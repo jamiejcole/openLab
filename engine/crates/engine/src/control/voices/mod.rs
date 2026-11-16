@@ -1270,7 +1270,13 @@ mod tests {
                 v.insert(VoiceId(1), r);
                 let mut fx = Effects::default();
                 let end = FinishReason::EndOfStream;
-                v.finished(VoiceId(1), at, end, &|c, r| held && (c, r) == (cue, run), &mut fx);
+                v.finished(
+                    VoiceId(1),
+                    at,
+                    end,
+                    &|c, r| held && (c, r) == (cue, run),
+                    &mut fx,
+                );
                 let case = format!("preview {preview}, end on {at}, run held {held}");
                 assert_eq!(
                     fx.feedback,
@@ -1295,7 +1301,13 @@ mod tests {
             r.paused_at = paused_at;
             v.insert(VoiceId(1), r);
             let mut fx = Effects::default();
-            v.finished(VoiceId(1), 200, FinishReason::Faulted, &|_, _| true, &mut fx);
+            v.finished(
+                VoiceId(1),
+                200,
+                FinishReason::Faulted,
+                &|_, _| true,
+                &mut fx,
+            );
             assert!(
                 matches!(
                     fx.feedback.as_slice(),
@@ -1375,7 +1387,13 @@ mod tests {
         v.insert(VoiceId(2), rec(cue, RunId(8), false));
         v.aliases.insert(VoiceId(1), (VoiceId(2), RunId(7)));
         let mut fx = Effects::default();
-        v.finished(VoiceId(1), 200, FinishReason::Faulted, &|_, _| true, &mut fx);
+        v.finished(
+            VoiceId(1),
+            200,
+            FinishReason::Faulted,
+            &|_, _| true,
+            &mut fx,
+        );
         assert!(fx.deferred.is_empty(), "{:?}", fx.deferred);
         assert!(
             matches!(
