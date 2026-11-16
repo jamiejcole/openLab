@@ -330,6 +330,7 @@ impl Voices {
         if paused.is_none()
             && let Some(rest) = total_frames(&plan.table)
         {
+            let rest = Scale::new(env.rate.get(), plan.rate).master(rest);
             fx.feedback.push(Input::ActionLength {
                 cue,
                 run,
@@ -361,7 +362,7 @@ impl Voices {
                     queue: Vec::new(),
                 },
                 offset: plan.offset,
-                rest: Some(plan.table),
+                rest: Some((plan.table, plan.rate)),
                 shown: plan.shown,
                 delay: counted.saturating_sub(plan.offset),
                 moved: true,
@@ -498,7 +499,9 @@ impl Voices {
         let rate = self.recs.get(&id).map(|r| rate_for(env, r.cue));
         if let Some(r) = self.recs.get_mut(&id)
             && let Phase::Waiting { prepared, .. } = &mut r.phase
-            && prepared.as_ref().is_some_and(|p| Some(p.rate) != rate)
+            && prepared
+                .as_ref()
+                .is_some_and(|p| Some(p.scale.local_rate()) != rate)
         {
             *prepared = None;
         }
@@ -634,9 +637,10 @@ impl Voices {
         let Ready {
             stream: prepared,
             total,
-            table,
-            rate,
+            scale,
         } = ready;
+        // What the mixer voice plays, at the device's rate.
+        let table = prepared.slices.clone();
         // A start the probe held up plays as soon as it can, from its head (a cold start).
         let at = start.max(env.now);
         let crossfade = Fade::new(seconds_to_samples(SEEK_CROSSFADE, env.rate), Curve::Linear);
@@ -671,7 +675,7 @@ impl Voices {
                 r.start_at = at;
                 r.total = total;
                 r.table = table;
-                r.rates = (rate != env.rate.get()).then_some((env.rate.get(), rate));
+                r.scale = scale;
                 // A moved voice's delay starts at the difference between the core's count and
                 // its own (`relocate`); a start held up adds the hold.
                 r.delay = r.delay.saturating_add(at - start);
@@ -778,7 +782,7 @@ impl Voices {
             *prepared = None;
         }
         r.offset = plan.offset;
-        r.rest = Some(plan.table);
+        r.rest = Some((plan.table, plan.rate));
         r.shown = plan.shown;
         r.delay = counted.saturating_sub(plan.offset);
     }
@@ -961,7 +965,7 @@ impl Voices {
                     *start = Some(date);
                     *prepared = None;
                     r.offset = plan.offset;
-                    r.rest = Some(plan.table);
+                    r.rest = Some((plan.table, plan.rate));
                     r.shown = plan.shown;
                     r.delay = counted.saturating_sub(plan.offset);
                 }

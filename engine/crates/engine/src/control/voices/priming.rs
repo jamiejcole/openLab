@@ -86,12 +86,17 @@ impl Voices {
             return Err(PrepError::Failed);
         };
         let info = &ready.probed.info;
+        let master = env.rate.get();
+        let mut planned_at = master;
         let planned = match from {
             StartAt::Offset(offset) => {
                 cue_slices(&spec, info, env.rate, offset).map(|s| (s, offset))
             }
             StartAt::File(frame) => cue_slices_from(&spec, info, env.rate, frame),
-            StartAt::Table(table) => Ok((table, 0)),
+            StartAt::Table(table, rate) => {
+                planned_at = rate;
+                Ok((table, 0))
+            }
         };
         let (slices, shown) = match planned {
             Ok(s) => s,
@@ -107,22 +112,22 @@ impl Voices {
         if slices.is_empty() {
             return Err(PrepError::Empty);
         }
-        let total = total_frames(&slices);
-        let master = env.rate.get();
         let rate = rate_for(env, cue);
+        // The table the voice plays, at its device's rate; the core's length is that table's.
+        let slices = openlab_audio::rescale(&slices, planned_at, rate, info.frames_at(rate));
+        let total = total_frames(&slices).map(|t| Scale::new(master, rate).master(t));
         let req = StreamRequest {
             media: source,
             info: ready.probed.info,
             seeking: ready.probed.seeking.clone(),
-            slices: openlab_audio::rescale(&slices, master, rate, info.frames_at(rate)),
+            slices,
         };
         match env.streamer.prepare_at(req, rate) {
             Ok(stream) => Ok(Made {
                 ready: Ready {
                     stream,
                     total,
-                    table: slices,
-                    rate,
+                    scale: Scale::new(master, rate),
                 },
                 shown,
             }),
@@ -142,7 +147,8 @@ impl Voices {
     pub(super) fn take_prime(&mut self, cue: CueId, offset: u64, env: &Env<'_>) -> Option<Ready> {
         let usable = offset == 0
             && self.primes.get(&cue).is_some_and(|p| {
-                sig_of(env, cue).as_ref() == Some(&p.sig) && p.ready.rate == rate_for(env, cue)
+                sig_of(env, cue).as_ref() == Some(&p.sig)
+                    && p.ready.scale.local_rate() == rate_for(env, cue)
             });
         let prime = self.primes.remove(&cue)?;
         if usable {
@@ -160,7 +166,7 @@ impl Voices {
         self.primes.retain(|cue, p| {
             wanted.contains(cue)
                 && sig_of(env, *cue).as_ref() == Some(&p.sig)
-                && p.ready.rate == rate_for(env, *cue)
+                && p.ready.scale.local_rate() == rate_for(env, *cue)
         });
         for cue in wanted {
             if self.primes.contains_key(&cue)

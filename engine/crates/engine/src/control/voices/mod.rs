@@ -9,11 +9,15 @@
 //! resume re-keys the mixer voice to a fresh `VoiceId` for the fresh `RunId`; the old id stays an
 //! alias until the voice is gone, so late events and meter entries under it still name the cue.
 //!
-//! **Units.** Every frame count kept here (offsets, tables, totals, positions, delays, cuts) is
-//! in frames of the master clock, the primary device's rate, as the cue engine counts. A voice
-//! on a device at another rate gets its stream and its mixer slice table in that device's frames
-//! ([`Ready::stream`]): the table planned here is rescaled when the stream is made, and every
-//! other frame count of its commands is converted where commands are routed to the device.
+//! **Units.** What the cue engine counts (offsets, totals, positions, delays, the elapsed time
+//! shown) is in frames of the master clock, the primary device's rate. A voice's slice table
+//! and its devamp cuts are what its mixer voice plays: frames at its device's rate. A table is
+//! planned at the master rate and rescaled once, when its stream is made; from then on every
+//! count the core sees is derived from the device's table through the voice's [`Scale`], so a
+//! loop whose length rounds to whole device frames is counted as it really plays, pass after
+//! pass (the end, an auto-follow, a devamp's leave, the time shown and a move all follow the
+//! sound). The other frame counts of its commands are converted where commands are routed to
+//! the device.
 
 use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroU32;
@@ -186,9 +190,9 @@ pub struct VoiceRec {
     /// voice it moves from is, so it shows that voice's elapsed time (`shown`, set when it is
     /// made) and starts on its planned sample, not before it is in the commit window.
     relocated: bool,
-    /// The table a move to another device plays ([`move_plan`]), instead of one planned from
-    /// `offset` or `file`.
-    rest: Option<Vec<Slice>>,
+    /// The table a move to another device plays ([`move_plan`]), at the rate it is in, instead
+    /// of one planned from `offset` or `file`.
+    rest: Option<(Vec<Slice>, u32)>,
     /// A move to another device whose stream is late is planned again until this sample, then
     /// given up ([`SEEK_PRIME_WAIT`] after its first planned swap).
     swap_limit: SampleTime,
@@ -197,8 +201,43 @@ pub struct VoiceRec {
     retry_at: Option<SampleTime>,
     /// Moves of its run given up so far: each retry waits twice as long as the one before.
     gave_up: u32,
-    /// The master clock's rate and its stream's (its device's), when they differ.
-    rates: Option<(u32, u32)>,
+    /// Its table's frames (its device's) against the master clock's.
+    scale: Scale,
+}
+
+/// Frames of a voice's device against frames of the master clock. Every conversion between a
+/// voice's table (device frames) and the core's count (master frames) goes through here: one
+/// rational rounding of the whole count each time, so nothing builds up pass after pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Scale {
+    master: u32,
+    local: u32,
+}
+
+impl Scale {
+    pub(super) fn new(master: u32, local: u32) -> Self {
+        Scale { master, local }
+    }
+
+    /// The device's rate.
+    pub(super) fn local_rate(self) -> u32 {
+        self.local
+    }
+
+    /// Both clocks run at one rate: every conversion is the count itself.
+    pub(super) fn is_same(self) -> bool {
+        self.master == self.local
+    }
+
+    /// Master frames as device frames.
+    pub(super) fn local(self, master: u64) -> u64 {
+        openlab_audio::frames_at_rate(master, self.master, self.local)
+    }
+
+    /// Device frames as master frames.
+    pub(super) fn master(self, local: u64) -> u64 {
+        openlab_audio::frames_at_rate(local, self.local, self.master)
+    }
 }
 
 /// A cue's seeks prepare at most one stream per this many seconds: a burst of seeks (a stuck
@@ -231,15 +270,18 @@ enum StartAt {
     Offset(u64),
     /// A frame of the file at the device rate (a seek).
     File(u64),
-    /// This slice table: what the voice a move to another device replaces still had to play.
-    Table(Vec<Slice>),
+    /// This slice table at this rate: what the voice a move to another device replaces still
+    /// had to play.
+    Table(Vec<Slice>, u32),
 }
 
 /// A move to another device planned for one swap sample: the table the new voice plays (what
 /// the old one still has to play from then), where in the action that is, and the elapsed time
 /// it shows there.
 struct MovePlan {
+    /// At the old voice's device rate, `rate`.
     table: Vec<Slice>,
+    rate: u32,
     offset: u64,
     shown: u64,
 }
@@ -250,9 +292,10 @@ struct MovePlan {
 fn move_plan(o: &VoiceRec, swap: SampleTime) -> Option<MovePlan> {
     let here = o.position(swap.max(o.start_at)).unwrap_or(o.offset);
     let played = here.saturating_sub(o.offset);
-    let table = rest_of_table(&o.table, &o.cuts, o.devamp_stop, played)?;
+    let table = rest_of_table(&o.table, &o.cuts, o.devamp_stop, o.scale.local(played))?;
     Some(MovePlan {
         table,
+        rate: o.scale.local,
         offset: here,
         shown: o.shown.saturating_add(played),
     })
@@ -262,12 +305,10 @@ fn move_plan(o: &VoiceRec, swap: SampleTime) -> Option<MovePlan> {
 struct Ready {
     /// Its frames and slice table are at `rate`.
     stream: PreparedStream,
-    /// Frames it plays, at the master clock's rate (`None`: it loops until devamped).
+    /// Frames its table plays, in master frames (`None`: it loops until devamped).
     total: Option<u64>,
-    /// Its slice table at the master clock's rate (what the voice's record keeps).
-    table: Vec<Slice>,
-    /// The device rate it was made for.
-    rate: u32,
+    /// Its device's frames against the master clock's (`local`: the rate it was made for).
+    scale: Scale,
 }
 
 /// A stream made for a voice.
@@ -301,7 +342,7 @@ impl VoiceRec {
     /// Where its stream starts, as planned for it.
     fn plan_of(&self) -> StartAt {
         match (&self.rest, self.file) {
-            (Some(table), _) => StartAt::Table(table.clone()),
+            (Some((table, rate)), _) => StartAt::Table(table.clone(), *rate),
             (None, Some(frame)) => StartAt::File(frame),
             (None, None) => StartAt::Offset(self.offset),
         }
@@ -431,21 +472,22 @@ impl VoiceRec {
         let Some(played) = at.checked_sub(self.start_at) else {
             return;
         };
-        let played = played.saturating_sub(self.paused_frames);
+        let played = self.scale.local(played.saturating_sub(self.paused_frames));
         if self.cuts.last().is_none_or(|&c| played > c) && self.cuts.len() < MAX_SLICES {
             self.cuts.push(played);
         }
     }
 
     /// The frame of the media file the voice is at when the action is `pos` frames in (the
-    /// table starts at the action offset); `None` without a table or past its end.
+    /// table starts at the action offset), in frames of the file at the master rate; `None`
+    /// without a table or past its end.
     fn file_frame(&self, pos: u64) -> Option<u64> {
-        let played = pos.saturating_sub(self.offset);
+        let played = self.scale.local(pos.saturating_sub(self.offset));
         // A devamp stop ends the voice on the loop's boundary: nothing is played after it.
         if self.devamp_stop && self.cuts.last().is_some_and(|&c| c <= played) {
             return None;
         }
-        file_frame(&self.table, &self.cuts, played)
+        file_frame(&self.table, &self.cuts, played).map(|f| self.scale.master(f))
     }
 
     /// The action's length once a devamp leaves the loop it plays on sample `at`: where it is
@@ -458,7 +500,12 @@ impl VoiceRec {
         let rest = if self.devamp_stop {
             0
         } else {
-            rest_after_loop(&self.table, played)?
+            let left = self.scale.local(played);
+            let rest = rest_after_loop(&self.table, left)?;
+            // Counted as one stretch from the voice's start, so the rounding never adds up.
+            self.scale
+                .master(left.saturating_add(rest))
+                .saturating_sub(self.scale.master(left))
         };
         Some(
             self.offset
@@ -662,7 +709,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         swap_limit: 0,
         retry_at: None,
         gave_up: 0,
-        rates: None,
+        scale: Scale::new(1, 1),
     }
 }
 

@@ -239,7 +239,8 @@ impl Voices {
                 } = &r.phase
                     && r.moved
                 {
-                    let at = p.table.first().map(|s| s.start);
+                    let scale = p.scale;
+                    let at = p.stream.slices.first().map(|s| scale.master(s.start));
                     return Some((r.cue, r.shown, p.total, at));
                 }
                 let pos = r.position(t)?;
@@ -289,11 +290,10 @@ impl Voices {
         self.recs.values().filter_map(move |r| {
             let h = r.stream.as_ref()?;
             let played = r.position(t)?.saturating_sub(r.offset);
-            let needed = match r.rates {
-                Some((master, local)) => {
-                    openlab_audio::frames_at_rate(played, master, local).saturating_add(1)
-                }
-                None => played,
+            let needed = if r.scale.is_same() {
+                played
+            } else {
+                r.scale.local(played).saturating_add(1)
             };
             Some((h, needed))
         })
