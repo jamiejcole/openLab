@@ -847,11 +847,12 @@ impl DocCx<'_> {
                 let frames = fade.map_or(0, |f| f.frames);
                 self.sound_action(action, fx);
                 self.eng.pictures.take_held(doc, run);
+                // The stop (its fade, if any) is over on this sample, as a mixer voice's is; a
+                // devamp that stops the picture sooner ends picture, sound and cue there.
+                let mut end = at.saturating_add(frames);
                 if let Some(id) = self.eng.pictures.find(doc, run) {
-                    self.stop_picture(id, at, frames);
+                    end = self.stop_picture(id, at, frames);
                 }
-                // The stop (its fade, if any) is over on this sample, as a mixer voice's is.
-                let end = at.saturating_add(frames);
                 let ended = Input::ActionEnded { cue, run, at: end };
                 fx.pictured.push((Some(end), ended));
             }
@@ -1497,27 +1498,33 @@ impl DocCx<'_> {
         }
     }
 
-    /// Stops picture `id` from sample `at`, fading out over `frames`. A playing picture whose
-    /// devamp stops it at the end of its pass before that fade is over leaves there, as its
-    /// sound does: its plan ends there.
-    fn stop_picture(&mut self, id: u64, at: SampleTime, frames: SampleTime) {
+    /// Stops picture `id` from sample `at`, fading out over `frames`, and returns the sample it
+    /// is gone on. A playing picture whose action ends before that fade is over (its range's
+    /// end, or the end of the pass a devamp stops it at) leaves there, as its sound does, and
+    /// its cue ends there too: a picture held on its last frame would be the action's end
+    /// drawn on.
+    fn stop_picture(&mut self, id: u64, at: SampleTime, frames: SampleTime) -> SampleTime {
         let mut at = at;
         let mut frames = frames;
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
             let playing = matches!(l.motion, Some((Some(_), _)));
-            let leaves = (l.plan.as_ref())
-                .and_then(|p| p.devamp)
-                .and_then(|(stop, leaves)| stop.then_some(leaves))
-                .filter(|_| playing);
-            if let Some(leaves) = leaves
-                && at < leaves
-                && leaves < at.saturating_add(frames)
+            // Its plan's end on the engine's clock; none while it loops for ever or holds its
+            // last frame (hold at end with no devamp to stop it).
+            let plan_end = (l.plan.as_ref())
+                .filter(|_| playing && l.length.is_some())
+                .and_then(|p| {
+                    let total = total_frames(&p.table)?;
+                    Some(p.at.saturating_add(total.saturating_sub(p.into)))
+                });
+            if let Some(end) = plan_end
+                && at < end
+                && end < at.saturating_add(frames)
             {
-                (at, frames) = (leaves, 0);
+                (at, frames) = (end, 0);
             }
             let end = at.saturating_add(frames);
             if l.ends.is_some_and(|e| e <= end) {
-                return;
+                return end;
             }
             l.ends = Some(end);
             l.stop = Some(ToStage::Stop {
@@ -1531,6 +1538,7 @@ impl DocCx<'_> {
             at,
             fade: frames,
         });
+        at.saturating_add(frames)
     }
 
     /// A picture that cannot be loaded: the cue breaks, as a stream that cannot be opened does
@@ -1597,7 +1605,7 @@ impl DocCx<'_> {
                 .map(|(id, _)| *id)
                 .collect();
             for id in ids {
-                self.stop_picture(id, at, 0);
+                let _ = self.stop_picture(id, at, 0);
             }
         }
     }
