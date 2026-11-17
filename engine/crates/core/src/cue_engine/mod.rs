@@ -594,6 +594,7 @@ impl CueEngine {
             }
             Input::Load { cue, time } => {
                 if self.known(cue, cx) {
+                    let time = self.load_time(cue, time, cx);
                     self.load_tree(cue, time, cx);
                 }
             }

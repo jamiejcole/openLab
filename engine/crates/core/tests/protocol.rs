@@ -2279,7 +2279,6 @@ fn malformed_input_is_an_error_never_a_panic() {
         format!(
             r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":-1e999}}}}"#
         ),
-        format!(r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":-1}}}}"#),
         format!(r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":NaN}}}}"#),
         format!(
             r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":null}}}}"#
@@ -2318,11 +2317,23 @@ fn malformed_input_is_an_error_never_a_panic() {
         // A client frame is never a valid server frame either way round, and must not panic.
         let _ = decode_server(text);
     }
-    assert_eq!(
+    // A load time may be negative (back from the end) but never not-a-number or infinite.
+    assert!(
         decode_client(
             r#"{"type":"transport","id":1,"action":{"type":"load","cue":"00000000-0000-0000-0000-000000000001","at":-1}}"#
-        ),
-        Err(ProtocolError::OutOfRange {
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        encode_client(&transport(
+            1,
+            TransportAction::Load {
+                cue: cue_id(1),
+                at: f64::INFINITY
+            }
+        ))
+        .err(),
+        Some(ProtocolError::NonFinite {
             field: "transport.load.at"
         })
     );
@@ -2453,15 +2464,15 @@ fn a_batch_is_refused_whole_unless_well_formed() {
             "{not_per_cue:?}"
         );
     }
-    assert_eq!(
+    assert!(
         batch(vec![
             start(1),
             TransportAction::Load {
                 cue: cue_id(2),
                 at: -1.0
             }
-        ]),
-        field("transport.load.at")
+        ])
+        .is_ok()
     );
     // The largest batch fits a frame and decodes; every per-cue kind is accepted.
     let most: Vec<_> = (0..MAX_BATCH_ACTIONS as u128).map(start).collect();
@@ -4679,13 +4690,19 @@ fn arb_command() -> impl Strategy<Value = Command> {
         (
             proptest::collection::vec(arb_cue(), 0..4),
             arb_time(),
-            arb_time()
+            arb_time(),
+            arb_text(),
+            arb_text()
         )
-            .prop_map(|(ids, start, increment)| Command::Renumber {
-                ids,
-                start,
-                increment
-            }),
+            .prop_map(
+                |(ids, start, increment, prefix, suffix)| Command::Renumber {
+                    ids,
+                    start,
+                    increment,
+                    prefix,
+                    suffix,
+                }
+            ),
     ]
 }
 

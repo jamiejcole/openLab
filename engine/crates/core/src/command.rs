@@ -243,11 +243,16 @@ pub enum Command {
         numbers: Vec<NumberAssignment>,
     },
     /// Numbers `ids` `start`, `start + increment`, … in cue list order, whatever order `ids` is
-    /// in (ED-08). A group is numbered before its children, if both are listed.
+    /// in (ED-08), each with `prefix` before and `suffix` after, skipping any number a cue
+    /// outside `ids` already has. A group is numbered before its children, if both are listed.
     Renumber {
         ids: Vec<CueId>,
         start: f64,
         increment: f64,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        prefix: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        suffix: String,
     },
     /// Several commands as one undo step. If one is refused, none is applied. May not contain
     /// another transaction.
@@ -684,7 +689,9 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
             ids,
             start,
             increment,
-        } => renumber(ws, &ids, start, increment),
+            prefix,
+            suffix,
+        } => renumber(ws, &ids, start, increment, &prefix, &suffix),
         Command::Transaction { .. } => Err(CommandError::NestedTransaction),
         other => apply_model(ws, &other, restoring).unwrap_or(Err(CommandError::Internal)),
     }

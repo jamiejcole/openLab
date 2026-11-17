@@ -166,6 +166,8 @@ fn everything() -> Vec<Command> {
             ids: vec![cue_id(10), cue_id(3)],
             start: 100.0,
             increment: 10.0,
+            prefix: String::new(),
+            suffix: String::new(),
         },
         set(
             6,

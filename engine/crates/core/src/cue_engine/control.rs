@@ -89,7 +89,7 @@ impl CueEngine {
     /// measured in 5.6.5): further back than the start, or with no known end (audio not probed
     /// yet, an endless group), it loads to the start. An Audio cue that loops forever ends, for
     /// this, after one pass (QLab 5.6.5 measured).
-    fn load_time(&self, target: CueId, time: f64, cx: &Ctx) -> f64 {
+    pub(super) fn load_time(&self, target: CueId, time: f64, cx: &Ctx) -> f64 {
         if time >= 0.0 {
             return time;
         }

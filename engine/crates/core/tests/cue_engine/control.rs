@@ -564,6 +564,39 @@ fn a_negative_load_time_longer_than_the_target_or_with_no_known_end_loads_at_the
     );
 }
 
+/// Flow: the Load to Time tool with a negative time (the `load` transport action) loads the
+/// cue that long before the end of its pre-wait and action together, as a Load cue does.
+#[test]
+fn a_transport_load_with_a_negative_time_loads_before_the_cues_end() {
+    let mut rig = Rig::new(vec![timed(sound(1), 1.0, 0.0, DNC), sound(2)]);
+    let lengths = [(id(1), Some(4000))].into_iter().collect();
+    rig.at(0, Input::CueLengths { lengths });
+    // 1 s pre-wait + 4 s audio = 5 s; 2 s back is 3 s: 2 s into the audio.
+    let load = rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: -2.0,
+        },
+    );
+    assert!(
+        load.iter().any(|a| matches!(
+            a,
+            Action::LoadVoice { cue, offset: 2000, .. } if *cue == id(1)
+        )),
+        "{load:?}"
+    );
+    // Further back than the start, and a cue with no known end: loaded at the start.
+    for (cue, time) in [(1, -60.0), (2, -1.0)] {
+        let load = rig.at(10, Input::Load { cue: id(cue), time });
+        assert!(
+            load.iter()
+                .any(|a| matches!(a, Action::LoadVoice { offset: 0, .. })),
+            "{cue}: {load:?}"
+        );
+    }
+}
+
 #[test]
 fn load_cue_on_an_active_or_broken_target_warns() {
     let mut rig = Rig::new(vec![load_cue(1, 3, 0.0), memo(2), sound(3)]);
