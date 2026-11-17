@@ -866,8 +866,8 @@ fn reopened(c: &openlab_engine::control::Control) -> Vec<String> {
 
 /// Flow: a damaged file (fails on open or on every read) → the cue breaks as before, with no
 /// loop of re-opens. (a) A movie whose first frames are good, so it probes as playable, cut
-/// short further in: its frames run out mid-play, the movie opened again has none there
-/// either, and only its own cue breaks, with `decode_failed` and a notice, while another cue
+/// short further in: its reader fails or its frames run out mid-play, it is opened again at
+/// most once and fails again there, and only its own cue breaks, with `decode_failed` and a notice, while another cue
 /// on the stage plays on. (b) A file that turns to noise after its probe fails at its open on
 /// the stage host, which is never tried again.
 #[test]
@@ -911,21 +911,21 @@ fn a_damaged_file_breaks_its_cue_with_no_loop_of_reopens() {
     let now = on_stage(&mut s, "cue 1 still shown");
     assert!(now.abs_diff(frame_at(at)) <= 1, "{now} at {at} s");
     s.run(samples(0.5));
-    assert_eq!(
-        reopened(s.control()),
-        Vec::<String>::new(),
-        "no re-open took"
-    );
+    // At most one re-open: none when the movie opened again finds no frames there either, one
+    // when the reader met the cut before the frames ran out (its read-ahead, under load) and
+    // the movie opened again then ran out. Either way the failure says both.
+    let lines = reopened(s.control());
+    assert!(lines.len() <= 1, "no loop of re-opens: {lines:?}");
     let reason = s
         .control()
         .show_log()
         .tail(2000)
         .into_iter()
         .map(|e| e.message)
-        .find(|m| m.contains("opening it again failed"));
+        .find(|m| m.contains("opening it again failed") || m.contains("after it was opened again"));
     assert!(
         reason.is_some(),
-        "tried once, said in the failure\n{}",
+        "the failure says it was tried again\n{}",
         seen(&s)
     );
 

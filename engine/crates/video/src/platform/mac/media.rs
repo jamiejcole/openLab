@@ -600,7 +600,9 @@ fn reopen(
     }
     let (asked, position, pass) = {
         let mail = shared.lock();
-        if mail.closed {
+        // Let go, or already failed (a frame past its limit on a stalled volume): nothing to
+        // open again for, and no line saying it was.
+        if mail.closed || mail.failed.is_some() {
             return Err(why);
         }
         mail.want.ok_or_else(|| why.clone())?
@@ -1330,6 +1332,33 @@ mod tests {
         // Every frame read, a frame at a time, to 29 s: failures at about 11 s and 22 s.
         let notes = play_through(&mut p, (0..725).map(|i| f64::from(i) * 0.04));
         assert_eq!(notes.len(), 2, "{notes:?}");
+    }
+
+    /// A picture that already failed (a frame past its limit) is not opened again when its
+    /// reader then fails too: no note says it was, and the reason is the reader's.
+    #[test]
+    fn a_picture_that_already_failed_is_not_opened_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = clip(dir.path(), "clip.mov", 5);
+        let mut movie = Movie::open(&file).unwrap();
+        let shared = Shared {
+            mail: Mutex::new(Mail::default()),
+            wake: Condvar::new(),
+        };
+        {
+            let mut mail = shared.lock();
+            mail.want = Some((1, 0.04, 0));
+            mail.failed = Some(frame_overrun(LIMITS));
+        }
+        let got = reopen(&shared, &file, &mut movie, "reader failed".into(), &|| {});
+        assert_eq!(got.err().as_deref(), Some("reader failed"));
+        assert_eq!(shared.lock().reopened, None);
+        assert!(!movie.reopened);
+        // Not failed: the same call opens it again.
+        shared.lock().failed = None;
+        let got = reopen(&shared, &file, &mut movie, "reader failed".into(), &|| {});
+        assert!(matches!(got, Ok((1, Some(_)))), "{:?}", got.err());
+        assert!(movie.reopened && shared.lock().reopened.is_some());
     }
 
     /// A movie opened again has its allowance back only after `REOPEN_SETTLE` of frames read.
