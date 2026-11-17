@@ -121,8 +121,9 @@ jobs:
         include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"macOS arm64","os":"macos-26"},{"name":"Windows x64","os":"windows-2025"}]' || '[{"name":"macOS arm64","os":"macos-26"},{"name":"macOS Intel","os":"macos-26-intel"},{"name":"Windows x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
     # Backstop: a hung test fails the job instead of holding the runner for hours (arm64 also
-    # builds and runs the release suite).
-    timeout-minutes: 45
+    # builds and runs the release suite; longer outside a pull request, where that suite includes the video
+    # crate's tests, #751).
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 45 || 60 }}
     defaults:
       run:
         working-directory: engine
@@ -146,8 +147,8 @@ jobs:
       - run: ../scripts/rust-checks.sh fmt
       - run: ../scripts/rust-checks.sh clippy
       # Step limits fail a hung test well before the job's backstop (a hung video test once held
-      # the Intel job 33+ min). Green runs took at most 13 min (Intel debug) and 10 min (arm64
-      # release) with the build; about twice that leaves room for a cold cache.
+      # the Intel job 33+ min). Green debug runs took at most 13 min (Intel) with the build; about
+      # twice that leaves room for a cold cache.
       - run: ../scripts/rust-checks.sh test
         timeout-minutes: 25
       # Release builds skip debug-only checks (the cue engine's full model check on every call,
@@ -155,11 +156,12 @@ jobs:
       # rather than a separate one: it reuses the job's checkout, toolchain and cache, and runs on
       # every PR; arm64 is the fastest runner.
       # On a pull request the video crate's tests run in debug only (step above): in release on the hosted
-      # arm64 VM they take 17+ minutes (its video decoding slows as a run goes on; 35 s on a Mac). Main
-      # pushes, nightly and on-demand runs still run them in release (owner decision 2026-11-18).
+      # arm64 VM they take 12-19+ minutes (its video decoding slows as a run goes on; 35 s on a Mac), until
+      # #751 is fixed. Main pushes, nightly and on-demand runs still run them in release, with a longer
+      # limit (owner decision 2026-11-18).
       - name: Tests (release)
         if: matrix.os == 'macos-26'
-        timeout-minutes: 25
+        timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 40 }}
         run: ../scripts/rust-checks.sh ${{ github.event_name == 'pull_request' && 'test-release-no-video' || 'test-release' }}
       # NFR-23/QA-06: the mixer must render 64 stereo voices with fades at >= 10x real time.
       # Release-only (a debug build is far slower), gated on the slowest runner.
