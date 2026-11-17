@@ -146,7 +146,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// sideways scroller under them for systems that always show one (the columns overflow at the least
     /// width with the sidebar shown).
     static let minCueListHeight: CGFloat = 56 + sidewaysScrollerHeight
-    /// The least window height, which leaves the inspector its least and the list its least.
+    /// The least window height: the list's extra room comes out of the inspector's, which at this size keeps
+    /// its existing room (over 240 points) and not its 180 least.
     static let minWindowHeight: CGFloat = 500 + sidewaysScrollerHeight
     /// The least the inspector may be: enough for the Time & Loops tab's left column (Start, End,
     /// play count, Loop) below the tab strip. The smallest window leaves this much.

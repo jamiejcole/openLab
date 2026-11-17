@@ -6339,31 +6339,70 @@ final class CueListColumnLayoutTests: XCTestCase {
 
     /// Flow: scroll bars always shown, the least window, inspector and sidebar shown (so the columns
     /// overflow and the sideways scroller is on), a cue playing: the selected row is whole in the list
-    /// above the scroller, with the window shrunk to that size from a larger one.
+    /// between the header and the scroller. Reached by shrinking the window with the sidebar shown, and by
+    /// showing the sidebar in a window already at its least size.
     func testWithScrollBarsAlwaysShownAndTheSidewaysScrollerOnTheSelectedRowIsWholeAboveIt() async throws {
         let wc = try await open(NSSize(width: 1200, height: 800), playing: [H.intro])
         let window = try XCTUnwrap(wc.window)
         let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        let header = try XCTUnwrap(outline.headerView)
         scroll.scrollerStyle = .legacy
-        wc.setVisible(.sidebar, true)
+        func least() {
+            window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+        func check(_ what: String) throws {
+            XCTAssertTrue(wc.isVisible(.inspector), what)
+            XCTAssertTrue(scroll.hasHorizontalScroller, "\(what): the sideways scroller is on")
+            let scroller = try XCTUnwrap(scroll.horizontalScroller)
+            XCTAssertFalse(scroller.isHiddenOrHasHiddenAncestor, what)
+            let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
+            let head = header.convert(header.bounds, to: nil)
+            let at = scroller.convert(scroller.bounds, to: nil)
+            XCTAssertLessThanOrEqual(row.maxY, head.minY + 0.5, "\(what): the selected row is below the header")
+            XCTAssertGreaterThanOrEqual(row.minY, at.maxY - 0.5, "\(what): and above the scroller \(at), row \(row)")
+        }
         for cue in [H.radio, H.intro] {
             wc.cueList.selectAsUser([cue])
+            wc.setVisible(.sidebar, true)
             window.setContentSize(NSSize(width: 1200, height: 800))
             window.contentView?.layoutSubtreeIfNeeded()
             outline.scrollRowToVisible(outline.numberOfRows - 1)
-            window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
+            least()
+            try check("shrunk to the least size, cue \(cue)")
+            // The sidebar shown in a window already at its least size.
+            wc.setVisible(.sidebar, false)
             window.contentView?.layoutSubtreeIfNeeded()
-            XCTAssertTrue(wc.isVisible(.inspector))
-            XCTAssertTrue(scroll.hasHorizontalScroller, "the sideways scroller is on")
-            let scroller = try XCTUnwrap(scroll.horizontalScroller)
-            XCTAssertFalse(scroller.isHiddenOrHasHiddenAncestor)
-            let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
-            let seen = scroll.convert(scroll.contentView.frame, to: nil)
-            XCTAssertGreaterThanOrEqual(row.minY, seen.minY - 0.5, "the selected row is not cut off below")
-            XCTAssertLessThanOrEqual(row.maxY, seen.maxY + 0.5, "and not above")
-            let at = scroller.convert(scroller.bounds, to: nil)
-            XCTAssertFalse(at.intersects(row.insetBy(dx: 0, dy: 0.5)), "the scroller \(at) lies over the row \(row)")
+            outline.scrollRowToVisible(outline.selectedRow)
+            XCTAssertFalse(scroll.hasHorizontalScroller, "the columns fit without the sidebar")
+            wc.setVisible(.sidebar, true)
+            window.contentView?.layoutSubtreeIfNeeded()
+            try check("sidebar shown at the least size, cue \(cue)")
         }
+    }
+
+    /// Scroll bars that show only while scrolling reserve no room: at the least window size, idle, the
+    /// list has no inset below its rows and the scroller is the overlay kind that draws nothing until
+    /// the list scrolls, so nothing covers the one row.
+    func testWithScrollBarsShownWhileScrollingNothingIsDrawnOverTheRowAtTheLeastWindowSize() async throws {
+        let wc = try await open(NSSize(width: 1200, height: 800))
+        let window = try XCTUnwrap(wc.window)
+        let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        scroll.scrollerStyle = .overlay
+        wc.setVisible(.sidebar, true)
+        window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        wc.cueList.selectAsUser([H.radio])
+        outline.scrollRowToVisible(outline.selectedRow)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let scroller = try XCTUnwrap(scroll.horizontalScroller)
+        XCTAssertEqual(scroll.scrollerStyle, .overlay)
+        XCTAssertTrue(NSScroller.isCompatibleWithOverlayScrollers, "the scroller is the overlay kind")
+        XCTAssertEqual(scroll.contentView.contentInsets.bottom, 0, "no room is kept below the rows")
+        XCTAssertEqual(scroll.contentView.frame.height, scroll.frame.height, accuracy: 0.5)
+        let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
+        let seen = scroll.convert(scroll.contentView.frame, to: nil)
+        XCTAssertGreaterThanOrEqual(row.minY, seen.minY - 0.5, "the row is whole in the list")
     }
 
     /// The columns wider than the list (the least width with the sidebar shown) and the list scrolled
@@ -6394,13 +6433,14 @@ final class CueListColumnLayoutTests: XCTestCase {
                         title.minX, cells.minX, accuracy: 0.5, "\(bars), \(what): column \(column)'s title")
                 }
             }
+            // The list scrolled sideways by `dx` points, as a wheel does: the clip view moved and the scroll
+            // view told, within the document's range. (A synthetic wheel event failed to scroll on a
+            // runner while it did here, so the event's routing is not what this test is about.)
             func wheel(_ dx: Int32) throws {
-                let event = try XCTUnwrap(
-                    CGEvent(
-                        scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: dx, wheel3: 0
-                    )
-                    .flatMap { NSEvent(cgEvent: $0) })
-                scroll.scrollWheel(with: event)
+                let clip = scroll.contentView
+                let most = max(0, outline.frame.width - clip.bounds.width)
+                let x = min(max(0, clip.bounds.minX - CGFloat(dx)), most)
+                scroll.scroll(clip, to: NSPoint(x: x, y: clip.bounds.minY))
                 window.contentView?.layoutSubtreeIfNeeded()
             }
             // How far the columns reach past the list the operator sees. A scroll bar that always shows
