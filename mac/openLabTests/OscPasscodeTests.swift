@@ -60,10 +60,18 @@ extension WorkspaceSettingsTests {
     private func addRows(_ rig: Rig, _ rows: [(String, OscRights)]) async {
         for (code, rights) in rows {
             let at = table(rig).rows.count
-            guard case .success = await rig.store.send(command: .addOscPasscode(code, rights: rights, at: at)) else {
-                return XCTFail("add \(code)")
+            if case .failure(let error) = await rig.store.send(command: .addOscPasscode(code, rights: rights, at: at)) {
+                return XCTFail("add \(code): \(error)")
             }
         }
+    }
+
+    /// `count` more full-rights rows with codes from `first` up that the table does not hold yet: a
+    /// new workspace's own passcode is random, and a fixed code that matches it is refused.
+    private func addFreshRows(_ rig: Rig, _ count: Int, from first: Int) async {
+        let taken = Set(codes(rig))
+        let fresh = (first..<first + count + taken.count).map(String.init).filter { !taken.contains($0) }
+        await addRows(rig, fresh.prefix(count).map { ($0, .all) })
     }
 
     /// Empties the passcode table (a starting state).
@@ -142,7 +150,7 @@ extension WorkspaceSettingsTests {
     func testTableFull() async throws {
         let (rig, wc) = try await newWorkspace()
         let sc = wc.settingsWindow
-        await addRows(rig, (1...15).map { (String(2000 + $0), .all) })
+        await addFreshRows(rig, 15, from: 2001)
         await assertEventually { self.shown(sc).count == 17 }
         let before = commands(rig).count
         sc.oscAddButton.performClick(nil)
@@ -244,7 +252,7 @@ extension WorkspaceSettingsTests {
     func testANewRowIsScrolledIntoView() async throws {
         let (rig, wc) = try await newWorkspace()
         let sc = wc.settingsWindow
-        await addRows(rig, (1...11).map { (String(3000 + $0), .all) })
+        await addFreshRows(rig, 11, from: 3001)
         await assertEventually { self.shown(sc).count == 13 }
         sc.window?.contentView?.layoutSubtreeIfNeeded()
         sc.oscAddButton.performClick(nil)
@@ -284,7 +292,11 @@ extension WorkspaceSettingsTests {
     func testTheColumnTitlesStayAboveTheScrollingRows() async throws {
         let (rig, wc) = try await newWorkspace()
         let sc = wc.settingsWindow
-        await addRows(rig, (1...15).map { (String(3000 + $0), .all) })
+        // The table already holds a code in the range filled below, as a new workspace's random
+        // one sometimes does.
+        await clearRows(rig)
+        await addRows(rig, [("3005", .all)])
+        await addFreshRows(rig, 15, from: 3001)
         await assertEventually { self.shown(sc).count == 17 }
         sc.window?.contentView?.layoutSubtreeIfNeeded()
         let scroll = try XCTUnwrap(view("settings-osc-table", in: sc) as? NSScrollView)
