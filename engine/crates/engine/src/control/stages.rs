@@ -5,17 +5,17 @@
 //! host says back. The stage host starts with the control loop, so its displays are known when
 //! a new workspace is made; the control thread never waits on it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use openlab_core::StageId;
 use openlab_core::protocol::{
     ErrorBody, ErrorCode, LogLevel, OkBody, Outcome, RequestId, ResultData, ServerMessage,
     StageMappingEntry,
 };
 use openlab_core::stage_link::{Display, LinkLevel, StageOutput, StageState};
+use openlab_core::{Command, CommandError, CueKind, CueState, StageId};
 
 use super::inbox::reply;
-use super::{Control, DocId, Engine, Inbox, ReplyTx, failed, ok};
+use super::{Control, DocCx, DocId, Engine, Inbox, ReplyTx, failed, ok};
 use crate::stage::{StageEvent, StageHost};
 
 /// What a test probe reads: one stage's own picture, or what a display shows.
@@ -50,11 +50,17 @@ pub(super) struct Stages {
     states: HashMap<StageId, StageState>,
     /// The stage set last handed to the supervisor.
     sent: Option<Vec<StageOutput>>,
-    /// What that set was made from: each open doc's stages, and [`Stages::mappings`] then. An
-    /// idle tick finds them unchanged and does no more.
-    synced: Option<(Vec<DocStages>, u64)>,
+    /// What that set was made from: each open doc's stages, [`Stages::mappings`] and
+    /// [`Stages::releases`] then. An idle tick finds them unchanged and does no more.
+    synced: Option<(Vec<DocStages>, u64, u64)>,
     /// Counts changes to this machine's stage display choices.
     mappings: u64,
+    /// Stages whose black a panic took down (QLab 5 manual p. 227: a stage keeps black until
+    /// the workspace panics): the stage host is told they do not keep black until a picture
+    /// plays on them again.
+    released: HashSet<StageId>,
+    /// Counts changes to [`Stages::released`].
+    releases: u64,
     /// Something a `video_outputs` push carries changed since the last one went out.
     push_due: bool,
     /// When the last `video_outputs` went out (control clock, ms).
@@ -155,6 +161,31 @@ impl Engine {
         }
     }
 
+    /// A panic of the workspace these stages belong to: each one's black goes down once its
+    /// pictures have faded, until a picture plays on it again.
+    pub(super) fn release_stages(&mut self, stages: impl IntoIterator<Item = StageId>) {
+        let mut changed = false;
+        for id in stages {
+            changed |= self.stages.released.insert(id);
+        }
+        if changed {
+            self.stages.releases = self.stages.releases.wrapping_add(1);
+        }
+    }
+
+    /// A picture plays on `stage`: its black (if it keeps black) stays up again between cues.
+    pub(super) fn unrelease_stage(&mut self, stage: StageId) {
+        if self.stages.released.remove(&stage) {
+            self.stages.releases = self.stages.releases.wrapping_add(1);
+        }
+    }
+
+    /// Whether `stage` keeps black now: it does, and no panic has taken it down since a picture
+    /// last played on it.
+    fn keeps_black(&self, stage: &openlab_core::Stage) -> bool {
+        stage.keep_black && !self.stages.released.contains(&stage.id)
+    }
+
     /// The stage host supervisor, if video output runs.
     pub(super) fn stages_host(&self) -> Option<&StageHost> {
         self.stages.host.as_ref()
@@ -186,19 +217,20 @@ impl Control {
     /// Hands the stage host every open workspace's stages, each with the display this machine
     /// shows it on, when that set changed. Called every tick; cheap when nothing changed.
     pub(super) fn sync_stages(&mut self) {
-        let unchanged = self
-            .eng
-            .stages
-            .synced
-            .as_ref()
-            .is_some_and(|(docs, mappings)| {
-                *mappings == self.eng.stages.mappings
-                    && docs.len() == self.docs.len()
-                    && docs
-                        .iter()
-                        .zip(&self.docs)
-                        .all(|((id, stages), d)| *id == d.id && *stages == d.model.ws().stages)
-            });
+        let unchanged =
+            self.eng
+                .stages
+                .synced
+                .as_ref()
+                .is_some_and(|(docs, mappings, releases)| {
+                    *mappings == self.eng.stages.mappings
+                        && *releases == self.eng.stages.releases
+                        && docs.len() == self.docs.len()
+                        && docs
+                            .iter()
+                            .zip(&self.docs)
+                            .all(|((id, stages), d)| *id == d.id && *stages == d.model.ws().stages)
+                });
         if unchanged {
             return;
         }
@@ -208,6 +240,7 @@ impl Control {
                 .map(|d| (d.id, d.model.ws().stages.clone()))
                 .collect(),
             self.eng.stages.mappings,
+            self.eng.stages.releases,
         ));
         let mut outputs = Vec::new();
         for doc in &self.docs {
@@ -223,11 +256,17 @@ impl Control {
                         .machine
                         .stage_mapping(ws.id, stage.id)
                         .map(|m| m.display.clone()),
-                    keep_black: stage.keep_black,
+                    keep_black: self.eng.keeps_black(stage),
                     stack: 0,
                 });
             }
         }
+        // A closed workspace's or a removed stage's release is forgotten, so the set stays
+        // within the stages open.
+        self.eng
+            .stages
+            .released
+            .retain(|id| outputs.iter().any(|o| o.id == *id));
         // Ranked across every open workspace: two workspaces' stages may share a display.
         let rank: HashMap<StageId, u32> =
             openlab_core::stack_order(self.docs.iter().flat_map(|d| d.model.ws().stages.iter()))
@@ -314,6 +353,7 @@ impl Control {
                 stage: s.id,
                 mapping: self.eng.config.machine.stage_mapping(ws.id, s.id).cloned(),
                 state: self.eng.stages.states.get(&s.id).cloned(),
+                panicked: s.keep_black && !self.eng.keeps_black(s),
             })
             .collect()
     }
@@ -785,5 +825,51 @@ impl Control {
     /// The running stage host's process id, once it has answered `hello`.
     pub fn stage_host_pid(&self) -> Option<u32> {
         self.eng.stages.pid.filter(|_| self.eng.stages.up)
+    }
+}
+
+impl DocCx<'_> {
+    /// Why `command` (a step of it, for a transaction, an undo or a redo) may not run now: it
+    /// removes a stage that a cue is using (loaded, waiting, playing, paused or stopping on
+    /// it). Its picture would otherwise vanish from the audience mid-cue. `None`: it may run.
+    pub(super) fn stage_removal_refused(&self, command: &Command) -> Option<CommandError> {
+        match command {
+            Command::RemoveStage { id } => self.stage_user(*id),
+            Command::Transaction { commands } => {
+                commands.iter().find_map(|c| self.stage_removal_refused(c))
+            }
+            _ => None,
+        }
+    }
+
+    /// The refusal naming the first cue using `stage`, if one does.
+    fn stage_user(&self, stage: StageId) -> Option<CommandError> {
+        let ws = self.doc.model.ws();
+        let engine = self.doc.model.engine();
+        let cue = ws.cues().find(|cue| {
+            matches!(&cue.kind, CueKind::Video { stage: Some(s), .. } if *s == stage)
+                && matches!(
+                    engine.state(cue.id),
+                    CueState::Loaded
+                        | CueState::PreWaiting
+                        | CueState::Running
+                        | CueState::Paused
+                        | CueState::Fading
+                        | CueState::Stopping
+                )
+        })?;
+        let name = ws
+            .stages
+            .iter()
+            .find(|s| s.id == stage)
+            .map_or_else(String::new, |s| s.name.clone());
+        let label = match &cue.number {
+            Some(n) if !n.is_empty() => n.clone(),
+            _ => openlab_core::display_name(cue).into_owned(),
+        };
+        Some(CommandError::StageInUse {
+            stage: name,
+            cue: label,
+        })
     }
 }

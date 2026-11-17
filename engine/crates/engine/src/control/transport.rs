@@ -64,6 +64,12 @@ impl DocCx<'_> {
         if let Some(scope) = scope {
             self.silence_orphans(scope, now);
         }
+        // QLab 5 manual p. 227: a panic takes down the black of every stage that keeps it,
+        // once the pictures on it have faded.
+        if panic {
+            let stages: Vec<_> = self.doc.model.ws().stages.iter().map(|s| s.id).collect();
+            self.eng.release_stages(stages);
+        }
     }
 
     /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
