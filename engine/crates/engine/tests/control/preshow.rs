@@ -593,6 +593,304 @@ fn a_cue_added_on_a_spare_patch_on_an_unplugged_device_is_counted_and_goes_when_
     assert_eq!(feed_codes(&s.take_outbound()), None);
 }
 
+const OTHER: &str = "fake:other";
+const OTHER_NAME: &str = "Other";
+
+/// An Audio cue `n` on the spare patch.
+fn on_spare(n: u128) -> Cue {
+    let mut c = audio(n, &wav(&dc(100, 0.5)), 0);
+    if let CueKind::Audio { patch, .. } = &mut c.kind {
+        *patch = spare_patch();
+    }
+    c
+}
+
+/// Adds cue `c` at `index` in the list.
+fn add(s: &mut DeviceShow, c: Cue, index: usize) {
+    edit(
+        s,
+        Command::AddCue {
+            at: Position {
+                list: list_id(),
+                parent: None,
+                index,
+            },
+            cue: c,
+            auto_number: false,
+        },
+    );
+}
+
+/// A show whose one cue plays on the main patch, with a spare patch mapped to `spare`, opened
+/// with "Other" plugged in (`other_is_default`: as the system's default output), which the
+/// check passes; then "Other" is unplugged. Returns the outbound messages since the unplug.
+fn spare_on_a_device_then_unplugged(
+    spare: PatchMapping,
+    other_is_default: bool,
+    cues: Vec<Cue>,
+) -> (DeviceShow, Vec<ServerMessage>) {
+    let mut all = vec![audio(1, &wav(&dc(100, 0.5)), 0)];
+    all.extend(cues);
+    let mut ws = workspace(all);
+    ws.patches.push(twin(&ws.patches[0], 902, "Spare"));
+    let mut c = config_main_only(&ws);
+    c.machine
+        .set_patch_mapping(ws.id, spare_patch(), spare)
+        .unwrap();
+    let mut other = listed(OTHER, OTHER_NAME, 2);
+    other.is_default = other_is_default;
+    let mut s = DeviceShow::new(ws, vec![listed(DEV, DEV_NAME, 2), other], c);
+    s.settle_devices();
+    s.tick();
+    let r = preshow(&mut s);
+    assert!(r.ok, "before the unplug: {r:?}");
+    s.take_outbound();
+    s.fake.unplug(OTHER, true);
+    s.settle_devices();
+    s.tick();
+    let msgs = s.take_outbound();
+    (s, msgs)
+}
+
+fn on_other() -> PatchMapping {
+    PatchMapping {
+        device: OTHER_NAME.into(),
+        channels: vec![0, 1],
+        system: false,
+    }
+}
+
+/// Whether the report's system problems hold `code` about the device named `device`.
+fn counts(r: &PreshowReport, code: &str, device: &str) -> bool {
+    r.system.iter().any(|w| {
+        matches!(w, WireWarning::Notice { code: c, device: Some(d), .. }
+            if c == code && d == device)
+    })
+}
+
+/// Whether the report's system problems hold `code` about device "Other".
+fn counts_other(r: &PreshowReport, code: &str) -> bool {
+    counts(r, code, OTHER_NAME)
+}
+
+/// A spare patch mapped to a device unplugged after the show opened, no cue on it: the
+/// pre-show check passes with no system problem; the Warnings list names the device.
+#[test]
+fn a_spare_patch_on_a_device_unplugged_after_opening_with_no_cue_passes_and_the_warnings_name_it() {
+    let (mut s, msgs) = spare_on_a_device_then_unplugged(on_other(), false, vec![]);
+    let notices = feed_notices(&msgs);
+    assert!(
+        notices
+            .iter()
+            .any(|(code, device, patch, _)| code == "device_lost"
+                && device.as_deref() == Some(OTHER_NAME)
+                && patch.is_none()),
+        "{notices:?}"
+    );
+    let r = preshow(&mut s);
+    assert!(r.ok, "{r:?}");
+    assert!(r.system.is_empty(), "{:?}", r.system);
+    assert_eq!(r.summary, PreshowSummary::default());
+}
+
+/// A cue on that patch: the check counts the device's loss; the cue removed, it goes.
+#[test]
+fn a_cue_on_the_spare_patch_counts_the_lost_device_and_it_goes_when_the_cue_is_removed() {
+    let (mut s, _) = spare_on_a_device_then_unplugged(on_other(), false, vec![]);
+    add(&mut s, on_spare(7), 1);
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert!(counts_other(&r, "device_lost"), "{:?}", r.system);
+    assert_eq!(notice_codes(&r.system), vec!["device_lost"]);
+    assert_eq!(r.summary.system, 1, "{r:?}");
+    assert_eq!(broken_ids(&r), vec![id(7)]);
+
+    edit(&mut s, Command::RemoveCue { id: id(7) });
+    let r = preshow(&mut s);
+    assert!(r.ok, "{r:?}");
+    assert!(r.system.is_empty(), "{:?}", r.system);
+    assert_eq!(r.summary, PreshowSummary::default());
+}
+
+/// A cue whose patch is on the system output, and the system's output device is unplugged: the
+/// device's loss is counted, as the cue played on it.
+#[test]
+fn a_cue_on_the_system_output_counts_the_loss_of_the_device_it_played_on() {
+    let (mut s, msgs) = spare_on_a_device_then_unplugged(
+        PatchMapping::system_output(vec![0, 1]),
+        true,
+        vec![on_spare(7)],
+    );
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    // The engine still names the system's device the cue played on: its loss is the problem.
+    assert!(counts_other(&r, "device_lost"), "{:?}", r.system);
+    assert_eq!(r.summary.system, 1, "{r:?}");
+    assert!(
+        feed_notices(&msgs)
+            .iter()
+            .any(|(code, device, _, _)| code == "device_lost"
+                && device.as_deref() == Some(OTHER_NAME)),
+        "the Warnings list names the device"
+    );
+    assert_eq!(broken_ids(&r), vec![id(7)]);
+}
+
+/// Moves the clock on by `ms` in 25 ms steps with the device threads answering; stops early
+/// once the clock device is down.
+fn idle_ms(s: &mut DeviceShow, ms: u64) {
+    for _ in 0..ms / 25 {
+        s.advance(std::time::Duration::from_millis(25));
+        s.tick();
+        s.wait_devices();
+        if s.control().device_down() {
+            return;
+        }
+    }
+}
+
+/// The only cue plays on a second device; the clock device, which no cue's patch is on,
+/// stalls: the master clock every device's cues are dated on stands still, so the check fails
+/// with `device_stalled`, and with `device_lost` once the stall is a loss.
+#[test]
+fn a_stall_or_loss_of_the_clock_device_fails_the_check_while_a_cue_plays_on_another_device() {
+    let mut ws = workspace(vec![on_spare(7)]);
+    ws.patches.push(twin(&ws.patches[0], 902, "Spare"));
+    let mut c = config_main_only(&ws);
+    map_to(&mut c, &ws, spare_patch(), OTHER_NAME);
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed(OTHER, OTHER_NAME, 2)],
+        c,
+    );
+    s.settle_devices();
+    s.tick();
+    s.run(BLOCK * 2);
+    let r = preshow(&mut s);
+    assert!(r.ok, "before the stall: {r:?}");
+
+    s.fake.stall();
+    idle_ms(&mut s, 600);
+    assert!(!s.control().device_down(), "a stall, not yet a loss");
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert!(counts(&r, "device_stalled", DEV_NAME), "{:?}", r.system);
+    assert_eq!(r.summary.system, 1, "{r:?}");
+
+    idle_ms(&mut s, 3_000);
+    assert!(s.control().device_down(), "the stall became a loss");
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert!(counts(&r, "device_lost", DEV_NAME), "{:?}", r.system);
+}
+
+/// A show of a Network cue and a Wait cue only, no cue on any patch: the clock device's stall
+/// stops the wait's clock, so the check fails with `device_stalled`, then `device_lost`.
+#[test]
+fn a_stall_or_loss_of_the_clock_device_fails_the_check_of_a_show_with_no_audio() {
+    let mut ws = workspace(vec![
+        network_cue(5, net(51)),
+        cue(6, CueKind::Wait { duration: 2.0 }),
+    ]);
+    ws.network_patches.push(lighting(NetworkProtocol::Udp));
+    let c = config_main_only(&ws);
+    let mut s = DeviceShow::new(ws, vec![listed(DEV, DEV_NAME, 2)], c);
+    s.settle_devices();
+    s.tick();
+    s.run(BLOCK * 2);
+    let r = preshow(&mut s);
+    assert!(r.ok, "before the stall: {r:?}");
+
+    s.fake.stall();
+    idle_ms(&mut s, 600);
+    assert!(!s.control().device_down(), "a stall, not yet a loss");
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert_eq!(notice_codes(&r.system), vec!["device_stalled"]);
+    assert!(counts(&r, "device_stalled", DEV_NAME), "{:?}", r.system);
+
+    idle_ms(&mut s, 3_000);
+    assert!(s.control().device_down(), "the stall became a loss");
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert!(counts(&r, "device_lost", DEV_NAME), "{:?}", r.system);
+}
+
+/// The clock device has fewer outputs than the show was opened with, and no cue's patch is on
+/// it: that touches neither its clock nor any cue, so the check passes and the Warnings list
+/// names the device.
+#[test]
+fn the_clock_devices_dropped_outputs_with_no_cue_on_it_pass_the_check() {
+    let mut ws = workspace(vec![on_spare(7)]);
+    ws.patches.push(twin(&ws.patches[0], 902, "Spare"));
+    let mut c = config_main_only(&ws);
+    map_to(&mut c, &ws, spare_patch(), OTHER_NAME);
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 1), listed(OTHER, OTHER_NAME, 2)],
+        c,
+    );
+    s.settle_devices();
+    s.tick();
+    let msgs = s.take_outbound();
+    assert!(
+        feed_notices(&msgs)
+            .iter()
+            .any(|(code, device, patch, _)| code == "outputs_dropped"
+                && device.as_deref() == Some(DEV_NAME)
+                && patch.is_none()),
+        "{:?}",
+        feed_notices(&msgs)
+    );
+    let r = preshow(&mut s);
+    assert!(r.ok, "{r:?}");
+    assert!(r.system.is_empty(), "{:?}", r.system);
+}
+
+/// A cue whose patch has no device to name (on the system output while the system has no output
+/// device): which device it will play on is not known, so every lost device counts.
+#[test]
+fn a_lost_device_counts_while_a_cues_patch_has_no_device_to_name() {
+    let mut on_system = on_spare(7);
+    if let CueKind::Audio { patch, .. } = &mut on_system.kind {
+        *patch = PatchId(Uuid::from_u128(903));
+    }
+    let mut ws = workspace(vec![audio(1, &wav(&dc(100, 0.5)), 0), on_system]);
+    ws.patches.push(twin(&ws.patches[0], 902, "Spare"));
+    ws.patches.push(twin(&ws.patches[0], 903, "System"));
+    let mut c = config_main_only(&ws);
+    c.mixer_patches = 3;
+    map_to(&mut c, &ws, spare_patch(), OTHER_NAME);
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            PatchId(Uuid::from_u128(903)),
+            PatchMapping::system_output(vec![0, 1]),
+        )
+        .unwrap();
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed(OTHER, OTHER_NAME, 2)],
+        c,
+    );
+    s.settle_devices();
+    s.tick();
+    assert_eq!(
+        notice_codes(&preshow(&mut s).system),
+        vec!["patch_no_system_output"]
+    );
+    s.fake.unplug(OTHER, true);
+    s.settle_devices();
+    s.tick();
+    let r = preshow(&mut s);
+    assert!(counts_other(&r, "device_lost"), "{:?}", r.system);
+    assert_eq!(
+        notice_codes(&r.system),
+        vec!["device_lost", "patch_no_system_output"]
+    );
+    assert_eq!(r.summary.system, 2, "{r:?}");
+}
+
 /// Every notice about one patch's trouble names the patch, and none about a patch no cue uses
 /// is a pre-show problem: a device not plugged in, more channels than the device has, routing
 /// past the device's outputs, a device that cannot be used, the system output with no device,
