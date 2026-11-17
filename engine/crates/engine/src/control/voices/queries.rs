@@ -260,12 +260,6 @@ impl Voices {
         v
     }
 
-    /// Whether a voice of run `run` is held (a Video cue's run has one only when its movie has
-    /// sound).
-    pub fn has_run(&self, run: RunId) -> bool {
-        self.by_run.contains_key(&run)
-    }
-
     /// The show voices loaded and not started, each with the frame of its media file (master rate)
     /// it will start at: a loaded cue's position line (a Load cue's time, or a click in the
     /// timeline). A voice whose stream is not ready yet has none.

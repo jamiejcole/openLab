@@ -14,10 +14,10 @@
 //! picture is moved back by as much, so the two stay together.
 
 use openlab_audio::{CommandKind, Fade, MediaInfo};
-use openlab_core::{Action, CueId, CueKind, CueState, Input, PatchId};
+use openlab_core::{Action, CueId, CueKind, CueState, Input, PatchId, RunId, SampleTime};
 
 use super::DocCx;
-use super::voices::{Effects, Env};
+use super::voices::{Effects, Env, SeekTo, Voices};
 
 /// Feedback about a run's length, end or devamp: for a Video cue's run, its picture's to give.
 fn lifecycle(input: &Input) -> Option<CueId> {
@@ -106,6 +106,34 @@ impl DocCx<'_> {
         if makes && self.sound_info(cue).is_none() {
             return;
         }
+        self.on_sound(fx, |voices, env, own| voices.apply(action, env, own));
+    }
+
+    /// Moves the sound of a Video cue's run `from` to `to` as run `run` from sample `at` (a
+    /// seek), if its movie has sound: a run whose sound has ended gets a voice again.
+    pub(super) fn sound_seek(
+        &mut self,
+        cue: CueId,
+        (run, from): (RunId, RunId),
+        at: SampleTime,
+        to: SeekTo,
+        fx: &mut Effects,
+    ) {
+        if self.sound_info(cue).is_none() {
+            return;
+        }
+        self.on_sound(fx, |voices, env, own| {
+            voices.seek(cue, run, from, at, to, env, own);
+        });
+    }
+
+    /// Runs `act` on the doc's voices; of what it reports, the run's length, end and devamp
+    /// are left to the picture.
+    fn on_sound(
+        &mut self,
+        fx: &mut Effects,
+        act: impl FnOnce(&mut Voices, &mut Env<'_>, &mut Effects),
+    ) {
         let mut own = Effects::default();
         let now = self.now();
         let floor = self.stop_floor();
@@ -123,7 +151,7 @@ impl DocCx<'_> {
             window: self.eng.block,
             floor,
         };
-        self.doc.voices.apply(action, &mut env, &mut own);
+        act(&mut self.doc.voices, &mut env, &mut own);
         own.feedback.retain(|i| lifecycle(i).is_none());
         own.deferred.retain(|(_, i)| lifecycle(i).is_none());
         fx.commands.append(&mut own.commands);

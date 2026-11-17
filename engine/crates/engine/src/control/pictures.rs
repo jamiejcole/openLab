@@ -44,7 +44,7 @@ use openlab_core::{
 
 use super::plan::{PlanSpec, cue_slices, picture_info};
 
-use super::voices::Effects;
+use super::voices::{Effects, SeekTo, rest_of_table};
 use super::{DocCx, DocId, Engine};
 
 /// How far the engine's clock may move before the stage host is told it again (it moves the
@@ -945,7 +945,10 @@ impl DocCx<'_> {
     /// A Video cue's run moved to `position` samples into its action (`Action::SeekVoice`) and
     /// goes on as `run`. A picture waiting for its probe takes the point; a paused one is held
     /// on the frame there; a playing one plays on from it on sample `at`, its plan as it was.
-    /// Its sound, if it has a voice, moves to the file's frame for that point.
+    /// From the point on the cue engine counts the action as the picture's own time, so a late
+    /// start before the seek is behind it. Its sound goes on from the same point of the same
+    /// plan, as a voice of its own if the old one has ended (hold at end); a point past the
+    /// plan's end leaves it nothing to play.
     fn seek_picture(
         &mut self,
         cue: CueId,
@@ -973,14 +976,15 @@ impl DocCx<'_> {
         };
         live.run = run;
         let paused = matches!(live.motion, Some((None, _)));
-        let late = live.plan.as_ref().map_or(0, |p| p.late);
-        // The picture's own time: the action's less a late start.
-        let own = seconds(position.saturating_sub(late), rate);
-        let file = live
-            .plan
-            .as_ref()
-            .map_or(own, |p| position_in(&p.passes, own));
+        if let Some(p) = live.plan.as_mut() {
+            p.late = 0;
+        }
+        let own = seconds(position, rate);
         if paused {
+            let file = live
+                .plan
+                .as_ref()
+                .map_or(own, |p| position_in(&p.passes, own));
             let message = ToStage::Pause {
                 picture: id,
                 at,
@@ -993,19 +997,27 @@ impl DocCx<'_> {
         } else {
             self.play_picture(cue, run, at, position, 0, false, fx);
         }
-        // Only a run with a voice of its sound has one to move: a silent movie has none, and the
-        // mixer would make one for the seek.
-        if self.doc.voices.has_run(from) {
-            let frames = seconds_to_samples(file, self.eng.rate);
-            let moved = Action::SeekVoice {
-                cue,
-                run,
-                from,
-                at,
-                position: frames,
-            };
-            self.sound_action(&moved, fx);
-        }
+        // What the picture plays from the point (a paused one, from its resume): nothing if it
+        // could not play on (it failed, or waits for its file again and starts its sound then).
+        let rest = (self.eng.pictures.find(doc, run))
+            .and_then(|id| self.eng.pictures.live.get(&id))
+            .and_then(|l| l.plan.as_ref())
+            .and_then(|p| {
+                let (table, into) = if paused {
+                    (p.settled(position), position)
+                } else {
+                    (p.table.as_slice(), p.into)
+                };
+                rest_of_table(table, &[], false, into)
+            })
+            .unwrap_or_default();
+        let to = SeekTo::Plan {
+            table: rest,
+            rate,
+            offset: position,
+            paused,
+        };
+        self.sound_seek(cue, (run, from), at, to, fx);
     }
 
     /// A start waits for its file's probe: said once, and the hold limit starts.

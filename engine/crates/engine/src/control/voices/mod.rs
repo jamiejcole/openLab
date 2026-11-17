@@ -209,8 +209,8 @@ pub struct VoiceRec {
     /// voice it moves from is, so it shows that voice's elapsed time (`shown`, set when it is
     /// made) and starts on its planned sample, not before it is in the commit window.
     relocated: bool,
-    /// The table a move to another device plays ([`move_plan`]), at the rate it is in, instead
-    /// of one planned from `offset` or `file`.
+    /// The table a move to another device plays ([`move_plan`]), or a Video cue's seek
+    /// ([`SeekTo::Plan`]), at the rate it is in, instead of one planned from `offset` or `file`.
     rest: Option<(Vec<Slice>, u32)>,
     /// A move to another device whose stream is late is planned again until this sample, then
     /// given up ([`SEEK_PRIME_WAIT`] after its first planned swap).
@@ -292,6 +292,23 @@ enum StartAt {
     /// This slice table at this rate: what the voice a move to another device replaces still
     /// had to play.
     Table(Vec<Slice>, u32),
+}
+
+/// Where a seek moves a run's voice to.
+pub enum SeekTo {
+    /// A frame of the file at the master rate (an Audio cue's seek): its slices are planned from
+    /// there.
+    File(u64),
+    /// A Video cue's seek: `table` (at `rate`) is the rest of its picture's plan from the point,
+    /// `offset` frames into its action, so picture and sound go on in one plan; `paused` while
+    /// its picture is held there (the moved voice waits for the resume, even with no voice
+    /// left to move).
+    Plan {
+        table: Vec<Slice>,
+        rate: u32,
+        offset: u64,
+        paused: bool,
+    },
 }
 
 /// A move to another device planned for one swap sample: the table the new voice plays (what

@@ -18,7 +18,7 @@ impl Voices {
                 from,
                 at,
                 position,
-            } => self.seek(cue, run, from, at, position, env, fx),
+            } => self.seek(cue, run, from, at, SeekTo::File(position), env, fx),
             Action::RelocateVoice {
                 cue,
                 run,
@@ -179,24 +179,25 @@ impl Voices {
         self.seek_gate.insert(cue, next);
     }
 
-    /// Moves the voice of run `from` to file frame `position` as run `run` from sample `at`
-    /// (`Action::SeekVoice`). A playing voice plays on until the moved one's stream is ready,
-    /// then the two crossfade; a paused one is let go at once and the moved one waits for the
-    /// resume. Seeks that come faster than that replace the one waiting, so a burst costs one
-    /// stream and at most two sounding voices of the cue.
+    /// Moves the voice of run `from` to `to` as run `run` from sample `at`
+    /// (`Action::SeekVoice`, or a Video cue's seek). A playing voice plays on until the moved
+    /// one's stream is ready, then the two crossfade; a paused one is let go at once and the
+    /// moved one waits for the resume. Seeks that come faster than that replace the one waiting,
+    /// so a burst costs one stream and at most two sounding voices of the cue. A run with no
+    /// voice (its sound has ended) gets one.
     #[allow(clippy::too_many_arguments)]
-    fn seek(
+    pub fn seek(
         &mut self,
         cue: CueId,
         run: RunId,
         from: RunId,
         at: SampleTime,
-        position: u64,
+        to: SeekTo,
         env: &mut Env<'_>,
         fx: &mut Effects,
     ) {
         let mut replaces = None;
-        let mut paused = false;
+        let mut paused = matches!(to, SeekTo::Plan { paused: true, .. });
         let mut swap_after = 0;
         let mut preview = from.0 >= openlab_core::PREVIEW_RUN_BASE;
         if let Some(&old) = self.by_run.get(&from) {
@@ -222,7 +223,7 @@ impl Voices {
                     Phase::Waiting { paused: held, .. } => {
                         // Not sounding yet (an earlier seek still waiting, a start waiting for
                         // its probe): this one takes its place, and the voice it was to replace.
-                        paused = *held;
+                        paused |= *held;
                         replaces = r.replaces.take();
                         drop_old = true;
                     }
@@ -238,6 +239,15 @@ impl Voices {
                 self.remove(old);
             }
         }
+        let (file, rest, offset) = match to {
+            SeekTo::File(frame) => (Some(frame), None, 0),
+            SeekTo::Plan {
+                table,
+                rate,
+                offset,
+                ..
+            } => (None, Some((table, rate)), offset),
+        };
         let id = env.ids.next(env.doc);
         self.insert(
             id,
@@ -248,7 +258,10 @@ impl Voices {
                     paused,
                     queue: Vec::new(),
                 },
-                file: Some(position),
+                file,
+                rest,
+                offset,
+                shown: offset,
                 moved: true,
                 replaces,
                 swap_after,
@@ -398,7 +411,7 @@ impl Voices {
         else {
             return self.try_start(id, env, fx);
         };
-        if (r.file.is_none() && !r.relocated) || !self.seek_gate_open(r.cue, env.now) {
+        if (r.file.is_none() && r.rest.is_none()) || !self.seek_gate_open(r.cue, env.now) {
             return;
         }
         if start.is_none() {
@@ -414,7 +427,7 @@ impl Voices {
                 && let Phase::Waiting { prepared, .. } = &mut r.phase
             {
                 *prepared = Some(made.ready);
-                if !r.relocated {
+                if r.rest.is_none() {
                     r.shown = made.shown;
                 }
             }
@@ -429,7 +442,7 @@ impl Voices {
             .recs
             .iter()
             .filter(|(_, r)| {
-                (r.file.is_some() || r.relocated)
+                (r.file.is_some() || r.rest.is_some())
                     && matches!(r.phase, Phase::Waiting { .. })
                     && (r.moved || matches!(r.phase, Phase::Waiting { prepared: None, .. }))
             })
@@ -536,7 +549,7 @@ impl Voices {
                         && let Phase::Waiting { prepared, .. } = &mut r.phase
                     {
                         *prepared = Some(made.ready);
-                        if !r.relocated {
+                        if r.rest.is_none() {
                             r.shown = made.shown;
                         }
                         // The file read now, which a relink since the record was made may
@@ -683,6 +696,12 @@ impl Voices {
                 // A moved voice's delay starts at the difference between the core's count and
                 // its own (`relocate`); a start held up adds the hold.
                 r.delay = r.delay.saturating_add(at - start);
+                // A Video cue's sound moved by a seek swaps in after the sample its picture
+                // moved on (its stream was slow to fill): the sound is the clock, so the
+                // picture is put back by as much and the two go on together.
+                if r.moved && !r.relocated && r.rest.is_some() && at > start {
+                    fx.late.push((run, at, at - start));
+                }
                 let delay = r.delay;
                 let preview = r.preview;
                 let held = r.held.take().is_some();
