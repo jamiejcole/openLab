@@ -21,18 +21,20 @@ enum InspectorTabs {
 
     /// The tabs of `cue` as it is now. A Video cue has a Levels tab, where an Audio cue has it, only
     /// while its probed movie has sound (QLab 5 manual p. 214); a Fade aimed at a Video cue has its
-    /// Levels tab only while that cue has sound (p. 242).
+    /// Levels tab only while that cue has sound (p. 242), and a Geometry tab after it (p. 242).
     static func ids(for cue: Cue, model: WorkspaceModel, media: [ModelID: CueMediaDuration]) -> [String] {
         var ids = ids(forKind: cue.kindType)
         switch cue.kindType {
         case "video":
             if cue.sounds(media[cue.id]) { ids.append("levels") }
         case "fade":
-            if let target = cue.raw["kind"]?["target"]?.stringValue.flatMap({ model.cue(ModelID($0)) }),
-                target.kindType == "video", !target.sounds(media[target.id])
-            {
+            let target = cue.raw["kind"]?["target"]?.stringValue.flatMap({ model.cue(ModelID($0)) })
+            if let target, target.kindType == "video", !target.sounds(media[target.id]) {
                 ids.removeAll { $0 == "fadeLevels" }
             }
+            // A picture's values for a Video target, or for none yet: QLab shows a Fade every tab it
+            // can have until it has a target, then only the target's (p. 241).
+            if target == nil || target?.kindType == "video" { ids.append("fadeGeometry") }
         default: break
         }
         return ids

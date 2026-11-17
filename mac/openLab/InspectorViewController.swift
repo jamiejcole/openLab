@@ -45,6 +45,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let audioLevels = LevelsPanel(isFade: false)
     let fadeLevels = LevelsPanel(isFade: true)
     let fadeSettings = FadeSettingsPanel()
+    let fadeGeometry = FadeGeometryPanel()
     var levelsItem: NSTabViewItem?
     var curveItem: NSTabViewItem?
     var fadeLevelsItem: NSTabViewItem?
@@ -466,9 +467,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let network = networkTab(row: row, column: column)
         let io = ioTab(row: row, column: column)
         let geometryItem = geometryTab()
+        let fadeGeometryItem = fadeGeometryTab()
         buildLevelsTabs()
         buildTimeLoopsTab()
-        for i in [item, triggers, devamp, network, io, geometryItem]
+        for i in [item, triggers, devamp, network, io, geometryItem, fadeGeometryItem]
             + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 })
         {
             if let id = i.identifier as? String { tabItems[id] = i }
@@ -890,6 +892,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         renderIO(cue, model: model)
         renderGeometry(cueForKindEdit ?? cue, model: model)
         renderLevels(cueForEdit ?? cue, model: model)
+        renderFadeGeometry(cueForKindEdit ?? cue, model: model)
         renderTimeLoops(cueForEdit ?? cue)
         updatePreviewButton()
         if isLocked { applyLock() }
@@ -904,6 +907,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let on = connected ?? (store.connectionState == .connected)
         previewButton.isEnabled = previewable && on
         fadePreviewButton.isEnabled = cue?.kindType == "fade" && on
+        fadeGeometry.previewButton.isEnabled = cue?.kindType == "fade" && on
     }
 
     /// The Choose button, and a double-click on a file cue's Target field (QLab 5, manual pp. 120, 126).
@@ -946,6 +950,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         audioLevels.isLocked = isLocked
         fadeLevels.isLocked = isLocked
         fadeSettings.isLocked = isLocked
+        fadeGeometry.isLocked = isLocked
         timeLoops.isLocked = isLocked
         geometry.isLocked = isLocked
         if isLocked, !stale.isEmpty { render(force: stale) }
@@ -1126,6 +1131,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     /// The kind `cue` will have once `property` lands, when the property replaces it (`kind`) or a
     /// field inside it (`duration`, `load_to_time`): a kind edit sent before the answer must keep it.
+    /// `now` with each of `parts` set, an object part by its own parts (the engine's merge).
+    static func merged(_ now: JSONValue, _ parts: JSONValue) -> JSONValue {
+        guard case .object(var into) = now, case .object(let changes) = parts else { return parts }
+        for (key, v) in changes { into[key] = into[key].map { merged($0, v) } ?? v }
+        return .object(into)
+    }
+
     private func pendingKind(_ cue: ModelID, after property: JSONValue) -> JSONValue? {
         let type = property["type"]?.stringValue
         if type == "kind" { return property["value"] }
@@ -1133,12 +1145,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
         {
             for (field, value) in fields {
-                // A Video cue's pair or crop may carry only its changed parts (the engine merges them).
-                if VideoGeometry.partialFields.contains(field), case .object(let parts) = value,
-                    case .object(var now)? = kind[field]
-                {
-                    for (part, v) in parts { now[part] = v }
-                    kind.set(field, .object(now))
+                // A Video cue's pair or crop, or a Fade's picture values, may carry only their changed
+                // parts, a pair's parts too (the engine merges them).
+                if VideoGeometry.partialFields.contains(field), case .object = value, case .object? = kind[field] {
+                    kind.set(field, Self.merged(kind[field] ?? .null, value))
                 } else {
                     kind.set(field, value)
                 }

@@ -20,8 +20,9 @@ struct VideoGeometry: Equatable {
 
     static let styles = ["fit", "fill", "stretch"]
     /// Kind fields an edit may give only some parts of: each typed part goes alone, so two typed
-    /// before the engine answers both hold (core's `merge_kind_fields`).
-    static let partialFields: Set<String> = ["translation", "scale", "anchor", "crop"]
+    /// before the engine answers both hold (core's `merge_kind_fields`). `geometry` is a Fade
+    /// cue's picture values.
+    static let partialFields: Set<String> = ["translation", "scale", "anchor", "crop", "geometry"]
     static let cropEdges = ["top", "bottom", "left", "right"]
 
     init() {}
