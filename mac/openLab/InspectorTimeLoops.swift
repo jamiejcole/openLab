@@ -74,13 +74,8 @@ extension InspectorViewController {
     /// engine sends where in the file the cue is).
     func updateTimeLoopsProgress() {
         guard let cue, Self.timeLoopsKinds.contains(cue.kindType) else { return }
-        var position = store.progress[cue.id]?.position
-        // A loaded cue stands where it was loaded. The line a click left there is that place already.
-        if position == nil, let at = store.loadedAt[cue.id] {
-            let clicked = timeLoops.waveform.insertion
-            position = clicked.map { abs($0 - at) < 0.05 } == true ? nil : at
-        }
-        timeLoops.showProgress(position: position)
+        // Playing or paused: where it is; loaded: where it stands.
+        timeLoops.showProgress(position: store.progress[cue.id]?.position ?? store.loadedAt[cue.id])
     }
 
     /// A click in the timeline: the cue (Audio or Video) plays on (or is loaded, or its pre-wait ends) from

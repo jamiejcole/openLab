@@ -1013,6 +1013,63 @@ final class VideoCueTests: XCTestCase {
         expectRowTime(Self.movie, 3.4, "it plays on from the click")
     }
 
+    /// The timeline shows one position after a click: the click's line while the cue stands there
+    /// (loaded or paused at it), then only the play line once it plays on, nothing once it has ended,
+    /// and only the line where a Load cue loads it after that.
+    func testAfterAClickTheTimelineShowsOneLineWhereTheCueIs() async throws {
+        try await openVideoShow()
+        let panel = try await timeLoopsTab()
+        let wave = panel.waveform
+        await soon("the file's length") { wave.duration == 4 }
+        clickTimeline(at: 2, panel)
+        await soon("loaded") { self.status(Self.movie) == loc("cue.state.loaded") }
+        try await play(0.2)
+        XCTAssertEqual(wave.insertion ?? -1, 2, accuracy: 0.05, "loaded where clicked: the click's line")
+        XCTAssertNil(wave.playhead, "and no second line")
+        try await go()
+        try await play(0.5)
+        // GO moved the selection on: back to the movie, as the operator would.
+        _ = try await timeLoopsTab()
+        try await play(0.1)
+        XCTAssertNil(wave.insertion, "playing on: the click's line is gone")
+        XCTAssertEqual(wave.playhead ?? -1, 2.6, accuracy: 0.1, "the play line is where it plays")
+        try await perform(.pauseResumeSelected, on: Self.movie)
+        await soon("paused") { self.status(Self.movie) == loc("cue.state.paused") }
+        _ = try await timeLoopsTab()
+        clickTimeline(at: 3, panel)
+        await sync()
+        try await play(0.3)
+        XCTAssertEqual(wave.insertion ?? -1, 3, accuracy: 0.05, "paused at the click: its line")
+        XCTAssertNil(wave.playhead, "one line")
+        try await perform(.pauseResumeSelected, on: Self.movie)
+        await soon("resumed") { self.status(Self.movie) == loc("cue.state.running") }
+        try await play(0.4)
+        XCTAssertNil(wave.insertion, "resumed: the click's line is gone")
+        XCTAssertEqual(wave.playhead ?? -1, 3.4, accuracy: 0.1)
+        try await play(1)
+        await soon("ended") { self.status(Self.movie) != loc("cue.state.running") }
+        XCTAssertNil(wave.insertion)
+        XCTAssertNil(wave.playhead, "ended: no line")
+        // Loaded by a click, then loaded elsewhere by a Load cue: only the Load cue's line.
+        clickTimeline(at: 3.5, panel)
+        await soon("loaded") { self.status(Self.movie) == loc("cue.state.loaded") }
+        let load: ModelID = "00000000-0000-0000-0000-0000000000d3"
+        var cue = try XCTUnwrap(NewCueKind.load.cueJSON(id: load, patch: nil))
+        var kind = try XCTUnwrap(cue["kind"])
+        kind.set("target", .string(Self.movie.raw))
+        kind.set("load_to_time", .double(1))
+        cue.set("kind", kind)
+        let lists = try XCTUnwrap(store.model?.cueLists.first)
+        let added = await store.send(command: .addCue(cue, list: lists.id, parent: nil, index: lists.cues.count))
+        guard case .success = added else { return XCTFail("add the Load cue: \(added)") }
+        await soon("the Load cue is in") { self.store.model?.cue(load) != nil }
+        try await perform(.startSelected, on: load)
+        try await play(0.1)
+        XCTAssertEqual(wc.inspector.cue?.id, Self.movie, "the movie is still the one shown")
+        await soon("the line is at the Load cue's time") { abs((wave.playhead ?? -1) - 1) < 0.05 }
+        XCTAssertNil(wave.insertion, "the click's line at 3.5 s is gone")
+    }
+
     /// A Load cue loads the movie to a time: the timeline shows the position line there (past a start
     /// trim, in the file's time), the cue is loaded, and GO plays on from that frame.
     func testAMovieLoadedToATimeByALoadCueShowsTheLineThere() async throws {
