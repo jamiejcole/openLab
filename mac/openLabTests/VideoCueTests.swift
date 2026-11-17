@@ -1040,7 +1040,7 @@ final class VideoCueTests: XCTestCase {
         await sync()
         try await play(0.3)
         XCTAssertEqual(wave.insertion ?? -1, 3, accuracy: 0.05, "paused at the click: its line")
-        XCTAssertNil(wave.playhead, "one line")
+        XCTAssertEqual(wave.playhead ?? -1, 3, accuracy: 0.05, "the play line drawn over it: one position")
         try await perform(.pauseResumeSelected, on: Self.movie)
         await soon("resumed") { self.status(Self.movie) == loc("cue.state.running") }
         try await play(0.4)
