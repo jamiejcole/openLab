@@ -130,7 +130,7 @@ final class ScenarioRunner {
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
         "focus", "paste_properties", "shot", "inside", "device", "set_media", "find_missing_files",
-        "choose", "hover", "open_menu", "menu_command",
+        "choose", "hover", "open_menu", "menu_command", "tool",
     ]
 
     /// The Edit menu's commands a `menu_command` step sends, by name.
