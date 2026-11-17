@@ -112,8 +112,8 @@ pub struct Mac {
     windows: Option<Windows>,
     /// Video cues' pictures, by the engine's id.
     media: HashMap<u64, media::Picture>,
-    /// Pictures that failed while drawn, not yet reported.
-    failed: Vec<(u64, String)>,
+    /// What became of pictures that failed while drawn, not yet reported.
+    failed: Vec<PictureEvent>,
     /// Test support: the limits on the open and frames of a file a fault switch names
     /// (`limits_of`).
     #[cfg(feature = "test-support")]
@@ -261,12 +261,13 @@ impl Platform for Mac {
     }
 
     fn take_picture_events(&mut self) -> Vec<PictureEvent> {
-        let mut events: Vec<PictureEvent> = std::mem::take(&mut self.failed)
-            .into_iter()
-            .map(|(p, why)| PictureEvent::Failed(p, why))
-            .collect();
+        let mut events = std::mem::take(&mut self.failed);
         let mut gone = Vec::new();
         for (id, picture) in &mut self.media {
+            // Before a failure it may have led to: said even when the picture then goes.
+            if let Some(why) = picture.take_reopened() {
+                events.push(PictureEvent::Reopened(*id, why));
+            }
             match picture.poll() {
                 Some(media::Polled::Opened) => events.push(PictureEvent::Opened(*id)),
                 Some(media::Polled::Failed(why)) => {
@@ -308,7 +309,7 @@ impl Mac {
 fn frame_of(
     device: &ProtocolObject<dyn MTLDevice>,
     media: &mut HashMap<u64, media::Picture>,
-    failed: &mut Vec<(u64, String)>,
+    failed: &mut Vec<PictureEvent>,
     cue: &crate::host::CuePicture,
     ahead: f64,
     wait: bool,
@@ -323,8 +324,11 @@ fn frame_of(
     ) {
         Ok(frame) => frame,
         Err(why) => {
+            if let Some(note) = source.take_reopened() {
+                failed.push(PictureEvent::Reopened(cue.picture, note));
+            }
             media.remove(&cue.picture);
-            failed.push((cue.picture, why));
+            failed.push(PictureEvent::Failed(cue.picture, why));
             None
         }
     }
