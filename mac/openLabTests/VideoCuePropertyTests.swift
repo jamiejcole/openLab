@@ -141,7 +141,7 @@ final class VideoCuePropertyTests: XCTestCase {
     }
 
     /// A Video cue's tabs: Levels last, only while its probed movie has sound. A Fade's Levels tab
-    /// goes while its Video target has none. Several Video cues have Levels when all have sound.
+    /// goes while its Video target has none; its Geometry tab stays. Several Video cues have Levels when all have sound.
     @MainActor func testTheLevelsTabFollowsTheMoviesSound() throws {
         let v: ModelID = "v"
         let cue = try video(v, duration: nil)
@@ -158,12 +158,15 @@ final class VideoCuePropertyTests: XCTestCase {
         let video = ["basics", "triggers", "io", "geometry", "timeLoops"]
         for silent in [[:], [v: media(v, "video")], [v: media(v, "still")], [v: sounding(v, tracks: [])]] {
             XCTAssertEqual(InspectorTabs.ids(for: cue, model: model, media: silent), video)
-            XCTAssertEqual(InspectorTabs.ids(for: fade, model: model, media: silent), ["basics", "triggers", "curve"])
+            XCTAssertEqual(
+                InspectorTabs.ids(for: fade, model: model, media: silent),
+                ["basics", "triggers", "curve", "fadeGeometry"])
         }
         let heard = [v: sounding(v, tracks: [stereo])]
         XCTAssertEqual(InspectorTabs.ids(for: cue, model: model, media: heard), video + ["levels"])
         XCTAssertEqual(
-            InspectorTabs.ids(for: fade, model: model, media: heard), ["basics", "triggers", "curve", "fadeLevels"])
+            InspectorTabs.ids(for: fade, model: model, media: heard),
+            ["basics", "triggers", "curve", "fadeLevels", "fadeGeometry"])
         XCTAssertEqual(InspectorViewController.batchTabs(forKinds: ["video"]), ["basics", "triggers", "io"])
         XCTAssertEqual(
             InspectorViewController.batchTabs(forKinds: ["video"], allSound: true),
