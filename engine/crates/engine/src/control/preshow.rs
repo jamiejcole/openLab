@@ -161,7 +161,21 @@ impl DocCx<'_> {
             }
         }
 
-        let mut system: Vec<WireWarning> = self.doc.warnings.to_vec();
+        // A patch's own trouble (no device, a device missing or unusable, too few channels,
+        // routing past the device, no mixer patch) stops nothing while no cue plays on it: the
+        // warnings list keeps naming it, the check leaves it out.
+        let mut system: Vec<WireWarning> = self
+            .doc
+            .warnings
+            .iter()
+            .filter(|w| match w {
+                WireWarning::Notice {
+                    patch: Some(patch), ..
+                } => uses.patch.get(patch).is_some_and(|cues| !cues.is_empty()),
+                _ => true,
+            })
+            .cloned()
+            .collect();
         system.sort_by(|a, b| notice_key(a).cmp(&notice_key(b)));
 
         let unchecked = network

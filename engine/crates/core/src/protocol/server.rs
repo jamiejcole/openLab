@@ -316,8 +316,9 @@ pub struct PreshowReport {
     /// does not have, by id.
     pub network: Vec<PreshowTarget>,
     /// The workspace-level warnings in force (device lost or stalled, damaged media, cues whose
-    /// slices cannot play, ...), as in the `warnings` message; by `code`, then cue, then message.
-    /// `preload_over_budget` is information: listed, not counted, never a failure.
+    /// slices cannot play, ...), as in the `warnings` message, less the notices about a patch no
+    /// cue uses; by `code`, then cue, then message. `preload_over_budget` is information:
+    /// listed, not counted, never a failure.
     pub system: Vec<WireWarning>,
 }
 

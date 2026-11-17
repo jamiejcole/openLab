@@ -354,8 +354,9 @@ pub enum WireWarning {
         /// client list one entry per device and name it in its own words.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
-        /// The output patch a patch notice is about (`patch_routing_beyond_device`), so a client
-        /// can name it.
+        /// The output patch a patch notice is about (a patch's device missing or unusable, no
+        /// device, too few channels, routing past the device, no mixer patch), so a client can
+        /// name it and the pre-show check can leave out a patch no cue uses.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         patch: Option<PatchId>,
     },

@@ -12,7 +12,7 @@
     clippy::indexing_slicing
 )]
 
-use crate::show::device::{DeviceShow, listed};
+use crate::show::device::{DeviceShow, listed, listed_at};
 use crate::show::*;
 use openlab_core::protocol::{
     ClientMessage, Outcome, PreshowMediaStatus, PreshowReport, PreshowSummary, PreshowTargetStatus,
@@ -464,6 +464,210 @@ fn the_no_device_notice_of_a_spare_patch_follows_the_cues_on_it() {
     edit(&mut s, Command::RemoveCue { id: id(7) });
     let msgs = s.take_outbound();
     raised(&mut s, &msgs, false);
+}
+
+/// The main patch's twin as patch `n`, named `name`.
+fn twin(main: &OutputPatch, n: u128, name: &str) -> OutputPatch {
+    OutputPatch {
+        id: PatchId(Uuid::from_u128(n)),
+        name: name.into(),
+        ..main.clone()
+    }
+}
+
+/// Patch `patch` mapped to channels 0 and 1 of the device named `device`.
+fn map_to(c: &mut ControlConfig, ws: &Workspace, patch: PatchId, device: &str) {
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            patch,
+            PatchMapping {
+                device: device.into(),
+                channels: vec![0, 1],
+                system: false,
+            },
+        )
+        .unwrap();
+}
+
+/// A show whose one cue plays on the main patch, with a spare patch mapped to "Gone", a device
+/// that is not plugged in.
+fn spare_on_an_unplugged_device() -> DeviceShow {
+    let good = wav(&dc(100, 0.5));
+    let mut ws = workspace(vec![audio(1, &good, 0)]);
+    ws.patches.push(twin(&ws.patches[0], 902, "Spare"));
+    let mut c = config_main_only(&ws);
+    map_to(&mut c, &ws, spare_patch(), "Gone");
+    DeviceShow::new(ws, vec![listed(DEV, DEV_NAME, 2)], c)
+}
+
+/// The notices of the last `warnings` list sent, as (code, device, patch, message).
+type FeedNotice = (String, Option<String>, Option<PatchId>, String);
+fn feed_notices(msgs: &[ServerMessage]) -> Vec<FeedNotice> {
+    let list = msgs
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::Warnings { warnings } => Some(warnings),
+            _ => None,
+        })
+        .next_back()
+        .expect("a warnings list was sent");
+    list.iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice {
+                code,
+                message,
+                device,
+                patch,
+                ..
+            } => Some((code.clone(), device.clone(), *patch, message.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A spare patch mapped to an unplugged device, no cue on it: the pre-show check passes with
+/// no system problem; the Warnings list still names the patch and the device.
+#[test]
+fn a_spare_patch_on_an_unplugged_device_with_no_cue_passes_and_the_warnings_name_it() {
+    let mut s = spare_on_an_unplugged_device();
+    let msgs = s.take_outbound();
+    let r = preshow(&mut s);
+    assert!(r.ok, "{r:?}");
+    assert!(r.system.is_empty(), "{:?}", r.system);
+    assert_eq!(r.summary, PreshowSummary::default());
+    // Listed among the patches with no device to play on, with no cue and not counted.
+    assert_eq!(r.patches.len(), 1, "{r:?}");
+    assert_eq!(r.patches[0].patch, spare_patch());
+    assert_eq!(r.patches[0].device.as_deref(), Some("Gone"));
+    assert!(r.patches[0].cues.is_empty());
+
+    let notices = feed_notices(&msgs);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    let (code, device, patch, message) = &notices[0];
+    assert_eq!(code, "patch_device_missing");
+    assert_eq!(device.as_deref(), Some("Gone"));
+    assert_eq!(*patch, Some(spare_patch()));
+    assert!(message.contains("\"Spare\""), "{message}");
+}
+
+/// A cue added on that patch makes the pre-show check count the problem; the cue removed, it
+/// goes. The Warnings list names the patch throughout.
+#[test]
+fn a_cue_added_on_a_spare_patch_on_an_unplugged_device_is_counted_and_goes_when_removed() {
+    let mut s = spare_on_an_unplugged_device();
+    let notices = feed_notices(&s.take_outbound());
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].2, Some(spare_patch()));
+    let mut on_spare = audio(7, &wav(&dc(100, 0.5)), 0);
+    if let CueKind::Audio { patch, .. } = &mut on_spare.kind {
+        *patch = spare_patch();
+    }
+    edit(
+        &mut s,
+        Command::AddCue {
+            at: Position {
+                list: list_id(),
+                parent: None,
+                index: 1,
+            },
+            cue: on_spare,
+            auto_number: false,
+        },
+    );
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert_eq!(notice_codes(&r.system), vec!["patch_device_missing"]);
+    assert_eq!(r.summary.system, 1, "{r:?}");
+    assert_eq!(broken_ids(&r), vec![id(7)]);
+    assert_eq!(r.patches[0].cues, vec![id(7)]);
+    assert_eq!(r.summary.total, 2, "{r:?}");
+
+    edit(&mut s, Command::RemoveCue { id: id(7) });
+    let r = preshow(&mut s);
+    assert!(r.ok, "{r:?}");
+    assert!(r.system.is_empty(), "{:?}", r.system);
+    assert_eq!(r.summary, PreshowSummary::default());
+    // The notice itself stays in force for the operator: the list sent at the start, naming
+    // the patch, is not sent again.
+    assert_eq!(feed_codes(&s.take_outbound()), None);
+}
+
+/// Every notice about one patch's trouble names the patch, and none about a patch no cue uses
+/// is a pre-show problem: a device not plugged in, more channels than the device has, routing
+/// past the device's outputs, a device that cannot be used, the system output with no device,
+/// no free mixer patch.
+#[test]
+fn every_notice_about_a_patch_no_cue_uses_names_it_and_is_no_preshow_problem() {
+    const SLOW: &str = "fake:slow";
+    let good = wav(&dc(100, 0.5));
+    let mut ws = workspace(vec![audio(1, &good, 0)]);
+    let main = ws.patches[0].clone();
+    let gone = twin(&main, 911, "On a missing device");
+    let mut wide = twin(&main, 912, "Wider than the device");
+    wide.outputs = vec![main.outputs[0].clone(); 4];
+    let mut beyond = twin(&main, 913, "Routed past the device");
+    beyond.crosspoints = vec![openlab_core::PatchCrosspoint {
+        output: 0,
+        device_output: 5,
+        db: 0.0,
+    }];
+    let unusable = twin(&main, 914, "On an unusable device");
+    let system = twin(&main, 915, "On the system output");
+    let last = twin(&main, 916, "With no mixer patch");
+    ws.patches
+        .extend([gone, wide, beyond, unusable, system, last]);
+    let mut c = config_main_only(&ws);
+    c.mixer_patches = 6;
+    map_to(&mut c, &ws, PatchId(Uuid::from_u128(911)), "Gone");
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            PatchId(Uuid::from_u128(912)),
+            PatchMapping {
+                device: DEV_NAME.into(),
+                channels: vec![0, 1, 2, 3],
+                system: false,
+            },
+        )
+        .unwrap();
+    map_to(&mut c, &ws, PatchId(Uuid::from_u128(913)), DEV_NAME);
+    map_to(&mut c, &ws, PatchId(Uuid::from_u128(914)), "Slow");
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            PatchId(Uuid::from_u128(915)),
+            PatchMapping::system_output(vec![0, 1]),
+        )
+        .unwrap();
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed_at(SLOW, "Slow", 2, 4_000)],
+        c,
+    );
+    s.settle_devices();
+    s.tick();
+    let notices = feed_notices(&s.take_outbound());
+    let about =
+        |want: &str, n: u128| {
+            assert!(
+                notices.iter().any(|(code, _, patch, _)| code == want
+                    && *patch == Some(PatchId(Uuid::from_u128(n)))),
+                "{want} about patch {n}: {notices:?}"
+            );
+        };
+    about("patch_device_missing", 911);
+    about("outputs_dropped", 912);
+    about("patch_routing_beyond_device", 913);
+    about("patch_device_unusable", 914);
+    about("patch_no_system_output", 915);
+    // Seven patches, six mixer patches: the last in the list has none.
+    about("mixer_patches_exhausted", 916);
+
+    let r = preshow(&mut s);
+    assert!(r.ok, "{r:?}");
+    assert!(r.system.is_empty(), "{:?}", r.system);
+    assert_eq!(r.summary, PreshowSummary::default());
 }
 
 /// The codes of the notices in `list`.

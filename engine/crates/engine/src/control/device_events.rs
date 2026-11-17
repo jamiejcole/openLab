@@ -854,7 +854,8 @@ impl DocCx<'_> {
     /// The device's notices: an outage, a mixer that could not be recovered, patches that map
     /// more device channels than the device has (`outputs_dropped`), patches whose crosspoints
     /// or device-output levels name device outputs it lacks (`patch_routing_beyond_device`),
-    /// patches with no free mixer slot (`mixer_patches_exhausted`).
+    /// patches with no free mixer slot (`mixer_patches_exhausted`). Every notice about one
+    /// patch names it in `patch`.
     pub(super) fn device_warnings(&self, list: &mut Vec<WireWarning>) {
         let eng = &*self.eng;
         eng.stage_faults
@@ -917,6 +918,7 @@ impl DocCx<'_> {
         }
         let ws_id = self.doc.model.ws().id;
         for patch in &self.doc.model.ws().patches {
+            let from = list.len();
             match self.eng.patches.resolution(self.doc.id, patch.id) {
                 // A listed device that cannot be used: the patch says why. One still opening
                 // (no reason yet) resolves the same way for a moment, and is not a problem.
@@ -1019,6 +1021,7 @@ impl DocCx<'_> {
                 };
                 list.push(device_notice("outputs_dropped", message, device));
             }
+            about_patch(list, from, patch.id);
         }
         for patch in &self.doc.model.ws().patches {
             let (Some((needed, available)), Some(PatchResolution::Mapped { device, .. })) = (
@@ -1027,7 +1030,8 @@ impl DocCx<'_> {
             ) else {
                 continue;
             };
-            let mut warning = device_notice(
+            let from = list.len();
+            list.push(device_notice(
                 "patch_routing_beyond_device",
                 format!(
                     "patch \"{}\" routes to device output {needed}, but \"{device}\" has \
@@ -1035,11 +1039,8 @@ impl DocCx<'_> {
                     patch.name
                 ),
                 device,
-            );
-            if let WireWarning::Notice { patch: about, .. } = &mut warning {
-                *about = Some(patch.id);
-            }
-            list.push(warning);
+            ));
+            about_patch(list, from, patch.id);
         }
         for &id in self.eng.patches.exhausted(self.doc.id) {
             let name = self
@@ -1050,6 +1051,7 @@ impl DocCx<'_> {
                 .iter()
                 .find(|p| p.id == id)
                 .map_or("", |p| p.name.as_str());
+            let from = list.len();
             list.push(notice(
                 "mixer_patches_exhausted",
                 format!(
@@ -1058,6 +1060,17 @@ impl DocCx<'_> {
                 ),
                 None,
             ));
+            about_patch(list, from, id);
+        }
+    }
+}
+
+/// Names output patch `patch` on the notices from index `from` on: what the pre-show check reads
+/// to leave out the trouble of a patch no cue plays on.
+fn about_patch(list: &mut [WireWarning], from: usize, patch: PatchId) {
+    for warning in list.iter_mut().skip(from) {
+        if let WireWarning::Notice { patch: about, .. } = warning {
+            *about = Some(patch);
         }
     }
 }
