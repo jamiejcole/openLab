@@ -708,8 +708,21 @@ impl Voice {
         }
     }
 
-    /// A voice that has ended: of what is still on its way, only a resume does anything, and
-    /// it reports the end again, with the fresh id.
+    /// When a voice that has ended next reports its end again (see [`Self::drain_dead`]).
+    fn owed_report(&self) -> Option<SampleTime> {
+        self.cmds
+            .iter()
+            .find(|(_, _, c)| {
+                matches!(
+                    c,
+                    Cmd::Resume { .. } | Cmd::Seek { .. } | Cmd::Relocate { .. }
+                )
+            })
+            .map(|c| c.0)
+    }
+
+    /// A voice that has ended: of what is still on its way, only a resume, seek or move does
+    /// anything, and it reports the end again, with the fresh id.
     fn drain_dead(&mut self, t: SampleTime, events: &mut Vec<(SampleTime, Input)>) {
         while self.cmds.first().is_some_and(|c| c.0 <= t) {
             let (at, _, cmd) = self.cmds.remove(0);
@@ -1108,7 +1121,7 @@ impl Sim {
                     } else if let Some(v) = self.dead.remove(from) {
                         self.dead.insert(*run, v);
                     } else if let Some(cue) = self.ended.remove(from) {
-                        // It ended before the move: the moved voice has nothing to play.
+                        // It ended before the move: this simulation reports the end under the new run (the real engine starts the moved voice from the seek point instead; both end the run).
                         self.ended.insert(*run, cue);
                         self.late.push((
                             *at,
@@ -1244,11 +1257,19 @@ impl Sim {
         let late = self.late.iter().filter(
             |(_, e)| !matches!(e, Input::ActionEnded { run, .. } if run.0 >= PREVIEW_RUN_BASE),
         );
+        // So does the end an ended voice owes a resume, seek or move still on its way: the
+        // engine waits for it under the fresh id.
+        let owed = self
+            .dead
+            .values()
+            .filter(|v| !v.preview)
+            .filter_map(Voice::owed_report);
         self.voices
             .values()
             .filter(|v| !v.preview)
             .filter_map(Voice::next_time)
             .chain(late.map(|(at, _)| *at))
+            .chain(owed)
             .min()
     }
 }
@@ -1874,18 +1895,30 @@ impl Run {
                         }
                         _ => None,
                     };
+                    let is_playlist = |g: CueId| {
+                        self.ws.find_cue(g).is_some_and(|g| {
+                            matches!(
+                                g.kind,
+                                CueKind::Group {
+                                    mode: GroupMode::Playlist { .. },
+                                    ..
+                                }
+                            )
+                        })
+                    };
+                    // In a playlist, or moved out of one that still runs: the playlist goes on
+                    // waiting on the run it started, so the run is still its child.
                     let in_playlist = failed.is_some_and(|cue| {
                         groups_around(&self.ws.cue_lists[0].cues, cue)
                             .last()
-                            .and_then(|g| self.ws.find_cue(*g))
-                            .is_some_and(|g| {
-                                matches!(
-                                    g.kind,
-                                    CueKind::Group {
-                                        mode: GroupMode::Playlist { .. },
-                                        ..
-                                    }
-                                )
+                            .is_some_and(|g| is_playlist(*g))
+                            || self.moved_out_of.iter().any(|(m, g)| {
+                                *m == cue
+                                    && is_playlist(*g)
+                                    && !matches!(
+                                        self.engine.state(*g),
+                                        CueState::Idle | CueState::Loaded | CueState::Broken
+                                    )
                             })
                     });
                     self.call(event, Kind::Feedback)?;
