@@ -581,8 +581,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.setAX(AX.cueList, label: loc("cuelist.label"))
-        (outlineView as? CueOutlineView)?.onDragExit = { [weak self] in self?.showTargetOutline(nil) }
-        outlineView.registerForDraggedTypes([Self.dragType, .fileURL])
+        (outlineView as? CueOutlineView)?.onDragExit = { [weak self] in
+            self?.showTargetOutline(nil)
+            self?.kindDropProposal = nil
+        }
+        outlineView.registerForDraggedTypes([Self.dragType, CueToolbarView.dragType, .fileURL])
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         outlineView.target = self
         outlineView.action = #selector(clicked)
@@ -1343,6 +1346,18 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case insert([URL], ModelID?, Int)
     }
 
+    /// A toolbar button was dropped: a new cue of that kind goes at that place (parent nil: the list's top
+    /// level).
+    var onKindDrop: ((NewCueKind, ModelID?, Int) -> Void)?
+    /// Where the toolbar button now being dragged would land, for the insertion line (nil: not over a
+    /// place it can go).
+    private(set) var kindDropProposal: (parent: ModelID?, index: Int)?
+
+    /// The kind a drag from the toolbar carries.
+    private func draggedKind(_ info: NSDraggingInfo) -> NewCueKind? {
+        info.draggingPasteboard.string(forType: CueToolbarView.dragType).flatMap(NewCueKind.init(rawValue:))
+    }
+
     /// The plan, and how many of the dragged files it leaves out (not audio).
     var onFileDrop: ((FileDrop, Int) -> Void)?
     /// The Target cell's button of an Audio cue was clicked.
@@ -1381,6 +1396,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         _ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?,
         proposedChildIndex index: Int
     ) -> NSDragOperation {
+        if draggedKind(info) != nil {
+            kindDropProposal = nil
+            guard !isEditLocked else { return [] }
+            let place = dropTarget(item, index)
+            outlineView.setDropItem(place.parent, dropChildIndex: place.index)
+            kindDropProposal = (place.parent?.id, place.index)
+            return .copy
+        }
         let files = fileURLs(info)
         showTargetOutline(targetOutlineFor(dragged, at: outlineView.convert(info.draggingLocation, from: nil)))
         if !files.isEmpty {
@@ -1403,6 +1426,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         _ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int
     ) -> Bool {
         showTargetOutline(nil)
+        kindDropProposal = nil
+        if let kind = draggedKind(info) {
+            guard !isEditLocked else { return false }
+            let place = dropTarget(item, index)
+            onKindDrop?(kind, place.parent?.id, place.index)
+            return true
+        }
         let files = fileURLs(info)
         if !files.isEmpty {
             guard let plan = fileDropPlan(files, item: item, index: index) else { return false }
@@ -1815,14 +1845,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             }
         case "number": text(cue.number ?? "")
         case "name":
-            let kind = cue.kindType
-            let shown = shownName(cue)
-            if shown.isEmpty {
-                text(CueKindStyle.kindLabel(kind))
-                cell.label.textColor = .secondaryLabelColor
-            } else {
-                text(shown)
-            }
+            // An unnamed cue with no default name shows an empty cell (QLab 5, manual p. 93).
+            text(shownName(cue))
         case "target":
             if cue.takesFile {
                 fillFileTargetButton(cell, cue)
@@ -1900,6 +1924,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// and starts again each pass. Instantaneous cues (and Audio cues whose file is unknown) have none.
     private func durationText(_ node: CueNode) -> String {
         let remaining = timeShown["duration"] == .remaining
+        // A cue loaded to a time stands there like a paused one: its Duration reads the point.
+        if let stand = loadedStand(node) {
+            return CueTime.running(remaining ? stand.length - stand.at : stand.at)
+        }
         if let p = store.progress[node.id] {
             if let left = p.remaining { return CueTime.running(remaining ? left : p.elapsed) }
             if let pass = loopPass(node, p) { return CueTime.running(remaining ? pass.length - pass.gone : pass.gone) }
@@ -1909,11 +1937,22 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return ""
     }
 
+    /// Where a loaded cue stands in its length (Load to Time); nil for one loaded at its start or whose
+    /// length is not known.
+    private func loadedStand(_ node: CueNode) -> (at: Double, length: Double)? {
+        guard store.cueStates[node.id]?.state == .loaded, let position = store.loadedAt[node.id],
+            let length = restingDuration(node), length > 0
+        else { return nil }
+        // The engine's point is in the file; the cue's own time starts at its start trim.
+        let at = position - (node.cue.raw["kind"]?["start_time"]?.doubleValue ?? 0)
+        return at > 0 ? (min(at, length), length) : nil
+    }
+
     private func loopPass(_ node: CueNode, _ p: ProgressItem) -> (gone: Double, length: Double)? {
         LoopPass.of(node.cue, p, fileDuration: store.mediaDurations[node.id]?.file)
     }
 
-    private func restingDuration(_ node: CueNode) -> Double? {
+    func restingDuration(_ node: CueNode) -> Double? {
         switch node.cue.kindType {
         case "fade", "wait": return node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0
         case "audio": return store.mediaDurations[node.id]?.shownDuration
@@ -1925,6 +1964,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// How far a running or paused cue is, drawn in its Duration cell: green running, yellow paused
     /// (the Active Cues bar's colours).
     private func durationProgress(_ node: CueNode) -> (fraction: Double, colour: NSColor)? {
+        if let stand = loadedStand(node) { return (stand.at / stand.length, MarkColour.caution) }
         guard let p = store.progress[node.id] else { return nil }
         let paused = displayState(node.id).state == .paused
         let colour: NSColor = paused ? MarkColour.caution : .systemGreen

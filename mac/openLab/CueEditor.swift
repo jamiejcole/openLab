@@ -172,7 +172,9 @@ final class CueEditor {
     }
 
     @discardableResult
-    func add(_ kind: NewCueKind, after cues: [ModelID]? = nil) async -> ModelID? {
+    func add(_ kind: NewCueKind, after cues: [ModelID]? = nil, at place: (parent: ModelID?, index: Int)? = nil)
+        async -> ModelID?
+    {
         guard await begin(), let list = cueList?.listID else { return nil }
         let id = ModelID(UUID().uuidString.lowercased())
         // A Network cue needs a destination. A workspace with none gets a default one in the same
@@ -201,7 +203,9 @@ final class CueEditor {
         }
         let roots = cueList?.roots ?? []
         let command: Command
-        if kind == .group,
+        if let place {
+            command = Command.addCue(cue, list: list, parent: place.parent, index: place.index)
+        } else if kind == .group,
             let wrap = Self.groupCommands(list: list, group: cue, groupID: id, selected: selected, roots: roots),
             let all = Command.transaction(wrap)
         {
@@ -239,7 +243,9 @@ final class CueEditor {
         if selectionGoes, let successor, cueList?.node(successor) != nil { cueList?.selectAsUser([successor]) }
     }
 
-    func renumberSelection(of cues: [ModelID]? = nil, start: Double, increment: Double) async {
+    func renumberSelection(
+        of cues: [ModelID]? = nil, start: Double, increment: Double, prefix: String = "", suffix: String = ""
+    ) async {
         guard await begin() else { return }
         let ids = selectedNodes(of: cues).map(\.id)
         guard !ids.isEmpty else { return }
@@ -247,7 +253,7 @@ final class CueEditor {
             notify(loc("edit.error.renumberValues"))
             return
         }
-        _ = report(await store.send(command: .renumber(ids, start: start, increment: increment)))
+        _ = report(await store.send(command: .renumber(ids, start: start, increment: increment, prefix: prefix, suffix: suffix)))
     }
 
     /// Moves the selected cues one place up (`by` -1) or down (+1) among their siblings. A cue

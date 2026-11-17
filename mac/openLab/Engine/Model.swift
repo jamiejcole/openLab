@@ -84,7 +84,7 @@ struct Cue: Hashable, Sendable, Decodable {
     ]
 
     /// The default name of an unnamed cue that acts on another: its kind and the target's shown name
-    /// ("Fade and stop ..." for a Fade that stops its target), empty when the cue has no such name
+    /// ("fade and stop ..." for a Fade that stops its target), empty when the cue has no such name
     /// or its target is missing. `lookup` finds a cue by id. Never stored: it follows the target.
     func targetDefaultName(lookup: (ModelID) -> Cue?) -> String {
         targetDefaultName(lookup: lookup, depth: 0)
@@ -108,8 +108,8 @@ struct Cue: Hashable, Sendable, Decodable {
         if shown.isEmpty { shown = CueKindStyle.kindLabel(target.kindType) }
         let stops = kindType == "fade" && raw["kind"]?["stop_target_when_done"] == .bool(true)
         return String(
-            format: loc(stops ? "cue.name.fadeAndStop" : "cue.name.afterTarget"), CueKindStyle.kindLabel(kindType),
-            shown)
+            format: loc(stops ? "cue.name.fadeAndStop" : "cue.name.afterTarget"),
+            CueKindStyle.kindLabel(kindType).lowercased(), shown)
     }
 
     /// Whether the name this cue shows follows one of `ids`: one of them is further along its chain

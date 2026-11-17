@@ -148,12 +148,12 @@ final class PlayheadClickUITests: XCTestCase {
     /// of Intro, which has its default name, follows it.
     func testDoubleClickName() {
         let app = launchDemo()
-        XCTAssertTrue(app.staticTexts["Fade and stop Intro"].waitForExistence(timeout: 10), "the fade follows Intro")
+        XCTAssertTrue(app.staticTexts["fade and stop Intro"].waitForExistence(timeout: 10), "the fade follows Intro")
         app.staticTexts["Intro"].doubleClick()
         app.typeText("entrance\r")
         XCTAssertTrue(app.staticTexts["entrance"].waitForExistence(timeout: 10), "the cell shows entrance")
         XCTAssertTrue(
-            app.staticTexts["Fade and stop entrance"].waitForExistence(timeout: 10), "the fade's name follows")
+            app.staticTexts["fade and stop entrance"].waitForExistence(timeout: 10), "the fade's name follows")
         XCTAssertFalse(cueState("Running", of: "entrance", in: app).exists, "Return did not fire GO")
     }
 
@@ -161,7 +161,7 @@ final class PlayheadClickUITests: XCTestCase {
     /// retargets the Fade: the cell and the inspector show the new target, and Return fires no GO.
     func testDoubleClickTargetRetargetsTheFade() {
         let app = launchDemo()
-        let fade = row("Fade and stop Intro", in: app)
+        let fade = row("fade and stop Intro", in: app)
         XCTAssertTrue(fade.waitForExistence(timeout: 10))
         // Its Target cell shows the target's number, the only "1" in the row (the Fade has no number of its
         // own): the columns move with the window's width, so the cell is found by what it shows.
@@ -172,7 +172,7 @@ final class PlayheadClickUITests: XCTestCase {
         app.typeText("2.1\r")
         XCTAssertTrue(
             waitFor("value == '2.1'", app.textFields["inspector-target"]), "the inspector shows the new target")
-        XCTAssertTrue(app.staticTexts["Fade and stop Door slam"].waitForExistence(timeout: 10), "the name follows it")
+        XCTAssertTrue(app.staticTexts["fade and stop Door slam"].waitForExistence(timeout: 10), "the name follows it")
         XCTAssertFalse(cueStates("Running", in: app).firstMatch.exists, "Return did not fire GO")
     }
 

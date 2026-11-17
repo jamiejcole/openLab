@@ -280,6 +280,30 @@ extension CueListViewController: NSMenuDelegate {
         setPlayhead(target.id)
     }
 
+    /// View > Move Playhead to Next / Previous Sequence: the playhead goes to the top of the next (previous)
+    /// run of top-level cues joined by auto-continue or auto-follow (QLab 5, manual p. 70: `=` and `-`).
+    func movePlayheadBySequence(_ delta: Int) {
+        guard let list = listID, !roots.isEmpty else { return }
+        var anchor = store.playheads[list].flatMap { node($0) }
+        while let a = anchor?.parent { anchor = a }
+        let at = anchor.flatMap { top in roots.firstIndex { $0 === top } } ?? (delta > 0 ? -1 : roots.count)
+        let tops = roots.indices.filter { $0 == 0 || !Self.continues(roots[$0 - 1].cue) }
+        let target: Int?
+        if delta > 0 {
+            target = tops.first { $0 > at }
+        } else {
+            let own = tops.last { $0 <= at } ?? roots.count
+            target = tops.last { $0 < own }
+        }
+        guard let target else { return NSSound.beep() }
+        setPlayhead(roots[target].id)
+    }
+
+    /// The next cue starts with this one (it auto-continues or auto-follows).
+    private static func continues(_ cue: Cue) -> Bool {
+        ["auto_continue", "auto_follow"].contains(cue.raw["continue_mode"]?.stringValue ?? "")
+    }
+
     /// Tools > Reveal Target File in Finder: the last selected cue's file, as the row menu does.
     @discardableResult
     func revealSelectedTarget() -> Bool {

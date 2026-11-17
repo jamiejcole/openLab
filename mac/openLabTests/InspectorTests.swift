@@ -1377,7 +1377,7 @@ final class CueTargetFlowTests: XCTestCase {
         XCTAssertEqual(try drop([Self.fade], on: Self.intro), .setTarget([Self.fade], Self.intro))
         await assertEventually { self.targetCell(Self.fade) == "1" }
         XCTAssertEqual(order, original)
-        XCTAssertEqual(nameCell(Self.fade), "Fade intro", "its default name follows")
+        XCTAssertEqual(nameCell(Self.fade), "fade intro", "its default name follows")
     }
 
     func testDragTheTargetOntoTheActingCue() async throws {
@@ -2234,11 +2234,11 @@ final class UserTestFlowTests: XCTestCase {
         func name(_ id: ModelID) -> String? { cell("name", id)?.label.stringValue }
         let made = await wc.editor.add(.wait)
         let wait = try XCTUnwrap(made)
-        await assertEventually { name(wait) == "Wait 00:05.00" }
+        await assertEventually { name(wait) == "wait 00:05.00" }
         guard case .success = await rig.store.send(command: .setProperty(wait, .duration(2.5))) else {
             return XCTFail("duration")
         }
-        await assertEventually("the name follows the length") { name(wait) == "Wait 00:02.50" }
+        await assertEventually("the name follows the length") { name(wait) == "wait 00:02.50" }
         let sent = await wc.editor.add(.network)
         let network = try XCTUnwrap(sent)
         await assertEventually { self.wc.cueList.node(network) != nil }
@@ -2250,7 +2250,7 @@ final class UserTestFlowTests: XCTestCase {
         await select(Self.intro)
         let left = await wc.editor.add(.devamp)
         let devamp = try XCTUnwrap(left)
-        await assertEventually { name(devamp) == "Devamp intro" }
+        await assertEventually { name(devamp) == "devamp intro" }
         // A typed name wins, as for every cue.
         guard case .success = await rig.store.send(command: .setProperty(wait, .name("Hold"))) else {
             return XCTFail("name")

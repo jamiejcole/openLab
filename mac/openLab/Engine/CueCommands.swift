@@ -176,12 +176,17 @@ extension Command {
             ]))
     }
 
-    static func renumber(_ ids: [ModelID], start: Double, increment: Double) -> Command {
-        Command(
-            .object([
-                "type": .string("renumber"), "ids": .array(ids.map { .string($0.raw) }), "start": .double(start),
-                "increment": .double(increment),
-            ]))
+    /// The numbers go out as prefix + number + suffix; an empty prefix or suffix is left off the wire.
+    static func renumber(
+        _ ids: [ModelID], start: Double, increment: Double, prefix: String = "", suffix: String = ""
+    ) -> Command {
+        var json: [String: JSONValue] = [
+            "type": .string("renumber"), "ids": .array(ids.map { .string($0.raw) }), "start": .double(start),
+            "increment": .double(increment),
+        ]
+        if !prefix.isEmpty { json["prefix"] = .string(prefix) }
+        if !suffix.isEmpty { json["suffix"] = .string(suffix) }
+        return Command(.object(json))
     }
 
     /// One undo step; a single command is sent as itself.

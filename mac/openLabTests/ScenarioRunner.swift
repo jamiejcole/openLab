@@ -55,6 +55,8 @@ final class ScenarioRunner {
         /// sent as the menu sends it, along the responder chain from the window's first responder to
         /// the app's menu actions. A command the menu would grey out stops the run.
         case menuCommand(String)
+        /// `{"tool": "load_to_time"}`: Tools > Load to Time, which cycles the bar open, to its field, closed.
+        case tool(String)
         /// `{"type": id, "text": "...", "enter": true}`: the control focused, its text replaced, Return.
         case type(id: String, text: String, enter: Bool)
         /// `{"key": "space", "modifiers": ["command"]}`: a key press as the app's key handling takes it.
@@ -316,6 +318,10 @@ final class ScenarioRunner {
                     "unknown command \"\(name)\"; known: \(menuCommands.keys.sorted().joined(separator: ", "))")
             }
             return .menuCommand(name)
+        case "tool":
+            let name = try string("tool")
+            guard name == "load_to_time" else { throw Failure("unknown tool \"\(name)\"; known: load_to_time") }
+            return .tool(name)
         case "type":
             guard let text = o["text"] as? String else { throw Failure("\"text\" must be a string") }
             return .type(id: try string("type"), text: text, enter: o["enter"] as? Bool ?? true)
@@ -729,6 +735,10 @@ final class ScenarioRunner {
             let handler: NSObject = chain.first { $0.responds(to: edit.selector) } ?? bar
             _ = handler.perform(edit.selector, with: item)
             note("menu_command \(name): \(Swift.type(of: handler))")
+        case .tool:
+            await catchUp()
+            wc.toggleLoadToTime()
+            note("tool load_to_time")
         case .type(let id, let text, let enter):
             try type(text, into: try control(id), enter: enter)
             note("type \"\(text)\" into \(id)\(enter ? " + return" : "")")
@@ -1455,6 +1465,7 @@ final class ScenarioRunner {
         case .hover(let id, _, let part): return "hover \(id)\(partText(part))"
         case .openMenu(let id): return "open_menu \(id)"
         case .menuCommand(let name): return "menu_command \(name)"
+        case .tool(let name): return "tool \(name)"
         case .type(let id, _, _): return "type \(id)"
         case .key(let k, let m): return "key \(modifierText(m))\(k)"
         case .scroll(let id, _, _, _, _, _): return "scroll \(id)"

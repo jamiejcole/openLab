@@ -92,6 +92,7 @@ enum MainMenu {
                 item("menu.file.recover", #selector(AppDelegate.recoverAutosaves(_:))),
                 .separator(),
                 item("menu.file.workspaceSettings", #selector(AppDelegate.showWorkspaceSettings(_:)), ","),
+                item("menu.file.showInFinder", #selector(AppDelegate.showWorkspaceInFinder(_:))),
                 .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
                 closeAllItem(),
@@ -203,6 +204,7 @@ enum MainMenu {
                 .separator(),
                 item("menu.tools.revealTarget", #selector(AppDelegate.revealTargetFile(_:))),
                 item("menu.tools.findMissingFiles", #selector(AppDelegate.findMissingFiles(_:))),
+                item("menu.tools.pasteLevels", #selector(AppDelegate.pasteLevels(_:))),
                 jumpToTargetsItem(),
             ])
     }
@@ -232,10 +234,13 @@ enum MainMenu {
         return menu(
             "menu.view",
             [
+                chord(item("menu.view.enterFullScreen", #selector(AppDelegate.toggleWorkspaceFullScreen(_:)), "f"), shiftCmd),
+                .separator(),
                 area("menu.view.inspector", .inspector, "i"),
                 area("menu.view.toolbar", .toolbar),
                 area("menu.view.masthead", .masthead),
                 area("menu.view.sidebar", .sidebar, "l"),
+                chord(item("menu.view.sidebarTab", #selector(AppDelegate.toggleSidebarTab(_:)), "l"), shiftCmd),
                 item("menu.view.warnings", #selector(AppDelegate.showWarnings(_:)), "b"),
                 .separator(),
                 chord(item("menu.view.selectCue", #selector(AppDelegate.selectCue(_:)), "j"), cmd),
@@ -248,6 +253,8 @@ enum MainMenu {
                 chord(item("menu.view.playheadNext", #selector(AppDelegate.movePlayheadNext(_:)), down), shiftCmd),
                 chord(
                     item("menu.view.playheadPrevious", #selector(AppDelegate.movePlayheadPrevious(_:)), up), shiftCmd),
+                chord(item("menu.view.nextSequence", #selector(AppDelegate.movePlayheadNextSequence(_:)), "="), []),
+                chord(item("menu.view.previousSequence", #selector(AppDelegate.movePlayheadPreviousSequence(_:)), "-"), []),
                 .separator(),
                 chord(item("menu.view.moveDown", #selector(AppDelegate.moveCuesDown(_:)), down), [.command, .option]),
                 chord(item("menu.view.moveUp", #selector(AppDelegate.moveCuesUp(_:)), up), [.command, .option]),

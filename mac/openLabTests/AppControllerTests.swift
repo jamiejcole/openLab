@@ -1909,17 +1909,6 @@ final class AppControllerTests: XCTestCase {
         XCTAssertGreaterThan(moved, 0)
     }
 
-    func testLoadToTimeSendsTheEnginesLoadCommandForTheSelectedCue() async throws {
-        keyDoc = "1"
-        let wc = try XCTUnwrap(app.windows["1"])
-        let cue = try XCTUnwrap(wc.cueList.roots.first).id
-        wc.cueList.selectAsUser([cue])
-        wc.loadToTime(cue, 12.5)
-        await assertEventually { !transports(.load(cue: cue, at: 12.5)).isEmpty }
-        XCTAssertNil(CueTime.parse("-1"), "a typed time is validated by the shared parser")
-        XCTAssertEqual(CueTime.parse("1:02.5"), 62.5)
-    }
-
     func testRevealTargetFileNeedsAnAudioCueWithAFile() throws {
         let list = try XCTUnwrap(app.windows["1"]).cueList
         let plain = try XCTUnwrap(list.roots.first { $0.cue.kindType != "audio" })
@@ -3832,21 +3821,6 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(edit.store.logEntries.filter { $0.level == .error }.count, 1, "logged once")
         XCTAssertTrue(show.footer.noticeLabel.stringValue.isEmpty)
         XCTAssertFalse(show.store.logEntries.contains { $0.level == .error })
-    }
-
-    func testLoadToTimeIsOffInShowMode() async throws {
-        keyDoc = "1"
-        let delegate = AppDelegate()
-        delegate.appController = app
-        let wc = try XCTUnwrap(app.windows["1"])
-        let items = MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items)
-        let item = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.loadToTime(_:)) })
-        wc.cueList.selectAsUser([try XCTUnwrap(wc.store.model?.cueLists.first?.cues.first?.id)])
-        XCTAssertTrue(delegate.validateMenuItem(item))
-        wc.setShowMode(true)
-        XCTAssertFalse(delegate.validateMenuItem(item))
-        wc.promptLoadToTime()
-        XCTAssertNil(wc.window?.attachedSheet)
     }
 
     func testFooterNoticeClearsAfterItsLifetimeAndARepeatIsNotClearedEarly() {
