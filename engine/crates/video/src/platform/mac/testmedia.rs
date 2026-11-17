@@ -8,7 +8,9 @@
 //! the hardware encoder is turned off, so making a test file never depends on a machine's
 //! video hardware, which a virtual machine shares and can fail under load); stills
 //! with ImageIO (PNG, JPEG, TIFF). A codec this Mac cannot encode fails the command, and the
-//! test that wanted it fails: it never passes without the file.
+//! test that wanted it fails: it never passes without the file. HAP movies have no platform
+//! encoder: their frames are made by openLab's own test writer (`hap::write`) and written to
+//! the movie as they are (AVFoundation's writer passes them through).
 
 use std::path::Path;
 use std::ptr::NonNull;
@@ -25,7 +27,9 @@ use objc2_core_foundation::{CFData, CFRetained, CFString, CFURL};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
 };
-use objc2_core_media::{CMFormatDescription, CMSampleBuffer, CMTime};
+use objc2_core_media::{
+    CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime, kCMTimeInvalid,
+};
 use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
     CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
@@ -35,10 +39,14 @@ use objc2_foundation::{NSData, NSDictionary, NSNumber, NSString, NSURL};
 use objc2_image_io::CGImageDestination;
 
 use crate::card;
+use crate::hap::write::Pack;
+use crate::hap::{Variant, write};
 
 /// `--make-test-media <kind> <path> [frames fps]`: `kind` is `h264`, `hevc`, `prores`, or
-/// `prores4444` (the card's right half below the barcode at half alpha) (with a frame count and
-/// rate), each with `+<format>:<channels>:<rate>` after it for every sound track it is to have
+/// `prores4444` (the card's right half below the barcode at half alpha), or `hap` (Snappy),
+/// `hap-alpha` (Snappy; alpha as `prores4444`'s) or `hap-q` (in Snappy chunks), any HAP kind
+/// with `@<n>` after it to have every frame from `n` on damaged ([`damage`]) (with a frame count
+/// and rate), each with `+<format>:<channels>:<rate>` after it for every sound track it is to have
 /// (`h264+pcm:2:48000`, `h264+aac:2:44100+pcm:6:48000`; see [`sound_sample`] for what a track
 /// carries), or `png`, `jpeg`, `tiff` (frame 0's card), `huge-png` (a black
 /// PNG of 16384 x 8192 pixels, one bit each: small on disk, too many pixels to play), or the
@@ -67,15 +75,6 @@ pub fn make(args: &[String]) -> Result<(), String> {
 fn file_url(path: &Path) -> Result<Retained<NSURL>, String> {
     let text = path.to_str().ok_or("path is not Unicode")?;
     Ok(NSURL::fileURLWithPath(&NSString::from_str(text)))
-}
-
-/// The card for `frame`, as BGRA rows.
-fn bgra(frame: u16) -> Vec<u8> {
-    let mut px = card::pixels(frame);
-    for p in px.as_chunks_mut::<4>().0 {
-        p.swap(0, 2);
-    }
-    px
 }
 
 /// One sound track of a test movie.
@@ -194,6 +193,25 @@ unsafe extern "C" {
         destination: *mut std::ffi::c_void,
         offset: usize,
         length: usize,
+    ) -> i32;
+    fn CMVideoFormatDescriptionCreate(
+        allocator: *const std::ffi::c_void,
+        codec: u32,
+        width: i32,
+        height: i32,
+        extensions: *const std::ffi::c_void,
+        out: *mut *const CMFormatDescription,
+    ) -> i32;
+    fn CMSampleBufferCreateReady(
+        allocator: *const std::ffi::c_void,
+        data: *mut std::ffi::c_void,
+        format: *const CMFormatDescription,
+        samples: isize,
+        timings: isize,
+        timing: *const CMSampleTimingInfo,
+        sizes: isize,
+        size: *const usize,
+        out: *mut *mut CMSampleBuffer,
     ) -> i32;
     fn CMAudioSampleBufferCreateReadyWithPacketDescriptions(
         allocator: *const std::ffi::c_void,
@@ -351,10 +369,186 @@ unsafe fn sound_buffer(
     }
 }
 
+/// A HAP test movie's frames: the flavour, how they are packed, and the first damaged frame.
+struct Hap {
+    variant: Variant,
+    pack: Pack,
+    damaged_from: Option<u16>,
+}
+
+/// The HAP kind `kind` names (`hap`, `hap-alpha`, `hap-q`, each optionally `@<n>`), if it is one.
+fn hap_kind(kind: &str) -> Result<Option<Hap>, String> {
+    let (name, damaged_from) = match kind.split_once('@') {
+        Some((name, from)) => (
+            name,
+            Some(from.parse::<u16>().map_err(|_| "bad damaged frame")?),
+        ),
+        None => (kind, None),
+    };
+    let (variant, pack) = match name {
+        "hap" => (Variant::Hap, Pack::Snappy),
+        "hap-alpha" => (Variant::HapAlpha, Pack::Snappy),
+        "hap-q" => (Variant::HapQ, Pack::Chunks(4)),
+        _ if damaged_from.is_some() => return Err(format!("unknown HAP kind {name}")),
+        _ => return Ok(None),
+    };
+    Ok(Some(Hap {
+        variant,
+        pack,
+        damaged_from,
+    }))
+}
+
+/// Damages a HAP frame, in one of four ways by frame number: cut to half, a section length
+/// longer than the frame, its Snappy data overwritten, or another texture format.
+fn damage(bytes: &mut Vec<u8>, frame: u16) {
+    match frame % 4 {
+        0 => bytes.truncate(bytes.len() / 2),
+        1 => {
+            if let Some(b) = bytes.get_mut(2) {
+                *b = b.wrapping_add(1);
+            }
+        }
+        2 => {
+            for b in bytes.iter_mut().skip(8) {
+                *b = 0xFF;
+            }
+        }
+        _ => {
+            if let Some(kind) = bytes.get_mut(3) {
+                *kind ^= 0x01;
+            }
+        }
+    }
+}
+
+/// The card for `frame` as straight RGBA, with the right half below the barcode at half alpha
+/// when `alpha` (as a straight-alpha file holds it).
+fn card_rgba(frame: u16, alpha: bool) -> Vec<u8> {
+    let mut px = card::pixels(frame);
+    if alpha {
+        for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = (i % card::WIDTH, i / card::WIDTH);
+            if x >= card::WIDTH / 2 && y >= card::HEIGHT / 10 {
+                p[3] = 128;
+            }
+        }
+    }
+    px
+}
+
+/// A sample buffer holding HAP frame `frame` of `h`, timed at `fps`.
+///
+/// # Safety
+/// CoreMedia calls with valid arguments; every result is checked.
+unsafe fn hap_sample(
+    h: &Hap,
+    format: &CMFormatDescription,
+    frame: u16,
+    fps: i32,
+) -> Result<CFRetained<CMSampleBuffer>, String> {
+    let rgba = card_rgba(frame, h.variant == Variant::HapAlpha);
+    let (w, ht) = (card::WIDTH as u32, card::HEIGHT as u32);
+    let mut bytes = write::frame(h.variant, w, ht, &rgba, h.pack)?;
+    if h.damaged_from.is_some_and(|from| frame >= from) {
+        damage(&mut bytes, frame);
+    }
+    // SAFETY: plain times, and a framework constant.
+    let timing = unsafe {
+        CMSampleTimingInfo {
+            duration: CMTime::new(1, fps),
+            presentationTimeStamp: CMTime::new(i64::from(frame), fps),
+            decodeTimeStamp: kCMTimeInvalid,
+        }
+    };
+    let size = bytes.len();
+    // SAFETY: as `sound_buffer`: a block buffer of its own memory, the frame copied into it,
+    // and a sample buffer of one sample of that size and timing; released when dropped here.
+    unsafe {
+        let mut block: *mut std::ffi::c_void = std::ptr::null_mut();
+        let status = CMBlockBufferCreateWithMemoryBlock(
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            size,
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            size,
+            1,
+            &raw mut block,
+        );
+        if status != 0 || block.is_null() {
+            return Err(format!("frame block error {status}"));
+        }
+        let copied = CMBlockBufferReplaceDataBytes(bytes.as_ptr().cast(), block, 0, size);
+        let mut out: *mut CMSampleBuffer = std::ptr::null_mut();
+        let status = if copied == 0 {
+            CMSampleBufferCreateReady(
+                std::ptr::null(),
+                block,
+                format,
+                1,
+                1,
+                &raw const timing,
+                1,
+                &raw const size,
+                &raw mut out,
+            )
+        } else {
+            copied
+        };
+        CFRelease(block.cast_const());
+        let out = NonNull::new(out).ok_or(format!("frame buffer error {status}"))?;
+        Ok(CFRetained::from_raw(out))
+    }
+}
+
+/// A writer input that passes HAP frames of `variant` through as they are, and their format.
+///
+/// # Safety
+/// AVFoundation and CoreMedia calls with valid arguments; every result is checked.
+unsafe fn hap_input(
+    variant: Variant,
+) -> Result<
+    (
+        Retained<AVAssetWriterInput>,
+        CFRetained<CMFormatDescription>,
+    ),
+    String,
+> {
+    // SAFETY: a video format description of the card's size for the flavour's code, no
+    // extensions; owned from here.
+    unsafe {
+        let mut format: *const CMFormatDescription = std::ptr::null();
+        let status = CMVideoFormatDescriptionCreate(
+            std::ptr::null(),
+            variant.code(),
+            card::WIDTH as i32,
+            card::HEIGHT as i32,
+            std::ptr::null(),
+            &raw mut format,
+        );
+        let format = NonNull::new(format.cast_mut()).ok_or("no HAP format")?;
+        let format = CFRetained::from_raw(format);
+        if status != 0 {
+            return Err(format!("HAP format error {status}"));
+        }
+        let media = AVMediaTypeVideo.ok_or("media type missing")?;
+        let input =
+            AVAssetWriterInput::assetWriterInputWithMediaType_outputSettings_sourceFormatHint(
+                media,
+                None,
+                Some(&format),
+            );
+        Ok((input, format))
+    }
+}
+
 fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
     let mut parts = kind.split('+');
     let kind = parts.next().unwrap_or_default();
     let sounds = sounds(&parts.collect::<Vec<_>>())?;
+    let hap = hap_kind(kind)?;
     // SAFETY: framework constants, always set on a Mac with AVFoundation.
     let codec = unsafe {
         match kind {
@@ -362,6 +556,8 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
             "hevc" => AVVideoCodecTypeHEVC,
             "prores" => AVVideoCodecTypeAppleProRes422Proxy,
             "prores4444" => AVVideoCodecTypeAppleProRes4444,
+            // HAP passes its frames through; the codec named is not used.
+            _ if hap.is_some() => AVVideoCodecTypeH264,
             _ => return Err(format!("unknown codec {kind}")),
         }
     }
@@ -397,10 +593,19 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
         ];
         let settings = NSDictionary::from_slices(&keys, &values);
         let media = AVMediaTypeVideo.ok_or("media type missing")?;
-        let input = AVAssetWriterInput::assetWriterInputWithMediaType_outputSettings(
-            media,
-            Some(&settings),
-        );
+        let (input, hap_format) = match &hap {
+            Some(h) => {
+                let (input, format) = hap_input(h.variant)?;
+                (input, Some(format))
+            }
+            None => (
+                AVAssetWriterInput::assetWriterInputWithMediaType_outputSettings(
+                    media,
+                    Some(&settings),
+                ),
+                None,
+            ),
+        };
         let adaptor = AVAssetWriterInputPixelBufferAdaptor::assetWriterInputPixelBufferAdaptorWithAssetWriterInput_sourcePixelBufferAttributes(&input, None);
         // The container's index first, as a file made for streaming has it: a test can then
         // damage the frames that follow and leave the file readable.
@@ -430,22 +635,27 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
         {
             let mut fed = false;
             if frame < frames && input.isReadyForMoreMediaData() {
-                let mut px = bgra(frame);
-                // ProRes 4444 carries alpha: the card's right half below the barcode at half
-                // alpha (straight: the colour itself, as a straight-alpha file holds it).
-                if kind == "prores4444" {
-                    for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-                        let (x, y) = (i % card::WIDTH, i / card::WIDTH);
-                        if x >= card::WIDTH / 2 && y >= card::HEIGHT / 10 {
-                            p[3] = 128;
-                        }
+                let appended = match (&hap, &hap_format) {
+                    (Some(h), Some(format)) => {
+                        let sample = hap_sample(h, format, frame, fps)?;
+                        input.appendSampleBuffer(&sample)
                     }
-                }
-                let buffer = pixel_buffer(&px)?;
-                if !adaptor.appendPixelBuffer_withPresentationTime(
-                    &buffer,
-                    CMTime::new(i64::from(frame), fps),
-                ) {
+                    _ => {
+                        // ProRes 4444 carries alpha: the card's right half below the barcode
+                        // at half alpha (straight: the colour itself, as a straight-alpha file
+                        // holds it).
+                        let mut px = card_rgba(frame, kind == "prores4444");
+                        for p in px.as_chunks_mut::<4>().0 {
+                            p.swap(0, 2);
+                        }
+                        let buffer = pixel_buffer(&px)?;
+                        adaptor.appendPixelBuffer_withPresentationTime(
+                            &buffer,
+                            CMTime::new(i64::from(frame), fps),
+                        )
+                    }
+                };
+                if !appended {
                     return Err(writer_error(&writer));
                 }
                 frame += 1;

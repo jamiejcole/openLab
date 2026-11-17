@@ -316,7 +316,7 @@ fn frame_of(
     cue: &crate::host::CuePicture,
     ahead: f64,
     wait: bool,
-) -> Option<(gpu::Texture, (u32, u32))> {
+) -> Option<(gpu::Texture, (u32, u32), gpu::Colour)> {
     let source = media.get_mut(&cue.picture)?;
     match source.frame(
         device,

@@ -430,7 +430,11 @@ pub mod write {
     }
 
     fn from565(c: u16) -> [i32; 3] {
-        let (r, g, b) = (i32::from(c >> 11), i32::from(c >> 5 & 63), i32::from(c & 31));
+        let (r, g, b) = (
+            i32::from(c >> 11),
+            i32::from(c >> 5 & 63),
+            i32::from(c & 31),
+        );
         [r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2]
     }
 
@@ -632,17 +636,31 @@ mod tests {
         let ok = build(&[0x0A, 0x0A], &[half, n - half], Some(&[0, half]), &texture);
         assert_eq!(unwrap(&ok, Variant::Hap, w, w).as_ref(), Ok(&texture));
         let cases: [(&str, Vec<u8>); 8] = [
-            ("tables disagree", build(&[0x0A], &[half, n - half], None, &texture)),
+            (
+                "tables disagree",
+                build(&[0x0A], &[half, n - half], None, &texture),
+            ),
             ("outside", build(&[0x0A, 0x0A], &[half, n], None, &texture)),
             (
                 "outside",
-                build(&[0x0A, 0x0A], &[half, n - half], Some(&[0, u32::MAX]), &texture),
+                build(
+                    &[0x0A, 0x0A],
+                    &[half, n - half],
+                    Some(&[0, u32::MAX]),
+                    &texture,
+                ),
             ),
             ("wrong size", build(&[0x0A], &[half], None, &texture)),
-            ("packed", build(&[0x0A, 0x07], &[half, n - half], None, &texture)),
+            (
+                "packed",
+                build(&[0x0A, 0x07], &[half, n - half], None, &texture),
+            ),
             ("no chunks", build(&[], &[], None, &texture)),
             ("not described", section(0xCB, &section(0x09, &texture))),
-            ("missing", section(0xCB, &section(0x01, &section(0x02, &[0x0A])))),
+            (
+                "missing",
+                section(0xCB, &section(0x01, &section(0x02, &[0x0A]))),
+            ),
         ];
         for (want, bytes) in cases {
             let why = refused(&bytes, Variant::Hap, w, w);

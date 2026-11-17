@@ -114,6 +114,8 @@ fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let ext = match kind {
         "h264" | "hevc" | "prores" | "prores4444" => "mov",
+        // HAP, written by openLab's own test writer (`hap`, `hap-alpha`, `hap-q`, `@<n>`).
+        hap if hap.starts_with("hap") => "mov",
         // A movie with sound tracks (`h264+pcm:2:48000`).
         with_sound if with_sound.contains('+') => "mov",
         "huge-png" | "wide-png" | "tall-png" | "alpha-png" | "tiny-png" => "png",
@@ -404,6 +406,197 @@ fn mutated_movies_give_an_answer_within_the_limit() {
             other => panic!("round {round}: {other:?}"),
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// HAP (VID-03): no platform decoder; openLab unwraps the frames and draws their textures. The
+// movies are made by openLab's own HAP frame writer (`--make-test-media hap|hap-alpha|hap-q`),
+// so they decode the same on every machine: no `movie!` reliability check.
+
+/// The HAP flavours a Video cue plays, as the test media command names them.
+const HAP_KINDS: [(&str, VideoCodec); 3] = [
+    ("hap", VideoCodec::Hap),
+    ("hap-alpha", VideoCodec::HapAlpha),
+    ("hap-q", VideoCodec::HapQ),
+];
+
+/// Flow: a HAP, HAP Alpha and HAP Q file in a mov → the probe reports codec, size, rate and
+/// length, and GO plays it on a stage in step, first frame to last: the frame shown is the one
+/// the clock has reached, the quadrants are their colours (HAP Alpha's half-alpha half blended
+/// once over the stage's black, HAP Q's YCoCg turned back into RGB), and the cue ends at its
+/// last frame with the stage clear.
+#[test]
+fn a_hap_hap_alpha_and_hap_q_file_in_a_mov_probes_and_plays_in_step_first_frame_to_last() {
+    let dir = tempfile::tempdir().unwrap();
+    for (kind, codec) in HAP_KINDS {
+        let movie = make(dir.path(), &format!("{kind}.mov"), kind, Some((50, 25)));
+        assert_eq!(
+            probe(&movie).unwrap(),
+            ProbeReport::Video {
+                codec,
+                width: 288,
+                height: 160,
+                fps: 25.0,
+                duration: 2.0,
+            },
+            "{kind}"
+        );
+        let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+        assert_eq!(problems(&s, 1), vec![], "{kind}");
+        let at = go(&mut s);
+        for want in [0u16, 1, 12, 25, 49] {
+            run_to(&mut s, at + samples(f64::from(want) / 25.0) + samples(0.01));
+            let position = (s.now() - at) as f64 / f64::from(RATE);
+            let expected = frame_at(position);
+            assert_eq!(shown(&mut s), Some(expected), "{kind} at {position} s");
+            assert!(expected >= want);
+        }
+        let half = kind == "hap-alpha";
+        let read = colours(
+            &mut s,
+            &[[0.25, 0.3], [0.75, 0.3], [0.25, 0.8], [0.75, 0.8]],
+        );
+        let want: [[u8; 3]; 4] = if half {
+            [[255, 0, 0], [0, 128, 0], [0, 0, 255], [128, 128, 0]]
+        } else {
+            [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]]
+        };
+        let near = read
+            .iter()
+            .zip(want)
+            .all(|(c, w)| c[..3].iter().zip(w).all(|(g, w)| g.abs_diff(w) <= 6));
+        assert!(near, "{kind}: {read:?}");
+        run_to(&mut s, at + samples(2.0) + BLOCK);
+        expect_state(&s, 1, CueState::Idle, kind);
+        assert_eq!(shown(&mut s), None, "{kind}");
+        assert_eq!(s.control().pictures_live(), 0, "{kind}");
+    }
+}
+
+/// Flow: a damaged HAP file → a broken cue with a reason, never a crash or hang. (a) Its first
+/// frame damaged: the probe says why and the cue is broken before GO. (b) Damaged from frame 25
+/// on (each flavour, each of the writer's four kinds of damage among them): it probes as
+/// playable, plays up to there, and then only its cue breaks (`decode_failed`, a notice), with
+/// the reason in the show log, while the stage host that drew it stays up.
+#[test]
+fn a_damaged_hap_file_breaks_its_cue_with_a_reason_never_a_crash_or_hang() {
+    let dir = tempfile::tempdir().unwrap();
+    for kind in ["hap@0", "hap-alpha@0", "hap-q@0"] {
+        let file = make(dir.path(), "first.mov", kind, Some((10, 25)));
+        let why = unsupported(probe(&file));
+        assert!(why.contains("HAP frame is damaged"), "{kind}: {why}");
+        let s = video_show(vec![video_cue(1, Some(&file))]);
+        assert!(
+            matches!(
+                problems(&s, 1).as_slice(),
+                [CueProblem::MediaUnsupported { reason, .. }] if reason.contains("damaged")
+            ),
+            "{kind}: {:?}",
+            problems(&s, 1)
+        );
+    }
+    for (n, kind) in ["hap@25", "hap-alpha@26", "hap-q@27", "hap@28"]
+        .into_iter()
+        .enumerate()
+    {
+        let file = make(dir.path(), &format!("late{n}.mov"), kind, Some((50, 25)));
+        let mut s = video_show(vec![video_cue(1, Some(&file))]);
+        assert_eq!(problems(&s, 1), vec![], "{kind}: probed as playable");
+        let pid = s.control().stage_host_pid();
+        s.take_outbound();
+        let at = go(&mut s);
+        run_to(&mut s, at + samples(0.5));
+        assert_eq!(
+            shown(&mut s),
+            Some(frame_at(0.5)),
+            "{kind}: plays up to the damage"
+        );
+        let mut broke = false;
+        for step in 1..=12 {
+            run_to(&mut s, at + samples(0.5 + 0.25 * f64::from(step)));
+            shown(&mut s);
+            s.run(BLOCK);
+            if state(&s, 1) == CueState::Broken {
+                broke = true;
+                break;
+            }
+        }
+        assert!(broke, "{kind}: the cue never broke\n{}", seen(&s));
+        assert_eq!(
+            s.control().engine().broken_reason(id(1)),
+            Some(openlab_core::BrokenReason::DecodeFailed),
+            "{kind}"
+        );
+        assert!(
+            notices(&mut s).iter().any(|c| c == "video_decode_failed"),
+            "{kind}"
+        );
+        let said = s
+            .control()
+            .show_log()
+            .tail(2000)
+            .into_iter()
+            .any(|e| e.message.contains("HAP frame is damaged"));
+        assert!(said, "{kind}: the reason is logged\n{}", seen(&s));
+        assert_eq!(s.control().stage_host_pid(), pid, "{kind}: no crash");
+    }
+}
+
+/// Fuzzed HAP movies (a seeded walk changing bytes anywhere in a good file, the frames' data
+/// most of all) each give an answer within the probe limit, and each one that probes playable
+/// plays on the stage host to its end or breaks only its cue: the stage host never crashes or
+/// hangs (it answers every probe of the stage, and its pid stays the same).
+#[test]
+fn mutated_hap_movies_probe_and_play_or_break_their_cue_never_crashing_the_stage_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut seed: u64 = 0x4a9_5eed;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut played = 0;
+    for round in 0..18u64 {
+        let (kind, _) = HAP_KINDS[(round % 3) as usize];
+        let mut bytes = std::fs::read(make(dir.path(), "good.mov", kind, Some((10, 25)))).unwrap();
+        // The test movies' index comes first; most changes land in the frames after it.
+        let frames_from = bytes.windows(4).position(|w| w == b"mdat").unwrap_or(0);
+        for _ in 0..(1 + round % 8) {
+            let span = if next() % 4 == 0 { 0 } else { frames_from };
+            let at = span + (next() % (bytes.len() - span) as u64) as usize;
+            if let Some(b) = bytes.get_mut(at) {
+                *b = next() as u8;
+            }
+        }
+        let file = dir.path().join(format!("m{round}.mov"));
+        std::fs::write(&file, &bytes).unwrap();
+        match probe_damaged(&file) {
+            Ok(ProbeReport::Video { .. }) => {}
+            Err(MediaError::Unsupported(_)) => continue,
+            other => panic!("round {round}: {other:?}"),
+        }
+        played += 1;
+        let mut s = video_show(vec![video_cue(1, Some(&file))]);
+        if !problems(&s, 1).is_empty() {
+            continue;
+        }
+        let pid = s.control().stage_host_pid();
+        let at = go(&mut s);
+        for step in 1..=5 {
+            run_to(&mut s, at + samples(0.1 * f64::from(step)));
+            shown(&mut s);
+        }
+        run_to(&mut s, at + samples(0.4) + BLOCK);
+        let end = state(&s, 1);
+        assert!(
+            matches!(end, CueState::Idle | CueState::Broken),
+            "round {round}: {end:?}\n{}",
+            seen(&s)
+        );
+        assert_eq!(s.control().stage_host_pid(), pid, "round {round}: no crash");
+    }
+    assert!(played > 0, "no mutated movie probed as playable");
 }
 
 fn video_cue(n: u128, media: Option<&Path>) -> Cue {
