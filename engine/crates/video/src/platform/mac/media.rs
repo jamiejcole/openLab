@@ -89,6 +89,12 @@ const BACK_HOLD_FRAMES: f64 = 1.0;
 /// failure instead of re-opening the movie over and over.
 pub const REOPEN_SETTLE: f64 = 10.0;
 
+/// What an open is doing, named in the reason it failed when it took too long: a stall on a
+/// show machine (a volume, the system's media services, the decoder) says where it was.
+const READING_STILL: &str = "reading the image";
+const READING_TRACKS: &str = "reading the movie's tracks";
+const DECODING_FIRST: &str = "decoding its first frame";
+
 /// Decode threads alive at once, stuck ones included: past this a new picture is refused
 /// instead of starting another thread.
 const MAX_DECODERS: usize = 2 * MAX_PICTURES;
@@ -180,6 +186,8 @@ struct Mail {
     /// Decoder to main: the newest frame not yet taken.
     frame: Option<Frame>,
     failed: Option<String>,
+    /// Decoder to main: what the open is doing, for the reason given when it takes too long.
+    opening: &'static str,
     /// Decoder to main: the movie was opened again after its reader failed, and why (for the
     /// show log), not yet taken.
     reopened: Option<String>,
@@ -262,12 +270,21 @@ impl Picture {
         }
         let alive = Alive;
         let shared = Arc::new(Shared {
-            mail: Mutex::new(Mail::default()),
+            mail: Mutex::new(Mail {
+                opening: if still { READING_STILL } else { READING_TRACKS },
+                ..Mail::default()
+            }),
             wake: Condvar::new(),
         });
         let theirs = Arc::clone(&shared);
         #[cfg(feature = "test-support")]
-        let hangs = file.contains(fault::HANG_OPEN) || file.contains(fault::HANG_DECODE);
+        let hangs = [
+            fault::HANG_OPEN,
+            fault::HANG_FIRST_FRAME,
+            fault::HANG_DECODE,
+        ]
+        .iter()
+        .any(|f| file.contains(f));
         #[cfg(not(feature = "test-support"))]
         let hangs = false;
         let file = file.to_owned();
@@ -303,8 +320,9 @@ impl Picture {
         if mail.opened.is_none() {
             return (since(self.started) >= limits.open).then(|| {
                 Polled::Failed(format!(
-                    "its file took longer than {} s to open",
-                    limits.open.as_secs_f64()
+                    "its file took longer than {} s to open ({})",
+                    limits.open.as_secs_f64(),
+                    mail.opening
                 ))
             });
         }
@@ -506,6 +524,12 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits)
     #[cfg(feature = "test-support")]
     {
         movie.slow = file.contains(fault::SLOW_DECODE);
+    }
+    shared.lock().opening = DECODING_FIRST;
+    #[cfg(feature = "test-support")]
+    {
+        shared.wake.notify_all();
+        fault::hang_if(shared, file, fault::HANG_FIRST_FRAME);
     }
     // The open's own frame is under the open's limit, not the frames'.
     let first = match movie.frame_at(offset, 0, &|| {}) {
@@ -1085,6 +1109,8 @@ pub mod fault {
 
     pub const HANG_OPEN: &str = "openlab-test-hang-open";
     pub const HANG_DECODE: &str = "openlab-test-hang-decode";
+    /// Hangs once the movie's tracks are read, before its first frame is decoded.
+    pub const HANG_FIRST_FRAME: &str = "openlab-test-hang-first-frame";
     /// Crashes while the file opens (its first frame decoded).
     pub const CRASH_OPEN: &str = "openlab-test-crash-open";
     /// Crashes at the first frame asked for after the open.
@@ -1233,6 +1259,50 @@ mod tests {
             p.take_reopened(),
             None,
             "an open that fails is not tried again"
+        );
+    }
+
+    /// An open past its limit says what it was doing, so a stall on a show machine (the
+    /// file's tracks never read, or its first frame never decoded) says where it stopped.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn an_open_past_its_limit_says_where_it_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let none = Limits {
+            open: Duration::ZERO,
+            frame: Duration::from_secs(60),
+        };
+        let failed = |p: &mut Picture| match p.poll() {
+            Some(Polled::Failed(why)) => why,
+            _ => panic!("the open did not fail past its limit"),
+        };
+        let tracks = clip(dir.path(), "openlab-test-hang-open.mov", 5);
+        let mut p = Picture::open(&tracks, false, 0.0, none).unwrap();
+        assert_eq!(
+            failed(&mut p),
+            "its file took longer than 0 s to open (reading the movie's tracks)"
+        );
+        let first = clip(dir.path(), "openlab-test-hang-first-frame.mov", 5);
+        let mut p = Picture::open(&first, false, 0.0, none).unwrap();
+        {
+            // Bounded: the decode thread reads five frames' tracks in well under this.
+            let mut mail = p.shared.lock();
+            let mut rounds = 600;
+            while mail.opening != DECODING_FIRST && mail.failed.is_none() && rounds > 0 {
+                rounds -= 1;
+                mail = p
+                    .shared
+                    .wake
+                    .wait_timeout(mail, Duration::from_millis(100))
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+            }
+            assert_eq!(mail.failed, None);
+            assert_eq!(mail.opening, DECODING_FIRST, "the tracks were never read");
+        }
+        assert_eq!(
+            failed(&mut p),
+            "its file took longer than 0 s to open (decoding its first frame)"
         );
     }
 

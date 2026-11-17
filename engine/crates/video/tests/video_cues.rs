@@ -1441,9 +1441,8 @@ fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
     );
     let texts = notice_texts(&mut s);
     assert!(
-        texts
-            .iter()
-            .any(|(c, t)| c == "video_decode_failed" && t.contains("to open")),
+        texts.iter().any(|(c, t)| c == "video_decode_failed"
+            && t.contains("to open (reading the movie's tracks)")),
         "{texts:?}"
     );
     expect_state(&s, 1, CueState::Running, "the other cue plays on");
