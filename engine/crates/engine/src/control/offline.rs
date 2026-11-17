@@ -42,6 +42,9 @@ pub struct OfflineShow {
     buf: Vec<f32>,
     next_id: u64,
     stalls: u64,
+    /// How long each wait for another thread may take ([`SETTLE_TIMEOUT`] unless a test
+    /// lengthens it).
+    settle_timeout: Duration,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -106,11 +109,19 @@ impl OfflineShow {
             buf: vec![0.0; block * channels],
             next_id: 0,
             stalls: 0,
+            settle_timeout: SETTLE_TIMEOUT,
         })
     }
 
     pub fn control(&self) -> &Control {
         &self.control
+    }
+
+    /// Test support: lengthens (or shortens) every later wait for another thread, for tests
+    /// whose workers lean on a platform framework that can be slow on a loaded machine.
+    #[cfg(feature = "test-support")]
+    pub fn set_settle_timeout(&mut self, timeout: Duration) {
+        self.settle_timeout = timeout;
     }
 
     /// Ends the show as the control thread does at shutdown ([`Control::shutdown`]: a hard stop
@@ -159,9 +170,9 @@ impl OfflineShow {
 
     /// Waits until the document worker and the writer thread have answered everything asked of
     /// them and the answers are applied (ticking, which is where the control loop collects
-    /// them). Bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`].
+    /// them). Bounded by the settle timeout, counted in [`Self::stalls`].
     pub fn settle_docs(&mut self) {
-        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        let deadline = std::time::Instant::now() + self.settle_timeout;
         loop {
             self.pump_inbox();
             self.control.tick();
@@ -180,16 +191,16 @@ impl OfflineShow {
     }
 
     /// Waits until the stage host has been told every stage and has said where each one is, and
-    /// no probe waits (answers handled, ticking). Bounded by [`SETTLE_TIMEOUT`], counted in
+    /// no probe waits (answers handled, ticking). Bounded by the settle timeout, counted in
     /// [`Self::stalls`].
     pub fn settle_stages(&mut self) {
         self.wait_for(|c| c.stages_settled());
     }
 
-    /// Handles inbox messages and ticks until `done` holds. Bounded by [`SETTLE_TIMEOUT`],
+    /// Handles inbox messages and ticks until `done` holds. Bounded by the settle timeout,
     /// counted in [`Self::stalls`]; `false` when it gave up.
     pub fn wait_for(&mut self, done: impl Fn(&Control) -> bool) -> bool {
-        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        let deadline = std::time::Instant::now() + self.settle_timeout;
         loop {
             self.pump_inbox();
             self.control.tick();
@@ -216,9 +227,9 @@ impl OfflineShow {
     }
 
     /// Waits until every host look-up and queued network message has been handled by its worker
-    /// and the answers are applied. Bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`].
+    /// and the answers are applied. Bounded by the settle timeout, counted in [`Self::stalls`].
     pub fn settle_net(&mut self) {
-        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        let deadline = std::time::Instant::now() + self.settle_timeout;
         loop {
             self.pump_inbox();
             if self.control.net_busy() == 0 {
@@ -360,7 +371,7 @@ impl OfflineShow {
     /// Waits until every probe, preload and waveform read has answered (or was given up on by
     /// the watchdog) and the answers are in, then ticks. Ticks while it waits, so the probe watchdog runs.
     pub fn settle_media(&mut self) {
-        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        let deadline = std::time::Instant::now() + self.settle_timeout;
         // `probes_pending` scans every probe entry: ask once per batch of answers, not once
         // per answer (a show of thousands of files would make the wait quadratic).
         loop {
@@ -405,11 +416,11 @@ impl OfflineShow {
         took
     }
 
-    /// Waits (bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`]) for the document
+    /// Waits (bounded by the settle timeout, counted in [`Self::stalls`]) for the document
     /// worker's next answer, handling every other message meanwhile, and returns it unhandled,
     /// so a test can time what the control thread does with it ([`Self::deliver`]).
     pub fn next_doc_answer(&mut self) -> Option<Inbox> {
-        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        let deadline = std::time::Instant::now() + self.settle_timeout;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match self.inbox.recv_timeout(left) {
@@ -465,7 +476,7 @@ impl OfflineShow {
 
     fn settle_streams(&mut self) {
         let end = self.rendered() + self.block as u64;
-        self.stalls += self.control.wait_streams(end, SETTLE_TIMEOUT);
+        self.stalls += self.control.wait_streams(end, self.settle_timeout);
     }
 
     /// Blocks the driver could not settle in time (a test asserts 0).
@@ -539,11 +550,11 @@ impl OfflineShow {
         self.control.watch_pass()
     }
 
-    /// Thread mode: waits (bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`]) for the
+    /// Thread mode: waits (bounded by the settle timeout, counted in [`Self::stalls`]) for the
     /// next message from the watch thread, handling everything else that comes meanwhile,
     /// then ticks. Whether one came.
     pub fn wait_watch(&mut self) -> bool {
-        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        let deadline = std::time::Instant::now() + self.settle_timeout;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match self.inbox.recv_timeout(left) {

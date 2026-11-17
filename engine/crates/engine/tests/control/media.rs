@@ -2013,3 +2013,20 @@ fn hanging_waveform_reads_never_hold_up_a_probe() {
         vec![16384; 10]
     );
 }
+
+/// A test can lengthen or shorten the offline driver's waits for other threads (for tests whose
+/// workers lean on a slow platform framework): with a zero wait, a condition that never holds
+/// is looked at once and the wait counted as a stall, not looked at for the default 30 s.
+#[test]
+fn the_offline_drivers_waits_end_at_the_settle_timeout_a_test_sets() {
+    let mut s = show(workspace(vec![]));
+    s.set_settle_timeout(std::time::Duration::ZERO);
+    let looks = std::cell::Cell::new(0);
+    let held = s.wait_for(|_| {
+        looks.set(looks.get() + 1);
+        false
+    });
+    assert!(!held);
+    assert_eq!(looks.get(), 1);
+    assert_eq!(s.stalls(), 1);
+}
