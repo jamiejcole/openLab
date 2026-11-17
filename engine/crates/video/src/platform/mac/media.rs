@@ -1690,6 +1690,37 @@ mod tests {
             seen.extend(shown(&mut m, &mut h, sample));
         }
         assert_eq!(seen, vec![29], "the range's last frame, and only it");
+
+        // Paused in the loop's second pass 5 ms before a frame's start, just after a refresh
+        // that asked a refresh ahead and so showed that frame: the pause holds it. In the pass
+        // it paused in, the decoder sees no seam, so it neither steps back a frame nor reads
+        // again.
+        let mut h = host(&["D"]);
+        up(&mut h);
+        let mut m = Movie::open(&file).unwrap();
+        let mut on = None;
+        for sample in refreshes(0, 1390).chain([1390]) {
+            on = shown(&mut m, &mut h, sample).or(on);
+        }
+        assert_eq!(on, Some(25), "a refresh ahead of 0.99 s into the file");
+        send(
+            &mut h,
+            ToStage::Pause {
+                picture: 1,
+                at: 1395,
+                offset: 0.995,
+                action: 1.395,
+            },
+        );
+        let restarts = m.restarts;
+        for sample in refreshes(1400, 2000) {
+            on = shown(&mut m, &mut h, sample).or(on);
+        }
+        assert_eq!(on, Some(25), "the frame shown is held");
+        assert_eq!(
+            m.restarts, restarts,
+            "the pause did not start reading again"
+        );
     }
 
     /// On a real display the frame asked for is the one due a refresh on. In the last pass that
