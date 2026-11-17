@@ -51,7 +51,8 @@
 //! - A second trigger on an active cue does what its option says (Second trigger): `nothing`
 //!   never restarts it (rule 1 / GO and double-GO), stop leaves it inactive, panic fades it out,
 //!   restart starts it again (or is cut at the chain limit), devamp and play next/previous do
-//!   not restart it; a release that is not a second trigger does nothing at all. A cue fading
+//!   not restart it, and play next on a playlist that does not loop never goes round to an
+//!   earlier child; a release that is not a second trigger does nothing at all. A cue fading
 //!   out in a panic is not active for the rule.
 //! - After a panic has ended, nothing is active, loaded or pending, and no voice is left in the
 //!   mixer (Panic, "After it").
@@ -1326,6 +1327,9 @@ struct Run {
     /// children busy while such a cue is. Dropped when that run ends, or when the group ends,
     /// is stopped or starts a new run (it lets go of them then).
     moved_out_of: Vec<(CueId, CueId)>,
+    /// Playlists whose mode was edited from shuffled: a pass begun shuffled keeps its order to
+    /// its end, so list order does not tell which child comes next.
+    edited_from_shuffled: BTreeSet<CueId>,
 }
 
 fn preview_action(a: &Action) -> bool {
@@ -1380,6 +1384,7 @@ impl Run {
             ph_around: Vec::new(),
             held_in_playlist: BTreeSet::new(),
             moved_out_of: Vec::new(),
+            edited_from_shuffled: BTreeSet::new(),
         }
     }
 
@@ -2294,6 +2299,9 @@ impl Run {
                     if s.b.is_multiple_of(2) {
                         children.reverse();
                     } else {
+                        if matches!(mode, GroupMode::Playlist { shuffle: true, .. }) {
+                            self.edited_from_shuffled.insert(target);
+                        }
                         *mode = group_mode(s.b / 2);
                     }
                 }
@@ -2544,7 +2552,17 @@ impl Run {
             let option = model.second_trigger.effective(&model.kind);
             let applies =
                 !release || (model.second_trigger_on_release && option != SecondTrigger::Nothing);
-            Some((cue, self.engine.run_of(cue), option, applies))
+            // Its children not doing anything yet: a child that starts in the call is one of
+            // them (a paused one that resumes is not).
+            let idle_children: BTreeSet<CueId> = match &model.kind {
+                CueKind::Group { children, .. } => children
+                    .iter()
+                    .map(|c| c.id)
+                    .filter(|c| !self.engine.state(*c).is_active())
+                    .collect(),
+                _ => BTreeSet::new(),
+            };
+            Some((cue, self.engine.run_of(cue), option, applies, idle_children))
         });
         let stepping = matches!(
             input,
@@ -2594,7 +2612,7 @@ impl Run {
                 );
             }
         }
-        if let Some((cue, run, option, applies)) = before {
+        if let Some((cue, run, option, applies, idle_children)) = before {
             let actions = &self.raw[start..];
             let restarted = actions.iter().any(|a| match a {
                 Action::StartVoice { cue: c, .. }
@@ -2715,6 +2733,64 @@ impl Run {
                         && in_a_looping_playlist
                         && matches!((ended, started), (Some(e), Some(s)) if e < s);
                     prop_assert!(!restarted || by_its_group, "{:?} restarted {}", option, cue);
+                    // Play next on a playlist that does not loop never goes round again: the
+                    // child it starts comes after the one it stopped, in list order (the order
+                    // it plays in unshuffled), until the playlist itself has ended. A group
+                    // with no pre-wait shows nothing of its own when it goes round, only this.
+                    let in_list_order = matches!(
+                        self.ws.find_cue(cue).map(|c| &c.kind),
+                        Some(CueKind::Group {
+                            mode: GroupMode::Playlist {
+                                loop_: false,
+                                shuffle: false,
+                            },
+                            ..
+                        })
+                    ) && !self.edited_from_shuffled.contains(&cue);
+                    if option == SecondTrigger::PlayNext && in_list_order {
+                        let children = match self.ws.find_cue(cue).map(|c| &c.kind) {
+                            Some(CueKind::Group { children, .. }) => children.as_slice(),
+                            _ => &[],
+                        };
+                        let index = |id: CueId| children.iter().position(|c| c.id == id);
+                        let until = ended.unwrap_or(actions.len());
+                        // The first of its children `pick` accepts to change to `state`, from
+                        // action `from` on: (where in the actions, its index, it).
+                        let child_to =
+                            |state: CueState, from: usize, pick: &dyn Fn(CueId) -> bool| {
+                                actions[..until]
+                                    .iter()
+                                    .enumerate()
+                                    .skip(from)
+                                    .find_map(|(i, a)| match a {
+                                        Action::StateChanged {
+                                            cue: c, state: s, ..
+                                        } if *s == state && pick(*c) => {
+                                            index(*c).map(|n| (i, n, *c))
+                                        }
+                                        _ => None,
+                                    })
+                            };
+                        // The child it stopped, then the one it started: a child that was doing
+                        // nothing, or the one it stopped (a paused child resuming with its
+                        // playlist is not a start).
+                        if let Some((at, stopped_at, stopped)) =
+                            child_to(CueState::Idle, 0, &|_| true)
+                            && let Some((_, started_at, started)) =
+                                child_to(CueState::PreWaiting, at, &|c| {
+                                    c == stopped || idle_children.contains(&c)
+                                })
+                        {
+                            prop_assert!(
+                                started_at > stopped_at,
+                                "play next went round playlist {} that does not loop: {} stopped, {} started; inside {:?}",
+                                cue,
+                                stopped,
+                                started,
+                                groups_around(&self.ws.cue_lists[0].cues, cue)
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -3158,6 +3234,64 @@ fn a_resumed_voice_whose_known_end_is_in_the_window_is_not_a_leak() {
     };
     if let Err(e) = invariants(&case) {
         panic!("{e}");
+    }
+}
+
+/// Play next on a playlist that does not loop, playing its last child, completes the playlist:
+/// it never goes round to its first child again. The playlist has no pre-wait, so going round
+/// shows nothing of its own (no start, no voice): only its child starting again does. At the top
+/// level and inside a timeline group.
+#[test]
+fn play_next_past_the_last_child_of_a_playlist_that_does_not_loop_completes_it() {
+    let spec = |kind: u8, level: u8| Spec {
+        kind,
+        pre: 0,
+        post: 0,
+        mode: 0,
+        armed: true,
+        dup: false,
+        level,
+        group_mode: 0,
+        target: 0,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    for nested in [false, true] {
+        let level = u8::from(nested);
+        // The playlist (kind 22, play next) and its one child, a Wait (kind 1); nested, inside a
+        // timeline group (kind 4).
+        let mut specs = vec![
+            Spec {
+                group_mode: 4,
+                second: 14,
+                ..spec(22, level)
+            },
+            Spec {
+                post: 2,
+                ..spec(1, level + 1)
+            },
+        ];
+        if nested {
+            specs.insert(0, spec(4, 0));
+        }
+        // Start the playlist, then start it again while its child plays.
+        let start = |dt: u64| Step {
+            dt,
+            op: 2,
+            a: 2 * level + 1,
+            b: 0,
+        };
+        let case = Case {
+            specs,
+            steps: vec![start(0), start(100)],
+            lookahead: 0,
+            min_go: 0,
+            panic: 0,
+        };
+        if let Err(e) = invariants(&case) {
+            panic!("nested {nested}: {e}");
+        }
     }
 }
 
