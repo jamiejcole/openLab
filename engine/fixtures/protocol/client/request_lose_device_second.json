@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 66,
+  "request": {
+    "type": "lose_device",
+    "device": "openlab:virtual-2"
+  }
+}

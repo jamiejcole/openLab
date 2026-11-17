@@ -2003,7 +2003,7 @@ extension PlayheadFlowTests {
             return self.store.mediaDurations[id]?.file != nil
         }
         await waveformDrawn()
-        guard case .success = await engine.request(.loseDevice) else { return XCTFail("lose_device") }
+        guard case .success = await engine.request(.loseDevice()) else { return XCTFail("lose_device") }
         try await play(0.5)
         await assertEventually("broken: no device") { self.rowMark(id) == loc("cue.state.broken") }
         clickWave(at: 12)

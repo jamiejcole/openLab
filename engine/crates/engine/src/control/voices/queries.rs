@@ -352,8 +352,13 @@ impl Voices {
 
     /// Stream handles of playing voices, with the frames each voice will have read by rendered
     /// sample `t` (offline settling), in its stream's frames (its device's rate), rounded up.
+    /// A voice its lost device cut is left out: stopped on that device's first sample back, it
+    /// reads nothing more, and its disk worker cannot write ahead while nothing reads.
     pub fn stream_needs(&self, t: SampleTime) -> impl Iterator<Item = (&StreamHandle, u64)> {
-        self.recs.values().filter_map(move |r| {
+        self.recs.iter().filter_map(move |(&id, r)| {
+            if self.is_unmetered(id) {
+                return None;
+            }
             let h = r.stream.as_ref()?;
             let played = r.position(t)?.saturating_sub(r.offset);
             let needed = if r.scale.is_same() {

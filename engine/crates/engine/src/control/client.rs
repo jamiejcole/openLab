@@ -292,9 +292,17 @@ impl Control {
                 #[cfg(feature = "test-support")]
                 Request::Advance { frames } => return Ok(self.advance(id, frames, to)),
                 #[cfg(feature = "test-support")]
-                Request::LoseDevice => return Ok(self.lose_device(id, to)),
+                Request::LoseDevice { device } => {
+                    return Ok(self.lose_device(id, device.as_deref(), to));
+                }
                 #[cfg(feature = "test-support")]
-                Request::RestoreDevice => return Ok(self.restore_device(id, to)),
+                Request::RestoreDevice { device } => {
+                    return Ok(self.restore_device(id, device.as_deref(), to));
+                }
+                #[cfg(feature = "test-support")]
+                Request::SetDefaultDevice { device } => {
+                    return Ok(self.set_default_device(id, &device, to));
+                }
                 #[cfg(feature = "test-support")]
                 Request::DisplayProbe { display, points } => {
                     self.display_probe(id, display, points, to);

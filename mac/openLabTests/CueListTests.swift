@@ -5776,12 +5776,12 @@ final class DeviceLossRowTests: XCTestCase {
     }
 
     private func lose(_ h: H) async throws {
-        guard case .success = await engine.request(.loseDevice) else { return XCTFail("lose_device") }
+        guard case .success = await engine.request(.loseDevice()) else { return XCTFail("lose_device") }
         try await h.rig.advance(0.5)
     }
 
     private func restore(_ h: H) async throws {
-        guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore_device") }
+        guard case .success = await engine.request(.restoreDevice()) else { return XCTFail("restore_device") }
         // The next device-list read finds it and the stream reopens.
         try await h.rig.advance(2)
     }

@@ -438,7 +438,7 @@ final class WarningsTests: XCTestCase {
     }
 
     private func device(lose: Bool) async throws {
-        guard case .success = await rig.testEngine.request(lose ? .loseDevice : .restoreDevice) else {
+        guard case .success = await rig.testEngine.request(lose ? .loseDevice() : .restoreDevice()) else {
             return XCTFail("device")
         }
         // A device plugged back in is found at the next list read and reopened.

@@ -183,6 +183,10 @@ final class Rig {
 final class TestEngine {
     /// The virtual device's rate: frames per second of device time.
     static let rate = 48_000.0
+    /// The engine's virtual output devices, as `list_devices` gives them: the first is listed from
+    /// the start and is the system's output; the second only once plugged in (`restoreDevice`).
+    static let deviceIDs = ["openlab:virtual", "openlab:virtual-2"]
+    static let deviceNames = ["openLab Virtual Output", "openLab Virtual Output 2"]
 
     let folder: URL
     var support: URL { folder.appendingPathComponent("support", isDirectory: true) }

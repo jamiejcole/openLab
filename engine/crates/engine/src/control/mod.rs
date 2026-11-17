@@ -275,8 +275,8 @@ pub struct ControlConfig {
     /// whose media framework is slow).
     #[cfg(feature = "test-support")]
     pub picture_probe_limit: Duration,
-    /// The virtual device the backend's stream runs on (`--virtual-device`): it answers the
-    /// test-only `advance`, `lose_device` and `restore_device` requests.
+    /// The virtual devices the backend's streams run on (`--virtual-device`): they answer the
+    /// test-only `advance`, `lose_device`, `restore_device` and `set_default_device` requests.
     #[cfg(feature = "test-support")]
     pub virtual_device: Option<virtual_device::VirtualDevice>,
 }
@@ -1454,9 +1454,11 @@ fn request_name(r: &Request) -> &'static str {
         #[cfg(feature = "test-support")]
         Request::Advance { .. } => "advance",
         #[cfg(feature = "test-support")]
-        Request::LoseDevice => "lose_device",
+        Request::LoseDevice { .. } => "lose_device",
         #[cfg(feature = "test-support")]
-        Request::RestoreDevice => "restore_device",
+        Request::RestoreDevice { .. } => "restore_device",
+        #[cfg(feature = "test-support")]
+        Request::SetDefaultDevice { .. } => "set_default_device",
     }
 }
 

@@ -285,8 +285,8 @@ fn all_requests() -> Vec<(&'static str, Request)> {
         ),
         // Test support only (the `test-support` feature, `--virtual-device`).
         ("advance", Request::Advance { frames: 4800 }),
-        ("lose_device", Request::LoseDevice),
-        ("restore_device", Request::RestoreDevice),
+        ("lose_device", Request::LoseDevice { device: None }),
+        ("restore_device", Request::RestoreDevice { device: None }),
         (
             "discard_recovery",
             Request::DiscardRecovery {
@@ -333,6 +333,12 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 points: vec![[0.5, 0.5]],
             },
         ),
+        (
+            "set_default_device",
+            Request::SetDefaultDevice {
+                device: "openlab:virtual-2".into(),
+            },
+        ),
     ]
 }
 
@@ -374,6 +380,18 @@ fn request_variants() -> Vec<(&'static str, Request)> {
             Request::SetPatchMapping {
                 patch: PatchId(uuid::Uuid::from_u128(0x71)),
                 mapping: Some(PatchMapping::system_output(vec![0, 1])),
+            },
+        ),
+        (
+            "lose_device_second",
+            Request::LoseDevice {
+                device: Some("openlab:virtual-2".into()),
+            },
+        ),
+        (
+            "restore_device_second",
+            Request::RestoreDevice {
+                device: Some("openlab:virtual-2".into()),
             },
         ),
     ]
@@ -2087,7 +2105,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 25);
-    assert_eq!(all_requests().len(), 28);
+    assert_eq!(all_requests().len(), 29);
 }
 
 #[test]
@@ -4615,8 +4633,9 @@ fn arb_request() -> impl Strategy<Value = Request> {
                 buckets,
             }),
         (0..=MAX_ADVANCE_FRAMES).prop_map(|frames| Request::Advance { frames }),
-        Just(Request::LoseDevice),
-        Just(Request::RestoreDevice),
+        proptest::option::of(arb_text()).prop_map(|device| Request::LoseDevice { device }),
+        proptest::option::of(arb_text()).prop_map(|device| Request::RestoreDevice { device }),
+        arb_text().prop_map(|device| Request::SetDefaultDevice { device }),
     ]
 }
 

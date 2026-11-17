@@ -941,7 +941,7 @@ extension VideoCueTests {
         try await play(1)
         let before = await shownFrame()
         XCTAssertNotNil(before)
-        guard case .success = await engine.request(.loseDevice) else { return XCTFail("lose the device") }
+        guard case .success = await engine.request(.loseDevice()) else { return XCTFail("lose the device") }
         try await play(0.3)
         await soon("the paused mark") { self.status(Self.movie) == loc("cue.state.paused") }
         let stood = duration(Self.movie)
@@ -956,7 +956,7 @@ extension VideoCueTests {
         XCTAssertFalse(wc.footer.warningsButton.isHidden)
 
         // The device back: nothing resumes by itself.
-        guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore the device") }
+        guard case .success = await engine.request(.restoreDevice()) else { return XCTFail("restore the device") }
         try await play(2.5)
         await soon("the device warning clears") {
             !WarningRows.make(store: self.store).contains { $0.detail == loc("warnings.device.device_lost") }
