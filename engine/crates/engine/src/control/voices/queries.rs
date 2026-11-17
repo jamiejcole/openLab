@@ -287,7 +287,10 @@ impl Voices {
 
     /// Every voice is gone and nothing is held for one: a stopped show leaks nothing.
     pub fn is_idle(&self) -> bool {
-        self.recs.is_empty() && self.by_run.is_empty() && self.aliases.is_empty()
+        self.recs.is_empty()
+            && self.by_run.is_empty()
+            && self.aliases.is_empty()
+            && self.unmetered.is_empty()
     }
 
     /// Forgets every voice, alias and prime (a new workspace replaces the engine they belong
@@ -300,6 +303,35 @@ impl Voices {
         self.aliases.clear();
         self.primes.clear();
         self.gone.clear();
+        self.unmetered.clear();
+    }
+
+    /// `ids` were cut by the loss of their device: no meter read reports them again, under
+    /// their own id or the one they had before a resume re-keyed them.
+    pub fn unmeter(&mut self, ids: &[VoiceId]) {
+        for id in ids {
+            self.unmetered.insert(*id);
+            if let Some(prev) = self.recs.get(id).and_then(|r| r.prev_id) {
+                self.unmetered.insert(prev);
+            }
+        }
+    }
+
+    /// Whether a meter entry under `id` is one a lost device cut ([`Self::unmeter`]).
+    pub fn is_unmetered(&self, id: VoiceId) -> bool {
+        self.unmetered.contains(&id)
+            || self
+                .aliases
+                .get(&id)
+                .is_some_and(|(cur, _)| self.unmetered.contains(cur))
+    }
+
+    /// After a meter read: an id no record or alias names any more can never be reported again
+    /// (the read that took its last `gone` entry is done), so it is forgotten.
+    pub fn forget_unmetered(&mut self) {
+        let mut ids = std::mem::take(&mut self.unmetered);
+        ids.retain(|id| self.knows(*id) || self.gone.iter().any(|(g, _)| g == id));
+        self.unmetered = ids;
     }
 
     /// Lets go of every primed stream (a panic, shutdown).

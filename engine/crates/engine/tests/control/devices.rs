@@ -791,6 +791,86 @@ fn a_cue_playing_when_the_device_goes_stops_and_stays_stopped_after_20_s() {
     lost_cue_stays_stopped(Duration::from_secs(20));
 }
 
+/// The peaks of cue `n` in every meter message of `msgs`.
+fn cue_meters(msgs: &[ServerMessage], n: u128) -> Vec<Vec<f32>> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMessage::Meters { cues, .. } => Some(cues),
+            _ => None,
+        })
+        .flatten()
+        .filter(|c| c.cue == id(n))
+        .map(|c| c.peaks.clone())
+        .collect()
+}
+
+/// Checklist: a cue plays, its device is lost and returned on the virtual clock: no meter
+/// message for that cue after the loss until it sounds again. The same for a cue paused by
+/// the operator and one a Fade cue is fading, and whichever block of the meter period the
+/// loss lands in (the peaks rendered since the last read are still held in the mixer).
+#[test]
+fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
+    for blocks in 1..=4 {
+        let long = wav(&dc(200_000, 0.5));
+        let fade = cue(
+            4,
+            CueKind::Fade {
+                target: Some(id(3)),
+                duration: secs(40_000),
+                curve: openlab_core::FadeCurve::Linear,
+                levels: openlab_core::FadeLevels {
+                    master_db: Some(-40.0),
+                    output_db: vec![],
+                    crosspoints: vec![],
+                },
+                stop_target_when_done: false,
+                mode: Default::default(),
+                geometry: Default::default(),
+            },
+        );
+        let mut s = device_show(workspace(vec![
+            audio(1, &long, 0),
+            audio(2, &long, 1),
+            audio(3, &long, 0),
+            fade,
+        ]));
+        s.run(BLOCK * 2);
+        for n in [1, 2, 3, 4] {
+            start(&mut s, n);
+        }
+        s.run(BLOCK * 6);
+        s.transport(TransportAction::Pause { cue: id(2) });
+        s.run(BLOCK * 8 + BLOCK * blocks);
+        assert_eq!(s.control().engine().state(id(3)), CueState::Fading);
+        let before = s.take_outbound();
+        assert!(!cue_meters(&before, 1).is_empty(), "cue 1 was metered");
+        lose(&mut s);
+        s.wait_wall(Duration::from_secs(3), 6);
+        replug(&mut s);
+        // Well past the reopen and several meter periods.
+        s.run(u64::from(RATE) * 2);
+        let after = s.take_outbound();
+        for n in [1, 2, 3] {
+            assert_eq!(
+                cue_meters(&after, n),
+                Vec::<Vec<f32>>::new(),
+                "cue {n}, loss {blocks} block(s) into the period"
+            );
+        }
+        // Nothing is kept for the voices the loss cut once no meter read can name them.
+        assert!(s.control().is_idle());
+        // It sounds again: metered again.
+        start(&mut s, 1);
+        s.run(BLOCK * 16);
+        assert!(
+            cue_meters(&s.take_outbound(), 1)
+                .iter()
+                .any(|p| p.iter().any(|&x| x > 0.4)),
+            "cue 1 metered once it plays again"
+        );
+    }
+}
+
 /// Every state a cue on the lost device can be in, as QLab 5 shows it (measured: playing,
 /// fading as playing, pre-waiting, paused by the operator, idle, loaded; a post-wait assumed
 /// like a pre-wait): playing and fading cues show paused and keep the mark after the return; a
@@ -2464,6 +2544,31 @@ fn a_patch_set_to_no_device_is_warned_about() {
         !texts.iter().any(|(code, _)| code == "patch_device_missing"),
         "{texts:?}"
     );
+}
+
+/// One of two devices goes while a cue plays on each: the other device keeps sample time and
+/// the meter reads running, and the lost device's cue gets no meter entry, while it is away or
+/// after it returns; the cue on the device that stayed is metered throughout.
+#[test]
+fn a_cue_on_a_lost_second_device_gets_no_meter_while_the_other_plays() {
+    let long = wav(&dc(200_000, 0.5));
+    let mut s = two_device_show(vec![audio(1, &long, 0), audio_b(2, &long, 0)]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 9);
+    assert!(!cue_meters(&s.take_outbound(), 2).is_empty(), "cue 2 was metered");
+    unplug(&mut s, DEV2);
+    for _ in 0..40 {
+        s.play(BLOCK);
+    }
+    let away = s.take_outbound();
+    assert_eq!(cue_meters(&away, 2), Vec::<Vec<f32>>::new());
+    assert!(cue_meters(&away, 1).len() > 4, "cue 1 is still metered");
+    s.fake.plug(listed(DEV2, DEV2_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.wait_output(DEV2_NAME);
+    s.run(u64::from(RATE));
+    assert_eq!(cue_meters(&s.take_outbound(), 2), Vec::<Vec<f32>>::new());
 }
 
 /// Checklist: two patches on two devices, one Audio cue on each, GO both: each device carries

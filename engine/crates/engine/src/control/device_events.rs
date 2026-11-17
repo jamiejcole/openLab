@@ -671,6 +671,7 @@ impl DocCx<'_> {
             .eng
             .outputs
             .on_output(key, self.doc.voices.playing_ids());
+        self.doc.voices.unmeter(&voices);
         let commands = voices
             .into_iter()
             .map(|voice| {
