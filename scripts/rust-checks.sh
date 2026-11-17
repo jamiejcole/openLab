@@ -15,6 +15,8 @@
 #                    cannot run on this machine records why in $OPENLAB_TEST_SKIPS; without that
 #                    variable it fails instead) and what the machine reported, passing or not
 #   test-release     the same, optimised (debug-only checks off)
+#   test-release-no-video  test-release without the openlab-video crate: what a pull request runs, since the
+#                    hosted arm64 VM's video decoding makes the release video tests take 17+ minutes
 #   fuzz-lint        fmt and clippy for engine/fuzz, which is outside the workspace
 set -euo pipefail
 
@@ -74,8 +76,9 @@ case "${1:-}" in
     cargo clippy --locked -- -D warnings
     ;;
   test-release) tests --release ;;
+  test-release-no-video) tests --release --exclude openlab-video ;;
   *)
-    echo "usage: scripts/rust-checks.sh fmt|clippy|clippy-windows|fuzz-lint|test|test-release" >&2
+    echo "usage: scripts/rust-checks.sh fmt|clippy|clippy-windows|fuzz-lint|test|test-release|test-release-no-video" >&2
     exit 2
     ;;
 esac

@@ -154,10 +154,13 @@ jobs:
       # debug_assert!s) and optimise differently, so the suite also runs as shipped. In this job
       # rather than a separate one: it reuses the job's checkout, toolchain and cache, and runs on
       # every PR; arm64 is the fastest runner.
+      # On a pull request the video crate's tests run in debug only (step above): in release on the hosted
+      # arm64 VM they take 17+ minutes (its video decoding slows as a run goes on; 35 s on a Mac). Main
+      # pushes, nightly and on-demand runs still run them in release (owner decision 2026-11-18).
       - name: Tests (release)
         if: matrix.os == 'macos-26'
         timeout-minutes: 25
-        run: ../scripts/rust-checks.sh test-release
+        run: ../scripts/rust-checks.sh ${{ github.event_name == 'pull_request' && 'test-release-no-video' || 'test-release' }}
       # NFR-23/QA-06: the mixer must render 64 stereo voices with fades at >= 10x real time.
       # Release-only (a debug build is far slower), gated on the slowest runner.
       - name: CPU budget gate
