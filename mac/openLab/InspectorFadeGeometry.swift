@@ -143,8 +143,10 @@ final class FadeGeometryPanel: NSObject, NSTextFieldDelegate {
             f.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
         // The reset buttons are told apart from the Video cue's own.
-        for (b, what) in [(opacityReset, "opacity"), (positionReset, "position"), (scaleReset, "scale"),
-                          (rotationReset, "rotation")] {
+        for (b, what) in [
+            (opacityReset, "opacity"), (positionReset, "position"), (scaleReset, "scale"),
+            (rotationReset, "rotation"),
+        ] {
             b.setAX("fade-geometry-\(what)-reset", label: loc("inspector.geometry.reset.\(what)"))
         }
         scaleLock.bezelStyle = .inline
