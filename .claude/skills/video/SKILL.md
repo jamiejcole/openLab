@@ -15,7 +15,7 @@ Probing Video cues' files and playing their pictures on stages in step with the 
 Not built: HAP, effects and blend modes, a Fade's 2D path, 3D rotation and fading the rate.
 
 ## Must not break
-- A stage with keep-black on and its display connected shows black whenever nothing plays on it, never a frozen frame (VID-12), while the stage host runs. The desktop does show: from the engine's death until a relaunched engine's stage host is up; between a stage host crash and its relaunch (about 150 ms); and for the whole pause after repeated crashes (`retry_after`). The app-side black backstop that covers these is issue #667.
+- A stage with keep-black on and its display connected shows black whenever nothing plays on it, never a frozen frame (VID-12). The stage host draws that black while it runs; in its gaps (the engine's death until a relaunched engine's stage host is up, a stage host crash or kill until its relaunch, about 150 ms, the whole `retry_after` pause after repeated crashes) the app's black backstop shows instead, except on the display with the menu bar (Q298; below).
 - The engine links no GUI framework and no video decoder. Everything that touches windows, displays, the GPU or (later) media is in `openlab-stage`, so a crash or hang there never stops sound.
 - Every line crossing the link is validated on both ends (`stage_link::decode_*`): a bad line is a warning, never a panic, a hang or unbounded memory.
 - The stage host exits when its stdin ends, so it never outlives the engine.
@@ -204,6 +204,14 @@ Not built: HAP, effects and blend modes, a Fade's 2D path, 3D rotation and fadin
 - A doc connection's `snapshot` request (the bind's too) has `video_outputs` pushed at once, right after the snapshot's reply and whatever the gap (`Control::push_doc_video_outputs`; at the next tick only if the outbound channel was full), so a connection that binds after the last push has it.
 - That push goes out before anything handled after the snapshot, so a message taken in the same wake (a client's first GO) cannot put its broadcasts ahead of it; the order would otherwise depend on how fast the client spoke. A broadcast, never a reply: a connection writes broadcasts ahead of replies, and a reply could land after a newer push. The app keeps it in `WorkspaceStore.videoOutputs` and draws it on the workspace settings Video page (skill `mac-app`).
 - Requests (`docs/protocol.md`): `list_displays` (app-scope), `list_stage_mappings`, `set_stage_mapping { stage, display? }` (the display must be listed now; stored in `settings.json`, refused `io` when settings cannot be saved).
+
+## The app's black backstop (VID-12; `mac/openLab/BlackBackstop.swift`)
+- The app (`AppController.backstop`) holds a borderless black window on each display that a keep-black stage of an open workspace is shown on (`BackstopPlan.covers`), so the gaps above show black, not the desktop. It reads the workspaces' models and the display choices of their last `video_outputs`, never the stages' states, so it is up whether or not a stage host runs.
+- Why the app: it outlives both the engine and the stage host. Workspaces waiting to be reattached after an engine restart keep their model and display choices, so the backstop stays through the whole relaunch.
+- Never on the display with the menu bar (`CGMainDisplayID`, as the stage host's level rule): there the stage is under every app window and the operator works. Displays are matched to the stage host's ids by ColorSync UUID (`systemDisplays`).
+- Level: screen-saver minus one, so under the stage host's output windows and over everything else on that display. Never key or main, mouse ignored, on every Space, out of cycling and the Window menu, not hidden with the app.
+- It goes when its stage goes, keep-black is turned off, the stage moves to another display, the display goes or gets the menu bar, or the workspace closes. Displays are read on AppKit's display change and again `secondReadDelay` (0.5 s) later, which puts back a window the system moved off a display that went away, or takes it down.
+- Tests: `BlackBackstopTests` (the plan, and on the real engine with virtual displays given places off every screen: a killed stage host, the goes-when cases, two workspaces, display changes) and `EngineCrashFlowTests` (the engine killed and relaunched by the app).
 
 ## Tests
 - Test support only (never in a shipped stage host: `scripts/rust-checks.sh` checks): `--virtual-displays ID:WxH,...` runs offscreen with those displays and no windows.

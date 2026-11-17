@@ -1351,3 +1351,16 @@ func writeTestMedia(_ url: URL, seconds: Double, sound: String? = nil) throws {
     default: try writeWAV(url, seconds: seconds)
     }
 }
+
+/// The stage hosts `engine` runs now (its children named `openlab-stage`; a picture probe is one
+/// too while it runs).
+func stageHostPids(of engine: Int32) -> [Int32] {
+    var pids = [Int32](repeating: 0, count: 256)
+    let count = proc_listchildpids(engine, &pids, Int32(pids.count * MemoryLayout<Int32>.size))
+    guard count > 0 else { return [] }
+    return pids.prefix(Int(count)).filter { pid in
+        var name = [CChar](repeating: 0, count: 256)
+        guard proc_name(pid, &name, UInt32(name.count)) > 0 else { return false }
+        return String(cString: name) == "openlab-stage"
+    }
+}
