@@ -67,3 +67,39 @@ enum CueTime {
         return total <= maxSeconds ? total : nil
     }
 }
+
+/// Where a looping cue is in its pass: the cue list's Duration cell and Active Cues count the same time.
+enum LoopPass {
+    /// For a cue with no end whose voice is inside a slice: how far into the slice it is, and the
+    /// slice's length.
+    static func of(_ cue: Cue, _ p: ProgressItem, fileDuration: Double?) -> (gone: Double, length: Double)? {
+        guard p.remaining == nil, let position = p.position else { return nil }
+        let kind = cue.raw["kind"] ?? .null
+        switch cue.kindType {
+        case "audio": break
+        // A Video cue's loops are an Audio cue's; one held on its last frame has no end either,
+        // but is in no pass: it counts up.
+        case "video":
+            let counts = [kind["last_slice_play_count"]] + (kind["slices"]?.arrayValue ?? []).map { $0["play_count"] }
+            guard counts.contains(where: { $0?.doubleValue == 0 }) else { return nil }
+        default: return nil
+        }
+        let start = kind["start_time"]?.doubleValue ?? 0
+        let end = kind["end_time"]?.doubleValue ?? fileDuration ?? position
+        let marks = (kind["slices"]?.arrayValue ?? []).compactMap { $0["time"]?.doubleValue }.sorted()
+        let from = marks.last { $0 <= position } ?? start
+        let to = marks.first { $0 > position } ?? end
+        guard to > from else { return nil }
+        // A Video cue devamped out of its loop and held on its last frame stands at the very end of
+        // its last pass (the engine reports a hair before it): it is in no pass any more and counts up,
+        // as a held cue that never looped does.
+        if cue.kindType == "video", kind["hold_at_end"] == .bool(true), to - position < heldWithin {
+            return nil
+        }
+        return (min(max(0, position - from), to - from), to - from)
+    }
+
+    /// How near a pass's end a Video cue's position must be to count as held there (the engine's is
+    /// a microsecond short of it).
+    private static let heldWithin = 1e-4
+}

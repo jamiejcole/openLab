@@ -1177,6 +1177,24 @@ final class InspectorWindowFrameTests: XCTestCase {
         }
     }
 
+    /// An Audio cue's Levels tab shown at the least window size, with and without the sidebar: the window
+    /// keeps its frame and the tab's content stays inside the inspector (it scrolls if it needs more room).
+    func testTheLevelsTabAtTheLeastSizeKeepsTheWindow() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let least = window.frame
+        XCTAssertEqual(least.size, window.minSize)
+        await select(audio)
+        for sidebarOpen in [false, true] {
+            if wc.isVisible(.sidebar) != sidebarOpen { try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil) }
+            try clickTab("basics")
+            try clickTab("levels")
+            XCTAssertEqual(window.frame, least, "the window keeps its frame (sidebar open: \(sidebarOpen))")
+            let content = try XCTUnwrap(wc.inspector.tabView.selectedTabViewItem?.view)
+            XCTAssertEqual(sideways(content, depth: 3), [], "the Levels tab is cut or overlapping")
+        }
+    }
+
     /// The Triggers tab at the least window size with the sidebar open: the hotkey field's prompt stays on
     /// one line (cut short), so the field is as tall as the Clear button beside it, not two lines tall.
     func testTheHotkeyPromptStaysOnOneLineInTheNarrowTriggersTab() async throws {

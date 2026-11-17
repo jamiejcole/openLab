@@ -1909,38 +1909,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return ""
     }
 
-    /// For a cue with no end whose voice is inside a slice: how far into the slice it is, and the
-    /// slice's length.
     private func loopPass(_ node: CueNode, _ p: ProgressItem) -> (gone: Double, length: Double)? {
-        guard p.remaining == nil, let position = p.position else { return nil }
-        let kind = node.cue.raw["kind"] ?? .null
-        switch node.cue.kindType {
-        case "audio": break
-        // A Video cue's loops are an Audio cue's; one held on its last frame has no end either,
-        // but is in no pass: it counts up.
-        case "video":
-            let counts = [kind["last_slice_play_count"]] + (kind["slices"]?.arrayValue ?? []).map { $0["play_count"] }
-            guard counts.contains(where: { $0?.doubleValue == 0 }) else { return nil }
-        default: return nil
-        }
-        let start = kind["start_time"]?.doubleValue ?? 0
-        let end = kind["end_time"]?.doubleValue ?? store.mediaDurations[node.id]?.file ?? position
-        let marks = (kind["slices"]?.arrayValue ?? []).compactMap { $0["time"]?.doubleValue }.sorted()
-        let from = marks.last { $0 <= position } ?? start
-        let to = marks.first { $0 > position } ?? end
-        guard to > from else { return nil }
-        // A Video cue devamped out of its loop and held on its last frame stands at the very end of
-        // its last pass (the engine reports a hair before it): it is in no pass any more and counts up,
-        // as a held cue that never looped does.
-        if node.cue.kindType == "video", kind["hold_at_end"] == .bool(true), to - position < Self.heldWithin {
-            return nil
-        }
-        return (min(max(0, position - from), to - from), to - from)
+        LoopPass.of(node.cue, p, fileDuration: store.mediaDurations[node.id]?.file)
     }
-
-    /// How near a pass's end a Video cue's position must be to count as held there (the engine's is
-    /// a microsecond short of it).
-    private static let heldWithin = 1e-4
 
     private func restingDuration(_ node: CueNode) -> Double? {
         switch node.cue.kindType {

@@ -227,7 +227,34 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         view.orientation = .horizontal
         view.alignment = .top
         view.spacing = 12
-        view.addArrangedSubview(side)
+        if isFade {
+            view.addArrangedSubview(side)
+        } else {
+            // An Audio cue's column scrolls when the tab is shorter than its controls, so a short
+            // window never has to grow for them.
+            let sideScroll = NSScrollView()
+            let column = FlippedView()
+            side.translatesAutoresizingMaskIntoConstraints = false
+            column.addSubview(side)
+            sideScroll.documentView = column
+            sideScroll.hasVerticalScroller = true
+            sideScroll.autohidesScrollers = true
+            sideScroll.drawsBackground = false
+            sideScroll.borderType = .noBorder
+            column.translatesAutoresizingMaskIntoConstraints = false
+            let clip = sideScroll.contentView
+            NSLayoutConstraint.activate([
+                column.topAnchor.constraint(equalTo: clip.topAnchor),
+                column.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+                column.widthAnchor.constraint(equalToConstant: Self.sideWidth),
+                side.topAnchor.constraint(equalTo: column.topAnchor),
+                side.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+                side.bottomAnchor.constraint(equalTo: column.bottomAnchor),
+                sideScroll.widthAnchor.constraint(equalToConstant: Self.sideWidth),
+            ])
+            view.addArrangedSubview(sideScroll)
+            sideScroll.heightAnchor.constraint(equalTo: view.heightAnchor).isActive = true
+        }
         view.addArrangedSubview(scroll)
         scroll.heightAnchor.constraint(equalTo: view.heightAnchor).isActive = true
         scroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)

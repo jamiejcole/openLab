@@ -954,6 +954,27 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(duration(Self.movie) ?? -1, first + 1, accuracy: 0.1, "and it goes on counting")
     }
 
+    /// A Video cue looping until devamped, on its third pass: the Duration cell and the cue's Active Cues row
+    /// show the same time, the time into the current pass.
+    func testALoopingVideoCueOnItsThirdPassShowsTheSameTimeInTheCellAndInActiveCues() async throws {
+        try await openVideoShow()
+        let panel = try await timeLoopsTab()
+        try typeInto(panel.endField, "2")
+        panel.loopRadio.state = .on
+        _ = panel.loopRadio.target?.perform(panel.loopRadio.action, with: panel.loopRadio)
+        await soon("looping") { self.movieField("last_slice_play_count") == .int(0) }
+        click(Self.movie)
+        try await go()
+        try await play(4.7)
+        let cell = try XCTUnwrap(duration(Self.movie), "the cell shows a time")
+        XCTAssertLessThan(cell, 2.01, "inside the third pass the cell counts the pass, not the whole time")
+        let sidebar = wc.sidebar
+        sidebar.loadViewIfNeeded()
+        let row = ActiveCueCell()
+        sidebar.fill(row, Self.movie)
+        XCTAssertEqual(row.times.stringValue, CueTime.running(cell), "Active Cues shows the cell's time")
+    }
+
     /// A real click in the Video cue's timeline, as the operator makes it: a press and release on the
     /// waveform at file time `t`, through what the window has under the pointer.
     func clickTimeline(at t: Double, _ panel: TimeLoopsPanel) {
