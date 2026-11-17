@@ -847,6 +847,12 @@ mod tests {
     fn hap_textures_draw_their_colours() {
         use crate::hap::write;
         let mut gpu = Gpu::new().unwrap();
+        // A GPU without BC textures fails this test (as every gpu.rs test fails without Metal):
+        // HAP could not be drawn on such a machine, and the test must not pass there.
+        assert!(
+            gpu.device().supportsBCTextureCompression(),
+            "this GPU cannot sample BC textures: HAP movies cannot be drawn here"
+        );
         let (w, h) = (8u32, 8u32);
         let mut rgba = Vec::new();
         for y in 0..h {

@@ -117,6 +117,19 @@ final class VideoCuePropertyTests: XCTestCase {
             "xyz9, 2 channels, 96 kHz")
     }
 
+    /// The format line names every codec the engine's probe reports by name, HAP's three
+    /// flavours included, never a string-table key.
+    func testTheVideoFormatNamesEveryCodecTheProbeReports() {
+        for (codec, name) in [
+            ("h264", "H.264"), ("hevc", "HEVC"), ("prores", "ProRes"),
+            ("hap", "HAP"), ("hap_alpha", "HAP Alpha"), ("hap_q", "HAP Q"),
+        ] {
+            let p = PictureFormat(
+                type: "video", codec: codec, format: nil, width: 288, height: 160, fps: 25, duration: 2)
+            XCTAssertEqual(VideoIOControls.formatText(p), "\(name), 288 × 160, 25 fps", codec)
+        }
+    }
+
     /// A new Video cue takes the patch it is given and that patch's default levels, exactly an
     /// Audio cue's; with no patch it has none and the main level alone.
     func testANewVideoCueTakesThePatchAndAnAudioCuesDefaultLevels() throws {
