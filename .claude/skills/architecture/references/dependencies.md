@@ -30,9 +30,10 @@ All dependencies must be GPLv3-compatible (`cargo deny` enforces licences). Ever
 | objc2-av-foundation, objc2-core-media | reading movies: the probe (codec, size, frame rate, length, first frame) and test-support test movies (`crates/video`, macOS only) | Zlib OR Apache-2.0 OR MIT |
 | objc2-core-video | pixel buffers of movie frames (`crates/video`, macOS only) | Zlib OR Apache-2.0 OR MIT |
 | objc2-image-io | still images: the probe, test-support test stills (`crates/video`, macOS only) | Zlib OR Apache-2.0 OR MIT |
+| snap | Snappy unpacking of HAP movie frames (`crates/video` `hap.rs`, every platform: pure Rust, no dependencies of its own); the format packs frames with Snappy, so there is no std alternative | BSD-3-Clause |
 | cargo-fuzz's LLVM harness binding crate (named in `engine/fuzz/Cargo.toml`; fuzz crate only) | fuzz harness; not in shipped binaries | MIT/Apache-2.0 (the LLVM library: Apache-2.0 WITH LLVM-exception) |
 
-Video crates approved by the user (2026-11-13) and added with the code that uses them: objc2-av-foundation, objc2-core-media, objc2-core-video, objc2-image-io (in the table above), and snap (HAP, not yet added). Each is used with default features off and only the headers it needs; the stage host is the only crate that links them.
+Video crates approved by the user (2026-11-13) and added with the code that uses them: objc2-av-foundation, objc2-core-media, objc2-core-video, objc2-image-io and snap (in the table above). Each is used with default features off and only the headers it needs; the stage host is the only crate that links them.
 
 ## Hand-declared system calls
 Calls std lacks are declared next to their one use, each with a `// SAFETY:` comment and a test, not pulled in through a crate:
