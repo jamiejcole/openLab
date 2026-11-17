@@ -877,9 +877,14 @@ fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
         start(&mut s, 6);
         s.step();
         assert_eq!(s.control().live_voices(), voices + 1);
-        while s.control().live_voices() > voices {
+        // Bounded: a voice that never ends fails the test instead of hanging it.
+        for _ in 0..10_000 {
+            if s.control().live_voices() <= voices {
+                break;
+            }
             s.step();
         }
+        assert_eq!(s.control().live_voices(), voices, "the faded voice ended");
         assert_eq!(s.control().engine().state(id(3)), CueState::Fading);
         assert_eq!(s.control().engine().state(id(5)), CueState::Running);
         let before = s.take_outbound();
