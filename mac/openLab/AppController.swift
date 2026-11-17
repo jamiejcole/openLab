@@ -29,6 +29,8 @@ final class AppController {
     let launcher = LauncherWindowController()
     /// The Override Controls panel and what feeds it (`AppController+Overrides`).
     let overrides = OutputOverridesPanel()
+    /// VID-12: black on the output displays of keep-black stages while no stage host draws them.
+    let backstop: BlackBackstop
     var statusSubs: [ObjectIdentifier: AnyCancellable] = [:]
 
     // Seams for tests (no modal loops, no panels, no real recents list or key window).
@@ -145,6 +147,7 @@ final class AppController {
         self.supervisor = supervisor
         self.scheduler = scheduler
         self.timeout = timeout
+        backstop = BlackBackstop(scheduler: scheduler)
         // A key released while the app is inactive never reaches the monitor: forget held keys.
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: nil, queue: .main

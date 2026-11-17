@@ -880,12 +880,14 @@ final class EngineCrashFlowTests: XCTestCase {
     /// The app with Hamlet (the demo show, a cue playing and an unsaved edit) and A (an empty show)
     /// open. `before`: what happens in the folder before the app starts its engine.
     private func launch(
-        hidingFirstRun: Bool = false, firstRunPort: UInt16? = nil, launchDefaults: UserDefaults? = nil
+        hidingFirstRun: Bool = false, firstRunPort: UInt16? = nil, launchDefaults: UserDefaults? = nil,
+        displays: String? = nil
     ) async throws {
         let support = runs.support
         processes = SystemEngineProcesses(
             infoURL: runs.infoURL, watchStderr: false,
-            arguments: TestEngineOptions(clock: .stepped, appSupport: support).engineArguments, watchStdin: true)
+            arguments: TestEngineOptions(clock: .stepped, appSupport: support, displays: displays).engineArguments,
+            watchStdin: true)
         let supervised: EngineProcesses =
             hidingFirstRun ? HidesFirstRunFile(processes, closedPort: firstRunPort) : processes
         hiding = supervised as? HidesFirstRunFile
@@ -1042,6 +1044,70 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertTrue(presenter.isVisible)
         // Nothing modal ran by itself.
         XCTAssertTrue(alerts.log.isEmpty)
+    }
+
+    /// VID-12: a stage with keep-black on, the engine killed and relaunched by the app: the output
+    /// display shows black, never the desktop, from the kill until the new engine's stage host has
+    /// drawn the stage again (the app's backstop; BlackBackstopTests for the rest).
+    func testAKeepBlackStageShowsBlackNeverTheDesktopWhileTheEngineIsKilledAndRelaunched() async throws {
+        try await launch(displays: BlackBackstopTests.displays)
+        app.backstop.readDisplays = { BlackBackstopTests.virtual }
+        app.backstop.displaysChanged()
+        let session = app.session
+        await assertEventually("the stage host listed its displays") {
+            guard case .success(let ok) = await session.appClient.send({ .request(id: $0, .listDisplays) }),
+                case .displays(let list, _)? = ok.data
+            else { return false }
+            return list.count == 2
+        }
+        _ = await session.open(path: try runs.show("Video", named: "Cyc"))
+        await assertEventually { session.stores.values.first?.model != nil }
+        let store = try XCTUnwrap(session.stores.values.first)
+        let stage: ModelID = "00000000-0000-0000-0000-0000000000f1"
+        guard case .success = await store.setStageMapping(stage, display: "V1"),
+            case .success = await store.send(
+                command: .setStage(stage, .object(["type": .string("keep_black"), "value": .bool(true)]))),
+            case .success = await store.save()
+        else { return XCTFail("the stage was not set up") }
+        let shown: @MainActor () -> Bool = {
+            store.videoOutputs.stages.first { $0.stage == stage }?.state?.state == "shown"
+        }
+        // `video_outputs` pushes go at most every 100 ms of the stepped clock.
+        let up = await eventually {
+            try? await self.advance(0.11)
+            return shown() && self.app.backstop.windows["V1"] != nil
+        }
+        XCTAssertTrue(up, "the stage is up black, the backstop under it")
+        let window = try XCTUnwrap(app.backstop.windows["V1"])
+        XCTAssertTrue(window.isVisible)
+        XCTAssertEqual(window.frame, BlackBackstopTests.v1Frame)
+
+        var uncovered = false
+        let covered: @MainActor () -> Void = {
+            if self.app.backstop.windows["V1"] !== window || !window.isVisible { uncovered = true }
+        }
+        try await crash()
+        covered()
+        let back = await pump {
+            covered()
+            return self.presenter.detail.contains(loc("engine.alarm.back"))
+        }
+        XCTAssertTrue(back, "a new engine reattached the workspace")
+        let black: [UInt8] = [0, 0, 0, 255]
+        let drawn = await eventually {
+            covered()
+            try? await self.advance(0.11)
+            guard shown(),
+                case .success(let ok) = await session.appClient.send({
+                    .request(id: $0, .displayProbe(display: "V1", points: [[0.5, 0.5]]))
+                }),
+                case .stageProbe(_, let colours)? = ok.data
+            else { return false }
+            return colours == [black]
+        }
+        XCTAssertTrue(drawn, "the new engine's stage host draws the stage black")
+        XCTAssertFalse(uncovered, "the backstop stayed up from the kill until the stage was drawn again")
+        XCTAssertTrue(app.backstop.windows["V1"] === window && window.isVisible)
     }
 
     /// The output override lives in the engine only: after a crash and restart the app follows the

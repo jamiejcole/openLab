@@ -61,6 +61,7 @@ extension AppController {
         }
         let liveIDs = Set(live.map(ObjectIdentifier.init))
         for id in controllers.keys where !liveIDs.contains(id) { dropWindow(id) }
+        backstop.follow(live)
         showLauncherIfNoWindows()
     }
 
