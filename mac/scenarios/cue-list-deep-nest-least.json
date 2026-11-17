@@ -15,6 +15,17 @@
     },
     {
       "shot": "sidebar-shown"
+    },
+    {
+      "key": "q"
+    },
+    {
+      "type": "cue-name-editor",
+      "text": "Deep memo renamed in place",
+      "enter": false
+    },
+    {
+      "shot": "renaming"
     }
   ]
 }

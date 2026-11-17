@@ -200,7 +200,7 @@ final class WholeGlyphLabel: NSTextField {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if currentEditor() == nil, !Self.fits(attributedStringValue, in: bounds.width) { return }
+        if !Self.fits(attributedStringValue, in: bounds.width) { return }
         super.draw(dirtyRect)
     }
 }
@@ -386,6 +386,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     static let rowHeight: CGFloat = 24
     /// The least the Name column shrinks to; a narrower list scrolls sideways.
     static let nameMinWidth: CGFloat = 60
+    /// The least width of the Name editor, whatever the cell's.
+    static let nameEditorMinWidth: CGFloat = 180
 
     let store: WorkspaceStore
     let outlineView: NSOutlineView
@@ -467,11 +469,16 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// A list made shorter (the window or the inspector resized, a divider moved) keeps its selected row in
     /// view, as a selection change does: the clip view keeps its scroll position, so the row slid out below.
-    /// Only a shrink moves the list, so a list the operator scrolled away is left alone when it grows.
+    /// Only a shrink that cut off a selected row that was in view moves the list: a list the operator
+    /// scrolled away from the selection, or one that grows, is left where it is.
     private func keepSelectionInViewWhenShorter() {
-        let height = outlineView.enclosingScrollView?.contentView.bounds.height ?? 0
+        let clip = outlineView.enclosingScrollView?.contentView
+        let height = clip?.bounds.height ?? 0
         defer { lastVisibleHeight = height }
-        guard let was = lastVisibleHeight, height < was, outlineView.selectedRow >= 0 else { return }
+        guard let clip, let was = lastVisibleHeight, height < was, outlineView.selectedRow >= 0 else { return }
+        let row = outlineView.rect(ofRow: outlineView.selectedRow)
+        let before = NSRect(x: 0, y: clip.bounds.minY, width: 1, height: was)
+        guard row.minY >= before.minY - 0.5, row.maxY <= before.maxY + 0.5 else { return }
         outlineView.scrollRowToVisible(outlineView.selectedRow)
     }
 
@@ -590,6 +597,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.menu = menu
         cellEditor.delegate = self
         cellEditor.usesSingleLineMode = true
+        cellEditor.cell?.isScrollable = true
         cellEditor.font = .systemFont(ofSize: NSFont.systemFontSize)
         let scroll = NSScrollView()
         scroll.documentView = outlineView
@@ -1661,7 +1669,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         else { return cancelCellEdit() }
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { return cancelCellEdit() }
-        cellEditor.frame = outlineView.frameOfCell(atColumn: column, row: row)
+        var frame = outlineView.frameOfCell(atColumn: column, row: row)
+        if cell.column == "name" {
+            // A deeply nested row leaves its Name cell too narrow to see what is typed: the editor is at
+            // least `nameEditorMinWidth` wide, reaching over the columns to its right, and kept inside the list.
+            frame.size.width = max(frame.width, Self.nameEditorMinWidth)
+            frame.origin.x = max(0, min(frame.minX, outlineView.bounds.maxX - frame.width))
+        }
+        cellEditor.frame = frame
         exposeCellEditor()
     }
 
