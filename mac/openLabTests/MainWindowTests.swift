@@ -1177,6 +1177,45 @@ final class InspectorWindowFrameTests: XCTestCase {
         }
     }
 
+    /// An Audio cue's Levels tab shown at the least window size, with and without the sidebar: the window
+    /// keeps its frame and the tab's content stays inside the inspector (it scrolls if it needs more room).
+    func testTheLevelsTabAtTheLeastSizeKeepsTheWindow() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let least = window.frame
+        XCTAssertEqual(least.size, window.minSize)
+        await select(audio)
+        for sidebarOpen in [false, true] {
+            if wc.isVisible(.sidebar) != sidebarOpen { try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil) }
+            try clickTab("basics")
+            try clickTab("levels")
+            XCTAssertEqual(window.frame, least, "the window keeps its frame (sidebar open: \(sidebarOpen))")
+            let content = try XCTUnwrap(wc.inspector.tabView.selectedTabViewItem?.view)
+            XCTAssertEqual(sideways(content, depth: 3), [], "the Levels tab is cut or overlapping")
+            // The column of controls is whole in what the user sees of it: nothing scrolled out of its area,
+            // with overlay scrollers and with always-visible ones (which take room beside the column).
+            let levels = wc.inspector.audioLevels
+            for style in [NSScroller.Style.overlay, .legacy] {
+                levels.sideScroll.scrollerStyle = style
+                settleLayout()
+                let clip = levels.sideScroll.contentView
+                let column = try XCTUnwrap(levels.sideScroll.documentView)
+                let what = "\(style == .legacy ? "legacy" : "overlay") scrollers, sidebar open: \(sidebarOpen)"
+                XCTAssertLessThanOrEqual(column.frame.height, clip.bounds.height + 0.5, "the column fits: \(what)")
+                XCTAssertLessThanOrEqual(column.frame.width, clip.bounds.width + 0.5, "no scroller over it: \(what)")
+                let meter = levels.meter.convert(levels.meter.bounds, to: clip)
+                XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(meter), "the meter shows: \(what)")
+                for control in [levels.defaultButton, levels.silentButton, levels.editPatchButton, levels.muteCheck] {
+                    let frame = control.convert(control.bounds, to: clip)
+                    XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "\(control.title): \(what)")
+                }
+                let gang = levels.gangField.convert(levels.gangField.bounds, to: clip)
+                XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(gang), "the gang box: \(what)")
+            }
+            levels.sideScroll.scrollerStyle = .overlay
+        }
+    }
+
     /// A control in the Basics target row 16 pt wider than here (as on another macOS, whose controls and
     /// fonts measure differently): opening the sidebar at the least window size narrows the file's path,
     /// not the sidebar, and the window keeps its frame.

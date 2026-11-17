@@ -8,6 +8,28 @@ final class ActiveCueButton: NSButton {
     var cue: ModelID?
 }
 
+/// The bar across the foot of an Active Cues row: filled from the left to `doubleValue` (0 to 1). It draws
+/// the value it is given at once; a system progress indicator eases toward it, so it lags a cue whose pass
+/// starts again.
+final class ActiveCueBar: NSView {
+    var doubleValue: Double = 0 {
+        didSet { if doubleValue != oldValue { needsDisplay = true } }
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 6) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3)
+        NSColor.quaternaryLabelColor.setFill()
+        track.fill()
+        let width = bounds.width * CGFloat(min(1, max(0, doubleValue)))
+        guard width >= 1 else { return }
+        track.addClip()
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(rect: NSRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height)).fill()
+    }
+}
+
 /// One Active Cues row, as QLab lays it out: pause/resume on the left, number and name with the
 /// times below, panic on the right, a progress bar across the bottom, a colour stripe on the edge.
 final class ActiveCueCell: NSTableCellView {
@@ -15,7 +37,7 @@ final class ActiveCueCell: NSTableCellView {
     let panicButton = ActiveCueButton()
     let title = NSTextField(labelWithString: "")
     let times = NSTextField(labelWithString: "")
-    let bar = NSProgressIndicator()
+    let bar = ActiveCueBar()
     let stripe = NSView()
 
     init() {
@@ -36,11 +58,6 @@ final class ActiveCueCell: NSTableCellView {
         times.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         times.textColor = .secondaryLabelColor
         times.setAccessibilityIdentifier(AX.activeCueTimes)
-        bar.style = .bar
-        bar.isIndeterminate = false
-        bar.minValue = 0
-        bar.maxValue = 1
-        bar.controlSize = .small
         bar.setAccessibilityElement(false)
         stripe.wantsLayer = true
         stripe.translatesAutoresizingMaskIntoConstraints = false
@@ -949,11 +966,16 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         cell.pauseButton.setAccessibilityLabel(pauseName)
         cell.pauseButton.isEnabled = state != .stopping
         if let p = store.progress[id] {
-            let times = Self.timesText(elapsed: p.elapsed, remaining: p.remaining)
+            // A cue looping a slice with no end shows its pass as the cue list's Duration cell does: the
+            // time into the pass, the time left in it and a bar for how far through it is.
+            let pass = cue.flatMap { LoopPass.of($0, p, fileDuration: store.mediaDurations[id]?.file) }
+            let elapsed = pass?.gone ?? p.elapsed
+            let remaining = pass.map { $0.length - $0.gone } ?? p.remaining
+            let times = Self.timesText(elapsed: elapsed, remaining: remaining)
             cell.times.stringValue =
                 state == .paused || state == .stopping ? "\(CueStateStyle.style(for: state).label)  \(times)" : times
-            let total = p.elapsed + (p.remaining ?? 0)
-            cell.bar.doubleValue = p.remaining != nil && total > 0 ? min(1, p.elapsed / total) : 0
+            let total = elapsed + (remaining ?? 0)
+            cell.bar.doubleValue = remaining != nil && total > 0 ? min(1, elapsed / total) : 0
         } else {
             cell.times.stringValue = CueStateStyle.style(for: state).label
             cell.bar.doubleValue = 0

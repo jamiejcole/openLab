@@ -377,10 +377,10 @@ final class SidebarTests: XCTestCase {
         XCTAssertLessThanOrEqual(title.maxX, panic.minX, "and ends before the panic button")
     }
 
-    /// Flow: an active cue with a long name and a single time under it (Intro loops until devamped, so it
-    /// has no time left to show) → in the window's own Active Cues the name uses the row's width up to the
+    /// Flow: an active cue with a long name and its times under it (Intro loops until devamped: the time into its
+    /// pass and the time left in it) → in the window's own Active Cues the name uses the row's width up to the
     /// buttons and is not cut to the width of the time text.
-    func testAnActiveCueWithALongNameAndASingleTimeUsesTheRowsWidthInActiveCues() async throws {
+    func testAnActiveCueWithALongNameAndItsTimesUsesTheRowsWidthInActiveCues() async throws {
         let long = "Thunder rumble in the distance, rolling in from stage left"
         let wired = try await Rig.open(
             "Demo",
@@ -414,7 +414,7 @@ final class SidebarTests: XCTestCase {
             wc.sidebar.activeTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? ActiveCueCell)
         cell.layoutSubtreeIfNeeded()
         XCTAssertTrue(cell.title.stringValue.hasSuffix(long), "the row names Intro: \(cell.title.stringValue)")
-        XCTAssertFalse(cell.times.stringValue.contains("-"), "a single time: \(cell.times.stringValue)")
+        XCTAssertTrue(cell.times.stringValue.contains("-"), "the pass's time left too: \(cell.times.stringValue)")
         func inCell(_ v: NSView) -> NSRect { v.convert(v.bounds, to: cell) }
         let (title, pause, panic) = (inCell(cell.title), inCell(cell.pauseButton), inCell(cell.panicButton))
         let timesWidth = (cell.times.stringValue as NSString).size(withAttributes: [.font: cell.times.font!]).width
@@ -534,5 +534,42 @@ final class SidebarTests: XCTestCase {
         let wc = try await make()
         XCTAssertEqual(wc.footer.clock.accessibilityIdentifier(), AX.wallClock)
         XCTAssertFalse(wc.footer.clock.stringValue.isEmpty)
+    }
+
+    /// Flow: Intro loops until devamped; on its third pass the cue list's Duration cell and the real Active
+    /// Cues row show the same time into the pass, and the row the time left in it.
+    func testALoopingAudioCueOnItsThirdPassShowsTheSameTimeInTheCellAndInActiveCues() async throws {
+        let wired = try await Rig.open("Demo")
+        let wc = WorkspaceWindowController(store: wired.store)
+        defer { wc.window?.close() }
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(NSRect(x: 0, y: 0, width: 1100, height: 700), display: true)
+        wc.setVisible(.sidebar, true)
+        wc.sidebar.tabs.selectedSegment = 1
+        wc.sidebar.tabs.performClick(nil)
+        guard case .success = await wired.store.transport(.start(cue: Self.intro)) else {
+            return XCTFail("start Intro")
+        }
+        try await wired.advance(0.5)
+        await assertEventually {
+            wired.store.progress[Self.intro] != nil && wired.store.mediaDurations[Self.intro]?.file != nil
+        }
+        let pass = try XCTUnwrap(wired.store.mediaDurations[Self.intro]?.file)
+        try await wired.advance(2 * pass + 1)
+        await assertEventually { wc.sidebar.activeCues == [Self.intro] }
+        let outline = wc.cueList.outlineView
+        let node = try XCTUnwrap(wc.cueList.node(Self.intro))
+        let column = outline.column(withIdentifier: NSUserInterfaceItemIdentifier("duration"))
+        let cell = try XCTUnwrap(
+            outline.view(atColumn: column, row: outline.row(forItem: node), makeIfNecessary: true) as? CueCell)
+        let shown = try XCTUnwrap(CueTime.parse(cell.label.stringValue), "the Duration cell: \(cell.label.stringValue)")
+        XCTAssertLessThan(shown, pass + 0.01, "the cell counts inside the third pass, not the whole time")
+        let row = try XCTUnwrap(
+            wc.sidebar.activeTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? ActiveCueCell)
+        XCTAssertTrue(
+            row.times.stringValue.hasPrefix(CueTime.running(shown)),
+            "Active Cues \(row.times.stringValue) vs the cell \(cell.label.stringValue)")
+        XCTAssertTrue(row.times.stringValue.contains("  -"), "with the time left in the pass: \(row.times.stringValue)")
+        XCTAssertEqual(row.bar.doubleValue, shown / pass, accuracy: 0.001, "the bar is how far through the pass it is")
     }
 }
