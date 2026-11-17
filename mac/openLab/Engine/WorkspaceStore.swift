@@ -45,6 +45,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// Cues started since they were last reset: their rows show the second colour, if they have one.
     @Published private(set) var played: Set<ModelID> = []
     @Published private(set) var progress: [ModelID: ProgressItem] = [:]
+    /// Where in its file each loaded cue stands (seconds), as the engine's progress says: a Load
+    /// cue's time, a click in a timeline. Only loaded cues are here; a cue leaving that state leaves.
+    private(set) var loadedAt: [ModelID: Double] = [:]
     /// Audio cues' media lengths as the engine probed them (`media_durations`, `media_duration`).
     @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:]
     /// Pre-wait and post-wait countdowns in progress (`progress.waits`), by cue.
@@ -352,10 +355,16 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             // nothing once all is quiet, so an item taken for an ended cue would never be cleared.
             let live = items.filter { item in cueStates[item.cue].map { Self.keepsProgress($0.state) } ?? true }
             progress = Dictionary(live.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
+            let oldLoaded = loadedAt
+            loadedAt = Dictionary(
+                items.compactMap { item in
+                    guard cueStates[item.cue]?.state == .loaded, let at = item.position else { return nil }
+                    return (item.cue, at)
+                }, uniquingKeysWith: { $1 })
             var next: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
             for wait in w { next[wait.cue, default: [:]][wait.wait] = wait }
             waits = next
-            let touched = Set(old.keys).union(progress.keys)
+            let touched = Set(old.keys).union(progress.keys).union(oldLoaded.keys).union(loadedAt.keys)
             if !touched.isEmpty { changes.send(.progress(touched)) }
             let waited = Set(oldWaits.keys).union(next.keys)
             if !waited.isEmpty { changes.send(.waits(waited)) }
@@ -538,6 +547,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 cues.insert(cue)
                 // A paused or stopping cue keeps its (frozen or elapsed) progress: the engine still
                 // reports it, and dropping it here would only have the next `progress` put it back.
+                if state != .loaded, loadedAt[cue] != nil {
+                    loadedAt[cue] = nil
+                    progressEnded.insert(cue)
+                }
                 if !Self.keepsProgress(state), progress[cue] != nil {
                     progress[cue] = nil
                     progressEnded.insert(cue)

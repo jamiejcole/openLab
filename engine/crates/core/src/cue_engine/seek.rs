@@ -21,18 +21,30 @@ impl CueEngine {
         let Some(model) = cx.ws.find_cue(cue) else {
             return cx.warn(EngineWarning::UnknownCue { cue });
         };
-        if !matches!(model.kind, CueKind::Audio { .. }) {
-            return cx.warn(EngineWarning::LoadIgnored { cue });
-        }
+        // A Video cue's `seconds` count into its action (the binary maps the file's time through
+        // the cue's plan), because its picture and sound follow the plan from an offset into it,
+        // as a load to time does.
+        let video = match model.kind {
+            CueKind::Audio { .. } => false,
+            CueKind::Video { .. } => true,
+            _ => return cx.warn(EngineWarning::LoadIgnored { cue }),
+        };
+        let pre_wait = model.pre_wait;
         let position = cx.secs(seconds, &self.config);
-        self.seek_preview(cue, position, cx);
+        if !video {
+            self.seek_preview(cue, position, cx);
+        }
         match self.slots.get(&cue) {
+            // Loaded to the point past its pre-wait: GO starts the action there.
+            None | Some(Slot::Loaded(_) | Slot::Lost(_)) if video => {
+                self.load(cue, pre_wait + seconds, cx);
+            }
             None | Some(Slot::Loaded(_) | Slot::Lost(_)) => self.seek_load(cue, position, cx),
             Some(Slot::Broken(_)) => cx.warn(EngineWarning::CueBroken { cue }),
             Some(Slot::Active(run)) if run.is_broken() => {
                 cx.warn(EngineWarning::CueBroken { cue });
             }
-            Some(Slot::Active(_)) => self.seek_run(cue, position, cx),
+            Some(Slot::Active(_)) => self.seek_run(cue, position, video, cx),
         }
     }
 
@@ -80,14 +92,16 @@ impl CueEngine {
     /// paused); in its action the voice moves there and plays on (or stays paused). Its timers,
     /// post-wait and continues are untouched; its end is the moved voice's, once the binary
     /// tells its length again.
-    fn seek_run(&mut self, cue: CueId, position: SampleTime, cx: &mut Ctx) {
+    fn seek_run(&mut self, cue: CueId, position: SampleTime, video: bool, cx: &mut Ctx) {
         let now = cx.now;
         let fresh = self.new_run();
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
+        // A stop with a fade ends where it is: a click while it fades changes nothing and is
+        // not a fault of the cue, so it says nothing.
         if run.stop_end.is_some() {
-            return cx.warn(EngineWarning::LoadIgnored { cue });
+            return;
         }
         match (run.phase, run.voice) {
             (Phase::PreWait { .. }, voice) => {
@@ -96,8 +110,12 @@ impl CueEngine {
                     cx.out.push(Action::UnloadVoice { cue, run: run.run });
                     run.voice = Voice::None;
                 }
-                run.seek = Some(position);
-                run.action_offset = 0;
+                // A Video cue's point is an offset into its action, an Audio cue's a file frame.
+                (run.seek, run.action_offset) = if video {
+                    (None, position)
+                } else {
+                    (Some(position), 0)
+                };
                 // Ends at once; the deadline loop starts the action in this call (on the
                 // resume when it is paused).
                 let until = run.paused_at.unwrap_or(now.max(run.committed));
@@ -115,12 +133,13 @@ impl CueEngine {
                 });
                 run.run = fresh;
                 // Positions count from the moved voice (the binary's lengths are from it too).
+                let from = if video { position } else { 0 };
                 run.voice = Voice::Started {
                     at: run.paused_at.map_or(at, |p| p.min(at)),
-                    from: 0,
+                    from,
                     first: at,
                 };
-                run.action_offset = 0;
+                run.action_offset = from;
                 run.length = None;
                 run.phase = Phase::Action { start, end: None };
                 regive_levels(cue, run, at, cx);

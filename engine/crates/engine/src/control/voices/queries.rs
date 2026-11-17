@@ -260,6 +260,31 @@ impl Voices {
         v
     }
 
+    /// The show voices loaded and not started, each with the frame of its media file (master rate)
+    /// it will start at: a loaded cue's position line (a Load cue's time, or a click in the
+    /// timeline). A voice whose stream is not ready yet has none.
+    pub fn loaded_at(&self) -> Vec<(CueId, u64)> {
+        let mut v: Vec<(CueId, u64)> = self
+            .recs
+            .values()
+            .filter(|r| !r.preview && !r.retired)
+            .filter_map(|r| match &r.phase {
+                Phase::Waiting {
+                    prepared: Some(p),
+                    start: None,
+                    ..
+                } => p
+                    .stream
+                    .slices
+                    .first()
+                    .map(|s| (r.cue, p.scale.master(s.start))),
+                _ => None,
+            })
+            .collect();
+        v.sort_by_key(|(c, _)| *c);
+        v
+    }
+
     /// Every voice is gone and nothing is held for one: a stopped show leaks nothing.
     pub fn is_idle(&self) -> bool {
         self.recs.is_empty() && self.by_run.is_empty() && self.aliases.is_empty()

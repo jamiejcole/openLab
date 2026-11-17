@@ -124,6 +124,16 @@ final class GeometryThumbnail: NSView {
         return NSRect(x: bounds.midX - w / 2, y: bounds.midY - h / 2, width: w, height: h)
     }
 
+    /// The black the stage is drawn on: the largest box of the stage's shape in the view, centred,
+    /// so the preview keeps the stage's shape however tall or narrow the view is (the rest of the
+    /// view is left clear).
+    var backdropRect: NSRect {
+        guard stage.width > 0, stage.height > 0, bounds.width > 0, bounds.height > 0 else { return .zero }
+        let s = min(bounds.width / stage.width, bounds.height / stage.height)
+        let (w, h) = (stage.width * s, stage.height * s)
+        return NSRect(x: bounds.midX - w / 2, y: bounds.midY - h / 2, width: w, height: h)
+    }
+
     /// View points per stage pixel.
     private var pointsPerPixel: CGFloat {
         stage.width > 0 ? stageRect.width / stage.width : 0
@@ -137,8 +147,8 @@ final class GeometryThumbnail: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSBezierPath.clip(bounds)
         NSColor.black.setFill()
-        bounds.fill()
         guard hasStage else {
+            bounds.fill()
             let text = NSAttributedString(
                 string: loc("inspector.geometry.noStage"),
                 attributes: [
@@ -149,6 +159,9 @@ final class GeometryThumbnail: NSView {
             text.draw(at: NSPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2))
             return
         }
+        let backdrop = backdropRect
+        backdrop.fill()
+        NSBezierPath.clip(backdrop)
         let stageBox = stageRect
         NSColor(white: 0.12, alpha: 1).setFill()
         stageBox.fill()

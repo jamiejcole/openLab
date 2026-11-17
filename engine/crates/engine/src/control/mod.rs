@@ -576,6 +576,8 @@ struct Doc {
     resend_document: bool,
     resend_warnings: bool,
     last_progress: Option<SampleTime>,
+    /// The loaded cues' positions the last progress message carried.
+    last_loaded: Vec<(CueId, f64)>,
     /// Where the voices of cues a lost device left paused stood when it went (`progress`'s
     /// values): their time is shown as a paused voice's, the loop pass and file position
     /// included. Kept while the cue shows the mark.
@@ -1180,6 +1182,7 @@ impl Doc {
             resend_document: false,
             resend_warnings: false,
             last_progress: None,
+            last_loaded: Vec::new(),
             lost_progress: Vec::new(),
             meters_live: false,
             waveforms: waveforms::Waveforms::default(),

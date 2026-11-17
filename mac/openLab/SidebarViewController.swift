@@ -54,6 +54,10 @@ final class ActiveCueCell: NSTableCellView {
         // The name and times take the row's width between the two buttons.
         text.setHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         row.spacing = 6
+        // Filled: the name and times column takes all the room between the buttons. With the default
+        // gravity areas it was only as wide as its widest text, so a lone time cut the name short and
+        // the panic button sat beside the text instead of at the row's edge.
+        row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         addSubview(stripe)

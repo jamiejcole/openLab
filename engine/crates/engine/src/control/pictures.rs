@@ -44,7 +44,7 @@ use openlab_core::{
 
 use super::plan::{PlanSpec, cue_slices, picture_info};
 
-use super::voices::Effects;
+use super::voices::{Effects, SeekTo, rest_of_table};
 use super::{DocCx, DocId, Engine};
 
 /// How far the engine's clock may move before the stage host is told it again (it moves the
@@ -263,6 +263,27 @@ fn passes(table: &[Slice], rate: u32) -> Vec<PlanPass> {
 /// just before the end of the last pass (the frame it holds), never further on.
 fn position_in(passes: &[PlanPass], into: f64) -> f64 {
     plan_point(passes, into).map_or(0.0, |p| p.position)
+}
+
+/// Seconds into `passes` at which a movie following them first stands at file second `at`: the
+/// start of the pass that holds it (a point in a pass that repeats is its first play), the start
+/// of the next pass for a point in a gap or before the first (the nearest trim), and for a point
+/// at or past the end trim the end of the last pass's first play (as an Audio cue's seek: its
+/// other plays follow). A pass that loops until devamped is left after one play.
+fn action_at(passes: &[PlanPass], at: f64) -> f64 {
+    let mut elapsed = 0.0;
+    let mut end_trim = 0.0;
+    for p in passes {
+        if at < p.from {
+            return elapsed;
+        }
+        if at < p.from + p.length || p.plays == 0 {
+            return elapsed + (at - p.from).clamp(0.0, p.length);
+        }
+        end_trim = elapsed + p.length;
+        elapsed += p.length * f64::from(p.plays);
+    }
+    end_trim
 }
 
 /// Where a devamp at `elapsed` samples into `table` leaves its loop: the table with the pass
@@ -559,6 +580,20 @@ impl Engine {
             .collect()
     }
 
+    /// Where in its file each Video cue's picture that is loaded and not yet played stands (the
+    /// frame it opens on, seconds), for a loaded cue's position line. A still has none.
+    pub(super) fn loaded_pictures(&self, doc: DocId) -> Vec<(CueId, f64)> {
+        self.pictures
+            .live
+            .values()
+            .filter(|l| l.doc == doc && l.motion.is_none() && !l.still)
+            .filter_map(|l| match &l.load {
+                ToStage::Load { offset, .. } => Some((l.cue, *offset)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Pictures up whose file the stage host has open (tests).
     pub(super) fn pictures_opened(&self) -> usize {
         self.pictures.live.values().filter(|l| l.opened).count()
@@ -632,6 +667,7 @@ impl DocCx<'_> {
             Action::LoadVoice { cue, .. }
             | Action::UnloadVoice { cue, .. }
             | Action::StartVoice { cue, .. }
+            | Action::SeekVoice { cue, .. }
             | Action::StopVoice { cue, .. }
             | Action::PauseVoice { cue, .. }
             | Action::ResumeVoice { cue, .. }
@@ -841,6 +877,13 @@ impl DocCx<'_> {
                     self.sound_action(action, fx);
                 }
             }
+            Action::SeekVoice {
+                cue,
+                run,
+                from,
+                at,
+                position,
+            } => self.seek_picture(cue, run, from, at, position, fx),
             Action::StopVoice {
                 cue, run, at, fade, ..
             } => {
@@ -888,6 +931,96 @@ impl DocCx<'_> {
             // Levels and ducks act on its sound.
             _ => self.sound_action(action, fx),
         }
+    }
+
+    /// Where in its action (seconds) a Video cue's plan first stands at `file` seconds into its
+    /// movie, for a seek: `None` for a cue that is not a probed movie (a still has no timeline;
+    /// a file not probed has no plan) or a point that is not a time.
+    pub(super) fn video_seek_point(&self, cue: CueId, file: f64) -> Option<f64> {
+        if !file.is_finite() {
+            return None;
+        }
+        let (info, timing) = self.plays(cue).ok()?.movie?;
+        let (top, _) = movie_table(&info, &timing, self.eng.rate).ok()?;
+        Some(action_at(&passes(&top, self.eng.rate.get()), file.max(0.0)))
+    }
+
+    /// A Video cue's run moved to `position` samples into its action (`Action::SeekVoice`) and
+    /// goes on as `run`. A picture waiting for its probe takes the point; a paused one is held
+    /// on the frame there; a playing one plays on from it on sample `at`, its plan as it was.
+    /// From the point on the cue engine counts the action as the picture's own time, so a late
+    /// start before the seek is behind it. Its sound goes on from the same point of the same
+    /// plan, as a voice of its own if the old one has ended (hold at end); a point past the
+    /// plan's end leaves it nothing to play.
+    fn seek_picture(
+        &mut self,
+        cue: CueId,
+        run: RunId,
+        from: RunId,
+        at: SampleTime,
+        position: SampleTime,
+        fx: &mut Effects,
+    ) {
+        let doc = self.doc.id;
+        let rate = self.eng.rate.get();
+        if let Some(h) = self.eng.pictures.held_mut(doc, from) {
+            h.run = run;
+            h.offset = position;
+            if h.start.is_some() {
+                h.start = Some((at, position));
+            }
+            return;
+        }
+        let Some(id) = self.eng.pictures.find(doc, from) else {
+            return;
+        };
+        let Some(live) = self.eng.pictures.live.get_mut(&id) else {
+            return;
+        };
+        live.run = run;
+        let paused = matches!(live.motion, Some((None, _)));
+        if let Some(p) = live.plan.as_mut() {
+            p.late = 0;
+        }
+        let own = seconds(position, rate);
+        if paused {
+            let file = live
+                .plan
+                .as_ref()
+                .map_or(own, |p| position_in(&p.passes, own));
+            let message = ToStage::Pause {
+                picture: id,
+                at,
+                offset: file.min(openlab_core::MAX_TIME),
+                action: own.min(openlab_core::MAX_TIME),
+            };
+            live.now = Some(message.clone());
+            live.motion = Some((None, own));
+            self.eng.picture(message);
+        } else {
+            self.play_picture(cue, run, at, position, 0, false, fx);
+        }
+        // What the picture plays from the point (a paused one, from its resume): nothing if it
+        // could not play on (it failed, or waits for its file again and starts its sound then).
+        let rest = (self.eng.pictures.find(doc, run))
+            .and_then(|id| self.eng.pictures.live.get(&id))
+            .and_then(|l| l.plan.as_ref())
+            .and_then(|p| {
+                let (table, into) = if paused {
+                    (p.settled(position), position)
+                } else {
+                    (p.table.as_slice(), p.into)
+                };
+                rest_of_table(table, &[], false, into)
+            })
+            .unwrap_or_default();
+        let to = SeekTo::Plan {
+            table: rest,
+            rate,
+            offset: position,
+            paused,
+        };
+        self.sound_seek(cue, (run, from), at, to, fx);
     }
 
     /// A start waits for its file's probe: said once, and the hold limit starts.
@@ -1652,6 +1785,56 @@ mod tests {
             frames,
             plays,
         }
+    }
+
+    /// A seek's file time is counted through the plan: into a pass, the first play of a pass that
+    /// repeats, the nearest trim for a point before the plan or in a gap, the end of the last
+    /// pass's first play past it, and one play into a loop that never ends.
+    #[test]
+    fn a_file_time_is_placed_in_the_plan_at_its_first_play() {
+        let pass = |from, length, plays| PlanPass {
+            from,
+            length,
+            plays,
+        };
+        // 1..3 twice, a gap, 5..6 once.
+        let plan = [pass(1.0, 2.0, 2), pass(5.0, 1.0, 1)];
+        assert_eq!(
+            action_at(&plan, 0.2),
+            0.0,
+            "before the first pass: its start"
+        );
+        assert_eq!(action_at(&plan, 1.5), 0.5);
+        assert_eq!(
+            action_at(&plan, 2.9),
+            1.9,
+            "the first play of a repeated pass"
+        );
+        assert_eq!(
+            action_at(&plan, 4.0),
+            4.0,
+            "in the gap: the next pass's start"
+        );
+        assert_eq!(action_at(&plan, 5.25), 4.25);
+        assert_eq!(
+            action_at(&plan, 9.0),
+            5.0,
+            "past the end: the last pass played once"
+        );
+        let twice = [pass(1.0, 2.0, 2)];
+        assert_eq!(
+            action_at(&twice, 9.0),
+            2.0,
+            "past the end: the end of the first play, the other to come"
+        );
+        let endless = [pass(0.0, 2.0, 0), pass(2.0, 1.0, 1)];
+        assert_eq!(action_at(&endless, 1.0), 1.0);
+        assert_eq!(
+            action_at(&endless, 2.5),
+            2.0,
+            "past a loop that never ends: after one play"
+        );
+        assert_eq!(action_at(&[], 3.0), 0.0, "no plan");
     }
 
     /// A devamp leaves the loop at the end of the pass under way: the loop's entry keeps the

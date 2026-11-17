@@ -169,10 +169,12 @@ impl Outbound {
     }
 
     /// Meters and progress: dropped while the channel is half full, to keep room for the rest.
-    pub fn send_lossy(&mut self, doc: Option<super::DocId>, message: ServerMessage) {
+    pub fn send_lossy(&mut self, doc: Option<super::DocId>, message: ServerMessage) -> bool {
         if self.try_lossy(doc, message).is_err() {
             self.lossy_dropped += 1;
+            return false;
         }
+        true
     }
 
     /// The rule of [`Outbound::send_lossy`], handing a dropped message back and not counting

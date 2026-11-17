@@ -1,0 +1,31 @@
+{
+  "about": "A click in a Video cue's Time & Loops timeline: an idle movie is loaded where it was clicked (the row says loaded, a line is drawn there), GO plays from it, a click while it plays moves it on, and a click while paused moves the play line with the cue still paused; light appearance.",
+  "show": "Video",
+  "appearance": "light",
+  "displays": "V1:1920x1080",
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1,
+    "media/card.jpg": 1,
+    "media/A very long name for a projection clip used in the second act.mov": 2
+  },
+  "window": {"width": 1000, "height": 700},
+  "steps": [
+    {"advance": 0.1},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"click": "time-loops-waveform", "at": [0.5, 0.5]},
+    {"advance": 0.3},
+    {"shot": "loaded-at-click"},
+    {"key": "space"},
+    {"advance": 0.5},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"shot": "playing-from-click"},
+    {"click": "time-loops-waveform", "at": [0.15, 0.5]},
+    {"advance": 0.5},
+    {"shot": "playing-after-second-click"},
+    {"key": "escape"},
+    {"advance": 1}
+  ]
+}

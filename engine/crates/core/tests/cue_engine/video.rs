@@ -865,3 +865,139 @@ fn picture_values_alone_are_nothing_to_fade_for_a_target_without_a_picture() {
     rig.tick(4);
     assert_eq!(rig.problems(3), vec![CueProblem::NothingToFade]);
 }
+
+fn seek(rig: &mut Rig, now: SampleTime, n: u128, seconds: f64) -> Vec<Action> {
+    rig.at(
+        now,
+        Input::Seek {
+            cue: id(n),
+            position: seconds,
+        },
+    )
+}
+
+#[test]
+fn an_idle_video_cue_seeked_is_loaded_at_the_point_past_its_pre_wait_and_go_starts_there() {
+    let mut cue = video_on(1, Some(stage_id(1)));
+    cue.pre_wait = 2.0;
+    let mut rig = rig(vec![cue]);
+    let loaded = seek(&mut rig, 0, 1, 1.5);
+    assert!(
+        loaded
+            .iter()
+            .any(|a| matches!(a, Action::LoadVoice { offset: 1500, .. })),
+        "{loaded:?}"
+    );
+    assert_eq!(rig.state(1), CueState::Loaded);
+    // The point is where the picture starts: the pre-wait is over.
+    let go = rig.go(100);
+    assert!(
+        go.iter().any(|a| matches!(
+            a,
+            Action::StartVoice {
+                at: 100,
+                offset: 1500,
+                ..
+            }
+        )),
+        "{go:?}"
+    );
+    // A second seek of the loaded cue loads it at the new point.
+    rig.stop(150, 1);
+    seek(&mut rig, 200, 1, 0.5);
+    let again = seek(&mut rig, 300, 1, 0.75);
+    assert!(
+        again
+            .iter()
+            .any(|a| matches!(a, Action::LoadVoice { offset: 750, .. })),
+        "{again:?}"
+    );
+    assert_eq!(rig.state(1), CueState::Loaded);
+}
+
+#[test]
+fn a_playing_video_cue_seeked_moves_to_the_point_and_ends_where_its_length_says() {
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1)))]);
+    rig.go(0);
+    let old = rig.run(1);
+    length(&mut rig, 0, 1, 4000);
+    assert_eq!(rig.engine.next_deadline(), Some(4000));
+    let moved = seek(&mut rig, 1000, 1, 3.0);
+    let fresh = rig.run(1);
+    assert_ne!(fresh, old);
+    assert!(
+        moved.iter().any(|a| matches!(
+            a,
+            Action::SeekVoice {
+                from,
+                run,
+                at: 1000,
+                position: 3000,
+                ..
+            } if *from == old && *run == fresh
+        )),
+        "{moved:?}"
+    );
+    assert_eq!(rig.state(1), CueState::Running, "no stop, no restart");
+    // The picture says its whole length again (offset included): the end is 1 s from the move.
+    length(&mut rig, 1010, 1, 4000);
+    assert_eq!(rig.engine.next_deadline(), Some(2000));
+    // The run it moved from is no one's.
+    let stale = rig.at(
+        1500,
+        Input::ActionEnded {
+            cue: id(1),
+            run: old,
+            at: 1400,
+        },
+    );
+    assert!(changes(&stale, 1).is_empty(), "{stale:?}");
+    // Paused halfway, then seeked: the cue stays paused and the resume plays from the new point.
+    let paused = rig.pause(1500, 1);
+    assert!(
+        paused
+            .iter()
+            .any(|a| matches!(a, Action::PauseVoice { offset: 3500, .. }))
+    );
+    let before = rig.run(1);
+    let moved = seek(&mut rig, 1600, 1, 1.0);
+    assert!(
+        moved.iter().any(|a| matches!(
+            a,
+            Action::SeekVoice { from, position: 1000, .. } if *from == before
+        )),
+        "{moved:?}"
+    );
+    assert_eq!(rig.state(1), CueState::Paused);
+    let resumed = rig.resume(2000, 1);
+    assert!(
+        resumed
+            .iter()
+            .any(|a| matches!(a, Action::ResumeVoice { offset: 1000, .. })),
+        "{resumed:?}"
+    );
+}
+
+#[test]
+fn a_video_cue_seeked_in_its_pre_wait_starts_its_action_at_the_point_now() {
+    let mut cue = video_on(1, Some(stage_id(1)));
+    cue.pre_wait = 5.0;
+    let mut rig = rig(vec![cue]);
+    rig.go(0);
+    assert_eq!(rig.state(1), CueState::PreWaiting);
+    let moved = seek(&mut rig, 1000, 1, 2.0);
+    let started = rig.tick(1000);
+    let all: Vec<&Action> = moved.iter().chain(started.iter()).collect();
+    assert!(
+        all.iter().any(|a| matches!(
+            a,
+            Action::StartVoice {
+                at: 1000,
+                offset: 2000,
+                ..
+            }
+        )),
+        "{all:?}"
+    );
+    assert_eq!(rig.state(1), CueState::Running);
+}

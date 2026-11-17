@@ -3830,8 +3830,8 @@ fn a_stop_fading_past_the_end_of_the_range_ends_picture_sound_and_cue_with_the_r
 
 /// A movie with sound and a skipped slice: sound and picture go over it on the same sample,
 /// nothing of it heard or shown; a devamp of the loop before it goes on to the slice after it
-/// for both; and a load to a time counts only what plays, for both (a Video cue takes no seek
-/// to a point of its file, so no point inside the skipped slice can be asked for).
+/// for both; and a load to a time counts only what plays, for both (a load's time is a point
+/// of the action, which has no time inside the skipped slice).
 #[test]
 fn a_skipped_slice_keeps_picture_and_sound_together_played_devamped_and_loaded() {
     use openlab_core::{PlayCount, SliceMarker};
@@ -5691,4 +5691,491 @@ fn a_fade_of_a_video_waiting_for_its_probe_reaches_the_picture_when_it_plays() {
     assert!(s.wait_for(|c| c.pictures_opened() == 1));
     s.run(samples(0.2));
     opacity_is(&mut s, 0.25, 0.02, "drawn where the Fade left it");
+}
+
+/// A seek of an idle Video cue (a click in its timeline) loads it at that point of its file and
+/// tells clients where it stands; GO then starts the picture on that frame.
+#[test]
+fn a_seek_loads_an_idle_video_cue_at_the_point_and_go_starts_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (100, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 2.0,
+    });
+    s.run(BLOCK);
+    expect_state(&s, 1, CueState::Loaded, "");
+    assert_eq!(shown(&mut s), None, "a loaded picture is not shown");
+    // The loaded cue's place in its file is told, once its progress is.
+    s.run(samples(0.3));
+    let told = progress_of(&mut s, 1).expect("a loaded cue's position is told");
+    assert!(told.2.is_some_and(|p| near(p, 2.0)), "{told:?}");
+    // Nothing more is sent for a cue that stands loaded, until a client asks for the snapshot
+    // (a client that joins late knows the place only from the next pass).
+    s.run(samples(0.3));
+    assert!(progress_of(&mut s, 1).is_none(), "told once");
+    let id = s.request_id();
+    s.send(ClientMessage::Request {
+        id,
+        request: Request::Snapshot,
+    });
+    s.run(samples(0.3));
+    let again = progress_of(&mut s, 1).expect("told again after a snapshot");
+    assert!(again.2.is_some_and(|p| near(p, 2.0)), "{again:?}");
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(50));
+}
+
+/// A seek of a playing movie jumps there without stopping the cue and plays on in step; its
+/// progress goes on from the point and its end moves with it.
+#[test]
+fn a_seek_moves_a_playing_movie_and_a_paused_one_stays_paused_until_resumed() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (100, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 2.0,
+    });
+    let moved = s.now();
+    expect_state(&s, 1, CueState::Running, "no stop");
+    run_to(&mut s, moved + samples(0.5));
+    let frame = on_stage(&mut s, "a frame after the seek");
+    assert!(
+        frame.abs_diff(frame_at(2.5)) <= 2,
+        "{frame} half a second after 2 s"
+    );
+    let (elapsed, remaining, position) =
+        progress_at(&mut s, 1, moved + samples(1.0)).expect("progress after the seek");
+    assert!(near(elapsed, 3.0), "{elapsed}");
+    assert!(near(remaining.unwrap(), 1.0), "{remaining:?}");
+    assert!(near(position.unwrap(), 3.0), "{position:?}");
+    // Paused, then moved: held on the frame there, and the resume plays on from it.
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    expect_state(&s, 1, CueState::Paused, "");
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 1.0,
+    });
+    s.run(samples(0.5));
+    expect_state(&s, 1, CueState::Paused, "still paused");
+    assert_eq!(shown(&mut s), Some(25), "held on the frame at 1 s");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.5));
+    let now = on_stage(&mut s, "playing again");
+    assert!(
+        now.abs_diff(frame_at(1.5)) <= 2,
+        "{now} half a second on from 1 s"
+    );
+    // 3 s of movie were left at 1 s: it ends there, not where the first run would have.
+    run_to(&mut s, resumed + samples(2.9));
+    expect_state(&s, 1, CueState::Running, "still playing");
+    run_to(&mut s, resumed + samples(3.1));
+    expect_state(&s, 1, CueState::Idle, "ended after the rest of the movie");
+}
+
+/// A seek counts the file's time through the cue's plan: with a start trim the picture plays on
+/// from the point (the trim is not played again), and a point before the trim goes to the trim.
+#[test]
+fn a_seek_in_a_trimmed_movie_goes_to_that_frame_and_a_point_before_the_trim_to_the_trim() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (100, 25));
+    let mut trimmed = video_cue(1, Some(&movie));
+    if let CueKind::Video { timing, .. } = &mut trimmed.kind {
+        timing.start_time = 1.0;
+        timing.end_time = Some(3.0);
+    }
+    let mut s = video_show(vec![trimmed]);
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 2.0,
+    });
+    s.run(BLOCK);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(50), "the frame at 2 s of the file");
+    // Left running; 1 s of the trimmed range is left when it started there.
+    run_to(&mut s, at + samples(0.9));
+    expect_state(&s, 1, CueState::Running, "");
+    run_to(&mut s, at + samples(1.1));
+    expect_state(&s, 1, CueState::Idle, "ended at the end trim");
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 0.2,
+    });
+    s.run(BLOCK);
+    expect_state(&s, 1, CueState::Loaded, "loaded at the trim");
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(
+        shown(&mut s),
+        Some(25),
+        "a point before the trim loads at the trim"
+    );
+}
+
+/// A seek of cue `n` to `position` seconds of its file (a click in its timeline).
+fn seek(s: &mut OfflineShow, n: u128, position: f64) {
+    s.transport(TransportAction::Seek {
+        cue: id(n),
+        position,
+    });
+}
+
+/// A seek of a playing movie with sound moves picture and sound to the point together, and
+/// they play on in step; paused, both stay held and the resume plays both on from the point;
+/// both end together with nothing heard after.
+#[test]
+fn a_seek_moves_picture_and_sound_together_playing_and_paused() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
+    let mut s = video_show(vec![sounding_cue(1, &movie)]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    seek(&mut s, 1, 2.0);
+    let moved = s.now();
+    run_to(&mut s, moved + samples(0.5));
+    let sound = in_step(&mut s, RATE, 25.0, "after the seek");
+    assert!((sound - 2.5).abs() < 0.03, "the sound at {sound} s");
+    s.transport(TransportAction::Pause { cue: id(1) });
+    let paused = s.now();
+    s.run(samples(0.2));
+    seek(&mut s, 1, 1.0);
+    s.run(samples(0.3));
+    expect_state(&s, 1, CueState::Paused, "still paused");
+    assert_eq!(shown(&mut s), Some(25), "held on the frame at 1 s");
+    assert!(
+        silent(&s, paused + samples(0.01), s.rendered()),
+        "both held"
+    );
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.5));
+    let sound = in_step(&mut s, RATE, 25.0, "after the resume");
+    assert!((sound - 1.5).abs() < 0.03, "the sound at {sound} s");
+    let end = resumed + samples(3.0);
+    run_to(&mut s, end + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "the rest of the movie played");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.2));
+    assert!(
+        silent(&s, end + samples(0.02), s.rendered()),
+        "nothing after the end"
+    );
+    assert_eq!(s.stalls(), 0);
+}
+
+/// A slice that loops until devamped between two that play once: a seek of the playing cue to a
+/// point past the loop goes to the end of the loop's first pass, and picture and sound loop on
+/// together until a devamp, then play the last slice together and end together.
+#[test]
+fn a_seek_past_a_loop_until_devamped_loops_picture_and_sound_together() {
+    use openlab_core::{PlayCount, SliceMarker};
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
+    // 0–0.4 s once, 0.4–1.2 s until devamped, 1.2–4 s once.
+    let looped = timed_sounding_cue(1, &movie, |t| {
+        t.slices = vec![
+            SliceMarker {
+                time: 0.4,
+                play_count: PlayCount::ONCE,
+            },
+            SliceMarker {
+                time: 1.2,
+                play_count: PlayCount::Endless,
+            },
+        ];
+    });
+    let mut s = video_show(vec![looped, devamp_cue(2)]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.2));
+    seek(&mut s, 1, 3.0);
+    let moved = s.now();
+    run_to(&mut s, moved + samples(0.3));
+    let sound = in_step(&mut s, RATE, 25.0, "after the seek");
+    assert!(
+        (sound - 0.7).abs() < 0.03,
+        "in the loop: the sound at {sound} s"
+    );
+    // Over two seams of the loop, both still in it.
+    for pass in 1..=2 {
+        run_to(&mut s, moved + samples(0.3 + 0.8 * f64::from(pass)));
+        let sound = in_step(&mut s, RATE, 25.0, "looping on");
+        assert!(
+            (sound - 0.7).abs() < 0.03,
+            "pass {pass}: the sound at {sound} s"
+        );
+    }
+    expect_state(&s, 1, CueState::Running, "looping");
+    // The devamp leaves the loop at the end of the pass under way (the third: moved + 2.4 s).
+    start(&mut s, 2);
+    let leaves = moved + samples(2.4);
+    run_to(&mut s, leaves + samples(0.3));
+    let sound = in_step(&mut s, RATE, 25.0, "after the devamp");
+    assert!((sound - 1.5).abs() < 0.03, "the sound at {sound} s");
+    let end = leaves + samples(2.8);
+    run_to(&mut s, end - samples(0.1));
+    in_step(&mut s, RATE, 25.0, "near the end");
+    run_to(&mut s, end + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended after the last slice");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.2));
+    assert!(
+        silent(&s, end + samples(0.02), s.rendered()),
+        "nothing after the end"
+    );
+}
+
+/// The last slice plays twice; a seek past the end trim goes to the end of its first play, as an
+/// Audio cue's does: picture and sound play the pass left together and end together, with
+/// nothing heard after.
+#[test]
+fn a_seek_past_the_end_trim_plays_the_passes_left_and_ends_picture_sound_and_cue_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
+    let twice = timed_sounding_cue(1, &movie, |t| {
+        t.end_time = Some(2.0);
+        t.last_slice_play_count = 2.into();
+    });
+    let mut s = video_show(vec![twice]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    seek(&mut s, 1, 3.0);
+    let moved = s.now();
+    run_to(&mut s, moved + samples(0.3));
+    let sound = in_step(&mut s, RATE, 25.0, "in the pass left");
+    assert!((sound - 0.3).abs() < 0.03, "the sound at {sound} s");
+    run_to(&mut s, moved + samples(1.9));
+    expect_state(&s, 1, CueState::Running, "the pass left still playing");
+    let end = moved + samples(2.0);
+    run_to(&mut s, end + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended after the pass left");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(2.5));
+    assert!(
+        silent(&s, end + samples(0.02), s.rendered()),
+        "nothing heard after the cue ended"
+    );
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+/// A movie with sound holding its last frame (its sound has ended): a seek plays picture and
+/// sound from the point together, and they hold at the end again.
+#[test]
+fn a_seek_of_a_movie_held_at_its_end_plays_picture_and_sound_from_the_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
+    let held = timed_sounding_cue(1, &movie, |t| {
+        t.end_time = Some(1.2);
+        t.hold_at_end = true;
+    });
+    let mut s = video_show(vec![held]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(2.0));
+    expect_state(&s, 1, CueState::Running, "held at its end");
+    assert_eq!(s.control().live_voices(), 0, "its sound has ended");
+    seek(&mut s, 1, 0.5);
+    let moved = s.now();
+    run_to(&mut s, moved + samples(0.3));
+    let sound = in_step(&mut s, RATE, 25.0, "after the seek");
+    assert!((sound - 0.8).abs() < 0.03, "the sound at {sound} s");
+    run_to(&mut s, moved + samples(1.2));
+    expect_state(&s, 1, CueState::Running, "held at its end again");
+    assert_eq!(shown(&mut s), Some(29));
+    assert!(
+        silent(&s, moved + samples(0.72), s.rendered()),
+        "no sound after the end"
+    );
+    // Paused there, then moved: both held at the point until the resume plays both on.
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    seek(&mut s, 1, 0.4);
+    let paused = s.now();
+    s.run(samples(0.3));
+    expect_state(&s, 1, CueState::Paused, "still paused");
+    assert_eq!(shown(&mut s), Some(10), "held on the frame at 0.4 s");
+    assert!(
+        silent(&s, paused, s.rendered()),
+        "nothing heard while paused"
+    );
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.3));
+    let sound = in_step(&mut s, RATE, 25.0, "after the resume");
+    assert!((sound - 0.7).abs() < 0.03, "the sound at {sound} s");
+}
+
+/// A start held by its file's probe plays late; a seek then goes to the point clicked, not
+/// that much before it, and picture and sound play on from it in step and end with the rest.
+#[test]
+fn a_seek_after_a_late_start_goes_to_the_point_clicked() {
+    let dir = tempfile::tempdir().unwrap();
+    let silent_movie = movie!(dir.path(), "a.mov", (50, 25));
+    let movie = sound_movie!(dir.path(), "b.mov", (100, 25), "pcm:2:48000");
+    let mut s = gated_video_show(vec![sounding_cue(1, &silent_movie)]);
+    GATED.lock().unwrap().push(movie.clone());
+    set_media(&mut s, 1, &movie);
+    let at = go(&mut s);
+    s.run(samples(0.5));
+    release_probe(&movie);
+    s.settle_media();
+    let released = s.now();
+    assert!(released >= at + samples(0.5));
+    run_to(&mut s, released + samples(0.3));
+    seek(&mut s, 1, 2.0);
+    let moved = s.now();
+    run_to(&mut s, moved + samples(0.4));
+    let sound = in_step(&mut s, RATE, 25.0, "after the seek");
+    assert!(
+        (sound - 2.4).abs() < 0.03,
+        "the sound at {sound} s, not before the point"
+    );
+    // 2 s were left at the point.
+    run_to(&mut s, moved + samples(1.9));
+    expect_state(&s, 1, CueState::Running, "the rest still playing");
+    run_to(&mut s, moved + samples(2.0) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended after the rest");
+    assert_eq!(shown(&mut s), None);
+}
+
+/// A loop until devamped over 0.4–0.8 s, then 0.8–1.2 s once; a devamp is pending when a seek
+/// moves the cue back into the loop's first pass: picture and sound leave the loop together at
+/// the end of that pass, play the slice after it and end together.
+#[test]
+fn a_seek_with_a_devamp_pending_leaves_the_loop_with_picture_and_sound_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    let looping = timed_sounding_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+        t.slices = vec![openlab_core::SliceMarker {
+            time: 0.8,
+            play_count: 0.into(),
+        }];
+    });
+    let mut s = video_show(vec![looping, devamp_cue(2)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // pending until 1.2 s
+    run_to(&mut s, at + samples(1.05));
+    seek(&mut s, 1, 0.5);
+    let moved = s.now();
+    let leaves = moved + samples(0.3);
+    run_to(&mut s, leaves - samples(0.1));
+    let sound = in_step(&mut s, RATE, 25.0, "in the pass after the seek");
+    assert!((sound - 0.7).abs() < 0.03, "the sound at {sound} s");
+    run_to(&mut s, leaves + samples(0.2));
+    let sound = in_step(&mut s, RATE, 25.0, "after the loop");
+    assert!((sound - 1.0).abs() < 0.03, "the sound at {sound} s");
+    let end = leaves + samples(0.4);
+    run_to(&mut s, end + 2 * BLOCK);
+    expect_state(
+        &s,
+        1,
+        CueState::Idle,
+        "ended after the slice after the loop",
+    );
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.2));
+    assert!(
+        silent(&s, end + samples(0.02), s.rendered()),
+        "nothing after the end"
+    );
+}
+
+/// A seek whose new point's stream is slow to open (held for 0.15 s, inside the wait for it):
+/// the old sound plays on meanwhile, and once the moved sound swaps in the picture is put back
+/// to meet it, so the two play on together from the point.
+#[test]
+fn a_seek_whose_sound_is_slow_to_open_keeps_picture_and_sound_together_after_the_swap() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
+    let ws = workspace(vec![sounding_cue(1, &movie)]);
+    let mut s = video_show_config(
+        ws,
+        &[],
+        |_| {},
+        |c| {
+            c.prime_cues = 0;
+            c.streamer.before_open = gated_open;
+        },
+    );
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    gate(&movie);
+    seek(&mut s, 1, 2.0);
+    let moved = s.now();
+    s.run_unsettled(samples(0.15));
+    release(&movie);
+    run_to(&mut s, moved + samples(0.6));
+    let sound = in_step(&mut s, RATE, 25.0, "after the swap");
+    assert!((sound - 2.45).abs() < 0.05, "the sound at {sound} s");
+    // The end moved with them: the rest (2 s) from the swap.
+    run_to(&mut s, moved + samples(2.05));
+    expect_state(&s, 1, CueState::Running, "still playing");
+    run_to(&mut s, moved + samples(2.4));
+    expect_state(&s, 1, CueState::Idle, "ended with its sound");
+    assert_eq!(shown(&mut s), None);
+}
+
+/// A seek while a stop fades past the end of the range is ignored: picture, sound and cue still
+/// end together with the range, nothing heard after. A seek in a pre-wait starts picture and
+/// sound at the point together at once.
+#[test]
+fn a_seek_while_stopping_is_ignored_and_one_in_a_pre_wait_starts_picture_and_sound_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    let mut waits = timed_sounding_cue(2, &movie, |_| {});
+    waits.pre_wait = 5.0;
+    let mut s = video_show(vec![
+        timed_sounding_cue(1, &movie, |t| t.end_time = Some(1.2)),
+        waits,
+    ]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.9));
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: Some(openlab_core::FadeSpec {
+            duration: 1.0,
+            curve: openlab_core::FadeCurve::Linear,
+        }),
+    });
+    s.run(BLOCK);
+    s.take_outbound();
+    seek(&mut s, 1, 0.2);
+    s.run(BLOCK);
+    assert_eq!(
+        warnings(&s.take_outbound()),
+        vec![],
+        "a stopping cue says nothing"
+    );
+    let ends = at + samples(1.2);
+    run_to(&mut s, ends + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended with the range");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.3));
+    assert!(
+        silent(&s, ends + 8, s.rendered()),
+        "nothing after the range"
+    );
+
+    start(&mut s, 2);
+    s.run(samples(0.5));
+    expect_state(&s, 2, CueState::PreWaiting, "");
+    seek(&mut s, 2, 1.0);
+    let moved = s.now();
+    run_to(&mut s, moved + samples(0.4));
+    expect_state(&s, 2, CueState::Running, "started at the point");
+    let sound = in_step(&mut s, RATE, 25.0, "started from the point");
+    assert!((sound - 1.4).abs() < 0.03, "the sound at {sound} s");
+    run_to(&mut s, moved + samples(1.0) + 2 * BLOCK);
+    expect_state(&s, 2, CueState::Idle, "the rest played");
+    s.run(samples(0.2));
+    assert!(silent(&s, moved + samples(1.02), s.rendered()));
 }

@@ -23,7 +23,8 @@ final class TimeLoopsTests: XCTestCase {
     /// The tests of pure drawing and editing logic: they need no engine (and run in engine-free runs).
     private static let engineFree = [
         "testDrawingStacksChannelsAndSpansMinToMax", "testDrawingFollowsTheZoom",
-        "testALiveResizeAsksForPeaksOnceWhenItEnds", "testSliceChangesApplyToTheCurrentKind",
+        "testALiveResizeAsksForPeaksOnceWhenItEnds",
+        "testTheRulersFirstLabelIsNotUnderTheStartHandle", "testSliceChangesApplyToTheCurrentKind",
         "testTheDrawnFadeShapeIsCoresCurve", "testViewportZoomKeepsTheAnchorAndStaysInTheFile",
         "testViewportPanStopsAtTheFileEnds",
         "testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown",
@@ -128,6 +129,27 @@ final class TimeLoopsTests: XCTestCase {
             peaks: peaks, scale: WaveformScale(start: 0, end: 4, width: 4),
             in: CGRect(x: 0, y: 0, width: 4, height: 100))
         XCTAssertEqual(wide.lanes[0].columns.count, 2, "nothing is drawn past the file's end")
+    }
+
+    /// The ruler's first label starts beside the start handle's triangle, wherever the handle is, and a
+    /// label that would run under the end handle is left out.
+    func testTheRulersFirstLabelIsNotUnderTheStartHandle() {
+        let wave = WaveformView(frame: NSRect(x: 0, y: 0, width: 600, height: 120))
+        wave.duration = 60
+        wave.scale = WaveformScale(start: 0, end: 60, width: 600)
+        let width: (String) -> CGFloat = { _ in 42 }
+        let first = wave.rulerMarks(labelWidth: width).first
+        XCTAssertEqual(first?.text, "00:00.00")
+        XCTAssertGreaterThanOrEqual(first?.labelX ?? 0, wave.scale.x(0) + WaveformView.handleWidth, "beside the handle")
+        wave.trimStart = 10
+        let moved = wave.rulerMarks(labelWidth: width).first { $0.text == "00:10.00" }
+        XCTAssertGreaterThanOrEqual(moved?.labelX ?? 0, wave.scale.x(10) + WaveformView.handleWidth)
+        let before = wave.rulerMarks(labelWidth: width).first { $0.text == "00:00.00" }
+        XCTAssertEqual(before?.labelX ?? 0, 2, "a label clear of the handle stays where it was")
+        wave.trimEnd = 22
+        let marks = wave.rulerMarks(labelWidth: width)
+        XCTAssertNil(marks.first { $0.text == "00:20.00" }?.labelX, "no label under the end handle's triangle")
+        XCTAssertNotNil(marks.first { $0.text == "00:20.00" }, "its tick stays")
     }
 
     // MARK: The tab
@@ -1602,6 +1624,32 @@ extension PlayheadFlowTests {
         try await play(0.4)
         await playsAt(id, 12.5)
         XCTAssertEqual(rowMark(id), runningMark)
+    }
+
+    func testACueLoadedToATimeByALoadCueShowsThePositionLineThere() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        XCTAssertNil(waveView.playhead, "nothing is loaded yet")
+        let load: ModelID = "00000000-0000-0000-0000-0000000000d3"
+        var cue = try XCTUnwrap(NewCueKind.load.cueJSON(id: load, patch: nil))
+        var kind = try XCTUnwrap(cue["kind"])
+        kind.set("target", .string(id.raw))
+        kind.set("load_to_time", .double(7))
+        cue.set("kind", kind)
+        let lists = try XCTUnwrap(store.model?.cueLists.first)
+        let added = await store.send(command: .addCue(cue, list: lists.id, parent: nil, index: lists.cues.count))
+        guard case .success = added else { return XCTFail("add the Load cue") }
+        await assertEventually("the Load cue is in") { self.store.model?.cue(load) != nil }
+        await app.perform(.startSelected, on: wc, cues: [load])
+        await assertEventually("the cue is loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+        await assertEventually("the position line is at the loaded time") {
+            try? await self.play(0.01)
+            return abs((self.waveView.playhead ?? -1) - 7) < 0.05
+        }
+        XCTAssertTrue(try lineDrawn(at: waveX(7)) || waveView.playhead != nil, "and drawn there")
+        try await goFromWaveform(id)
+        try await play(0.4)
+        await playsAt(id, 7.4)
     }
 
     func testPlayingOrPreviewingCueClickJumpsThereAndPlaysOnWithItsTimesFromThere() async throws {

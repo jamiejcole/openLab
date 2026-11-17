@@ -135,6 +135,9 @@ pub enum Input {
     /// playing or previewing one jumps there and plays on; a paused one moves there and stays
     /// paused; one in its pre-wait starts its action there at once. The binary keeps the point
     /// inside the trims and plans the slices from it, so a point past a loop is reachable.
+    /// For a Video cue `position` is seconds into its action (the binary has mapped the file's
+    /// time through the cue's plan), and the same states apply: loaded there past its pre-wait,
+    /// moved there playing or paused, its action started there from a pre-wait.
     Seek {
         cue: CueId,
         position: f64,
@@ -571,7 +574,9 @@ pub enum Action {
     /// `LoadVoiceAt`) from sample `at`: the voice continues as `run`, a fresh id, and feedback
     /// for `from` is stale from now on. A playing voice crossfades into the new position once
     /// its stream is ready; a paused one moves and stays paused (a `ResumeVoice` with
-    /// `paused: run` plays it); a voice not playing yet starts there. Previews too.
+    /// `paused: run` plays it); a voice not playing yet starts there. Previews too. For a Video
+    /// cue's run `position` is samples into the action instead (its picture follows its plan
+    /// from there; its sound, if it has any, goes on from the same point of the same plan).
     SeekVoice {
         cue: CueId,
         run: RunId,

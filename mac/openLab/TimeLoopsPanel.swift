@@ -385,17 +385,18 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         left.setHuggingPriority(.defaultHigh, for: .vertical)
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        // A Video cue's keep-last-frame box is with the play count on the left: the row under the
-        // timeline is as wide for a Video cue as for an Audio cue, and fits the least window.
-        let strip = NSStackView(views: [
-            deleteSlicesButton, addSliceButton, fadeCheck, fadeCurvePopup, spacer, zoomOutButton, zoomInButton,
-        ])
+        // A Video cue's keep-last-frame box is with the play count on the left. Two rows under the
+        // timeline, each narrow enough that the tab fits the least window with the sidebar open: the
+        // slice and zoom buttons, then the built-in fades.
+        let strip = NSStackView(views: [deleteSlicesButton, addSliceButton, spacer, zoomOutButton, zoomInButton])
         strip.spacing = 4
+        let fadeStrip = NSStackView(views: [fadeCheck, fadeCurvePopup])
+        fadeStrip.spacing = 6
         waveform.translatesAutoresizingMaskIntoConstraints = false
         waveform.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         waveform.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         waveform.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
-        let right = NSStackView(views: [waveform, strip])
+        let right = NSStackView(views: [waveform, strip, fadeStrip])
         right.orientation = .vertical
         right.alignment = .leading
         right.spacing = 4
@@ -404,6 +405,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         right.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         view.orientation = .horizontal
         view.alignment = .top
+        // The timeline takes the room the left column leaves, whatever its rows under it need.
+        view.distribution = .fill
         view.spacing = 12
         view.addArrangedSubview(left)
         view.addArrangedSubview(right)
@@ -530,10 +533,22 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         waveform.fadeCurve = fadeCurve
     }
 
-    /// Draws the playhead line at `position`, where the engine says the cue's voice is in the
-    /// file (slices, loop passes and devamps already applied); none draws no line.
+    /// Draws the playhead line at `position`, where the engine says the cue is in the file (playing
+    /// or paused, slices, loop passes and devamps already applied; or where it stands loaded); none
+    /// draws no line. The timeline shows one position: a click's line is kept while the cue stands
+    /// at it (loaded or paused there, drawn as that line alone) and goes once the cue is anywhere
+    /// else (playing on, loaded elsewhere by a Load cue, a click it ignored).
     func showProgress(position: Double?) {
-        waveform.playhead = file == nil ? nil : position
+        var shown = position
+        if let position, let clicked = waveform.insertion {
+            if abs(clicked - position) < 0.05 {
+                shown = nil
+            } else {
+                waveform.insertion = nil
+                applyLock()
+            }
+        }
+        waveform.playhead = file == nil ? nil : shown
     }
 
     private func applyLock() {

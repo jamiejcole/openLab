@@ -1,0 +1,22 @@
+{
+  "about": "Active Cues rows with a long name: a looping Audio cue and a plain one playing, the name using the row's width beside the buttons whatever the time text under it, at the sidebar's default and narrowest width, in light appearance.",
+  "show": "Demo",
+  "appearance": "light",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"type": "inspector-name", "text": "Thunder rumble in the distance, rolling in from stage left and building under the dialogue"},
+    {"tab": "timeLoops"},
+    {"click": "time-loops-loop"},
+    {"click": "toggle-sidebar"},
+    {"click": "sidebar-tabs", "at": [0.5, 0.5]},
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 2},
+    {"shot": "looping-long-name"},
+    {"key": "space"},
+    {"advance": 2},
+    {"shot": "two-running"}
+  ]
+}

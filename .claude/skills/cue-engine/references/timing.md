@@ -64,7 +64,7 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 ### Seek (load to a point of the file)
 `Seek { cue, position }` (a click in an Audio cue's waveform, `seek.rs`) names a point of the media file, not of the timeline: core cannot plan slices, so it passes `position` (seconds to device frames; NaN and negative are 0, huge saturates) and the binary keeps it inside the trims and plans from there (`cue_slices_from`), past loops included.
 - A point at or past the out point is the end of a pass of the last slice: its next pass follows if it has one (a forever loop loops on from its start), else nothing (a playing cue's action ends).
-- Not Audio, stopping (`stop_end`), post-waiting with its sound over, or a run with no voice: `LoadIgnored`. Broken (static, run time, or a lost mark while the device is away): `CueBroken`, nothing sent.
+- Stopping (`stop_end`): nothing, and no warning (the stop ends it where it is; a warning row would blame a healthy cue). Not Audio, post-waiting with its sound over, or a run with no voice: `LoadIgnored`. Broken (static, run time, or a lost mark while the device is away): `CueBroken`, nothing sent.
 - A preview of the cue jumps first: `SeekVoice` with a fresh preview id; it stays a preview (no `PreviewChanged`).
 - Idle or loaded: a load there (`LoadVoiceAt`, `Loaded.seek`, no pre-wait left, offset 0); starting it plays from the point with no pre-wait (a cue loaded disarmed gets its `LoadVoiceAt` at the start). A lost mark clears as for Load.
 - Pre-waiting: the pre-wait ends now (`until = now`; paused: on the resume) and the action starts there in the same call (`Run::seek` taken at action start: `LoadVoiceAt`, then `StartVoice` offset 0); a stream a load to time prepared is unloaded first.
@@ -94,7 +94,7 @@ Voice actions apply to armed Audio cues only. Group operations also reach descen
 | stopping | `TriggerIgnored` | idle, hard `StopVoice` | stopping | stopping | `LoadIgnored` | idle, hard `StopVoice` |
 | broken | `CueBroken` (static problems: timing runs); a broken-and-paused cue resumes | pending auto-continue cancelled | timers freeze | timers continue | `CueBroken` | idle, continue cancelled; static problems stay |
 
-The Start column is for option `Nothing`; other options replace `TriggerIgnored`. Seek is the Load column except where a running, paused or pre-waiting cue moves ("Seek" above).
+The Start column is for option `Nothing`; other options replace `TriggerIgnored`. Seek is the Load column except where a running, paused or pre-waiting cue moves and a stopping cue says nothing ("Seek" above).
 
 | From | Event | To |
 |---|---|---|

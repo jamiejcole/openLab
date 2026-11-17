@@ -211,8 +211,9 @@ final class FadeGeometryPanel: NSObject, NSTextFieldDelegate {
         fillsStageNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         fillsStageNote.textColor = .secondaryLabelColor
         fillsStageNote.translatesAutoresizingMaskIntoConstraints = false
-        // Wraps within the fields' width; never widens them.
-        fillsStageNote.preferredMaxLayoutWidth = 280
+        // Wraps within the fields' width (the grid's, which is fixed), so its height is that of the
+        // lines it is drawn in; never widens them.
+        fillsStageNote.preferredMaxLayoutWidth = grid.fittingSize.width
         fillsStageNote.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         fields.addSubview(fillsStageNote)
         let scroll = NSScrollView()
@@ -229,9 +230,11 @@ final class FadeGeometryPanel: NSObject, NSTextFieldDelegate {
             view.addSubview(v)
         }
         let clip = scroll.contentView
-        // As wide as the fields need when there is room, so the thumbnail takes the rest.
+        // As wide as the fields need when there is room, so the thumbnail takes the rest; below the
+        // window's hold on its size, so a narrow inspector (the sidebar open in the least window)
+        // scrolls the fields instead of growing the window.
         let fit = scroll.widthAnchor.constraint(equalTo: fields.widthAnchor)
-        fit.priority = .defaultHigh
+        fit.priority = NSLayoutConstraint.Priority(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 10)
         thumbnail.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         thumbnail.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         thumbnail.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .vertical)
@@ -259,9 +262,13 @@ final class FadeGeometryPanel: NSObject, NSTextFieldDelegate {
             thumbnail.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
             thumbnail.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 16),
             thumbnail.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            thumbnail.widthAnchor.constraint(greaterThanOrEqualToConstant: GeometryControls.thumbnailLeast),
+            thumbnail.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.thumbnailLeast),
         ])
     }
+
+    /// The thumbnail's least width here: narrower than the Video cue's tab, which has no side column, so
+    /// the side column, the fields and the thumbnail all fit beside the sidebar in the least window.
+    static let thumbnailLeast: CGFloat = 64
 
     // MARK: Showing
 
