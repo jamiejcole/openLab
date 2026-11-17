@@ -74,15 +74,24 @@ extension InspectorViewController {
     /// engine sends where in the file the cue is).
     func updateTimeLoopsProgress() {
         guard let cue, Self.timeLoopsKinds.contains(cue.kindType) else { return }
-        timeLoops.showProgress(position: store.progress[cue.id]?.position)
+        var position = store.progress[cue.id]?.position
+        // A loaded cue stands where it was loaded. The line a click left there is that place already.
+        if position == nil, let at = store.loadedAt[cue.id] {
+            let clicked = timeLoops.waveform.insertion
+            position = clicked.map { abs($0 - at) < 0.05 } == true ? nil : at
+        }
+        timeLoops.showProgress(position: position)
     }
 
-    /// A click in the waveform: the cue plays on (or is loaded, or its pre-wait ends) from
+    /// A click in the timeline: the cue (Audio or Video) plays on (or is loaded, or its pre-wait ends) from
     /// `position` seconds into its file; the engine keeps it inside the trims. A broken cue gets
     /// only the line: nothing would load or sound. A refusal goes to the show log, as a transport
     /// key's does.
     func seek(_ id: ModelID, to position: Double) {
-        guard !isLocked, position.isFinite, position >= 0, store.model?.cue(id)?.kindType == "audio" else { return }
+        // A still has no timeline to click in: the panel sends nothing for it.
+        guard !isLocked, position.isFinite, position >= 0,
+            let kind = store.model?.cue(id)?.kindType, Self.timeLoopsKinds.contains(kind)
+        else { return }
         let problems = store.problems[id] ?? []
         guard (store.cueStates[id]?.state ?? (problems.isEmpty ? .idle : .broken)) != .broken else { return }
         Task { [store] in

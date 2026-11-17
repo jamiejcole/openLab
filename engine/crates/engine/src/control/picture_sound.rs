@@ -91,6 +91,7 @@ impl DocCx<'_> {
             Action::LoadVoice { cue, .. }
             | Action::UnloadVoice { cue, .. }
             | Action::StartVoice { cue, .. }
+            | Action::SeekVoice { cue, .. }
             | Action::StopVoice { cue, .. }
             | Action::PauseVoice { cue, .. }
             | Action::ResumeVoice { cue, .. }

@@ -405,6 +405,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         right.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         view.orientation = .horizontal
         view.alignment = .top
+        // The timeline takes the room the left column leaves, whatever its rows under it need.
+        view.distribution = .fill
         view.spacing = 12
         view.addArrangedSubview(left)
         view.addArrangedSubview(right)

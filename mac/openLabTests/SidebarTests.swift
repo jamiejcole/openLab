@@ -357,6 +357,26 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(side.updatedActiveRows, [Self.rain])
     }
 
+    /// A long name with only a time under it (a loop with no end, a held cue) uses the row's width up to
+    /// the buttons; the panic button is at the row's trailing edge, not beside the text.
+    func testALongNameWithASingleTimeUsesTheRowsWidth() throws {
+        let cell = ActiveCueCell()
+        cell.frame = NSRect(x: 0, y: 0, width: 280, height: 56)
+        cell.title.stringValue = "1  Thunder rumble in the distance, rolling in from stage left and building"
+        cell.times.stringValue = CueTime.running(3.96)
+        cell.layoutSubtreeIfNeeded()
+        func inCell(_ v: NSView) -> NSRect { v.convert(v.bounds, to: cell) }
+        let title = inCell(cell.title)
+        let pause = inCell(cell.pauseButton)
+        let panic = inCell(cell.panicButton)
+        let timesWidth = (cell.times.stringValue as NSString).size(withAttributes: [.font: cell.times.font!]).width
+        XCTAssertGreaterThan(title.width, timesWidth + 60, "the name is not cut to the width of the time text")
+        XCTAssertGreaterThan(title.width, cell.bounds.width - pause.width - panic.width - 40, "it takes the room")
+        XCTAssertGreaterThan(panic.maxX, cell.bounds.width - 14, "the panic button is at the row's edge")
+        XCTAssertGreaterThanOrEqual(title.minX + 4, pause.maxX, "the name follows the pause button")
+        XCTAssertLessThanOrEqual(title.maxX, panic.minX, "and ends before the panic button")
+    }
+
     func testPausedAndStoppingCuesKeepTheirProgressAcrossStateChanges() async throws {
         _ = try await make()
         try state(Self.door, "running")

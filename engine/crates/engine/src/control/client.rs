@@ -472,6 +472,9 @@ impl DocCx<'_> {
             }
             ClientMessage::Request { id, request } => match request {
                 Request::Snapshot => {
+                    // The loaded cues' places are not in a snapshot: they go out again with the
+                    // next progress pass, for this client and any other.
+                    self.doc.last_loaded.clear();
                     reply(
                         to,
                         ServerMessage::Snapshot {

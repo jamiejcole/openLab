@@ -43,7 +43,7 @@ C-D2 | Devamp then pause/resume: devamp kept; the next cue plays after the devam
 C-D3 | Devamp on a non-looping cue: nothing; Devamp cue shows no duration/progress | user 2026-10-27
 C-D4 | Devamp during a non-looping slice: no effect, a later loop keeps looping (not carried over) | user 2026-10-27, assumed for carry-over (m: Q212)
 C-D5 | Devamp "start next cue": playhead moves to the next cue immediately after the Devamp GO; that cue starts when the target leaves its loop; playhead stays on it | user 2026-10-27
-C-D7 | Devamp mode for the currently looping slice goes to slice 2, then the cue plays again and slice 1 loops forever; devamp for the looping cue while slice 1 loops does nothing. One behaviour: leave whatever loop plays | user 2026-10-27
+C-D7 | Devamp mode for the currently looping slice goes to slice 2, then the cue plays again and slice 1 loops forever; devamp for the looping cue while slice 1 loops does nothing (ignored with a warning, as the manual's Devamp page has it). The first mode leaves whatever loop plays; the second only the cue's own loop, none when slices loop | user 2026-10-27
 C-F1 | Fade on a stopped target runs its duration, target untouched | user 2026-10-27
 C-F2 | Fade targeting a group is relative: each child moves by the same dB, not to one level. Relative to the level at the ramp's first sample, capped at +12 dB | user 2026-10-27
 C-F3 | Fade on a paused target applies; level is there on Resume | user 2026-10-27

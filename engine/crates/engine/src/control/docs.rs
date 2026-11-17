@@ -1457,6 +1457,7 @@ impl DocCx<'_> {
     /// Sends this doc's snapshot to its clients again (its model changed in a way no
     /// `model_changed` describes, or the first broadcast did not fit).
     pub(super) fn resend_snapshot(&mut self) {
+        self.doc.last_loaded.clear();
         let snapshot = Box::new(self.doc.snapshot());
         self.doc.file.resend_snapshot = !self
             .eng

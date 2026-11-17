@@ -33,6 +33,18 @@ impl DocCx<'_> {
 
     /// One transport action; `later_panic`: a `panic_cue` after another of the same batch.
     fn transport_one(&mut self, action: TransportAction, now: SampleTime, later_panic: bool) {
+        // A seek names a time in the cue's file; the cue engine counts a Video cue's into its
+        // action, where its plan (trims, slices, loops) first stands there.
+        let action = match action {
+            TransportAction::Seek { cue, position } if self.is_video(cue) => {
+                match self.video_seek_point(cue, position) {
+                    Some(position) => TransportAction::Seek { cue, position },
+                    // A still, or a movie not probed: no point to go to.
+                    None => return,
+                }
+            }
+            action => action,
+        };
         let scope = orphan_scope(&action);
         let panic = matches!(action, TransportAction::Panic);
         self.observe_transport(&action);

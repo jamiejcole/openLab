@@ -1,5 +1,5 @@
 {
-  "about": "A Video cue's Time & Loops tab (#646) in light appearance at the least window size (800x500), then in Show Mode (every control off).",
+  "about": "A Video cue's Time & Loops tab (#646) in light appearance at the least window size (800x500), then in Show Mode (which hides the inspector, so the shot shows the cue list alone).",
   "show": "Video",
   "appearance": "light",
   "displays": "V1:1920x1080",

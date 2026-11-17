@@ -5611,3 +5611,130 @@ fn a_fade_of_a_video_waiting_for_its_probe_reaches_the_picture_when_it_plays() {
     s.run(samples(0.2));
     opacity_is(&mut s, 0.25, 0.02, "drawn where the Fade left it");
 }
+
+/// A seek of an idle Video cue (a click in its timeline) loads it at that point of its file and
+/// tells clients where it stands; GO then starts the picture on that frame.
+#[test]
+fn a_seek_loads_an_idle_video_cue_at_the_point_and_go_starts_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (100, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 2.0,
+    });
+    s.run(BLOCK);
+    expect_state(&s, 1, CueState::Loaded, "");
+    assert_eq!(shown(&mut s), None, "a loaded picture is not shown");
+    // The loaded cue's place in its file is told, once its progress is.
+    s.run(samples(0.3));
+    let told = progress_of(&mut s, 1).expect("a loaded cue's position is told");
+    assert!(told.2.is_some_and(|p| near(p, 2.0)), "{told:?}");
+    // Nothing more is sent for a cue that stands loaded, until a client asks for the snapshot
+    // (a client that joins late knows the place only from the next pass).
+    s.run(samples(0.3));
+    assert!(progress_of(&mut s, 1).is_none(), "told once");
+    let id = s.request_id();
+    s.send(ClientMessage::Request {
+        id,
+        request: Request::Snapshot,
+    });
+    s.run(samples(0.3));
+    let again = progress_of(&mut s, 1).expect("told again after a snapshot");
+    assert!(again.2.is_some_and(|p| near(p, 2.0)), "{again:?}");
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(50));
+}
+
+/// A seek of a playing movie jumps there without stopping the cue and plays on in step; its
+/// progress goes on from the point and its end moves with it.
+#[test]
+fn a_seek_moves_a_playing_movie_and_a_paused_one_stays_paused_until_resumed() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (100, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 2.0,
+    });
+    let moved = s.now();
+    expect_state(&s, 1, CueState::Running, "no stop");
+    run_to(&mut s, moved + samples(0.5));
+    let frame = on_stage(&mut s, "a frame after the seek");
+    assert!(
+        frame.abs_diff(frame_at(2.5)) <= 2,
+        "{frame} half a second after 2 s"
+    );
+    let (elapsed, remaining, position) =
+        progress_at(&mut s, 1, moved + samples(1.0)).expect("progress after the seek");
+    assert!(near(elapsed, 3.0), "{elapsed}");
+    assert!(near(remaining.unwrap(), 1.0), "{remaining:?}");
+    assert!(near(position.unwrap(), 3.0), "{position:?}");
+    // Paused, then moved: held on the frame there, and the resume plays on from it.
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    expect_state(&s, 1, CueState::Paused, "");
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 1.0,
+    });
+    s.run(samples(0.5));
+    expect_state(&s, 1, CueState::Paused, "still paused");
+    assert_eq!(shown(&mut s), Some(25), "held on the frame at 1 s");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.5));
+    let now = on_stage(&mut s, "playing again");
+    assert!(
+        now.abs_diff(frame_at(1.5)) <= 2,
+        "{now} half a second on from 1 s"
+    );
+    // 3 s of movie were left at 1 s: it ends there, not where the first run would have.
+    run_to(&mut s, resumed + samples(2.9));
+    expect_state(&s, 1, CueState::Running, "still playing");
+    run_to(&mut s, resumed + samples(3.1));
+    expect_state(&s, 1, CueState::Idle, "ended after the rest of the movie");
+}
+
+/// A seek counts the file's time through the cue's plan: with a start trim the picture plays on
+/// from the point (the trim is not played again), and a point before the trim goes to the trim.
+#[test]
+fn a_seek_in_a_trimmed_movie_goes_to_that_frame_and_a_point_before_the_trim_to_the_trim() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (100, 25));
+    let mut trimmed = video_cue(1, Some(&movie));
+    if let CueKind::Video { timing, .. } = &mut trimmed.kind {
+        timing.start_time = 1.0;
+        timing.end_time = Some(3.0);
+    }
+    let mut s = video_show(vec![trimmed]);
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 2.0,
+    });
+    s.run(BLOCK);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(50), "the frame at 2 s of the file");
+    // Left running; 1 s of the trimmed range is left when it started there.
+    run_to(&mut s, at + samples(0.9));
+    expect_state(&s, 1, CueState::Running, "");
+    run_to(&mut s, at + samples(1.1));
+    expect_state(&s, 1, CueState::Idle, "ended at the end trim");
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 0.2,
+    });
+    s.run(BLOCK);
+    expect_state(&s, 1, CueState::Loaded, "loaded at the trim");
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(
+        shown(&mut s),
+        Some(25),
+        "a point before the trim loads at the trim"
+    );
+}

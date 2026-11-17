@@ -201,11 +201,28 @@ impl DocCx<'_> {
             if items.len() > voiced || pictured {
                 items.sort_by_key(|i| i.cue);
             }
-            if !items.is_empty() || !waits.is_empty() {
+            // Loaded cues stand at a point of their file (a Load cue's time, a click in the
+            // timeline): their items carry only that `position`. They ride on the message sent for
+            // anything else, and make one of their own only when the set changed, so a standing
+            // loaded cue costs no traffic.
+            let loaded = self.loaded_positions();
+            let loaded_changed = loaded != self.doc.last_loaded;
+            if !items.is_empty() || !waits.is_empty() || loaded_changed {
+                items.extend(loaded.iter().map(|&(cue, position)| ProgressItem {
+                    cue,
+                    elapsed: 0.0,
+                    remaining: None,
+                    position: Some(position),
+                }));
+                items.sort_by_key(|i| i.cue);
                 self.doc.last_progress = Some(rendered);
                 let mut m = ServerMessage::Progress { items, waits };
                 m.sanitise();
-                self.eng.out.send_lossy(Some(self.doc.id), m);
+                // A message dropped for a slow client is made again next pass while the loaded
+                // set it carried is still unsent (a playing cue's progress comes again anyway).
+                if self.eng.out.send_lossy(Some(self.doc.id), m) {
+                    self.doc.last_loaded = loaded;
+                }
             }
         }
         // The engine read the meters once this wake ([`Control::begin_meter_round`]): this
@@ -213,6 +230,23 @@ impl DocCx<'_> {
         if let Some(round) = self.eng.meter_round {
             self.meters(round);
         }
+    }
+
+    /// Where each loaded cue of this doc stands in its media file, seconds, by cue.
+    fn loaded_positions(&self) -> Vec<(openlab_core::CueId, f64)> {
+        let engine = self.doc.model.engine();
+        let mut out: Vec<(openlab_core::CueId, f64)> = self
+            .doc
+            .voices
+            .loaded_at()
+            .into_iter()
+            .filter(|(cue, _)| !self.is_video(*cue))
+            .map(|(cue, frame)| (cue, self.seconds(frame)))
+            .chain(self.eng.loaded_pictures(self.doc.id))
+            .filter(|(cue, _)| engine.state(*cue) == openlab_core::CueState::Loaded)
+            .collect();
+        out.sort_by_key(|(c, _)| *c);
+        out
     }
 
     fn seconds(&self, frames: u64) -> f64 {

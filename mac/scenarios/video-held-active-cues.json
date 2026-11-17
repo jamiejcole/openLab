@@ -1,0 +1,30 @@
+{
+  "about": "A Video cue held on its last frame (hold at end, one pass of 3 s): the Duration cell and the Active Cues row show the same counting time, no bar, in light appearance with the sidebar open; the Time & Loops tab shows its line at the last frame.",
+  "show": "Video",
+  "appearance": "light",
+  "displays": "V1:1920x1080",
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1,
+    "media/card.jpg": 1,
+    "media/A very long name for a projection clip used in the second act.mov": 2
+  },
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"advance": 0.1},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"type": "time-loops-end", "text": "3"},
+    {"click": "time-loops-hold-at-end"},
+    {"click": "toggle-sidebar"},
+    {"click": "sidebar-tabs", "at": [0.5, 0.5]},
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 5},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"shot": "held"},
+    {"advance": 2},
+    {"shot": "held-later"}
+  ]
+}

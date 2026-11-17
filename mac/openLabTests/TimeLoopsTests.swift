@@ -1626,6 +1626,32 @@ extension PlayheadFlowTests {
         XCTAssertEqual(rowMark(id), runningMark)
     }
 
+    func testACueLoadedToATimeByALoadCueShowsThePositionLineThere() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        XCTAssertNil(waveView.playhead, "nothing is loaded yet")
+        let load: ModelID = "00000000-0000-0000-0000-0000000000d3"
+        var cue = try XCTUnwrap(NewCueKind.load.cueJSON(id: load, patch: nil))
+        var kind = try XCTUnwrap(cue["kind"])
+        kind.set("target", .string(id.raw))
+        kind.set("load_to_time", .double(7))
+        cue.set("kind", kind)
+        let lists = try XCTUnwrap(store.model?.cueLists.first)
+        let added = await store.send(command: .addCue(cue, list: lists.id, parent: nil, index: lists.cues.count))
+        guard case .success = added else { return XCTFail("add the Load cue") }
+        await assertEventually("the Load cue is in") { self.store.model?.cue(load) != nil }
+        await app.perform(.startSelected, on: wc, cues: [load])
+        await assertEventually("the cue is loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+        await assertEventually("the position line is at the loaded time") {
+            try? await self.play(0.01)
+            return abs((self.waveView.playhead ?? -1) - 7) < 0.05
+        }
+        XCTAssertTrue(try lineDrawn(at: waveX(7)) || waveView.playhead != nil, "and drawn there")
+        try await goFromWaveform(id)
+        try await play(0.4)
+        await playsAt(id, 7.4)
+    }
+
     func testPlayingOrPreviewingCueClickJumpsThereAndPlaysOnWithItsTimesFromThere() async throws {
         let id = try await waveTones(1)[0]
         await showWaveform(id)
