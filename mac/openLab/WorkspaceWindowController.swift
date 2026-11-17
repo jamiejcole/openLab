@@ -140,8 +140,14 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var pendingInspectorHeight: CGFloat?
     var pendingSidebarWidth: CGFloat?
     var isRestoringLayout = false
-    /// The least the cue list keeps: its height (the baseline of a minimum-size window) and width.
-    static let minCueListHeight: CGFloat = 56
+    /// What a sideways scroller that always shows takes of the list's height.
+    static let sidewaysScrollerHeight = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+    /// The least the cue list keeps: its width, and its height: the header and one whole row, with a
+    /// sideways scroller under them for systems that always show one (the columns overflow at the least
+    /// width with the sidebar shown).
+    static let minCueListHeight: CGFloat = 56 + sidewaysScrollerHeight
+    /// The least window height, which leaves the inspector its least and the list its least.
+    static let minWindowHeight: CGFloat = 500 + sidewaysScrollerHeight
     /// The least the inspector may be: enough for the Time & Loops tab's left column (Start, End,
     /// play count, Loop) below the tab strip. The smallest window leaves this much.
     /// The inspector's height until the operator drags it: room for the level faders and the notes.
@@ -164,7 +170,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.title = loc("window.main.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.mainWindow)
         window.isReleasedWhenClosed = false  // closing must never destroy the window
-        window.minSize = NSSize(width: 800, height: 500)
+        window.minSize = NSSize(width: 800, height: Self.minWindowHeight)
         super.init(window: window)
         window.delegate = self
         // The log window belongs to this workspace: it goes when the workspace's window does.

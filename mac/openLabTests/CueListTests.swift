@@ -6337,6 +6337,35 @@ final class CueListColumnLayoutTests: XCTestCase {
         XCTAssertFalse(scroll.hasHorizontalScroller, "and gone again once they fit")
     }
 
+    /// Flow: scroll bars always shown, the least window, inspector and sidebar shown (so the columns
+    /// overflow and the sideways scroller is on), a cue playing: the selected row is whole in the list
+    /// above the scroller, with the window shrunk to that size from a larger one.
+    func testWithScrollBarsAlwaysShownAndTheSidewaysScrollerOnTheSelectedRowIsWholeAboveIt() async throws {
+        let wc = try await open(NSSize(width: 1200, height: 800), playing: [H.intro])
+        let window = try XCTUnwrap(wc.window)
+        let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        scroll.scrollerStyle = .legacy
+        wc.setVisible(.sidebar, true)
+        for cue in [H.radio, H.intro] {
+            wc.cueList.selectAsUser([cue])
+            window.setContentSize(NSSize(width: 1200, height: 800))
+            window.contentView?.layoutSubtreeIfNeeded()
+            outline.scrollRowToVisible(outline.numberOfRows - 1)
+            window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
+            window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertTrue(wc.isVisible(.inspector))
+            XCTAssertTrue(scroll.hasHorizontalScroller, "the sideways scroller is on")
+            let scroller = try XCTUnwrap(scroll.horizontalScroller)
+            XCTAssertFalse(scroller.isHiddenOrHasHiddenAncestor)
+            let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
+            let seen = scroll.convert(scroll.contentView.frame, to: nil)
+            XCTAssertGreaterThanOrEqual(row.minY, seen.minY - 0.5, "the selected row is not cut off below")
+            XCTAssertLessThanOrEqual(row.maxY, seen.maxY + 0.5, "and not above")
+            let at = scroller.convert(scroller.bounds, to: nil)
+            XCTAssertFalse(at.intersects(row.insetBy(dx: 0, dy: 0.5)), "the scroller \(at) lies over the row \(row)")
+        }
+    }
+
     /// The columns wider than the list (the least width with the sidebar shown) and the list scrolled
     /// sideways with the wheel: the header moves with the rows, each title over its column. Widened until
     /// the columns fit, the list is back at its left edge (the playhead's pointer whole) with no scroller.
