@@ -96,3 +96,65 @@ final class LevelsUITests: XCTestCase {
         XCTAssertTrue(waitFor("value == '00:03.00'", duration), "the duration is stored")
     }
 }
+
+/// The patch editor's device pop-up with real presses, on the test engine's two virtual outputs
+/// (QLab 5 manual, Audio settings and the patch editor).
+@MainActor
+final class PatchEditorUITests: XCTestCase {
+    private let first = "openLab Virtual Output"
+    private let second = "openLab Virtual Output 2"
+
+    /// Picks `title` in `popup`'s menu.
+    private func choose(_ title: String, in popup: XCUIElement, app: XCUIApplication, line: UInt = #line) {
+        let item = app.menuItems[title]
+        popup.click()
+        // A pop-up opened while another process holds focus can fail to show its menu: once more.
+        if !item.waitForExistence(timeout: 3) {
+            app.typeKey(.escape, modifierFlags: [])
+            popup.click()
+        }
+        XCTAssertTrue(item.waitForExistence(timeout: 5), "\(title) is offered", line: line)
+        item.click()
+        XCTAssertTrue(waitFor("value == '\(title)'", popup), "\(title) is shown", line: line)
+    }
+
+    func testPatchEditorDeviceChosenWhileACuePlaysTheSystemOutputAndALossAndReturn() async {
+        let app = launchDemo()
+        await engineRequest(["type": "restore_device", "device": "openlab:virtual-2"])  // plugged in
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])  // GO: Intro, a loop
+        let playing = cueState("Running", of: "Intro", in: app)
+        XCTAssertTrue(playing.waitForExistence(timeout: 10), "Intro plays")
+
+        app.buttons["settings-button"].click()
+        tabButton("Audio", in: app).click()
+        let edit = app.buttons["settings-patch-edit-1"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 10), "the patch table")
+        edit.click()
+        let editor = app.windows["patch-editor-window"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 10), "the patch editor opens")
+        let device = editor.popUpButtons["patch-editor-device"]
+        XCTAssertTrue(waitFor("value == '\(first)'", device), "on the first output")
+
+        // Another device while Intro plays: the editor shows it, and Intro plays on.
+        choose(second, in: device, app: app)
+        XCTAssertTrue(playing.exists, "Intro plays on")
+        XCTAssertFalse(cueState("Broken", of: "Intro", in: app).exists, "and is not broken")
+
+        // The system output names the Mac's output device, and follows it when it changes.
+        choose("System output (\(first))", in: device, app: app)
+        await engineRequest(["type": "set_default_device", "device": "openlab:virtual-2"])
+        XCTAssertTrue(
+            waitFor("value == 'System output (\(second))'", device), "the system output follows the Mac's choice")
+        XCTAssertTrue(playing.exists, "Intro plays on")
+
+        // The patch's device lost and back: the editor says it is not connected, then shows it again.
+        choose(first, in: device, app: app)
+        await engineRequest(["type": "lose_device", "device": "openlab:virtual"])
+        XCTAssertTrue(waitFor("value == '\(first) (not connected)'", device), "the editor shows the device gone")
+        let problem = editor.staticTexts["patch-editor-problem"]
+        XCTAssertTrue(waitFor("value CONTAINS 'not connected'", problem), "and why: \(text(problem))")
+        await engineRequest(["type": "restore_device", "device": "openlab:virtual"])
+        XCTAssertTrue(waitFor("value == '\(first)'", device), "the device is back")
+        XCTAssertTrue(waitFor("exists == false", problem), "and the problem line goes")
+    }
+}
