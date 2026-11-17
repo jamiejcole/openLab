@@ -39,7 +39,10 @@ pub const SYSTEM_OUTPUT: &str = "system output";
 pub struct PatchMapping {
     /// The device's name as the device layer lists it; empty on the system output.
     pub device: String,
-    /// Device channel (0-based) for each logical output of the patch, in order.
+    /// Device channel (0-based) for each of the patch's first logical outputs, in order; outputs
+    /// past the list have no device output of their own (a device with fewer outputs than the
+    /// patch, as QLab 5 routes cue output n only where device output n exists). The patch's
+    /// crosspoints may still send them anywhere.
     pub channels: Vec<u32>,
     /// Plays on the system output: whichever device the operating system's default output is,
     /// followed when it changes (QLab 5 manual p. 7), rather than on a named device.
@@ -495,7 +498,7 @@ pub struct DeviceInfo {
 /// Where a patch can play right now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatchResolution {
-    /// Every logical output has a device channel.
+    /// The patch's first outputs each have a device channel (the rest have none).
     Mapped { device: String, channels: Vec<u32> },
     /// The operator has not mapped this patch on this machine (WS-07): ask once.
     Unmapped,
@@ -507,7 +510,7 @@ pub enum PatchResolution {
         needed: u32,
         available: u32,
     },
-    /// The mapping lists a different number of channels than the patch has outputs.
+    /// The mapping lists more channels than the patch has outputs.
     OutputCountMismatch { mapped: usize, outputs: usize },
 }
 
@@ -523,7 +526,7 @@ pub fn resolve_patch(
     let Some(mapping) = settings.patch_mapping(workspace, patch.id) else {
         return PatchResolution::Unmapped;
     };
-    if mapping.channels.len() != patch.outputs.len() {
+    if mapping.channels.len() > patch.outputs.len() {
         return PatchResolution::OutputCountMismatch {
             mapped: mapping.channels.len(),
             outputs: patch.outputs.len(),
@@ -619,6 +622,8 @@ mod tests {
 
     fn patch(n: u128, outputs: usize) -> OutputPatch {
         OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: pid(n),
             name: "Main".into(),
             master_db: 0.0,
@@ -976,12 +981,20 @@ mod tests {
                 available: 3
             }
         );
-        // The patch grew since it was mapped.
+        // The patch grew since it was mapped: its third output has no device output of its own.
         assert_eq!(
             resolve_patch(&settings, ws(1), &patch(1, 3), &devices, None),
+            PatchResolution::Mapped {
+                device: "A".into(),
+                channels: vec![2, 3]
+            }
+        );
+        // It shrank: the mapping names an output it no longer has.
+        assert_eq!(
+            resolve_patch(&settings, ws(1), &patch(1, 1), &devices, None),
             PatchResolution::OutputCountMismatch {
                 mapped: 2,
-                outputs: 3
+                outputs: 1
             }
         );
     }

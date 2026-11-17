@@ -1,0 +1,602 @@
+{
+ "format_version": 9,
+ "workspace": {
+  "id": "00000000-0000-0000-0000-0000000000e3",
+  "name": "Routing kept",
+  "settings": {
+   "min_go_interval": 0.5,
+   "panic_duration": 3.0,
+   "autosave_interval": 30.0,
+   "osc_access": {
+    "no_passcode": {
+     "view": false,
+     "edit": false,
+     "control": false
+    },
+    "passcodes": [
+     {
+      "passcode": "1234",
+      "rights": {
+       "view": true,
+       "edit": true,
+       "control": true
+      }
+     }
+    ]
+   },
+   "output_max_db": 12.0,
+   "output_min_db": -60.0,
+   "hotkeys": {
+    "go": {
+     "key": "space",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "stop_all": null,
+    "pause_all": null,
+    "resume_all": {
+     "key": "]",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "load_selected": {
+     "key": "l",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "pause_resume_selected": {
+     "key": "p",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "start_selected": null,
+    "stop_selected": null,
+    "reset_selected": null,
+    "preview_selected": {
+     "key": "v",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "panic_selected": {
+     "key": "s",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "edit_number": {
+     "key": "n",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "edit_name": {
+     "key": "q",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "edit_notes": {
+     "key": "o",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "edit_target": {
+     "key": "t",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "edit_pre_wait": {
+     "key": "e",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "edit_duration": {
+     "key": "d",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "edit_post_wait": {
+     "key": "w",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "cycle_continue": {
+     "key": "c",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "toggle_flag": {
+     "key": "f",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    }
+   },
+   "auto_number_start": 1.0,
+   "auto_number_increment": 0.5,
+   "new_cues_auto_load": false
+  },
+  "patches": [
+   {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "name": "Main PA and surround system for the auditorium, balcony and foyer",
+    "master_db": 0.0,
+    "outputs": [
+     {
+      "name": "Surround rear left balcony delay line 1",
+      "level_db": -0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": -1.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": -2.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "Surround rear left balcony delay line 4",
+      "level_db": -3.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": -4.0,
+      "mute": true,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "Surround rear left balcony delay line 7",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "Surround rear left balcony delay line 10",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "Surround rear left balcony delay line 13",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "Surround rear left balcony delay line 16",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "Surround rear left balcony delay line 19",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "Surround rear left balcony delay line 22",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "name": "",
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     }
+    ],
+    "crosspoints": [
+     {
+      "output": 0,
+      "device_output": 7,
+      "db": -0.0
+     },
+     {
+      "output": 0,
+      "device_output": 39,
+      "db": -0.0
+     },
+     {
+      "output": 1,
+      "device_output": 10,
+      "db": -1.0
+     },
+     {
+      "output": 1,
+      "device_output": 39,
+      "db": -1.0
+     },
+     {
+      "output": 2,
+      "device_output": 13,
+      "db": -2.0
+     },
+     {
+      "output": 2,
+      "device_output": 39,
+      "db": -2.0
+     },
+     {
+      "output": 3,
+      "device_output": 16,
+      "db": -3.0
+     },
+     {
+      "output": 3,
+      "device_output": 39,
+      "db": -3.0
+     },
+     {
+      "output": 4,
+      "device_output": 19,
+      "db": -4.0
+     },
+     {
+      "output": 4,
+      "device_output": 39,
+      "db": -4.0
+     },
+     {
+      "output": 5,
+      "device_output": 22,
+      "db": -5.0
+     },
+     {
+      "output": 5,
+      "device_output": 39,
+      "db": -5.0
+     },
+     {
+      "output": 6,
+      "device_output": 25,
+      "db": -6.0
+     },
+     {
+      "output": 6,
+      "device_output": 39,
+      "db": -6.0
+     },
+     {
+      "output": 7,
+      "device_output": 28,
+      "db": -0.0
+     },
+     {
+      "output": 7,
+      "device_output": 39,
+      "db": -0.0
+     },
+     {
+      "output": 8,
+      "device_output": 31,
+      "db": -1.0
+     },
+     {
+      "output": 8,
+      "device_output": 39,
+      "db": -1.0
+     },
+     {
+      "output": 9,
+      "device_output": 34,
+      "db": -2.0
+     },
+     {
+      "output": 9,
+      "device_output": 39,
+      "db": -2.0
+     },
+     {
+      "output": 10,
+      "device_output": 37,
+      "db": -3.0
+     },
+     {
+      "output": 10,
+      "device_output": 39,
+      "db": -3.0
+     },
+     {
+      "output": 11,
+      "device_output": 0,
+      "db": -4.0
+     },
+     {
+      "output": 11,
+      "device_output": 39,
+      "db": -4.0
+     },
+     {
+      "output": 12,
+      "device_output": 3,
+      "db": -5.0
+     },
+     {
+      "output": 12,
+      "device_output": 39,
+      "db": -5.0
+     },
+     {
+      "output": 13,
+      "device_output": 6,
+      "db": -6.0
+     },
+     {
+      "output": 13,
+      "device_output": 39,
+      "db": -6.0
+     },
+     {
+      "output": 14,
+      "device_output": 9,
+      "db": -0.0
+     },
+     {
+      "output": 14,
+      "device_output": 39,
+      "db": -0.0
+     },
+     {
+      "output": 15,
+      "device_output": 12,
+      "db": -1.0
+     },
+     {
+      "output": 15,
+      "device_output": 39,
+      "db": -1.0
+     },
+     {
+      "output": 16,
+      "device_output": 15,
+      "db": -2.0
+     },
+     {
+      "output": 16,
+      "device_output": 39,
+      "db": -2.0
+     },
+     {
+      "output": 17,
+      "device_output": 18,
+      "db": -3.0
+     },
+     {
+      "output": 17,
+      "device_output": 39,
+      "db": -3.0
+     },
+     {
+      "output": 18,
+      "device_output": 21,
+      "db": -4.0
+     },
+     {
+      "output": 18,
+      "device_output": 39,
+      "db": -4.0
+     },
+     {
+      "output": 19,
+      "device_output": 24,
+      "db": -5.0
+     },
+     {
+      "output": 19,
+      "device_output": 39,
+      "db": -5.0
+     },
+     {
+      "output": 20,
+      "device_output": 27,
+      "db": -6.0
+     },
+     {
+      "output": 20,
+      "device_output": 39,
+      "db": -6.0
+     },
+     {
+      "output": 21,
+      "device_output": 30,
+      "db": -0.0
+     },
+     {
+      "output": 21,
+      "device_output": 39,
+      "db": -0.0
+     },
+     {
+      "output": 22,
+      "device_output": 33,
+      "db": -1.0
+     },
+     {
+      "output": 22,
+      "device_output": 39,
+      "db": -1.0
+     },
+     {
+      "output": 23,
+      "device_output": 36,
+      "db": -2.0
+     },
+     {
+      "output": 23,
+      "device_output": 39,
+      "db": -2.0
+     }
+    ],
+    "device_outputs": [
+     {
+      "device_output": 1,
+      "level_db": -3.0,
+      "mute": true
+     },
+     {
+      "device_output": 10,
+      "level_db": -3.0,
+      "mute": false
+     },
+     {
+      "device_output": 20,
+      "level_db": -3.0,
+      "mute": true
+     },
+     {
+      "device_output": 39,
+      "level_db": -3.0,
+      "mute": true
+     }
+    ]
+   }
+  ],
+  "network_patches": [],
+  "stages": [],
+  "cue_lists": [
+   {
+    "id": "00000000-0000-0000-0000-0000000000e2",
+    "name": "Main",
+    "cues": []
+   }
+  ]
+ }
+}

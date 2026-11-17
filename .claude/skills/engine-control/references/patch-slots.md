@@ -24,19 +24,26 @@
   - Still not primed `SEEK_PRIME_WAIT` after the first planned swap, or nothing left to play by the new swap: the move is given up (`give_up_move`): the old voice keeps the run, with any devamp sent for the moved one, and the waiting record and stream go. Progress shows the old voice until the swap.
   - A move given up for a late stream is tried again (`VoiceRec::retry_at`, `Voices::take_due_moves` in the doc tick, then `follow_devices`) `MOVE_RETRY` (0.25 s) later, doubling after each give-up of the run up to 16 times; each try plans afresh with `move_plan`, so opens stay bounded and nothing plays twice. The first give-up of a run writes one `warn` line and a `move_delayed` notice.
   - `relocate` tells the core the run's length for the fresh run at once (the core's count plus what the old voice still has to play), so the end and an auto-follow keep their sample whether the move is made or given up.
-  While the patch exists, every sync rebuilds the retired slot's first `min(old, new)` outputs from the current master, levels, mutes, polarity and device mapping (`Patches::retired_base`), so a mute or master pull-down still reaches the playing cue; outputs the patch no longer has keep their last gains. With no voice on the slot the resize is in place. This is openLab's rule (skill `qlab-behaviour` Q226).
-  - Level, mute, polarity, master and mapping edits apply in place, so to voices already playing.
+  While the patch exists, every sync rebuilds the retired slot's first `min(old, new)` outputs from the current master, levels, mutes, polarity, crosspoints, device-output levels and device mapping (`Patches::retired_base`), so a mute or master pull-down still reaches the playing cue; outputs the patch no longer has keep their last gains. With no voice on the slot the resize is in place. This is openLab's rule (skill `qlab-behaviour` Q226).
+  - Level, mute, polarity, master, crosspoint, device-output and mapping edits apply in place, so to voices already playing (`SetPatchRouting`, over the de-zipper).
+
+## Matrix gains (`fill_routing`)
+- Gain of cue output `o` to device output `d` = patch master x cue output level (mute: 0, polarity: negative) x crosspoint x device output `d`'s level (mute: 0).
+- The crosspoint is the patch's listed one for `(o, d)` if any (`-120` dB: silent); else 1.0 where `d` is the device channel the mapping gives `o`; else 0. So a patch with no crosspoints routes exactly as its mapping (one device output per cue output).
+- Device outputs at or past the slot's mixer width are never sent and never written into the next row. A mapped patch whose live crosspoints (above silence, for a cue output it has) or device-output entries name such outputs is kept as it is and reported: `Patches::routing_beyond` and the `patch_routing_beyond_device` device notice (skill `qlab-behaviour` Q510). It does not break the patch or its cues.
 - A closed doc's slots are zeroed and freed at once; a doc whose patches waited for a slot syncs on the next wake.
 
 ## Default mapping
-Before each patch resolution (`sync_patches`: start, doc opened, edits like AddPatch, device back), every patch with **no mapping entry** on this machine gets, when the primary device plays, a mapping to its outputs 1..N in `config.machine`. The settings are written by the settings writer (a failed write is a `warn`, not the control thread) with an `info` log.
+Before each patch resolution (`sync_patches`: start, doc opened, edits like AddPatch, device back), every patch with **no mapping entry** on this machine gets, when the primary device plays, a mapping of its cue outputs 1..N to device outputs 1..N in `config.machine`, N at most the device's outputs (skill `qlab-behaviour` Q515). The settings are written by the settings writer (a failed write is a `warn`, not the control thread) with an `info` log.
 - **A patch with an entry is never touched** (an operator's mapping is never overwritten).
-- A device with fewer outputs than the patch needs leaves it **unmapped** (silent, cues broken), never partly mapped; one `warn` per patch and device; a later sync with a bigger or other device maps it.
+- A device with fewer outputs than the patch is mapped on the outputs it has: the mapping lists channels for the patch's first outputs only, the rest have no default route (crosspoints may still send them anywhere). The patch plays and its cues are not broken. A device with no outputs leaves it unmapped, one `warn` per patch and device.
+- A mapping lists channels for the patch's first outputs (1 to its count; `resolve_patch` is `output_count_mismatch` only for more). A short entry is not grown by a device sync (two open docs of one workspace id must not refit each other): reopening the show on a bigger device fits it.
 - No playable device (outage, none listed): nothing is written; patches stay `Unmapped` until a sync with a device.
 - A patch the operator cleared has an explicit empty entry, so it counts as having an entry.
 
 ## Fitting a mapping to its patch (`fit_mappings_to_patches`)
-- On this doc's opening and after each of its edits, undo and redo (`sync_workspace`, not a device sync, so two open docs of one workspace id never refit each other), an entry whose channel count differs from its patch's outputs is fitted: kept outputs keep their channels, a new output `n` goes to channel `n` mod the usable outputs (the device's, at most the primary's count; a device not listed: round the channels the entry already reaches), removed ones drop.
+- When: on this doc's opening and after each of its edits, undo and redo (`sync_workspace`, not a device sync, so two open docs of one workspace id never refit each other).
+- An entry whose channel count differs from its patch's outputs is fitted: kept outputs keep their channels, a new output `n` goes to channel `n` while that is one of the usable outputs (the device's, at most the primary's count; a device not listed: the channels the entry already reaches), and it and later ones get none past them; removed ones drop.
 - Written like the default mapping, `info` log. A cleared entry is left alone. So a cue-output count edit is one request and never leaves the patch `output_count_mismatch` (skill `qlab-behaviour` Q281).
 
 ## `Request::SetPatchMapping { patch, mapping? }` (`Control::set_patch_mapping`)

@@ -189,6 +189,35 @@
             "mute": false,
             "polarity_inverted": true
           }
+        ],
+        "crosspoints": [
+          {
+            "output": 0,
+            "device_output": 2,
+            "db": -6.0
+          },
+          {
+            "output": 1,
+            "device_output": 1,
+            "db": -120.0
+          },
+          {
+            "output": 1,
+            "device_output": 3,
+            "db": 0.0
+          }
+        ],
+        "device_outputs": [
+          {
+            "device_output": 2,
+            "level_db": -3.0,
+            "mute": false
+          },
+          {
+            "device_output": 3,
+            "level_db": 0.0,
+            "mute": true
+          }
         ]
       }
     ],

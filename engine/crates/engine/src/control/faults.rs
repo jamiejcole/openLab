@@ -367,6 +367,8 @@ mod tests {
             polarity_inverted: false,
         };
         ws.patches.push(openlab_core::OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: patch,
             name: "Main".into(),
             master_db: 0.0,

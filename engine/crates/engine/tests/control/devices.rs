@@ -2100,24 +2100,28 @@ fn a_stage_needs_ten_samples_of_watched_silence() {
     assert_eq!(stalled_warning(&s.take_outbound()), Some(true));
 }
 
+/// A patch opened on a device with fewer outputs than it has is mapped on the outputs the
+/// device has, with no warning; the entry is kept when the device is lost and back (an entry is
+/// never overwritten by the default mapping).
 #[test]
-fn a_patch_left_unmapped_by_a_small_device_is_mapped_when_a_bigger_one_is_back() {
+fn a_patch_on_a_small_device_is_mapped_on_its_outputs_and_kept_across_a_loss() {
     let ws = workspace(vec![]);
     let mut c = device_config(&ws);
     c.machine = MachineSettings::default();
     let mut s = DeviceShow::new(ws.clone(), vec![listed(DEV, DEV_NAME, 1)], c);
     let msgs = s.take_outbound();
-    assert_eq!(logs(&msgs, LogLevel::Warn).len(), 1);
-    assert_eq!(s.control().machine().patch_mapping(ws.id, patch_id()), None);
+    assert!(logs(&msgs, LogLevel::Warn).is_empty());
+    let mapped = |s: &DeviceShow| {
+        s.control()
+            .machine()
+            .patch_mapping(ws.id, patch_id())
+            .cloned()
+            .map(|m| (m.device, m.channels))
+    };
+    assert_eq!(mapped(&s), Some((DEV_NAME.to_owned(), vec![0])));
     lose(&mut s);
     replug(&mut s);
-    let m = s
-        .control()
-        .machine()
-        .patch_mapping(ws.id, patch_id())
-        .cloned()
-        .expect("mapped on the bigger device");
-    assert_eq!((m.device.as_str(), m.channels), (DEV_NAME, vec![0, 1]));
+    assert_eq!(mapped(&s), Some((DEV_NAME.to_owned(), vec![0])));
 }
 
 #[test]

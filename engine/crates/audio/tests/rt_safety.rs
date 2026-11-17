@@ -671,8 +671,8 @@ fn no_allocation_on_the_128_cue_output_paths() {
     assert_eq!(ctl.leaked_returns(), 0);
 }
 
-/// Meters (AUD-19) on 64 voices × 2 cue outputs and 64 device outputs: publishing them in every
-/// block, voice ends, slot reuse, pause and re-keying resume, xrun notes, and reading them into
+/// Meters (AUD-19) on 64 voices × 2 cue outputs and 64 device outputs, and the patch bus meters:
+/// publishing them in every block, voice ends, slot reuse, pause and re-keying resume, xrun notes, and reading them into
 /// caller buffers all run without allocating.
 #[test]
 fn no_allocation_with_meters_active_on_64_voices() {
@@ -711,6 +711,7 @@ fn no_allocation_with_meters_active_on_64_voices() {
     }
     let cap = ctl.voice_meter_capacity();
     let (mut ids, mut peaks, mut outs) = (vec![VoiceId(0); cap], vec![0.0; cap * 64], [0.0; 64]);
+    let mut bus = vec![0.0; 128];
     let mut out = vec![0.0; 64 * 300];
     let mut entries = 0;
     for _ in 0..12 {
@@ -720,6 +721,7 @@ fn no_allocation_with_meters_active_on_64_voices() {
             r.inject_xruns(1);
             assert_eq!(ctl.read_output_meters_into(&mut outs), 64);
             entries += ctl.read_voice_meters_into(&mut ids, &mut peaks);
+            assert_eq!(ctl.read_patch_meters_into(0, &mut bus), 128);
         });
         assert!(outs.iter().all(|p| p.is_finite()));
     }

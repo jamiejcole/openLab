@@ -105,6 +105,7 @@ fn snapshot() -> Snapshot {
         previewing: vec![cue_id(10)],
         played: vec![cue_id(10)],
         warnings: vec![WireWarning::Notice {
+            patch: None,
             code: "media_damaged".into(),
             message: "intro.wav has a damaged tail".into(),
             cue: Some(cue_id(10)),
@@ -1284,6 +1285,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             outputs: vec![OutputMeter {
                 patch: patch_id(1),
                 peaks: vec![0.5, 0.25],
+                cue_outputs: vec![0.5, 0.125],
             }],
             cues: vec![CueMeter {
                 cue: cue_id(10),
@@ -1361,6 +1363,7 @@ fn fixtures() -> Vec<(String, Sample)> {
         server(ServerMessage::Warnings {
             warnings: vec![
                 WireWarning::Notice {
+                    patch: None,
                     code: "file_repaired".into(),
                     message: "duplicate cue number 3 was cleared".into(),
                     cue: None,
@@ -1369,6 +1372,14 @@ fn fixtures() -> Vec<(String, Sample)> {
                 WireWarning::LateStart {
                     cue: cue_id(10),
                     late_ms: 12,
+                },
+                WireWarning::Notice {
+                    patch: Some(patch_id(1)),
+                    code: "patch_routing_beyond_device".into(),
+                    message: "patch \"Main\" routes to device output 5, but \"Out\" has 2 here"
+                        .into(),
+                    cue: None,
+                    device: Some("Out".into()),
                 },
             ],
         }),
@@ -2564,6 +2575,13 @@ fn per_device_fields_are_optional_on_the_wire() {
     let mapping: PatchMappingEntry =
         serde_json::from_str(r#"{"patch":"00000000-0000-0000-0000-000000000070"}"#).unwrap();
     assert_eq!(mapping.resolution, None);
+    let meter: OutputMeter =
+        serde_json::from_str(r#"{"patch":"00000000-0000-0000-0000-000000000070","peaks":[0.5]}"#)
+            .unwrap();
+    assert!(
+        meter.cue_outputs.is_empty(),
+        "an older engine's meter has no cue outputs"
+    );
 }
 
 #[test]
@@ -2658,6 +2676,7 @@ fn progress_and_meters_are_sanitised_not_refused() {
         outputs: vec![OutputMeter {
             patch: patch_id(1),
             peaks: vec![peak, 0.5],
+            cue_outputs: vec![peak],
         }],
         cues: vec![CueMeter {
             cue: cue_id(1),
@@ -2670,7 +2689,8 @@ fn progress_and_meters_are_sanitised_not_refused() {
             ServerMessage::Meters {
                 outputs: vec![OutputMeter {
                     patch: patch_id(1),
-                    peaks: vec![0.0, 0.5]
+                    peaks: vec![0.0, 0.5],
+                    cue_outputs: vec![0.0],
                 }],
                 cues: vec![CueMeter {
                     cue: cue_id(1),
@@ -3229,6 +3249,7 @@ fn all_warnings() -> Vec<WireWarning> {
         reason: WireGoIgnored::DoubleGo,
     });
     all.push(WireWarning::Notice {
+        patch: None,
         code: "media_damaged".into(),
         message: "intro.wav has a damaged tail".into(),
         cue: Some(c),
@@ -3582,6 +3603,7 @@ fn preshow_report_sample() -> PreshowReport {
             },
         ],
         system: vec![WireWarning::Notice {
+            patch: None,
             code: "device_lost".into(),
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
@@ -3685,6 +3707,7 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
     add(
         "warnings_notice_device_lost",
         warnings(WireWarning::Notice {
+            patch: None,
             code: "device_lost".into(),
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
@@ -3974,6 +3997,40 @@ fn property_commands() -> Vec<(String, Command)> {
         PatchProperty::ChannelCount { value: 6 },
         PatchProperty::Outputs {
             value: vec![patch_output(); 2],
+        },
+        PatchProperty::Crosspoint {
+            output: 0,
+            device_output: 3,
+            value: Some(-6.0),
+        },
+        PatchProperty::Crosspoints {
+            value: vec![
+                PatchCrosspoint {
+                    output: 0,
+                    device_output: 2,
+                    db: -6.0,
+                },
+                PatchCrosspoint {
+                    output: 1,
+                    device_output: 0,
+                    db: -120.0,
+                },
+            ],
+        },
+        PatchProperty::DeviceOutputLevel {
+            device_output: 2,
+            value: -10.0,
+        },
+        PatchProperty::DeviceOutputMute {
+            device_output: 3,
+            value: true,
+        },
+        PatchProperty::DeviceOutputs {
+            value: vec![DeviceOutputLevel {
+                device_output: 1,
+                level_db: -3.0,
+                mute: true,
+            }],
         },
     ];
     let network = [

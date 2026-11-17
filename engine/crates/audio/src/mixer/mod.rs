@@ -449,6 +449,10 @@ struct Patch {
     dirty_rows: usize,
     /// A disabled patch is not mixed and ignores routing commands.
     health: Health,
+    /// Each bus row's peak since the last meter flush (the cue output as the cues send it, before
+    /// the matrix), and how many rows may hold one.
+    peak: Vec<f32>,
+    peak_rows: usize,
 }
 
 impl Patch {
@@ -460,6 +464,8 @@ impl Patch {
         self.rows = 0;
         self.dirty = false;
         self.dirty_rows = 0;
+        self.peak.fill(0.0);
+        self.peak_rows = 0;
     }
 
     /// Makes the patch live for this segment with at least `rows` bus rows cleared (the first
@@ -579,7 +585,7 @@ impl Mixer {
         let (ret_tx, ret_rx) =
             RingBuffer::new(COMMAND_CAPACITY + PENDING_CAPACITY + max_voices + 1);
         let shared = Arc::new(Shared {
-            meters: Meters::new(outs, max_voices, cue_outputs),
+            meters: Meters::new(outs, max_voices, cue_outputs).with_patches(patches),
             ..Shared::default()
         });
 
@@ -614,6 +620,8 @@ impl Mixer {
                     dirty: false,
                     dirty_rows: 0,
                     health: Health::OK,
+                    peak: vec![0.0; cue_outputs],
+                    peak_rows: 0,
                 })
                 .collect(),
             out_health: vec![Health::OK; outs],
@@ -716,6 +724,12 @@ impl Mixer {
             self.stage.enter(Stage::Meters);
             let meters = &self.outbox.shared.meters;
             meters.flush_outputs(&mut self.out_peak);
+            for (k, p) in self.patches.iter_mut().enumerate() {
+                let rows = std::mem::take(&mut p.peak_rows);
+                if let Some(local) = p.peak.get_mut(..rows) {
+                    meters.flush_patch(k, local);
+                }
+            }
             for v in self.voices.iter_mut().filter(|v| v.is_active()) {
                 meters.flush_voice(v.slot, v.epoch, &mut v.meter);
             }

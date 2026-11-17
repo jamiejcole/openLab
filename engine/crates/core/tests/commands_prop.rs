@@ -541,6 +541,51 @@ fn patch_output_from(p: &Pick) -> PatchOutput {
 
 fn patch_property(p: &Pick) -> PatchProperty {
     let output = p.c as usize % 4;
+    // Device outputs in range, at the edge and past it; cue outputs likewise.
+    let device_output = [0, 1, 5, 63, 64, u32::MAX][p.a as usize % 6];
+    let cue_output = [0, 1, 3, 127, 128][p.c as usize % 5];
+    match p.b % 13 {
+        8 => PatchProperty::Crosspoint {
+            output: cue_output,
+            device_output,
+            value: (!p.d.is_multiple_of(4)).then(|| level(p.d)),
+        },
+        9 => PatchProperty::DeviceOutputLevel {
+            device_output,
+            value: level(p.d),
+        },
+        10 => PatchProperty::DeviceOutputMute {
+            device_output,
+            value: p.d.is_multiple_of(2),
+        },
+        // Sorted and unique, or not (refused whole).
+        11 => PatchProperty::Crosspoints {
+            value: (0..p.d % 5)
+                .map(|i| PatchCrosspoint {
+                    output: (cue_output + i) % 130,
+                    device_output: if p.a.is_multiple_of(3) {
+                        device_output
+                    } else {
+                        i
+                    },
+                    db: level(p.d.wrapping_add(i)),
+                })
+                .collect(),
+        },
+        12 => PatchProperty::DeviceOutputs {
+            value: (0..p.d % 4)
+                .map(|i| DeviceOutputLevel {
+                    device_output: device_output.wrapping_add(i),
+                    level_db: level(p.c.wrapping_add(i)),
+                    mute: i.is_multiple_of(2),
+                })
+                .collect(),
+        },
+        _ => patch_output_property(p, output),
+    }
+}
+
+fn patch_output_property(p: &Pick, output: usize) -> PatchProperty {
     match p.b % 8 {
         0 => PatchProperty::Name {
             value: name_pool(p.d),

@@ -3,7 +3,8 @@
 import AppKit
 import QuartzCore
 
-/// What a meter shows: a cue's peaks, or an output patch's.
+/// What a meter shows: a cue's peaks, or an output patch's cue outputs (each before the patch's
+/// crosspoints, so a row shows what that cue output carries wherever it is routed).
 enum MeterSource: Hashable {
     case cue(ModelID)
     case output(ModelID)
@@ -77,7 +78,7 @@ final class MeterBank {
 
     func ingest(outputs: [OutputMeter], cues: [CueMeter]) {
         guard !views.isEmpty else { return }
-        for m in outputs { fold(.output(m.patch), m.peaks) }
+        for m in outputs { fold(.output(m.patch), m.cueOutputs) }
         for m in cues { fold(.cue(m.cue), m.peaks) }
     }
 

@@ -93,6 +93,11 @@ pub(crate) struct Meters {
     /// slot beyond it was ever written, so reads and flushes stop there. A mixer with 128 cue
     /// outputs and stereo cues costs what 2 outputs do.
     widths: Vec<AtomicUsize>,
+    /// `[patch][cue output]`, `f32` bits: each patch bus row (a cue output as the cues send it,
+    /// before the patch matrix).
+    patches: Vec<AtomicU32>,
+    /// Per patch, the most rows ever flushed (it only grows), as `widths` for voices.
+    patch_widths: Vec<AtomicUsize>,
 }
 
 impl Meters {
@@ -103,7 +108,18 @@ impl Meters {
             slots: (0..slots).map(|_| Slot::default()).collect(),
             voices: (0..slots * cue_outputs).map(|_| Word::default()).collect(),
             widths: (0..slots).map(|_| AtomicUsize::new(0)).collect(),
+            patches: Vec::new(),
+            patch_widths: Vec::new(),
         }
+    }
+
+    /// With a bus meter per cue output of each of `patches` patch matrices.
+    pub(crate) fn with_patches(mut self, patches: usize) -> Self {
+        self.patches = (0..patches * self.cue_outputs)
+            .map(|_| AtomicU32::new(0))
+            .collect();
+        self.patch_widths = (0..patches).map(|_| AtomicUsize::new(0)).collect();
+        self
     }
 
     /// The words of `slot` that may have been written.
@@ -127,6 +143,22 @@ impl Meters {
     /// Publishes device-output peaks and zeroes `local`. Skips silent outputs.
     pub(crate) fn flush_outputs(&self, local: &mut [f32]) {
         for (a, m) in self.outputs.iter().zip(local.iter_mut()) {
+            if *m > 0.0 {
+                a.fetch_max(finite(*m).to_bits(), Ordering::Relaxed);
+            }
+            *m = 0.0;
+        }
+    }
+
+    /// Publishes patch `patch`'s bus-row peaks (its first `local.len()` rows) and zeroes `local`.
+    /// Skips silent rows.
+    pub(crate) fn flush_patch(&self, patch: usize, local: &mut [f32]) {
+        let Some(width) = self.patch_widths.get(patch) else {
+            return;
+        };
+        width.fetch_max(local.len().min(self.cue_outputs), Ordering::Release);
+        let row = self.patches.iter().skip(patch * self.cue_outputs);
+        for (a, m) in row.zip(local.iter_mut()).take(self.cue_outputs) {
             if *m > 0.0 {
                 a.fetch_max(finite(*m).to_bits(), Ordering::Relaxed);
             }
@@ -239,6 +271,23 @@ impl MeterReader {
     pub(crate) fn read_outputs(&self, out: &mut [f32]) -> usize {
         let mut n = 0;
         for (a, o) in self.shared.meters.outputs.iter().zip(out.iter_mut()) {
+            *o = f32::from_bits(a.swap(0, Ordering::Relaxed));
+            n += 1;
+        }
+        n
+    }
+
+    /// See [`crate::MixerController::read_patch_meters_into`].
+    pub(crate) fn read_patch(&self, patch: usize, out: &mut [f32]) -> usize {
+        let m = &self.shared.meters;
+        let width = m
+            .patch_widths
+            .get(patch)
+            .map_or(0, |w| w.load(Ordering::Acquire))
+            .min(m.cue_outputs);
+        let row = m.patches.iter().skip(patch * m.cue_outputs).take(width);
+        let mut n = 0;
+        for (a, o) in row.zip(out.iter_mut()) {
             *o = f32::from_bits(a.swap(0, Ordering::Relaxed));
             n += 1;
         }

@@ -8,7 +8,7 @@ use openlab_core::protocol::{
     CueMeter, OutputMeter, ProgressItem, RuntimeChange, ServerMessage, WaitProgress, WireWait,
     WorkspaceInfo,
 };
-use openlab_core::{Input, SampleTime, Timer};
+use openlab_core::{Input, SampleTime, Timer, db_to_gain};
 
 use super::voices::Effects;
 use super::{Control, DocCx, DocId, Engine, Listed, MeterRound, REPORT_HZ, notice};
@@ -297,7 +297,39 @@ impl DocCx<'_> {
                             .unwrap_or(0.0)
                     })
                     .collect();
-                Some(OutputMeter { patch: p.id, peaks })
+                // Each cue output itself: its bus after its level and mute in the patch (the
+                // matrix carries them, so they are applied here), before crosspoints. A cue still
+                // playing on a slot the patch left when it was resized is metered there.
+                let patches = &self.eng.patches;
+                let slots = patches
+                    .mixer_patch(self.doc.id, p.id)
+                    .into_iter()
+                    .chain(patches.retired_slots(self.doc.id, p.id));
+                let mut bus = vec![0.0f32; p.outputs.len()];
+                for slot in slots {
+                    let out = patches.slot_output(slot).unwrap_or(key);
+                    for (b, x) in bus.iter_mut().zip(self.eng.bus_peaks(out, slot)) {
+                        *b = b.max(*x);
+                    }
+                }
+                let cue_outputs = p
+                    .outputs
+                    .iter()
+                    .zip(bus)
+                    .map(|(out, peak)| {
+                        let gain = if out.mute {
+                            0.0
+                        } else {
+                            db_to_gain(out.level_db)
+                        };
+                        peak * gain
+                    })
+                    .collect();
+                Some(OutputMeter {
+                    patch: p.id,
+                    peaks,
+                    cue_outputs,
+                })
             })
             .collect();
         let live = self.doc.voices.has_playing() || !cues.is_empty();

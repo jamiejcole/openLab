@@ -348,6 +348,8 @@ fn two_patch_show_with(
     cues.extend(extra);
     let mut ws = workspace(cues);
     ws.patches.push(OutputPatch {
+        crosspoints: Vec::new(),
+        device_outputs: Vec::new(),
         id: side(),
         name: "Side".into(),
         master_db: 0.0,

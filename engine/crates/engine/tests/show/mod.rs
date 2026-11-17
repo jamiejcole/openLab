@@ -158,6 +158,8 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             new_cues_auto_load: false,
         },
         patches: vec![OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: patch_id(),
             name: "Main".into(),
             master_db: 0.0,

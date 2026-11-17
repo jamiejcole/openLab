@@ -138,7 +138,7 @@ Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open anoth
 - **An external edit of `settings.json` while the engine runs is overwritten at the next rewrite** (it writes the in-memory copy).
 - If the file could not be read at start (an I/O error, not "missing"), or it produced warnings and its `.corrupt` copy could not be made, the engine keeps default mappings in memory only, warns once and never writes the file (`ControlConfig::machine_writable`). If the settings thread cannot start or has stopped, mappings stay in memory with a warning.
 - At shutdown the engine waits at most `DROP_WAIT` (5 s) for the settings thread's pending write. A write stuck on a hung volume is left to finish on its own, so it never holds up quit or relaunch.
-- `resolve_patch(settings, workspace_id, patch, devices)` gives `Mapped`, `Unmapped` (ask the operator once), `DeviceMissing`, `ChannelsMissing` or `OutputCountMismatch`. The last three leave the patch silent and its cues broken, never a crash.
+- `resolve_patch(settings, workspace_id, patch, devices)` gives `Mapped`, `Unmapped` (ask the operator once), `DeviceMissing`, `ChannelsMissing` or `OutputCountMismatch` (the mapping lists more channels than the patch has outputs; fewer means the later outputs have no device output of their own). The last three leave the patch silent and its cues broken, never a crash.
 - Recent files and open-on-launch (WS-08) are app-side. Per-cue-type defaults are deferred (REQUIREMENTS §21).
 
 ## Media paths (WS-03, NFR-32)

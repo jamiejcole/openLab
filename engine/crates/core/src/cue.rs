@@ -76,6 +76,9 @@ pub const MAX_CHANNELS: u32 = 64;
 /// Most cue outputs a patch (and so a cue's levels, crosspoint outputs and gangs) may have
 /// (AUD-07; QLab 5 allows 1 to 128).
 pub const MAX_CUE_OUTPUTS: u32 = 128;
+/// Most device outputs a patch can route to: the audio engine opens at most this many outputs
+/// of a device (AUD-03). The engine crate tests that the two limits agree.
+pub const MAX_DEVICE_OUTPUTS: u32 = 64;
 /// Most slice markers an Audio cue may hold. The audio engine plays at most 256 slice entries
 /// (`openlab_audio::MAX_SLICES`): n markers make n + 1 slices, and a start offset inside a slice
 /// splits it in two. The engine crate tests that the two limits agree.

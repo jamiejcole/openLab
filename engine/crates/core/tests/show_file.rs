@@ -30,8 +30,9 @@ const V1_EXAMPLE: &str = include_str!("../../../fixtures/show/v1-example.openlab
 const V0_EXAMPLE: &str = include_str!("../../../fixtures/show/v0-example.openlab");
 
 /// The current example as an older fixture migrates to: the same show without its stages and
-/// Video cues and with every cue output unnamed, which only the current version's example has
-/// (optional keys and a new cue kind; no migration adds them).
+/// Video cues, with every cue output unnamed and no patch crosspoints or device-output levels,
+/// which only the current version's example has (optional keys and a new cue kind; no migration
+/// adds them).
 fn example_older() -> Workspace {
     let mut ws = load_show(EXAMPLE).unwrap().workspace;
     ws.stages.clear();
@@ -41,6 +42,10 @@ fn example_older() -> Workspace {
     }
     for output in ws.patches.iter_mut().flat_map(|p| p.outputs.iter_mut()) {
         output.name.clear();
+    }
+    for patch in &mut ws.patches {
+        patch.crosspoints.clear();
+        patch.device_outputs.clear();
     }
     ws
 }
@@ -1479,7 +1484,17 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
         )
 }
 
-fn any_patch() -> impl Strategy<Value = (String, f64, Vec<PatchOutput>)> {
+type AnyPatch = (
+    String,
+    f64,
+    Vec<PatchOutput>,
+    Vec<PatchCrosspoint>,
+    Vec<DeviceOutputLevel>,
+);
+
+/// Any patch, with crosspoints and device outputs in any order, repeated, and naming cue and
+/// device outputs past what a patch can have (repair removes those).
+fn any_patch() -> impl Strategy<Value = AnyPatch> {
     let output = (text(), level(), any::<bool>(), any::<bool>()).prop_map(
         |(name, level_db, mute, polarity_inverted)| PatchOutput {
             name,
@@ -1488,7 +1503,27 @@ fn any_patch() -> impl Strategy<Value = (String, f64, Vec<PatchOutput>)> {
             polarity_inverted,
         },
     );
-    (text(), level(), vec(output, 0..5))
+    let crosspoint =
+        (0u32..130, 0u32..66, level()).prop_map(|(output, device_output, db)| PatchCrosspoint {
+            output,
+            device_output,
+            db,
+        });
+    let device_output =
+        (0u32..66, level(), any::<bool>()).prop_map(|(device_output, level_db, mute)| {
+            DeviceOutputLevel {
+                device_output,
+                level_db,
+                mute,
+            }
+        });
+    (
+        text(),
+        level(),
+        vec(output, 0..5),
+        vec(crosspoint, 0..8),
+        vec(device_output, 0..4),
+    )
 }
 
 fn any_workspace() -> impl Strategy<Value = Workspace> {
@@ -1521,12 +1556,16 @@ fn any_workspace() -> impl Strategy<Value = Workspace> {
             ws.patches = patches
                 .into_iter()
                 .enumerate()
-                .map(|(i, (name, master_db, outputs))| OutputPatch {
-                    id: patch_id(i as u128),
-                    name,
-                    master_db,
-                    outputs,
-                })
+                .map(
+                    |(i, (name, master_db, outputs, crosspoints, device_outputs))| OutputPatch {
+                        crosspoints,
+                        device_outputs,
+                        id: patch_id(i as u128),
+                        name,
+                        master_db,
+                        outputs,
+                    },
+                )
                 .collect();
             ws.network_patches = network_patches
                 .into_iter()

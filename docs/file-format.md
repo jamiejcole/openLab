@@ -87,6 +87,8 @@ cue, and the cue shows as broken where it cannot run.
 | A slice marker less than 50 ms (`MIN_SLICE_SECONDS`) after `start_time` or the marker before it, or before `end_time` | Warning; every slice, and so every loop, is at least 50 ms long. The marker moves to make the short slice exactly 50 ms (keeping its play count, so a stutter or vamp stays one); only when the neighbouring slice cannot give the room is the marker removed and the two slices become one, playing as the longer did. Without an `end_time` the last slice meets only the audio engine's loop floor (`MIN_LOOP_MS`) at voice planning |
 | More than 254 slice markers (`MAX_SLICE_MARKERS`; the audio engine plays at most 256 slice entries, and a start offset inside a slice splits it) | Warning (`TooManySlices`); the markers after the 254th are removed. An edit, paste or duplicate that would exceed it is refused |
 | A patch with no outputs, or more than 128 | Warning; one output added, or the extras removed |
+| A patch crosspoint naming cue output 128 or more or device output 64 or more, a device-output entry naming device output 64 or more, or a pair (or device output) listed twice | Warning (`InvalidPatchValue`, naming the patch); those entries removed, the first of a repeat kept. Listed out of order: sorted silently |
+| A patch crosspoint or device output naming a device output this machine's device lacks | Loads unchanged; while the show plays, a `patch_routing_beyond_device` notice says which, and that routing is not heard |
 | More Audio cue outputs than its patch has | Warning; kept, but the extra outputs are silent until the patch has them again |
 | More than 128 cue outputs; a crosspoint naming channel 64 or more or output 128 or more; a gang naming output 128 or more; Fade levels naming output 128 or more or channel 64 or more | Warning; those entries are removed |
 | The same crosspoint (input and output) listed twice, or a cue output in more than one gang or twice in one | Warning; the first is kept, the repeats removed |
@@ -154,8 +156,9 @@ openLab writes the paths it creates in Unicode NFC (macOS reports names decompos
 
 ### 4.4 Output patches
 
-A patch is a named set of logical outputs that Audio cues play to. Which device channels those
-outputs reach is configured per machine.
+A patch is a named set of logical outputs that Audio cues play to. Which device a patch plays on,
+and the device output each cue output goes to by default, are configured per machine; the
+crosspoints and device-output levels below travel with the show.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -163,6 +166,8 @@ outputs reach is configured per machine.
 | `name` | string | |
 | `master_db` | level | Patch master. |
 | `outputs` | array of outputs | 1 to 128 entries (QLab 5's patch range); the patch's channel count is the length. Each is `{"name"?: string, "level_db": level, "mute": bool, "polarity_inverted": bool}`; `name` is what a cue's Levels tab shows under that output (absent or empty: its number), checked like a patch name. |
+| `crosspoints` | array of `{"output", "device_output", "db"}` | Optional (absent: none). The routing matrix's crosspoints set in the patch editor: cue output `output` (0-based) to device output `device_output` (0-based device channel, below 64) at `db`. Sorted by output then device output, each pair once. A cue output goes, at 0 dB, to the device output this machine maps it to unless a listed crosspoint names that pair, and to every other listed device output at its level; `-120` means not routed. So a patch with none plays as its mapping says. Entries for cue outputs past the patch's count are kept and silent. |
+| `device_outputs` | array of `{"device_output", "level_db": level, "mute": bool}` | Optional (absent: none). Level and mute of the patch's device outputs, sorted, each once; one not listed is at 0 dB, unmuted. Applies to everything the patch sends to that device output. |
 
 ### 4.5 Network patches
 

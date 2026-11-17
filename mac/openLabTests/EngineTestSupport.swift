@@ -781,6 +781,25 @@ final class WireTap: EngineTransport {
     var holdSnapshots = false
     fileprivate var connections: [TapConnection] = []
     fileprivate var held: [(TapConnection, String)] = []
+    /// The loudest peak each patch's mapped device outputs reported since `resetDevicePeaks`, from
+    /// the engine's `meters` (`peaks`: one per cue output, at the device output it is mapped to):
+    /// what is heard there, which the app's meters (the cue outputs themselves) do not show.
+    private(set) var devicePeaks: [ModelID: [Float]] = [:]
+
+    func resetDevicePeaks() { devicePeaks = [:] }
+
+    fileprivate func noteMeters(_ text: String) {
+        guard let v = JSONValue.parse(text), v["type"]?.stringValue == "meters" else { return }
+        for m in v["outputs"]?.arrayValue ?? [] {
+            guard let patch = m["patch"]?.stringValue else { continue }
+            let peaks = (m["peaks"]?.arrayValue ?? []).map { Float($0.doubleValue ?? 0) }
+            var kept = devicePeaks[ModelID(patch)] ?? []
+            for (i, p) in peaks.enumerated() {
+                if i < kept.count { kept[i] = max(kept[i], p) } else { kept.append(p) }
+            }
+            devicePeaks[ModelID(patch)] = kept
+        }
+    }
 
     func connect(info: EngineConnectionInfo) async throws -> any EngineConnection {
         let c = TapConnection(inner: try await inner.connect(info: info), tap: self)
@@ -861,6 +880,7 @@ final class TapConnection: EngineConnection {
     private func arrived(_ text: String) {
         if tap.holdSnapshots && doc != nil { return tap.held.append((self, text)) }
         let type = JSONValue.parse(text)?["type"]?.stringValue
+        if type == "meters" { tap.noteMeters(text) }
         if type == "runtime" && tap.holdRuntime { return tap.held.append((self, text)) }
         if type == "model_changed" && tap.holdModel { return tap.held.append((self, text)) }
         if type == "document" && tap.holdDocument { return tap.held.append((self, text)) }

@@ -32,8 +32,8 @@ fn spare_patch() -> PatchId {
     PatchId(Uuid::from_u128(902))
 }
 
-/// A patch the device cannot take (four outputs on a two-output device): the default mapping
-/// leaves it unmapped, which is what these tests need an unmapped patch for.
+/// A second, wider patch, left with no device on this machine (`config_for`): what these tests
+/// need an unmapped patch for.
 fn wide_spare(main: &OutputPatch) -> OutputPatch {
     let mut spare = OutputPatch {
         id: spare_patch(),
@@ -89,11 +89,18 @@ fn lighting(protocol: NetworkProtocol) -> NetworkPatch {
 }
 
 fn config_for(ws: &Workspace) -> ControlConfig {
+    let mut c = config_main_only(ws);
+    c.machine
+        .set_patch_mapping(ws.id, spare_patch(), PatchMapping::none())
+        .unwrap();
+    c
+}
+
+/// The main patch mapped; nothing stored for any other.
+fn config_main_only(ws: &Workspace) -> ControlConfig {
     let mut c = ControlConfig::new(RATE, BLOCK);
     c.seed = 7;
     let mut machine = MachineSettings::default();
-    // Only the main patch is mapped on this machine; the spare one is not (and, being wider
-    // than the device, is not mapped by default either).
     machine
         .set_patch_mapping(
             ws.id,
@@ -240,7 +247,8 @@ fn the_report_lists_exactly_the_problems_and_counts_them() {
     assert_eq!(gone.name, None);
     assert_eq!(gone.cues, vec![id(5)]);
 
-    assert!(r.system.is_empty(), "{:?}", r.system);
+    // The spare patch was set to no device: that is said once, as a system problem.
+    assert_eq!(notice_codes(&r.system), vec!["patch_no_device"]);
     assert_eq!(
         r.summary,
         PreshowSummary {
@@ -249,13 +257,14 @@ fn the_report_lists_exactly_the_problems_and_counts_them() {
             patches: 1,
             network: 1,
             network_unchecked: 1,
-            system: 0,
-            total: 4,
+            system: 1,
+            total: 5,
         }
     );
 
-    // Broken cues are not warnings: the feed has nothing for them (the snapshot's problems do).
-    assert_eq!(feed_codes(&msgs), None);
+    // Broken cues are not warnings: the feed has nothing for them (the snapshot's problems do),
+    // only the spare patch's notice.
+    assert_eq!(feed_codes(&msgs), Some(vec!["patch_no_device".to_owned()]));
 }
 
 #[test]
@@ -269,15 +278,10 @@ fn a_lost_device_adds_the_system_problem_the_device_and_the_cues_it_breaks() {
     let r = preshow(&mut s);
 
     assert!(!r.ok);
-    let codes: Vec<_> = r
-        .system
-        .iter()
-        .map(|w| match w {
-            WireWarning::Notice { code, .. } => code.as_str(),
-            _ => "other",
-        })
-        .collect();
-    assert_eq!(codes, vec!["device_lost"]);
+    assert_eq!(
+        notice_codes(&r.system),
+        vec!["device_lost", "patch_no_device"]
+    );
     // The main patch now lacks its device; the spare one is still unmapped.
     assert_eq!(r.patches.len(), 2);
     let main = r.patches.iter().find(|p| p.patch == patch_id()).unwrap();
@@ -291,13 +295,16 @@ fn a_lost_device_adds_the_system_problem_the_device_and_the_cues_it_breaks() {
     let broken = broken_ids(&r);
     // The disarmed cue 3 is broken too: disarming hides nothing from this check.
     assert_eq!(broken, vec![id(1), id(2), id(3), id(4), id(5), id(7)]);
-    assert_eq!(r.summary.system, 1);
+    assert_eq!(r.summary.system, 2);
     // Both patches have cues, the main one three.
     assert_eq!(r.summary.patches, 2);
-    // The problem rows: the six broken cues and the one system problem.
-    assert_eq!(r.summary.total, 6 + 1);
-    // The feed has the device notice and nothing per cue.
-    assert_eq!(feed_codes(&msgs), Some(vec!["device_lost".to_owned()]));
+    // The problem rows: the six broken cues and the two system problems.
+    assert_eq!(r.summary.total, 6 + 2);
+    // The feed has the device notice and the spare patch's, and nothing per cue.
+    assert_eq!(
+        feed_codes(&msgs),
+        Some(vec!["device_lost".to_owned(), "patch_no_device".to_owned()])
+    );
 }
 
 #[test]
@@ -349,20 +356,39 @@ fn a_network_destination_that_exists_is_reported_unchecked_and_does_not_fail_the
     assert_eq!(r.summary.total, 0);
 }
 
+/// A patch no cue uses, set to no device: listed with no cues and breaking none; it is not a
+/// patch problem, only the one notice that it has no device.
 #[test]
-fn a_spare_patch_no_cue_uses_is_listed_but_is_not_a_problem() {
+fn a_spare_patch_no_cue_uses_is_listed_but_breaks_nothing() {
     let good = wav(&dc(100, 0.5));
     let mut ws = workspace(vec![audio(1, &good, 0)]);
     let spare = wide_spare(&ws.patches[0]);
     ws.patches.push(spare);
     let mut s = device_show(ws);
     let r = preshow(&mut s);
-    assert!(r.ok, "{r:?}");
-    // Listed (no mapping on this machine) with no cues, but not counted.
     assert_eq!(r.patches.len(), 1);
     assert_eq!(r.patches[0].patch, spare_patch());
     assert!(r.patches[0].cues.is_empty());
-    assert_eq!(r.summary, PreshowSummary::default());
+    assert!(r.broken_cues.is_empty());
+    assert_eq!(notice_codes(&r.system), vec!["patch_no_device"]);
+    assert_eq!(
+        r.summary,
+        PreshowSummary {
+            system: 1,
+            total: 1,
+            ..PreshowSummary::default()
+        }
+    );
+}
+
+/// The codes of the notices in `list`.
+fn notice_codes(list: &[WireWarning]) -> Vec<&str> {
+    list.iter()
+        .map(|w| match w {
+            WireWarning::Notice { code, .. } => code.as_str(),
+            _ => "other",
+        })
+        .collect()
 }
 
 #[test]
@@ -374,7 +400,8 @@ fn a_fresh_patch_the_device_can_take_is_mapped_by_default_and_not_reported() {
         name: "Spare".into(),
         ..ws.patches[0].clone()
     });
-    let mut s = device_show(ws);
+    let c = config_main_only(&ws);
+    let mut s = DeviceShow::new(ws, vec![listed(DEV, DEV_NAME, 2)], c);
     let r = preshow(&mut s);
     assert!(r.ok, "{r:?}");
     // Mapped patches are not listed; an unmapped one would be (see the test above).

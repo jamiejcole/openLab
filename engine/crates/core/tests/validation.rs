@@ -752,6 +752,64 @@ fn patch_levels_are_clamped() {
     );
 }
 
+/// AUD-07: a loaded patch's crosspoints and device outputs are sorted (no warning: same
+/// meaning); entries naming a cue output past 128 or a device output past 64, and repeated
+/// pairs, are removed with a warning naming the patch; levels are clamped as other patch
+/// levels are. A device output past this machine's device but within 64 is kept.
+#[test]
+fn patch_crosspoints_and_device_outputs_are_repaired_on_load() {
+    let mut ws = workspace(vec![]);
+    let xp = |output, device_output, db| PatchCrosspoint {
+        output,
+        device_output,
+        db,
+    };
+    let dev = |device_output, level_db| DeviceOutputLevel {
+        device_output,
+        level_db,
+        mute: false,
+    };
+    let p = &mut ws.patches[0];
+    p.crosspoints = vec![
+        xp(1, 63, -6.0),
+        xp(0, 1, 50.0),
+        xp(128, 0, 0.0),
+        xp(0, 64, 0.0),
+        xp(1, 63, -12.0),
+        xp(0, 0, -70.0),
+    ];
+    p.device_outputs = vec![dev(9, -3.0), dev(64, 0.0), dev(2, f64::NAN), dev(9, 0.0)];
+    let bad = |field| {
+        issue(
+            Severity::Warning,
+            None,
+            IssueKind::InvalidPatchValue {
+                patch: patch_id(1),
+                field,
+            },
+        )
+    };
+    let mut issues = repair(&mut ws);
+    issues.retain(|i| !matches!(i.kind, IssueKind::LevelsBelowMinimum));
+    assert_eq!(
+        issues,
+        vec![
+            bad("crosspoints"),
+            bad("crosspoints.db"),
+            bad("device_outputs"),
+            bad("device_outputs.level_db"),
+        ]
+    );
+    let p = &ws.patches[0];
+    assert_eq!(
+        p.crosspoints,
+        vec![xp(0, 0, SILENCE_DB), xp(0, 1, MAX_DB), xp(1, 63, -6.0)]
+    );
+    assert_eq!(p.device_outputs, vec![dev(2, SILENCE_DB), dev(9, -3.0)]);
+    // Repaired once, it stays: nothing more to say.
+    assert!(repair(&mut ws).is_empty());
+}
+
 fn audio_with(
     edit: impl FnOnce(&mut CueLevels, &mut Vec<SliceMarker>, &mut f64, &mut Option<f64>),
 ) -> CueKind {

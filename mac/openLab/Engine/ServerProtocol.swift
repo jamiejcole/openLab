@@ -161,7 +161,29 @@ struct WaitProgress: Hashable, Sendable, Decodable {
 
 struct OutputMeter: Sendable, Decodable {
     let patch: ModelID
+    /// One per cue output: the device output this machine maps it to.
     let peaks: [Float]
+    /// One per cue output: the cue output itself after its level and mute in the patch, before
+    /// the crosspoints (empty from an engine that predates it).
+    let cueOutputs: [Float]
+
+    init(patch: ModelID, peaks: [Float], cueOutputs: [Float] = []) {
+        self.patch = patch
+        self.peaks = peaks
+        self.cueOutputs = cueOutputs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case patch, peaks
+        case cueOutputs = "cue_outputs"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        patch = try c.decode(ModelID.self, forKey: .patch)
+        peaks = try c.decode([Float].self, forKey: .peaks)
+        cueOutputs = try c.decodeIfPresent([Float].self, forKey: .cueOutputs) ?? []
+    }
 }
 
 struct CueMeter: Sendable, Decodable {

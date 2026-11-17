@@ -27,6 +27,8 @@ fn ws_of(ids: &[u128]) -> Workspace {
     ws.patches = ids
         .iter()
         .map(|&n| OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: id(n),
             name: format!("P{n}"),
             master_db: 0.0,
@@ -84,6 +86,8 @@ fn ws_with(outputs: Vec<PatchOutput>) -> Workspace {
             new_cues_auto_load: false,
         },
         patches: vec![OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: pid(),
             name: "Main".into(),
             master_db: -6.0,
@@ -491,6 +495,98 @@ fn the_matrix_gains_are_patch_master_times_output_level() {
     assert_eq!(
         p.sent[&(0, 0)][3].to_bits(),
         (-(pm * db_to_gain(-1.5))).to_bits()
+    );
+}
+
+fn xp(output: u32, device_output: u32, db: f64) -> openlab_core::PatchCrosspoint {
+    openlab_core::PatchCrosspoint {
+        output,
+        device_output,
+        db,
+    }
+}
+
+/// Bit for bit master × cue output level (polarity) × crosspoint × device output level; a
+/// crosspoint on the mapped pair replaces the mapping's 0 dB; device outputs past the mixer's
+/// width are never sent and never alias into the next row; a muted device output is silent.
+#[test]
+fn crosspoints_and_device_outputs_multiply_into_the_matrix() {
+    let mut ws = ws_with(vec![out(-3.0, false, false), out(-1.5, false, true)]);
+    ws.patches[0].crosspoints = vec![
+        xp(0, 0, -6.0),
+        xp(0, 2, -12.0),
+        xp(0, 3, 0.0),
+        xp(1, 0, 0.0),
+        xp(1, 9, 0.0),
+    ];
+    ws.patches[0].device_outputs = vec![
+        openlab_core::DeviceOutputLevel {
+            device_output: 0,
+            level_db: -10.0,
+            mute: false,
+        },
+        openlab_core::DeviceOutputLevel {
+            device_output: 3,
+            level_db: 0.0,
+            mute: true,
+        },
+    ];
+    let s = settings(&ws, vec![0, 1]);
+    let mut p = Patches::new(1, 2, 4);
+    p.sync(D0, &ws, &s, &device(4), None, &idle());
+    let pm = db_to_gain(-6.0);
+    let (o0, o1) = (pm * db_to_gain(-3.0), -(pm * db_to_gain(-1.5)));
+    let m = &p.sent[&(0, 0)];
+    let want = [
+        o0 * db_to_gain(-6.0) * db_to_gain(-10.0),
+        0.0,
+        o0 * db_to_gain(-12.0),
+        0.0,
+        o1 * db_to_gain(-10.0),
+        o1,
+        0.0,
+        0.0,
+    ];
+    let bits = |v: &[f32]| v.iter().map(|g| g.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(m), bits(&want));
+    // Device output 10 is past this mixer's four: kept in the model, reported, not heard.
+    assert_eq!(p.routing_beyond(D0, pid()), Some((10, 4)));
+}
+
+/// A resize under a playing voice retires its slot; the retired slot still follows the patch's
+/// crosspoints and device-output levels for the outputs both sizes have.
+#[test]
+fn a_retired_slot_follows_crosspoint_and_device_output_edits() {
+    let mut ws = ws_with(vec![out(0.0, false, false), out(0.0, false, false)]);
+    let mut p = Patches::new(2, 2, 2);
+    p.sync(
+        D0,
+        &ws,
+        &settings(&ws, vec![0, 1]),
+        &device(2),
+        None,
+        &idle(),
+    );
+    ws.patches[0].outputs.pop();
+    ws.patches[0].crosspoints = vec![xp(0, 1, -6.0)];
+    ws.patches[0].device_outputs = vec![openlab_core::DeviceOutputLevel {
+        device_output: 0,
+        level_db: 0.0,
+        mute: true,
+    }];
+    p.sync(
+        D0,
+        &ws,
+        &settings(&ws, vec![0]),
+        &device(2),
+        None,
+        &busy(&[0]),
+    );
+    assert_eq!(slot(&p, 7), Some(1));
+    // The patch master is -6 dB.
+    assert_eq!(
+        &p.sent[&(0, 0)][0..2],
+        &[0.0, db_to_gain(-6.0) * db_to_gain(-6.0)]
     );
 }
 

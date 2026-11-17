@@ -1373,6 +1373,374 @@ fn a_patch_edit_to_the_same_value_is_not_an_edit() {
     assert!(!history.can_undo());
 }
 
+fn crosspoint(output: u32, device_output: u32, value: Option<f64>) -> PatchProperty {
+    PatchProperty::Crosspoint {
+        output,
+        device_output,
+        value,
+    }
+}
+
+fn xp(output: u32, device_output: u32, db: f64) -> PatchCrosspoint {
+    PatchCrosspoint {
+        output,
+        device_output,
+        db,
+    }
+}
+
+/// AUD-07: a patch's routing matrix, cell by cell and whole, each edit undone and redone
+/// exactly; a cell set back to the mapping (`None`) leaves the list.
+#[test]
+fn crosspoints_and_device_outputs_can_be_edited_and_undone() {
+    let ws = workspace(vec![]);
+    let after = round_trip(&ws, patch_prop(1, crosspoint(0, 3, Some(-6.0))));
+    assert_eq!(after.patches[0].crosspoints, vec![xp(0, 3, -6.0)]);
+    // Kept sorted whatever order cells are typed in.
+    let after = round_trip(&after, patch_prop(1, crosspoint(0, 1, Some(SILENCE_DB))));
+    let after = round_trip(&after, patch_prop(1, crosspoint(1, 0, Some(-3.0))));
+    assert_eq!(
+        after.patches[0].crosspoints,
+        vec![xp(0, 1, SILENCE_DB), xp(0, 3, -6.0), xp(1, 0, -3.0)]
+    );
+    let back = round_trip(&after, patch_prop(1, crosspoint(0, 3, None)));
+    assert_eq!(back.patches[0].crosspoint(0, 3), None);
+    let whole = round_trip(
+        &after,
+        patch_prop(
+            1,
+            PatchProperty::Crosspoints {
+                value: vec![xp(1, 1, -12.0)],
+            },
+        ),
+    );
+    assert_eq!(whole.patches[0].crosspoints, vec![xp(1, 1, -12.0)]);
+
+    let level = round_trip(
+        &ws,
+        patch_prop(
+            1,
+            PatchProperty::DeviceOutputLevel {
+                device_output: 5,
+                value: -10.0,
+            },
+        ),
+    );
+    let muted = round_trip(
+        &level,
+        patch_prop(
+            1,
+            PatchProperty::DeviceOutputMute {
+                device_output: 5,
+                value: true,
+            },
+        ),
+    );
+    assert_eq!(
+        muted.patches[0].device_output(5),
+        DeviceOutputLevel {
+            device_output: 5,
+            level_db: -10.0,
+            mute: true
+        }
+    );
+    // Back at 0 dB and unmuted, the entry goes: a patch nobody touched lists none.
+    let mut work = muted.clone();
+    let mut history = History::new();
+    for property in [
+        PatchProperty::DeviceOutputMute {
+            device_output: 5,
+            value: false,
+        },
+        PatchProperty::DeviceOutputLevel {
+            device_output: 5,
+            value: 0.0,
+        },
+    ] {
+        assert!(history.execute(&mut work, patch_prop(1, property)).unwrap());
+    }
+    assert!(work.patches[0].device_outputs.is_empty());
+    assert_clean(&work);
+    history.undo(&mut work).unwrap();
+    history.undo(&mut work).unwrap();
+    assert_eq!(work, muted);
+    round_trip(
+        &ws,
+        patch_prop(
+            1,
+            PatchProperty::DeviceOutputs {
+                value: vec![DeviceOutputLevel {
+                    device_output: 2,
+                    level_db: -6.0,
+                    mute: true,
+                }],
+            },
+        ),
+    );
+}
+
+/// Every path that sets a crosspoint or device-output level keeps it within the limits and the
+/// pairs within what a patch can have; a refusal changes nothing.
+#[test]
+fn bad_crosspoint_and_device_output_edits_are_refused() {
+    let ws = workspace(vec![]);
+    let device = |device_output, value| PatchProperty::DeviceOutputLevel {
+        device_output,
+        value,
+    };
+    for (property, want) in [
+        (crosspoint(128, 0, Some(0.0)), "value"),
+        (crosspoint(0, 64, Some(0.0)), "value"),
+        (crosspoint(u32::MAX, u32::MAX, None), "value"),
+        (crosspoint(0, 0, Some(13.0)), "model"),
+        (crosspoint(0, 0, Some(f64::INFINITY)), "model"),
+        (device(64, 0.0), "value"),
+        (device(0, 13.0), "model"),
+        (
+            PatchProperty::DeviceOutputMute {
+                device_output: u32::MAX,
+                value: true,
+            },
+            "value",
+        ),
+        // Unsorted, repeated or out of range: refused whole, not repaired.
+        (
+            PatchProperty::Crosspoints {
+                value: vec![xp(1, 0, 0.0), xp(0, 0, 0.0)],
+            },
+            "model",
+        ),
+        (
+            PatchProperty::Crosspoints {
+                value: vec![xp(0, 0, 0.0), xp(0, 0, -6.0)],
+            },
+            "model",
+        ),
+        (
+            PatchProperty::Crosspoints {
+                value: vec![xp(0, 64, 0.0)],
+            },
+            "model",
+        ),
+        (
+            PatchProperty::Crosspoints {
+                value: vec![xp(0, 0, 0.0); 128 * 64 + 1],
+            },
+            "value",
+        ),
+        (
+            PatchProperty::DeviceOutputs {
+                value: vec![
+                    DeviceOutputLevel {
+                        device_output: 1,
+                        level_db: 0.0,
+                        mute: true,
+                    };
+                    2
+                ],
+            },
+            "model",
+        ),
+        (
+            PatchProperty::DeviceOutputs {
+                value: vec![
+                    DeviceOutputLevel {
+                        device_output: 0,
+                        level_db: 0.0,
+                        mute: true,
+                    };
+                    65
+                ],
+            },
+            "value",
+        ),
+    ] {
+        let error = refused(&ws, patch_prop(1, property.clone()));
+        let kind = match error {
+            CommandError::InvalidValue(_) => "value",
+            CommandError::InvalidModel(_) => "model",
+            other => panic!("{property:?}: {other}"),
+        };
+        assert_eq!(kind, want, "{property:?}");
+    }
+    // Within MAX_DB but above the workspace maximum, or below its minimum: put at the limit.
+    let mut low = ws.clone();
+    low.settings.output_max_db = -6.0;
+    low.patches[0].limit_levels(low.settings.limits());
+    let after = round_trip(&low, patch_prop(1, crosspoint(0, 0, Some(6.0))));
+    assert_eq!(after.patches[0].crosspoint(0, 0), Some(-6.0));
+    let after = round_trip(&low, patch_prop(1, crosspoint(0, 0, Some(-70.0))));
+    assert_eq!(after.patches[0].crosspoint(0, 0), Some(SILENCE_DB));
+    let after = round_trip(&low, patch_prop(1, device(3, 6.0)));
+    assert_eq!(after.patches[0].device_output(3).level_db, -6.0);
+}
+
+#[test]
+fn a_crosspoint_or_device_output_edit_to_the_same_value_is_not_an_edit() {
+    let mut ws = workspace(vec![]);
+    ws.patches[0].crosspoints = vec![xp(0, 1, -6.0)];
+    let mut history = History::new();
+    for property in [
+        crosspoint(0, 1, Some(-6.0)),
+        crosspoint(1, 1, None),
+        PatchProperty::DeviceOutputLevel {
+            device_output: 3,
+            value: 0.0,
+        },
+        PatchProperty::DeviceOutputMute {
+            device_output: 3,
+            value: false,
+        },
+        PatchProperty::Crosspoints {
+            value: vec![xp(0, 1, -6.0)],
+        },
+        PatchProperty::DeviceOutputs { value: vec![] },
+    ] {
+        assert!(
+            !history
+                .execute(&mut ws, patch_prop(1, property.clone()))
+                .unwrap(),
+            "{property:?}"
+        );
+    }
+    assert!(!history.can_undo());
+}
+
+/// A drag on a crosspoint's level is one undo step; a typed level after it is another.
+#[test]
+fn a_drag_on_a_crosspoint_is_one_undo_step() {
+    let mut ws = workspace(vec![]);
+    let mut history = History::new();
+    for db in [-1.0, -2.0, -3.0] {
+        history
+            .execute_coalescing(
+                &mut ws,
+                patch_prop(1, crosspoint(0, 1, Some(db))),
+                Some("k"),
+            )
+            .unwrap();
+    }
+    history
+        .execute(&mut ws, patch_prop(1, crosspoint(0, 2, Some(-4.0))))
+        .unwrap();
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws.patches[0].crosspoints, vec![xp(0, 1, -3.0)]);
+    history.undo(&mut ws).unwrap();
+    assert!(ws.patches[0].crosspoints.is_empty());
+    assert!(!history.can_undo());
+}
+
+/// Narrowing the volume limits takes crosspoints and device outputs with it, in one step.
+#[test]
+fn narrowing_the_maximum_limits_crosspoints_and_device_outputs() {
+    let mut ws = workspace(vec![]);
+    ws.patches[0].crosspoints = vec![xp(0, 1, 6.0), xp(1, 0, -12.0)];
+    ws.patches[0].device_outputs = vec![DeviceOutputLevel {
+        device_output: 1,
+        level_db: 9.0,
+        mute: true,
+    }];
+    let clamps = ws.limit_clamps(LevelLimits {
+        max_db: 0.0,
+        min_db: -60.0,
+    });
+    // One command per list, not per entry.
+    assert_eq!(clamps.len(), 2, "{clamps:?}");
+    let mut history = History::new();
+    let mut commands = clamps;
+    commands.push(setting(WorkspaceSetting::OutputMaxDb { value: 0.0 }));
+    history
+        .execute(&mut ws, Command::Transaction { commands })
+        .unwrap();
+    assert_eq!(
+        ws.patches[0].crosspoints,
+        vec![xp(0, 1, 0.0), xp(1, 0, -12.0)]
+    );
+    assert_eq!(ws.patches[0].device_output(1).level_db, 0.0);
+    assert!(ws.patches[0].device_output(1).mute);
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws.patches[0].crosspoint(0, 1), Some(6.0));
+    assert_eq!(ws.patches[0].device_output(1).level_db, 9.0);
+}
+
+/// A dense matrix (128 cue outputs by 64 device outputs, every crosspoint at -50 dB) under a
+/// minimum raised to -40 dB: the limit change is the setting and one whole-list command per patch
+/// list, not one per crosspoint (each of which would check the whole patch: seconds on the control
+/// thread), every crosspoint goes silent, and one undo brings each back.
+#[test]
+fn raising_the_minimum_over_a_dense_matrix_is_one_command_per_list() {
+    let mut ws = workspace(vec![]);
+    let patch = &mut ws.patches[0];
+    patch.outputs = vec![patch_output(); 128];
+    patch.crosspoints = (0..128)
+        .flat_map(|o| (0..64).map(move |d| xp(o, d, -50.0)))
+        .collect();
+    patch.device_outputs = (0..64)
+        .map(|d| DeviceOutputLevel {
+            device_output: d,
+            level_db: -50.0,
+            mute: false,
+        })
+        .collect();
+    let before = ws.clone();
+    let mut limits = ws.settings.limits();
+    limits.min_db = -40.0;
+    let clamps = ws.limit_clamps(limits);
+    assert_eq!(
+        clamps.len(),
+        2,
+        "one crosspoint list and one device-output list"
+    );
+    let mut commands = clamps;
+    commands.push(setting(WorkspaceSetting::OutputMinDb { value: -40.0 }));
+    let mut history = History::new();
+    assert!(
+        history
+            .execute(&mut ws, Command::Transaction { commands })
+            .unwrap()
+    );
+    let p = &ws.patches[0];
+    assert_eq!(p.crosspoints.len(), 128 * 64);
+    assert!(p.crosspoints.iter().all(|c| c.db == SILENCE_DB));
+    assert!(p.device_outputs.iter().all(|d| d.level_db == SILENCE_DB));
+    assert_clean(&ws);
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws, before, "one undo restores every cell");
+}
+
+/// A device output the maximum brings to 0 dB, unmuted, leaves the list; one already at its
+/// level stays as it is.
+#[test]
+fn a_device_output_clamped_to_its_default_leaves_the_list() {
+    let mut ws = workspace(vec![]);
+    ws.patches[0].device_outputs = vec![
+        DeviceOutputLevel {
+            device_output: 0,
+            level_db: 6.0,
+            mute: false,
+        },
+        DeviceOutputLevel {
+            device_output: 1,
+            level_db: -6.0,
+            mute: false,
+        },
+    ];
+    let clamps = ws.limit_clamps(LevelLimits {
+        max_db: 0.0,
+        min_db: -60.0,
+    });
+    let [
+        Command::SetPatchProperty {
+            property: PatchProperty::DeviceOutputs { value },
+            ..
+        },
+    ] = clamps.as_slice()
+    else {
+        panic!("{clamps:?}");
+    };
+    assert_eq!(value, &vec![ws.patches[0].device_outputs[1].clone()]);
+}
+
 // ---- Network patches ----
 
 #[test]
