@@ -655,6 +655,8 @@ final class ScenarioRunner {
             note("\(clicks == 2 ? "double_click" : "click") \(id) at \(Self.text(p)): \(hit)")
         case .drag(let id, let from, let to, let mods, let part):
             let (view, rect) = try aim(id, part)
+            let column = columnOf(id, part)
+            let widthBefore = column?.width
             let a = try windowPoint(from, in: view, rect: rect)
             let b = try windowPoint(to, in: view, rect: rect)
             var events = [try mouse(.leftMouseDown, at: a, mods, clicks: 1)]
@@ -665,7 +667,8 @@ final class ScenarioRunner {
             }
             events.append(try mouse(.leftMouseUp, at: b, mods, clicks: 1))
             let hit = try press(events, on: view)
-            note("drag \(id)\(Self.partText(part)) \(Self.text(a)) -> \(Self.text(b)): \(hit)")
+            let widthNote = widthBefore.flatMap { w in column.map { ", width \(Int(w)) -> \(Int($0.width))" } } ?? ""
+            note("drag \(id)\(Self.partText(part)) \(Self.text(a)) -> \(Self.text(b)): \(hit)\(widthNote)")
         case .hover(let id, let at, let part):
             let (view, rect) = try aim(id, part)
             let p = try windowPoint(at, in: view, rect: rect)
@@ -674,14 +677,19 @@ final class ScenarioRunner {
                 throw Failure("no tooltip at \(Self.text(p)) (\(target.className))")
             }
             tip = (text, p)
-            note("hover \(id)\(Self.partText(part)) at \(Self.text(p)): tooltip \"\(text)\"")
+            note(
+                "hover \(id)\(Self.partText(part)) at \(Self.text(p)): tooltip \"\(text)\" "
+                    + "(the bubble in shots is drawn by the runner, not AppKit)")
         case .openMenu(let id):
             await catchUp()
-            guard let popup = try control(id) as? NSPopUpButton, let menu = popup.menu else {
+            guard let popup = try control(id) as? NSPopUpButton else {
                 throw Failure("\"\(id)\" is not a pop-up button")
             }
+            // A pull-down's first item is the button's own title, not a choice.
+            let items = Self.shownItems(of: popup)
+            guard !items.isEmpty else { throw Failure("\"\(id)\" has no items to show") }
             openMenu = popup
-            note("open_menu \(id): \(menu.items.filter { !$0.isHidden }.map(Self.menuLine).joined(separator: " | "))")
+            note("open_menu \(id): \(items.map(Self.menuLine).joined(separator: " | "))")
         case .menuCommand(let name):
             await catchUp()
             guard let edit = Self.menuCommands[name] else { throw Failure("unknown command \(name)") }
@@ -689,6 +697,9 @@ final class ScenarioRunner {
             let bar = menuBar ?? AppDelegate()
             bar.appController = app
             menuBar = bar
+            if window.firstResponder is NSText {
+                throw Failure("text is being edited: the menu's action would go to the text, not the cues")
+            }
             guard bar.validateMenuItem(item) else { throw Failure("Edit > \(name) is off (greyed out) now") }
             // As a menu item with no target is sent: each responder from the first one up, then the
             // app's menu actions.
@@ -965,7 +976,9 @@ final class ScenarioRunner {
         }
         if view.visibleRect.isEmpty { throw Failure("the control is scrolled out of view or has no size") }
         if rect != nil, !view.visibleRect.contains(local) {
-            throw Failure("that point of the header or row is scrolled out of view")
+            throw Failure(
+                "that point (\(Self.text(p))) is outside the header or row's view or scrolled out of it: "
+                    + "fractions may go past the header cell but must stay inside the table's header")
         }
         return p
     }
@@ -994,6 +1007,12 @@ final class ScenarioRunner {
         }
     }
 
+    /// The column a header part names, to log its width around a drag.
+    private func columnOf(_ id: String, _ part: Part?) -> NSTableColumn? {
+        guard case .header(let title)? = part, let table = try? control(id) as? NSTableView else { return nil }
+        return table.tableColumns.first { ($0.title.isEmpty ? $0.identifier.rawValue : $0.title) == title }
+    }
+
     /// The tooltip AppKit would show for `view` with the pointer at window point `p`: a header cell's,
     /// a segment's, else the nearest view up from it that has one.
     private func tooltip(of view: NSView, at p: NSPoint) -> String? {
@@ -1003,16 +1022,22 @@ final class ScenarioRunner {
             if i >= 0, let tip = table.tableColumns[i].headerToolTip, !tip.isEmpty { return tip }
         }
         if let bar = view as? NSSegmentedControl {
+            // The segments' own widths and the dividers between them: what is left of the control's
+            // width after the fixed widths, shared by the automatic ones, less one point a divider.
             let widths = (0..<bar.segmentCount).map { bar.width(forSegment: $0) }
             let automatic = CGFloat(widths.filter { $0 == 0 }.count)
-            let each = automatic > 0 ? max(0, bar.bounds.width - widths.reduce(0, +)) / automatic : 0
+            let gaps = CGFloat(max(0, widths.count - 1))
+            let spare = bar.bounds.width - widths.reduce(0, +)
+            let divider = automatic == 0 ? (gaps > 0 ? max(0, spare / gaps) : 0) : 1
+            let each = automatic > 0 ? max(0, spare - gaps * divider) / automatic : 0
             var x: CGFloat = 0
             for (i, w) in widths.enumerated() {
-                x += w == 0 ? each : w
+                x += (w == 0 ? each : w) + divider / 2
                 if local.x < x {
                     if let tip = bar.toolTip(forSegment: i), !tip.isEmpty { return tip }
                     break
                 }
+                x += divider / 2
             }
         }
         var up: NSView? = view
@@ -1178,9 +1203,8 @@ final class ScenarioRunner {
     }
 
     private func drawMenu(of popup: NSPopUpButton, within area: NSRect) {
-        guard let menu = popup.menu else { return }
         let font = NSFont.menuFont(ofSize: 0)
-        let items = menu.items.filter { !$0.isHidden }
+        let items = Self.shownItems(of: popup)
         let rowHeight: CGFloat = 22
         let heights = items.map { $0.isSeparatorItem ? CGFloat(9) : rowHeight }
         let widest = items.map { ($0.title as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
@@ -1390,6 +1414,11 @@ final class ScenarioRunner {
         case .header(let t)?: return " header \(t)"
         case .row(let r)?: return " row \(r)"
         }
+    }
+
+    /// The items a pop-up's open menu lists: not the hidden ones, nor a pull-down's title item.
+    private static func shownItems(of popup: NSPopUpButton) -> [NSMenuItem] {
+        (popup.menu?.items ?? []).dropFirst(popup.pullsDown ? 1 : 0).filter { !$0.isHidden }
     }
 
     private static func menuLine(_ item: NSMenuItem) -> String {
@@ -1693,5 +1722,120 @@ final class ScenarioShotTests: XCTestCase {
         XCTAssertTrue(notPopUp.contains("\"toggle-sidebar\" is not a pop-up button"), notPopUp)
         let noTip = try await failure(of: #"{"show": "Demo", "steps": [{"hover": "cue-list"}]}"#)
         XCTAssertTrue(noTip.contains("no tooltip at"), noTip)
+    }
+
+    /// Runs the scenario and returns its `steps.log`.
+    private func runLog(of json: String) async throws -> String {
+        try await ScenarioRunner(scenario: try scenario(json), out: out).run()
+        return try String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)
+    }
+
+    func testHoverReadsTheTooltipOfTheHeaderAndTheSegmentUnderThePointer() async throws {
+        let log = try await runLog(
+            of: """
+                {"show": "Demo", "steps": [
+                  {"hover": "cue-list", "header": "Duration"},
+                  {"hover": "cue-toolbar", "at": [0.06, 0.5]},
+                  {"hover": "cue-toolbar", "at": [0.478, 0.5]},
+                  {"hover": "cue-toolbar", "at": [0.492, 0.5]}]}
+                """)
+        let tips = log.split(separator: "\n").compactMap { line -> String? in
+            guard let r = line.range(of: "tooltip \"") else { return nil }
+            return String(line[r.upperBound...].prefix { $0 != "\"" })
+        }
+        XCTAssertEqual(tips.count, 4, log)
+        XCTAssertEqual(tips[0], loc("cuelist.time.showRemaining"), log)
+        XCTAssertEqual(tips[1], "Audio", log)
+        // Inside a segment near its right edge, where widths summed without the dividers named the next one.
+        XCTAssertEqual(tips[2], "Wait", log)
+        XCTAssertNotEqual(tips[3], tips[2], "a point past the divider is the next segment's: \(log)")
+        XCTAssertTrue(log.contains("drawn by the runner, not AppKit"), log)
+    }
+
+    func testOpenMenuListsTheItemsWithTheChosenOneTickedAndLeavesOutAPullDownsTitle() async throws {
+        let log = try await runLog(
+            of: """
+                {"show": "VideoSound", "displays": "V1:1920x1080", "media": {"media/talk.mov": 4}, "steps": [
+                  {"select": "5"}, {"tab": "fadeGeometry"},
+                  {"open_menu": "fade-geometry-mode"},
+                  {"choose": "fade-geometry-mode", "item": "Relative"},
+                  {"open_menu": "fade-geometry-mode"},
+                  {"focus": "settings"}, {"tab": "audio"}, {"click": "settings-patch-edit-1"},
+                  {"focus": "patch-editor"}, {"open_menu": "patch-editor-copy"}]}
+                """)
+        XCTAssertTrue(log.contains("open_menu fade-geometry-mode: [x] Absolute | Relative"), log)
+        XCTAssertTrue(log.contains("open_menu fade-geometry-mode: Absolute | [x] Relative"), log)
+        let pullDown = try XCTUnwrap(log.split(separator: "\n").first { $0.hasPrefix("open_menu patch-editor-copy") })
+        XCTAssertTrue(pullDown.contains(loc("patchEditor.copyDefaults")), "\(pullDown)")
+        XCTAssertFalse(pullDown.contains(loc("patchEditor.copyRouting")), "the title item is not listed: \(pullDown)")
+    }
+
+    func testOpenMenuOfAPopUpThatIsNotShownStopsTheRun() async throws {
+        // The Geometry tab's pop-up is not in the window until a Fade cue is selected.
+        let message = try await failure(
+            of: #"{"show": "Demo", "steps": [{"open_menu": "fade-geometry-mode"}]}"#)
+        XCTAssertTrue(message.contains("no control with identifier \"fade-geometry-mode\""), message)
+    }
+
+    func testAHeaderDragOnAResizableColumnResizesItAndOnTheNameColumnDoesNot() async throws {
+        let log = try await runLog(
+            of: """
+                {"show": "Demo", "steps": [
+                  {"drag": "cue-list", "header": "Pre-Wait", "from": [0.999, 0.5], "to": [1.4, 0.5]},
+                  {"drag": "cue-list", "header": "Name", "from": [0.999, 0.5], "to": [0.5, 0.5]}]}
+                """)
+        let widths = log.split(separator: "\n").compactMap { line -> (Int, Int)? in
+            guard let r = line.range(of: ", width ") else { return nil }
+            let parts = line[r.upperBound...].components(separatedBy: " -> ").compactMap { Int($0) }
+            return parts.count == 2 ? (parts[0], parts[1]) : nil
+        }
+        XCTAssertEqual(widths.count, 2, log)
+        XCTAssertGreaterThan(widths[0].1, widths[0].0, "Pre-Wait was widened: \(log)")
+        XCTAssertEqual(widths[1].0, widths[1].1, "Name takes no user resize: \(log)")
+    }
+
+    func testAShotWithADisplayWritesItsCompositeBesideTheWindowShotAndShowsTheCardWhilePlaying() async throws {
+        let log = try await runLog(
+            of: """
+                {"show": "Video", "displays": "V1:1920x1080",
+                 "settings": {"settings_version": 1, "workspaces": {"00000000-0000-0000-0000-0000000000f0": {
+                   "patches": {}, "stages": {"00000000-0000-0000-0000-0000000000f1":
+                     {"display": "V1", "name": "Stage 1", "width": 1920, "height": 1080}}}}},
+                 "media": {"media/clip.mov": 4, "media/still.png": 1, "media/card.jpg": 1,
+                   "media/A very long name for a projection clip used in the second act.mov": 2},
+                 "steps": [{"advance": 0.1}, {"select": "1"}, {"shot": "idle", "display": "V1"},
+                   {"key": "space"}, {"advance": 1.5}, {"shot": "playing", "display": "V1"}]}
+                """)
+        XCTAssertTrue(log.contains("shot 02-playing-display-V1.png"), log)
+        func blocks(_ name: String) throws -> NSBitmapImageRep {
+            let data = try Data(contentsOf: out.appendingPathComponent(name))
+            return try XCTUnwrap(NSBitmapImageRep(data: data), name)
+        }
+        let (cols, rows) = ScenarioRunner.displayGrid(width: 1920, height: 1080)
+        func lit(_ rep: NSBitmapImageRep) -> Int {
+            var n = 0
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide {
+                    guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                    if c.redComponent + c.greenComponent + c.blueComponent > 0.3 { n += 1 }
+                }
+            }
+            return n
+        }
+        let idle = try blocks("01-idle-display-V1.png")
+        let playing = try blocks("02-playing-display-V1.png")
+        XCTAssertEqual(playing.pixelsWide, cols * 8)
+        XCTAssertEqual(playing.pixelsHigh, rows * 8)
+        XCTAssertEqual(lit(idle), 0, "nothing is shown before GO")
+        XCTAssertGreaterThan(lit(playing), playing.pixelsWide * playing.pixelsHigh / 2, "the test card fills the stage")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: out.appendingPathComponent("02-playing.png").path))
+    }
+
+    func testMenuCommandWhileTextIsBeingEditedStopsTheRun() async throws {
+        let message = try await failure(
+            of:
+                #"{"show": "Demo", "steps": [{"select": "1"}, {"type": "inspector-name", "text": "x", "enter": false}, {"menu_command": "copy"}]}"#
+        )
+        XCTAssertTrue(message.contains("text is being edited"), message)
     }
 }

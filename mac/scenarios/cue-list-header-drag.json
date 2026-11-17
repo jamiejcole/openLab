@@ -1,5 +1,5 @@
 {
-  "about": "A drag that starts on a named column header of the cue list: dragging within the Duration header counts as a click on it (the times switch to the whole time), as for a user. A drag on the Name header's right edge presses its resize edge.",
+  "about": "A drag that starts on a named column header of the cue list: dragging within the Duration header counts as a click on it (the times switch to the whole time), as for a user. A drag from the Pre-Wait header's right edge resizes that column.",
   "show": "Demo",
   "window": {"width": 1200, "height": 800},
   "steps": [
@@ -7,7 +7,7 @@
     {"drag": "cue-list", "header": "Duration", "from": [0.2, 0.5], "to": [0.8, 0.5]},
     {"hover": "cue-list", "header": "Duration"},
     {"shot": "duration-header-clicked-its-tooltip-flipped"},
-    {"drag": "cue-list", "header": "Name", "from": [0.999, 0.5], "to": [0.5, 0.5]},
-    {"shot": "after-name-edge-drag"}
+    {"drag": "cue-list", "header": "Pre-Wait", "from": [0.999, 0.5], "to": [1.4, 0.5]},
+    {"shot": "after-pre-wait-edge-drag"}
   ]
 }
