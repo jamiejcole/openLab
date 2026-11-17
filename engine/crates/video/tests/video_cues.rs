@@ -5332,6 +5332,10 @@ fn an_edit_of_the_value_a_fade_moves_takes_it_over_and_the_target_plays_on() {
     run_to(&mut s, at + samples(2.0) + BLOCK);
     opacity_is(&mut s, 0.4, 0.02, "the Fade moves it no more");
     expect_state(&s, 1, CueState::Running, "not stopped");
+    // Every later edit of it is drawn too.
+    assert!(set_fields(&mut s, 1, serde_json::json!({"opacity": 0.9})));
+    s.run(samples(0.1));
+    opacity_is(&mut s, 0.9, 0.02, "a second edit");
 }
 
 /// A Fade of a Video cue whose start waits for its file's probe reaches the picture when it

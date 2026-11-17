@@ -760,7 +760,23 @@ fn an_edit_of_a_value_a_fade_moves_takes_it_over_and_ends_the_fade_without_stopp
     assert_eq!(rig.state(2), CueState::Idle);
     assert!(voice_stops(&rig.tick(4000)).is_empty());
     assert_eq!(rig.state(1), CueState::Running);
-    assert_eq!(rig.level(1, OPACITY, 4000), None, "the model's value again");
+    assert_eq!(rig.level(1, OPACITY, 4000), Some(0.5), "the model's value");
+    // A later edit of it reaches the picture the same way.
+    if let CueKind::Video { geometry, .. } = &mut rig.find_mut(1).kind {
+        geometry.opacity = 0.9;
+    }
+    rig.engine.model_changed();
+    assert_eq!(
+        picture_ramps(&rig.tick(5000)),
+        vec![(
+            id(1),
+            PictureParam::Opacity,
+            5000,
+            0.9,
+            10,
+            FadeCurve::Linear
+        )]
+    );
 }
 
 #[test]
