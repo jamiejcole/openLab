@@ -295,6 +295,11 @@ impl Control {
         self.eng.primes_up()
     }
 
+    /// Pictures' opens asked ahead so far, for the cues standing by.
+    pub fn picture_opens_ahead(&self) -> u64 {
+        self.eng.primes_asked()
+    }
+
     /// Video cue starts waiting for their pictures' files to open (not paused), every doc's.
     pub fn pictures_waiting(&self) -> usize {
         self.eng.pictures_waiting()

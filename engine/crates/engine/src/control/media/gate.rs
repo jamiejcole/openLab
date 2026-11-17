@@ -126,6 +126,11 @@ impl Gate {
             .any(|d| self.bucket(&d.join("show")).eq_ignore_ascii_case(bucket))
     }
 
+    /// Whether the volume `path` is on is stalled ([`Self::stalled`]).
+    pub(super) fn path_stalled(&self, path: &Path) -> bool {
+        self.stalled(&self.bucket(path))
+    }
+
     pub(super) fn stalled(&self, bucket: &str) -> bool {
         if self.exempt(bucket) {
             return false;

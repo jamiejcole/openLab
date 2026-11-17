@@ -175,10 +175,10 @@ impl Engine {
 }
 
 impl Control {
-    /// A picture `doc` opened ahead settled (opened, failed, or dropped at a crash): its next
-    /// priming pass opens the next one.
-    fn reprime(&mut self, doc: DocId) {
-        if let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) {
+    /// An open ahead answered (or the stage host stopped or started): one is asked at a time
+    /// across every doc, so every doc's next priming pass may open its next.
+    fn reprime(&mut self) {
+        for d in &mut self.docs {
             d.primes_dirty = true;
         }
     }
@@ -340,8 +340,11 @@ impl Control {
                             .to_owned(),
                     );
                 }
-                // A new stage host (after a crash too) shows the pictures that are up.
+                // A new stage host (after a crash too) shows the pictures that are up, and is
+                // sent the pictures opened ahead again.
                 self.eng.resend_pictures();
+                self.eng.primes_host_started();
+                self.reprime();
             }
             StageEvent::Displays(displays) => {
                 if displays == self.eng.stages.displays {
@@ -386,9 +389,8 @@ impl Control {
                 s.up = false;
                 s.pid = None;
                 s.states.clear();
-                for doc in self.eng.pictures_host_stopped(crashed) {
-                    self.reprime(doc);
-                }
+                self.eng.pictures_host_stopped(crashed);
+                self.reprime();
                 if restarting {
                     self.eng.log(
                         LogLevel::Warn,
@@ -412,14 +414,17 @@ impl Control {
                 }
             }
             StageEvent::PictureOpened { picture } => {
-                if let Some(doc) = self.eng.picture_opened(picture) {
-                    self.reprime(doc);
+                if self.eng.picture_opened(picture) {
+                    self.reprime();
                 }
             }
-            StageEvent::PictureFailed { picture, reason } => match self.eng.prime_failed(picture) {
-                Some(doc) => self.reprime(doc),
-                None => self.eng.picture_failed(picture, reason),
-            },
+            StageEvent::PictureFailed { picture, reason } => {
+                if self.eng.prime_failed(picture) {
+                    self.reprime();
+                } else {
+                    self.eng.picture_failed(picture, reason);
+                }
+            }
             StageEvent::Log { level, message } => {
                 let level = match level {
                     LinkLevel::Info => LogLevel::Info,

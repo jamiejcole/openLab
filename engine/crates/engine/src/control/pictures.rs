@@ -36,6 +36,7 @@
 //! notice. The control thread never waits on the stage host.
 
 mod primes;
+mod sequence;
 
 use std::collections::BTreeMap;
 
@@ -77,6 +78,9 @@ struct Wait {
     paused: bool,
     /// A devamp asked meanwhile (its stop), carried out once the picture plays.
     devamp: Option<bool>,
+    /// The cues started with it (one GO's sequence), which start together once every picture
+    /// among them is open (`sequence.rs`).
+    group: Option<u64>,
 }
 
 /// One run's picture.
@@ -210,6 +214,8 @@ pub(super) struct Pictures {
     clock_sent: Option<SampleTime>,
     /// Pictures opened ahead for the cues standing by.
     primes: primes::Primes,
+    /// Cues started together that wait for a picture among them to open.
+    sequence: sequence::Sequences,
     /// Pictures the stage host reported failed, for their doc's next tick, and whether their
     /// start was still waiting for the open (nothing seen or heard: the cue was only skipped).
     failed: Vec<(DocId, CueId, RunId, String, bool)>,
@@ -391,9 +397,6 @@ impl Engine {
 
     /// A stage host started: it is sent the clock and every picture again.
     pub(super) fn resend_pictures(&mut self) {
-        for load in self.prime_loads() {
-            self.picture(load);
-        }
         if self.pictures.live.is_empty() {
             return;
         }
@@ -414,15 +417,16 @@ impl Engine {
         }
     }
 
-    /// The stage host has `picture`'s file open. A prime's doc is returned: it opens its next.
-    pub(super) fn picture_opened(&mut self, picture: u64) -> Option<DocId> {
-        if let Some(doc) = self.prime_opened(picture) {
-            return Some(doc);
+    /// The stage host has `picture`'s file open; `true` if it was opened ahead (the docs then
+    /// open their next).
+    pub(super) fn picture_opened(&mut self, picture: u64) -> bool {
+        if self.prime_opened(picture) {
+            return true;
         }
         if let Some(l) = self.pictures.live.get_mut(&picture) {
             l.opened = true;
         }
-        None
+        false
     }
 
     /// The stage host stopped. Only a crash of its own (`crashed`: not a kill by the
@@ -436,15 +440,15 @@ impl Engine {
     ///   running unseen) and tried again one at a time, the earliest suspected last
     ///   (`try_held_back_pictures`), so the bad file ends up alone and only its cue breaks.
     /// - Everything else is sent to the next stage host.
-    ///
-    /// Returns the docs whose prime was dropped, to open their next.
-    pub(super) fn pictures_host_stopped(&mut self, crashed: bool) -> Vec<DocId> {
-        let reprime = self.primes_host_stopped(crashed);
+    /// - A crash while a picture was being opened ahead is that file's doing: it is not
+    ///   opened ahead again, and no running picture is suspected.
+    pub(super) fn pictures_host_stopped(&mut self, crashed: bool) {
+        let ahead = self.primes_host_stopped(crashed);
         for l in self.pictures.live.values_mut() {
             l.trial = l.trial.filter(|_| crashed);
         }
-        if !crashed {
-            return reprime;
+        if !crashed || ahead {
+            return;
         }
         let now = self.now();
         let window = seconds_to_samples(SUSPECT_WINDOW_S, self.rate);
@@ -463,7 +467,7 @@ impl Engine {
                     "the video output crashed while it played this file".to_owned(),
                 );
             }
-            return reprime;
+            return;
         }
         let mut repeat = Vec::new();
         for (id, l) in &mut self.pictures.live {
@@ -497,7 +501,6 @@ impl Engine {
                 }
             }
         }
-        reprime
     }
 
     /// Each tick: a picture held back after crashes is sent again alone once the stage host
@@ -562,6 +565,7 @@ impl Engine {
     /// A doc closed: its pictures go.
     pub(super) fn drop_doc_pictures(&mut self, doc: DocId) {
         self.drop_doc_primes(doc);
+        self.drop_doc_sequences(doc);
         let gone: Vec<u64> = self
             .pictures
             .live
@@ -1159,6 +1163,9 @@ impl DocCx<'_> {
             return;
         };
         let since = self.now();
+        // Started with others (one GO's sequence): they start together once every picture
+        // among them is open, which the batch's end decides (`end_sequence`).
+        let group = self.eng.pictures.sequence.batch();
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
             l.wait = Some(Wait {
                 at,
@@ -1167,26 +1174,30 @@ impl DocCx<'_> {
                 since,
                 paused: false,
                 devamp: None,
+                group,
             });
         }
-        if !self.start_if_open(id, fx) && load_sound {
+        let started = group.is_none() && self.start_if_open(id, fx);
+        if !started && load_sound {
             self.load_sound_for_wait(cue, run, from, fx);
         }
     }
 
-    /// Plays the run's picture and sound from `from` into its action on `at`, or now if that has
-    /// passed: the action was `offset` into its time on `at`, so what it has run past `from` by
+    /// Plays the run's picture and sound from `from` into its action on sample `on` (not before
+    /// `at`): the action was `offset` into its time on `at`, so what it has run past `from` by
     /// then is late, counted into its length. A devamp asked while it waited follows.
+    #[allow(clippy::too_many_arguments)]
     fn play_from(
         &mut self,
         cue: CueId,
         run: RunId,
         (at, offset): (SampleTime, SampleTime),
         from: SampleTime,
+        on: SampleTime,
         devamp: Option<bool>,
         fx: &mut Effects,
     ) {
-        let on = at.max(self.now());
+        let on = on.max(at);
         let late = offset.saturating_add(on - at).saturating_sub(from);
         self.play_picture(cue, run, on, from, late, true, fx);
         if late > 0 {
@@ -1298,6 +1309,7 @@ impl DocCx<'_> {
     /// breaks its cue (the stage host never answered), as a start that failed: nothing was seen
     /// or heard.
     pub(super) fn start_waiting_pictures(&mut self, now: SampleTime, fx: &mut Effects) {
+        self.start_lone_sounds(fx);
         let doc = self.doc.id;
         let limit = seconds_to_samples(OPEN_WAIT_LIMIT_S, self.eng.rate);
         let waiting: Vec<(u64, SampleTime)> = (self.eng.pictures.live.iter())
@@ -1305,6 +1317,10 @@ impl DocCx<'_> {
             .filter_map(|(id, l)| Some((*id, l.wait.filter(|w| !w.paused)?.since)))
             .collect();
         for (id, since) in waiting {
+            // Gone, or started with its sequence by another's open since the list was made.
+            if self.picture_wait(id).is_none_or(|w| w.paused) {
+                continue;
+            }
             if self.start_if_open(id, fx) || now < since.saturating_add(limit) {
                 continue;
             }
@@ -1340,12 +1356,19 @@ impl DocCx<'_> {
             return false;
         };
         let go = l.opened || l.held_back || !opens;
-        let Some(w) = l.wait.filter(|w| go && !w.paused) else {
+        let Some(w) = l.wait.filter(|w| !w.paused) else {
             return false;
         };
+        if let Some(group) = w.group {
+            return self.start_sequence_if_open(group, fx);
+        }
+        if !go {
+            return false;
+        }
         l.wait = None;
         let (cue, run) = (l.cue, l.run);
-        self.play_from(cue, run, (w.at, w.offset), w.from, w.devamp, fx);
+        let on = w.at.max(self.now());
+        self.play_from(cue, run, (w.at, w.offset), w.from, on, w.devamp, fx);
         true
     }
 
@@ -1401,6 +1424,7 @@ impl DocCx<'_> {
                         since: now,
                         paused: true,
                         devamp: None,
+                        group: None,
                     });
                 }
             }
