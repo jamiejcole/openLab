@@ -3697,9 +3697,23 @@ fn a_pause_with_a_pending_devamp_stop_keeps_picture_and_sound_together() {
     assert_eq!(s.stalls(), 0);
 }
 
+/// Picture and sound fade together now: the picture's opacity (its red over `full`, the red
+/// unfaded) and the sound's gain (the second output over `unity`, its value unfaded) are
+/// within 0.06 of each other and of `want`.
+fn fading_in_step(s: &mut OfflineShow, full: u8, unity: f32, want: f64, what: &str) {
+    let opacity = f64::from(red_at(s)) / f64::from(full);
+    let heard = s.audio()[usize::try_from(s.rendered() - 1).unwrap() * 2 + 1];
+    let gain = f64::from(heard / unity);
+    assert!(
+        (opacity - want).abs() < 0.06 && (gain - want).abs() < 0.06,
+        "{what}: the picture at {opacity} and the sound at {gain} of full, not {want}"
+    );
+}
+
 /// A stop with a fade longer than what is left of the pass, while a devamp that stops the cue
 /// is pending: picture, sound and the cue's state all end at the end of the pass, not after
-/// the fade. A Panic fading past it does the same.
+/// the fade; until then the picture fades with the sound. A Panic fading past it does the
+/// same.
 #[test]
 fn picture_sound_and_the_cues_state_end_on_the_same_sample_when_a_stop_fades_past_a_pending_devamp_stop()
  {
@@ -3708,7 +3722,7 @@ fn picture_sound_and_the_cues_state_end_on_the_same_sample_when_a_stop_fades_pas
     let stop = TransportAction::Stop {
         cue: id(1),
         fade_out: Some(openlab_core::FadeSpec {
-            duration: 10.0,
+            duration: 1.0,
             curve: openlab_core::FadeCurve::Linear,
         }),
     };
@@ -3727,18 +3741,24 @@ fn picture_sound_and_the_cues_state_end_on_the_same_sample_when_a_stop_fades_pas
             },
         );
         let mut ws: Workspace = workspace(vec![looping, devamp]);
-        ws.settings.panic_duration = 10.0;
+        ws.settings.panic_duration = 1.0;
         let mut s = video_show_of(ws);
         let at = start(&mut s, 1);
         run_to(&mut s, at + samples(1.0));
         start(&mut s, 2); // the pass under way ends at 1.6 s
         run_to(&mut s, at + samples(1.1));
+        let full = red_at(&mut s);
         s.transport(stop);
+        let stopped = s.now();
+        // 0.4 s into the 1 s fade, the file 0.7 s in (its first second: 1/2048 unfaded).
+        run_to(&mut s, stopped + samples(0.4));
+        fading_in_step(&mut s, full, 1.0 / 2048.0, 0.6, what);
         let leaves = at + samples(1.6);
         run_to(&mut s, leaves - 2 * BLOCK);
-        on_stage(
-            &mut s,
-            &format!("{what} fading, before the end of the pass"),
+        let red = red_at(&mut s);
+        assert!(
+            red > full / 4,
+            "{what}: still up before the end of the pass: {red}"
         );
         assert!(
             !silent(&s, at + samples(1.4), s.rendered()),
@@ -3758,7 +3778,7 @@ fn picture_sound_and_the_cues_state_end_on_the_same_sample_when_a_stop_fades_pas
             silent(&s, leaves + 8, s.rendered()),
             "{what}: the sound ended there"
         );
-        run_to(&mut s, at + samples(11.1) + 2 * BLOCK);
+        run_to(&mut s, stopped + samples(1.0) + 2 * BLOCK);
         expect_state(
             &s,
             1,
@@ -3769,9 +3789,9 @@ fn picture_sound_and_the_cues_state_end_on_the_same_sample_when_a_stop_fades_pas
     }
 }
 
-/// A stop with a fade longer than what is left of a movie that does not loop: picture, sound
-/// and the cue's state end with the movie's range, as an Audio cue's file ending inside its
-/// stop fade ends that cue.
+/// A stop with a fade longer than what is left of a movie that does not loop: the picture
+/// fades with the sound, and picture, sound and the cue's state end with the movie's range,
+/// as an Audio cue's file ending inside its stop fade ends that cue.
 #[test]
 fn a_stop_fading_past_the_end_of_the_range_ends_picture_sound_and_cue_with_the_range() {
     let dir = tempfile::tempdir().unwrap();
@@ -3780,17 +3800,26 @@ fn a_stop_fading_past_the_end_of_the_range_ends_picture_sound_and_cue_with_the_r
         t.end_time = Some(1.2);
     })]);
     let at = start(&mut s, 1);
-    run_to(&mut s, at + samples(1.0));
+    run_to(&mut s, at + samples(0.9));
+    let full = red_at(&mut s);
     s.transport(TransportAction::Stop {
         cue: id(1),
         fade_out: Some(openlab_core::FadeSpec {
-            duration: 10.0,
+            duration: 1.0,
             curve: openlab_core::FadeCurve::Linear,
         }),
     });
+    let stopped = s.now();
+    // 0.2 s into the 1 s fade, the file 1.1 s in (its second second: 2/2048 unfaded).
+    run_to(&mut s, stopped + samples(0.2));
+    fading_in_step(&mut s, full, 2.0 / 2048.0, 0.8, "fading");
     let ends = at + samples(1.2);
     run_to(&mut s, ends - 2 * BLOCK);
-    on_stage(&mut s, "fading, before the end of the range");
+    let red = red_at(&mut s);
+    assert!(
+        red > full / 4,
+        "still up before the end of the range: {red}"
+    );
     expect_state(&s, 1, CueState::Stopping, "fading");
     run_to(&mut s, ends + 2 * BLOCK);
     expect_state(&s, 1, CueState::Idle, "ended with the range");

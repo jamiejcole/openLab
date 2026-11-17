@@ -144,8 +144,9 @@ struct Pic {
     before: Option<Run>,
     /// The sample it first played on: drawn from then on.
     since: Option<u64>,
-    /// Fading out from sample `.0` over `.1` samples, then gone.
-    stop: Option<(u64, u64)>,
+    /// Fading out from sample `.0` over `.1` samples; gone on sample `.2` (the fade's end, or
+    /// the stop's cut if that comes first).
+    stop: Option<(u64, u64, u64)>,
     /// When it first played, for the stacking (later on top): (sample, arrival order).
     order: (u64, u64),
     geometry: VideoGeometry,
@@ -256,8 +257,9 @@ impl Pic {
             self.before.as_ref().unwrap_or(&self.run)
         };
         let stopping = match self.stop {
-            Some((at, _)) if clock < at => 1.0,
-            Some((at, fade)) => {
+            Some((_, _, end)) if clock >= end => return None,
+            Some((at, _, _)) if clock < at => 1.0,
+            Some((at, fade, _)) => {
                 let gone = clock - at;
                 if gone >= fade {
                     return None;
@@ -540,12 +542,18 @@ impl<P: Platform> Host<P> {
                     p.before = Some(std::mem::replace(&mut p.run, paused));
                 }
             }
-            ToStage::Stop { picture, at, fade } => {
+            ToStage::Stop {
+                picture,
+                at,
+                fade,
+                cut,
+            } => {
+                let end = at.saturating_add(fade).min(cut.unwrap_or(u64::MAX));
                 let gone = match self.pics.get_mut(&picture) {
-                    // Never shown, or a stop with no fade that is due: gone now.
-                    Some(p) if p.since.is_none() || (fade == 0 && at <= sample) => true,
+                    // Never shown, or a stop that ends by now: gone now.
+                    Some(p) if p.since.is_none() || end <= sample => true,
                     Some(p) => {
-                        p.stop = Some((at, fade));
+                        p.stop = Some((at, fade, end));
                         false
                     }
                     None => false,
@@ -642,10 +650,7 @@ impl<P: Platform> Host<P> {
         let done: Vec<u64> = self
             .pics
             .iter()
-            .filter(|(_, p)| {
-                p.stop
-                    .is_some_and(|(at, fade)| clock >= at.saturating_add(fade))
-            })
+            .filter(|(_, p)| p.stop.is_some_and(|(_, _, end)| clock >= end))
             .map(|(id, _)| *id)
             .collect();
         for id in done {
@@ -1411,6 +1416,7 @@ pub(crate) mod tests {
                 picture: 7,
                 at: 4000,
                 fade: 1000,
+                cut: None,
             },
         );
         clock(&mut h, 4500);
@@ -1425,6 +1431,37 @@ pub(crate) mod tests {
         );
         h.redraw(&mut Vec::new());
         assert!(!h.playing(), "gone once its fade is over");
+
+        // A stop cut short (its cue's action ends mid-fade): it fades as the stop says until
+        // the cut, then it is gone.
+        load(&mut h, 8, 1);
+        send(&mut h, plain_play(8, 5000, 0.0));
+        send(
+            &mut h,
+            ToStage::Stop {
+                picture: 8,
+                at: 5000,
+                fade: 1000,
+                cut: Some(5600),
+            },
+        );
+        clock(&mut h, 5500);
+        assert_eq!(cues(&mut h, 1), vec![(8, 0.5, 0.5)], "fading, not cut yet");
+        clock(&mut h, 5600);
+        assert_eq!(cues(&mut h, 1), vec![], "gone on the cut");
+        h.redraw(&mut Vec::new());
+        assert!(!h.playing(), "dropped on the cut");
+        // A cut already passed when the stop comes: gone at once.
+        load(&mut h, 9, 1);
+        send(&mut h, plain_play(9, 5600, 0.0));
+        let stop = ToStage::Stop {
+            picture: 9,
+            at: 5600,
+            fade: 1000,
+            cut: Some(5600),
+        };
+        send(&mut h, stop);
+        assert!(!h.playing(), "gone at once");
     }
 
     /// A movie's plan (VID-07): the picture follows its passes (a trimmed range played twice),
