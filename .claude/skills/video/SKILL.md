@@ -15,7 +15,7 @@ Probing Video cues' files and playing their pictures on stages in step with the 
 Not built: HAP, effects and blend modes, a Fade's 2D path, 3D rotation and fading the rate.
 
 ## Must not break
-- A stage with keep-black on and its display connected shows black whenever nothing plays on it, never a frozen frame (VID-12). The stage host draws that black while it runs; in its gaps (the engine's death until a relaunched engine's stage host is up, a stage host crash or kill until its relaunch, about 150 ms, the whole `retry_after` pause after repeated crashes) the app's black backstop shows instead (below).
+- A stage with keep-black on and its display connected shows black whenever nothing plays on it, never a frozen frame (VID-12). The stage host draws that black while it runs; in its gaps (the engine's death until a relaunched engine's stage host is up, a stage host crash or kill until its relaunch, about 150 ms, the whole `retry_after` pause after repeated crashes) the app's black backstop shows instead, except on the display with the menu bar (Q298; below).
 - The engine links no GUI framework and no video decoder. Everything that touches windows, displays, the GPU or (later) media is in `openlab-stage`, so a crash or hang there never stops sound.
 - Every line crossing the link is validated on both ends (`stage_link::decode_*`): a bad line is a warning, never a panic, a hang or unbounded memory.
 - The stage host exits when its stdin ends, so it never outlives the engine.
