@@ -748,11 +748,9 @@ fn fill_routing(
             continue;
         };
         row.fill(0.0);
-        let (Some(out), Some(&ch), Ok(index)) = (
-            patch.outputs.get(o),
-            channels.get(o),
-            u32::try_from(o),
-        ) else {
+        let (Some(out), Some(&ch), Ok(index)) =
+            (patch.outputs.get(o), channels.get(o), u32::try_from(o))
+        else {
             continue;
         };
         let Ok(d) = usize::try_from(ch) else { continue };

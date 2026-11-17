@@ -559,7 +559,14 @@ fn crosspoints_and_device_outputs_multiply_into_the_matrix() {
 fn a_retired_slot_follows_crosspoint_and_device_output_edits() {
     let mut ws = ws_with(vec![out(0.0, false, false), out(0.0, false, false)]);
     let mut p = Patches::new(2, 2, 2);
-    p.sync(D0, &ws, &settings(&ws, vec![0, 1]), &device(2), None, &idle());
+    p.sync(
+        D0,
+        &ws,
+        &settings(&ws, vec![0, 1]),
+        &device(2),
+        None,
+        &idle(),
+    );
     ws.patches[0].outputs.pop();
     ws.patches[0].crosspoints = vec![xp(0, 1, -6.0)];
     ws.patches[0].device_outputs = vec![openlab_core::DeviceOutputLevel {
@@ -567,7 +574,14 @@ fn a_retired_slot_follows_crosspoint_and_device_output_edits() {
         level_db: 0.0,
         mute: true,
     }];
-    p.sync(D0, &ws, &settings(&ws, vec![0]), &device(2), None, &busy(&[0]));
+    p.sync(
+        D0,
+        &ws,
+        &settings(&ws, vec![0]),
+        &device(2),
+        None,
+        &busy(&[0]),
+    );
     assert_eq!(slot(&p, 7), Some(1));
     // The patch master is -6 dB.
     assert_eq!(

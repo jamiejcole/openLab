@@ -223,7 +223,11 @@ fn each_device_output_has_its_own_level_and_mute_and_lowering_one_lowers_all_it_
     s.run(400);
     let lowered = both * db_to_gain(-6.0);
     heard_edit(&s, 0, at, both, lowered, at + 300);
-    held(&s.channel(1)[at - 100..at + 300], LEVEL, "device output 2 untouched");
+    held(
+        &s.channel(1)[at - 100..at + 300],
+        LEVEL,
+        "device output 2 untouched",
+    );
 
     let at = set(
         &mut s,
@@ -234,7 +238,11 @@ fn each_device_output_has_its_own_level_and_mute_and_lowering_one_lowers_all_it_
     );
     s.run(400);
     heard_edit(&s, 0, at, lowered, 0.0, at + 300);
-    held(&s.channel(1)[at - 100..at + 300], LEVEL, "device output 2 untouched");
+    held(
+        &s.channel(1)[at - 100..at + 300],
+        LEVEL,
+        "device output 2 untouched",
+    );
     // Unmuted, it comes back at its level, which the mute kept.
     let at = set(
         &mut s,
@@ -364,7 +372,11 @@ fn a_show_saved_with_routing_reopens_with_it_and_fewer_outputs_warn_and_keep_it(
     assert_eq!(notice.1.as_deref(), Some("Offline"));
     let start = go(&mut small) as usize;
     small.run(400);
-    held(&small.channel(0)[start + 10..start + 300], LEVEL, "mapped route");
+    held(
+        &small.channel(0)[start + 10..start + 300],
+        LEVEL,
+        "mapped route",
+    );
     assert_eq!(save_show(small.control().workspace()).unwrap(), text);
 
     // The four-output machine again: no warning, heard on device output 4 at -9 dB.
@@ -414,4 +426,37 @@ fn the_device_output_limit_is_the_mixers() {
         openlab_core::MAX_DEVICE_OUTPUTS as usize,
         openlab_audio::MAX_OUTPUT_CHANNELS
     );
+}
+
+/// The largest matrix a patch can hold (128 cue outputs by 64 device outputs) set in one edit
+/// while a cue plays: taken whole (split only past the mixer's queue), never lost, heard at its
+/// level, and the device outputs past the device's four are kept and warned about.
+#[test]
+fn a_whole_matrix_edit_while_a_cue_plays_is_taken_whole() {
+    let mut s = show_on(steady(false), 4);
+    set(&mut s, PatchProperty::ChannelCount { value: 128 });
+    go(&mut s);
+    s.run(800);
+    let value: Vec<PatchCrosspoint> = (0..128)
+        .flat_map(|output| {
+            (0..64).map(move |device_output| PatchCrosspoint {
+                output,
+                device_output,
+                db: -6.0,
+            })
+        })
+        .collect();
+    let at = set(&mut s, PatchProperty::Crosspoints { value });
+    s.run(800);
+    let want = LEVEL * db_to_gain(-6.0);
+    for ch in 0..4 {
+        held(
+            &s.channel(ch)[at + 400..at + 700],
+            want,
+            "every device output",
+        );
+    }
+    assert_eq!(patch(&s).crosspoints.len(), 128 * 64);
+    assert!(notice_codes(&s).contains(&"patch_routing_beyond_device".to_owned()));
+    assert_eq!(s.control().live_voices(), 1);
 }
