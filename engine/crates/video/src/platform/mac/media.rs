@@ -26,9 +26,10 @@
 //!
 //! A movie that loops (a play count or an infinite loop over its trims, VID-07) jumps back at
 //! each seam. The main thread passes the jump on with the position it asks for, up to a second
-//! before the seam: the decode thread then opens a second reader at the loop's start and reads
-//! its first frame ahead (`prime`), after answering the frame asked for, and swaps it in at the
-//! seam instead of opening one then. Until the next pass's first frame is ready the frame shown
+//! before the seam: the decode thread then opens a second reader at the loop's start (a frame
+//! early, passing over without copying any frame before the one on show there) and reads that
+//! frame ahead (`prime`), after answering the frame asked for, and swaps it in at the seam
+//! instead of opening one then. Until the next pass's first frame is ready the frame shown
 //! stays up (the main thread never waits and never draws a picture without a frame), so a seam
 //! is never a black frame.
 //!
@@ -117,6 +118,11 @@ pub const LIMITS: Limits = Limits {
     open: Duration::from_secs(10),
     frame: Duration::from_secs(5),
 };
+
+/// Rounding allowed when a frame's time plus the frame period is compared with a place: far
+/// below `HOLD_BEFORE_END`, so a held end, a microsecond before the next frame, never counts
+/// as that frame's. Too little only costs a frame copied that is then passed over.
+const FRAME_TIME_SLACK: f64 = 1e-9;
 
 /// How far ahead of the clock a picture drawn on a real display is asked for: it is shown at
 /// the display's next refresh.
@@ -752,6 +758,9 @@ struct Movie {
     shown: Option<f64>,
     /// The frame read past the position last asked for.
     next: Option<Frame>,
+    /// Where reading last started again: the next read passes over the frames before the one
+    /// on show there.
+    skip: Option<f64>,
     /// The reader has no frame after `next`.
     ended: bool,
     /// The movie's length and one frame's time, in seconds, as its file says.
@@ -766,6 +775,9 @@ struct Movie {
     restarts: u32,
     #[cfg(test)]
     spares_taken: u32,
+    /// Frames copied out of the decoder (tests).
+    #[cfg(test)]
+    copied: std::cell::Cell<u32>,
     /// Test support: each frame takes `fault::SLOW_FRAME` to read.
     #[cfg(feature = "test-support")]
     slow: bool,
@@ -815,6 +827,7 @@ impl Movie {
             size,
             shown: None,
             next: None,
+            skip: None,
             ended: false,
             length,
             frame: 1.0 / f64::from(fps),
@@ -824,6 +837,8 @@ impl Movie {
             restarts: 0,
             #[cfg(test)]
             spares_taken: 0,
+            #[cfg(test)]
+            copied: std::cell::Cell::new(0),
             #[cfg(feature = "test-support")]
             slow: false,
             #[cfg(feature = "test-support")]
@@ -851,6 +866,7 @@ impl Movie {
             unsafe { reader.cancelReading() };
         }
         self.next = None;
+        self.skip = None;
         self.ended = false;
         #[cfg(test)]
         {
@@ -871,6 +887,7 @@ impl Movie {
             unsafe { spare.reader.0.cancelReading() };
         }
         self.reader = Some(self.open_reader(from)?);
+        self.skip = Some(from);
         Ok(())
     }
 
@@ -892,7 +909,7 @@ impl Movie {
             self.prime_failed = Some(from);
             return;
         };
-        let Ok(first) = self.read_from(&reader) else {
+        let Ok(first) = self.read_from(&reader, from) else {
             // SAFETY: cancelling a reader this movie owns.
             unsafe { reader.0.cancelReading() };
             self.prime_failed = Some(from);
@@ -905,8 +922,13 @@ impl Movie {
         });
     }
 
-    /// A reader of BGRA frames from `from` seconds on.
+    /// A reader of BGRA frames from the one on show at `from` seconds on. AVFoundation starts
+    /// a time range at the first frame dated at or after its start, so a range from inside a
+    /// frame would skip that frame and show the next (past an end trim, when `from` is in the
+    /// range's last frame): the range starts a frame earlier, and the first read passes over
+    /// the frames before the one on show at `from` (`read_from`).
     fn open_reader(&self, from: f64) -> Result<Reader, String> {
+        let start = (from - self.frame).max(0.0);
         // SAFETY: AVFoundation calls on the movie's own asset and track; results are checked.
         unsafe {
             let reader = AVAssetReader::assetReaderWithAsset_error(&self.asset)
@@ -923,7 +945,7 @@ impl Movie {
             output.setAlwaysCopiesSampleData(false);
             reader.addOutput(&output);
             reader.setTimeRange(CMTimeRange {
-                start: CMTime::with_seconds(from.max(0.0), 600),
+                start: CMTime::with_seconds(start, 600),
                 duration: objc2_core_media::kCMTimePositiveInfinity,
             });
             if !reader.startReading() {
@@ -935,27 +957,46 @@ impl Movie {
 
     /// Reads the next frame; `None` at the end of the movie.
     fn read(&mut self) -> Result<Option<Frame>, String> {
+        let before = self.skip.take().unwrap_or(f64::NEG_INFINITY);
         match &self.reader {
-            Some(reader) => self.read_from(reader),
+            Some(reader) => self.read_from(reader, before),
             None => Ok(None),
         }
     }
 
-    /// Reads `reader`'s next frame; `None` at its end.
-    fn read_from(&self, (reader, output): &Reader) -> Result<Option<Frame>, String> {
-        #[cfg(feature = "test-support")]
-        if self.slow {
-            fault::slow_frame();
-        }
+    /// Reads `reader`'s next frame at or after the one on show at `before` seconds; `None` at
+    /// its end. A reader opens a frame early (`open_reader`): a frame whose successor, a frame
+    /// period on, is at or before `before` is passed over without copying its pixels, so a
+    /// seam or a jump copies no more frames than a reader opened at the place itself would.
+    /// The last frame there is is kept, whatever its time.
+    fn read_from(&self, (reader, output): &Reader, before: f64) -> Result<Option<Frame>, String> {
         // SAFETY: reading the reader's own output; a sample buffer's image is a pixel buffer
         // of BGRA (asked for above), locked while its bytes are copied out.
         unsafe {
-            let Some(sample) = output.copyNextSampleBuffer() else {
-                return match reader.status() {
-                    AVAssetReaderStatus::Failed => Err(reader_error(reader)),
-                    _ => Ok(None),
+            let mut passed = None;
+            let sample = loop {
+                #[cfg(feature = "test-support")]
+                if self.slow {
+                    fault::slow_frame();
+                }
+                let Some(sample) = output.copyNextSampleBuffer() else {
+                    if reader.status() == AVAssetReaderStatus::Failed {
+                        return Err(reader_error(reader));
+                    }
+                    match passed {
+                        Some(last) => break last,
+                        None => return Ok(None),
+                    }
                 };
+                let time = sample.presentation_time_stamp().seconds();
+                if time + self.frame <= before + FRAME_TIME_SLACK {
+                    passed = Some(sample);
+                    continue;
+                }
+                break sample;
             };
+            #[cfg(test)]
+            self.copied.set(self.copied.get() + 1);
             let time = sample.presentation_time_stamp().seconds();
             let Some(image) = sample.image_buffer() else {
                 return Err("a frame had no picture".into());
@@ -1087,6 +1128,7 @@ impl Movie {
     /// Cancels its readers and drops the frames it read ahead.
     fn let_go(&mut self) {
         self.next = None;
+        self.skip = None;
         let spare = self.spare.take().map(|s| s.reader);
         for (reader, _) in self.reader.take().into_iter().chain(spare) {
             // SAFETY: cancelling a reader this movie owns.
@@ -1490,6 +1532,24 @@ mod tests {
         assert_eq!(m.restarts, restarts + 1);
     }
 
+    /// A reader opened inside a frame (a load to time, a pause on a new decoder, a seam at a
+    /// loop start between frames) starts with the frame on show there, not the next one.
+    #[test]
+    fn a_reader_opened_inside_a_frame_starts_with_that_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mov");
+        let file = path.to_str().unwrap().to_owned();
+        super::super::testmedia::make(&["h264".into(), file.clone(), "50".into(), "25".into()])
+            .unwrap();
+        // A held end, just before the next frame, is still the frame before it.
+        let held = 1.2 - openlab_core::HOLD_BEFORE_END;
+        for (at, want) in [(1.19, 29), (0.41, 10), (0.0, 0), (1.96, 49), (held, 29)] {
+            let mut m = Movie::open(&file).unwrap();
+            let f = m.frame_at(at, 0, &|| {}).unwrap().unwrap();
+            assert_eq!(number(&f), want, "opened at {at} s");
+        }
+    }
+
     /// A loop's seam (VID-07): with the loop's start primed ahead, the jump back takes the
     /// primed reader and shows the loop's first frame, with no new reader opened at the seam; a
     /// jump somewhere else still opens one, and the primed reader is let go.
@@ -1523,6 +1583,49 @@ mod tests {
         assert_eq!(number(&f), 40);
         assert_eq!(m.spares_taken, 1);
         assert!(!m.primed(0.4), "let go");
+    }
+
+    /// The reader primed at a loop's start opens a frame early but copies only the frame on
+    /// show there: priming and the seam together copy the loop's first frame and the one after
+    /// it, as a reader opened at the loop's start would. A loop start inside a frame primes that
+    /// frame. A jump that is not primed passes over the early frame too.
+    #[test]
+    fn a_primed_seam_copies_only_the_frames_it_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mov");
+        let file = path.to_str().unwrap().to_owned();
+        super::super::testmedia::make(&["h264".into(), file.clone(), "50".into(), "25".into()])
+            .unwrap();
+        for (from, first) in [(0.4, 10), (0.41, 10)] {
+            let mut m = Movie::open(&file).unwrap();
+            m.frame_at(1.15, 0, &|| {}).unwrap().unwrap();
+            m.frame_at(1.19, 0, &|| {}).unwrap();
+            let before = m.copied.get();
+            m.prime(from);
+            assert_eq!(
+                m.copied.get() - before,
+                1,
+                "primed at {from}: one frame copied"
+            );
+            let f = m.frame_at(from, 1, &|| {}).unwrap().unwrap();
+            assert_eq!(number(&f), first, "the seam at {from}");
+            assert_eq!(m.spares_taken, 1);
+            assert_eq!(
+                m.copied.get() - before,
+                2,
+                "and the one after it, at the seam"
+            );
+        }
+        let mut m = Movie::open(&file).unwrap();
+        m.frame_at(0.0, 0, &|| {}).unwrap().unwrap();
+        let before = m.copied.get();
+        let f = m.frame_at(1.6, 0, &|| {}).unwrap().unwrap();
+        assert_eq!(number(&f), 40);
+        assert_eq!(
+            m.copied.get() - before,
+            2,
+            "the frame shown and the one after it"
+        );
     }
 
     /// A loop of two frames: going round, the position steps back by a frame or less, which
@@ -1576,6 +1679,130 @@ mod tests {
         m.prime(0.8);
         assert!(m.primed(0.8) && m.spare.is_some(), "primed there");
         assert_eq!(m.prime_failed, None, "a new place forgets the old failure");
+    }
+
+    /// A movie with an end trim, paused or loaded to within one refresh of the trim, asked for
+    /// with the real display's look-ahead → the frame drawn is the range's last frame, never one
+    /// past it. Driven as a display's window draws: the host's picture at each refresh, asked
+    /// of the decoder a refresh ahead. A paused picture stands still, so the pause neither
+    /// moves the frame nor starts reading again.
+    #[test]
+    fn a_movie_paused_or_loaded_within_a_refresh_of_its_end_trim_draws_the_ranges_last_frame() {
+        use crate::host::Host;
+        use crate::host::tests::{Fake, clock, drawn, host, load, send, stage};
+        use openlab_core::stage_link::ToStage;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mov");
+        let file = path.to_str().unwrap().to_owned();
+        super::super::testmedia::make(&["h264".into(), file.clone(), "50".into(), "25".into()])
+            .unwrap();
+        // File 0.4 to 1.2 s twice (frames 10 to 29 each pass), on a 1 kHz clock; paused 10 ms
+        // before the end trim in the last pass, on frame 29.
+        let play = ToStage::Play {
+            picture: 1,
+            at: 0,
+            offset: 0.4,
+            action: 0.0,
+            plan: vec![openlab_core::PlanPass {
+                from: 0.4,
+                length: 0.8,
+                plays: 2,
+            }],
+            into: 0.0,
+            fades: openlab_core::PictureFades::NONE,
+        };
+        let pause = ToStage::Pause {
+            picture: 1,
+            at: 1590,
+            offset: 1.19,
+            action: 1.59,
+        };
+        let shown = |m: &mut Movie, h: &mut Host<Fake>, sample: u64| {
+            clock(h, sample);
+            let c = *drawn(h, 1).first().expect("drawn");
+            m.frame_at(
+                c.position_after(FRAME_AHEAD),
+                c.pass_after(FRAME_AHEAD),
+                &|| {},
+            )
+            .unwrap()
+            .map(|f| number(&f))
+        };
+        let refreshes =
+            |from: u64, to: u64| (from * 60 / 1000..to * 60 / 1000).map(|r| r * 1000 / 60);
+        let up = |h: &mut Host<Fake>| {
+            send(
+                h,
+                ToStage::Stages {
+                    stages: vec![stage(1, Some("D"), false)],
+                },
+            );
+            load(h, 1, 1);
+            send(h, play.clone());
+        };
+
+        // Paused while it plays.
+        let mut h = host(&["D"]);
+        up(&mut h);
+        let mut m = Movie::open(&file).unwrap();
+        let mut on = None;
+        for sample in refreshes(0, 1590) {
+            on = shown(&mut m, &mut h, sample).or(on);
+        }
+        assert_eq!(on, Some(29), "the range's last frame as it pauses");
+        send(&mut h, pause.clone());
+        let restarts = m.restarts;
+        for sample in refreshes(1590, 3000) {
+            on = shown(&mut m, &mut h, sample).or(on);
+        }
+        assert_eq!(on, Some(29), "held on the range's last frame while paused");
+        assert_eq!(
+            m.restarts, restarts,
+            "the pause did not start reading again"
+        );
+
+        // Loaded there: a stage host started again is sent the load, the first play and the
+        // pause, and a fresh decoder draws its first frame.
+        let mut h = host(&["D"]);
+        up(&mut h);
+        send(&mut h, pause);
+        let mut m = Movie::open(&file).unwrap();
+        let mut seen = Vec::new();
+        for sample in refreshes(1600, 3000) {
+            seen.extend(shown(&mut m, &mut h, sample));
+        }
+        assert_eq!(seen, vec![29], "the range's last frame, and only it");
+
+        // Paused in the loop's second pass 5 ms before a frame's start, just after a refresh
+        // that asked a refresh ahead and so showed that frame: the pause holds it. In the pass
+        // it paused in, the decoder sees no seam, so it neither steps back a frame nor reads
+        // again.
+        let mut h = host(&["D"]);
+        up(&mut h);
+        let mut m = Movie::open(&file).unwrap();
+        let mut on = None;
+        for sample in refreshes(0, 1390).chain([1390]) {
+            on = shown(&mut m, &mut h, sample).or(on);
+        }
+        assert_eq!(on, Some(25), "a refresh ahead of 0.99 s into the file");
+        send(
+            &mut h,
+            ToStage::Pause {
+                picture: 1,
+                at: 1395,
+                offset: 0.995,
+                action: 1.395,
+            },
+        );
+        let restarts = m.restarts;
+        for sample in refreshes(1400, 2000) {
+            on = shown(&mut m, &mut h, sample).or(on);
+        }
+        assert_eq!(on, Some(25), "the frame shown is held");
+        assert_eq!(
+            m.restarts, restarts,
+            "the pause did not start reading again"
+        );
     }
 
     /// On a real display the frame asked for is the one due a refresh on. In the last pass that
