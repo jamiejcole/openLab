@@ -1,0 +1,14 @@
+{
+  "about": "A cue selected well down a long list, then the window shrunk until the list shows one row: that row is the selected cue.",
+  "show": "Nested",
+  "window": {"width": 1200, "height": 900},
+  "appearance": "dark",
+  "steps": [
+    {"select": "30"},
+    {"shot": "tall"},
+    {"resize": [800, 500]},
+    {"shot": "least-window"},
+    {"resize": [1200, 900]},
+    {"shot": "tall-again"}
+  ]
+}
