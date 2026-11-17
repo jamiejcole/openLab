@@ -1317,7 +1317,7 @@ final class EngineCrashFlowTests: XCTestCase {
         let ok = await eventually {
             guard direct.state == .connected else { return false }
             _ = await direct.send({ .request(id: $0, .advance(frames: 480)) })
-            return self.tap.heldCount >= 1
+            return self.tap.heldResults(of: \.opensADoc) >= 1
         }
         XCTAssertTrue(ok, "the new engine answered the first reopen")
     }

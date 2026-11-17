@@ -522,11 +522,11 @@ final class AppControllerTests: XCTestCase {
             // before the hold (the patch editor's mappings, sent once its device list came back) can be
             // answered after it on a slow machine.
             await assertEventually {
-                let edit = self.engine.holdsResult { if case .command = $0 { return true } else { return false } }
-                let check = self.engine.holdsResult {
+                let edit = self.engine.heldResults { if case .command = $0 { return true } else { return false } }
+                let check = self.engine.heldResults {
                     if case .request(_, .preshowCheck) = $0 { return true } else { return false }
                 }
-                return edit && check
+                return edit == 1 && check == 1
             }
             engine.holdResults = false
             alerts.saveChoices = [.dontSave]

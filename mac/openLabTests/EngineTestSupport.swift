@@ -780,6 +780,9 @@ final class WireTap: EngineTransport {
     /// in order, until `releaseResults`: a big show's snapshot is slow to reach the app. Clear it before releasing.
     var holdSnapshots = false
     fileprivate var connections: [TapConnection] = []
+    /// Every message the app sent, with the connection it went on (kept by `forgetSent`): a result is
+    /// matched to its request by both, as each connection numbers its own.
+    private var sentBy: [(TapConnection, ClientMessage)] = []
     fileprivate var held: [(TapConnection, String)] = []
     /// The loudest peak each patch's mapped device outputs reported since `resetDevicePeaks`, from
     /// the engine's `meters` (`peaks`: one per cue output, at the device output it is mapped to):
@@ -811,6 +814,7 @@ final class WireTap: EngineTransport {
         guard let m = try? JSONDecoder().decode(ClientMessage.self, from: Data(text.utf8)) else { return }
         if case .hello(let h) = m { c.doc = h.workspace }
         sentOn.append((c.doc, m))
+        sentBy.append((c, m))
     }
 
     /// Ends every connection as a network drop would; the engine and its documents stay.
@@ -842,19 +846,16 @@ final class WireTap: EngineTransport {
     /// How many results are held (`holdResults`).
     var heldCount: Int { held.count }
 
-    /// Whether the result answering the last message the app sent that `matches` is held: that request
-    /// is pending, whatever else is held beside it (the answer to a read another window started just
-    /// before the hold, say).
-    func holdsResult(of matches: (ClientMessage) -> Bool) -> Bool {
-        guard let sent = sentOn.last(where: { matches($0.message) }), let id = sent.message.resultID else {
-            return false
-        }
-        return held.contains { c, text in
-            guard c.doc == sent.doc, let v = JSONValue.parse(text), v["type"]?.stringValue == "result" else {
-                return false
-            }
-            return v["id"]?.doubleValue == Double(id)
-        }
+    /// How many held results answer a message the app sent that `matches`, on the connection it went
+    /// on: how many of those requests are pending, whatever else is held beside them (the answer to a
+    /// read another window started just before the hold, say).
+    func heldResults(of matches: (ClientMessage) -> Bool) -> Int {
+        let asked = sentBy.compactMap { c, m in matches(m) ? m.resultID.map { (c, Double($0)) } : nil }
+        return held.filter { c, text in
+            guard let v = JSONValue.parse(text), v["type"]?.stringValue == "result", let id = v["id"]?.doubleValue
+            else { return false }
+            return asked.contains { $0.0 === c && $0.1 == id }
+        }.count
     }
 
     /// Forgets what was sent so far (the test's own setup).
@@ -867,6 +868,14 @@ final class WireTap: EngineTransport {
 }
 
 extension ClientMessage {
+    /// A request that opens or makes a document (what a reattach sends for each window).
+    var opensADoc: Bool {
+        switch self {
+        case .request(_, .open), .request(_, .openRecovery), .request(_, .new): return true
+        default: return false
+        }
+    }
+
     /// The id of the `result` that answers it (nil: none does).
     var resultID: UInt64? {
         switch self {

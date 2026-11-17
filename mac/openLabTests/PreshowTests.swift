@@ -206,7 +206,9 @@ final class PreshowTests: XCTestCase {
         }
         try await other.advance()
         let second = Task { await pc.runCheck() }
-        await assertEventually("both answers held") { rig.wire.heldCount == 2 }
+        await assertEventually("both answers held") {
+            rig.wire.heldResults { if case .request(_, .preshowCheck) = $0 { return true } else { return false } } == 2
+        }
         rig.wire.holdResults = false
         // The newer (no media problem) answer lands first; the older one must not replace it.
         rig.wire.releaseResults(reversed: true)
