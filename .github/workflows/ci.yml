@@ -296,11 +296,10 @@ jobs:
     runs-on: xcode-27
     # Backstop: a hung test fails the job (seen holding a runner past 75 min). Setup before the test step is
     # about 0.7 min; the app and engine build (about 5 min) is inside the test step. Job limit = setup + step
-    # limits, with headroom, so the step is cancelled first: shard 0.7 + 45 (about 6 build + about 9 tests,
-    # twice if a proven runner stall forces the one re-run below) -> 50;
+    # limits, with headroom, so the step is cancelled first: shard 0.7 + 25 (about 6 build + about 9 tests) -> 30;
     # engine-free 0.7 + 30 -> 35; bundle entry 0.7 + about 11 for the three bundle steps -> 30; nightly and on
     # demand 0.7 + core flows 12 + tests 55 = 67.7, leaving 22 of the 90 for the bundle (about 11) and rebuild.
-    timeout-minutes: ${{ matrix.shard == 'full' && 90 || (matrix.shard == 'unit' && 35 || 50) }}
+    timeout-minutes: ${{ matrix.shard == 'full' && 90 || (matrix.shard == 'unit' && 35 || 30) }}
     steps:
       - uses: actions/checkout@v7
       - name: Select Xcode
@@ -347,24 +346,14 @@ jobs:
       - run: make test-mac-core-flows
         timeout-minutes: 12
         if: matrix.shard == 'full'
-      # A shard's step is about 6 min of building and 9 of tests; the engine-free run is shorter. A hung run
-      # is cancelled here and the step below still uploads its results. A hung test does not get that
-      # far: the wrapper ends the run (exit 76) and no second process starts (scripts/run-mac-tests.sh).
-      # A run the wrapper cut short on a proven WindowServer stall of the hosted runner (exit 75, its
-      # spindump shows the runner wedged, not our code) is run once more here instead of by hand; a second
-      # stall, or any other failure, fails the step. 45 leaves room for that one re-run.
-      - timeout-minutes: ${{ matrix.shard == 'full' && 55 || (matrix.shard == 'unit' && 30 || 45) }}
+      # A shard's step is about 6 min of building and 9 of tests (25 is a stop for a run that stalls); the
+      # engine-free run is shorter. A hung run is cancelled here and the step below still uploads its
+      # results. A hung test does not get that far: the wrapper ends the run (exit 76) and no second
+      # process starts (scripts/run-mac-tests.sh). A proven runner stall (exit 75) is investigated and
+      # recorded before anyone re-runs the job; CI never re-runs it by itself.
+      - timeout-minutes: ${{ matrix.shard == 'full' && 55 || (matrix.shard == 'unit' && 30 || 25) }}
         if: ${{ !cancelled() && matrix.target != '' }}
-        env:
-          FULL: ${{ matrix.shard == 'full' }}
-        run: |
-          log="$RUNNER_TEMP/mac-tests.log"
-          set -o pipefail
-          make ${{ matrix.target }} 2>&1 | tee "$log" && exit 0
-          # Both exit-75 paths of scripts/run-mac-tests.sh print this warning; a stall it retried itself does not.
-          [ "$FULL" != true ] && grep -q 'WindowServer wedged on the runner::.*re-run the job' "$log" || exit 1
-          echo "::warning::the runner's WindowServer stalled (proven by its spindump); running the tests once more"
-          make ${{ matrix.target }}
+        run: make ${{ matrix.target }}
       # A hung or crashed test run leaves its result bundle (stacks, per-test logs) here; keep it a few days.
       - uses: actions/upload-artifact@v4
         if: failure()
