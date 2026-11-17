@@ -1184,7 +1184,8 @@ final class InspectorWindowFrameTests: XCTestCase {
         XCTAssertEqual(field.frame.width, 130, accuracy: 0.5)
         let prompt = (field.placeholderString ?? "") as NSString
         let font = try XCTUnwrap(field.font)
-        XCTAssertGreaterThan(prompt.size(withAttributes: [.font: font]).width, field.frame.width - 10, "the prompt is cut")
+        let promptWidth = prompt.size(withAttributes: [.font: font]).width
+        XCTAssertGreaterThan(promptWidth, field.frame.width - 10, "the prompt is cut")
         XCTAssertLessThanOrEqual(field.frame.height, wc.inspector.hotkeyClear.frame.height + 4, "one line tall")
     }
 

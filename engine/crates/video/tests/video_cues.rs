@@ -5822,7 +5822,10 @@ fn a_seek_in_a_trimmed_movie_goes_to_that_frame_and_a_point_before_the_trim_to_t
 
 /// A seek of cue `n` to `position` seconds of its file (a click in its timeline).
 fn seek(s: &mut OfflineShow, n: u128, position: f64) {
-    s.transport(TransportAction::Seek { cue: id(n), position });
+    s.transport(TransportAction::Seek {
+        cue: id(n),
+        position,
+    });
 }
 
 /// A seek of a playing movie with sound moves picture and sound to the point together, and
@@ -5847,7 +5850,10 @@ fn a_seek_moves_picture_and_sound_together_playing_and_paused() {
     s.run(samples(0.3));
     expect_state(&s, 1, CueState::Paused, "still paused");
     assert_eq!(shown(&mut s), Some(25), "held on the frame at 1 s");
-    assert!(silent(&s, paused + samples(0.01), s.rendered()), "both held");
+    assert!(
+        silent(&s, paused + samples(0.01), s.rendered()),
+        "both held"
+    );
     s.transport(TransportAction::Resume { cue: id(1) });
     let resumed = s.now();
     run_to(&mut s, resumed + samples(0.5));
@@ -5858,7 +5864,10 @@ fn a_seek_moves_picture_and_sound_together_playing_and_paused() {
     expect_state(&s, 1, CueState::Idle, "the rest of the movie played");
     assert_eq!(shown(&mut s), None);
     s.run(samples(0.2));
-    assert!(silent(&s, end + samples(0.02), s.rendered()), "nothing after the end");
+    assert!(
+        silent(&s, end + samples(0.02), s.rendered()),
+        "nothing after the end"
+    );
     assert_eq!(s.stalls(), 0);
 }
 
@@ -5890,12 +5899,18 @@ fn a_seek_past_a_loop_until_devamped_loops_picture_and_sound_together() {
     let moved = s.now();
     run_to(&mut s, moved + samples(0.3));
     let sound = in_step(&mut s, RATE, 25.0, "after the seek");
-    assert!((sound - 0.7).abs() < 0.03, "in the loop: the sound at {sound} s");
+    assert!(
+        (sound - 0.7).abs() < 0.03,
+        "in the loop: the sound at {sound} s"
+    );
     // Over two seams of the loop, both still in it.
     for pass in 1..=2 {
         run_to(&mut s, moved + samples(0.3 + 0.8 * f64::from(pass)));
         let sound = in_step(&mut s, RATE, 25.0, "looping on");
-        assert!((sound - 0.7).abs() < 0.03, "pass {pass}: the sound at {sound} s");
+        assert!(
+            (sound - 0.7).abs() < 0.03,
+            "pass {pass}: the sound at {sound} s"
+        );
     }
     expect_state(&s, 1, CueState::Running, "looping");
     // The devamp leaves the loop at the end of the pass under way (the third: moved + 2.4 s).
@@ -5911,7 +5926,10 @@ fn a_seek_past_a_loop_until_devamped_loops_picture_and_sound_together() {
     expect_state(&s, 1, CueState::Idle, "ended after the last slice");
     assert_eq!(shown(&mut s), None);
     s.run(samples(0.2));
-    assert!(silent(&s, end + samples(0.02), s.rendered()), "nothing after the end");
+    assert!(
+        silent(&s, end + samples(0.02), s.rendered()),
+        "nothing after the end"
+    );
 }
 
 /// The last slice plays twice; a seek past the end trim goes to the end of the plan: picture,
@@ -5975,7 +5993,10 @@ fn a_seek_of_a_movie_held_at_its_end_plays_picture_and_sound_from_the_point() {
     s.run(samples(0.3));
     expect_state(&s, 1, CueState::Paused, "still paused");
     assert_eq!(shown(&mut s), Some(10), "held on the frame at 0.4 s");
-    assert!(silent(&s, paused, s.rendered()), "nothing heard while paused");
+    assert!(
+        silent(&s, paused, s.rendered()),
+        "nothing heard while paused"
+    );
     s.transport(TransportAction::Resume { cue: id(1) });
     let resumed = s.now();
     run_to(&mut s, resumed + samples(0.3));
@@ -6004,7 +6025,10 @@ fn a_seek_after_a_late_start_goes_to_the_point_clicked() {
     let moved = s.now();
     run_to(&mut s, moved + samples(0.4));
     let sound = in_step(&mut s, RATE, 25.0, "after the seek");
-    assert!((sound - 2.4).abs() < 0.03, "the sound at {sound} s, not before the point");
+    assert!(
+        (sound - 2.4).abs() < 0.03,
+        "the sound at {sound} s, not before the point"
+    );
     // 2 s were left at the point.
     run_to(&mut s, moved + samples(1.9));
     expect_state(&s, 1, CueState::Running, "the rest still playing");
@@ -6044,10 +6068,18 @@ fn a_seek_with_a_devamp_pending_leaves_the_loop_with_picture_and_sound_together(
     assert!((sound - 1.0).abs() < 0.03, "the sound at {sound} s");
     let end = leaves + samples(0.4);
     run_to(&mut s, end + 2 * BLOCK);
-    expect_state(&s, 1, CueState::Idle, "ended after the slice after the loop");
+    expect_state(
+        &s,
+        1,
+        CueState::Idle,
+        "ended after the slice after the loop",
+    );
     assert_eq!(shown(&mut s), None);
     s.run(samples(0.2));
-    assert!(silent(&s, end + samples(0.02), s.rendered()), "nothing after the end");
+    assert!(
+        silent(&s, end + samples(0.02), s.rendered()),
+        "nothing after the end"
+    );
 }
 
 /// A seek whose new point's stream is slow to open (held for 0.15 s, inside the wait for it):
@@ -6058,10 +6090,15 @@ fn a_seek_whose_sound_is_slow_to_open_keeps_picture_and_sound_together_after_the
     let dir = tempfile::tempdir().unwrap();
     let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
     let ws = workspace(vec![sounding_cue(1, &movie)]);
-    let mut s = video_show_config(ws, &[], |_| {}, |c| {
-        c.prime_cues = 0;
-        c.streamer.before_open = gated_open;
-    });
+    let mut s = video_show_config(
+        ws,
+        &[],
+        |_| {},
+        |c| {
+            c.prime_cues = 0;
+            c.streamer.before_open = gated_open;
+        },
+    );
     let at = go(&mut s);
     run_to(&mut s, at + samples(0.5));
     gate(&movie);
@@ -6109,7 +6146,10 @@ fn a_seek_while_stopping_is_ignored_and_one_in_a_pre_wait_starts_picture_and_sou
     expect_state(&s, 1, CueState::Idle, "ended with the range");
     assert_eq!(shown(&mut s), None);
     s.run(samples(0.3));
-    assert!(silent(&s, ends + 8, s.rendered()), "nothing after the range");
+    assert!(
+        silent(&s, ends + 8, s.rendered()),
+        "nothing after the range"
+    );
 
     start(&mut s, 2);
     s.run(samples(0.5));
