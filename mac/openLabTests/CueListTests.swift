@@ -5176,6 +5176,18 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { (try? self.drawnMark(h, H.rain, 2))?.icon == .preview }
         XCTAssertEqual(try drawnMark(h, H.rain, 2)?.colour, .systemBlue, "preview is blue")
         guard case .success = await h.store.transport(.stopPreview(cue: H.rain)) else { return XCTFail("stop") }
+        // Output-overridden is red: a Network cue while the engine's network switch is off.
+        let patch = CueEditor.defaultNetworkPatch(id: ModelID(UUID().uuidString.lowercased()))
+        guard case .success = await h.store.send(command: .addNetworkPatch(patch, index: 0)) else {
+            return XCTFail("network patch")
+        }
+        let net = try await add(.network, h.rig)
+        guard let engine = h.rig.realEngine, case .success = await engine.request(.setOutputOverrides(networkDisabled: true))
+        else { return XCTFail("override") }
+        await assertEventually { (try? self.drawnMark(h, net, 2))?.icon == .outputOverridden }
+        XCTAssertEqual(try drawnMark(h, net, 2)?.colour, .systemRed, "output-overridden is red")
+        // A warning is yellow in the Warnings list.
+        XCTAssertEqual(WarningCell().marker.contentTintColor, MarkColour.caution, "a warning is yellow")
         guard case .success = await h.store.transport(.start(cue: H.intro)) else { return XCTFail("start") }
         try await h.rig.advance(0.2)
         await assertEventually { (try? self.drawnMark(h, H.intro, 1))?.icon == .stateRunning }

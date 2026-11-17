@@ -93,6 +93,47 @@ final class AudioPreferencesTests: XCTestCase {
         XCTAssertTrue(prefs.deviceGrid.subviews.isEmpty, "the unplugged device's row is gone")
     }
 
+    /// Flow (#752): a device with a long name shows whole when the window has room, is cut at its end only at
+    /// the least width, and the buffer-size pop-up stays in line to its right with nothing overlapping.
+    /// Unit test (openLabTests), the real window laid out; the long name is set on the model, as the host's
+    /// engine lists no such device.
+    func testALongDeviceNameShowsWholeOrIsCutAtItsEndAndThePopUpStaysInLine() async throws {
+        let prefs = try await open()
+        let model = try XCTUnwrap(prefs.audio)
+        let long = "openLab Virtual Output With A Long Interface Name 2"
+        let json = """
+            [{"name":"\(long)","output_channels":2,"buffer_frames":512,"primary":true},
+             {"name":"Short","output_channels":2,"buffer_frames":256}]
+            """
+        model.devices = try JSONDecoder().decode([DeviceEntry].self, from: Data(json.utf8))
+        prefs.renderAudio()
+        let window = try XCTUnwrap(prefs.window)
+        func layout(width: CGFloat) throws -> (name: NSTextField, popup: NSPopUpButton, list: NSView) {
+            window.setContentSize(NSSize(width: width, height: 380))
+            window.contentView?.layoutSubtreeIfNeeded()
+            prefs.deviceGrid.layoutSubtreeIfNeeded()
+            let stack = try XCTUnwrap(prefs.deviceGrid.cell(atColumnIndex: 0, rowIndex: 0).contentView as? NSStackView)
+            let name = try XCTUnwrap(stack.arrangedSubviews.first as? NSTextField)
+            return (name, prefs.bufferPopups[0], try XCTUnwrap(prefs.deviceGrid.superview))
+        }
+        for width in [CGFloat(700), 420] {
+            let (name, popup, list) = try layout(width: width)
+            let n = name.convert(name.bounds, to: list)
+            let p = popup.convert(popup.bounds, to: list)
+            XCTAssertEqual(name.stringValue, long, "the name is never changed")
+            XCTAssertEqual(name.lineBreakMode, .byTruncatingTail, "a cut is at the end")
+            XCTAssertLessThanOrEqual(n.maxX, p.minX, "the name ends before the pop-up at \(width)")
+            XCTAssertLessThanOrEqual(p.maxX, list.bounds.maxX, "the pop-up is inside the list at \(width)")
+            XCTAssertGreaterThanOrEqual(n.minX, list.bounds.minX)
+            if width == 700 {
+                XCTAssertGreaterThanOrEqual(n.width, name.attributedStringValue.size().width, "whole at 700")
+            }
+            let short = try XCTUnwrap(prefs.deviceGrid.cell(atColumnIndex: 1, rowIndex: 1).contentView)
+            XCTAssertEqual(
+                short.convert(short.bounds, to: list).maxX, p.maxX, accuracy: 0.5, "the pop-ups line up")
+        }
+    }
+
     func testTheDeviceListComesFromTheEngine() async throws {
         let prefs = try await open()
         XCTAssertEqual(prefs.clockPopup.itemTitles, [loc("settings.audio.systemDefault"), device])
