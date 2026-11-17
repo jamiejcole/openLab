@@ -54,6 +54,8 @@ const GOOD_MEDIA_LIMITS: &str = "60000,30000";
 const PICTURE_PROBE_LIMIT: Duration = Duration::from_secs(120);
 /// The probe pool's watchdog, past the probe process's own limit so that limit answers first.
 const PROBE_WATCHDOG: Duration = Duration::from_secs(150);
+/// How long the stage host may take to make a test file or say which decoder a movie gets.
+const MEDIA_TOOL_LIMIT: Duration = Duration::from_secs(120);
 /// The offline driver's waits: past a stage probe that waits for a picture's open and frame
 /// (90 s at most) and a probe process at its limit.
 const SETTLE: Duration = Duration::from_secs(180);
@@ -130,7 +132,7 @@ fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
     if let Some((frames, fps)) = frames_fps {
         command.arg(frames.to_string()).arg(fps.to_string());
     }
-    let out = command.output().unwrap();
+    let out = spin::output_within(&mut command, MEDIA_TOOL_LIMIT);
     assert!(
         out.status.success(),
         "{kind}: {}",
@@ -152,11 +154,12 @@ fn decodes_reliably(kind: &str) -> bool {
     if let Some((_, ok)) = found.iter().find(|(k, _)| k == kind) {
         return *ok;
     }
-    let out = Command::new(STAGE_HOST)
-        .arg("--test-decoder")
-        .arg(fixture(kind, Some((10, 25))))
-        .output()
-        .unwrap();
+    let out = spin::output_within(
+        Command::new(STAGE_HOST)
+            .arg("--test-decoder")
+            .arg(fixture(kind, Some((10, 25)))),
+        MEDIA_TOOL_LIMIT,
+    );
     let said = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     assert!(
         out.status.success() && (said == "software" || said == "hardware"),
