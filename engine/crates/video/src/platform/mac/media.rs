@@ -295,17 +295,18 @@ impl Picture {
         #[cfg(not(feature = "test-support"))]
         let hangs = false;
         let file = file.to_owned();
+        let started = now();
         std::thread::Builder::new()
             .name("openlab-stage-decode".into())
             .spawn(move || {
                 let _alive = alive;
-                decode(&theirs, &file, still, offset, limits);
+                decode(&theirs, &file, still, offset, limits, started);
             })
             .map_err(|e| format!("no thread to read the file ({e})"))?;
         Ok(Self {
             shared,
             still,
-            started: now(),
+            started,
             told_open: false,
             slots: [None, None],
             front: None,
@@ -492,10 +493,16 @@ impl Drop for Picture {
 }
 
 /// The decode thread: opens the file (a movie's frame at `offset` decoded), then answers each
-/// position the main thread wants with its frame until the picture is let go.
-fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits) {
+/// position the main thread wants with its frame until the picture is let go. `started` is
+/// when the load was taken (the media clock then).
+fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits, started: Instant) {
+    #[cfg(not(feature = "test-support"))]
+    let _ = started;
     #[cfg(feature = "test-support")]
-    fault::hang_if(shared, file, fault::HANG_OPEN);
+    {
+        fault::hang_if(shared, file, fault::HANG_OPEN);
+        fault::slow_open_if(shared, file, started);
+    }
     if still {
         match still_frame(file) {
             Ok(frame) => {
@@ -1162,6 +1169,9 @@ pub mod fault {
     /// Reads every frame slowly: each moves the hand-moved media clock on by `SLOW_FRAME`, a
     /// decoder slower than real time that keeps going, whatever the machine's speed.
     pub const SLOW_DECODE: &str = "openlab-test-slow-decode";
+    /// Opens slowly: the open goes on only once the hand-moved media clock has moved
+    /// `SLOW_OPEN` on from its start (a file on a slow disk, however fast the machine).
+    pub const SLOW_OPEN_FILE: &str = "openlab-test-slow-open";
     /// The reader fails at the first frame asked at or past [`FAIL_FROM`] seconds after the
     /// open; the movie opened again reads on.
     pub const FAIL_DECODE_ONCE: &str = "openlab-test-fail-decode-once";
@@ -1236,6 +1246,30 @@ pub mod fault {
     }
 
     pub const SLOW_FRAME: std::time::Duration = std::time::Duration::from_millis(400);
+
+    /// How long a `SLOW_OPEN_FILE` open takes on the hand-moved media clock (inside the open
+    /// limit tests give fault files).
+    pub const SLOW_OPEN: std::time::Duration = std::time::Duration::from_millis(300);
+
+    /// Holds a `SLOW_OPEN_FILE` open until the hand clock has moved `SLOW_OPEN` on from
+    /// `started` (when the main thread took the load, so a clock moved after the load was sent
+    /// counts whenever this thread runs), or the picture is let go. Without a hand clock it
+    /// does nothing: the fault is for tests that move that clock.
+    pub(super) fn slow_open_if(shared: &Shared, file: &str, started: std::time::Instant) {
+        if !file.contains(SLOW_OPEN_FILE) || hand_now().is_none() {
+            return;
+        }
+        let until = started + SLOW_OPEN;
+        let mut mail = shared.lock();
+        while !mail.closed && hand_now().is_some_and(|t| t < until) {
+            // The hand clock moves without waking this thread: look again shortly.
+            mail = shared
+                .wake
+                .wait_timeout(mail, std::time::Duration::from_millis(5))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
 
     /// Whether `file`'s name asks for a fault.
     pub fn named(file: &str) -> bool {
