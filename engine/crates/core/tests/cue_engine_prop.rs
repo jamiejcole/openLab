@@ -593,10 +593,12 @@ enum Cmd {
     Devamp {
         stop: bool,
     },
-    /// A seek: the voice plays on from the start of its moved action as `run` (its length
-    /// counted from the move).
+    /// A seek: the voice plays on as `run` from the start of its moved action (an Audio cue's:
+    /// its length counted from the move), or `into` samples into its action (a Video cue's: the
+    /// binary plays its plan on from that point and tells its length from the action's top).
     Seek {
         run: RunId,
+        into: Option<u64>,
     },
     /// A move to another device: the voice plays on in step as `run` (its length, counted from
     /// the action's start, told again).
@@ -726,7 +728,7 @@ impl Voice {
     fn drain_dead(&mut self, t: SampleTime, events: &mut Vec<(SampleTime, Input)>) {
         while self.cmds.first().is_some_and(|c| c.0 <= t) {
             let (at, _, cmd) = self.cmds.remove(0);
-            if let Cmd::Resume { run, .. } | Cmd::Seek { run } | Cmd::Relocate { run } = cmd {
+            if let Cmd::Resume { run, .. } | Cmd::Seek { run, .. } | Cmd::Relocate { run } = cmd {
                 self.run = run;
                 events.push((
                     at,
@@ -910,14 +912,15 @@ impl Voice {
                     ));
                 }
             }
-            Cmd::Seek { run } => {
+            Cmd::Seek { run, into } => {
                 // The moved voice: its action counts from 0 on the move (paused, it stays
-                // paused there), its whole length to come.
+                // paused there), its whole length to come; a Video cue's from the point in its
+                // action, the rest of it to come.
                 self.run = run;
                 if !self.started {
                     return;
                 }
-                self.pos = 0;
+                self.pos = into.unwrap_or(0);
                 self.since = at;
                 self.leave = None;
                 self.fail_pos = None;
@@ -1052,6 +1055,9 @@ struct Sim {
     late: Vec<(SampleTime, Input)>,
     seq: u64,
     errors: Vec<String>,
+    /// The cues the engine finds as Video cues (the first cue of a duplicated id, as the
+    /// workspace stands now): a seek's position is a point in their action, not of their file.
+    videos: BTreeSet<CueId>,
 }
 
 impl Sim {
@@ -1112,9 +1118,16 @@ impl Sim {
                             .push(format!("relocation of unknown voice {from:?}"));
                     }
                 }
-                Action::SeekVoice { run, from, at, .. } => {
+                Action::SeekVoice {
+                    cue,
+                    run,
+                    from,
+                    at,
+                    position,
+                } => {
                     self.known.insert(*run);
-                    self.queue(*from, *at, Cmd::Seek { run: *run });
+                    let into = self.videos.contains(cue).then_some(*position);
+                    self.queue(*from, *at, Cmd::Seek { run: *run, into });
                     // What comes next for the fresh id goes to the same voice (as a resume).
                     if let Some(v) = self.voices.remove(from) {
                         self.voices.insert(*run, v);
@@ -1726,6 +1739,21 @@ impl Run {
             if let Action::StartVoice { run, .. } | Action::LoadVoice { run, .. } = action {
                 prop_assert!(run.0 < PREVIEW_RUN_BASE);
             }
+        }
+        if actions
+            .iter()
+            .any(|a| matches!(a, Action::SeekVoice { .. }))
+        {
+            let ws = &self.ws;
+            self.sim.videos = (ws.cues())
+                .filter(|c| {
+                    matches!(
+                        ws.find_cue(c.id).map(|f| &f.kind),
+                        Some(CueKind::Video { .. })
+                    )
+                })
+                .map(|c| c.id)
+                .collect();
         }
         self.sim.apply(&actions);
         prop_assert!(self.sim.errors.is_empty(), "{:?}", self.sim.errors);
