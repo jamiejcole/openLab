@@ -575,6 +575,17 @@ impl Patches {
         }
     }
 
+    /// The retired slots of `doc` still held for `patch` (a resize under a playing voice): its
+    /// voices play on through them, so its meters read them too.
+    pub fn retired_slots(&self, doc: DocId, patch: PatchId) -> impl Iterator<Item = u16> + '_ {
+        self.docs
+            .get(&doc)
+            .into_iter()
+            .flat_map(|d| d.retired.iter())
+            .filter(move |(_, h)| h.patch == patch)
+            .map(|(&slot, _)| slot)
+    }
+
     /// The mixer slot a cue of `doc` on `patch` starts through.
     pub fn mixer_patch(&self, doc: DocId, patch: PatchId) -> Option<u16> {
         self.docs

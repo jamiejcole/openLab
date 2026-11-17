@@ -298,24 +298,31 @@ impl DocCx<'_> {
                     })
                     .collect();
                 // Each cue output itself: its bus after its level and mute in the patch (the
-                // matrix carries them, so they are applied here), before crosspoints.
-                let bus = self
-                    .eng
-                    .patches
+                // matrix carries them, so they are applied here), before crosspoints. A cue still
+                // playing on a slot the patch left when it was resized is metered there.
+                let patches = &self.eng.patches;
+                let slots = patches
                     .mixer_patch(self.doc.id, p.id)
-                    .map(|slot| self.eng.bus_peaks(key, slot))
-                    .unwrap_or(&[]);
+                    .into_iter()
+                    .chain(patches.retired_slots(self.doc.id, p.id));
+                let mut bus = vec![0.0f32; p.outputs.len()];
+                for slot in slots {
+                    let out = patches.slot_output(slot).unwrap_or(key);
+                    for (b, x) in bus.iter_mut().zip(self.eng.bus_peaks(out, slot)) {
+                        *b = b.max(*x);
+                    }
+                }
                 let cue_outputs = p
                     .outputs
                     .iter()
-                    .enumerate()
-                    .map(|(o, out)| {
+                    .zip(bus)
+                    .map(|(out, peak)| {
                         let gain = if out.mute {
                             0.0
                         } else {
                             db_to_gain(out.level_db)
                         };
-                        bus.get(o).copied().unwrap_or(0.0) * gain
+                        peak * gain
                     })
                     .collect();
                 Some(OutputMeter {

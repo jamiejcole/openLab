@@ -514,3 +514,23 @@ fn a_patch_meters_each_cue_output_itself_not_its_mapped_device_output() {
     assert_eq!(by_device[0], 0.0, "device output 1 hears nothing");
     assert!(near(by_cue_output[0], LEVEL), "{by_cue_output:?}");
 }
+
+/// The patch's cue-output count changed while a cue plays on it: the cue plays on through the
+/// slot the patch had (retired), and the editor's rows keep metering it until it ends.
+#[test]
+fn a_resized_patch_keeps_metering_the_cue_still_playing_on_its_old_layout() {
+    let mut s = show_on(steady(false), 4);
+    go(&mut s);
+    s.run(2000);
+    let (_, before) = patch_meter(&mut s);
+    assert!(near(before[0], LEVEL), "{before:?}");
+    set(&mut s, PatchProperty::ChannelCount { value: 3 });
+    s.run(2000);
+    let (_, after) = patch_meter(&mut s);
+    assert_eq!(after.len(), 3);
+    assert!(
+        near(after[0], LEVEL),
+        "row 1 still meters the playing cue: {after:?}"
+    );
+    assert_eq!(s.control().live_voices(), 1);
+}
