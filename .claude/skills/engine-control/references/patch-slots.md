@@ -30,7 +30,7 @@
 ## Matrix gains (`fill_routing`)
 - Gain of cue output `o` to device output `d` = patch master x cue output level (mute: 0, polarity: negative) x crosspoint x device output `d`'s level (mute: 0).
 - The crosspoint is the patch's listed one for `(o, d)` if any (`-120` dB: silent); else 1.0 where `d` is the device channel the mapping gives `o`; else 0. So a patch with no crosspoints routes exactly as its mapping (one device output per cue output).
-- Device outputs at or past the slot's mixer width are never sent and never written into the next row. A mapped patch whose live crosspoints (above silence, for a cue output it has) or device-output entries name such outputs is kept as it is and reported: `Patches::routing_beyond` and the `patch_routing_beyond_device` device notice (QLab 5 Q510). It does not break the patch or its cues.
+- Device outputs at or past the slot's mixer width are never sent and never written into the next row. A mapped patch whose live crosspoints (above silence, for a cue output it has) or device-output entries name such outputs is kept as it is and reported: `Patches::routing_beyond` and the `patch_routing_beyond_device` device notice (skill `qlab-behaviour` Q510). It does not break the patch or its cues.
 - A closed doc's slots are zeroed and freed at once; a doc whose patches waited for a slot syncs on the next wake.
 
 ## Default mapping
