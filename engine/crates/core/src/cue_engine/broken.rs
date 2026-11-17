@@ -319,6 +319,19 @@ impl CueEngine {
         out
     }
 
+    /// The cues that name `patch` for their sound (Audio cues, and Video cues whatever their
+    /// file holds), as of the last call: what the binary asks before it calls a patch's own
+    /// trouble a problem of the show.
+    pub fn cues_on_patch(&self, patch: PatchId) -> impl Iterator<Item = CueId> + '_ {
+        self.problems
+            .model
+            .by_patch
+            .get(&patch)
+            .into_iter()
+            .flatten()
+            .copied()
+    }
+
     /// Whether a cue inside the group, at any depth, is shown with static problems (CUE-06). As
     /// in QLab 5 the group then shows as broken too (its state is `broken` while it has no
     /// runtime), but it has no problem of its own: it still starts, and its broken children are

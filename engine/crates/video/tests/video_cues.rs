@@ -5123,8 +5123,8 @@ fn a_devamp_stop_asked_while_the_sound_is_starved_ends_both_after_the_whole_pass
 }
 
 /// The pre-show check's patches with no device, as (cues listed on each, patches counted as
-/// problems).
-fn preshow_patches(s: &mut OfflineShow) -> (Vec<Vec<openlab_core::CueId>>, u64) {
+/// problems, system problems counted).
+fn preshow_patches(s: &mut OfflineShow) -> (Vec<Vec<openlab_core::CueId>>, u64, u64) {
     let request = s.request_id();
     let replies = s.send(ClientMessage::Request {
         id: request,
@@ -5144,7 +5144,7 @@ fn preshow_patches(s: &mut OfflineShow) -> (Vec<Vec<openlab_core::CueId>>, u64) 
         })
         .expect("a pre-show report");
     let cues = report.patches.iter().map(|p| p.cues.clone()).collect();
-    (cues, report.summary.patches)
+    (cues, report.summary.patches, report.summary.system)
 }
 
 /// A patch's device is cleared while a silent movie, a still and a movie with sound play, all
@@ -5185,13 +5185,15 @@ fn clearing_a_patchs_device_leaves_stills_and_silent_movies_playing() {
     assert_eq!(s.control().pictures_live(), 3);
     assert_eq!(problems(&s, 1), vec![]);
     assert_eq!(problems(&s, 2), vec![]);
-    assert_eq!(preshow_patches(&mut s), (vec![vec![id(3)]], 1));
+    // The patch, and its notice that it has no device, are problems of this show.
+    assert_eq!(preshow_patches(&mut s), (vec![vec![id(3)]], 1, 1));
 
-    // With silent pictures alone the patch is listed, with no cue on it, and not counted.
+    // With silent pictures alone the patch is listed, with no cue on it, and not counted; its
+    // lack of a device is no system problem either.
     let mut s = video_show(cues.into_iter().take(2).collect());
     clear(&mut s);
     s.run(BLOCK);
-    assert_eq!(preshow_patches(&mut s), (vec![vec![]], 0));
+    assert_eq!(preshow_patches(&mut s), (vec![vec![]], 0, 0));
 }
 
 /// A Video cue with sound and hold at end stays up when the report of its voice's end was

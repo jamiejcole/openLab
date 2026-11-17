@@ -950,20 +950,48 @@ impl Engine {
     /// Reads every mixer's output meters into `out_peaks`, output `k`'s at `k * device_outputs`
     /// (as many as its mixer has), and its patch bus meters into `bus_peaks`.
     fn read_output_meters(&mut self) {
+        for key in 0..self.outputs.len() {
+            self.read_output_meters_of(key);
+        }
+    }
+
+    /// [`Self::read_output_meters`] of output `key` alone; returns whether it exists.
+    fn read_output_meters_of(&mut self, key: OutputKey) -> bool {
         let n = self.device_outputs;
         let (slots, rows) = (self.patches.capacity(), self.cue_outputs.max(1));
-        for (k, o) in self.outputs.iter_mut().enumerate() {
-            let width = o.mixer.device_outputs().min(n);
-            if let Some(out) = self.out_peaks.get_mut(k * n..k * n + width) {
-                o.mixer.read_output_meters_into(out);
+        let Some(o) = self.outputs.get_mut(key) else {
+            return false;
+        };
+        let width = o.mixer.device_outputs().min(n);
+        if let Some(out) = self.out_peaks.get_mut(key * n..key * n + width) {
+            o.mixer.read_output_meters_into(out);
+        }
+        for slot in 0..slots {
+            let at = (key * slots + slot) * rows;
+            if let Some(out) = self.bus_peaks.get_mut(at..at + rows) {
+                out.fill(0.0);
+                o.mixer.read_patch_meters_into(slot, out);
             }
-            for slot in 0..slots {
-                let at = (k * slots + slot) * rows;
-                if let Some(out) = self.bus_peaks.get_mut(at..at + rows) {
-                    out.fill(0.0);
-                    o.mixer.read_patch_meters_into(slot, out);
-                }
-            }
+        }
+        true
+    }
+
+    /// Throws away the output and patch bus peaks output `key`'s mixer still holds: what it
+    /// rendered before its device was lost, which no meter may show once the device is back.
+    fn drop_held_meters(&mut self, key: OutputKey) {
+        if !self.read_output_meters_of(key) {
+            return;
+        }
+        let n = self.device_outputs;
+        if let Some(out) = self.out_peaks.get_mut(key * n..(key + 1) * n) {
+            out.fill(0.0);
+        }
+        let (slots, rows) = (self.patches.capacity(), self.cue_outputs.max(1));
+        if let Some(out) = self
+            .bus_peaks
+            .get_mut(key * slots * rows..(key + 1) * slots * rows)
+        {
+            out.fill(0.0);
         }
     }
 
