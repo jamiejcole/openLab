@@ -1055,7 +1055,8 @@ struct Sim {
     late: Vec<(SampleTime, Input)>,
     seq: u64,
     errors: Vec<String>,
-    /// The Video cues: a seek's position is a point in their action, not of their file.
+    /// The cues the engine finds as Video cues (the first cue of a duplicated id, as the
+    /// workspace stands now): a seek's position is a point in their action, not of their file.
     videos: BTreeSet<CueId>,
 }
 
@@ -1388,22 +1389,11 @@ impl Run {
         let ids = all_ids(&ws);
         let seen: BTreeSet<CueId> = ids.iter().copied().collect();
         let dup = seen.len() != ids.len();
-        let videos = (ids.iter().copied())
-            .filter(|id| {
-                matches!(
-                    ws.find_cue(*id).map(|c| &c.kind),
-                    Some(CueKind::Video { .. })
-                )
-            })
-            .collect();
         Self {
             ws,
             engine: CueEngine::new(EngineConfig::new(1000, case.lookahead, 7).unwrap()),
             last: None,
-            sim: Sim {
-                videos,
-                ..Sim::default()
-            },
+            sim: Sim::default(),
             previews,
             dup,
             follow_rule: false,
@@ -1749,6 +1739,21 @@ impl Run {
             if let Action::StartVoice { run, .. } | Action::LoadVoice { run, .. } = action {
                 prop_assert!(run.0 < PREVIEW_RUN_BASE);
             }
+        }
+        if actions
+            .iter()
+            .any(|a| matches!(a, Action::SeekVoice { .. }))
+        {
+            let ws = &self.ws;
+            self.sim.videos = (ws.cues())
+                .filter(|c| {
+                    matches!(
+                        ws.find_cue(c.id).map(|f| &f.kind),
+                        Some(CueKind::Video { .. })
+                    )
+                })
+                .map(|c| c.id)
+                .collect();
         }
         self.sim.apply(&actions);
         prop_assert!(self.sim.errors.is_empty(), "{:?}", self.sim.errors);
