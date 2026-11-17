@@ -8,7 +8,8 @@
 //! The decode thread owns the file. A still is decoded once with ImageIO; a movie is read in
 //! order with AVFoundation's asset reader (the platform's hardware decoders), one BGRA frame at
 //! a time. A HAP movie's frames are read as the file holds them (no platform decoder) and
-//! unwrapped here ([`crate::hap`]) into the block-compressed texture the GPU draws as it is. The main thread posts the position it wants (the newest only: an older ask is
+//! unwrapped here ([`crate::hap`]) into the block-compressed texture the GPU draws as it is.
+//! The main thread posts the position it wants (the newest only: an older ask is
 //! dropped, never queued) and takes the newest decoded frame from a one-slot mailbox (a newer
 //! frame replaces one not yet taken), uploads it to one of the picture's two textures and
 //! draws. The frame for a position is the last whose time is at or before it, so the picture
