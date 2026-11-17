@@ -473,12 +473,15 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// scrolled away from the selection, or one that grows, is left where it is.
     private func keepSelectionInViewWhenShorter() {
         let clip = outlineView.enclosingScrollView?.contentView
-        let height = clip?.bounds.height ?? 0
+        // The rows' visible part: where scroll bars always show, the sideways scroller lies over the clip
+        // view's lower edge as an inset, so its appearing shortens the list without the clip view changing.
+        let insets = clip?.contentInsets ?? NSEdgeInsets()
+        let height = (clip?.bounds.height ?? 0) - insets.top - insets.bottom
         defer { lastVisibleHeight = height }
         guard let clip, let was = lastVisibleHeight, height < was, outlineView.selectedRow >= 0 else { return }
         let row = outlineView.rect(ofRow: outlineView.selectedRow)
-        let before = NSRect(x: 0, y: clip.bounds.minY, width: 1, height: was)
-        guard row.minY >= before.minY - 0.5, row.maxY <= before.maxY + 0.5 else { return }
+        let top = clip.bounds.minY + insets.top
+        guard row.minY >= top - 0.5, row.maxY <= top + was + 0.5 else { return }
         outlineView.scrollRowToVisible(outlineView.selectedRow)
     }
 
@@ -510,7 +513,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let width = max(name.minWidth, left)
         if abs(name.width - width) >= 1 { name.width = width }
         // The sideways scroller only while the columns are wider than the list. Where scroll bars always
-        // show, a scroller kept for nothing took 17 of the least list's 56 points, over its one row. The
+        // show, a scroller kept for nothing took the room of the least list's one row. The
         // vertical scroller is left as it is (its room is always kept above).
         let overflows = left < name.minWidth
         if scroll.hasHorizontalScroller != overflows { scroll.hasHorizontalScroller = overflows }

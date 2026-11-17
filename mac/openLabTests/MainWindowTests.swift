@@ -1637,7 +1637,7 @@ final class WindowLayoutTests: XCTestCase {
         let (_, wc) = try await open(try showFile("Small"))
         wc.window?.setFrame(NSRect(origin: frame(wc).origin, size: wc.window?.minSize ?? .zero), display: true)
         settle(wc)
-        XCTAssertGreaterThanOrEqual(wc.cueList.view.frame.height, 56)
+        XCTAssertGreaterThanOrEqual(wc.cueList.view.frame.height, WorkspaceWindowController.minCueListHeight)
         // The least window has no room for the inspector's usual height: it keeps what the list leaves.
         XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, 240)
     }
