@@ -1142,14 +1142,18 @@ final class InspectorWindowFrameTests: XCTestCase {
     /// inside the inspector.
     func testOpeningTheSidebarAtTheLeastSizeKeepsTheWindowOnEveryTab() async throws {
         let video = try await addVideoCue()
+        let fadeOnVideo = try await addFade(aimedAt: video)
         window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
         settleLayout()
         let least = window.frame
         XCTAssertEqual(least.size, window.minSize)
         let sidebar = try XCTUnwrap(wc.footer.toggles[.sidebar])
-        for cue in [audio, video, fade, group, memo] {
+        for cue in [audio, video, fade, fadeOnVideo, group, memo] {
             await select(cue)
-            let ids = InspectorTabs.ids(forKind: wc.store.model?.cue(cue)?.kindType ?? "")
+            // The tabs the cue shows (a Fade aimed at a Video cue has a Geometry tab).
+            let ids = wc.inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }
+            XCTAssertFalse(ids.isEmpty)
+            if cue == fadeOnVideo { XCTAssertTrue(ids.contains("fadeGeometry"), "\(ids)") }
             for id in ids {
                 // Each tab from the same start: the least window with the sidebar closed.
                 if wc.isVisible(.sidebar) { sidebar.performClick(nil) }
@@ -1209,6 +1213,20 @@ final class InspectorWindowFrameTests: XCTestCase {
             }
         }
         return found
+    }
+
+    /// A Fade cue aimed at `target`, after the others.
+    private func addFade(aimedAt target: ModelID) async throws -> ModelID {
+        let id: ModelID = "00000000-0000-0000-0000-0000000000e3"
+        let list = try XCTUnwrap(rig.store.model?.cueLists.first?.id)
+        var cue = try XCTUnwrap(NewCueKind.fade.cueJSON(id: id, patch: nil))
+        var kind = try XCTUnwrap(cue["kind"])
+        kind.set("target", .string(target.raw))
+        cue.set("kind", kind)
+        let added = await rig.store.send(command: .addCue(cue, list: list, parent: nil, index: 5))
+        guard case .success = added else { return try XCTUnwrap(nil as ModelID?, "the engine adds the fade") }
+        await assertEventually { self.rig.store.model?.cue(id) != nil }
+        return id
     }
 
     private func addVideoCue() async throws -> ModelID {
