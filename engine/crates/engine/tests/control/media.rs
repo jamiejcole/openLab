@@ -214,41 +214,47 @@ fn a_failed_stream_probes_the_file_it_read_not_the_cues_current_one() {
     assert_eq!(probed, vec![a], "only the file that failed is probed");
 }
 
-/// The file `probe_then_change` overwrites right after its first probe of it.
-static CHANGE_AFTER_PROBE: std::sync::Mutex<Option<std::path::PathBuf>> =
+/// A file whose next probe `stale_probe` answers with another file's probe, and that file.
+static STALE_PROBE: std::sync::Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>> =
     std::sync::Mutex::new(None);
 
-fn probe_then_change(
-    p: &std::path::Path,
-) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
+/// A probe whose next answer for the file in `STALE_PROBE` describes the other file there: the
+/// file changed right after it was read. Nothing is written to the file, so a scanner holding
+/// it (on Windows an antivirus scan can make a truncate fail) cannot stop the change.
+fn stale_probe(p: &std::path::Path) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
     let probed = gated_probe(p);
-    if let Ok(mut target) = CHANGE_AFTER_PROBE.lock()
-        && target.as_deref() == Some(p)
-    {
-        *target = None;
-        let _ = std::fs::write(p, std::fs::read(wav(&dc(1500, 0.5))).unwrap_or_default());
+    let mut stale = STALE_PROBE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match stale.take() {
+        Some((file, from)) if file == p => openlab_audio::probe(&from),
+        other => {
+            *stale = other;
+            probed
+        }
     }
-    probed
 }
 
 #[test]
 #[allow(clippy::unwrap_used)]
 fn a_stream_prepared_after_a_relink_probes_the_file_it_read() {
     // Cue 1 waits for `a`'s probe, is relinked to `b`, and its stream is prepared from `b`
-    // when b's probe lands. b changes right after that probe, so the stream fails: `b` is
-    // probed again, not `a` (the file the record was made for).
+    // when b's probe lands. That probe describes a longer file than `b` (b changed right after
+    // it was read), so the stream fails: `b` is probed again, not `a` (the file the record was
+    // made for).
     let a = wav(&dc(2000, 0.5));
-    let b = wav(&dc(40_000, 0.5));
+    let b = wav(&dc(1500, 0.5));
+    let longer = wav(&dc(40_000, 0.5));
     let ws = workspace(vec![audio(1, &a, 0), audio(2, &a, 1)]);
     let mut c = config(&ws);
     c.prime_cues = 0;
-    c.probe = probe_then_change;
+    c.probe = stale_probe;
     // The watchdog's clock stands still: the held probe of `a` is never given up on.
     c.probe_clock = ProbeTime::new().clock();
     gate(&a);
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
     wait_probed(std::slice::from_ref(&a), 1);
-    *CHANGE_AFTER_PROBE.lock().unwrap() = Some(b.clone());
+    *STALE_PROBE.lock().unwrap() = Some((b.clone(), longer));
     go(&mut s);
     let mut kind = s
         .control()
