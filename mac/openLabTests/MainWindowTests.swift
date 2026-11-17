@@ -1171,6 +1171,23 @@ final class InspectorWindowFrameTests: XCTestCase {
         }
     }
 
+    /// The Triggers tab at the least window size with the sidebar open: the hotkey field's prompt stays on
+    /// one line (cut short), so the field is as tall as the Clear button beside it, not two lines tall.
+    func testTheHotkeyPromptStaysOnOneLineInTheNarrowTriggersTab() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        await select(audio)
+        try clickTab("triggers")
+        if !wc.isVisible(.sidebar) { try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil) }
+        settleLayout()
+        let field = wc.inspector.hotkeyField
+        XCTAssertEqual(field.stringValue, "", "no key: the prompt shows")
+        XCTAssertEqual(field.frame.width, 130, accuracy: 0.5)
+        let prompt = (field.placeholderString ?? "") as NSString
+        let font = try XCTUnwrap(field.font)
+        XCTAssertGreaterThan(prompt.size(withAttributes: [.font: font]).width, field.frame.width - 10, "the prompt is cut")
+        XCTAssertLessThanOrEqual(field.frame.height, wc.inspector.hotkeyClear.frame.height + 4, "one line tall")
+    }
+
     /// Where `view`'s visible children (down `depth` levels) run past it on the left or right, or lie
     /// over one another, as text.
     private func sideways(_ view: NSView, depth: Int) -> [String] {
