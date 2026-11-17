@@ -1,0 +1,63 @@
+{
+  "about": "A Video cue playing on a stage: the window shot and the stage's display composite (read back from the virtual display) side by side, before the GO, while the movie plays and after it.",
+  "show": "Video",
+  "displays": "V1:1920x1080",
+  "settings": {
+    "settings_version": 1,
+    "workspaces": {
+      "00000000-0000-0000-0000-0000000000f0": {
+        "patches": {},
+        "stages": {
+          "00000000-0000-0000-0000-0000000000f1": {
+            "display": "V1",
+            "name": "Stage 1",
+            "width": 1920,
+            "height": 1080
+          }
+        }
+      }
+    }
+  },
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1,
+    "media/card.jpg": 1,
+    "media/A very long name for a projection clip used in the second act.mov": 2
+  },
+  "window": {
+    "width": 1200,
+    "height": 800
+  },
+  "steps": [
+    {
+      "advance": 0.1
+    },
+    {
+      "select": "1"
+    },
+    {
+      "shot": "before-go",
+      "display": "V1"
+    },
+    {
+      "key": "space"
+    },
+    {
+      "advance": 1.5
+    },
+    {
+      "select": "1"
+    },
+    {
+      "shot": "playing",
+      "display": "V1"
+    },
+    {
+      "advance": 4
+    },
+    {
+      "shot": "after",
+      "display": "V1"
+    }
+  ]
+}
