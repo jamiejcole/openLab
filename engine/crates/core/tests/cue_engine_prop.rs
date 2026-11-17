@@ -1895,18 +1895,30 @@ impl Run {
                         }
                         _ => None,
                     };
+                    let is_playlist = |g: CueId| {
+                        self.ws.find_cue(g).is_some_and(|g| {
+                            matches!(
+                                g.kind,
+                                CueKind::Group {
+                                    mode: GroupMode::Playlist { .. },
+                                    ..
+                                }
+                            )
+                        })
+                    };
+                    // In a playlist, or moved out of one that still runs: the playlist goes on
+                    // waiting on the run it started, so the run is still its child.
                     let in_playlist = failed.is_some_and(|cue| {
                         groups_around(&self.ws.cue_lists[0].cues, cue)
                             .last()
-                            .and_then(|g| self.ws.find_cue(*g))
-                            .is_some_and(|g| {
-                                matches!(
-                                    g.kind,
-                                    CueKind::Group {
-                                        mode: GroupMode::Playlist { .. },
-                                        ..
-                                    }
-                                )
+                            .is_some_and(|g| is_playlist(*g))
+                            || self.moved_out_of.iter().any(|(m, g)| {
+                                *m == cue
+                                    && is_playlist(*g)
+                                    && !matches!(
+                                        self.engine.state(*g),
+                                        CueState::Idle | CueState::Loaded | CueState::Broken
+                                    )
                             })
                     });
                     self.call(event, Kind::Feedback)?;
