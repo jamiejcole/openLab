@@ -19,8 +19,9 @@ use openlab_core::protocol::{
     Request, ResultData, ServerMessage, WireProblem, WireResolution, WireWarning,
 };
 use openlab_core::{
-    Command, Cue, CueId, CueKind, FadeCurve, FadeLevels, MachineSettings, NetworkPatch,
-    NetworkPatchId, NetworkProtocol, OutputPatch, PatchId, PatchMapping, Workspace,
+    Command, Cue, CueId, CueKind, CueProperty, FadeCurve, FadeLevels, MachineSettings,
+    NetworkPatch, NetworkPatchId, NetworkProtocol, OutputPatch, PatchId, PatchMapping, Position,
+    Workspace,
 };
 use openlab_engine::control::ControlConfig;
 use uuid::Uuid;
@@ -356,8 +357,8 @@ fn a_network_destination_that_exists_is_reported_unchecked_and_does_not_fail_the
     assert_eq!(r.summary.total, 0);
 }
 
-/// A patch no cue uses, set to no device: listed with no cues and breaking none; it is not a
-/// patch problem, only the one notice that it has no device.
+/// A patch no cue uses, set to no device: listed with no cues and breaking none, and no
+/// problem of the show at all: no notice, nothing counted, the check passes.
 #[test]
 fn a_spare_patch_no_cue_uses_is_listed_but_breaks_nothing() {
     let good = wav(&dc(100, 0.5));
@@ -365,20 +366,104 @@ fn a_spare_patch_no_cue_uses_is_listed_but_breaks_nothing() {
     let spare = wide_spare(&ws.patches[0]);
     ws.patches.push(spare);
     let mut s = device_show(ws);
+    let msgs = s.take_outbound();
     let r = preshow(&mut s);
+    assert!(r.ok, "{r:?}");
     assert_eq!(r.patches.len(), 1);
     assert_eq!(r.patches[0].patch, spare_patch());
     assert!(r.patches[0].cues.is_empty());
     assert!(r.broken_cues.is_empty());
-    assert_eq!(notice_codes(&r.system), vec!["patch_no_device"]);
-    assert_eq!(
-        r.summary,
-        PreshowSummary {
-            system: 1,
-            total: 1,
-            ..PreshowSummary::default()
-        }
+    assert!(r.system.is_empty(), "{:?}", r.system);
+    assert_eq!(r.summary, PreshowSummary::default());
+    assert_eq!(feed_codes(&msgs), None);
+}
+
+/// Sends `command` and lets the edit take effect.
+fn edit(s: &mut DeviceShow, command: Command) {
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Command {
+        id: rid,
+        command: Box::new(command),
+        coalesce: None,
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
     );
+    s.tick();
+}
+
+/// The spare patch's no-device notice follows its users: a cue added on it raises it, the cue
+/// moved to the main patch clears it, the undo of that move raises it again and the cue's
+/// removal clears it; the feed and the check agree at each step.
+#[test]
+fn the_no_device_notice_of_a_spare_patch_follows_the_cues_on_it() {
+    let good = wav(&dc(100, 0.5));
+    let mut ws = workspace(vec![audio(1, &good, 0)]);
+    let spare = wide_spare(&ws.patches[0]);
+    ws.patches.push(spare);
+    let mut s = device_show(ws);
+    s.take_outbound();
+    let raised = |s: &mut DeviceShow, msgs: &[ServerMessage], on: bool| {
+        let r = preshow(s);
+        let want: Vec<&str> = if on { vec!["patch_no_device"] } else { vec![] };
+        assert_eq!(notice_codes(&r.system), want, "{r:?}");
+        assert_eq!(r.ok, !on, "{r:?}");
+        assert_eq!(r.summary.system, u64::from(on), "{r:?}");
+        assert_eq!(
+            feed_codes(msgs),
+            Some(want.iter().map(|c| (*c).to_owned()).collect())
+        );
+    };
+
+    let mut on_spare = audio(7, &good, 0);
+    if let CueKind::Audio { patch, .. } = &mut on_spare.kind {
+        *patch = spare_patch();
+    }
+    edit(
+        &mut s,
+        Command::AddCue {
+            at: Position {
+                list: list_id(),
+                parent: None,
+                index: 1,
+            },
+            cue: on_spare.clone(),
+            auto_number: false,
+        },
+    );
+    let msgs = s.take_outbound();
+    raised(&mut s, &msgs, true);
+
+    let mut moved = on_spare.kind.clone();
+    if let CueKind::Audio { patch, .. } = &mut moved {
+        *patch = patch_id();
+    }
+    edit(
+        &mut s,
+        Command::SetCueProperty {
+            id: id(7),
+            property: CueProperty::Kind { value: moved },
+        },
+    );
+    let msgs = s.take_outbound();
+    raised(&mut s, &msgs, false);
+
+    let rid = s.request_id();
+    s.send(ClientMessage::Undo { id: rid });
+    s.tick();
+    let msgs = s.take_outbound();
+    raised(&mut s, &msgs, true);
+
+    edit(&mut s, Command::RemoveCue { id: id(7) });
+    let msgs = s.take_outbound();
+    raised(&mut s, &msgs, false);
 }
 
 /// The codes of the notices in `list`.

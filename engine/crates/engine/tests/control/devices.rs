@@ -2522,10 +2522,12 @@ fn an_unusable_device_that_leaves_the_list_is_missing_and_plays_when_back() {
     );
 }
 
-/// A patch the operator set to no device carries its own warning (QLab 5 manual p. 191).
+/// A patch the operator set to no device that a cue plays on carries its own warning (QLab 5
+/// manual p. 191).
 #[test]
 fn a_patch_set_to_no_device_is_warned_about() {
-    let mut s = two_patch_show_with(vec![], DEV_NAME, vec![listed(DEV, DEV_NAME, 2)], |c| {
+    let cues = vec![audio_b(1, &wav(&dc(100, 0.5)), 0)];
+    let mut s = two_patch_show_with(cues, DEV_NAME, vec![listed(DEV, DEV_NAME, 2)], |c| {
         let ws = workspace(vec![]);
         c.machine
             .set_patch_mapping(ws.id, patch_b(), PatchMapping::none())
@@ -2556,7 +2558,10 @@ fn a_cue_on_a_lost_second_device_gets_no_meter_while_the_other_plays() {
     start(&mut s, 1);
     start(&mut s, 2);
     s.run(BLOCK * 9);
-    assert!(!cue_meters(&s.take_outbound(), 2).is_empty(), "cue 2 was metered");
+    assert!(
+        !cue_meters(&s.take_outbound(), 2).is_empty(),
+        "cue 2 was metered"
+    );
     unplug(&mut s, DEV2);
     for _ in 0..40 {
         s.play(BLOCK);
