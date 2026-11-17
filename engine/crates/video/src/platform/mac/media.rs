@@ -127,7 +127,8 @@ pub type Drawable = (Texture, (u32, u32));
 
 /// How long an offscreen probe waits between looks at a picture's decode thread.
 const WAIT_SLICE: Duration = Duration::from_millis(5);
-/// The most real time an offscreen probe waits for one picture, whatever the media clock does.
+/// The most real time an offscreen probe waits for one picture, whatever the media clock does
+/// (longer when the picture's open and frame limits together are longer: test support).
 const PROBE_GUARD: Duration = Duration::from_secs(60);
 
 /// The time the media limits are measured on: the system's, or (test support, with
@@ -372,8 +373,9 @@ impl Picture {
         if wait && !self.hangs {
             let limits = self.limits;
             // On the media clock (moved by hand in some tests), looked at every few
-            // milliseconds; `PROBE_GUARD` of real time bounds the wait whatever that clock does.
-            let guard = Instant::now() + PROBE_GUARD;
+            // milliseconds; `PROBE_GUARD` of real time (or the limits together, if longer)
+            // bounds the wait whatever that clock does.
+            let guard = Instant::now() + PROBE_GUARD.max(limits.open.saturating_add(limits.frame));
             while mail.failed.is_none() && mail.opened.is_none() {
                 if since(self.started) >= limits.open || Instant::now() >= guard {
                     break;

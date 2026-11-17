@@ -471,6 +471,9 @@ pub struct DeviceShow {
     /// Streams prepared but not playing are not waited for before a callback: a slow disk,
     /// whose stream a move to another device cannot have by its swap.
     pub slow_disk: bool,
+    /// Timed-out 20 ms waits before the probes are called hung: [`WAIT_STEPS`], or more when
+    /// the engine's own probe watchdog (`probe_timeout`) waits longer before giving up on one.
+    probe_wait_steps: u32,
 }
 
 impl DeviceShow {
@@ -498,6 +501,8 @@ impl DeviceShow {
             let (wall, slept) = (Arc::clone(&wall), Arc::clone(&slept));
             Arc::new(move || sys_base + *wall.lock().unwrap() + *slept.lock().unwrap())
         };
+        let probe_wait_steps = WAIT_STEPS
+            .max(u32::try_from(config.probe_timeout.as_millis() / 20).unwrap_or(u32::MAX));
         let primary = devices[0].id.clone();
         let request = OpenRequest {
             device_id: Some(primary.clone()),
@@ -535,6 +540,7 @@ impl DeviceShow {
             captures: Vec::new(),
             next_id: 0,
             slow_disk: false,
+            probe_wait_steps,
         };
         show.settle_media();
         show
@@ -601,7 +607,7 @@ impl DeviceShow {
                 }
                 Err(_) => {
                     timeouts += 1;
-                    assert!(timeouts <= WAIT_STEPS, "probes never answered");
+                    assert!(timeouts <= self.probe_wait_steps, "probes never answered");
                     self.control.tick();
                 }
             }

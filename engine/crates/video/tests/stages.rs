@@ -41,18 +41,34 @@ fn stage(n: u128) -> Stage {
     s
 }
 
+/// How long a test's stage host may take to start (`hello`) and to answer a ping: far beyond
+/// any machine's slowness (shipped 20 s and 5 s; a CI virtual machine's graphics and media
+/// frameworks have stalled for seconds). The tests that mean to kill one move a hand clock,
+/// set a short limit or kill it.
+const SLOW_MACHINE: Duration = Duration::from_secs(120);
+/// The offline driver's waits for the stage host: past a start at its `hello` limit.
+const SETTLE: Duration = Duration::from_secs(150);
+
 fn host_config(args: &[&str]) -> StageHostConfig {
     let mut c = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     c.args = args.iter().map(|a| (*a).to_owned()).collect();
-    // A stage host slow to answer on a loaded machine is never killed as hung: the tests that
-    // mean to kill one move a hand clock or kill it.
-    c.answer_within = Duration::from_secs(120);
+    c.answer_within = SLOW_MACHINE;
     c
 }
 
 /// Two virtual displays, drawn offscreen.
 fn virtual_host() -> StageHostConfig {
-    host_config(&["--virtual-displays", "V1:1920x1080,V2:1280x720"])
+    let mut c = host_config(&["--virtual-displays", "V1:1920x1080,V2:1280x720"]);
+    c.hello_within = SLOW_MACHINE;
+    c
+}
+
+/// An offline show of `ws` on `c` whose waits for the stage host are [`SETTLE`] long.
+fn show_patient(ws: Workspace, c: ControlConfig) -> OfflineShow {
+    let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+    s.set_settle_timeout(SETTLE);
+    s.settle_media();
+    s
 }
 
 fn mapping(display: &str) -> StageMapping {
@@ -73,7 +89,7 @@ fn stage_show(ws: Workspace, host: StageHostConfig, display: Option<&str>) -> Of
             .set_stage_mapping(ws.id, stage_id(1), Some(mapping(d)))
             .unwrap();
     }
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     assert_eq!(s.stalls(), 0, "the stage host did not settle");
     s
@@ -203,6 +219,7 @@ fn a_new_workspace_has_one_stage_per_display() {
     let mut c: ControlConfig = config(&workspace(vec![]));
     c.stage_host = Some(virtual_host());
     let mut s = OfflineShow::empty(mixer_config(), c).unwrap();
+    s.set_settle_timeout(SETTLE);
     assert!(s.wait_for(|c| c.displays().len() == 2));
     s.open_doc(openlab_engine::control::DocSource::New).unwrap();
     s.settle_stages();
@@ -298,7 +315,7 @@ fn a_stage_without_its_display_opens_with_a_warning() {
         .set_stage_mapping(ws.id, stage_id(2), Some(mapping("GONE")))
         .unwrap();
     c.push_log = true;
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     assert_eq!(state(&mut s, 1), Some(StageState::NoDisplay));
     assert_eq!(
@@ -388,7 +405,7 @@ fn a_stage_display_unplugged_mid_cue_warns_and_comes_back() {
     c.machine
         .set_stage_mapping(ws.id, stage_id(1), Some(mapping("V1")))
         .unwrap();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     s.transport(TransportAction::Go { list: list_id() });
     s.run(BLOCK * 4);
@@ -466,7 +483,7 @@ fn a_stage_host_slow_to_start_is_not_killed_as_hung() {
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
     c.push_log = true;
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     // Before its hello (the script is still asleep): past a ping's answer time, short of
     // hello's.
     hand.advance(&mut s, 6);
@@ -501,7 +518,7 @@ fn a_stage_host_sending_garbage_is_stopped_and_sound_plays_on() {
     let ws = with_stages(vec![tone_cue()], vec![stage(1)]);
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.transport(TransportAction::Go { list: list_id() });
     s.run(BLOCK * 4);
     let started = s.channel(0).len();
@@ -538,7 +555,7 @@ fn a_stage_host_logging_in_a_burst_is_rate_limited() {
     let ws = with_stages(vec![], vec![stage(1)]);
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     assert!(s.wait_for(|c| c.stage_host_pid().is_some()));
     let mut seen = 0;
     for _ in 0..200 {
@@ -747,7 +764,7 @@ fn two_stages_on_one_display_stack_by_layer() {
             .set_stage_mapping(ws.id, stage_id(n), Some(mapping("V1")))
             .unwrap();
     }
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     test_card(&mut s, 1, 111);
     test_card(&mut s, 2, 222);
@@ -956,7 +973,7 @@ cat > /dev/null"#
     // One second of report budget for the whole burst, whatever the machine's speed.
     let clock = openlab_engine::control::ManualClock::new(1_000);
     c.clock = clock.clock();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     assert!(s.wait_for(|c| c.displays().iter().any(|d| d.id == "END")));
     let out = s.take_outbound();
     let lines = out
@@ -1016,7 +1033,7 @@ fn a_crash_after_a_long_healthy_run_is_relaunched_at_once() {
     let ws = with_stages(vec![], vec![stage(1)]);
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     assert!(s.wait_for(|c| c.stage_host_pid().is_some()));
     let first = s.control().stage_host_pid().unwrap();
     // Two minutes of healthy running, then it is killed.
@@ -1054,7 +1071,7 @@ fn a_snapshot_is_followed_by_the_video_outputs() {
     c.stage_host = Some(virtual_host());
     let clock = openlab_engine::control::ManualClock::new(10_000);
     c.clock = clock.clock();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     clock.advance(200);
     s.tick();
@@ -1086,7 +1103,7 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
     c.stage_host = Some(virtual_host());
     let clock = openlab_engine::control::ManualClock::new(10_000);
     c.clock = clock.clock();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     clock.advance(200);
     s.tick();
@@ -1153,7 +1170,7 @@ cat > /dev/null"#
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
     c.clock = openlab_engine::control::ManualClock::new(1_000).clock();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     assert!(s.wait_for(|c| c.displays().iter().any(|d| d.id == "END")));
     let pushes = s
         .take_outbound()
@@ -1175,7 +1192,7 @@ fn a_silent_stage_host_is_killed_after_the_answer_time() {
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
     c.push_log = true;
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     let mut seen = false;
     for _ in 0..500 {
         s.tick();

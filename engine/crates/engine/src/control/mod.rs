@@ -270,6 +270,11 @@ pub struct ControlConfig {
     /// (a test wraps the real probe to hold an answer back).
     #[cfg(feature = "test-support")]
     pub picture_probe: Option<crate::stage_probe::PictureProbeFn>,
+    /// Test support: how long a Video cue's file's probe process may take
+    /// ([`crate::stage_probe::PROBE_PROCESS_LIMIT`] unless a test lengthens it for a machine
+    /// whose media framework is slow).
+    #[cfg(feature = "test-support")]
+    pub picture_probe_limit: Duration,
     /// The virtual device the backend's stream runs on (`--virtual-device`): it answers the
     /// test-only `advance`, `lose_device` and `restore_device` requests.
     #[cfg(feature = "test-support")]
@@ -318,6 +323,8 @@ impl ControlConfig {
             stage_host: None,
             #[cfg(feature = "test-support")]
             picture_probe: None,
+            #[cfg(feature = "test-support")]
+            picture_probe_limit: crate::stage_probe::PROBE_PROCESS_LIMIT,
             #[cfg(feature = "test-support")]
             virtual_device: None,
         }
@@ -686,9 +693,13 @@ impl Control {
             config.waveform_timeout,
             config.probe_clock.clone(),
         );
+        #[cfg(feature = "test-support")]
+        let picture_limit = config.picture_probe_limit;
+        #[cfg(not(feature = "test-support"))]
+        let picture_limit = crate::stage_probe::PROBE_PROCESS_LIMIT;
         let picture = crate::stage_probe::picture_probe(
             config.stage_host.as_ref().map(|h| h.program.clone()),
-            crate::stage_probe::PROBE_PROCESS_LIMIT,
+            picture_limit,
         );
         #[cfg(feature = "test-support")]
         let picture: crate::stage_probe::PictureProbe = match config.picture_probe {

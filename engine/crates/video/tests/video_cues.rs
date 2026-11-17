@@ -28,14 +28,60 @@ use openlab_core::{
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::stage::StageHostConfig;
-use openlab_engine::stage_probe::probe_file;
+use openlab_engine::stage_probe::{PROBE_PROCESS_LIMIT, probe_file};
 use show::*;
 use uuid::Uuid;
 
 const STAGE_HOST: &str = env!("CARGO_BIN_EXE_openlab-stage");
-const LIMIT: Duration = Duration::from_secs(30);
-/// How long a test's stage host may take to answer a ping: far beyond any machine's slowness.
+/// How long a gated probe may be held before it goes ahead anyway (a hang guard).
+const GATE_LIMIT: Duration = Duration::from_secs(30);
+/// How long a test's stage host may take to answer `hello` and a ping: far beyond any
+/// machine's slowness.
 const SLOW_MACHINE: Duration = Duration::from_secs(120);
+
+// The time limits a slow but working media framework can trip, six times the shipped ones in
+// these tests (test-support settings; a shipped build has only the shipped limits). On CI's
+// virtual machines Apple's media framework has stalled a good file's open past 10 s, a probe
+// past 20 s and a frame past 5 s, though never on a real Mac however loaded. Six times leaves
+// room for such a stall while a real hang still fails a test within minutes. The tests that
+// prove a limit fires use fault-switch files, whose limits they set short themselves
+// (`HAND_LIMITS`).
+
+/// The stage host's limits on a good file's open and frames (`OPEN_MS,FRAME_MS`; shipped 10 s
+/// and 5 s).
+const GOOD_MEDIA_LIMITS: &str = "60000,30000";
+/// The engine's limit on a Video cue's file's probe process (shipped 20 s).
+const PICTURE_PROBE_LIMIT: Duration = Duration::from_secs(120);
+/// The probe pool's watchdog, past the probe process's own limit so that limit answers first.
+const PROBE_WATCHDOG: Duration = Duration::from_secs(150);
+/// How long the stage host may take to make a test file or say which decoder a movie gets.
+const MEDIA_TOOL_LIMIT: Duration = Duration::from_secs(120);
+/// The offline driver's waits: past a stage probe that waits for a picture's open and frame
+/// (90 s at most) and a probe process at its limit.
+const SETTLE: Duration = Duration::from_secs(180);
+
+/// A test's stage host on virtual display V1 (1920 x 1080) with `extra` arguments, never failing
+/// a good file or a slow answer that a slow machine can explain.
+fn test_stage_host(extra: &[&str]) -> StageHostConfig {
+    let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
+    host.args = ["--virtual-displays", "V1:1920x1080"]
+        .iter()
+        .chain(&["--good-media-limits", GOOD_MEDIA_LIMITS])
+        .chain(extra)
+        .map(|a| (*a).to_owned())
+        .collect();
+    // A stage host slow to start or to answer on a loaded machine (a probe waiting on a file's
+    // open) is never killed as hung: the tests kill one when they mean to.
+    host.hello_within = SLOW_MACHINE;
+    host.answer_within = SLOW_MACHINE;
+    host
+}
+
+/// The engine's limits on probing Video cues' files lengthened as the stage host's are.
+fn slow_media_ok(c: &mut ControlConfig) {
+    c.picture_probe_limit = PICTURE_PROBE_LIMIT;
+    c.probe_timeout = PROBE_WATCHDOG;
+}
 
 fn stage_id() -> StageId {
     StageId(Uuid::from_u128(0x5_0001))
@@ -86,7 +132,7 @@ fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
     if let Some((frames, fps)) = frames_fps {
         command.arg(frames.to_string()).arg(fps.to_string());
     }
-    let out = command.output().unwrap();
+    let out = spin::output_within(&mut command, MEDIA_TOOL_LIMIT);
     assert!(
         out.status.success(),
         "{kind}: {}",
@@ -108,11 +154,12 @@ fn decodes_reliably(kind: &str) -> bool {
     if let Some((_, ok)) = found.iter().find(|(k, _)| k == kind) {
         return *ok;
     }
-    let out = Command::new(STAGE_HOST)
-        .arg("--test-decoder")
-        .arg(fixture(kind, Some((10, 25))))
-        .output()
-        .unwrap();
+    let out = spin::output_within(
+        Command::new(STAGE_HOST)
+            .arg("--test-decoder")
+            .arg(fixture(kind, Some((10, 25)))),
+        MEDIA_TOOL_LIMIT,
+    );
     let said = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     assert!(
         out.status.success() && (said == "software" || said == "hardware"),
@@ -203,7 +250,14 @@ fn record(line: &str) -> bool {
 }
 
 fn probe(path: &Path) -> Result<ProbeReport, MediaError> {
-    probe_file(Path::new(STAGE_HOST), path, LIMIT)
+    probe_file(Path::new(STAGE_HOST), path, PICTURE_PROBE_LIMIT)
+}
+
+/// As [`probe`], within the shipped limit: for damaged files, where an answer past the limit
+/// (unsupported) is as good as any other, so a decoder that hangs on one costs the test only
+/// the shipped limit.
+fn probe_damaged(path: &Path) -> Result<ProbeReport, MediaError> {
+    probe_file(Path::new(STAGE_HOST), path, PROBE_PROCESS_LIMIT)
 }
 
 /// H.264, HEVC and ProRes in a QuickTime movie, and PNG, JPEG and TIFF stills, each read with
@@ -314,7 +368,7 @@ fn a_movie_cut_short_gives_an_answer_within_the_limit() {
     for keep in [2, 3, 4] {
         let cut = dir.path().join(format!("cut{keep}.mov"));
         std::fs::write(&cut, movie.get(..movie.len() * (keep - 1) / keep).unwrap()).unwrap();
-        match probe(&cut) {
+        match probe_damaged(&cut) {
             Ok(ProbeReport::Video { .. }) | Err(MediaError::Unsupported(_)) => {}
             other => panic!("cut to {}/{keep}: {other:?}", keep - 1),
         }
@@ -345,7 +399,7 @@ fn mutated_movies_give_an_answer_within_the_limit() {
         }
         let file = dir.path().join(format!("m{round}.mov"));
         std::fs::write(&file, &bytes).unwrap();
-        match probe(&file) {
+        match probe_damaged(&file) {
             Ok(ProbeReport::Video { .. }) | Err(MediaError::Unsupported(_)) => {}
             other => panic!("round {round}: {other:?}"),
         }
@@ -413,16 +467,13 @@ fn video_show_rate(
     stage.keep_black = true;
     ws.stages = vec![stage];
     let mut c: ControlConfig = config_at(&ws, rate, block);
+    slow_media_ok(&mut c);
     engine(&mut c);
-    let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
-    host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
-    host.args.extend(extra.iter().map(|a| (*a).to_owned()));
-    // A stage host slow to answer on a loaded machine (a probe waiting on a file's open) is
-    // never killed as hung: the tests kill one when they mean to.
-    host.answer_within = SLOW_MACHINE;
+    let mut host = test_stage_host(extra);
     tweak(&mut host);
     c.stage_host = Some(host);
     let mut s = OfflineShow::new(ws, mixer_config_at(rate, block), c).unwrap();
+    s.set_settle_timeout(SETTLE);
     s.settle_stages();
     // The files' probes are answered too: the tests read what they found.
     s.settle_media();
@@ -472,6 +523,27 @@ fn a_video_cues_file_is_probed_and_a_bad_or_missing_one_breaks_it_with_a_reason(
         [CueProblem::MediaUnsupported { .. }]
     ));
     assert_eq!(problems(&s, 4), vec![CueProblem::NoMedia]);
+}
+
+/// The engine's limit on a Video cue's file's probe process is the one the test sets (these
+/// tests lengthen it for slow machines): at no time at all, a good file's probe cannot answer
+/// and its cue is broken as unreadable in time.
+#[test]
+fn a_video_files_probe_is_bounded_by_the_probe_limit_a_test_sets() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = make(dir.path(), "good.mov", "h264", Some((25, 25)));
+    let s = video_show_config(
+        workspace(vec![video_cue(1, Some(&good))]),
+        &[],
+        |_| {},
+        |c| c.picture_probe_limit = Duration::ZERO,
+    );
+    match problems(&s, 1).as_slice() {
+        [CueProblem::MediaUnsupported { reason, .. }] => {
+            assert!(reason.contains("could not be read in time"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// A Video cue's file that goes missing gets the missing-file mark at the media watch's next
@@ -1080,11 +1152,11 @@ fn clients_are_told_a_video_cues_length_and_format() {
 static GATED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 static GATE_OPENED: std::sync::Condvar = std::sync::Condvar::new();
 
-/// The real probe, held while its file is in `GATED` (bounded by `LIMIT`).
+/// The real probe, held while its file is in `GATED` (bounded by `GATE_LIMIT`).
 fn gated_probe(path: &Path) -> Result<ProbeReport, MediaError> {
     let mut gated = GATED.lock().unwrap();
-    // A hang guard: at most `LIMIT` in waits of 50 ms.
-    let mut rounds = LIMIT.as_millis() / 50;
+    // A hang guard: at most `GATE_LIMIT` in waits of 50 ms.
+    let mut rounds = GATE_LIMIT.as_millis() / 50;
     while gated.iter().any(|p| p == path) && rounds > 0 {
         rounds -= 1;
         gated = GATE_OPENED
@@ -1108,12 +1180,11 @@ fn gated_video_show(cues: Vec<Cue>) -> OfflineShow {
     stage.keep_black = true;
     ws.stages = vec![stage];
     let mut c: ControlConfig = config(&ws);
-    let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
-    host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
-    host.answer_within = SLOW_MACHINE;
-    c.stage_host = Some(host);
+    slow_media_ok(&mut c);
+    c.stage_host = Some(test_stage_host(&[]));
     c.picture_probe = Some(gated_probe);
-    let mut s = show_with(ws, c);
+    let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+    s.set_settle_timeout(SETTLE);
     s.settle_stages();
     // The files' probes are answered too: the tests read what they found.
     s.settle_media();
@@ -1387,7 +1458,7 @@ fn a_stage_host_relaunched_while_a_movie_holds_its_last_frame_shows_that_frame()
 /// The stage host's media limits measured on a clock the test moves (`advance_stage_media_clock`,
 /// and each slow-decode frame), never on real time: a picture fails only when the test moves
 /// that clock past a limit, however slow the machine. The limits given apply to the files a
-/// fault switch names; a good file keeps the shipped ones.
+/// fault switch names; every other file gets `GOOD_MEDIA_LIMITS`.
 const HAND_LIMITS: [&str; 3] = ["--media-limits", "400,400", "--media-clock-by-hand"];
 
 /// A copy of a good movie under a name that makes the test-support decoder hang or crash.
@@ -4547,10 +4618,8 @@ fn device_video_show(
     }
     // A patch moved to another device needs a slot there while its old one plays out.
     c.mixer_patches = 4;
-    let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
-    host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
-    host.answer_within = SLOW_MACHINE;
-    c.stage_host = Some(host);
+    slow_media_ok(&mut c);
+    c.stage_host = Some(test_stage_host(&[]));
     let listed = devices
         .iter()
         .map(|(id, name, rate)| show::device::listed_at(id, name, 2, *rate))
