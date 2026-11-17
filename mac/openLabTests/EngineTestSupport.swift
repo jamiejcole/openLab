@@ -174,6 +174,11 @@ final class Rig {
 /// One engine per test class: `shared()` starts it on first use and it is stopped when the class's
 /// tests are done. Each test opens fresh copies of the test shows (`mac/TestShows`, see
 /// `open(_:)`); the documents a test opened are closed when it ends.
+///
+/// A test that needs an engine of its own (`start`) gets a new one every time, never one another
+/// test used. Starting one is the engine's own start-up, which the test would wait for: so while a
+/// test runs, the next engine of the same kind starts beside it (`spares`), ready for the next
+/// `start`, and an engine let go with `stopInBackground` ends off the main thread.
 @MainActor
 final class TestEngine {
     /// The virtual device's rate: frames per second of device time.
@@ -192,6 +197,11 @@ final class TestEngine {
     private var openedThisTest: [ModelID] = []
 
     private static var current: TestEngine?
+    /// An engine started ahead for the next `start` of the same `displays` ("" for none) with no
+    /// settings: never used before it is handed out. Ended when the class's tests are done.
+    private static var spares: [String: Task<TestEngine, Error>] = [:]
+    /// Engines being ended off the main thread (`stopInBackground`).
+    private static let ending = DispatchGroup()
 
     private init(folder: URL, process: Process, stdin: Pipe, info: EngineConnectionInfo, app: EngineClient) {
         self.folder = folder
@@ -205,7 +215,9 @@ final class TestEngine {
     static func shared() async throws -> TestEngine {
         if let current, current.process.isRunning { return current }
         current?.stop()
-        let engine = try await start()
+        try skipIfOff()
+        // One per class: an engine started ahead for it would only be ended unused.
+        let engine = try await launch(displays: nil, settings: nil)
         current = engine
         return engine
     }
@@ -214,10 +226,33 @@ final class TestEngine {
     /// (`ID:WxH,...`) gives it a stage host on virtual displays, drawn offscreen; `settings` is
     /// this machine's `settings.json` as it finds it at start.
     static func start(displays: String? = nil, settings: Data? = nil) async throws -> TestEngine {
-        // `make test-mac-unit` (every app PR) runs the engine-free tests only (scripts/paths.sh).
+        try skipIfOff()
+        guard settings == nil else { return try await launch(displays: displays, settings: settings) }
+        let kind = displays ?? ""
+        let spare = spares.removeValue(forKey: kind)
+        spares[kind] = Task { try await launch(displays: displays, settings: nil) }
+        if let ready = try? await spare?.value {
+            if ready.process.isRunning && ready.app.state == .connected { return ready }
+            ready.stop()
+        }
+        return try await launch(displays: displays, settings: nil)
+    }
+
+    /// `make test-mac-unit` (every app PR) runs the engine-free tests only (scripts/paths.sh).
+    private static func skipIfOff() throws {
         if ProcessInfo.processInfo.environment["OPENLAB_ENGINE_TESTS"] == "skip" {
             throw XCTSkip("real-engine tests are off in this run (make test-mac-unit)")
         }
+    }
+
+    /// Ends the engines started ahead (`spares`): the class that would have used them is done.
+    fileprivate static func endSpares() async {
+        let waiting = spares.values
+        spares = [:]
+        for spare in waiting { (try? await spare.value)?.stopInBackground() }
+    }
+
+    private static func launch(displays: String?, settings: Data?) async throws -> TestEngine {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
             "openlab-unit-\(UUID().uuidString)", isDirectory: true)
         let support = folder.appendingPathComponent("support", isDirectory: true)
@@ -327,13 +362,40 @@ final class TestEngine {
 
     /// Ends it: stdin closes (`--watch-stdin`) and it shuts down; killed if it has not within 20 s.
     func stop() {
+        letGo().finish()
+    }
+
+    /// Ends it as `stop` does, the wait for the process to exit and the removal of its folder done
+    /// off the main thread: for a test that is over and does not look at the engine again.
+    func stopInBackground() {
+        let end = letGo()
+        let group = Self.ending
+        group.enter()
+        DispatchQueue.global().async {
+            end.finish()
+            group.leave()
+        }
+    }
+
+    /// Lets the engine go: the harness's connection closes, and stdin, so the engine shuts down.
+    private func letGo() -> EngineEnd {
         app.stop()
         try? stdin.fileHandleForWriting.close()
-        let deadline = ProcessInfo.processInfo.systemUptime + 20
-        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline { usleep(5_000) }
-        if process.isRunning { kill() }
-        try? FileManager.default.removeItem(at: folder)
         if Self.current === self { Self.current = nil }
+        return EngineEnd(process: process, folder: folder)
+    }
+
+    /// The test bundle is done: every engine started ahead is ended, and every engine being ended is
+    /// waited for, so no engine or folder outlives the run.
+    fileprivate static func bundleEnded() async {
+        await endSpares()
+        let group = ending
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                _ = group.wait(timeout: .now() + 30)
+                done.resume()
+            }
+        }
     }
 
     /// The engine's show log so far (for a failure message).
@@ -342,7 +404,32 @@ final class TestEngine {
     }
 
     fileprivate static func testEnded() async { await current?.closeTestDocuments() }
-    fileprivate static func classEnded() { current?.stop() }
+    fileprivate static func classEnded() async {
+        current?.stop()
+        await endSpares()
+    }
+}
+
+/// An engine process let go: waited for (killed if it has not ended within 20 s), then its folder
+/// removed. Touched by one thread at a time.
+private final class EngineEnd: @unchecked Sendable {
+    private let process: Process
+    private let folder: URL
+
+    init(process: Process, folder: URL) {
+        self.process = process
+        self.folder = folder
+    }
+
+    func finish() {
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline { usleep(5_000) }
+        if process.isRunning {
+            Darwin.kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()
+        }
+        try? FileManager.default.removeItem(at: folder)
+    }
 }
 
 enum TestEngineError: Error {
@@ -396,7 +483,22 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
     }
 
     func testSuiteDidFinish(_ testSuite: XCTestSuite) {
-        MainActor.assumeIsolated { TestEngine.classEnded() }
+        MainActor.assumeIsolated { waitOnMain("the class's engines ended") { await TestEngine.classEnded() } }
+    }
+
+    func testBundleDidFinish(_ testBundle: Bundle) {
+        MainActor.assumeIsolated { waitOnMain("every engine ended") { await TestEngine.bundleEnded() } }
+        TestMediaCache.removeAll()
+    }
+
+    /// Runs `work` on the main actor and waits for it there, as XCTest's own observer calls must.
+    @MainActor private func waitOnMain(_ what: String, _ work: @escaping @MainActor () async -> Void) {
+        let done = XCTestExpectation(description: what)
+        Task { @MainActor in
+            await work()
+            done.fulfill()
+        }
+        _ = XCTWaiter().wait(for: [done], timeout: 40)
     }
 
     /// A window a test opened that is still alive two tests after it finished is a leak. A window still
@@ -1159,11 +1261,47 @@ final class UDPListener {
 /// every frame is the test card for its own number (288 x 160), so a stage probe reads which frame
 /// is shown. `codec` is `h264`, `hevc` or `prores` (a movie of `frames` at `fps`) or `png`, `jpeg`,
 /// `tiff` (a still). Nothing is checked in; a codec this Mac cannot encode fails the test.
+///
+/// Each kind of file is made once per test process (`TestMediaCache`) and copied from there: making
+/// a movie takes the stage host most of a second, and the Video tests make four per test.
 func makeTestMedia(_ url: URL, codec: String, frames: Int = 0, fps: Int = 25) throws {
+    let fm = FileManager.default
+    try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? fm.removeItem(at: url)
+    let made = try TestMediaCache.file(codec: codec, frames: frames, fps: fps, ext: url.pathExtension) {
+        try runMakeTestMedia($0, codec: codec, frames: frames, fps: fps)
+    }
+    try fm.copyItem(at: made, to: url)
+    // As if written now: a copy keeps the made file's date, and the engine tells a changed file by it.
+    try fm.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+}
+
+/// The test media made so far in this test process, in a folder of its own that is removed when
+/// the test bundle ends.
+enum TestMediaCache {
+    static let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "openlab-test-media-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+
+    /// The file made for these arguments, made by `make` (given where to write it) the first time.
+    static func file(codec: String, frames: Int, fps: Int, ext: String, make: (URL) throws -> Void) throws -> URL {
+        let name = "\(codec)-\(frames)-\(fps)".map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "_" }
+        let url = folder.appendingPathComponent(String(name)).appendingPathExtension(ext)
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // Made under a temporary name and moved in whole: a make that fails leaves nothing to reuse.
+        let partial = folder.appendingPathComponent("partial-\(UUID().uuidString)").appendingPathExtension(ext)
+        defer { try? FileManager.default.removeItem(at: partial) }
+        try make(partial)
+        try FileManager.default.moveItem(at: partial, to: url)
+        return url
+    }
+
+    static func removeAll() { try? FileManager.default.removeItem(at: folder) }
+}
+
+private func runMakeTestMedia(_ url: URL, codec: String, frames: Int, fps: Int) throws {
     let host = Bundle.main.bundleURL.appendingPathComponent(
         "Contents/Helpers/openLab Stage.app/Contents/MacOS/openlab-stage")
-    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try? FileManager.default.removeItem(at: url)
     let process = Process()
     process.executableURL = host
     process.arguments = ["--make-test-media", codec, url.path] + (frames > 0 ? [String(frames), String(fps)] : [])

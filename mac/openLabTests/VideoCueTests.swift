@@ -44,7 +44,7 @@ final class VideoCueTests: XCTestCase {
     override func tearDown() async throws {
         app?.closeAllWindows()
         app = nil
-        engine?.stop()
+        engine?.stopInBackground()
     }
 
     /// Opens a fresh copy of the Video show with its media made: a 4 s H.264 movie, a PNG and a

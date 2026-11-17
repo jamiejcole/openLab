@@ -229,7 +229,7 @@ final class AppControllerTests: XCTestCase {
         app?.closeAllWindows()
         app = nil
         engine?.releaseResults()
-        real?.stop()
+        real?.stopInBackground()
         // Leaves nothing showing.
         for window in NSApp.windows where window.isVisible { window.close() }
     }
