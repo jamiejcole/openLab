@@ -37,8 +37,9 @@ use openlab_core::video_probe::ProbeReport;
 use super::media::Probe;
 use openlab_audio::{MediaInfo, Plays as Passes, Slice, total_frames};
 use openlab_core::{
-    Action, BrokenReason, CueId, CueKind, CueState, Input, PictureFades, PlanPass, RunId,
-    SampleTime, StageId, VideoGeometry, VideoTiming, plan_point, seconds_to_samples,
+    Action, BrokenReason, CueId, CueKind, CueState, FadeCurve, Input, LevelParam, PictureFades,
+    PictureParam, PictureRamp, PlanPass, RunId, SampleTime, StageId, VideoGeometry, VideoTiming,
+    plan_point, seconds_to_samples,
 };
 
 use super::plan::{PlanSpec, cue_slices, picture_info};
@@ -66,6 +67,9 @@ struct Live {
     /// Its `stop`, likewise, sent after `now`: a stop never takes the place of the play or
     /// pause before it, so a stopping picture comes back where it was (a pause counted).
     stop: Option<ToStage>,
+    /// The last ramp of each geometry value Fade cues move (VID-05), likewise: each starts from
+    /// where the one before it is on its sample, as the mixer starts a gain's.
+    ramps: BTreeMap<PictureParam, PictureRamp>,
     /// It is stopping: gone from the stage host after this sample.
     ends: Option<SampleTime>,
     /// The stage host said its file is open (since the load was last sent).
@@ -118,7 +122,17 @@ impl Live {
             .now
             .as_ref()
             .filter(|n| Some(*n) != self.first.as_ref());
+        let picture = match &self.load {
+            ToStage::Load { picture, .. } => *picture,
+            _ => 0,
+        };
+        let ramps = self.ramps.iter().map(|(&param, &ramp)| ToStage::Ramp {
+            picture,
+            param,
+            ramp,
+        });
         std::iter::once(self.load.clone())
+            .chain(ramps)
             .chain(self.first.clone())
             .chain(now.cloned())
             .chain(self.stop.clone())
@@ -860,6 +874,15 @@ impl DocCx<'_> {
                     self.sound_action(action, fx);
                 }
             }
+            Action::Ramp {
+                run,
+                at,
+                param: LevelParam::Picture(param),
+                gain,
+                frames,
+                curve,
+                ..
+            } => self.ramp_picture(run, param, at, f64::from(gain), frames, curve),
             // Levels and ducks act on its sound.
             _ => self.sound_action(action, fx),
         }
@@ -999,6 +1022,7 @@ impl DocCx<'_> {
                 first: None,
                 now: None,
                 stop: None,
+                ramps: BTreeMap::new(),
                 ends: None,
                 opened: false,
                 suspected: 0,
@@ -1012,7 +1036,89 @@ impl DocCx<'_> {
             },
         );
         self.eng.picture(load);
+        self.seed_picture_ramps(id, cue);
         Ok(())
+    }
+
+    /// A Fade cue moves one of the run's picture values (VID-05): from where it is on `at` (the
+    /// last ramp's value then, else the cue's own) to `to` over `frames` with `curve`. A run
+    /// whose picture waits for its probe has none yet: it is given the Fade's values when it
+    /// loads (`seed_picture_ramps`).
+    fn ramp_picture(
+        &mut self,
+        run: RunId,
+        param: PictureParam,
+        at: SampleTime,
+        to: f64,
+        frames: SampleTime,
+        curve: FadeCurve,
+    ) {
+        let Some(id) = self.eng.pictures.find(self.doc.id, run) else {
+            return;
+        };
+        let Some(live) = self.eng.pictures.live.get_mut(&id) else {
+            return;
+        };
+        let own = match &live.load {
+            ToStage::Load { geometry, .. } => param.of(geometry),
+            _ => param.of(&VideoGeometry::default()),
+        };
+        let from = live.ramps.get(&param).map_or(own, |r| r.value(at));
+        // Within range on the link whatever the arithmetic: a value out of it is refused there.
+        let ramp = PictureRamp {
+            from: param.clamp(from),
+            to: param.clamp(to),
+            at,
+            frames,
+            curve,
+        };
+        live.ramps.insert(param, ramp);
+        if !live.held_back {
+            self.eng.picture(ToStage::Ramp {
+                picture: id,
+                param,
+                ramp,
+            });
+        }
+    }
+
+    /// A picture loaded for a run that Fade cues have already moved (one that waited for its
+    /// probe, or loaded again on a changed file) starts with the values they gave it, each still
+    /// moving to where it is going by its end.
+    fn seed_picture_ramps(&mut self, id: u64, cue: CueId) {
+        let now = self.now();
+        let ramps: Vec<(PictureParam, PictureRamp)> = (self.doc.model.engine())
+            .fade_ramps(cue, now)
+            .into_iter()
+            .filter_map(|l| {
+                let param = l.param.picture()?;
+                let moving = l.end > now;
+                Some((
+                    param,
+                    PictureRamp {
+                        from: param.clamp(f64::from(l.value)),
+                        to: param.clamp(f64::from(l.to)),
+                        at: now,
+                        frames: if moving { l.end - now } else { 0 },
+                        curve: l.curve,
+                    },
+                ))
+            })
+            .collect();
+        let Some(live) = self.eng.pictures.live.get_mut(&id) else {
+            return;
+        };
+        live.ramps.extend(ramps.iter().copied());
+        if live.held_back {
+            return;
+        }
+        for (param, ramp) in ramps {
+            self.eng.picture(ToStage::Ramp {
+                picture: id,
+                param,
+                ramp,
+            });
+        }
     }
 
     /// Whether picture `id` is still of what `cue` plays now: the same file, probed and

@@ -4921,3 +4921,436 @@ fn an_old_quicktime_movie_without_a_file_type_box_plays_its_sound() {
     run_to(&mut s, at + samples(1.0) + 2 * BLOCK);
     expect_state(&s, 1, CueState::Idle, "");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Fade cues on a Video cue's picture (VID-05; QLab 5 manual pp. 241-247). The stage reads back
+// the test card's red quadrant: its red channel is the picture's opacity over the black stage.
+
+/// A Fade of cue `target` over `seconds` with `curve` in `mode`, its picture values as `set`
+/// ticks them; no levels.
+fn picture_fade(
+    n: u128,
+    target: u128,
+    seconds: f64,
+    curve: openlab_core::FadeCurve,
+    mode: openlab_core::FadeMode,
+    set: impl FnOnce(&mut openlab_core::FadeGeometry),
+) -> Cue {
+    let mut geometry = openlab_core::FadeGeometry::default();
+    set(&mut geometry);
+    cue(
+        n,
+        CueKind::Fade {
+            target: Some(id(target)),
+            duration: seconds,
+            curve,
+            levels: openlab_core::FadeLevels {
+                master_db: None,
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+            mode,
+            geometry,
+        },
+    )
+}
+
+/// A linear absolute Fade of cue 1's opacity to `to` over `seconds`.
+fn opacity_fade(n: u128, seconds: f64, to: f64) -> Cue {
+    picture_fade(
+        n,
+        1,
+        seconds,
+        openlab_core::FadeCurve::Linear,
+        openlab_core::FadeMode::Absolute,
+        |g| {
+            g.fade_opacity = true;
+            g.opacity = to;
+        },
+    )
+}
+
+/// Where the test card is red, and yellow.
+const CARD_RED: [f32; 2] = [0.25, 0.3];
+const CARD_YELLOW: [f32; 2] = [0.75, 0.8];
+
+/// The picture's opacity as the stage shows it: the card's red quadrant's red over black.
+fn opacity_on_stage(s: &mut OfflineShow) -> f64 {
+    f64::from(colour(s, CARD_RED)[0]) / 255.0
+}
+
+/// The colour the stage shows at `point`.
+fn colour(s: &mut OfflineShow, point: [f32; 2]) -> [u8; 4] {
+    colours(s, &[point]).first().copied().unwrap()
+}
+
+/// Checks the stage shows the picture at `want` opacity (within `within`), saying `what`.
+fn opacity_is(s: &mut OfflineShow, want: f64, within: f64, what: &str) {
+    opacity_of(s, 1.0, want, within, what);
+}
+
+/// As [`opacity_is`] for a picture whose red is `full` at full opacity (a movie's red after
+/// encoding is not quite the card's).
+fn opacity_of(s: &mut OfflineShow, full: f64, want: f64, within: f64, what: &str) {
+    let got = opacity_on_stage(s) / full;
+    assert!(
+        (got - want).abs() <= within,
+        "{what}: opacity {got:.3} on stage, not {want:.3}\n{}",
+        seen(s)
+    );
+}
+
+/// The opacity an S-curve fade from 1 to 0 has `t` of the way through: the rising curve
+/// traced backwards (the cue engine's `ramp_value`).
+fn s_curve_down(t: f64) -> f64 {
+    openlab_core::ramp_value(
+        1.0,
+        0.0,
+        (t * 1e6) as u64,
+        1_000_000,
+        openlab_core::FadeCurve::SCurve,
+    )
+}
+
+/// Flow: a Fade with opacity 0 ticked, 3 s, S-curve → GO while the video plays → the picture
+/// fades to nothing over 3 s along the curve; the unticked position and scale do not move it
+/// (the yellow quadrant stays where it was, as dim as the red); the movie plays on.
+#[test]
+fn fade_with_opacity_0_ticked_go_while_the_video_plays_fades_the_picture_to_nothing_along_its_curve()
+ {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (200, 25));
+    let fade = picture_fade(
+        2,
+        1,
+        3.0,
+        openlab_core::FadeCurve::SCurve,
+        openlab_core::FadeMode::Absolute,
+        |g| {
+            g.fade_opacity = true;
+            g.opacity = 0.0;
+            g.translation = openlab_core::Pair { x: 900.0, y: 0.0 };
+            g.scale = openlab_core::Pair { x: 0.25, y: 0.25 };
+        },
+    );
+    let mut s = video_show(vec![video_cue(1, Some(&movie)), fade]);
+    assert_eq!(problems(&s, 2), vec![]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5));
+    // A movie's colours are near the card's after encoding: measured before the fade.
+    let full = opacity_on_stage(&mut s);
+    let yellow = colour(&mut s, CARD_YELLOW);
+    assert!(
+        full > 0.8 && yellow[0] > 200 && yellow[1] > 200,
+        "{full} {yellow:?}"
+    );
+    let faded = start(&mut s, 2);
+    for t in [0.25, 0.5, 0.75] {
+        run_to(&mut s, faded + samples(3.0 * t));
+        let want = s_curve_down(t);
+        opacity_of(&mut s, full, want, 0.03, &format!("{t} of the way"));
+        let y = colour(&mut s, CARD_YELLOW);
+        let near = |now: u8, was: u8| (f64::from(now) - f64::from(was) * want).abs() <= 8.0;
+        assert!(
+            near(y[0], yellow[0]) && near(y[1], yellow[1]),
+            "the yellow quadrant is where it was, as faded: {y:?} from {yellow:?}"
+        );
+        expect_state(&s, 1, CueState::Fading, "the movie plays on as it fades");
+    }
+    run_to(&mut s, faded + samples(3.0) + BLOCK);
+    assert_eq!(
+        colours(&mut s, &[CARD_RED, CARD_YELLOW]),
+        vec![BLACK, BLACK]
+    );
+    expect_state(&s, 1, CueState::Running, "faded out, still running");
+    expect_state(&s, 2, CueState::Idle, "");
+}
+
+/// Flow: "Stop target when done" → the video cue stops at the end of the fade and its
+/// picture leaves the stage.
+#[test]
+fn stop_target_when_done_stops_the_video_at_the_end_of_the_fade_and_its_picture_leaves_the_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut fade = opacity_fade(2, 1.0, 0.5);
+    if let CueKind::Fade {
+        stop_target_when_done,
+        ..
+    } = &mut fade.kind
+    {
+        *stop_target_when_done = true;
+    }
+    let mut s = video_show(vec![still_cue(1, &png, None), fade]);
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    let faded = start(&mut s, 2);
+    run_to(&mut s, faded + samples(0.5));
+    opacity_is(&mut s, 0.75, 0.02, "half way down to 50 %");
+    expect_state(&s, 1, CueState::Fading, "");
+    run_to(&mut s, faded + samples(1.0) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "stopped by the Fade");
+    expect_state(&s, 2, CueState::Idle, "");
+    assert_eq!(
+        colours(&mut s, &[CARD_RED]),
+        vec![BLACK],
+        "gone from the stage"
+    );
+}
+
+/// Flow: absolute and relative mode apply to geometry as to levels. An absolute Fade ends the
+/// picture where it says; a relative one adds its position to where the picture is now (and
+/// multiplies its opacity), so running it twice moves it twice.
+#[test]
+fn absolute_and_relative_fades_end_at_or_move_by_their_values_from_where_the_picture_is() {
+    let dir = tempfile::tempdir().unwrap();
+    // 400 x 100, bands of 100 px (red, green, blue, yellow), drawn at its own size in the
+    // middle: x 760 to 1160, y 490 to 590.
+    let wide = make(dir.path(), "wide.png", "wide-png", None);
+    let custom = VideoGeometry {
+        fill_stage: false,
+        opacity: 0.8,
+        ..VideoGeometry::default()
+    };
+    let relative = picture_fade(
+        2,
+        1,
+        0.5,
+        openlab_core::FadeCurve::Linear,
+        openlab_core::FadeMode::Relative,
+        |g| {
+            g.fade_translation = true;
+            g.translation = openlab_core::Pair { x: 300.0, y: 0.0 };
+            g.fade_opacity = true;
+            g.opacity = 0.5;
+        },
+    );
+    let absolute = picture_fade(
+        3,
+        1,
+        0.5,
+        openlab_core::FadeCurve::Linear,
+        openlab_core::FadeMode::Absolute,
+        |g| {
+            g.fade_translation = true;
+            g.translation = openlab_core::Pair { x: -500.0, y: 0.0 };
+            g.fade_opacity = true;
+            g.opacity = 1.0;
+        },
+    );
+    let mut s = video_show(vec![placed_still(1, &wide, custom), relative, absolute]);
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    let x = |px: f32| px / 1920.0;
+    let mid = 540.0 / 1080.0;
+    let red_at = |s: &mut OfflineShow, px: f32| colour(s, [x(px), mid])[0];
+    // 80 %: red 204 at its first band.
+    assert!(red_at(&mut s, 810.0).abs_diff(204) <= 2);
+    // Relative: 300 px right and times 0.5 (40 %), from where it is.
+    let at = start(&mut s, 2);
+    run_to(&mut s, at + samples(0.5) + BLOCK);
+    assert_eq!(red_at(&mut s, 810.0), 0, "moved off its first place");
+    assert!(
+        red_at(&mut s, 1110.0).abs_diff(102) <= 2,
+        "at 40 % 300 px on"
+    );
+    // Again: another 300 px and 20 %.
+    let at = start(&mut s, 2);
+    run_to(&mut s, at + samples(0.5) + BLOCK);
+    assert!(
+        red_at(&mut s, 1410.0).abs_diff(51) <= 2,
+        "at 20 % 600 px on"
+    );
+    // Absolute: to 500 px left of the middle at full opacity, wherever it was.
+    let at = start(&mut s, 3);
+    run_to(&mut s, at + samples(0.25));
+    // Half way: x from 600 to -500 is 50 px right of the middle; opacity 0.6.
+    assert!(red_at(&mut s, 810.0 + 50.0).abs_diff(153) <= 3, "half way");
+    run_to(&mut s, at + samples(0.5) + BLOCK);
+    assert_eq!(red_at(&mut s, 310.0), 255);
+    expect_state(&s, 1, CueState::Running, "");
+}
+
+/// Flow: two Fades on the same value of one cue → the later one takes it over from where the
+/// first had it (no jump); the first moves it no more, and ending it changes nothing.
+#[test]
+fn two_fades_on_one_value_the_later_takes_it_over_from_where_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![
+        still_cue(1, &png, None),
+        opacity_fade(2, 4.0, 0.0),
+        opacity_fade(3, 1.0, 1.0),
+    ]);
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    let first = start(&mut s, 2);
+    run_to(&mut s, first + samples(1.0));
+    opacity_is(&mut s, 0.75, 0.02, "the first fade a quarter way down");
+    let second = start(&mut s, 3);
+    opacity_is(
+        &mut s,
+        0.75,
+        0.02,
+        "the second starts where the first had it",
+    );
+    run_to(&mut s, second + samples(0.5));
+    opacity_is(&mut s, 0.875, 0.02, "half way back up");
+    run_to(&mut s, second + samples(1.0) + BLOCK);
+    opacity_is(&mut s, 1.0, 0.0, "up");
+    // The first runs on to its end and moves nothing.
+    run_to(&mut s, first + samples(4.0) + BLOCK);
+    expect_state(&s, 2, CueState::Idle, "");
+    opacity_is(&mut s, 1.0, 0.0, "the first no longer moves it");
+}
+
+/// Flow: a Fade started while its target is not running does nothing and raises no warning
+/// the operator sees: it runs its time; the picture started after it is untouched.
+#[test]
+fn a_fade_started_while_its_target_is_not_running_does_nothing_and_raises_no_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![still_cue(1, &png, None), opacity_fade(2, 0.5, 0.0)]);
+    notices(&mut s);
+    let logged = s.control().show_log().tail(usize::MAX).len();
+    let at = start(&mut s, 2);
+    expect_state(&s, 2, CueState::Running, "it runs its time");
+    assert_eq!(colours(&mut s, &[CARD_RED]), vec![BLACK]);
+    run_to(&mut s, at + samples(0.5) + BLOCK);
+    expect_state(&s, 2, CueState::Idle, "");
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    opacity_is(&mut s, 1.0, 0.0, "the picture is untouched");
+    assert_eq!(notices(&mut s), Vec::<String>::new());
+    assert!(
+        s.control()
+            .show_log()
+            .tail(usize::MAX)
+            .iter()
+            .skip(logged)
+            .all(|e| !matches!(
+                e.level,
+                openlab_core::protocol::LogLevel::Warn | openlab_core::protocol::LogLevel::Error
+            )),
+        "nothing warned: {}",
+        seen(&s)
+    );
+}
+
+/// Flow: pause and resume mid-fade → the fade holds and continues; panic mid-fade → picture
+/// and sound fade out from where they are. A movie with sound, its opacity and main level faded
+/// by one Fade.
+#[test]
+fn pause_and_resume_mid_fade_hold_and_continue_and_panic_fades_picture_and_sound_out_from_where_they_are()
+ {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (250, 25), "pcm:2:48000");
+    let mut fade = opacity_fade(2, 2.0, 0.0);
+    if let CueKind::Fade { levels, .. } = &mut fade.kind {
+        levels.master_db = Some(-120.0);
+    }
+    let mut ws: Workspace = workspace(vec![sounding_cue(1, &movie), fade]);
+    ws.settings.panic_duration = 1.0;
+    let mut s = video_show_of(ws);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.3));
+    let full = opacity_on_stage(&mut s);
+    let faded = start(&mut s, 2);
+    run_to(&mut s, faded + samples(0.5));
+    opacity_of(&mut s, full, 0.75, 0.03, "a quarter way down");
+    s.transport(TransportAction::PauseAll);
+    s.run(samples(1.0));
+    opacity_of(&mut s, full, 0.75, 0.03, "held while paused");
+    expect_state(&s, 2, CueState::Paused, "");
+    s.transport(TransportAction::ResumeAll);
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.5));
+    opacity_of(&mut s, full, 0.5, 0.03, "carries on from where it held");
+    let (_, before) = heard(&s);
+    assert!(before > 0.0, "the sound plays on, faded part way");
+    // Panic: both fade out from where they are over the panic time, and are gone after it.
+    s.transport(TransportAction::Panic);
+    let panic = s.now();
+    run_to(&mut s, panic + samples(0.5));
+    let half = opacity_on_stage(&mut s) / full;
+    assert!(
+        half > 0.15 && half < 0.35,
+        "half way out from 0.5: {half}\n{}",
+        seen(&s)
+    );
+    let (_, mid) = heard(&s);
+    assert!(
+        mid.abs() < before.abs() && mid != 0.0,
+        "the sound on its way out: {mid}"
+    );
+    run_to(&mut s, panic + samples(1.0) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "");
+    assert_eq!(colours(&mut s, &[CARD_RED]), vec![BLACK]);
+    assert!(silent(&s, s.rendered() - BLOCK, s.rendered()));
+}
+
+/// A stage host relaunched while a Fade moves the picture draws it where the Fade has it and
+/// carries on to the Fade's end.
+#[test]
+fn a_stage_host_relaunched_mid_fade_draws_the_picture_where_the_fade_has_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![still_cue(1, &png, None), opacity_fade(2, 4.0, 0.0)]);
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    let at = start(&mut s, 2);
+    run_to(&mut s, at + samples(1.0));
+    kill_stage_host(&mut s);
+    run_to(&mut s, at + samples(2.0));
+    opacity_is(&mut s, 0.5, 0.02, "half way, after the relaunch");
+    run_to(&mut s, at + samples(4.0) + BLOCK);
+    assert_eq!(colours(&mut s, &[CARD_RED]), vec![BLACK]);
+}
+
+/// An edit of the Video cue's opacity while a Fade moves it takes the value over at once (the
+/// operator wins, as with a level) and the Fade, set to stop its target, does not stop it.
+#[test]
+fn an_edit_of_the_value_a_fade_moves_takes_it_over_and_the_target_plays_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut fade = opacity_fade(2, 2.0, 0.0);
+    if let CueKind::Fade {
+        stop_target_when_done,
+        ..
+    } = &mut fade.kind
+    {
+        *stop_target_when_done = true;
+    }
+    let mut s = video_show(vec![still_cue(1, &png, None), fade]);
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    let at = start(&mut s, 2);
+    run_to(&mut s, at + samples(0.5));
+    assert!(set_fields(&mut s, 1, serde_json::json!({"opacity": 0.4})));
+    s.run(samples(0.1));
+    opacity_is(&mut s, 0.4, 0.02, "the edited value");
+    run_to(&mut s, at + samples(2.0) + BLOCK);
+    opacity_is(&mut s, 0.4, 0.02, "the Fade moves it no more");
+    expect_state(&s, 1, CueState::Running, "not stopped");
+}
+
+/// A Fade of a Video cue whose start waits for its file's probe reaches the picture when it
+/// plays: it is drawn where the Fade has it by then.
+#[test]
+fn a_fade_of_a_video_waiting_for_its_probe_reaches_the_picture_when_it_plays() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = gated_video_show(vec![still_cue(1, &png, None), opacity_fade(2, 0.5, 0.25)]);
+    let other = make(dir.path(), "other.png", "png", None);
+    GATED.lock().unwrap().push(other.clone());
+    set_media(&mut s, 1, &other);
+    s.run(BLOCK);
+    start(&mut s, 1);
+    s.run(BLOCK);
+    let at = start(&mut s, 2);
+    run_to(&mut s, at + samples(0.5) + BLOCK);
+    release_probe(&other);
+    assert!(s.wait_for(|c| c.pictures_opened() == 1));
+    s.run(samples(0.2));
+    opacity_is(&mut s, 0.25, 0.02, "drawn where the Fade left it");
+}

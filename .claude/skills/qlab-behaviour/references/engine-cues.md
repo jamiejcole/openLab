@@ -53,7 +53,7 @@ C-A2 | Arm/Disarm counts as an edit (dirty dot; persists after save and reopen) 
 Q204 | Devamp "start next cue" replaces the Devamp cue's own continue; pending devamp is re-sent after its target pauses | assumed
 Q212 | Devamp on a non-looping slice/playlist/audio cue is ignored, not carried to a later loop (a carried-over devamp would surprise an operator who pressed early) | assumed
 Q225 | Devamp while a non-looping slice between two loops (a bridge) plays: leaves at that slice's end, i.e. no effect; the next loop keeps looping. Same rule as Q212 applied inside one slice table | assumed (searched: devamp-cues manual page: silent on bridges)
-Q213 | Fade on a non-running target warns, runs its duration, no effect | assumed
+Q213 | Fade on a non-running target runs its duration with no effect and no warning the operator sees (the engine's `target_not_running` is logged at info and the app lists none) | assumed; no warning per the Fade-on-video checklist (2026-11-17)
 Q214 | Trigger on a cue fading out in a panic hard-stops it and starts afresh; the hard StopVoice can click, the binary may send a short stop fade | assumed
 Q205 | Stop-target-when-done stops the target when the fade ends | manual: transport-cues
 

@@ -12,3 +12,5 @@
 {"type":"play","picture":1,"at":480,"offset":1.0,"action":0.5,"into":0.5,"plan":[{"from":1.0,"length":2.0,"plays":0},{"from":3.0,"length":1.0,"plays":1}],"fades":{"fade_in":{"duration":0.5,"curve":"s_curve"},"fade_out":{"duration":1.0,"curve":"linear"},"end":null}}
 {"type":"pause","picture":1,"at":960,"offset":1.5,"action":1.0}
 {"type":"play","picture":1,"at":0,"offset":0,"action":-1,"into":0,"plan":[{"from":0,"length":0,"plays":1}],"fades":{"fade_in":{"duration":0,"curve":"linear"},"fade_out":{"duration":0,"curve":"linear"},"end":1e300}}
+{"type":"ramp","picture":1,"param":"opacity","ramp":{"from":1.0,"to":0.0,"at":48000,"frames":144000,"curve":"s_curve"}}
+{"type":"ramp","picture":1,"param":"rotation","ramp":{"from":0.0,"to":90.0,"at":0,"frames":0,"curve":"linear"}}

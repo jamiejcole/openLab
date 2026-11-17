@@ -12,7 +12,8 @@ use openlab_core::stage_link::{
     decode_to_stage, encode, read_line,
 };
 use openlab_core::{
-    HOLD_BEFORE_END, PictureFades, PlanPass, StageId, VideoGeometry, fade_factor, plan_point,
+    HOLD_BEFORE_END, PictureFades, PictureParam, PictureRamp, PlanPass, StageId, VideoGeometry,
+    fade_factor, plan_point,
 };
 
 /// What a stage shows.
@@ -143,9 +144,48 @@ struct Pic {
     geometry: VideoGeometry,
     /// Its integrated fades, as its last play gave them.
     fades: PictureFades,
+    /// The geometry values Fade cues move (VID-05), drawn over `geometry`'s: per value, its
+    /// ramps by start sample, each in force from its sample until the next one's.
+    ramps: BTreeMap<PictureParam, Vec<PictureRamp>>,
 }
 
+/// Most ramps of one value kept at once: the one in force and those dated ahead of the clock
+/// (a lookahead holds one or two; a hostile engine cannot grow the list past this).
+const MAX_RAMPS: usize = 8;
+
 impl Pic {
+    /// Takes `ramp` for `param` from its sample on: a ramp dated at or after it is replaced,
+    /// and ramps the clock (`clock`) has left behind for a later one are dropped.
+    fn ramp(&mut self, param: PictureParam, ramp: PictureRamp, clock: u64) {
+        let list = self.ramps.entry(param).or_default();
+        list.retain(|r| r.at < ramp.at);
+        list.push(ramp);
+        // The last one started by the clock is in force; those before it are over.
+        let current = list.iter().rposition(|r| r.at <= clock).unwrap_or(0);
+        list.drain(..current);
+        if list.len() > MAX_RAMPS {
+            let over = list.len() - MAX_RAMPS;
+            list.drain(..over);
+        }
+    }
+
+    /// Its geometry on sample `clock`: the values Fade cues move as their ramps have them, the
+    /// rest its own.
+    fn geometry_at(&self, clock: u64) -> VideoGeometry {
+        let mut g = self.geometry;
+        for (param, list) in &self.ramps {
+            let value = match list.iter().rev().find(|r| r.at <= clock) {
+                Some(r) => r.value(clock),
+                None => match list.first() {
+                    Some(r) => r.from,
+                    None => continue,
+                },
+            };
+            param.set(&mut g, value);
+        }
+        g
+    }
+
     fn place(run: &Run, clock: u64, rate: u32) -> Place {
         let still = |offset, action| Place {
             position: offset,
@@ -223,7 +263,7 @@ impl Pic {
             last: place.last,
             pass: place.pass,
             opacity: stopping * faded,
-            geometry: self.geometry,
+            geometry: self.geometry_at(clock),
         })
     }
 }
@@ -424,6 +464,7 @@ impl<P: Platform> Host<P> {
                                     order: (u64::MAX, 0),
                                     geometry,
                                     fades: PictureFades::NONE,
+                                    ramps: BTreeMap::new(),
                                 },
                             );
                         }
@@ -493,6 +534,14 @@ impl<P: Platform> Host<P> {
             // Drawn so from the next frame; its run (and the decoder) are untouched.
             ToStage::Geometry { picture, geometry } => match self.pics.get_mut(&picture) {
                 Some(p) => p.geometry = geometry,
+                None => return,
+            },
+            ToStage::Ramp {
+                picture,
+                param,
+                ramp,
+            } => match self.pics.get_mut(&picture) {
+                Some(p) => p.ramp(param, ramp, sample),
                 None => return,
             },
             _ => return,
@@ -1551,6 +1600,112 @@ mod tests {
         assert_eq!(drawn.len(), 1);
         assert_eq!(drawn[0].geometry, g);
         assert_eq!(drawn[0].position, 1.0);
+    }
+
+    fn ramp_msg(
+        picture: u64,
+        param: PictureParam,
+        from: f64,
+        to: f64,
+        at: u64,
+        frames: u64,
+    ) -> ToStage {
+        ToStage::Ramp {
+            picture,
+            param,
+            ramp: PictureRamp {
+                from,
+                to,
+                at,
+                frames,
+                curve: openlab_core::FadeCurve::Linear,
+            },
+        }
+    }
+
+    /// A Fade cue's ramp (VID-05) is drawn over the picture's own geometry along its curve from
+    /// its sample; the other values stay the picture's own, an edit of its geometry included.
+    #[test]
+    fn a_ramp_moves_one_value_of_a_playing_picture_along_its_curve() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 1, 1);
+        play(&mut h, 1, 0);
+        send(
+            &mut h,
+            ramp_msg(1, PictureParam::Opacity, 1.0, 0.0, 1000, 2000),
+        );
+        let drawn = |h: &mut Host<Fake>| drawn(h, 1)[0];
+        clock(&mut h, 500);
+        assert_eq!(drawn(&mut h).geometry.opacity, 1.0, "not before its sample");
+        clock(&mut h, 2000);
+        let d = drawn(&mut h);
+        assert_eq!(d.geometry.opacity, 0.5);
+        assert_eq!(d.position, 2.0, "the movie runs on");
+        // An edit of another value is drawn; the faded one keeps its ramp.
+        send(
+            &mut h,
+            ToStage::Geometry {
+                picture: 1,
+                geometry: VideoGeometry {
+                    opacity: 0.9,
+                    rotation: 30.0,
+                    fill_stage: false,
+                    ..VideoGeometry::default()
+                },
+            },
+        );
+        clock(&mut h, 2500);
+        let d = drawn(&mut h);
+        assert_eq!((d.geometry.opacity, d.geometry.rotation), (0.25, 30.0));
+        clock(&mut h, 9000);
+        assert_eq!(drawn(&mut h).geometry.opacity, 0.0, "held at its end");
+        // An unknown picture's ramp is ignored.
+        send(&mut h, ramp_msg(99, PictureParam::Opacity, 1.0, 0.0, 0, 0));
+    }
+
+    /// A later ramp dated ahead of the clock (a takeover inside the lookahead) leaves the one in
+    /// force drawn until its own sample, so the picture never jumps ahead.
+    #[test]
+    fn a_ramp_dated_ahead_takes_over_only_from_its_sample() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 1, 1);
+        play(&mut h, 1, 0);
+        send(
+            &mut h,
+            ramp_msg(1, PictureParam::TranslationX, 0.0, 400.0, 0, 4000),
+        );
+        clock(&mut h, 1000);
+        send(
+            &mut h,
+            ramp_msg(1, PictureParam::TranslationX, 150.0, -100.0, 1500, 1000),
+        );
+        clock(&mut h, 1200);
+        assert_eq!(drawn(&mut h, 1)[0].geometry.translation.x, 120.0);
+        clock(&mut h, 2000);
+        assert_eq!(drawn(&mut h, 1)[0].geometry.translation.x, 25.0);
+        // A burst of ramps all dated ahead keeps a bounded list.
+        for n in 0..100 {
+            send(
+                &mut h,
+                ramp_msg(1, PictureParam::ScaleX, 1.0, 2.0, 10_000 + n, 10),
+            );
+        }
+        let kept = h.pics.get(&1).map(|p| p.ramps[&PictureParam::ScaleX].len());
+        assert_eq!(kept, Some(MAX_RAMPS));
     }
 
     /// A picture whose file cannot be opened, whose stage is not there, or whose stage is
