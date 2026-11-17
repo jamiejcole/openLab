@@ -804,6 +804,27 @@ fn cue_meters(msgs: &[ServerMessage], n: u128) -> Vec<Vec<f32>> {
         .collect()
 }
 
+/// The meters of `patch` in `msgs` that show any sound: its device outputs, then its cue
+/// outputs.
+fn lit_patch_meters(msgs: &[ServerMessage], patch: openlab_core::PatchId) -> Vec<Vec<f32>> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMessage::Meters { outputs, .. } => Some(outputs),
+            _ => None,
+        })
+        .flatten()
+        .filter(|o| o.patch == patch)
+        .map(|o| {
+            o.peaks
+                .iter()
+                .chain(&o.cue_outputs)
+                .copied()
+                .collect::<Vec<f32>>()
+        })
+        .filter(|p| p.iter().any(|&x| x > 0.0))
+        .collect()
+}
+
 /// Checklist: a cue plays, its device is lost and returned on the virtual clock: no meter
 /// message for that cue after the loss until it sounds again. The same for a cue paused by
 /// the operator and one a Fade cue is fading, and whichever block of the meter period the
@@ -857,6 +878,12 @@ fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
                 "cue {n}, loss {blocks} block(s) into the period"
             );
         }
+        // Nor do the patch's meters light with what the mixer rendered before the loss.
+        assert_eq!(
+            lit_patch_meters(&after, patch_id()),
+            Vec::<Vec<f32>>::new(),
+            "loss {blocks} block(s) into the period"
+        );
         // Nothing is kept for the voices the loss cut once no meter read can name them.
         assert!(s.control().is_idle());
         // It sounds again: metered again.
@@ -2568,12 +2595,15 @@ fn a_cue_on_a_lost_second_device_gets_no_meter_while_the_other_plays() {
     }
     let away = s.take_outbound();
     assert_eq!(cue_meters(&away, 2), Vec::<Vec<f32>>::new());
+    assert_eq!(lit_patch_meters(&away, patch_b()), Vec::<Vec<f32>>::new());
     assert!(cue_meters(&away, 1).len() > 4, "cue 1 is still metered");
     s.fake.plug(listed(DEV2, DEV2_NAME, 2));
     s.wait_wall(Duration::from_secs(1), 2);
     s.wait_output(DEV2_NAME);
     s.run(u64::from(RATE));
-    assert_eq!(cue_meters(&s.take_outbound(), 2), Vec::<Vec<f32>>::new());
+    let back = s.take_outbound();
+    assert_eq!(cue_meters(&back, 2), Vec::<Vec<f32>>::new());
+    assert_eq!(lit_patch_meters(&back, patch_b()), Vec::<Vec<f32>>::new());
 }
 
 /// Checklist: two patches on two devices, one Audio cue on each, GO both: each device carries

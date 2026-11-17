@@ -71,6 +71,7 @@ impl Control {
                 DeviceEvent::Restored => {
                     // It plays: no reason it could not be used holds any more.
                     self.eng.unusable.remove(&name);
+                    self.eng.drop_held_meters(key);
                     self.device_restored(&name, "is back");
                     self.eng.check_buffer(key);
                 }

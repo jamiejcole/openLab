@@ -967,6 +967,28 @@ impl Engine {
         }
     }
 
+    /// Throws away the output and patch bus peaks output `key`'s mixer still holds: what it
+    /// rendered before its device was lost, which no meter may show once the device is back.
+    fn drop_held_meters(&mut self, key: OutputKey) {
+        let n = self.device_outputs;
+        let (slots, rows) = (self.patches.capacity(), self.cue_outputs.max(1));
+        let Some(o) = self.outputs.get_mut(key) else {
+            return;
+        };
+        let width = o.mixer.device_outputs().min(n);
+        if let Some(out) = self.out_peaks.get_mut(key * n..key * n + width) {
+            o.mixer.read_output_meters_into(out);
+            out.fill(0.0);
+        }
+        for slot in 0..slots {
+            let at = (key * slots + slot) * rows;
+            if let Some(out) = self.bus_peaks.get_mut(at..at + rows) {
+                o.mixer.read_patch_meters_into(slot, out);
+                out.fill(0.0);
+            }
+        }
+    }
+
     /// The bus meters of `slot` on output `key`'s mixer: one per cue output, as last read.
     pub(super) fn bus_peaks(&self, key: OutputKey, slot: u16) -> &[f32] {
         let (slots, rows) = (self.patches.capacity(), self.cue_outputs.max(1));
