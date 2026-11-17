@@ -268,6 +268,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// The transport icons' side, the size Panic All's own picture is drawn at: well inside the 44 pt button.
     static let transportIconSize: CGFloat = 20
 
+    /// The least the sidebar may be dragged to: the transport icons keep a margin in their buttons (they
+    /// need about 230 pt here, and a newer macOS draws its bezels wider); the tabs' labels are cut short.
+    static let minWidth: CGFloat = 250
+
     static var icons: [Icon] { transport.map(\.icon) + [.activeCuePause, .activeCueResume, .activeCuePanic] }
 
     let store: WorkspaceStore
@@ -443,7 +447,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             column.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             column.topAnchor.constraint(equalTo: root.topAnchor),
             column.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            root.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            root.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minWidth),
         ])
         for v in [strip, tabs, warningsCount, listScroll, activeScroll, warningsScroll, bottom] {
             v.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -20).isActive = true
