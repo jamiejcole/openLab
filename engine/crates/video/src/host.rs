@@ -37,7 +37,8 @@ pub struct CuePicture {
     /// Where it goes when that pass ends, when not straight on (a loop's start): the decoder
     /// gets that frame ready while the pass ends ([`PRIME_AHEAD`] before).
     pub next: Option<f64>,
-    /// Its plan is over: it holds its last frame.
+    /// It stands still: paused, loaded, without a plan, or its plan is over (it holds its last
+    /// frame). The frame at `position` is the one shown, however far ahead it is asked for.
     pub held: bool,
     /// Its plan ends with the pass under way: nothing past that pass's end is ever shown.
     pub last: bool,
@@ -111,8 +112,14 @@ enum Run {
         plan: Vec<PlanPass>,
         into: f64,
     },
-    /// Holding the frame at `offset` from sample `at`, `action` seconds into its cue's action.
-    Paused { at: u64, offset: f64, action: f64 },
+    /// Holding the frame at `offset` from sample `at`, `action` seconds into its cue's action,
+    /// in pass `pass` of the plan it was playing (so its decoder sees no seam at the pause).
+    Paused {
+        at: u64,
+        offset: f64,
+        action: f64,
+        pass: u64,
+    },
 }
 
 /// Where a run is at a sample: its file position, the pass's time left and next jump, whether
@@ -137,8 +144,9 @@ struct Pic {
     before: Option<Run>,
     /// The sample it first played on: drawn from then on.
     since: Option<u64>,
-    /// Fading out from sample `.0` over `.1` samples, then gone.
-    stop: Option<(u64, u64)>,
+    /// Fading out from sample `.0` over `.1` samples; gone on sample `.2` (the fade's end, or
+    /// the stop's cut if that comes first).
+    stop: Option<(u64, u64, u64)>,
     /// When it first played, for the stacking (later on top): (sample, arrival order).
     order: (u64, u64),
     geometry: VideoGeometry,
@@ -187,18 +195,25 @@ impl Pic {
     }
 
     fn place(run: &Run, clock: u64, rate: u32) -> Place {
-        let still = |offset, action| Place {
+        // Standing still, it is asked for its own frame whatever the look-ahead: a frame due a
+        // refresh later is the same one, and never one past the range it was held in.
+        let still = |offset, action, pass| Place {
             position: offset,
             left: f64::INFINITY,
             next: None,
-            held: false,
+            held: true,
             last: false,
             action,
-            pass: 0,
+            pass,
         };
         match run {
-            Run::Held { offset } => still(*offset, 0.0),
-            Run::Paused { offset, action, .. } => still(*offset, *action),
+            Run::Held { offset } => still(*offset, 0.0, 0),
+            Run::Paused {
+                offset,
+                action,
+                pass,
+                ..
+            } => still(*offset, *action, *pass),
             Run::Playing {
                 at,
                 offset,
@@ -220,7 +235,7 @@ impl Pic {
                     },
                     // No plan: held where it is (a still has no position; a movie never runs
                     // on past the range it was given).
-                    None => still(*offset, action),
+                    None => still(*offset, action, 0),
                 }
             }
         }
@@ -242,8 +257,9 @@ impl Pic {
             self.before.as_ref().unwrap_or(&self.run)
         };
         let stopping = match self.stop {
-            Some((at, _)) if clock < at => 1.0,
-            Some((at, fade)) => {
+            Some((_, _, end)) if clock >= end => return None,
+            Some((at, _, _)) if clock < at => 1.0,
+            Some((at, fade, _)) => {
                 let gone = clock - at;
                 if gone >= fade {
                     return None;
@@ -422,7 +438,7 @@ impl<P: Platform> Host<P> {
     }
 
     fn picture_message(&mut self, message: ToStage, out: &mut Vec<FromStage>) {
-        let (sample, _) = self.now();
+        let (sample, rate) = self.now();
         match message {
             ToStage::Clock { sample, rate } => {
                 // Drawn by the platform's own frame loop (or a probe), not on every clock.
@@ -514,16 +530,30 @@ impl<P: Platform> Host<P> {
                 action,
             } => {
                 if let Some(p) = self.pics.get_mut(&picture) {
-                    let was = std::mem::replace(&mut p.run, Run::Paused { at, offset, action });
-                    p.before = Some(was);
+                    // The pass it pauses in, so its decoder holds the frame shown rather than
+                    // reading again as at a loop's seam.
+                    let pass = Pic::place(&p.run, at, rate).pass;
+                    let paused = Run::Paused {
+                        at,
+                        offset,
+                        action,
+                        pass,
+                    };
+                    p.before = Some(std::mem::replace(&mut p.run, paused));
                 }
             }
-            ToStage::Stop { picture, at, fade } => {
+            ToStage::Stop {
+                picture,
+                at,
+                fade,
+                cut,
+            } => {
+                let end = at.saturating_add(fade).min(cut.unwrap_or(u64::MAX));
                 let gone = match self.pics.get_mut(&picture) {
-                    // Never shown, or a stop with no fade that is due: gone now.
-                    Some(p) if p.since.is_none() || (fade == 0 && at <= sample) => true,
+                    // Never shown, or a stop that ends by now: gone now.
+                    Some(p) if p.since.is_none() || end <= sample => true,
                     Some(p) => {
-                        p.stop = Some((at, fade));
+                        p.stop = Some((at, fade, end));
                         false
                     }
                     None => false,
@@ -620,10 +650,7 @@ impl<P: Platform> Host<P> {
         let done: Vec<u64> = self
             .pics
             .iter()
-            .filter(|(_, p)| {
-                p.stop
-                    .is_some_and(|(at, fade)| clock >= at.saturating_add(fade))
-            })
+            .filter(|(_, p)| p.stop.is_some_and(|(_, _, end)| clock >= end))
             .map(|(id, _)| *id)
             .collect();
         for id in done {
@@ -1090,13 +1117,14 @@ pub fn write_all(output: &mut impl Write, answers: &mut Vec<FromStage>) -> std::
     output.flush()
 }
 
+/// Also used by the platforms' tests, to drive a host down to their decoders.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use openlab_core::stage_link::MAX_LINE_BYTES;
 
     /// A platform with displays given by the test and no drawing.
-    struct Fake {
+    pub(crate) struct Fake {
         displays: Vec<Display>,
         /// Each display's layers as last presented, bottom first.
         shown: HashMap<String, Vec<StageId>>,
@@ -1165,7 +1193,7 @@ mod tests {
             .collect()
     }
 
-    fn drawn(host: &mut Host<Fake>, n: u8) -> Vec<CuePicture> {
+    pub(crate) fn drawn(host: &mut Host<Fake>, n: u8) -> Vec<CuePicture> {
         let now = host.now();
         host.cues_on(id(n), now)
     }
@@ -1187,17 +1215,17 @@ mod tests {
         }
     }
 
-    fn send(host: &mut Host<Fake>, m: ToStage) -> Vec<FromStage> {
+    pub(crate) fn send(host: &mut Host<Fake>, m: ToStage) -> Vec<FromStage> {
         let mut out = Vec::new();
         host.handle(m, &mut out);
         out
     }
 
-    fn clock(host: &mut Host<Fake>, sample: u64) {
+    pub(crate) fn clock(host: &mut Host<Fake>, sample: u64) {
         send(host, ToStage::Clock { sample, rate: 1000 });
     }
 
-    fn load(host: &mut Host<Fake>, picture: u64, n: u8) -> Vec<FromStage> {
+    pub(crate) fn load(host: &mut Host<Fake>, picture: u64, n: u8) -> Vec<FromStage> {
         send(
             host,
             ToStage::Load {
@@ -1388,6 +1416,7 @@ mod tests {
                 picture: 7,
                 at: 4000,
                 fade: 1000,
+                cut: None,
             },
         );
         clock(&mut h, 4500);
@@ -1402,6 +1431,37 @@ mod tests {
         );
         h.redraw(&mut Vec::new());
         assert!(!h.playing(), "gone once its fade is over");
+
+        // A stop cut short (its cue's action ends mid-fade): it fades as the stop says until
+        // the cut, then it is gone.
+        load(&mut h, 8, 1);
+        send(&mut h, plain_play(8, 5000, 0.0));
+        send(
+            &mut h,
+            ToStage::Stop {
+                picture: 8,
+                at: 5000,
+                fade: 1000,
+                cut: Some(5600),
+            },
+        );
+        clock(&mut h, 5500);
+        assert_eq!(cues(&mut h, 1), vec![(8, 0.5, 0.5)], "fading, not cut yet");
+        clock(&mut h, 5600);
+        assert_eq!(cues(&mut h, 1), vec![], "gone on the cut");
+        h.redraw(&mut Vec::new());
+        assert!(!h.playing(), "dropped on the cut");
+        // A cut already passed when the stop comes: gone at once.
+        load(&mut h, 9, 1);
+        send(&mut h, plain_play(9, 5600, 0.0));
+        let stop = ToStage::Stop {
+            picture: 9,
+            at: 5600,
+            fade: 1000,
+            cut: Some(5600),
+        };
+        send(&mut h, stop);
+        assert!(!h.playing(), "gone at once");
     }
 
     /// A movie's plan (VID-07): the picture follows its passes (a trimmed range played twice),
@@ -1792,7 +1852,7 @@ mod tests {
         assert!(!h.playing());
     }
 
-    fn id(n: u8) -> StageId {
+    pub(crate) fn id(n: u8) -> StageId {
         StageId(uuid::Uuid::from_u128(n.into()))
     }
 
@@ -1805,7 +1865,7 @@ mod tests {
         }
     }
 
-    fn stage(n: u8, display: Option<&str>, keep_black: bool) -> StageOutput {
+    pub(crate) fn stage(n: u8, display: Option<&str>, keep_black: bool) -> StageOutput {
         StageOutput {
             id: id(n),
             width: 1920,
@@ -1816,7 +1876,7 @@ mod tests {
         }
     }
 
-    fn host(displays: &[&str]) -> Host<Fake> {
+    pub(crate) fn host(displays: &[&str]) -> Host<Fake> {
         Host::new(Fake {
             displays: displays.iter().map(|d| display(d)).collect(),
             shown: HashMap::new(),

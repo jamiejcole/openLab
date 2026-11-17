@@ -102,8 +102,16 @@ pub enum ToStage {
         offset: f64,
         action: f64,
     },
-    /// The picture fades out over `fade` samples from sample `at` (0: gone on `at`), then goes.
-    Stop { picture: u64, at: u64, fade: u64 },
+    /// The picture fades out over `fade` samples from sample `at` (0: gone on `at`), then goes;
+    /// with `cut`, it goes on that sample if the fade is not over by then (its cue's action
+    /// ends there, mid-fade).
+    Stop {
+        picture: u64,
+        at: u64,
+        fade: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cut: Option<u64>,
+    },
     /// The picture goes now.
     Unload { picture: u64 },
     /// Test support: draw the test card for `frame` on `stage` (a 16-bit frame-number barcode
@@ -549,6 +557,18 @@ mod tests {
                     ..VideoGeometry::default()
                 },
             },
+            ToStage::Stop {
+                picture: 4,
+                at: 100,
+                fade: 50,
+                cut: None,
+            },
+            ToStage::Stop {
+                picture: 4,
+                at: 100,
+                fade: 50,
+                cut: Some(120),
+            },
         ];
         for m in to {
             let line = encode(&m).unwrap();
@@ -556,6 +576,12 @@ mod tests {
             assert!(line.ends_with('\n'));
             assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), m);
         }
+        // A stop with no cut is written without one, as before the cut existed.
+        let plain = br#"{"type":"stop","picture":4,"at":100,"fade":50}"#;
+        assert!(matches!(
+            decode_to_stage(plain),
+            Ok(ToStage::Stop { cut: None, .. })
+        ));
         let from = [
             FromStage::Hello {
                 version: 1,
