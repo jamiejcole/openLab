@@ -32,9 +32,13 @@ pub type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
 /// How a texture holds its colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Colour {
-    /// BGRA (or a HAP DXT1 texture) premultiplied by its alpha, or opaque.
+    /// BGRA premultiplied by its alpha, or opaque.
     #[default]
     Premultiplied,
+    /// Colour alone (HAP's DXT1, an RGB format): drawn opaque, whatever alpha the texture
+    /// samples (a DXT1 block in its three-colour mode samples one of its colours as
+    /// transparent black).
+    Opaque,
     /// Colour and straight alpha (HAP Alpha): premultiplied as it is drawn.
     Straight,
     /// HAP Q's scaled YCoCg: Co, Cg and the block's scale in red, green and blue, luma in
@@ -49,6 +53,7 @@ impl Colour {
             Self::Premultiplied => 0.0,
             Self::Straight => 1.0,
             Self::ScaledYCoCg => 2.0,
+            Self::Opaque => 3.0,
         }
     }
 }
@@ -56,7 +61,7 @@ impl Colour {
 /// The texture format and colour a HAP flavour's frames are drawn from.
 pub fn hap_texture(variant: Variant) -> (MTLPixelFormat, Colour) {
     match variant {
-        Variant::Hap => (MTLPixelFormat::BC1_RGBA, Colour::Premultiplied),
+        Variant::Hap => (MTLPixelFormat::BC1_RGBA, Colour::Opaque),
         Variant::HapAlpha => (MTLPixelFormat::BC3_RGBA, Colour::Straight),
         Variant::HapQ => (MTLPixelFormat::BC3_RGBA, Colour::ScaledYCoCg),
     }
@@ -70,8 +75,8 @@ pub type Pictures<'a> = dyn FnMut(&CuePicture) -> Option<(Texture, (u32, u32), C
 /// One quad: four corners (top left, top right, bottom left, bottom right; normalised device
 /// coordinates) and the texture coordinates at each, sampled smooth or nearest-neighbour. The
 /// colour sampled is made premultiplied RGBA first (`mode`, [`Colour`]): straight alpha is
-/// multiplied in, and HAP Q's scaled YCoCg (the format's published conversion) becomes opaque
-/// RGB. The whole colour is then scaled by the opacity and blended "over": a pixel the file
+/// multiplied in, colour alone is made opaque, and HAP Q's scaled YCoCg (the format's published
+/// conversion) becomes opaque RGB. The whole colour is then scaled by the opacity and blended "over": a pixel the file
 /// leaves transparent stays so.
 const SHADER: &str = r#"
 #include <metal_stdlib>
@@ -89,7 +94,9 @@ fragment float4 quad_fragment(V in [[stage_in]], texture2d<float> tex [[texture(
     constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
     constexpr sampler linear(filter::linear, address::clamp_to_edge);
     float4 c = q.smooth > 0.5 ? tex.sample(linear, in.uv) : tex.sample(nearest, in.uv);
-    if (q.mode > 1.5) {
+    if (q.mode > 2.5) {
+        c.a = 1.0;
+    } else if (q.mode > 1.5) {
         float scale = c.b * (255.0 / 8.0) + 1.0;
         float co = (c.r - 128.0 / 255.0) / scale;
         float cg = (c.g - 128.0 / 255.0) / scale;
@@ -841,7 +848,9 @@ mod tests {
     /// HAP, HAP Alpha and HAP Q textures (made by the test writer) drawn as the stage draws a
     /// movie's frame: each quadrant's colour, HAP Alpha's half alpha blended once over black
     /// (premultiplied as it is drawn), HAP Q's YCoCg turned back into RGB, HAP's and HAP Q's
-    /// alpha ignored (opaque). A size that is not a whole number of blocks draws too.
+    /// alpha ignored (opaque; HAP's three-colour-mode blocks:
+    /// `a_hap_dxt1_block_in_three_colour_mode_draws_opaque_black`). A size that is not a whole
+    /// number of blocks draws too.
     #[cfg(feature = "test-support")]
     #[test]
     fn hap_textures_draw_their_colours() {
@@ -907,5 +916,53 @@ mod tests {
             // Too few bytes for the texture: refused, never read past.
             assert!(replace(&t, (6, 5), &mut px[..8], variant.row_bytes(6)).is_err());
         }
+    }
+
+    /// A HAP (DXT1) block in its three-colour mode (endpoint 0 not above endpoint 1) whose
+    /// texels all take index 3 samples as transparent black; HAP is an RGB format, so it is
+    /// drawn opaque black over a red picture beneath, never letting the red through.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_hap_dxt1_block_in_three_colour_mode_draws_opaque_black() {
+        let mut gpu = Gpu::new().unwrap();
+        let red = texture(gpu.device(), 1, 1, &mut [0, 0, 255, 255]).unwrap();
+        let (format, colour) = hap_texture(Variant::Hap);
+        let hap = empty_texture(gpu.device(), 4, 4, format).unwrap();
+        // Endpoints white then black (0xFFFF > 0x0000 would be four-colour mode: reversed
+        // here), every index 3.
+        let mut block = [0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        replace(&hap, (4, 4), &mut block, Variant::Hap.row_bytes(4)).unwrap();
+        let cue = |picture| CuePicture {
+            picture,
+            position: 0.0,
+            left: f64::INFINITY,
+            next: None,
+            held: false,
+            last: false,
+            pass: 0,
+            opacity: 1.0,
+            geometry: VideoGeometry {
+                fill_style: openlab_core::FillStyle::Stretch,
+                smooth: false,
+                ..VideoGeometry::default()
+            },
+        };
+        let layer = Layer {
+            stage: openlab_core::StageId(uuid::Uuid::nil()),
+            width: 64,
+            height: 64,
+            picture: Picture::Black,
+            cues: vec![cue(0), cue(1)],
+        };
+        let read = gpu
+            .probe((64, 64), &[layer], &[[0.5, 0.5]], &mut |c| {
+                Some(if c.picture == 0 {
+                    (red.clone(), (1, 1), Colour::Premultiplied)
+                } else {
+                    (hap.clone(), (4, 4), colour)
+                })
+            })
+            .unwrap();
+        assert_eq!(read, vec![[0, 0, 0, 255]]);
     }
 }
