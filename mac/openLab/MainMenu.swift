@@ -234,7 +234,9 @@ enum MainMenu {
         return menu(
             "menu.view",
             [
-                chord(item("menu.view.enterFullScreen", #selector(AppDelegate.toggleWorkspaceFullScreen(_:)), "f"), shiftCmd),
+                chord(
+                    item("menu.view.enterFullScreen", #selector(AppDelegate.toggleWorkspaceFullScreen(_:)), "f"),
+                    shiftCmd),
                 .separator(),
                 area("menu.view.inspector", .inspector, "i"),
                 area("menu.view.toolbar", .toolbar),
@@ -253,8 +255,9 @@ enum MainMenu {
                 chord(item("menu.view.playheadNext", #selector(AppDelegate.movePlayheadNext(_:)), down), shiftCmd),
                 chord(
                     item("menu.view.playheadPrevious", #selector(AppDelegate.movePlayheadPrevious(_:)), up), shiftCmd),
-                chord(item("menu.view.nextSequence", #selector(AppDelegate.movePlayheadNextSequence(_:)), "="), []),
-                chord(item("menu.view.previousSequence", #selector(AppDelegate.movePlayheadPreviousSequence(_:)), "-"), []),
+                // Their keys, = and -, are fixed keys of the workspace (`AppController.handleKeyDown`).
+                item("menu.view.nextSequence", #selector(AppDelegate.movePlayheadNextSequence(_:))),
+                item("menu.view.previousSequence", #selector(AppDelegate.movePlayheadPreviousSequence(_:))),
                 .separator(),
                 chord(item("menu.view.moveDown", #selector(AppDelegate.moveCuesDown(_:)), down), [.command, .option]),
                 chord(item("menu.view.moveUp", #selector(AppDelegate.moveCuesUp(_:)), up), [.command, .option]),

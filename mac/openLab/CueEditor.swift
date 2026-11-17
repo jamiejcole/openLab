@@ -253,7 +253,9 @@ final class CueEditor {
             notify(loc("edit.error.renumberValues"))
             return
         }
-        _ = report(await store.send(command: .renumber(ids, start: start, increment: increment, prefix: prefix, suffix: suffix)))
+        _ = report(
+            await store.send(
+                command: .renumber(ids, start: start, increment: increment, prefix: prefix, suffix: suffix)))
     }
 
     /// Moves the selected cues one place up (`by` -1) or down (+1) among their siblings. A cue

@@ -18,8 +18,11 @@ extension WorkspaceWindowController {
         loadBar.onLoad = { [weak self] seconds in self?.loadStandingBy(to: seconds) }
         loadBar.onSubmit = { [weak self] text in
             guard let self else { return }
-            if let id = standingByCue, let problem = applyLoadTime(text, to: id) { showNotice(problem) }
-            else if standingByCue == nil { showNotice(loc("loadTime.nothing")) }
+            if let id = standingByCue, let problem = applyLoadTime(text, to: id) {
+                showNotice(problem)
+            } else if standingByCue == nil {
+                showNotice(loc("loadTime.nothing"))
+            }
         }
         loadBar.onDone = { [weak self] in self?.closeLoadBar() }
     }

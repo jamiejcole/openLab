@@ -304,7 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(toggleSidebarTab(_:))?: return appController.frontController != nil
         case #selector(toggleWorkspaceFullScreen(_:))?:
             guard let window = appController.frontController?.window else { return false }
-            item.title = loc(window.styleMask.contains(.fullScreen) ? "menu.view.exitFullScreen" : "menu.view.enterFullScreen")
+            item.title = loc(
+                window.styleMask.contains(.fullScreen) ? "menu.view.exitFullScreen" : "menu.view.enterFullScreen")
             return true
         case #selector(showWorkspaceInFinder(_:))?: return appController.canShowFrontWorkspaceInFinder
         case #selector(pasteLevels(_:))?:

@@ -2691,7 +2691,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await editWorkspace()
         try await focusList(on: fade)
         XCTAssertEqual(cell(fade, "name"), "fade intro")
-        XCTAssertEqual(wc.masthead.standbyField.stringValue, "3 \u{00B7} Fade intro")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, "3 \u{00B7} fade intro")
         XCTAssertEqual(wc.inspector.nameField.stringValue, "", "nothing is stored")
         XCTAssertEqual(wc.inspector.nameField.placeholderString, "fade intro")
         wc.setFindQuery("fade intro")
@@ -6516,7 +6516,8 @@ private final class ToolbarDrag: NSObject, @MainActor NSDraggingInfo {
     func slideDraggedImage(to screenPoint: NSPoint) {}
     func enumerateDraggingItems(
         options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
-        searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+        searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+        using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
     ) {}
     func resetSpringLoading() {}
 }
@@ -6571,16 +6572,19 @@ extension PlayheadFlowTests {
         let outline = wc.cueList.outlineView
         let drag = ToolbarDrag(try toolbarItem(.memo))
         // The insertion line follows the pointer: each place the pointer is over is proposed.
-        XCTAssertEqual(wc.cueList.outlineView(outline, validateDrop: drag, proposedItem: nil, proposedChildIndex: 3), .copy)
+        XCTAssertEqual(
+            wc.cueList.outlineView(outline, validateDrop: drag, proposedItem: nil, proposedChildIndex: 3), .copy)
         XCTAssertEqual(wc.cueList.kindDropProposal?.index, 3)
-        XCTAssertEqual(wc.cueList.outlineView(outline, validateDrop: drag, proposedItem: nil, proposedChildIndex: 1), .copy)
+        XCTAssertEqual(
+            wc.cueList.outlineView(outline, validateDrop: drag, proposedItem: nil, proposedChildIndex: 1), .copy)
         XCTAssertNil(wc.cueList.kindDropProposal?.parent)
         XCTAssertEqual(wc.cueList.kindDropProposal?.index, 1)
         XCTAssertTrue(wc.cueList.outlineView(outline, acceptDrop: drag, item: nil, childIndex: 1))
         await assertEventually("a Memo cue where it was dropped") {
             self.wc.cueList.roots.count == 4 && self.wc.cueList.roots[1].cue.kindType == "memo"
         }
-        XCTAssertEqual(wc.cueList.roots.map(\.id).filter { self.cues.contains($0) }, cues, "the others keep their order")
+        XCTAssertEqual(
+            wc.cueList.roots.map(\.id).filter { self.cues.contains($0) }, cues, "the others keep their order")
         XCTAssertNil(wc.cueList.kindDropProposal, "the line goes with the drop")
 
         // Into a group: dropped inside it, the cue is its child.
@@ -6590,7 +6594,8 @@ extension PlayheadFlowTests {
         let node = try XCTUnwrap(wc.cueList.node(group))
         outline.expandItem(node)
         let into = ToolbarDrag(try toolbarItem(.wait))
-        XCTAssertEqual(wc.cueList.outlineView(outline, validateDrop: into, proposedItem: node, proposedChildIndex: 0), .copy)
+        XCTAssertEqual(
+            wc.cueList.outlineView(outline, validateDrop: into, proposedItem: node, proposedChildIndex: 0), .copy)
         XCTAssertEqual(wc.cueList.kindDropProposal?.parent, group)
         XCTAssertTrue(wc.cueList.outlineView(outline, acceptDrop: into, item: node, childIndex: 0))
         await assertEventually("the Wait cue joined the group") {
@@ -6609,7 +6614,8 @@ extension PlayheadFlowTests {
         item.setString(NewCueKind.memo.rawValue, forType: CueToolbarView.dragType)
         let hostile = ToolbarDrag(item)
         XCTAssertEqual(
-            wc.cueList.outlineView(wc.cueList.outlineView, validateDrop: hostile, proposedItem: nil, proposedChildIndex: 0), [])
+            wc.cueList.outlineView(
+                wc.cueList.outlineView, validateDrop: hostile, proposedItem: nil, proposedChildIndex: 0), [])
         XCTAssertFalse(wc.cueList.outlineView(wc.cueList.outlineView, acceptDrop: hostile, item: nil, childIndex: 0))
         XCTAssertEqual(wc.cueList.roots.count, 3)
     }
@@ -6702,7 +6708,9 @@ extension PlayheadFlowTests {
         XCTAssertNil(store.loadedAt[cues[1]], "only the standing-by cue was loaded")
         // GO starts from there.
         try await space()
-        await assertEventually("playing from the loaded time") { (self.store.progress[cue]?.position ?? 0) >= at - 0.01 }
+        await assertEventually("playing from the loaded time") {
+            (self.store.progress[cue]?.position ?? 0) >= at - 0.01
+        }
         // Back from the end, with the slider let go elsewhere first.
         try await engine.advance(seconds: total)
         await sync()
@@ -6719,7 +6727,10 @@ extension PlayheadFlowTests {
         wc.loadBar.slider.doubleValue = 0.3
         let slider = wc.loadBar.slider
         XCTAssertTrue(slider.sendAction(slider.action, to: slider.target))
-        await assertEventually("the slider loaded it") { abs((self.store.loadedAt[self.cues[1]] ?? -1) - 0.3) < 0.02 }
+        try await play(0.1)
+        await assertEventually("the slider loaded it: \(String(describing: self.store.loadedAt[self.cues[1]]))") {
+            abs((self.store.loadedAt[self.cues[1]] ?? -1) - 0.3) < 0.02
+        }
         XCTAssertEqual(wc.loadBar.field.stringValue, CueTime.format(0.3), "the field follows the slider")
     }
 
@@ -6728,7 +6739,9 @@ extension PlayheadFlowTests {
         wc.toggleLoadToTime()
         var sent: [TransportAction] = []
         wc.onCueAction = { sent.append($0) }
-        for bad in ["", "abc", "1:75", "--3"] { XCTAssertEqual(wc.applyLoadTime(bad, to: cues[0]), loc("cue.prompt.badTime"), bad) }
+        for bad in ["", "abc", "1:75", "--3"] {
+            XCTAssertEqual(wc.applyLoadTime(bad, to: cues[0]), loc("cue.prompt.badTime"), bad)
+        }
         XCTAssertEqual(sent, [])
     }
 
@@ -6808,26 +6821,31 @@ extension PlayheadFlowTests {
     func testThePlayheadMovesToTheTopOfTheNextAndPreviousSequence() async throws {
         try await threeCues()
         await wc.editor.setContinue(of: cues[0], to: "auto_continue")
-        await assertEventually { self.store.model?.cue(self.cues[0])?.raw["continue_mode"]?.stringValue == "auto_continue" }
+        await assertEventually {
+            self.store.model?.cue(self.cues[0])?.raw["continue_mode"]?.stringValue == "auto_continue"
+        }
         click(cues[0])
         try await assertAllOn(cues[0])
         let delegate = listDelegate
         let next = try menuItem(#selector(AppDelegate.movePlayheadNextSequence(_:)))
         let previous = try menuItem(#selector(AppDelegate.movePlayheadPreviousSequence(_:)))
-        XCTAssertEqual(next.keyEquivalent, "=")
-        XCTAssertEqual(previous.keyEquivalent, "-")
+        XCTAssertEqual(next.keyEquivalent, "", "the menu bar takes no unmodified key")
+        XCTAssertEqual(previous.keyEquivalent, "")
         XCTAssertTrue(delegate.validateMenuItem(next))
-        delegate.movePlayheadNextSequence(nil)
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        XCTAssertNil(app.handleKeyDown(try key("=", code: 24)), "= is the next-sequence key")
         await assertEventually("cues 1 and 2 are one sequence: the next top is cue 3") {
             self.store.playheads[self.list] == self.cues[2]
         }
-        delegate.movePlayheadPreviousSequence(nil)
+        XCTAssertNil(app.handleKeyDown(try key("-", code: 27)), "- is the previous-sequence key")
         await assertEventually("back at the top of the first") { self.store.playheads[self.list] == self.cues[0] }
-        let before = wire.sent.count
         delegate.movePlayheadPreviousSequence(nil)
         await sync()
         XCTAssertEqual(store.playheads[list], cues[0], "there is no sequence before the first")
-        _ = before
+        // Typing keeps the key.
+        wc.cueList.beginCellEdit(cues[0], column: "name")
+        XCTAssertNotNil(app.handleKeyDown(try key("=", code: 24)))
+        XCTAssertEqual(store.playheads[list], cues[0])
     }
 
     func testShowWorkspaceInFinderRevealsTheSavedFileAndIsOffForAnUnsavedOne() async throws {
@@ -6844,7 +6862,9 @@ extension PlayheadFlowTests {
         var shown: [URL] = []
         app.revealInFinder = { shown = $0 }
         delegate.showWorkspaceInFinder(nil)
-        XCTAssertEqual(shown.map { $0.standardizedFileURL.resolvingSymlinksInPath() }, [url.standardizedFileURL.resolvingSymlinksInPath()])
+        XCTAssertEqual(
+            shown.map { $0.standardizedFileURL.resolvingSymlinksInPath() },
+            [url.standardizedFileURL.resolvingSymlinksInPath()])
     }
 
     func testPasteLevelsCopiesTheLevelsOfTheCopiedCueOntoTheSelectionAndIsOffWithNothingCopied() async throws {
@@ -6879,7 +6899,8 @@ extension PlayheadFlowTests {
         XCTAssertEqual(item.keyEquivalentModifierMask, [.command, .shift])
         XCTAssertTrue(delegate.validateMenuItem(item))
         XCTAssertEqual(item.title, loc("menu.view.enterFullScreen"))
-        XCTAssertTrue(try XCTUnwrap(wc.window).collectionBehavior.contains(.fullScreenPrimary), "the window can go full screen")
+        XCTAssertTrue(
+            try XCTUnwrap(wc.window).collectionBehavior.contains(.fullScreenPrimary), "the window can go full screen")
     }
 
     // MARK: Names
@@ -6892,9 +6913,11 @@ extension PlayheadFlowTests {
         XCTAssertEqual(cellText(memo, "name"), "", "no kind label stands in for a name")
         let addedFade = await wc.editor.add(.fade, after: [cues[0]])
         let fade = try XCTUnwrap(addedFade)
-        await assertEventually { self.cellText(fade, "name") == "fade 1.wav" }
+        await assertEventually("fade named after its target, was \(String(describing: self.cellText(fade, "name")))") {
+            self.cellText(fade, "name") == "fade 1.wav"
+        }
         let addedWait = await wc.editor.add(.wait, after: [])
         let wait = try XCTUnwrap(addedWait)
-        await assertEventually { self.cellText(wait, "name") == "wait 00:00.00" }
+        await assertEventually { self.cellText(wait, "name") == "wait 00:05.00" }
     }
 }

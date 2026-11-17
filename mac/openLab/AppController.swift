@@ -203,7 +203,19 @@ final class AppController {
         if frontController?.window?.firstResponder is WaveformView, WaveformView.editKey(for: event) != nil {
             return event
         }
-        return fireCueHotkeys(chord, event: event) ? nil : event
+        if fireCueHotkeys(chord, event: event) { return nil }
+        return moveBySequenceKey(chord, event: event) ? nil : event
+    }
+
+    /// `=` and `-` move the playhead to the next and previous sequence (QLab 5's fixed keys, manual
+    /// p. 70), with the list focused and no text being typed. They are not menu key equivalents: the
+    /// menu bar takes no unmodified key, which a cue hotkey could then never use.
+    private func moveBySequenceKey(_ chord: KeyChord, event: NSEvent) -> Bool {
+        guard chord.mask == 0, chord.key == "=" || chord.key == "-", !event.isARepeat, !isTextEditing(),
+            let list = frontController?.cueList, frontController?.window?.firstResponder === list.outlineView
+        else { return false }
+        list.movePlayheadBySequence(chord.key == "=" ? 1 : -1)
+        return true
     }
 
     /// The front workspace's cue-editing keys (its key map: N, Q, O, T, E, D, W, C and F by default),

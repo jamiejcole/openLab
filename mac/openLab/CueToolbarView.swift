@@ -28,7 +28,9 @@ final class CueToolbarButtons: NSSegmentedControl, NSDraggingSource {
             next, stop in
             guard let next else { return }
             if next.type == .leftMouseUp { stop.pointee = true }
-            let (dx, dy) = (next.locationInWindow.x - event.locationInWindow.x, next.locationInWindow.y - event.locationInWindow.y)
+            let (dx, dy) = (
+                next.locationInWindow.x - event.locationInWindow.x, next.locationInWindow.y - event.locationInWindow.y
+            )
             if next.type == .leftMouseDragged, dx * dx + dy * dy > 16 {
                 dragged = true
                 stop.pointee = true
