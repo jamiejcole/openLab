@@ -374,17 +374,6 @@ impl FadeGeometry {
             .collect()
     }
 
-    /// The stored names of the values outside their ranges (not finite too), as
-    /// `geometry.<field>`.
-    pub fn out_of_range(&self) -> Vec<&'static str> {
-        let mut copy = *self;
-        copy.numbers()
-            .into_iter()
-            .filter(|(v, p)| !p.ok(**v))
-            .map(|(_, p)| fade_field(p))
-            .collect()
-    }
-
     /// Puts every value within its range: one beyond it at its end, one that is not finite at
     /// its default. Returns the names of the values changed.
     pub fn repair(&mut self) -> Vec<&'static str> {
@@ -829,13 +818,10 @@ mod tests {
             scale: Pair { x: 1e9, y: 1.0 },
             ..FadeGeometry::default()
         };
-        assert_eq!(
-            bad.out_of_range(),
-            vec!["geometry.opacity", "geometry.scale.x"]
-        );
         assert_eq!(bad.repair(), vec!["geometry.opacity", "geometry.scale.x"]);
         assert_eq!((bad.opacity, bad.scale.x), (1.0, MAX_SCALE));
-        assert!(bad.out_of_range().is_empty());
+        let mut again = bad;
+        assert!(again.repair().is_empty(), "in range once repaired");
     }
 
     #[test]

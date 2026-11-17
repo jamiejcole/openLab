@@ -1129,8 +1129,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         showRefusal(loc(rejection.messageKey))
     }
 
-    /// The kind `cue` will have once `property` lands, when the property replaces it (`kind`) or a
-    /// field inside it (`duration`, `load_to_time`): a kind edit sent before the answer must keep it.
     /// `now` with each of `parts` set, an object part by its own parts (the engine's merge).
     static func merged(_ now: JSONValue, _ parts: JSONValue) -> JSONValue {
         guard case .object(var into) = now, case .object(let changes) = parts else { return parts }
@@ -1138,6 +1136,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         return .object(into)
     }
 
+    /// The kind `cue` will have once `property` lands, when the property replaces it (`kind`) or a
+    /// field inside it (`duration`, `load_to_time`): a kind edit sent before the answer must keep it.
     private func pendingKind(_ cue: ModelID, after property: JSONValue) -> JSONValue? {
         let type = property["type"]?.stringValue
         if type == "kind" { return property["value"] }

@@ -19,7 +19,8 @@ extension VideoCueTests {
         let id = try XCTUnwrap(made)
         await soon("the Fade aims at its target") { self.kind(id)?["target"]?.stringValue == target.raw }
         guard case .success = await store.send(command: .setProperty(id, .duration(seconds))) else {
-            throw XCTSkip("the duration was refused")
+            XCTFail("the engine refused the Fade's duration")
+            throw CancellationError()
         }
         try await show(id, tab: "fadeGeometry")
         return id
