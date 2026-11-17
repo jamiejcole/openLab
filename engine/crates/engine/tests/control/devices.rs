@@ -833,6 +833,8 @@ fn lit_patch_meters(msgs: &[ServerMessage], patch: openlab_core::PatchId) -> Vec
 fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
     for blocks in 1..=4 {
         let long = wav(&dc(200_000, 0.5));
+        // Ends just before the loss, its end handled after the last meter read.
+        let short = wav(&dc(BLOCK as usize * 2 + 10, 0.5));
         let fade = cue(
             4,
             CueKind::Fade {
@@ -855,6 +857,7 @@ fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
             audio(3, &long, 0),
             fade,
             audio(5, &long, 1),
+            audio(6, &short, 0),
         ]));
         s.run(BLOCK * 2);
         for n in [1, 2, 3, 4, 5] {
@@ -868,6 +871,15 @@ fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
         s.transport(TransportAction::Pause { cue: id(5) });
         s.transport(TransportAction::Resume { cue: id(5) });
         s.run(BLOCK);
+        // Cue 6 plays out, and the device goes on the tick its voice's end is handled: the
+        // mixer still holds the last peaks of a voice the doc already let go of.
+        let voices = s.control().live_voices();
+        start(&mut s, 6);
+        s.step();
+        assert_eq!(s.control().live_voices(), voices + 1);
+        while s.control().live_voices() > voices {
+            s.step();
+        }
         assert_eq!(s.control().engine().state(id(3)), CueState::Fading);
         assert_eq!(s.control().engine().state(id(5)), CueState::Running);
         let before = s.take_outbound();
@@ -878,7 +890,7 @@ fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
         // Well past the reopen and several meter periods.
         s.run(u64::from(RATE) * 2);
         let after = s.take_outbound();
-        for n in [1, 2, 3, 5] {
+        for n in [1, 2, 3, 5, 6] {
             assert_eq!(
                 cue_meters(&after, n),
                 Vec::<Vec<f32>>::new(),

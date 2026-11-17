@@ -326,11 +326,16 @@ impl Voices {
                 .is_some_and(|(cur, _)| self.unmetered.contains(cur))
     }
 
-    /// After a meter read: an id no record or alias names any more can never be reported again
-    /// (the read that took its last `gone` entry is done), so it is forgotten.
+    /// Ids that left since the last voice-meter read: the next read reports them once more.
+    pub fn gone_ids(&self) -> Vec<VoiceId> {
+        self.gone.iter().map(|(id, _)| *id).collect()
+    }
+
+    /// Right after a meter read took the `gone` entries: an id no record or alias names any
+    /// more can never be reported again, so it is forgotten.
     pub fn forget_unmetered(&mut self) {
         let mut ids = std::mem::take(&mut self.unmetered);
-        ids.retain(|id| self.knows(*id) || self.gone.iter().any(|(g, _)| g == id));
+        ids.retain(|id| self.knows(*id));
         self.unmetered = ids;
     }
 

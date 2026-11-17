@@ -673,6 +673,10 @@ impl DocCx<'_> {
             .outputs
             .on_output(key, self.doc.voices.playing_ids());
         self.doc.voices.unmeter(&voices);
+        // A voice whose end was handled since the last meter read still has its last peaks
+        // there, to be reported once more: rendered before the loss, they are not.
+        let ended = (self.eng.outputs).on_output(key, self.doc.voices.gone_ids());
+        self.doc.voices.unmeter(&ended);
         let commands = voices
             .into_iter()
             .map(|voice| {
