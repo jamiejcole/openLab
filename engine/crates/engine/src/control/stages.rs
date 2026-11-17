@@ -45,7 +45,7 @@ pub(super) struct Stages {
     /// Its process id, from that `hello`.
     pid: Option<u32>,
     /// What its `hello` said; `None` before the first.
-    video: Option<bool>,
+    pub(super) video: Option<bool>,
     displays: Vec<Display>,
     states: HashMap<StageId, StageState>,
     /// The stage set last handed to the supervisor.
@@ -175,6 +175,14 @@ impl Engine {
 }
 
 impl Control {
+    /// A picture `doc` opened ahead settled (opened, failed, or dropped at a crash): its next
+    /// priming pass opens the next one.
+    fn reprime(&mut self, doc: DocId) {
+        if let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) {
+            d.primes_dirty = true;
+        }
+    }
+
     /// Hands the stage host every open workspace's stages, each with the display this machine
     /// shows it on, when that set changed. Called every tick; cheap when nothing changed.
     pub(super) fn sync_stages(&mut self) {
@@ -378,7 +386,9 @@ impl Control {
                 s.up = false;
                 s.pid = None;
                 s.states.clear();
-                self.eng.pictures_host_stopped(crashed);
+                for doc in self.eng.pictures_host_stopped(crashed) {
+                    self.reprime(doc);
+                }
                 if restarting {
                     self.eng.log(
                         LogLevel::Warn,
@@ -401,10 +411,15 @@ impl Control {
                     );
                 }
             }
-            StageEvent::PictureOpened { picture } => self.eng.picture_opened(picture),
-            StageEvent::PictureFailed { picture, reason } => {
-                self.eng.picture_failed(picture, reason);
+            StageEvent::PictureOpened { picture } => {
+                if let Some(doc) = self.eng.picture_opened(picture) {
+                    self.reprime(doc);
+                }
             }
+            StageEvent::PictureFailed { picture, reason } => match self.eng.prime_failed(picture) {
+                Some(doc) => self.reprime(doc),
+                None => self.eng.picture_failed(picture, reason),
+            },
             StageEvent::Log { level, message } => {
                 let level = match level {
                     LinkLevel::Info => LogLevel::Info,

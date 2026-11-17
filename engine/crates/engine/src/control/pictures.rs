@@ -24,9 +24,18 @@
 //! is sent to the stage host until the answer, the cue starts late (`cold_start`) when it
 //! comes, and breaks only on a probe that fails or on no answer within `PROBE_HOLD_LIMIT`.
 //!
+//! A start whose picture is not open on the stage host yet (a GO on a cue that was not loaded or
+//! standing by, or one the probe held) waits for its open, its first frame decoded, before
+//! picture and sound start together on that sample, late by the wait (counted into its length),
+//! so its opening frames are shown, never skipped. Only a stage host that is up holds a start;
+//! the open's own limit breaks a file that does not open, and `OPEN_WAIT_LIMIT` bounds the wait
+//! if the stage host never answers.
+//!
 //! A stage host that starts (again, after a crash) is sent every picture again, so a picture
 //! comes back by itself. A picture the stage host cannot decode breaks only its own cue, with a
 //! notice. The control thread never waits on the stage host.
+
+mod primes;
 
 use std::collections::BTreeMap;
 
@@ -50,6 +59,25 @@ use super::{DocCx, DocId, Engine};
 /// How far the engine's clock may move before the stage host is told it again (it moves the
 /// picture on by its own clock in between).
 const CLOCK_EVERY_MS: u64 = 10;
+
+/// The most a start waits for its picture's open (sample time) before its cue breaks: past the
+/// stage host's own open limit (10 s), which breaks it first with its reason, so this only
+/// bounds a wait the stage host never answers.
+const OPEN_WAIT_LIMIT_S: f64 = 15.0;
+
+/// A start waiting for its picture's open: the action is `offset` into its time on sample `at`
+/// (as the cue engine dates it), and the picture starts `from` into it.
+#[derive(Clone, Copy)]
+struct Wait {
+    at: SampleTime,
+    offset: SampleTime,
+    from: SampleTime,
+    /// When the wait began, for `OPEN_WAIT_LIMIT_S`.
+    since: SampleTime,
+    paused: bool,
+    /// A devamp asked meanwhile (its stop), carried out once the picture plays.
+    devamp: Option<bool>,
+}
 
 /// One run's picture.
 struct Live {
@@ -91,6 +119,8 @@ struct Live {
     /// Sent again alone from the hold-back on this sample: a crash before
     /// `PROBATION_S` has passed is its doing.
     trial: Option<SampleTime>,
+    /// Its start, waiting for its open.
+    wait: Option<Wait>,
 }
 
 /// A movie run's plan (engine samples, from the top of its action). `top` is the plan the run
@@ -178,8 +208,11 @@ pub(super) struct Pictures {
     live: BTreeMap<u64, Live>,
     held: Vec<Held>,
     clock_sent: Option<SampleTime>,
-    /// Pictures the stage host reported failed, for their doc's next tick.
-    failed: Vec<(DocId, CueId, RunId, String)>,
+    /// Pictures opened ahead for the cues standing by.
+    primes: primes::Primes,
+    /// Pictures the stage host reported failed, for their doc's next tick, and whether their
+    /// start was still waiting for the open (nothing seen or heard: the cue was only skipped).
+    failed: Vec<(DocId, CueId, RunId, String, bool)>,
 }
 
 impl Pictures {
@@ -358,6 +391,9 @@ impl Engine {
 
     /// A stage host started: it is sent the clock and every picture again.
     pub(super) fn resend_pictures(&mut self) {
+        for load in self.prime_loads() {
+            self.picture(load);
+        }
         if self.pictures.live.is_empty() {
             return;
         }
@@ -378,11 +414,15 @@ impl Engine {
         }
     }
 
-    /// The stage host has `picture`'s file open.
-    pub(super) fn picture_opened(&mut self, picture: u64) {
+    /// The stage host has `picture`'s file open. A prime's doc is returned: it opens its next.
+    pub(super) fn picture_opened(&mut self, picture: u64) -> Option<DocId> {
+        if let Some(doc) = self.prime_opened(picture) {
+            return Some(doc);
+        }
         if let Some(l) = self.pictures.live.get_mut(&picture) {
             l.opened = true;
         }
+        None
     }
 
     /// The stage host stopped. Only a crash of its own (`crashed`: not a kill by the
@@ -396,12 +436,15 @@ impl Engine {
     ///   running unseen) and tried again one at a time, the earliest suspected last
     ///   (`try_held_back_pictures`), so the bad file ends up alone and only its cue breaks.
     /// - Everything else is sent to the next stage host.
-    pub(super) fn pictures_host_stopped(&mut self, crashed: bool) {
+    ///
+    /// Returns the docs whose prime was dropped, to open their next.
+    pub(super) fn pictures_host_stopped(&mut self, crashed: bool) -> Vec<DocId> {
+        let reprime = self.primes_host_stopped(crashed);
         for l in self.pictures.live.values_mut() {
             l.trial = l.trial.filter(|_| crashed);
         }
         if !crashed {
-            return;
+            return reprime;
         }
         let now = self.now();
         let window = seconds_to_samples(SUSPECT_WINDOW_S, self.rate);
@@ -420,7 +463,7 @@ impl Engine {
                     "the video output crashed while it played this file".to_owned(),
                 );
             }
-            return;
+            return reprime;
         }
         let mut repeat = Vec::new();
         for (id, l) in &mut self.pictures.live {
@@ -454,6 +497,7 @@ impl Engine {
                 }
             }
         }
+        reprime
     }
 
     /// Each tick: a picture held back after crashes is sent again alone once the stage host
@@ -501,7 +545,10 @@ impl Engine {
     /// tick.
     pub(super) fn picture_failed(&mut self, picture: u64, reason: String) {
         if let Some(l) = self.pictures.live.remove(&picture) {
-            self.pictures.failed.push((l.doc, l.cue, l.run, reason));
+            let waited = l.wait.is_some();
+            self.pictures
+                .failed
+                .push((l.doc, l.cue, l.run, reason, waited));
         }
     }
 
@@ -514,6 +561,7 @@ impl Engine {
 
     /// A doc closed: its pictures go.
     pub(super) fn drop_doc_pictures(&mut self, doc: DocId) {
+        self.drop_doc_primes(doc);
         let gone: Vec<u64> = self
             .pictures
             .live
@@ -586,7 +634,7 @@ impl Engine {
         self.pictures
             .live
             .values()
-            .filter(|l| l.doc == doc && l.motion.is_none() && !l.still)
+            .filter(|l| l.doc == doc && l.motion.is_none() && !l.still && l.wait.is_none())
             .filter_map(|l| match &l.load {
                 ToStage::Load { offset, .. } => Some((l.cue, *offset)),
                 _ => None,
@@ -597,6 +645,19 @@ impl Engine {
     /// Pictures up whose file the stage host has open (tests).
     pub(super) fn pictures_opened(&self) -> usize {
         self.pictures.live.values().filter(|l| l.opened).count()
+    }
+
+    /// Starts waiting for their picture's open, not paused (tests).
+    pub(super) fn pictures_waiting(&self) -> usize {
+        (self.pictures.live.values())
+            .filter(|l| l.wait.is_some_and(|w| !w.paused))
+            .count()
+    }
+
+    /// Whether a start may wait for its picture's open: a stage host is up that draws
+    /// pictures. Otherwise nothing would answer, and the cue plays unseen as it would anyway.
+    fn opens_pictures(&self) -> bool {
+        self.stages_host().is_some() && self.stages.up && self.stages.video == Some(true)
     }
 }
 
@@ -811,7 +872,8 @@ impl DocCx<'_> {
                         }
                     }
                 }
-                self.play_picture(cue, run, at, offset, 0, true, fx);
+                // A cue loaded beforehand loaded its sound with its picture.
+                self.start_or_wait(cue, run, (at, offset), offset, !loaded, fx);
             }
             Action::ResumeVoice {
                 cue,
@@ -829,8 +891,29 @@ impl DocCx<'_> {
                 let Some(id) = self.eng.pictures.find(doc, paused) else {
                     return;
                 };
+                let now = self.now();
+                let mut waits = false;
                 if let Some(l) = self.eng.pictures.live.get_mut(&id) {
                     l.run = run;
+                    // Paused before its picture opened: it waits again, from where its action
+                    // is now, its sound loaded under the new run.
+                    if let Some(w) = l.wait.as_mut() {
+                        *w = Wait {
+                            at,
+                            offset,
+                            since: now,
+                            paused: false,
+                            ..*w
+                        };
+                        waits = true;
+                    }
+                }
+                if waits {
+                    self.sound_action(&Action::UnloadVoice { cue, run: paused }, fx);
+                    let from = self.picture_wait(id).map_or(offset, |w| w.from);
+                    self.load_sound_for_wait(cue, run, from, fx);
+                    self.start_if_open(id, fx);
+                    return;
                 }
                 self.play_picture(cue, run, at, offset, 0, false, fx);
                 // Its sound resumes on the same sample (a picture that could not play on has
@@ -849,6 +932,14 @@ impl DocCx<'_> {
                     return;
                 }
                 if let Some(id) = self.eng.pictures.find(doc, run) {
+                    // A start still waiting for its open has shown and sounded nothing: it
+                    // waits on, paused.
+                    if let Some(w) =
+                        (self.eng.pictures.live.get_mut(&id)).and_then(|l| l.wait.as_mut())
+                    {
+                        w.paused = true;
+                        return;
+                    }
                     // A movie holds where its plan is then; a still has no position.
                     let late = self
                         .eng
@@ -909,6 +1000,14 @@ impl DocCx<'_> {
                 }
             }
             Action::DevampVoice { cue, run, at, stop } => {
+                // A start waiting for its open is devamped once it plays.
+                let waiting = (self.eng.pictures.find(doc, run))
+                    .and_then(|id| self.eng.pictures.live.get_mut(&id))
+                    .and_then(|l| l.wait.as_mut());
+                if let Some(w) = waiting {
+                    w.devamp = Some(stop);
+                    return;
+                }
                 self.devamp_picture(cue, run, at, stop, fx);
                 // Its sound leaves the loop with it: only a devamp the picture carried out.
                 let carried = (self.eng.pictures.find(doc, run))
@@ -974,6 +1073,9 @@ impl DocCx<'_> {
         let Some(id) = self.eng.pictures.find(doc, from) else {
             return;
         };
+        if let Some(w) = self.picture_wait(id) {
+            return self.seek_waiting_picture(id, cue, (run, from), at, position, w, fx);
+        }
         let Some(live) = self.eng.pictures.live.get_mut(&id) else {
             return;
         };
@@ -1040,6 +1142,213 @@ impl DocCx<'_> {
         ));
     }
 
+    /// Starts the run's picture and its sound, dated `at` with the action `offset` into its time
+    /// then, from `from` into it: at once if the stage host has its file open (or nothing would
+    /// open it), else once it has (`start_waiting_pictures`), its sound loaded meanwhile when
+    /// `load_sound` (a cue loaded beforehand loaded it with its picture).
+    fn start_or_wait(
+        &mut self,
+        cue: CueId,
+        run: RunId,
+        (at, offset): (SampleTime, SampleTime),
+        from: SampleTime,
+        load_sound: bool,
+        fx: &mut Effects,
+    ) {
+        let Some(id) = self.eng.pictures.find(self.doc.id, run) else {
+            return;
+        };
+        let since = self.now();
+        if let Some(l) = self.eng.pictures.live.get_mut(&id) {
+            l.wait = Some(Wait {
+                at,
+                offset,
+                from,
+                since,
+                paused: false,
+                devamp: None,
+            });
+        }
+        if !self.start_if_open(id, fx) && load_sound {
+            self.load_sound_for_wait(cue, run, from, fx);
+        }
+    }
+
+    /// Plays the run's picture and sound from `from` into its action on `at`, or now if that has
+    /// passed: the action was `offset` into its time on `at`, so what it has run past `from` by
+    /// then is late, counted into its length. A devamp asked while it waited follows.
+    fn play_from(
+        &mut self,
+        cue: CueId,
+        run: RunId,
+        (at, offset): (SampleTime, SampleTime),
+        from: SampleTime,
+        devamp: Option<bool>,
+        fx: &mut Effects,
+    ) {
+        let on = at.max(self.now());
+        let late = offset.saturating_add(on - at).saturating_sub(from);
+        self.play_picture(cue, run, on, from, late, true, fx);
+        if late > 0 {
+            fx.notices.push((
+                "cold_start",
+                "a cue started late: its video file had to be read first".to_owned(),
+                Some(cue),
+            ));
+        }
+        if let Some(stop) = devamp
+            && self.eng.pictures.find(self.doc.id, run).is_some()
+        {
+            let devamp = Action::DevampVoice {
+                cue,
+                run,
+                at: on,
+                stop,
+            };
+            self.picture_action(&devamp, fx);
+        }
+    }
+
+    /// Loads the sound of a start that waits for its picture's open, so its stream fills
+    /// meanwhile: on its primed stream for a start from the top, if it has one.
+    fn load_sound_for_wait(&mut self, cue: CueId, run: RunId, from: SampleTime, fx: &mut Effects) {
+        if from == 0 && self.load_primed_sound(cue, run, fx) {
+            return;
+        }
+        self.sound_action(
+            &Action::LoadVoice {
+                cue,
+                run,
+                offset: from,
+            },
+            fx,
+        );
+    }
+
+    fn picture_wait(&self, id: u64) -> Option<Wait> {
+        self.eng.pictures.live.get(&id).and_then(|l| l.wait)
+    }
+
+    /// A seek of a start still waiting for its picture's open: the picture is loaded again at
+    /// the point and the run waits for that open from there (or stays paused), its sound
+    /// loaded there; what it waited before is behind it.
+    #[allow(clippy::too_many_arguments)]
+    fn seek_waiting_picture(
+        &mut self,
+        id: u64,
+        cue: CueId,
+        (run, from): (RunId, RunId),
+        at: SampleTime,
+        position: SampleTime,
+        wait: Wait,
+        fx: &mut Effects,
+    ) {
+        let doc = self.doc.id;
+        self.eng.pictures.live.remove(&id);
+        self.eng.picture(ToStage::Unload { picture: id });
+        self.sound_action(&Action::UnloadVoice { cue, run: from }, fx);
+        match self.load_picture(cue, run, position) {
+            Ok(()) => {}
+            Err(Refused::Pending) => {
+                self.eng.pictures.held.push(Held {
+                    doc,
+                    cue,
+                    run,
+                    offset: position,
+                    start: (!wait.paused).then_some((at, position)),
+                    since: None,
+                    paused: wait.paused,
+                });
+                if !wait.paused {
+                    self.hold_start(cue, run, fx);
+                }
+                return;
+            }
+            Err(Refused::Failed(why)) => return self.picture_refused(cue, run, why, true, fx),
+        }
+        if wait.paused {
+            let since = self.now();
+            if let Some(l) = (self.eng.pictures.find(doc, run))
+                .and_then(|id| self.eng.pictures.live.get_mut(&id))
+            {
+                l.wait = Some(Wait {
+                    at,
+                    offset: position,
+                    from: position,
+                    since,
+                    ..wait
+                });
+            }
+            return;
+        }
+        self.start_or_wait(cue, run, (at, position), position, true, fx);
+        let Some(stop) = wait.devamp else { return };
+        let waiting = (self.eng.pictures.find(doc, run))
+            .and_then(|id| self.eng.pictures.live.get_mut(&id))
+            .and_then(|l| l.wait.as_mut());
+        match waiting {
+            Some(w) => w.devamp = Some(stop),
+            None => self.picture_action(&Action::DevampVoice { cue, run, at, stop }, fx),
+        }
+    }
+
+    /// Each tick: a start waiting for its picture's open plays once the stage host has the file
+    /// open, or at once when the stage host is down or the picture is held back after crashes
+    /// (it plays unseen, as those do); one still waiting `OPEN_WAIT_LIMIT_S` after it began
+    /// breaks its cue (the stage host never answered), as a start that failed: nothing was seen
+    /// or heard.
+    pub(super) fn start_waiting_pictures(&mut self, now: SampleTime, fx: &mut Effects) {
+        let doc = self.doc.id;
+        let limit = seconds_to_samples(OPEN_WAIT_LIMIT_S, self.eng.rate);
+        let waiting: Vec<(u64, SampleTime)> = (self.eng.pictures.live.iter())
+            .filter(|(_, l)| l.doc == doc)
+            .filter_map(|(id, l)| Some((*id, l.wait.filter(|w| !w.paused)?.since)))
+            .collect();
+        for (id, since) in waiting {
+            if self.start_if_open(id, fx) || now < since.saturating_add(limit) {
+                continue;
+            }
+            let Some(l) = self.eng.pictures.live.remove(&id) else {
+                continue;
+            };
+            let (cue, run) = (l.cue, l.run);
+            self.eng.picture(ToStage::Unload { picture: id });
+            let why = format!("its file took longer than {OPEN_WAIT_LIMIT_S} s to open");
+            self.log(
+                LogLevel::Warn,
+                format!("a Video cue's picture failed: {why}"),
+            );
+            fx.notices.push((
+                "video_decode_failed",
+                format!("the Video cue's picture failed: {why}"),
+                Some(cue),
+            ));
+            fx.feedback.push(Input::StartFailed {
+                cue,
+                run,
+                reason: BrokenReason::DecodeFailed,
+            });
+        }
+    }
+
+    /// Picture `id`'s start, if it waits (not paused) and its file is open, or nothing would
+    /// open it (the stage host down, the picture held back after crashes: it plays unseen, as
+    /// those do), plays now. `false` while it still waits.
+    fn start_if_open(&mut self, id: u64, fx: &mut Effects) -> bool {
+        let opens = self.eng.opens_pictures();
+        let Some(l) = self.eng.pictures.live.get_mut(&id) else {
+            return false;
+        };
+        let go = l.opened || l.held_back || !opens;
+        let Some(w) = l.wait.filter(|w| go && !w.paused) else {
+            return false;
+        };
+        l.wait = None;
+        let (cue, run) = (l.cue, l.run);
+        self.play_from(cue, run, (w.at, w.offset), w.from, w.devamp, fx);
+        true
+    }
+
     /// The probe of `key` answered: the runs of this doc that waited for it load, and start if
     /// they were started (late, from their head, as a held audio start does); a file that
     /// cannot play breaks them.
@@ -1076,14 +1385,23 @@ impl DocCx<'_> {
                 }
             }
             if let (Some((at, offset)), false) = (h.start, h.paused) {
-                let late = now.saturating_sub(at);
-                self.play_picture(h.cue, h.run, at.max(now), offset, late, true, &mut fx);
-                if h.since.is_some() {
-                    fx.notices.push((
-                        "cold_start",
-                        "a cue started late: its video file had to be read first".to_owned(),
-                        Some(h.cue),
-                    ));
+                // From its head, as a held audio start: what it waited is late.
+                let from = offset;
+                self.start_or_wait(h.cue, h.run, (at, offset), from, true, &mut fx);
+            } else if h.paused && h.since.is_some() {
+                // A start paused before its file was known waits, paused, for its open: the
+                // resume plays it from where its action stood once the file is open.
+                let live = (self.eng.pictures.find(doc, h.run))
+                    .and_then(|id| self.eng.pictures.live.get_mut(&id));
+                if let Some(l) = live {
+                    l.wait = Some(Wait {
+                        at: now,
+                        offset: h.offset,
+                        from: h.offset,
+                        since: now,
+                        paused: true,
+                        devamp: None,
+                    });
                 }
             }
         }
@@ -1125,7 +1443,13 @@ impl DocCx<'_> {
         }
     }
 
-    fn load_picture(&mut self, cue: CueId, run: RunId, offset: SampleTime) -> Result<(), Refused> {
+    /// What `cue`'s picture loads `offset` into its action (picture id 0), its action's length
+    /// (a still's duration) and whether it is a still.
+    fn picture_load(
+        &self,
+        cue: CueId,
+        offset: SampleTime,
+    ) -> Result<(ToStage, Option<f64>, bool), Refused> {
         let plays = self.plays(cue)?;
         let rate = self.eng.rate.get();
         // A movie opens on the frame its plan is at there (inside its trims and loops).
@@ -1136,17 +1460,32 @@ impl DocCx<'_> {
             }
             None => seconds(offset, rate),
         };
-        self.eng.pictures.next += 1;
-        let id = self.eng.pictures.next;
         let load = ToStage::Load {
-            picture: id,
+            picture: 0,
             stage: plays.stage,
             file: plays.path,
             still: plays.still,
             offset: at_file.min(openlab_core::MAX_TIME),
             geometry: plays.geometry,
         };
-        let (length, still) = (plays.length, plays.still);
+        Ok((load, plays.length, plays.still))
+    }
+
+    /// Loads the run's picture `offset` into its action: the cue's picture opened ahead if it
+    /// opens the same point, else a new one.
+    fn load_picture(&mut self, cue: CueId, run: RunId, offset: SampleTime) -> Result<(), Refused> {
+        let (mut load, length, still) = self.picture_load(cue, offset)?;
+        let primed = self.take_picture_prime(cue, &load);
+        let (id, opened) = match &primed {
+            Some((id, opened, _)) => (*id, *opened),
+            None => {
+                self.eng.pictures.next += 1;
+                (self.eng.pictures.next, false)
+            }
+        };
+        if let ToStage::Load { picture, .. } = &mut load {
+            *picture = id;
+        }
         self.eng.pictures.live.insert(
             id,
             Live {
@@ -1159,18 +1498,32 @@ impl DocCx<'_> {
                 stop: None,
                 ramps: BTreeMap::new(),
                 ends: None,
-                opened: false,
+                opened,
                 suspected: 0,
                 suspected_at: None,
                 held_back: false,
                 trial: None,
+                wait: None,
                 motion: None,
                 length,
                 still,
                 plan: None,
             },
         );
-        self.eng.picture(load);
+        match primed {
+            // Already on the stage host: only a geometry edited since it was opened goes.
+            Some((_, _, ToStage::Load { geometry: was, .. })) => {
+                if let ToStage::Load { geometry, .. } = load
+                    && geometry != was
+                {
+                    self.eng.picture(ToStage::Geometry {
+                        picture: id,
+                        geometry,
+                    });
+                }
+            }
+            _ => self.eng.picture(load),
+        }
         self.seed_picture_ramps(id, cue);
         Ok(())
     }
@@ -1656,6 +2009,7 @@ impl DocCx<'_> {
             {
                 (end, cut) = (plan_end, Some(plan_end));
             }
+            l.wait = None;
             if l.ends.is_some_and(|e| e <= end) {
                 return end;
             }
@@ -1753,7 +2107,7 @@ impl DocCx<'_> {
             .into_iter()
             .partition(|(d, ..)| *d == doc);
         self.eng.pictures.failed = others;
-        for (_, cue, run, reason) in mine {
+        for (_, cue, run, reason, waited) in mine {
             self.log(
                 LogLevel::Warn,
                 format!("a Video cue's picture failed: {reason}"),
@@ -1764,10 +2118,12 @@ impl DocCx<'_> {
                 format!("the Video cue's picture failed: {reason}"),
                 Some(cue),
             ));
-            fx.feedback.push(Input::ActionFailed {
-                cue,
-                run,
-                reason: BrokenReason::DecodeFailed,
+            // A start that waited for its open showed and sounded nothing: only skipped.
+            let reason = BrokenReason::DecodeFailed;
+            fx.feedback.push(if waited {
+                Input::StartFailed { cue, run, reason }
+            } else {
+                Input::ActionFailed { cue, run, reason }
             });
             self.follow(fx, now);
         }

@@ -109,6 +109,19 @@ impl DocCx<'_> {
         self.on_sound(fx, |voices, env, own| voices.apply(action, env, own));
     }
 
+    /// Loads the sound of run `run` of Video cue `cue` from its top on its primed stream, if it
+    /// has sound and a prime that still matches; `false` otherwise (nothing loaded).
+    pub(super) fn load_primed_sound(&mut self, cue: CueId, run: RunId, fx: &mut Effects) -> bool {
+        if self.sound_info(cue).is_none() {
+            return false;
+        }
+        let mut took = false;
+        self.on_sound(fx, |voices, env, _| {
+            took = voices.load_primed(cue, run, env)
+        });
+        took
+    }
+
     /// Moves the sound of a Video cue's run `from` to `to` as run `run` from sample `at` (a
     /// seek), if its movie has sound: a run whose sound has ended gets a voice again.
     pub(super) fn sound_seek(

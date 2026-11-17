@@ -1081,7 +1081,7 @@ impl Voices {
     }
 
     /// Lets go of a run's voice that is not playing (or forgets one that is).
-    fn release(&mut self, run: RunId) {
+    pub(super) fn release(&mut self, run: RunId) {
         if let Some(&id) = self.by_run.get(&run) {
             self.remove(id);
         }

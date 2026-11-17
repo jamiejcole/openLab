@@ -124,6 +124,7 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 ## Priming and preload
 - After every playhead change, model change, probe answer, landed preload and freed show voice, the loop keeps primed (stream prepared and filling): the next `PRIME_CUES` from each playhead, their targets (a group primes its audio cues), and every cue whose hotkey trigger is on (`Triggers::active_hotkey`); only armed Audio cues with media and no run, at most `MAX_PRIMES`.
   - Video cues with a file and a patch for their sound are primed too (the stream of the audio track they play); one whose file is known to have no sound is left out of the set.
+  - The same pass opens the pictures of the first Video cues near the playheads on the stage host (`prime_pictures`, a set of its own: any Video cue with a file and a stage; skill `video`).
 - A prime is used by a start from the top only if file, probe, trims/slices and source (file or preloaded samples) still match; otherwise it is released. A start without a prime is cold: audible once its ring fills, `cold_start` notice, **never a failure**.
 - Primes are one pool across docs, at most half the streamer's `max_streams` (primes must never take a permit a start needs; a start finding none fails `stream_failed`). Each doc keeps what it wants while all wants fit; otherwise max-min fair shares: a doc over its share lets go of its least urgent primes next pass, a doc under it fills at most 4 rings per pass (no disk burst).
 - **Preload** (a cue asks, or the probe advises `preload_advised`): decoded on a probe worker within `preload_budget`, one budget for all docs, given back when no cue uses the file or a doc closes. Over budget or failed: it streams, listed `preload_over_budget` / `preload_failed`.
@@ -148,6 +149,7 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 ## Offline driver
 `OfflineShow::step()` hands the inbox to control, **settles** the streams, renders one block, then ticks.
   Settling waits (blocking, outside `tick`, with a 30 s timeout counted in `stalls()`) until every playing stream has written what the block will read and every prepared stream is primed; that makes renders exact and repeatable (a device never lets disk workers fall far behind; a faster-than-real-time render would).
+  It also waits until no Video cue's start waits for its picture's open (`wait_for_pictures(false)` turns that off for a test of a slow or hung open).
   What a voice will read is counted in voice frames (`StreamHandle::wait_fed`), not frames written: after a devamp cut the ring also holds the stale loop frames the voice skips, so the written count runs ahead of the voice and waiting on it lets the voice run dry. `settle_media()` waits for probes and started preloads; `render_only(frames)` renders with no tick (a late control thread).
   Every wait for another thread (`settle_*`, `wait_for`, `send_until`) gives up after `SETTLE_TIMEOUT` (30 s), counted in `stalls()`; test support `set_settle_timeout` changes it for tests whose workers lean on a slow platform framework (the video tests).
 

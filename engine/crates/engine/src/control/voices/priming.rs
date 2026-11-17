@@ -177,6 +177,34 @@ impl Voices {
         usable.then_some(prime.ready)
     }
 
+    /// Loads run `run` of `cue` from the top on its primed stream, if one is ready and still
+    /// matches (as a start would take it): a Video cue's sound, loaded while its picture opens,
+    /// keeps the prime a priming pass would otherwise let go once the cue runs. `false` (and
+    /// nothing loaded) when there is none.
+    pub fn load_primed(&mut self, cue: CueId, run: RunId, env: &mut Env<'_>) -> bool {
+        let Some(ready) = self.take_prime(cue, 0, env) else {
+            return false;
+        };
+        self.release(run);
+        let id = env.ids.next(env.doc);
+        self.insert(
+            id,
+            VoiceRec {
+                phase: Phase::Waiting {
+                    prepared: Some(ready),
+                    start: None,
+                    paused: false,
+                    queue: Vec::new(),
+                },
+                offset: 0,
+                shown: 0,
+                media: cue_media(env.ws, cue),
+                ..rec(cue, run, false)
+            },
+        );
+        true
+    }
+
     /// Keeps exactly `wanted` primed (in order, most urgent first, at most `max`): new ones are
     /// prepared, at most `burst` of them; ones no longer wanted or out of date are released.
     /// Returns whether the burst limit left some unmade.

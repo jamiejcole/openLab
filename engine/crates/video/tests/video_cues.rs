@@ -1484,6 +1484,8 @@ fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
     let mut s = video_show_args(ws, &HAND_LIMITS);
     let pid = s.control().stage_host_pid().unwrap();
+    // The hung open's start never stops waiting: the clock moves on meanwhile, as live.
+    s.wait_for_pictures(false);
     s.take_outbound();
     start(&mut s, 2);
     s.run(BLOCK);
@@ -1495,6 +1497,8 @@ fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
         "the keep-black stage is black"
     );
     let at = start(&mut s, 1);
+    // The other picture opens before the clock moves on: it starts on its sample.
+    assert!(s.wait_for(|c| c.pictures_waiting() == 1));
     run_to(&mut s, at + samples(0.5));
     let now = on_stage(&mut s, "the other picture plays");
     assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
@@ -1534,6 +1538,12 @@ fn a_picture_whose_decode_hangs_fails_alone() {
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
     let mut s = video_show_args(ws, &HAND_LIMITS);
     let pid = s.control().stage_host_pid().unwrap();
+    // Both opened ahead (standing by), so both start on their GO's sample in that order.
+    assert!(
+        s.wait_for(|c| c.pictures_primed() == (2, 2)),
+        "{}",
+        seen(&s)
+    );
     // The hung one first, so the good one is drawn over it.
     start(&mut s, 2);
     let at = start(&mut s, 1);
@@ -1624,7 +1634,9 @@ fn a_picture_that_crashes_the_stage_host_as_it_opens_breaks_only_its_cue() {
     let good = movie!(dir.path(), "good.mov", (500, 25));
     let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
-    let mut s = video_show_of(ws);
+    // Opened at its start, not ahead while standing by (that crash is
+    // `a_file_that_crashes_the_stage_host_opened_ahead_is_not_opened_ahead_again`).
+    let mut s = video_show_config(ws, &[], |_| {}, |c| c.prime_cues = 0);
     let mut pids = vec![s.control().stage_host_pid().unwrap()];
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(0.2));
@@ -1861,7 +1873,10 @@ fn clients_are_told_a_video_cues_progress_playing_paused_resumed_and_loaded_to_t
     assert!(near(position.unwrap(), elapsed));
     s.transport(TransportAction::Pause { cue: id(1) });
     let now = s.now();
-    let paused = progress_at(&mut s, 1, now + BLOCK).expect("paused").0;
+    // A tenth of a second: at least one report period, wherever its phase.
+    let paused = progress_at(&mut s, 1, now + samples(0.1))
+        .expect("paused")
+        .0;
     let (still_paused, _, _) =
         progress_at(&mut s, 1, now + samples(1.0)).expect("still told while paused");
     assert!(
@@ -3462,6 +3477,300 @@ fn heard_throughout(s: &OfflineShow, at: u64, from: u64, to: u64) {
             sound_is(s, k, want, "heard throughout");
         }
     }
+}
+
+// Starts that wait for the picture's file to open: a cue starts once it is ready (QLab 5
+// manual p. 680), so its opening frames are shown and its sound starts with them.
+
+/// A copy of `good` whose open takes `SLOW_OPEN` (300 ms) of the hand-moved media clock: a
+/// file on a slow disk, however fast the machine.
+fn slow_to_open(dir: &Path, good: &Path) -> PathBuf {
+    faulty(dir, good, "openlab-test-slow-open")
+}
+
+/// The slow open's time on the hand-moved media clock (`SLOW_OPEN` in the stage host).
+const SLOW_OPEN_MS: u64 = 300;
+
+/// Flow: a Video cue that was never loaded, its file on a slow disk → GO → the first picture on
+/// stage is its first frame, no opening frames skipped, and its sound starts with that frame.
+#[test]
+fn a_video_cue_never_loaded_its_file_on_a_slow_disk_go_shows_its_first_frame_with_its_sound() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = sound_movie!(dir.path(), "good.mov", (75, 25), "pcm:2:48000");
+    let slow = slow_to_open(dir.path(), &good);
+    // Nothing is kept ready ahead: the cue is opened only at its GO.
+    let ws = workspace(vec![sounding_cue(1, &slow)]);
+    let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 0);
+    // The clock moves on while the file opens, as it does live.
+    s.wait_for_pictures(false);
+    s.take_outbound();
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.4));
+    expect_state(&s, 1, CueState::Running, "its action has begun");
+    assert_eq!(shown(&mut s), None, "nothing on stage while the file opens");
+    assert!(silent(&s, at, s.rendered()), "nothing heard while it opens");
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    assert!(
+        s.wait_for(|c| c.pictures_waiting() == 0),
+        "the open is answered\n{}",
+        seen(&s)
+    );
+    let started = s.now();
+    s.wait_for_pictures(true);
+    assert_eq!(on_stage(&mut s, "once open"), 0, "its first frame first");
+    run_to(&mut s, started + samples(0.1));
+    let sound = in_step(&mut s, RATE, 25.0, "0.1 s after it opened");
+    assert!(
+        (sound - 0.1).abs() < 0.02,
+        "the sound began with the first frame: at {sound} s"
+    );
+    assert!(silent(&s, at, started), "no sound before the first frame");
+    sound_is(&s, started + samples(0.05), 0.05, "the sound's start");
+    assert!(notices(&mut s).iter().any(|c| c == "cold_start"));
+    // Its whole three seconds from its first frame: the wait moved its end.
+    run_to(&mut s, started + samples(2.9));
+    expect_state(&s, 1, CueState::Running, "plays its last frames");
+    run_to(&mut s, started + samples(3.0) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ends after its last frame");
+    assert_eq!(s.stalls(), 0);
+}
+
+/// Flow: the same cue loaded first (standing by, or by a Load) → GO → its first frame is on
+/// stage at once, within a refresh of the GO, with its sound: nothing waits for the slow disk.
+#[test]
+fn the_same_cue_loaded_first_go_shows_its_first_frame_at_once_with_its_sound() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = sound_movie!(dir.path(), "good.mov", (75, 25), "pcm:2:48000");
+    let slow = slow_to_open(dir.path(), &good);
+    let ws = workspace(vec![sounding_cue(1, &slow), sounding_cue(2, &slow)]);
+    // Only the cue standing by is kept ready.
+    let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 1);
+    s.wait_for_pictures(false);
+    // Standing by: its picture is opened ahead.
+    assert!(s.wait_for(|c| c.pictures_primed().0 == 1), "{}", seen(&s));
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    assert!(
+        s.wait_for(|c| c.pictures_primed() == (1, 1)),
+        "the cue standing by is opened ahead\n{}",
+        seen(&s)
+    );
+    let at = go(&mut s);
+    assert_eq!(s.control().pictures_waiting(), 0, "GO waits for nothing");
+    assert_eq!(on_stage(&mut s, "at its GO"), 0, "its first frame at once");
+    run_to(&mut s, at + samples(0.1));
+    let sound = in_step(&mut s, RATE, 25.0, "0.1 s after GO");
+    assert!((sound - 0.1).abs() < 0.02, "the sound is at {sound} s");
+    sound_is(&s, at + samples(0.05), 0.05, "its sound from the GO");
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    // Loaded by a Load (it is not standing by now): opened then, played at once.
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 0.0,
+    });
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    assert!(
+        s.wait_for(|c| c.pictures_opened() == 1),
+        "the loaded cue's file opens\n{}",
+        seen(&s)
+    );
+    let at = start(&mut s, 1);
+    assert_eq!(
+        s.control().pictures_waiting(),
+        0,
+        "the start waits for nothing"
+    );
+    assert_eq!(
+        on_stage(&mut s, "at its start"),
+        0,
+        "its first frame at once"
+    );
+    run_to(&mut s, at + samples(0.1));
+    let sound = in_step(&mut s, RATE, 25.0, "0.1 s after the start");
+    assert!((sound - 0.1).abs() < 0.02, "the sound is at {sound} s");
+    sound_is(&s, at + samples(0.05), 0.05, "its sound from the start");
+    assert_eq!(s.stalls(), 0);
+}
+
+/// Flow: an unloaded cue whose file cannot be opened in time → GO → the cue breaks with its
+/// notice, as a start that failed (nothing was seen or heard); the other cue plays on.
+#[test]
+fn an_unloaded_cue_whose_file_cannot_be_opened_in_time_go_breaks_it_and_other_cues_play_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = sound_movie!(dir.path(), "good.mov", (250, 25), "pcm:2:48000");
+    let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
+    let ws = workspace(vec![sounding_cue(1, &hung), sounding_cue(2, &good)]);
+    let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 0);
+    let other = start(&mut s, 2);
+    s.run(BLOCK);
+    // The hung open never answers: the clock moves on while it waits, as live.
+    s.wait_for_pictures(false);
+    s.take_outbound();
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    expect_state(
+        &s,
+        1,
+        CueState::Running,
+        "not failed before the open's limit",
+    );
+    in_step(&mut s, RATE, 25.0, "the other cue while it waits");
+    // Past the open's limit.
+    s.control().advance_stage_media_clock(500);
+    assert!(wait_broken(&mut s, 1), "the cue breaks\n{}", seen(&s));
+    assert_eq!(
+        s.control().engine().broken_reason(id(1)),
+        Some(openlab_core::BrokenReason::DecodeFailed)
+    );
+    let texts = notice_texts(&mut s);
+    assert!(
+        texts
+            .iter()
+            .any(|(c, t)| c == "video_decode_failed" && t.contains("to open")),
+        "{texts:?}"
+    );
+    assert_eq!(s.control().pictures_live(), 1, "its picture is gone");
+    let later = s.now() + samples(0.5);
+    run_to(&mut s, later);
+    expect_state(&s, 2, CueState::Running, "the other cue plays on");
+    in_step(&mut s, RATE, 25.0, "the other cue after the break");
+    heard_throughout(&s, other, other + samples(0.1), s.rendered());
+}
+
+/// A start waiting for its slow open can be paused (nothing shown or heard, even once the file
+/// is open), moved by a seek while paused (it opens again there), and resumed: picture and
+/// sound then start together from the point it was moved to.
+#[test]
+fn a_start_waiting_for_its_open_can_be_paused_moved_and_resumed() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = sound_movie!(dir.path(), "good.mov", (75, 25), "pcm:2:48000");
+    let slow = slow_to_open(dir.path(), &good);
+    let ws = workspace(vec![sounding_cue(1, &slow)]);
+    let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 0);
+    s.wait_for_pictures(false);
+    let at = go(&mut s);
+    s.run(BLOCK);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    run_to(&mut s, at + samples(0.3));
+    expect_state(&s, 1, CueState::Paused, "paused while it opens");
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    assert!(s.wait_for(|c| c.pictures_opened() == 1), "{}", seen(&s));
+    s.run(samples(0.2));
+    assert_eq!(shown(&mut s), None, "paused before it ever played");
+    // Moved to 1 s into its file while paused: opened again there, still paused.
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 1.0,
+    });
+    s.run(BLOCK);
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    assert!(s.wait_for(|c| c.pictures_opened() == 1), "{}", seen(&s));
+    s.run(samples(0.2));
+    expect_state(&s, 1, CueState::Paused, "still paused");
+    assert_eq!(shown(&mut s), None, "still nothing shown");
+    assert!(
+        silent(&s, at, s.rendered()),
+        "nothing heard before the resume"
+    );
+    s.wait_for_pictures(true);
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    assert_eq!(on_stage(&mut s, "resumed"), 25, "the frame it was moved to");
+    run_to(&mut s, resumed + samples(0.1));
+    let sound = in_step(&mut s, RATE, 25.0, "0.1 s after the resume");
+    assert!((sound - 1.1).abs() < 0.02, "the sound is at {sound} s");
+}
+
+/// A start waiting for its open, then a panic: nothing is ever shown or heard of it, and the
+/// open answering later puts nothing up.
+#[test]
+fn a_panic_while_a_start_waits_for_its_open_shows_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = sound_movie!(dir.path(), "good.mov", (75, 25), "pcm:2:48000");
+    let slow = slow_to_open(dir.path(), &good);
+    let ws = workspace(vec![sounding_cue(1, &slow)]);
+    let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 0);
+    s.wait_for_pictures(false);
+    let at = go(&mut s);
+    s.run(samples(0.1));
+    s.transport(TransportAction::Panic);
+    s.run(samples(3.0));
+    expect_state(&s, 1, CueState::Idle, "the panic ended it");
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    s.run(samples(0.5));
+    assert_eq!(shown(&mut s), None, "nothing put up when the open answers");
+    assert!(silent(&s, at, s.rendered()), "never heard");
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
+/// A start whose open the stage host never answers (a hung volume, the stage host's own open
+/// limit not reached) breaks its cue after the engine's wait limit, with a notice, as a start
+/// that failed: it never runs on unseen and unheard for ever.
+#[test]
+fn a_start_whose_open_is_never_answered_breaks_after_the_wait_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = movie!(dir.path(), "good.mov", (50, 25));
+    let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
+    let ws = workspace(vec![video_cue(1, Some(&hung))]);
+    // The stage host's own open limit runs on a media clock nothing moves: it never fires.
+    let mut s = video_show_config(ws, &["--media-clock-by-hand"], |_| {}, |c| c.prime_cues = 0);
+    s.wait_for_pictures(false);
+    s.take_outbound();
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(14.9));
+    expect_state(&s, 1, CueState::Running, "waits up to the limit");
+    run_to(&mut s, at + samples(15.1));
+    expect_state(&s, 1, CueState::Broken, "broken at the limit");
+    assert_eq!(
+        s.control().engine().broken_reason(id(1)),
+        Some(openlab_core::BrokenReason::DecodeFailed)
+    );
+    let texts = notice_texts(&mut s);
+    assert!(
+        texts
+            .iter()
+            .any(|(c, t)| c == "video_decode_failed" && t.contains("longer than 15 s to open")),
+        "{texts:?}"
+    );
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
+/// Times the stage host stopped, from the show log.
+fn stage_host_stops(c: &openlab_engine::control::Control) -> usize {
+    (c.show_log().tail(200).iter())
+        .filter(|e| e.message.starts_with("video output stopped"))
+        .count()
+}
+
+/// A file that crashes the stage host as it is opened ahead for the cue standing by is not
+/// opened ahead again: one crash, not one at every playhead move; the other cue standing by is
+/// still opened ahead.
+#[test]
+fn a_file_that_crashes_the_stage_host_opened_ahead_is_not_opened_ahead_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = movie!(dir.path(), "good.mov", (50, 25));
+    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+    let ws = workspace(vec![video_cue(1, Some(&bomb)), video_cue(2, Some(&good))]);
+    let mut s = video_show_of(ws);
+    assert!(s.wait_for(|c| stage_host_stops(c) == 1), "{}", seen(&s));
+    assert!(
+        s.wait_for(|c| c.stage_host_pid().is_some() && c.pictures_primed() == (1, 1)),
+        "the other cue is opened ahead again\n{}",
+        seen(&s)
+    );
+    for cue in [Some(id(2)), Some(id(1))] {
+        s.transport(TransportAction::SetPlayhead {
+            list: list_id(),
+            cue,
+        });
+        s.run(samples(0.5));
+    }
+    s.settle_stages();
+    assert_eq!(stage_host_stops(s.control()), 1, "{}", seen(&s));
+    assert_eq!(s.control().pictures_primed(), (1, 1));
 }
 
 /// Flow: a Video cue with sound → its decoder fails once mid-stream; the sound is not
