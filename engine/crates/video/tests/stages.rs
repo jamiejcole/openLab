@@ -1272,3 +1272,218 @@ fn routine_clocks_never_get_a_busy_stage_host_stopped() {
     let reason = stopped(&rx, Duration::from_secs(10)).expect("stopped as not reading");
     assert!(reason.contains("stopped reading"), "{reason}");
 }
+
+/// A blocking WebSocket connection to a real engine process.
+type Socket = tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>;
+
+/// A connection to the engine on `port` that has said hello (bound to `doc`, or the app
+/// connection) and been welcomed: the welcome's snapshot, if any.
+fn connect(
+    port: u16,
+    token: &str,
+    doc: Option<openlab_core::protocol::DocId>,
+) -> (Socket, Option<openlab_core::protocol::Snapshot>) {
+    use tokio_tungstenite::tungstenite::{Message, client};
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    // A hang guard on every read: the engine answers within milliseconds.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    let (mut ws, _) = client(format!("ws://127.0.0.1:{port}"), stream).unwrap();
+    let hello = ClientMessage::Hello {
+        protocol_version: openlab_core::protocol::PROTOCOL_VERSION,
+        token: token.into(),
+        client_name: "force-quit test".into(),
+        workspace: doc,
+        pid: None,
+    };
+    ws.send(Message::text(
+        openlab_core::protocol::encode_client(&hello).unwrap(),
+    ))
+    .unwrap();
+    loop {
+        if let ServerMessage::Welcome { snapshot, .. } = next_message(&mut ws) {
+            return (ws, snapshot.map(|s| *s));
+        }
+    }
+}
+
+fn next_message(ws: &mut Socket) -> ServerMessage {
+    loop {
+        match ws.read().unwrap() {
+            tokio_tungstenite::tungstenite::Message::Text(text) => {
+                return openlab_core::protocol::decode_server(&text).unwrap();
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Sends `message` (built with its id) and reads until its `result`.
+fn call(
+    ws: &mut Socket,
+    id: u64,
+    message: impl FnOnce(openlab_core::protocol::RequestId) -> ClientMessage,
+) -> Outcome {
+    let id = openlab_core::protocol::RequestId(id);
+    let text = openlab_core::protocol::encode_client(&message(id)).unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::text(text))
+        .unwrap();
+    loop {
+        if let ServerMessage::Result { id: got, outcome } = next_message(ws)
+            && got == id
+        {
+            return outcome;
+        }
+    }
+}
+
+/// #642 flow: the app is force-quit while a cue plays → the picture stays up and the engine
+/// keeps playing. A real (test-support) engine process on its stepped virtual device runs its
+/// stage host on a virtual display; the app's connections (its app connection and its
+/// workspace's) end without `goodbye`, as a force-quit's do. A connection made afterwards finds
+/// the cue still running and its picture on the stage, and the cue then ends on its time with
+/// the stage black.
+#[test]
+fn the_app_force_quit_while_a_cue_plays_leaves_the_picture_up_and_the_engine_playing() {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    let engine = test_engine();
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("card.png");
+    let made = show::spin::output_within(
+        Command::new(STAGE_HOST)
+            .arg("--make-test-media")
+            .arg("png")
+            .arg(&png),
+        SLOW_MACHINE,
+    );
+    assert!(made.status.success(), "{made:?}");
+    // A still of the test card for 2 s on stage 1, which keeps black and is shown on V1.
+    let still = openlab_core::Cue {
+        kind: openlab_core::CueKind::Video {
+            media: Some(openlab_core::MediaRef::new(png.to_str().unwrap())),
+            stage: Some(stage_id(1)),
+            duration: Some(2.0),
+            geometry: Default::default(),
+            timing: Default::default(),
+            sound: Default::default(),
+        },
+        ..show::cue(1, openlab_core::CueKind::Memo)
+    };
+    let ws = with_stages(vec![still], vec![stage(1)]);
+    let show_file = dir.path().join("show.openlab");
+    std::fs::write(&show_file, openlab_core::save_show(&ws).unwrap()).unwrap();
+    let mut machine = openlab_core::MachineSettings::default();
+    let mut display = mapping("V1");
+    (display.width, display.height) = (192, 108);
+    machine
+        .set_stage_mapping(ws.id, stage_id(1), Some(display))
+        .unwrap();
+    std::fs::create_dir_all(dir.path().join("openLab")).unwrap();
+    std::fs::write(
+        dir.path().join("openLab").join("settings.json"),
+        openlab_core::save_settings(&machine).unwrap(),
+    )
+    .unwrap();
+    let child = Command::new(&engine)
+        .args([
+            "--virtual-device",
+            "stepped",
+            "--virtual-displays",
+            "V1:192x108",
+        ])
+        .arg("--app-support")
+        .arg(dir.path())
+        .arg("--open")
+        .arg(&show_file)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = Reaped(child);
+    // Its errors read all along on a thread of their own, so a full pipe never blocks it.
+    let stderr = std::io::BufReader::new(child.0.stderr.take().unwrap());
+    let (lines_tx, lines) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in stderr.lines().map_while(Result::ok) {
+            let _ = lines_tx.send(line);
+        }
+    });
+    let (mut port, mut doc) = (None, None);
+    while port.is_none() || doc.is_none() {
+        let line = lines
+            .recv_timeout(SLOW_MACHINE)
+            .expect("the engine did not say it was listening with the show open");
+        if let Some(p) = line.split("listening on 127.0.0.1:").nth(1) {
+            port = p.trim().parse::<u16>().ok();
+        }
+        if let Some(n) = line.split("(doc ").nth(1) {
+            doc = n.trim_end_matches(')').parse::<u64>().ok();
+        }
+        assert!(!line.contains("could not open"), "{line}");
+    }
+    let (port, doc) = (
+        port.expect("listening"),
+        openlab_core::protocol::DocId(doc.expect("opened")),
+    );
+    let file: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("openLab").join("engine.json")).unwrap(),
+    )
+    .unwrap();
+    let token = file["token"].as_str().unwrap().to_owned();
+    let advance = |ws: &mut Socket, id: u64, seconds: f64| {
+        let frames = (seconds * 48_000.0) as u64;
+        let outcome = call(ws, id, |id| ClientMessage::Request {
+            id,
+            request: Request::Advance { frames },
+        });
+        assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    };
+    let shows = |ws: &mut Socket, id: u64| match call(ws, id, |id| ClientMessage::Request {
+        id,
+        request: Request::StageProbe {
+            stage: stage_id(1),
+            points: vec![[0.25, 0.3]],
+        },
+    }) {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::StageProbe { frame, colours }) => (frame, colours),
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("{e:?}"),
+    };
+    // The app: its app connection and the workspace's. GO, and the card is up.
+    let (mut app, _) = connect(port, &token, None);
+    let (mut window, _) = connect(port, &token, Some(doc));
+    advance(&mut app, 1, 0.0);
+    let go = call(&mut window, 2, |id| ClientMessage::Transport {
+        id,
+        action: TransportAction::Go { list: list_id() },
+    });
+    assert!(matches!(go, Outcome::Ok(_)), "{go:?}");
+    advance(&mut app, 3, 0.5);
+    assert_eq!(shows(&mut window, 4), (Some(0), vec![QUADRANTS[0]]));
+    // Force-quit: both connections just end.
+    drop(window);
+    drop(app);
+    // The engine plays on: still up after another half second, its cue running.
+    let (mut app, _) = connect(port, &token, None);
+    advance(&mut app, 5, 0.5);
+    let (mut window, snapshot) = connect(port, &token, Some(doc));
+    let running =
+        snapshot.expect("a snapshot").cue_states.iter().any(|e| {
+            e.cue == show::id(1) && e.state == openlab_core::protocol::WireCueState::Running
+        });
+    assert!(running, "the cue plays on");
+    assert_eq!(
+        shows(&mut window, 6),
+        (Some(0), vec![QUADRANTS[0]]),
+        "the picture stays up"
+    );
+    // And it ends on its time: black then, never a frozen frame.
+    advance(&mut app, 7, 1.1);
+    assert_eq!(shows(&mut window, 8), (None, vec![BLACK]));
+    assert!(child.0.try_wait().unwrap().is_none(), "the engine runs on");
+}
