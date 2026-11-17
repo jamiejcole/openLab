@@ -1,0 +1,18 @@
+{
+  "about": "The pointer rests on a toolbar segment and on cue list column headers: the shot shows the tooltip under it. A column with no tooltip stops the run, so only those with one are hovered.",
+  "show": "Demo",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"hover": "cue-list", "header": "Duration", "at": [0.5, 0.5]},
+    {"shot": "duration-header"},
+    {"hover": "cue-list", "header": "Pre-Wait", "at": [0.3, 0.5]},
+    {"shot": "pre-wait-header"},
+    {"hover": "cue-toolbar", "at": [0.06, 0.5]},
+    {"shot": "toolbar-first-segment"},
+    {"hover": "cue-toolbar", "at": [0.5, 0.5]},
+    {"shot": "toolbar-middle"},
+    {"click": "toggle-sidebar"},
+    {"shot": "tooltip-gone-after-a-click"}
+  ]
+}
