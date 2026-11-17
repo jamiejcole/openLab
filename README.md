@@ -30,7 +30,7 @@ Prerequisites (macOS 12 or later to run; building needs a Mac with Xcode):
 make lint        # SPDX headers, cargo fmt --check, clippy -D warnings, cargo deny, swift format lint
 make test        # all Rust tests + macOS unit tests and the UI smoke set
 make test-rust   # Rust tests only (also works on Windows with cargo)
-make test-mac    # generate the Xcode project and run macOS unit tests + the UI smoke set (scripts/ui-smoke.txt)
+make test-mac    # generate the Xcode project and run macOS unit tests + the UI smoke set (scripts/ui-smoke.txt); CI runs the same tests as three parallel shards (`make test-mac-shard SHARD=1`, 2, 3)
 make test-mac-ui-full  # the same with every UI test (run nightly in CI)
 make mac         # build the Release app with a universal engine: build/Build/Products/Release/openLab.app
 make verify-bundle  # check that app: universal, macOS 12.0 minimum on every slice, one version, icon, valid signature

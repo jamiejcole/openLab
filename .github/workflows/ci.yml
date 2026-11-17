@@ -30,6 +30,7 @@ jobs:
       app_engine: ${{ steps.diff.outputs.app_engine }}
       bundle: ${{ steps.diff.outputs.bundle }}
       intel: ${{ steps.diff.outputs.intel }}
+      mac_matrix: ${{ steps.matrix.outputs.mac_matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -65,6 +66,28 @@ jobs:
           if [ "$all" = true ] || match "$PATHS_APP_ENGINE_RE"; then echo "app_engine=true"; else echo "app_engine=false"; fi >> "$GITHUB_OUTPUT"
           if [ "$EVENT" != pull_request ] || [ "$all" = true ] || match "$PATHS_BUNDLE_RE"; then echo "bundle=true"; else echo "bundle=false"; fi >> "$GITHUB_OUTPUT"
           if [ "$all" = true ] || match "$PATHS_INTEL_RE"; then echo "intel=true"; else echo "intel=false"; fi >> "$GITHUB_OUTPUT"
+
+      # The macOS app job's matrix. A pull request or push that runs the real-engine app tests (app_engine)
+      # splits them into three shards (scripts/mac-test-shards.txt); one that does not runs the engine-free
+      # unit tests in one job (they take a fraction of the time, so a split would only add three setups);
+      # nightly and on demand run the core flows and the whole UI suite in one job. `once` marks the one
+      # entry that also runs the steps that need no repeating (format lint, the Release bundle).
+      - id: matrix
+        env:
+          EVENT: ${{ github.event_name }}
+          APP_ENGINE: ${{ steps.diff.outputs.app_engine }}
+        run: |
+          case "$EVENT" in
+            schedule|workflow_dispatch)
+              m='[{"name":"macOS app","shard":"full","target":"test-mac-ui-full","once":true}]' ;;
+            *)
+              if [ "$APP_ENGINE" = true ]; then
+                m='[{"name":"macOS app (1/3)","shard":"1","target":"test-mac-shard SHARD=1","once":true},{"name":"macOS app (2/3)","shard":"2","target":"test-mac-shard SHARD=2","once":false},{"name":"macOS app (3/3)","shard":"3","target":"test-mac-shard SHARD=3","once":false}]'
+              else
+                m='[{"name":"macOS app","shard":"unit","target":"test-mac-unit","once":true}]'
+              fi ;;
+          esac
+          echo "mac_matrix=$m" >> "$GITHUB_OUTPUT"
 
   # Repo hygiene that needs no toolchain (scripts/check-repo.sh): fast, runs on every PR and push.
   checks:
@@ -249,16 +272,24 @@ jobs:
           key: ${{ matrix.check }}
       - run: make ${{ matrix.check }} SAN_TOOLCHAIN="$SAN_TOOLCHAIN" SAN_TARGET="$SAN_TARGET"
 
+  # Pull request or push with the real-engine app tests: three shards in parallel, each building the app and
+  # running its share (`make test-mac-shard`, scripts/mac-test-shards.txt); shard 3 also runs the UI smoke
+  # set. Otherwise one job (see the `changes` job's matrix step).
   mac:
-    name: macOS app
+    name: ${{ matrix.name }}
     needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.mac_matrix) }}
     # The app bundles the engine, so an engine change rebuilds it too.
     if: needs.changes.outputs.mac == 'true'
     runs-on: xcode-27
-    # Backstop: a hung test fails the job (seen holding a runner past 75 min; `make test-mac` takes 35-40
-    # on a pull request). Above the core-flows (12) and test (55) step limits plus setup, so those steps
-    # are cancelled first.
-    timeout-minutes: 75
+    # Backstop: a hung test fails the job (seen holding a runner past 75 min). A shard or the engine-free
+    # run: about 5 min of setup, the test step's 25 and up to 10 for the Release bundle steps of shard 1 or
+    # the single job. Nightly and on demand: above the core-flows (12) and test (55) step limits plus setup.
+    # Either way the steps are cancelled first.
+    timeout-minutes: ${{ matrix.shard == 'full' && 75 || 40 }}
     steps:
       - uses: actions/checkout@v7
       - name: Select Xcode
@@ -291,10 +322,12 @@ jobs:
           # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: swift format lint --strict -r mac/
-      # The app tests that start the real engine are expensive: a PR or push runs them with the UI smoke
-      # set (`make test-mac`) only when the engine, the protocol, the app's engine client, its tests or project changed
-      # (`changes.app_engine`, scripts/paths.sh); otherwise the engine-free unit tests (`make
-      # test-mac-unit`, where the real-engine tests report a skip). The full UI suite is slow and flaky,
+        if: matrix.once
+      # The app tests that start the real engine are expensive: a PR or push runs them in three shards, the UI
+      # smoke set in shard 3 (`make test-mac-shard`, together the same tests as `make test-mac`), only when the
+      # engine, the protocol, the app's engine client, its tests or project changed (`changes.app_engine`,
+      # scripts/paths.sh); otherwise the engine-free unit tests (`make test-mac-unit`, where the real-engine
+      # tests report a skip). The full UI suite is slow and flaky,
       # so it runs on the nightly schedule (and on demand), where a failure turns the run red and the
       # `alert` job opens the ci-red issue, unless its spindump proves the runner's WindowServer wedged
       # and a retry passes (scripts/run-mac-tests.sh).
@@ -302,29 +335,31 @@ jobs:
       # below runs after them even when they fail (the run stays red), and runs them again.
       - run: make test-mac-core-flows
         timeout-minutes: 12
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      # 12 + 55 plus about 1.5 of setup fit the job's 75 minutes, so a hung run is cancelled here and the
-      # step below still uploads its results. A hung test does not get that far: the wrapper ends the run
-      # (exit 76) and `make test-mac` starts no second process (scripts/run-mac-tests.sh).
-      - timeout-minutes: 55
+        if: matrix.shard == 'full'
+      # Nightly: 12 + 55 plus about 1.5 of setup fit the job's 75 minutes. A shard's tests take about 12 minutes
+      # (25 is a stop for a run that stalls); the engine-free run is shorter. A hung run is cancelled here and
+      # the step below still uploads its results. A hung test does not get that far: the wrapper ends the run
+      # (exit 76) and no second process starts (scripts/run-mac-tests.sh).
+      - timeout-minutes: ${{ matrix.shard == 'full' && 55 || (matrix.shard == 'unit' && 30 || 25) }}
         if: ${{ !cancelled() }}
-        run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || (needs.changes.outputs.app_engine == 'true' && 'test-mac' || 'test-mac-unit') }}
+        run: make ${{ matrix.target }}
       # A hung or crashed test run leaves its result bundle (stacks, per-test logs) here; keep it a few days.
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: mac-xcresult
+          name: mac-xcresult-${{ matrix.shard }}
           path: build/Logs/Test/*.xcresult
           retention-days: 5
+      # The Release bundle is built once, by the entry that has `once` set.
       - run: make mac
-        if: needs.changes.outputs.bundle == 'true'
+        if: matrix.once && needs.changes.outputs.bundle == 'true'
       - run: make verify-bundle
-        if: needs.changes.outputs.bundle == 'true'
+        if: matrix.once && needs.changes.outputs.bundle == 'true'
       - run: make dmg
-        if: needs.changes.outputs.bundle == 'true'
+        if: matrix.once && needs.changes.outputs.bundle == 'true'
       # Rebuilds the universal engine twice, so nightly and on demand only (those events have bundle=true).
       - run: make test-bundle-rebuild
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: matrix.shard == 'full'
 
   # The one check branch protection requires: green when every job that ran passed.
   result:

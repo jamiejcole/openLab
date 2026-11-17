@@ -1,0 +1,18 @@
+# The app unit-test classes that shards 1 and 2 of the CI app job run (`make test-mac-shard SHARD=<n>`),
+# one `<shard> <class>` per line, the class from mac/openLabTests. Shard 3 runs the whole target minus
+# every class listed here, then the UI smoke set, so a class that is new or renamed (or missing from
+# this file) still runs, in shard 3: nothing can drop out. scripts/check-repo.sh fails for a class that
+# does not exist or that is listed twice.
+# Balanced from runner times (seconds, one hosted macOS run) so each shard's tests take about 10-12 minutes;
+# the smoke set adds 3-5 to shard 3. Re-balance when a class's time changes a lot: put the slowest classes
+# first, one or two per shard.
+# Shard 1 (about 610 s):
+1 AppControllerTests
+1 EngineCrashFlowTests
+1 CueListTests
+1 InspectorLevelsTests
+# Shard 2 (about 700 s):
+2 PlayheadFlowTests
+2 VideoCueTests
+2 TimeLoopsTests
+2 WorkspaceSettingsTests

@@ -8,6 +8,9 @@ MAC_TESTS_WITH_LIMIT := scripts/run-mac-tests.sh $(XCODEBUILD) -destination "pla
 UI_SMOKE := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-smoke.txt),-only-testing:$(t))
 # The unit test classes `make test-mac` runs in its second test process.
 LATE_TEST_CLASSES := $(shell grep -hoE 'class [M-Z][A-Za-z0-9_]*: XCTestCase' mac/openLabTests/*.swift | sed 's/class //; s/:.*//' | sort -u)
+# The unit test classes shards 1 and 2 of the CI app job run, and every class either lists (scripts/mac-test-shards.txt).
+SHARD_CLASSES := $(shell grep -E '^$(SHARD)[[:space:]]' scripts/mac-test-shards.txt | awk '{print $$2}')
+SHARDED_CLASSES := $(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/mac-test-shards.txt | awk '{print $$2}')
 # The everyday-flow tests (scripts/core-flows.txt), unit and UI, as -only-testing arguments.
 CORE_FLOWS := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/core-flows.txt),-only-testing:$(t))
 
@@ -17,7 +20,7 @@ FUZZ_TOOLCHAIN ?= nightly
 SAN_TOOLCHAIN ?= nightly-2026-10-15
 SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: ui-shots lint test test-rust test-mac test-mac-unit test-mac-core-flows test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
+.PHONY: ui-shots lint test test-rust test-mac test-mac-shard test-mac-unit test-mac-core-flows test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
 
 lint:
 	scripts/check-repo.sh
@@ -107,6 +110,26 @@ test-mac: project
 	if [ "$$rc" = 76 ]; then echo "test-mac: a test hung in the first test process; not starting the second, which would most likely hang to the step's limit. Read the hang report in the result bundle, then re-run the job."; exit $$rc; fi; \
 	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(LATE_TEST_CLASSES),-only-testing:openLabTests/$(c)) $(UI_SMOKE) || rc=$$?; \
 	exit $$rc
+
+# One third of `make test-mac`, as the CI app job runs them in parallel (SHARD=1, 2 or 3; the lists are
+# scripts/mac-test-shards.txt). Shards 1 and 2 run their listed classes. Shard 3 runs every other unit test
+# (the whole target minus both lists, so an unlisted class still runs), then the UI smoke set in a second
+# process; like `test-mac`, it starts none after a run cut short by a stall (75) or a hang (76).
+test-mac-shard: project
+	@case "$(SHARD)" in 1|2|3) ;; *) echo "usage: make test-mac-shard SHARD=1|2|3"; exit 2;; esac
+	@test -n "$(SHARDED_CLASSES)" || { echo "scripts/mac-test-shards.txt lists no classes"; exit 1; }
+ifeq ($(SHARD),3)
+	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
+	rc=0; \
+	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(foreach c,$(SHARDED_CLASSES),-skip-testing:openLabTests/$(c)) || rc=$$?; \
+	if [ "$$rc" = 75 ]; then echo "test-mac-shard: the unit tests were cut short by a WindowServer stall on the runner; not starting the smoke set. Re-run the job."; exit $$rc; fi; \
+	if [ "$$rc" = 76 ]; then echo "test-mac-shard: a test hung in the unit tests; not starting the smoke set, which would most likely hang too. Read the hang report in the result bundle, then re-run the job."; exit $$rc; fi; \
+	$(MAC_TESTS_WITH_LIMIT) -- $(UI_SMOKE) || rc=$$?; \
+	exit $$rc
+else
+	@test -n "$(SHARD_CLASSES)" || { echo "scripts/mac-test-shards.txt lists no classes for shard $(SHARD)"; exit 1; }
+	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(SHARD_CLASSES),-only-testing:openLabTests/$(c))
+endif
 
 # The everyday QLab-user flows on the real engine (scripts/core-flows.txt): nightly before the full suite,
 # and on demand after a big feature change.

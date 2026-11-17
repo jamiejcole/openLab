@@ -685,6 +685,36 @@ test_mac_split() {
   printf '%s\n' "$plan" | grep -qx -- '-only-testing:openLabTests' || fail test-mac-split "make test-mac's first process must select the whole unit target"
 }
 
+# The CI app job's three shards (scripts/mac-test-shards.txt): the listed classes exist and are listed once,
+# shards 1 and 2 run exactly their lists, and shard 3 skips exactly both lists, so every class runs somewhere.
+test_mac_shards() {
+  local list=scripts/mac-test-shards.txt n=0 shard cls extra s plan only skipped
+  while read -r shard cls extra; do
+    case "$shard" in ''|'#'*) continue ;; esac
+    n=$((n + 1))
+    case "$shard$extra" in 1|2) ;; *) fail mac-shards "'$shard $cls $extra' is not '1 <class>' or '2 <class>' (shard 3 runs the rest)"; continue ;; esac
+    grep -qE "^(@[A-Za-z0-9_]+[[:space:]]+)*((public|internal|open)[[:space:]]+)?(final[[:space:]]+)?class[[:space:]]+$cls[[:space:]]*:[[:space:]]*XCTestCase" mac/openLabTests/*.swift \
+      || fail mac-shards "$cls is no XCTestCase class in mac/openLabTests"
+  done <"$list"
+  [ "$n" -gt 0 ] || fail mac-shards "$list lists no classes"
+  for cls in $(grep -Ev '^[[:space:]]*(#|$)' "$list" | awk '{print $2}' | sort | uniq -d); do
+    fail mac-shards "$cls is listed more than once"
+  done
+  for s in 1 2; do
+    plan=$(make -n test-mac-shard SHARD=$s | tr ' ' '\n')
+    only=$(printf '%s\n' "$plan" | sed -n 's/^-only-testing:openLabTests\/\([^/]*\)$/\1/p' | sort | tr '\n' ' ')
+    [ -n "$only" ] && [ "$only" = "$(grep -E "^$s[[:space:]]" "$list" | awk '{print $2}' | sort | tr '\n' ' ')" ] \
+      || fail mac-shards "make test-mac-shard SHARD=$s must run exactly its listed classes (and shard $s needs one), got: $only"
+    printf '%s\n' "$plan" | grep -q -- '-only-testing:openLabUITests/' && fail mac-shards "only shard 3 runs the UI smoke set"
+  done
+  plan=$(make -n test-mac-shard SHARD=3 | tr ' ' '\n')
+  skipped=$(printf '%s\n' "$plan" | sed -n 's/^-skip-testing:openLabTests\/\(.*\)$/\1/p' | sort -u | tr '\n' ' ')
+  [ "$skipped" = "$(grep -Ev '^[[:space:]]*(#|$)' "$list" | awk '{print $2}' | sort | tr '\n' ' ')" ] \
+    || fail mac-shards "make test-mac-shard SHARD=3 must skip exactly the classes of shards 1 and 2, got: $skipped"
+  printf '%s\n' "$plan" | grep -qx -- '-only-testing:openLabTests' || fail mac-shards "shard 3 must select the whole unit target"
+  printf '%s\n' "$plan" | grep -q -- '-only-testing:openLabUITests/' || fail mac-shards "shard 3 must run the UI smoke set"
+}
+
 # 13. Milestone and task IDs (M5.4, M4.12c; as identifiers m5_6b) stay out of code, comments and test names
 # (CLAUDE.md, "Work and git"); requirement IDs (AUD-07) are fine. They go stale, and the issue or PR holds
 # the history. The scan covers Rust and Swift sources and the skills except orchestrate (which
@@ -814,6 +844,7 @@ wedged_run
 test_list_cases
 ui_smoke
 test_mac_split
+test_mac_shards
 task_ids
 skill_shape_cases
 skills
