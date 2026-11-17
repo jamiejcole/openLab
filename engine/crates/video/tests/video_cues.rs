@@ -1458,7 +1458,7 @@ fn a_stage_host_relaunched_while_a_movie_holds_its_last_frame_shows_that_frame()
 /// The stage host's media limits measured on a clock the test moves (`advance_stage_media_clock`,
 /// and each slow-decode frame), never on real time: a picture fails only when the test moves
 /// that clock past a limit, however slow the machine. The limits given apply to the files a
-/// fault switch names; a good file keeps the shipped ones.
+/// fault switch names; every other file gets `GOOD_MEDIA_LIMITS`.
 const HAND_LIMITS: [&str; 3] = ["--media-limits", "400,400", "--media-clock-by-hand"];
 
 /// A copy of a good movie under a name that makes the test-support decoder hang or crash.
