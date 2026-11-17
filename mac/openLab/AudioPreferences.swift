@@ -12,7 +12,8 @@ final class AudioPreferencesModel {
     static let bufferSizes: [Int] = [16, 32, 64, 128, 256, 512, 1024]
 
     private let client: EngineClient
-    private(set) var devices: [DeviceEntry] = []
+    /// Set by `refresh`; a test sets it to draw a device the engine's host does not have.
+    var devices: [DeviceEntry] = []
     /// The device kept for the next engine start (nil: the system default).
     private(set) var chosenDevice: String?
     /// The device list was read: anything here can be changed.

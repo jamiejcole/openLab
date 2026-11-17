@@ -1,0 +1,26 @@
+{
+  "about": "A short window: the inspector hidden and shown again (footer button), then Show Mode entered and left. All of Basics stays inside the inspector's box and the selected row stays visible.",
+  "show": "Demo",
+  "window": {"width": 900, "height": 560},
+  "steps": [
+    {"select": "2.2"},
+    {"click": "toggle-inspector"},
+    {"shot": "hidden"},
+    {"click": "toggle-inspector"},
+    {"advance": 1},
+    {"inside": "inspector-number", "of": "inspector-tabs"},
+    {"inside": "inspector-pre-wait", "of": "inspector-tabs"},
+    {"inside": "inspector-continue", "of": "inspector-tabs"},
+    {"shot": "shown-again"},
+    {"click": "mode-switch", "at": [0.75, 0.5]},
+    {"click": "mode-switch", "at": [0.25, 0.5]},
+    {"advance": 1},
+    {"inside": "inspector-number", "of": "inspector-tabs"},
+    {"inside": "inspector-pre-wait", "of": "inspector-tabs"},
+    {"shot": "after-show-mode"},
+    {"resize": [900, 640]},
+    {"advance": 1},
+    {"inside": "inspector-number", "of": "inspector-tabs"},
+    {"shot": "after-resize"}
+  ]
+}

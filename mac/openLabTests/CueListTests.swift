@@ -5176,6 +5176,31 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { (try? self.drawnMark(h, H.rain, 2))?.icon == .preview }
         XCTAssertEqual(try drawnMark(h, H.rain, 2)?.colour, .systemBlue, "preview is blue")
         guard case .success = await h.store.transport(.stopPreview(cue: H.rain)) else { return XCTFail("stop") }
+        // Output-overridden is red: a Network cue while the engine's network switch is off.
+        let patch = CueEditor.defaultNetworkPatch(id: ModelID(UUID().uuidString.lowercased()))
+        guard case .success = await h.store.send(command: .addNetworkPatch(patch, index: 0)) else {
+            return XCTFail("network patch")
+        }
+        let net = try await add(.network, h.rig)
+        guard let engine = h.rig.realEngine,
+            case .success = await engine.request(.setOutputOverrides(networkDisabled: true))
+        else { return XCTFail("override") }
+        await assertEventually {
+            try? await h.rig.advance(0.3)
+            return (try? self.drawnMark(h, net, 2))?.icon == .outputOverridden
+        }
+        XCTAssertEqual(try drawnMark(h, net, 2)?.colour, .systemRed, "output-overridden is red")
+        // A warning is yellow in the Warnings list: the mark drawn on Radio's row (the engine reports it broken).
+        let side = SidebarViewController(store: h.store)
+        side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
+        side.view.layoutSubtreeIfNeeded()
+        let warning = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == H.radio }, "Radio is in the Warnings list")
+        let cell = try XCTUnwrap(
+            side.warningsTable.view(atColumn: 0, row: warning, makeIfNecessary: true) as? WarningCell)
+        let marker = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSImageView }.first, "the row has its mark")
+        XCTAssertFalse(marker.isHidden)
+        XCTAssertNotNil(marker.image)
+        XCTAssertEqual(marker.contentTintColor, MarkColour.caution, "a warning is yellow")
         guard case .success = await h.store.transport(.start(cue: H.intro)) else { return XCTFail("start") }
         try await h.rig.advance(0.2)
         await assertEventually { (try? self.drawnMark(h, H.intro, 1))?.icon == .stateRunning }
@@ -6127,7 +6152,7 @@ final class CueListColumnLayoutTests: XCTestCase {
 
     /// What the rows draw in the column header's area and in a band just above the list (the cue
     /// toolbar's lower edge): the window drawn with the rows and without them, compared there.
-    private func rowInk() throws -> (header: Int, above: Int, below: Int) {
+    private func rowInk(threshold: CGFloat = 0.05) throws -> (header: Int, above: Int, below: Int) {
         let window = try XCTUnwrap(wc?.window)
         let frameView = try XCTUnwrap(window.contentView?.superview)
         let scroll = try XCTUnwrap(outline.enclosingScrollView)
@@ -6146,7 +6171,7 @@ final class CueListColumnLayoutTests: XCTestCase {
                     let d =
                         abs(p.redComponent - q.redComponent) + abs(p.greenComponent - q.greenComponent)
                         + abs(p.blueComponent - q.blueComponent)
-                    if d > 0.05 { n += 1 }
+                    if d > threshold { n += 1 }
                 }
             }
             return n
@@ -6186,6 +6211,90 @@ final class CueListColumnLayoutTests: XCTestCase {
                 XCTAssertLessThanOrEqual(row.maxY, head.minY + 0.5, "\(what): the selected row is below the header")
                 XCTAssertGreaterThanOrEqual(row.minY, list.minY - 0.5, "\(what): and inside the list")
             }
+        }
+    }
+
+    /// Every control shown in the selected inspector tab, whole inside the tab's content box, and the
+    /// selected row whole in the list below its header. Real window, real engine.
+    private func assertBasicsInsideTheInspector(_ what: String, file: StaticString = #filePath, line: UInt = #line)
+        throws
+    {
+        let wc = try XCTUnwrap(self.wc)
+        let window = try XCTUnwrap(wc.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let tabs = wc.inspector.tabView
+        let box = tabs.convert(tabs.contentRect, to: nil).insetBy(dx: -1, dy: -1)
+        let page = try XCTUnwrap(tabs.selectedTabViewItem?.view)
+        var seen = 0
+        func visit(_ view: NSView) {
+            guard !view.isHidden else { return }
+            if view is NSControl {
+                seen += 1
+                let frame = view.convert(view.bounds, to: nil)
+                XCTAssertTrue(
+                    box.contains(frame), "\(what): \(type(of: view)) \(frame) is inside the inspector's box \(box)",
+                    file: file, line: line)
+            }
+            for sub in view.subviews { visit(sub) }
+        }
+        visit(page)
+        XCTAssertGreaterThan(seen, 8, "\(what): Basics' controls were checked", file: file, line: line)
+        for field in [wc.inspector.numberField, wc.inspector.preWaitField, wc.inspector.postWaitField] {
+            XCTAssertFalse(field.isHidden, what, file: file, line: line)
+        }
+        let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        let list = scroll.convert(scroll.bounds, to: nil)
+        let head = try XCTUnwrap(outline.headerView).convert(outline.headerView?.bounds ?? .zero, to: nil)
+        let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
+        XCTAssertGreaterThanOrEqual(outline.selectedRow, 0, what, file: file, line: line)
+        XCTAssertLessThanOrEqual(
+            row.maxY, head.minY + 0.5, "\(what): the selected row is below the header", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(row.minY, list.minY - 0.5, "\(what): and inside the list", file: file, line: line)
+    }
+
+    /// Flow (#655): in a short window and at the default size, the inspector hidden and shown again, and Show
+    /// Mode entered and left: all of Basics is inside the inspector's box and the selected row is visible.
+    /// Unit test (openLabTests).
+    func testTheInspectorHiddenThenShownAgainKeepsAllOfBasicsInsideItsBoxAndTheSelectedRowInView() async throws {
+        for size in [
+            NSSize(width: 900, height: 640), NSSize(width: 900, height: 520), NSSize(width: 1200, height: 800),
+        ] {
+            let wc = try await open(size)
+            wc.cueList.selectAsUser([H.radio])
+            outline.scrollRowToVisible(outline.selectedRow)
+            let name = "\(Int(size.width))x\(Int(size.height))"
+            wc.inspector.tabView.selectTabViewItem(at: 0)
+            try assertBasicsInsideTheInspector("\(name) at the start")
+            wc.setVisible(.inspector, false)
+            wc.window?.contentView?.layoutSubtreeIfNeeded()
+            wc.setVisible(.inspector, true)
+            try assertBasicsInsideTheInspector("\(name) hidden then shown")
+            wc.setShowMode(true)
+            wc.window?.contentView?.layoutSubtreeIfNeeded()
+            wc.setShowMode(false)
+            try assertBasicsInsideTheInspector("\(name) Show Mode entered and left")
+            wc.window?.close()
+        }
+    }
+
+    /// Flow (#655): a scrolled cue list, the column header is opaque and no row is drawn under its titles, in
+    /// a short window. Unit test (openLabTests).
+    func testAScrolledListInAShortWindowDrawsNoRowUnderTheColumnHeader() async throws {
+        let wc = try await open(NSSize(width: 900, height: 560))
+        let window = try XCTUnwrap(wc.window)
+        wc.setVisible(.inspector, false)
+        wc.setVisible(.inspector, true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        for target in [outline.numberOfRows - 1, outline.numberOfRows / 2, 1] {
+            outline.scrollRowToVisible(target)
+            let clip = try XCTUnwrap(outline.enclosingScrollView?.contentView)
+            clip.scroll(to: NSPoint(x: 0, y: max(0, clip.bounds.origin.y - 20)))
+            outline.enclosingScrollView?.reflectScrolledClipView(clip)
+            window.contentView?.layoutSubtreeIfNeeded()
+            let ink = try rowInk(threshold: 0.004)  // a faint see-through counts
+            XCTAssertEqual(ink.header, 0, "rows drawn through the header (row \(target))")
+            XCTAssertEqual(ink.above, 0, "rows drawn above the header (row \(target))")
+            XCTAssertGreaterThan(ink.below, 100, "the rows are drawn below the header (row \(target))")
         }
     }
 

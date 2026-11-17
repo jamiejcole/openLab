@@ -92,7 +92,9 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         NSLayoutConstraint.activate([
             deviceGrid.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 4),
             deviceGrid.topAnchor.constraint(equalTo: holder.topAnchor, constant: 4),
-            deviceGrid.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -4),
+            // The grid fills the list, so the name column takes what the pop-ups leave and a name is cut
+            // at its end only when that is not enough.
+            deviceGrid.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -4),
             holder.bottomAnchor.constraint(equalTo: deviceGrid.bottomAnchor, constant: 4),
         ])
         let scroll = NSScrollView()
@@ -187,8 +189,9 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         bufferPopups = []
         for (i, d) in devices.enumerated() {
             let name = NSTextField(labelWithString: d.name)
-            name.lineBreakMode = .byTruncatingMiddle
-            name.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            name.lineBreakMode = .byTruncatingTail
+            name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            name.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             var details = String(format: loc("prefs.audio.outputs"), d.outputChannels)
             if d.primary { details += " · " + loc("prefs.audio.clockNow") }
             let detail = NSTextField(labelWithString: details)
@@ -198,6 +201,8 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
             column.orientation = .vertical
             column.alignment = .leading
             column.spacing = 1
+            column.setHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            column.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             let popup = NSPopUpButton(frame: .zero, pullsDown: false)
             for size in AudioPreferencesModel.bufferSizes {
                 popup.addItem(withTitle: String(size))
