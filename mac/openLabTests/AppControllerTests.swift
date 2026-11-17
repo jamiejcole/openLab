@@ -993,7 +993,7 @@ final class AppControllerTests: XCTestCase {
         try await advance()
         await assertEventually { store.cueStates[cue]?.state == .paused }
         // The audio device goes while it is paused: the engine breaks it.
-        guard case .success = await real.request(.loseDevice) else { return XCTFail("lose_device") }
+        guard case .success = await real.request(.loseDevice()) else { return XCTFail("lose_device") }
         await assertEventually { store.cueStates[cue]?.state == .broken }
         wc.cueList.select([cue])
         await app.perform(.pauseResumeSelected)

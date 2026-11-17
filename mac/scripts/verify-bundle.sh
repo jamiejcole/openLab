@@ -26,10 +26,10 @@ for bin in "$app/Contents/MacOS/openLab" "$app/Contents/MacOS/openlab-engine" "$
     done
 done
 # The app's test-engine launch (`-OpenLabEngine test`) and its test-only requests (`advance`,
-# `lose_device`, `restore_device`) are Debug only (`#if DEBUG`, mac/openLab/Engine/EngineLaunch.swift
+# `lose_device`, `restore_device`, `set_default_device`) are Debug only (`#if DEBUG`, mac/openLab/Engine/EngineLaunch.swift
 # and ClientProtocol.swift).
 for marker in "-OpenLabEngine" "-OpenLabVirtualDevice" "-OpenLabVirtualDisplays" "--virtual-device" \
-    "--virtual-displays" "lose_device" "restore_device" "stage_probe"; do
+    "--virtual-displays" "lose_device" "restore_device" "set_default_device" "stage_probe"; do
     if grep -q -a -- "$marker" "$app/Contents/MacOS/openLab"; then
         echo "error: $app contains test-engine support ('$marker')" >&2
         exit 1

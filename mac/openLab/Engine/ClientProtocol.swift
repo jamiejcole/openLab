@@ -212,10 +212,12 @@ enum Request: Hashable, Sendable, Codable {
     #if DEBUG
         /// Test support only: an engine built with test-support on its virtual device
         /// (docs/protocol.md "Test support"). `advance` moves a stepped engine's device time by
-        /// `frames`; `loseDevice` / `restoreDevice` take the virtual device away and bring it back.
+        /// `frames`; `loseDevice` / `restoreDevice` take a virtual device away and plug it in (its id
+        /// as `listDevices` gives it; nil: the first); `setDefaultDevice` makes one the system's output.
         case advance(frames: UInt64)
-        case loseDevice
-        case restoreDevice
+        case loseDevice(device: String? = nil)
+        case restoreDevice(device: String? = nil)
+        case setDefaultDevice(device: String)
         /// Test support only: the stage host draws its test card for `frame` on `stage`, and
         /// `stageProbe` reads the stage's colours at points (fractions of the stage).
         case stageTestCard(stage: ModelID, frame: UInt16)
@@ -286,8 +288,13 @@ enum Request: Hashable, Sendable, Codable {
             return ("set_stage_mapping", f)
         #if DEBUG
             case .advance(let frames): return ("advance", [("frames", frames)])
-            case .loseDevice: return ("lose_device", [])
-            case .restoreDevice: return ("restore_device", [])
+            case .loseDevice(let device):
+                opt(&f, "device", device)
+                return ("lose_device", f)
+            case .restoreDevice(let device):
+                opt(&f, "device", device)
+                return ("restore_device", f)
+            case .setDefaultDevice(let device): return ("set_default_device", [("device", device)])
             case .stageTestCard(let stage, let frame): return ("stage_test_card", [("stage", stage), ("frame", frame)])
             case .stageProbe(let stage, let points): return ("stage_probe", [("stage", stage), ("points", points)])
             case .displayProbe(let display, let points):
@@ -353,8 +360,10 @@ enum Request: Hashable, Sendable, Codable {
                 display: try c.decodeIfPresent(String.self, forKey: "display"))
         #if DEBUG
             case "advance": self = .advance(frames: try c.decode(UInt64.self, forKey: "frames"))
-            case "lose_device": self = .loseDevice
-            case "restore_device": self = .restoreDevice
+            case "lose_device": self = .loseDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
+            case "restore_device":
+                self = .restoreDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
+            case "set_default_device": self = .setDefaultDevice(device: try c.decode(String.self, forKey: "device"))
             case "stage_test_card":
                 self = .stageTestCard(
                     stage: try c.decode(ModelID.self, forKey: "stage"),

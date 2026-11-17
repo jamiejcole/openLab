@@ -85,7 +85,7 @@ final class AudioPreferencesTests: XCTestCase {
         await prefs.refreshing?.value
         XCTAssertEqual(prefs.deviceGrid.numberOfRows, 1)
         XCTAssertEqual(prefs.deviceGrid.subviews.count, prefs.deviceGrid.numberOfRows * 2, "one name, one pop-up")
-        guard case .success = await engine.request(.loseDevice) else { return XCTFail("lose_device") }
+        guard case .success = await engine.request(.loseDevice()) else { return XCTFail("lose_device") }
         try await engine.advance(seconds: 1.5)
         prefs.reload()
         await prefs.refreshing?.value
@@ -119,7 +119,7 @@ final class AudioPreferencesTests: XCTestCase {
         let prefs = try await open()
         try pick(device, in: prefs.clockPopup)
         await prefs.refreshing?.value
-        guard case .success = await engine.request(.loseDevice) else { return XCTFail("lose_device") }
+        guard case .success = await engine.request(.loseDevice()) else { return XCTFail("lose_device") }
         try await engine.advance(seconds: 1.5)
         prefs.reload()
         await prefs.refreshing?.value

@@ -451,14 +451,28 @@ pub enum Request {
     Advance {
         frames: u64,
     },
-    /// Test support only: the virtual output device goes away (the host reports it lost and it
-    /// leaves the device list), as an unplugged interface does. App-scope.
+    /// Test support only: a virtual output device goes away (the host reports it lost and it
+    /// leaves the device list), as an unplugged interface does. `device`: its id as
+    /// `list_devices` gives it; absent, the first. App-scope.
     #[cfg(feature = "test-support")]
-    LoseDevice,
-    /// Test support only: the virtual output device is back in the list; the engine reopens it
-    /// as it would a device plugged back in. App-scope.
+    LoseDevice {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+    },
+    /// Test support only: a virtual output device is in the list (back, or plugged in for the
+    /// first time); the engine opens it as it would a device plugged in. `device` as for
+    /// `LoseDevice`. App-scope.
     #[cfg(feature = "test-support")]
-    RestoreDevice,
+    RestoreDevice {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+    },
+    /// Test support only: the device list marks `device` (a virtual device's id) as the system's
+    /// output, as the operator changing the computer's sound output does. App-scope.
+    #[cfg(feature = "test-support")]
+    SetDefaultDevice {
+        device: String,
+    },
     /// Test support only: the stage host draws its test card for `frame` on the connection's
     /// workspace's `stage` (docs/protocol.md section 5). Answers `ok` once sent. Workspace-bound.
     #[cfg(feature = "test-support")]

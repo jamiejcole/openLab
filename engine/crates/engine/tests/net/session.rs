@@ -1374,7 +1374,10 @@ async fn a_stepped_engine_loses_and_gets_back_its_virtual_device_on_request() {
     })
     .await;
 
-    ok_call(&mut ws, |id| request(id, Request::LoseDevice)).await;
+    ok_call(&mut ws, |id| {
+        request(id, Request::LoseDevice { device: None })
+    })
+    .await;
     // The loss is handled before the answer: the cue that played on the device shows paused
     // for the lost device (QLab 5).
     ws.wait("cue 1 paused", |c| c.state(1) == Some(WireCueState::Paused))
@@ -1394,7 +1397,10 @@ async fn a_stepped_engine_loses_and_gets_back_its_virtual_device_on_request() {
     ok_call(&mut ws, advance_by(VRATE)).await;
     assert!(device_names(ws.call(|id| request(id, Request::ListDevices)).await).is_empty());
 
-    ok_call(&mut ws, |id| request(id, Request::RestoreDevice)).await;
+    ok_call(&mut ws, |id| {
+        request(id, Request::RestoreDevice { device: None })
+    })
+    .await;
     // The next list read sees it back and the stream is reopened at once.
     ok_call(&mut ws, advance_by(VRATE * 2)).await;
     let listed = device_names(ws.call(|id| request(id, Request::ListDevices)).await);
@@ -1406,6 +1412,126 @@ async fn a_stepped_engine_loses_and_gets_back_its_virtual_device_on_request() {
         c.state(2) == Some(WireCueState::Running)
     })
     .await;
+    end(engine);
+}
+
+/// The loudest `peaks` each patch's device outputs reported in `seen`, by patch.
+fn patch_peaks(seen: &[ServerMessage]) -> HashMap<openlab_core::PatchId, f32> {
+    let mut loudest = HashMap::new();
+    for m in seen {
+        if let ServerMessage::Meters { outputs, .. } = m {
+            for o in outputs {
+                let peak = o.peaks.iter().copied().fold(0.0f32, f32::max);
+                let kept = loudest.entry(o.patch).or_insert(0.0f32);
+                *kept = kept.max(peak);
+            }
+        }
+    }
+    loudest
+}
+
+/// AUD-02 on the engine binary's two virtual devices: the second is listed once plugged in, a
+/// patch mapped to it plays its cue there and not on the first (a second patch on the first
+/// device meters silence), and unplugging the second stops that cue while the first plays on.
+#[tokio::test]
+async fn a_patch_mapped_to_the_second_virtual_device_is_heard_there_and_not_on_the_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = workspace(vec![audio(1, &wav(&dc(16_000, 0.25)), 0)]);
+    let mut other = ws.patches[0].clone();
+    other.id = openlab_core::PatchId(uuid::Uuid::from_u128(902));
+    other.name = "Other".into();
+    ws.patches.push(other.clone());
+    let main = ws.patches[0].id;
+    let show = dir.path().join("Two devices.openlab");
+    std::fs::write(&show, openlab_core::save_show(&ws).unwrap()).unwrap();
+
+    let (engine, _support, port, token) = spawn_virtual("stepped");
+    let (mut app, _) = App::connect_to(port, &token).await;
+    let doc = open_show(&mut app, 1, &show).await;
+    let (mut ws, _) = Ws::connect_to(port, &token, doc).await;
+    ws.next_id = 100;
+    let first = ("openLab Virtual Output".to_owned(), 2);
+    let second = ("openLab Virtual Output 2".to_owned(), 2);
+    let listed = device_names(ws.call(|id| request(id, Request::ListDevices)).await);
+    assert_eq!(
+        listed,
+        std::slice::from_ref(&first),
+        "the second is not plugged in yet"
+    );
+
+    let plug = |id| {
+        request(
+            id,
+            Request::RestoreDevice {
+                device: Some("openlab:virtual-2".into()),
+            },
+        )
+    };
+    ok_call(&mut ws, plug).await;
+    ok_call(&mut ws, advance_by(VRATE * 2)).await;
+    let listed = device_names(ws.call(|id| request(id, Request::ListDevices)).await);
+    assert_eq!(listed, [first, second.clone()]);
+
+    let to_second = move |id| {
+        request(
+            id,
+            Request::SetPatchMapping {
+                patch: main,
+                mapping: Some(openlab_core::PatchMapping {
+                    device: second.0.clone(),
+                    channels: vec![0, 1],
+                    system: false,
+                }),
+            },
+        )
+    };
+    ok_call(&mut ws, to_second).await;
+    // Mapped to it, the second device opens.
+    ok_call(&mut ws, advance_by(VRATE / 2)).await;
+
+    ws.transport(go()).await;
+    let before = ws.seen.len();
+    ok_call(&mut ws, advance_by(VRATE / 2)).await;
+    ws.wait("cue 1 running", |c| {
+        c.state(1) == Some(WireCueState::Running)
+    })
+    .await;
+    // The meters of that half second have come before the advance's answer.
+    let heard = patch_peaks(&ws.seen[before..]);
+    assert!(heard.get(&main).copied().unwrap_or(0.0) > 0.2, "{heard:?}");
+    assert_eq!(heard.get(&other.id).copied(), Some(0.0), "{heard:?}");
+
+    let unplug = |id| {
+        request(
+            id,
+            Request::LoseDevice {
+                device: Some("openlab:virtual-2".into()),
+            },
+        )
+    };
+    ok_call(&mut ws, unplug).await;
+    ws.wait("cue 1 paused for the lost device", |c| {
+        c.state(1) == Some(WireCueState::Paused)
+    })
+    .await;
+    ok_call(&mut ws, advance_by(VRATE * 2)).await;
+    let listed = device_names(ws.call(|id| request(id, Request::ListDevices)).await);
+    assert_eq!(listed, [("openLab Virtual Output".to_owned(), 2)]);
+
+    let unknown = ws
+        .call(|id| {
+            request(
+                id,
+                Request::LoseDevice {
+                    device: Some("openlab:virtual-3".into()),
+                },
+            )
+        })
+        .await;
+    assert!(
+        matches!(&unknown, Outcome::Error(e) if e.code == ErrorCode::NotFound),
+        "{unknown:?}"
+    );
     end(engine);
 }
 

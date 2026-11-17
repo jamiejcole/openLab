@@ -65,9 +65,11 @@ final class ScenarioRunner {
         case magnify(id: String, by: CGFloat, at: CGPoint)
         /// `{"advance": 1.5}`: seconds of the engine's device time.
         case advance(Double)
-        /// `{"device": "lose"}` / `{"device": "restore"}`: the virtual output device unplugged as an
-        /// interface would be, or listed again (the engine reopens it at its next list read).
-        case device(lose: Bool)
+        /// `{"device": "lose", "output": 2}`: a virtual output device unplugged as an interface would
+        /// be; `"restore"`: plugged in (again), opened at the engine's next list read; `"default"`:
+        /// made the system's output. `output` is 1 (the default: the one listed from the start) or 2
+        /// (the second, listed only once restored).
+        case device(DeviceChange, output: Int)
         /// `{"resize": [width, height]}`: the window's content size in points.
         case resize(CGSize)
         /// `{"tab": "timeLoops"}`: the inspector tab with that identifier.
@@ -96,6 +98,11 @@ final class ScenarioRunner {
         /// Missing Files. The next steps and shots act on the tool's window (`focus` `sheet`: its
         /// question, shown over it); `focus` `workspace` goes back.
         case findMissingFiles([String], folder: String)
+    }
+
+    enum DeviceChange: String {
+        case lose, restore
+        case makeDefault = "default"
     }
 
     struct Scenario {
@@ -235,7 +242,7 @@ final class ScenarioRunner {
             "shot": ["display"],
             "type": ["text", "enter"], "key": ["modifiers"], "scroll": ["dx", "dy", "precise", "modifiers", "at"],
             "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"], "set_media": ["file"],
-            "choose": ["item"],
+            "choose": ["item"], "device": ["output"],
             "find_missing_files": ["folder"],
         ]
         let allowed = options[kind, default: []].union([kind])
@@ -330,11 +337,12 @@ final class ScenarioRunner {
             guard s >= 0, s <= 600 else { throw Failure("\"advance\" must be 0 to 600 seconds") }
             return .advance(s)
         case "device":
-            switch try string("device") {
-            case "lose": return .device(lose: true)
-            case "restore": return .device(lose: false)
-            default: throw Failure("\"device\" must be \"lose\" or \"restore\"")
+            guard let change = DeviceChange(rawValue: try string("device")) else {
+                throw Failure("\"device\" must be \"lose\", \"restore\" or \"default\"")
             }
+            let output = o["output"] == nil ? 1 : try number("output")
+            guard output == 1 || output == 2 else { throw Failure("\"output\" must be 1 or 2") }
+            return .device(change, output: Int(output))
         case "resize":
             guard let a = o["resize"] as? [Double], a.count == 2 else {
                 throw Failure("\"resize\" must be [width, height]")
@@ -793,13 +801,20 @@ final class ScenarioRunner {
                 left -= step
             }
             note("advance \(seconds) s")
-        case .device(let lose):
+        case .device(let change, let output):
             guard let engine else { throw Failure("no engine") }
-            guard case .success = await engine.request(lose ? .loseDevice : .restoreDevice) else {
-                throw Failure("the engine refused \(lose ? "lose_device" : "restore_device")")
+            let id = TestEngine.deviceIDs[output - 1]
+            let request: Request
+            switch change {
+            case .lose: request = .loseDevice(device: id)
+            case .restore: request = .restoreDevice(device: id)
+            case .makeDefault: request = .setDefaultDevice(device: id)
+            }
+            guard case .success = await engine.request(request) else {
+                throw Failure("the engine refused \(change.rawValue) for output \(output)")
             }
             try await rig.advance(0)
-            note(lose ? "device lost" : "device restored")
+            note("device \(change.rawValue): \(TestEngine.deviceNames[output - 1])")
         case .resize(let size):
             window.setContentSize(size)
             note("resize \(Int(size.width))x\(Int(size.height))")
@@ -1435,7 +1450,7 @@ final class ScenarioRunner {
         case .scroll(let id, _, _, _, _, _): return "scroll \(id)"
         case .magnify(let id, _, _): return "magnify \(id)"
         case .advance(let s): return "advance \(s)"
-        case .device(let lose): return "device \(lose ? "lose" : "restore")"
+        case .device(let change, let output): return "device \(change.rawValue) \(output)"
         case .resize(let s): return "resize \(Int(s.width))x\(Int(s.height))"
         case .tab(let t): return "tab \(t)"
         case .focus(let w): return "focus \(w)"
@@ -1727,6 +1742,61 @@ final class ScenarioShotTests: XCTestCase {
             displays: #""displays": "V1:1920x1080","#)
         try refused(#"{"shot": "a", "display": "V1"}"#, "(none)")
         try refused(#"{"shot": "a", "display": []}"#, "\"display\" must be a display id or a list of them")
+    }
+
+    /// A `device` step unplugs, plugs in or makes the system output either virtual output, the
+    /// first unless `output` says 2.
+    func testDeviceStepsNameEitherOutputAndRefuseAnyOther() throws {
+        let s = try scenario(
+            """
+            {"show": "Demo", "steps": [{"device": "lose"}, {"device": "restore", "output": 2},
+              {"device": "default", "output": 2}, {"device": "lose", "output": 1}]}
+            """)
+        let changes: [(ScenarioRunner.DeviceChange, Int)] = s.steps.compactMap {
+            if case .device(let change, let output) = $0 { return (change, output) } else { return nil }
+        }
+        XCTAssertEqual(changes.map(\.0), [.lose, .restore, .makeDefault, .lose])
+        XCTAssertEqual(changes.map(\.1), [1, 2, 2, 1])
+        for (step, text) in [
+            (#"{"device": "unplug"}"#, "\"device\" must be \"lose\", \"restore\" or \"default\""),
+            (#"{"device": "lose", "output": 3}"#, "\"output\" must be 1 or 2"),
+            (#"{"device": "lose", "output": "2"}"#, "\"output\" must be a number"),
+            (#"{"device": "lose", "at": [0, 0]}"#, "\"device\" does not take \"at\""),
+        ] {
+            XCTAssertThrowsError(try scenario(#"{"show": "Demo", "steps": [\#(step)]}"#), step) { error in
+                XCTAssertTrue("\(error)".contains(text), "\(step): \(error)")
+            }
+        }
+    }
+
+    /// #666, #720: device steps plug the second virtual output in (the patch's row then offers it and
+    /// a `choose` maps the patch to it), make it the system output (the row's system-output entry
+    /// then names it) and unplug it again, on the real engine.
+    func testDeviceStepsPlugInTheSecondOutputMakeItTheSystemOutputAndUnplugIt() async throws {
+        let second = TestEngine.deviceNames[1]
+        let system = String(format: loc("settings.audio.systemOutput"), second)
+        let runner = ScenarioRunner(
+            scenario: try scenario(
+                """
+                {"show": "Demo", "steps": [
+                  {"device": "restore", "output": 2}, {"advance": 2}, {"focus": "settings"}, {"tab": "audio"},
+                  {"choose": "settings-patch-device-1", "item": "\(second)"}, {"advance": 1},
+                  {"device": "default", "output": 2}, {"advance": 2}, {"focus": "settings"},
+                  {"choose": "settings-patch-device-1", "item": "\(system)"}, {"advance": 1},
+                  {"device": "lose", "output": 2}, {"advance": 2}, {"shot": "unplugged"}]}
+                """), out: out)
+        do { try await runner.run() } catch {
+            let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
+            return XCTFail("\(error)\n\(log)")
+        }
+        let log = try String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)
+        for line in [
+            "device restore: \(second)", "choose settings-patch-device-1: \(second)", "device default: \(second)",
+            "choose settings-patch-device-1: \(system)", "device lose: \(second)",
+        ] {
+            XCTAssertTrue(log.contains(line), "\(line)\n\(log)")
+        }
+        XCTAssertEqual(runner.written.count, 1, log)
     }
 
     func testTheDisplayGridFollowsTheDisplaysShapeWithinOneProbeEach() {

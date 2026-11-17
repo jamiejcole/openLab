@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 68,
+  "request": {
+    "type": "set_default_device",
+    "device": "openlab:virtual-2"
+  }
+}

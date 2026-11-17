@@ -39,7 +39,7 @@ final class WorkspaceSettingsTests: XCTestCase {
 
     /// The device goes away (as an interface unplugged): its cues stop, the device list loses it.
     private func loseDevice(_ rig: Rig) async throws {
-        guard case .success = await engine.request(.loseDevice) else { return XCTFail("lose_device") }
+        guard case .success = await engine.request(.loseDevice()) else { return XCTFail("lose_device") }
         try await rig.advance(1.5)  // the next list read and status see it gone
     }
 
@@ -172,6 +172,50 @@ final class WorkspaceSettingsTests: XCTestCase {
             texts(sc.window?.contentView).contains { $0.contains(loc("settings.audio.restartNeeded")) },
             "no restart notice")
         meter.removeFromSuperview()
+    }
+
+    /// #666 checklist: with the second virtual device plugged in, it is picked in a patch's row → a
+    /// cue on that patch is heard on the second device and not on the first. A second patch, left on
+    /// the first device, meters what that device plays.
+    func testTheSecondDevicePickedForAPatchPlaysItsCueThereAndNotOnTheFirst() async throws {
+        let second = TestEngine.deviceNames[1]
+        guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("plug in the second device")
+        }
+        try await engine.advance(seconds: 2)  // a device-list read sees it
+        let (rig, sc) = try await open(edit: sounding())
+        sc.patchAddButton.performClick(nil)
+        await assertEventually { sc.patchNameFields.count == 2 }
+        let other = try XCTUnwrap(rig.store.model?.patches.first { $0.id != patch }?.id)
+        await assertEventually("the new patch is on the first device") {
+            sc.patchDevicePopups.last?.titleOfSelectedItem == self.device
+        }
+        let popup = try XCTUnwrap(sc.patchDevicePopups.first)
+        XCTAssertEqual(
+            popup.itemArray.filter { !$0.isSeparatorItem }.map(\.title),
+            [
+                loc("settings.audio.noDevice"), String(format: loc("settings.audio.systemOutput"), device), device,
+                second,
+            ])
+
+        try pick(second, in: popup)
+        await assertEventually("the engine took it") { sc.model.patches.first?.mapping?.device == second }
+        await assertEventually("the row shows the second device") {
+            sc.patchDevicePopups.first?.titleOfSelectedItem == second
+        }
+        let stored = try await mapping(rig)
+        XCTAssertEqual(stored, PatchMapping(device: second, channels: [0, 1]))
+        try await rig.advance(0.5)  // the second device opens
+        await assertEventually("no problem on the row") { sc.patchProblemLabels.first?.stringValue == "" }
+
+        guard case .success = await rig.store.transport(.start(cue: intro)) else { return XCTFail("start") }
+        try await rig.advance(0.5)
+        rig.wire.resetDevicePeaks()
+        for _ in 0..<5 { try await rig.advance(0.1) }
+        XCTAssertEqual(rig.store.cueStates[intro]?.state, .running)
+        let onSecond = rig.wire.devicePeaks[patch] ?? []
+        XCTAssertGreaterThan(onSecond.max() ?? 0, 0.05, "heard on the second device")
+        XCTAssertEqual(rig.wire.devicePeaks[other], [0, 0], "nothing on the first device")
     }
 
     /// #685 checklist: the device pop-up of a patch lists a system-output entry first (after none,
@@ -639,7 +683,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(rows.filter { $0.title == deviceTitle }.count, 1, "\(rows.map(\.title))")
 
         // Back again: the warning goes from all three.
-        guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore_device") }
+        guard case .success = await engine.request(.restoreDevice()) else { return XCTFail("restore_device") }
         try await rig.advance(2)
         await assertEventually { sc.patchProblemLabels.first?.stringValue == "" }
         await assertEventually { editor.problemLabel.stringValue == "" }
@@ -903,7 +947,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
         await assertEventually { editor.routingNote.stringValue.contains(loc("patchEditor.notConnectedNote")) }
         XCTAssertFalse(editor.routingNote.stringValue.contains("0 outputs"))
-        guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore_device") }
+        guard case .success = await engine.request(.restoreDevice()) else { return XCTFail("restore_device") }
         try await rig.advance(6)
         await assertEventually("the editor shows the device back") {
             editor.devicePopup.titleOfSelectedItem == self.device && editor.matrix.usable == 2
@@ -1182,7 +1226,7 @@ final class WorkspaceSettingsTests: XCTestCase {
                 && editor.problemLabel.stringValue == loc("settings.audio.systemOutputMissing")
                 && editor.matrix.usable == 0
         }
-        guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore_device") }
+        guard case .success = await engine.request(.restoreDevice()) else { return XCTFail("restore_device") }
         try await rig.advance(1.5)
         await assertEventually("the editor shows the device back") {
             editor.devicePopup.titleOfSelectedItem == system && editor.problemLabel.stringValue.isEmpty
