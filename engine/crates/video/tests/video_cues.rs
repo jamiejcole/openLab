@@ -3816,6 +3816,40 @@ fn a_crash_opening_ahead_is_not_held_against_the_cue_playing() {
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
 }
 
+/// The losing order of a crash while a picture opens ahead: the playing cue, suspected with the
+/// file at two crashes, is being tried alone when a GO opens that file and crashes the stage
+/// host again. Something else was opening, so the cue on trial is not blamed: the bad file's
+/// cue breaks and the playing cue plays on.
+#[test]
+fn a_crash_while_a_cue_is_tried_alone_and_another_opens_is_not_blamed_on_the_cue_tried() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = movie!(dir.path(), "good.mov", (500, 25));
+    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
+    let mut s = video_show_config(ws, &[], |_| {}, |c| c.prime_cues = 1);
+    let at = go(&mut s);
+    // Opened ahead once the playhead is on it, the bad file crashes the stage host twice
+    // beside the playing cue: both are suspects, and the playing cue is tried alone.
+    assert!(
+        s.wait_for(|c| stage_host_stops(c) == 2 && c.picture_trials() == 1),
+        "{}",
+        seen(&s)
+    );
+    go(&mut s);
+    let mut pids = vec![];
+    assert!(play_until_broken(&mut s, 2, &mut pids), "{}", seen(&s));
+    expect_state(
+        &s,
+        1,
+        CueState::Running,
+        "the cue tried alone is not blamed",
+    );
+    stays_up(&mut s, 6.0);
+    let played = (s.now() - at) as f64 / f64::from(RATE);
+    let now = on_stage(&mut s, "the good picture is back");
+    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+}
+
 /// A cue whose file crashes the stage host as it opens, started while four other cues are
 /// opened ahead: each relaunched stage host is sent one of those again, opening when the bad
 /// file crashes it once more. The bad cue still breaks within three crashes, without the video

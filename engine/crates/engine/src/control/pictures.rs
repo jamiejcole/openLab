@@ -435,8 +435,9 @@ impl Engine {
     /// supervisor or from outside) can have been caused by a picture's file, and only by one
     /// it was opening or decoding then: one not yet open, or a movie playing (a still once open,
     /// and a movie paused or not yet played, have no decoder running). Those are suspects.
-    /// - One tried alone after a hold-back (`trial`) when the crash came is the culprit: its
-    ///   cue breaks.
+    /// - One tried alone after a hold-back (`trial`) when the crash came is the culprit, its
+    ///   cue breaks, if nothing else was opening or decoding then (a GO meanwhile, a picture
+    ///   opened ahead); else it is a suspect with the others.
     /// - A suspect at a second crash within `SUSPECT_WINDOW_S`, if it is the only one, is the
     ///   culprit too. If several are, they are held back (kept off the stage host, their cues
     ///   running unseen) and tried again one at a time, the earliest suspected last
@@ -464,7 +465,12 @@ impl Engine {
             .filter(|(_, l)| l.trial.is_some_and(|t| now.saturating_sub(t) < probation))
             .map(|(id, _)| *id)
             .collect();
-        if !on_trial.is_empty() {
+        // The pictures on trial are the culprit only if nothing else was opening or decoding
+        // (a GO meanwhile, or a picture opened ahead): else they are suspects with the rest.
+        let others = ahead.is_some()
+            || (self.pictures.live.iter())
+                .any(|(id, l)| !on_trial.contains(id) && !l.held_back && decoding(l));
+        if !on_trial.is_empty() && !others {
             for picture in on_trial {
                 self.picture_failed(
                     picture,
@@ -476,8 +482,7 @@ impl Engine {
         let mut repeat = Vec::new();
         for (id, l) in &mut self.pictures.live {
             l.trial = None;
-            let decoding = !l.opened || (!l.still && matches!(l.motion, Some((Some(_), _))));
-            if !decoding || l.held_back {
+            if !decoding(l) || l.held_back {
                 continue;
             }
             if l.suspected_at
@@ -671,6 +676,15 @@ impl Engine {
         self.pictures.live.values().filter(|l| l.opened).count()
     }
 
+    /// Pictures being tried alone after crashes (tests).
+    pub(super) fn picture_trials(&self) -> usize {
+        self.pictures
+            .live
+            .values()
+            .filter(|l| l.trial.is_some())
+            .count()
+    }
+
     /// Starts waiting for their picture's open, not paused (tests).
     pub(super) fn pictures_waiting(&self) -> usize {
         (self.pictures.live.values())
@@ -683,6 +697,12 @@ impl Engine {
     fn opens_pictures(&self) -> bool {
         self.stages_host().is_some() && self.stages.up && self.stages.video == Some(true)
     }
+}
+
+/// Whether the stage host has a decoder running for `l`: opening it, or a movie playing (a
+/// still once open, and a movie paused or not yet played, have none).
+fn decoding(l: &Live) -> bool {
+    !l.opened || (!l.still && matches!(l.motion, Some((Some(_), _))))
 }
 
 fn seconds(samples: SampleTime, rate: u32) -> f64 {

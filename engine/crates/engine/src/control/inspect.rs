@@ -295,6 +295,11 @@ impl Control {
         self.eng.primes_up()
     }
 
+    /// Pictures being tried alone after stage host crashes, every doc's.
+    pub fn picture_trials(&self) -> usize {
+        self.eng.picture_trials()
+    }
+
     /// Pictures' opens asked ahead so far, for the cues standing by.
     pub fn picture_opens_ahead(&self) -> u64 {
         self.eng.primes_asked()
