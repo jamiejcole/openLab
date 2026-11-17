@@ -2606,7 +2606,17 @@ impl Run {
                 .iter()
                 .position(|a| matches!(a, Action::StateChanged { cue: c, .. } if *c == cue));
             let go_ignored = matches!(self.input, Input::Go { .. } | Input::GoFrom { .. })
-                && ignored_at.is_some_and(|i| acted_at.is_none_or(|a| i < a));
+                && (ignored_at.is_some_and(|i| acted_at.is_none_or(|a| i < a))
+                    // Double-GO protection only ever answers the operator's GO.
+                    || actions.iter().any(|a| {
+                        matches!(
+                            a,
+                            Action::GoIgnored {
+                                reason: GoIgnoredReason::DoubleGo,
+                                ..
+                            }
+                        )
+                    }));
             let option = if go_ignored {
                 SecondTrigger::Nothing
             } else {
@@ -2678,8 +2688,21 @@ impl Run {
                         } => *c == cue,
                         _ => false,
                     });
-                    let by_its_group = matches!((ended, started), (Some(e), Some(s)) if e < s)
-                        && !groups_around(&self.ws.cue_lists[0].cues, cue).is_empty();
+                    let in_a_looping_playlist = groups_around(&self.ws.cue_lists[0].cues, cue)
+                        .last()
+                        .and_then(|g| self.ws.find_cue(*g))
+                        .is_some_and(|g| {
+                            matches!(
+                                g.kind,
+                                CueKind::Group {
+                                    mode: GroupMode::Playlist { loop_: true, .. },
+                                    ..
+                                }
+                            )
+                        });
+                    let by_its_group = option == SecondTrigger::PlayNext
+                        && in_a_looping_playlist
+                        && matches!((ended, started), (Some(e), Some(s)) if e < s);
                     prop_assert!(!restarted || by_its_group, "{:?} restarted {}", option, cue);
                 }
             }
