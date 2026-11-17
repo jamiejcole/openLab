@@ -14,13 +14,14 @@ use std::hash::Hash;
 
 use crate::cue::{Cue, FadeLevels, FadeSpec, GroupMode, Hotkey};
 use crate::cue::{
-    CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS, MAX_DB, MAX_SLICE_MARKERS,
-    MAX_TIME, OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, PlayCount, SILENCE_DB, SliceMarker,
+    CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS, MAX_DB, MAX_DEVICE_OUTPUTS,
+    MAX_SLICE_MARKERS, MAX_TIME, OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, PlayCount,
+    SILENCE_DB, SliceMarker,
 };
 use crate::limits::{fade_holds_levels, group_ids};
 use crate::model::{
-    CueId, CueList, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, StageId,
-    Workspace, WorkspaceSettings, hotkey_field,
+    CueId, CueList, CueListId, NetworkPatchId, OutputPatch, PatchCrosspoint, PatchId, PatchOutput,
+    StageId, Workspace, WorkspaceSettings, hotkey_field,
 };
 use crate::network::MAX_HOST_BYTES;
 use crate::osc_access::{
@@ -191,7 +192,8 @@ pub enum IssueKind {
     InvalidHotkey { field: &'static str },
     /// A patch had no outputs (one was added) or more than [`MAX_CUE_OUTPUTS`] (extras removed).
     PatchChannelCount { patch: PatchId },
-    /// A patch level or delay was out of range; it was clamped.
+    /// A patch level was out of range (clamped), or a crosspoint or device-output entry named
+    /// an output no patch can have or repeated a pair (removed).
     InvalidPatchValue { patch: PatchId, field: &'static str },
     /// `second_trigger` is `play_next` or `play_previous` on a cue that is not a Playlist group:
     /// kept, but a second trigger does nothing (as `nothing`) until the cue is one.
@@ -402,7 +404,7 @@ impl fmt::Display for ValidationIssue {
                  has; it does nothing here"
             ),
             IssueKind::InvalidPatchValue { patch, field } => {
-                write!(f, "patch {}: invalid {field}; clamped", patch.0)
+                write!(f, "patch {}: invalid {field}; corrected", patch.0)
             }
         }
     }
@@ -833,10 +835,58 @@ impl Checker {
             }
             self.silence_below_minimum(&mut output.level_db);
         }
+        self.patch_routing(patch, &mut bad);
         for field in bad {
             self.warn(None, IssueKind::InvalidPatchValue { patch: id, field });
         }
         self.patch_outputs.entry(id).or_insert(patch.outputs.len());
+    }
+
+    /// A patch's crosspoints and device-output levels: entries naming a cue output or device
+    /// output no patch can have, and repeats of a pair (the first is kept), are removed; levels
+    /// are put within range. Sorted, which changes nothing they mean. A device output the
+    /// machine's device lacks is kept: the engine warns about it when the show plays.
+    fn patch_routing(&mut self, patch: &mut OutputPatch, bad: &mut Vec<&'static str>) {
+        let in_range = |output: u32, device_output: u32| {
+            output < MAX_CUE_OUTPUTS && device_output < MAX_DEVICE_OUTPUTS
+        };
+        let crosspoints = &mut patch.crosspoints;
+        let mut dropped = retain_counted(crosspoints, |c| in_range(c.output, c.device_output));
+        crosspoints.sort_by_key(PatchCrosspoint::key);
+        dropped += dedupe(crosspoints, PatchCrosspoint::key);
+        if dropped > 0 {
+            bad.push("crosspoints");
+        }
+        for crosspoint in crosspoints.iter_mut() {
+            if self.patch_level(&mut crosspoint.db) {
+                bad.push("crosspoints.db");
+            }
+        }
+        let outputs = &mut patch.device_outputs;
+        let mut dropped = retain_counted(outputs, |d| in_range(0, d.device_output));
+        outputs.sort_by_key(|d| d.device_output);
+        dropped += dedupe(outputs, |d| d.device_output);
+        if dropped > 0 {
+            bad.push("device_outputs");
+        }
+        for output in outputs.iter_mut() {
+            if self.patch_level(&mut output.level_db) {
+                bad.push("device_outputs.level_db");
+            }
+        }
+    }
+
+    /// Puts one patch level within range and the workspace's limits; true when that changed
+    /// what it means (not a number, or above a maximum).
+    fn patch_level(&mut self, db: &mut f64) -> bool {
+        let mut bad = db.is_nan() || *db > MAX_DB;
+        clamp(db, SILENCE_DB, MAX_DB);
+        if *db > self.limits.max_db {
+            *db = self.limits.max_db;
+            bad = true;
+        }
+        self.silence_below_minimum(db);
+        bad
     }
 
     fn cues(&mut self, cues: &mut [Cue], depth: usize) {

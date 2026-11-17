@@ -27,6 +27,8 @@ fn ws_of(ids: &[u128]) -> Workspace {
     ws.patches = ids
         .iter()
         .map(|&n| OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: id(n),
             name: format!("P{n}"),
             master_db: 0.0,
@@ -84,6 +86,8 @@ fn ws_with(outputs: Vec<PatchOutput>) -> Workspace {
             new_cues_auto_load: false,
         },
         patches: vec![OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: pid(),
             name: "Main".into(),
             master_db: -6.0,

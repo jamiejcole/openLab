@@ -22,11 +22,11 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::command::{Command, CommandError, Inverse};
-use crate::cue::{CueKind, Hotkey, MAX_CUE_OUTPUTS};
+use crate::cue::{CueKind, Hotkey, MAX_CUE_OUTPUTS, MAX_DEVICE_OUTPUTS};
 use crate::model::{
-    CueId, CueListId, NetworkPatch, NetworkPatchId, NetworkProtocol, OutputPatch, PatchId,
-    PatchOutput, StageId, TransportHotkeys, Workspace, WorkspaceSettings, hotkey_field,
-    is_reserved_key,
+    CueId, CueListId, DeviceOutputLevel, NetworkPatch, NetworkPatchId, NetworkProtocol,
+    OutputPatch, PatchCrosspoint, PatchId, PatchOutput, StageId, TransportHotkeys, Workspace,
+    WorkspaceSettings, hotkey_field, is_reserved_key,
 };
 use crate::osc_access::{MAX_OSC_PASSCODES, OscPasscode, OscRights, is_valid_new_passcode};
 use crate::validate::{host_problem, name_problem, patch_problems, settings_problems, visit};
@@ -624,6 +624,32 @@ pub enum PatchProperty {
     Outputs {
         value: Vec<PatchOutput>,
     },
+    /// One crosspoint of the routing matrix, cue output `output` to device output
+    /// `device_output` (0-based, below 128 and 64): `Some` sets its level (silence: not routed,
+    /// even where this machine's mapping would send it), `None` takes it out of the list, so the
+    /// mapping decides again.
+    Crosspoint {
+        output: u32,
+        device_output: u32,
+        value: Option<f64>,
+    },
+    /// Replaces every crosspoint: sorted by cue output then device output, each pair once.
+    Crosspoints {
+        value: Vec<PatchCrosspoint>,
+    },
+    /// A device output's level (0-based, below 64).
+    DeviceOutputLevel {
+        device_output: u32,
+        value: f64,
+    },
+    DeviceOutputMute {
+        device_output: u32,
+        value: bool,
+    },
+    /// Replaces every device output's level and mute: sorted, each device output once.
+    DeviceOutputs {
+        value: Vec<DeviceOutputLevel>,
+    },
 }
 
 impl PatchProperty {
@@ -665,6 +691,24 @@ impl PatchProperty {
             Self::ChannelCount { .. } | Self::Outputs { .. } => Self::Outputs {
                 value: patch.outputs.clone(),
             },
+            Self::Crosspoint {
+                output,
+                device_output,
+                ..
+            } => Self::Crosspoint {
+                output: *output,
+                device_output: *device_output,
+                value: patch.crosspoint(*output, *device_output),
+            },
+            Self::Crosspoints { .. } => Self::Crosspoints {
+                value: patch.crosspoints.clone(),
+            },
+            // Both are undone by the whole list: setting the default takes the entry out.
+            Self::DeviceOutputLevel { .. }
+            | Self::DeviceOutputMute { .. }
+            | Self::DeviceOutputs { .. } => Self::DeviceOutputs {
+                value: patch.device_outputs.clone(),
+            },
         })
     }
 
@@ -695,6 +739,55 @@ impl PatchProperty {
                 patch.outputs.resize(*value, default_output());
             }
             Self::Outputs { value } => patch.outputs.clone_from(value),
+            Self::Crosspoint {
+                output,
+                device_output,
+                value,
+            } => {
+                check_routing_indices(*output, *device_output)?;
+                let list = &mut patch.crosspoints;
+                let key = (*output, *device_output);
+                match (list.binary_search_by_key(&key, PatchCrosspoint::key), value) {
+                    (Ok(i), Some(db)) => {
+                        if let Some(c) = list.get_mut(i) {
+                            c.db = *db;
+                        }
+                    }
+                    (Ok(i), None) => {
+                        list.remove(i);
+                    }
+                    (Err(i), Some(db)) => list.insert(
+                        i,
+                        PatchCrosspoint {
+                            output: *output,
+                            device_output: *device_output,
+                            db: *db,
+                        },
+                    ),
+                    (Err(_), None) => {}
+                }
+            }
+            Self::Crosspoints { value } => {
+                // Bound before copying: the list comes from the wire.
+                if value.len() > (MAX_CUE_OUTPUTS * MAX_DEVICE_OUTPUTS) as usize {
+                    return Err(CommandError::InvalidValue("too many crosspoints"));
+                }
+                patch.crosspoints.clone_from(value);
+            }
+            Self::DeviceOutputLevel {
+                device_output,
+                value,
+            } => device_output_mut(patch, *device_output, |d| d.level_db = *value)?,
+            Self::DeviceOutputMute {
+                device_output,
+                value,
+            } => device_output_mut(patch, *device_output, |d| d.mute = *value)?,
+            Self::DeviceOutputs { value } => {
+                if value.len() > MAX_DEVICE_OUTPUTS as usize {
+                    return Err(CommandError::InvalidValue("too many device outputs"));
+                }
+                patch.device_outputs.clone_from(value);
+            }
         }
         Ok(())
     }
@@ -704,12 +797,66 @@ impl PatchProperty {
             Self::OutputLevel { output, .. }
             | Self::OutputMute { output, .. }
             | Self::OutputPolarity { output, .. }
-            | Self::OutputName { output, .. } => Some(*output),
+            | Self::OutputName { output, .. } => Some((*output, 0)),
+            Self::Crosspoint {
+                output,
+                device_output,
+                ..
+            } => Some((*output as usize, *device_output)),
+            Self::DeviceOutputLevel { device_output, .. }
+            | Self::DeviceOutputMute { device_output, .. } => Some((0, *device_output)),
             _ => None,
         };
         std::mem::discriminant(self) == std::mem::discriminant(other)
             && output(self) == output(other)
     }
+}
+
+/// Refuses a cue output or device output no patch can have.
+fn check_routing_indices(output: u32, device_output: u32) -> Result<(), CommandError> {
+    const _: () = assert!(
+        MAX_CUE_OUTPUTS == 128 && MAX_DEVICE_OUTPUTS == 64,
+        "the message below names the limits"
+    );
+    if output >= MAX_CUE_OUTPUTS || device_output >= MAX_DEVICE_OUTPUTS {
+        return Err(CommandError::InvalidValue(
+            "a crosspoint joins cue output 1 to 128 and device output 1 to 64",
+        ));
+    }
+    Ok(())
+}
+
+/// Changes device output `device_output`'s level or mute with `change`; one back at 0 dB and
+/// unmuted leaves the list, so a patch nobody touched lists none.
+fn device_output_mut(
+    patch: &mut OutputPatch,
+    device_output: u32,
+    change: impl FnOnce(&mut DeviceOutputLevel),
+) -> Result<(), CommandError> {
+    check_routing_indices(0, device_output)?;
+    let list = &mut patch.device_outputs;
+    let i = match list.binary_search_by_key(&device_output, |d| d.device_output) {
+        Ok(i) => i,
+        Err(i) => {
+            list.insert(
+                i,
+                DeviceOutputLevel {
+                    device_output,
+                    level_db: 0.0,
+                    mute: false,
+                },
+            );
+            i
+        }
+    };
+    let Some(entry) = list.get_mut(i) else {
+        return Err(CommandError::Internal);
+    };
+    change(entry);
+    if entry.is_default() {
+        list.remove(i);
+    }
+    Ok(())
 }
 
 fn default_output() -> PatchOutput {

@@ -65,7 +65,8 @@ impl Workspace {
     }
 
     /// The commands that put every level of the workspace within `limits`: Audio cues and Fade
-    /// cues aimed at something other than a Group, and the patches' masters and outputs.
+    /// cues aimed at something other than a Group, and the patches' masters, outputs,
+    /// crosspoints and device outputs.
     pub fn limit_clamps(&self, limits: LevelLimits) -> Vec<Command> {
         let mut out = Vec::new();
         for patch in &self.patches {
@@ -85,6 +86,29 @@ impl Workspace {
                         property: PatchProperty::OutputLevel {
                             output,
                             value: limits.limit(o.level_db),
+                        },
+                    });
+                }
+            }
+            for c in &patch.crosspoints {
+                if limits.limit(c.db) != c.db {
+                    out.push(Command::SetPatchProperty {
+                        id,
+                        property: PatchProperty::Crosspoint {
+                            output: c.output,
+                            device_output: c.device_output,
+                            value: Some(limits.limit(c.db)),
+                        },
+                    });
+                }
+            }
+            for d in &patch.device_outputs {
+                if limits.limit(d.level_db) != d.level_db {
+                    out.push(Command::SetPatchProperty {
+                        id,
+                        property: PatchProperty::DeviceOutputLevel {
+                            device_output: d.device_output,
+                            value: limits.limit(d.level_db),
                         },
                     });
                 }

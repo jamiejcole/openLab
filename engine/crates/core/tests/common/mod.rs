@@ -136,6 +136,8 @@ pub fn patch_output() -> PatchOutput {
 
 pub fn patch(n: u128, outputs: usize) -> OutputPatch {
     OutputPatch {
+        crosspoints: Vec::new(),
+        device_outputs: Vec::new(),
         id: patch_id(n),
         name: "Main".into(),
         master_db: 0.0,

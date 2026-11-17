@@ -110,6 +110,8 @@ fn refusal(replies: &[ServerMessage]) -> Option<String> {
 
 fn patch(n: u128) -> OutputPatch {
     OutputPatch {
+        crosspoints: Vec::new(),
+        device_outputs: Vec::new(),
         id: PatchId(uuid::Uuid::from_u128(n)),
         name: format!("Patch {n}"),
         master_db: 0.0,

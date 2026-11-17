@@ -619,6 +619,8 @@ mod tests {
 
     fn patch(n: u128, outputs: usize) -> OutputPatch {
         OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: pid(n),
             name: "Main".into(),
             master_db: 0.0,

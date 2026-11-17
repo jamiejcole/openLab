@@ -3975,6 +3975,40 @@ fn property_commands() -> Vec<(String, Command)> {
         PatchProperty::Outputs {
             value: vec![patch_output(); 2],
         },
+        PatchProperty::Crosspoint {
+            output: 0,
+            device_output: 3,
+            value: Some(-6.0),
+        },
+        PatchProperty::Crosspoints {
+            value: vec![
+                PatchCrosspoint {
+                    output: 0,
+                    device_output: 2,
+                    db: -6.0,
+                },
+                PatchCrosspoint {
+                    output: 1,
+                    device_output: 0,
+                    db: -120.0,
+                },
+            ],
+        },
+        PatchProperty::DeviceOutputLevel {
+            device_output: 2,
+            value: -10.0,
+        },
+        PatchProperty::DeviceOutputMute {
+            device_output: 3,
+            value: true,
+        },
+        PatchProperty::DeviceOutputs {
+            value: vec![DeviceOutputLevel {
+                device_output: 1,
+                level_db: -3.0,
+                mute: true,
+            }],
+        },
     ];
     let network = [
         NetworkPatchProperty::Name {
