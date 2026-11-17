@@ -3830,8 +3830,8 @@ fn a_stop_fading_past_the_end_of_the_range_ends_picture_sound_and_cue_with_the_r
 
 /// A movie with sound and a skipped slice: sound and picture go over it on the same sample,
 /// nothing of it heard or shown; a devamp of the loop before it goes on to the slice after it
-/// for both; and a load to a time counts only what plays, for both (a Video cue takes no seek
-/// to a point of its file, so no point inside the skipped slice can be asked for).
+/// for both; and a load to a time counts only what plays, for both (a load's time is a point
+/// of the action, which has no time inside the skipped slice).
 #[test]
 fn a_skipped_slice_keeps_picture_and_sound_together_played_devamped_and_loaded() {
     use openlab_core::{PlayCount, SliceMarker};
