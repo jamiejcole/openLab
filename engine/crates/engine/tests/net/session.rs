@@ -1436,7 +1436,8 @@ fn patch_peaks(seen: &[ServerMessage]) -> HashMap<openlab_core::PatchId, f32> {
 #[tokio::test]
 async fn a_patch_mapped_to_the_second_virtual_device_is_heard_there_and_not_on_the_first() {
     let dir = tempfile::tempdir().unwrap();
-    let mut ws = workspace(vec![audio(1, &wav(&dc(16_000, 0.25)), 0)]);
+    // Long enough to be playing when its device is unplugged.
+    let mut ws = workspace(vec![audio(1, &wav(&dc(8_000 * 30, 0.25)), 0)]);
     let mut other = ws.patches[0].clone();
     other.id = openlab_core::PatchId(uuid::Uuid::from_u128(902));
     other.name = "Other".into();
@@ -1514,9 +1515,16 @@ async fn a_patch_mapped_to_the_second_virtual_device_is_heard_there_and_not_on_t
         c.state(1) == Some(WireCueState::Paused)
     })
     .await;
+    // The first device plays on: time moves although the stopped voice's stream is not read.
     ok_call(&mut ws, advance_by(VRATE * 2)).await;
     let listed = device_names(ws.call(|id| request(id, Request::ListDevices)).await);
     assert_eq!(listed, [("openLab Virtual Output".to_owned(), 2)]);
+    // Plugged back in, it opens again and the cue keeps its mark until the operator acts.
+    ok_call(&mut ws, plug).await;
+    ok_call(&mut ws, advance_by(VRATE * 2)).await;
+    assert_eq!(ws.state(1), Some(WireCueState::Paused));
+    let listed = device_names(ws.call(|id| request(id, Request::ListDevices)).await);
+    assert_eq!(listed.len(), 2, "{listed:?}");
 
     let unknown = ws
         .call(|id| {
