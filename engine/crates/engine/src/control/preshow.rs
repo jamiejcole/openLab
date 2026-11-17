@@ -23,7 +23,7 @@ use super::DocCx;
 const INFO_CODE: &str = "preload_over_budget";
 
 /// The notices about a whole audio device rather than one patch: they count in the check only
-/// while some cue's patch is on that device.
+/// while some cue's patch is on that device, or, for the clock device, while any cue plays.
 const DEVICE_CODES: [&str; 4] = [
     "device_lost",
     "device_stalled",
@@ -231,9 +231,10 @@ impl DocCx<'_> {
 
     /// The devices the cues' patches play on: each patch's device on this machine, the
     /// system's output device now for one on the system output, and the device its resolution
-    /// names. `None` when some cue's patch has no device to name (not mapped, the system output
-    /// with no device, a deleted patch): it may play on any device, so every device's trouble
-    /// counts.
+    /// names; and, once any cue plays, the clock device, whose clock every device's cues are
+    /// dated on (its stall stops time for all of them). `None` when some cue's patch has no
+    /// device to name (not mapped, the system output with no device, a deleted patch): it may
+    /// play on any device, so every device's trouble counts.
     fn devices_played(&self, uses: &Uses) -> Option<BTreeSet<String>> {
         let ws = self.doc.model.ws().id;
         let system = self.eng.system_output();
@@ -241,6 +242,9 @@ impl DocCx<'_> {
         for (&patch, cues) in &uses.patch {
             if cues.is_empty() {
                 continue;
+            }
+            if played.is_empty() {
+                played.insert(self.eng.outputs.primary().name.clone());
             }
             let mapped = self
                 .eng

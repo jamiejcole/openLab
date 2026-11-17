@@ -660,12 +660,17 @@ fn on_other() -> PatchMapping {
     }
 }
 
-/// Whether the report's system problems hold `code` about device "Other".
-fn counts_other(r: &PreshowReport, code: &str) -> bool {
+/// Whether the report's system problems hold `code` about the device named `device`.
+fn counts(r: &PreshowReport, code: &str, device: &str) -> bool {
     r.system.iter().any(|w| {
         matches!(w, WireWarning::Notice { code: c, device: Some(d), .. }
-            if c == code && d == OTHER_NAME)
+            if c == code && d == device)
     })
+}
+
+/// Whether the report's system problems hold `code` about device "Other".
+fn counts_other(r: &PreshowReport, code: &str) -> bool {
+    counts(r, code, OTHER_NAME)
 }
 
 /// A spare patch mapped to a device unplugged after the show opened, no cue on it: the
@@ -729,6 +734,54 @@ fn a_cue_on_the_system_output_counts_the_loss_of_the_device_it_played_on() {
         "the Warnings list names the device"
     );
     assert_eq!(broken_ids(&r), vec![id(7)]);
+}
+
+/// Moves the clock on by `ms` in 25 ms steps with the device threads answering; stops early
+/// once the clock device is down.
+fn idle_ms(s: &mut DeviceShow, ms: u64) {
+    for _ in 0..ms / 25 {
+        s.advance(std::time::Duration::from_millis(25));
+        s.tick();
+        s.wait_devices();
+        if s.control().device_down() {
+            return;
+        }
+    }
+}
+
+/// The only cue plays on a second device; the clock device, which no cue's patch is on,
+/// stalls: the master clock every device's cues are dated on stands still, so the check fails
+/// with `device_stalled`, and with `device_lost` once the stall is a loss.
+#[test]
+fn a_stall_or_loss_of_the_clock_device_fails_the_check_while_a_cue_plays_on_another_device() {
+    let mut ws = workspace(vec![on_spare(7)]);
+    ws.patches.push(twin(&ws.patches[0], 902, "Spare"));
+    let mut c = config_main_only(&ws);
+    map_to(&mut c, &ws, spare_patch(), OTHER_NAME);
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed(OTHER, OTHER_NAME, 2)],
+        c,
+    );
+    s.settle_devices();
+    s.tick();
+    s.run(BLOCK * 2);
+    let r = preshow(&mut s);
+    assert!(r.ok, "before the stall: {r:?}");
+
+    s.fake.stall();
+    idle_ms(&mut s, 600);
+    assert!(!s.control().device_down(), "a stall, not yet a loss");
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert!(counts(&r, "device_stalled", DEV_NAME), "{:?}", r.system);
+    assert_eq!(r.summary.system, 1, "{r:?}");
+
+    idle_ms(&mut s, 3_000);
+    assert!(s.control().device_down(), "the stall became a loss");
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert!(counts(&r, "device_lost", DEV_NAME), "{:?}", r.system);
 }
 
 /// A cue whose patch has no device to name (on the system output while the system has no output
