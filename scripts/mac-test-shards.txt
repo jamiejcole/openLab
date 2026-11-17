@@ -5,9 +5,11 @@
 # that is listed twice.
 # Two shards, not more: with the two Rust macOS jobs and the Release bundle job that is five macOS jobs,
 # what the account runs at once; a sixth waited for a runner. Balanced from runner times (one hosted
-# macOS run) so each shard's tests take about 9 minutes; the smoke set's 3-4 are in shard 2's share.
+# macOS run: shard 1 took 7.9 minutes and shard 2 21.4 with only the first three classes below) so each
+# shard's job takes about 14-15 minutes; the smoke set's 3-4 are in shard 2's share.
 # Re-balance when a class's time changes a lot.
-# Shard 1 (about 540 s):
+# Shard 1:
 1 AppControllerTests
 1 EngineCrashFlowTests
 1 CueListTests
+1 PlayheadFlowTests
