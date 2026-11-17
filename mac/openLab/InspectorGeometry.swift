@@ -363,6 +363,7 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
         scaleLock.setButtonType(.toggle)
         scaleLock.toolTip = loc("inspector.geometry.scaleLock")
         thumbnail.setAX("inspector-geometry-thumbnail", label: loc("inspector.geometry.thumbnail"))
+        thumbnail.setAccessibilityElement(true)
         thumbnail.setAccessibilityRole(.image)
         let ids: [(NSTextField, String)] = [
             (layerField, "layer"), (opacityField, "opacity"), (xField, "x"), (yField, "y"), (scaleXField, "scale-x"),
