@@ -12,8 +12,8 @@ use openlab_core::protocol::{
     PreshowTarget, PreshowTargetStatus, WireProblem, WireResolution, WireWarning,
 };
 use openlab_core::{
-    CueId, CueKind, CueListId, CueProblem, NetworkPatchId, PatchId, PatchResolution, Workspace,
-    descendants,
+    CueId, CueKind, CueListId, CueProblem, NetworkPatchId, PatchId, PatchResolution, SYSTEM_OUTPUT,
+    Workspace, descendants,
 };
 
 use super::DocCx;
@@ -21,6 +21,15 @@ use super::DocCx;
 /// The system warning that is information, not a problem: the file is streamed instead of
 /// preloaded and plays fine. Listed in `system`, not counted, never makes the check fail.
 const INFO_CODE: &str = "preload_over_budget";
+
+/// The notices about a whole audio device rather than one patch: they count in the check only
+/// while some cue's patch is on that device.
+const DEVICE_CODES: [&str; 4] = [
+    "device_lost",
+    "device_stalled",
+    "device_unrecoverable",
+    "outputs_dropped",
+];
 
 impl DocCx<'_> {
     /// The report, from the current state. Brings the warnings up to date first so the two
@@ -162,8 +171,10 @@ impl DocCx<'_> {
         }
 
         // A patch's own trouble (no device, a device missing or unusable, too few channels,
-        // routing past the device, no mixer patch) stops nothing while no cue plays on it: the
-        // warnings list keeps naming it, the check leaves it out.
+        // routing past the device, no mixer patch) stops nothing while no cue plays on it, nor
+        // does a device's own trouble while no cue's patch is on it: the warnings list keeps
+        // naming them, the check leaves them out.
+        let played = self.devices_played(&uses);
         let mut system: Vec<WireWarning> = self
             .doc
             .warnings
@@ -172,6 +183,14 @@ impl DocCx<'_> {
                 WireWarning::Notice {
                     patch: Some(patch), ..
                 } => uses.patch.get(patch).is_some_and(|cues| !cues.is_empty()),
+                WireWarning::Notice {
+                    patch: None,
+                    device: Some(device),
+                    code,
+                    ..
+                } if DEVICE_CODES.contains(&code.as_str()) => {
+                    played.as_ref().is_none_or(|played| played.contains(device))
+                }
                 _ => true,
             })
             .cloned()
@@ -208,6 +227,41 @@ impl DocCx<'_> {
             network,
             system,
         }
+    }
+
+    /// The devices the cues' patches play on: each patch's device on this machine, the
+    /// system's output device now for one on the system output, and the device its resolution
+    /// names. `None` when some cue's patch has no device to name (not mapped, the system output
+    /// with no device, a deleted patch): it may play on any device, so every device's trouble
+    /// counts.
+    fn devices_played(&self, uses: &Uses) -> Option<BTreeSet<String>> {
+        let ws = self.doc.model.ws().id;
+        let system = self.eng.system_output();
+        let mut played = BTreeSet::new();
+        for (&patch, cues) in &uses.patch {
+            if cues.is_empty() {
+                continue;
+            }
+            let mapped = self
+                .eng
+                .config
+                .machine
+                .patch_mapping(ws, patch)
+                .and_then(|m| m.device_for(system.as_deref()));
+            let resolved = match self.eng.patches.resolution(self.doc.id, patch) {
+                Some(
+                    PatchResolution::Mapped { device, .. }
+                    | PatchResolution::DeviceMissing { device }
+                    | PatchResolution::ChannelsMissing { device, .. },
+                ) if device != SYSTEM_OUTPUT => Some(device.as_str()),
+                _ => None,
+            };
+            if mapped.is_none() && resolved.is_none() {
+                return None;
+            }
+            played.extend(mapped.into_iter().chain(resolved).map(str::to_owned));
+        }
+        Some(played)
     }
 }
 

@@ -174,7 +174,8 @@ Numbers are asserted in `engine/crates/engine/tests/perf.rs` (a 2,110-cue show b
 
 ## Pre-show check (engine half)
 `preshow_check` (`control/preshow.rs`) is built on the control thread from state it holds, no I/O: `CueEngine::broken_cues()` (folds in probes, watch, patch availability), patch resolutions, the workspace's cues, and the `warnings` list (refreshed if stale). Media is as fresh as the last probe and watch event; never re-read at request time.
-  `summary.total` counts broken cues plus `system` entries that are problems (`preload_over_budget` is information); an unused patch is listed, not counted, and raises no `patch_no_device` notice; `system` leaves out every notice whose `patch` no cue plays on (as the patch list counts users), which the `warnings` list still shows. Network destinations are `not_checked` when present, `missing` when a cue names one the workspace lacks.
+  `summary.total` counts broken cues plus `system` entries that are problems (`preload_over_budget` is information); an unused patch is listed, not counted, and raises no `patch_no_device` notice.
+  `system` leaves out every notice whose `patch` no cue plays on (as the patch list counts users), and a device's own notices (`DEVICE_CODES`, no `patch`) while no used patch is on that device (`devices_played`: mapping, system output's device now, resolution; a used patch with no device to name counts them all); the `warnings` list still shows both. Network destinations are `not_checked` when present, `missing` when a cue names one the workspace lacks.
 
 ## References (read only when the task needs it)
 - `references/feedback.md`: the mixer/stream/probe event to cue-engine input table, orphaned tails and aliases, reconciliation of lost events, mixer stage faults. Read when changing feedback handling, `control/faults.rs`, or anything that ends or fails a run.
