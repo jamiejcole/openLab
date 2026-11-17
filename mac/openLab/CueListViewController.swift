@@ -185,6 +185,26 @@ final class ProgressFillView: NSView {
     }
 }
 
+/// A label that truncates at the tail, and draws nothing where not even one letter and the ellipsis fit.
+/// AppKit's own tail truncation, given less than that, draws the first letter cut through its middle.
+final class WholeGlyphLabel: NSTextField {
+    /// Whether `width` holds the first letter and an ellipsis (the least a truncated text can show).
+    static func fits(_ text: NSAttributedString, in width: CGFloat) -> Bool {
+        if width >= text.size().width { return true }
+        guard text.length > 0 else { return true }
+        let first = text.attributedSubstring(from: NSRange(location: 0, length: 1)).mutableCopy()
+        guard let shown = first as? NSMutableAttributedString else { return true }
+        shown.append(NSAttributedString(string: "\u{2026}", attributes: text.attributes(at: 0, effectiveRange: nil)))
+        // The cell insets its text a little on each side.
+        return width - 4 >= shown.size().width
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if !Self.fits(attributedStringValue, in: bounds.width) { return }
+        super.draw(dirtyRect)
+    }
+}
+
 /// A cell: up to four small images around one label. The first (status) column has five images, each in
 /// a fixed slot (`statusSlots`): playhead (0), state (1), the cue's type icon (4), preview or flag (2, 3).
 /// Duration column: `progress` behind the label.
@@ -202,7 +222,7 @@ final class CueCell: NSTableCellView {
     static let statusWidth: CGFloat = 70
     /// The colours of the tinted images, kept so a highlighted row can draw them in its text colour.
     private var tints: [Int: (icon: Icon, image: NSImage, tint: NSColor, label: String)] = [:]
-    let label = NSTextField(labelWithString: "")
+    let label = WholeGlyphLabel(labelWithString: "")
     let progress = ProgressFillView()
     /// An Audio cue's button in the Target cell, with or without a file; clicking it calls `onChoose`.
     let chooseButton = NSButton(title: "", target: nil, action: nil)
@@ -366,6 +386,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     static let rowHeight: CGFloat = 24
     /// The least the Name column shrinks to; a narrower list scrolls sideways.
     static let nameMinWidth: CGFloat = 60
+    /// The least width of the Name editor, whatever the cell's.
+    static let nameEditorMinWidth: CGFloat = 180
 
     let store: WorkspaceStore
     let outlineView: NSOutlineView
@@ -440,6 +462,24 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         super.viewDidLayout()
         fitNameColumn()
         solidHeader()
+        keepSelectionInViewWhenShorter()
+    }
+
+    private var lastVisibleHeight: CGFloat?
+
+    /// A list made shorter (the window or the inspector resized, a divider moved) keeps its selected row in
+    /// view, as a selection change does: the clip view keeps its scroll position, so the row slid out below.
+    /// Only a shrink that cut off a selected row that was in view moves the list: a list the operator
+    /// scrolled away from the selection, or one that grows, is left where it is.
+    private func keepSelectionInViewWhenShorter() {
+        let clip = outlineView.enclosingScrollView?.contentView
+        let height = clip?.bounds.height ?? 0
+        defer { lastVisibleHeight = height }
+        guard let clip, let was = lastVisibleHeight, height < was, outlineView.selectedRow >= 0 else { return }
+        let row = outlineView.rect(ofRow: outlineView.selectedRow)
+        let before = NSRect(x: 0, y: clip.bounds.minY, width: 1, height: was)
+        guard row.minY >= before.minY - 0.5, row.maxY <= before.maxY + 0.5 else { return }
+        outlineView.scrollRowToVisible(outlineView.selectedRow)
     }
 
     /// The header's row is solid, so the rows scrolled up behind it never show through it: AppKit leaves
@@ -557,6 +597,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.menu = menu
         cellEditor.delegate = self
         cellEditor.usesSingleLineMode = true
+        cellEditor.cell?.isScrollable = true
         cellEditor.font = .systemFont(ofSize: NSFont.systemFontSize)
         let scroll = NSScrollView()
         scroll.documentView = outlineView
@@ -1628,7 +1669,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         else { return cancelCellEdit() }
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { return cancelCellEdit() }
-        cellEditor.frame = outlineView.frameOfCell(atColumn: column, row: row)
+        var frame = outlineView.frameOfCell(atColumn: column, row: row)
+        if cell.column == "name" {
+            // A deeply nested row leaves its Name cell too narrow to see what is typed: the editor is at
+            // least `nameEditorMinWidth` wide, reaching over the columns to its right, and kept inside the list.
+            frame.size.width = max(frame.width, Self.nameEditorMinWidth)
+            frame.origin.x = max(0, min(frame.minX, outlineView.bounds.maxX - frame.width))
+        }
+        cellEditor.frame = frame
         exposeCellEditor()
     }
 

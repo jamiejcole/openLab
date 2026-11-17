@@ -6002,8 +6002,10 @@ final class CueListColumnLayoutTests: XCTestCase {
     private var outline: NSOutlineView { wc!.cueList.outlineView }
 
     /// The Demo show in a dark workspace window of `size`, its group open, with `cues` playing.
-    private func open(_ size: NSSize, playing cues: [ModelID] = []) async throws -> WorkspaceWindowController {
-        let rig = try await Rig.open("Demo")
+    private func open(_ size: NSSize, show: String = "Demo", playing cues: [ModelID] = []) async throws
+        -> WorkspaceWindowController
+    {
+        let rig = try await Rig.open(show)
         self.rig = rig
         let wc = WorkspaceWindowController(store: rig.store)
         self.wc = wc
@@ -6011,8 +6013,10 @@ final class CueListColumnLayoutTests: XCTestCase {
         window.appearance = NSAppearance(named: .darkAqua)
         window.setContentSize(size)
         window.contentView?.layoutSubtreeIfNeeded()
-        let group = try XCTUnwrap(wc.cueList.node(H.group))
-        if !outline.isItemExpanded(group) { outline.expandItem(group) }
+        if show == "Demo" {
+            let group = try XCTUnwrap(wc.cueList.node(H.group))
+            if !outline.isItemExpanded(group) { outline.expandItem(group) }
+        }
         for cue in cues {
             guard case .success = await rig.store.transport(.start(cue: cue)) else {
                 XCTFail("start \(cue)")
@@ -6183,6 +6187,113 @@ final class CueListColumnLayoutTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(row.minY, list.minY - 0.5, "\(what): and inside the list")
             }
         }
+    }
+
+    /// Flow: a cue nested five groups deep, in the least window with the sidebar shown, leaves its Name cell
+    /// too narrow for a letter: the name is not drawn at all, never cut through a letter; where a letter and
+    /// the ellipsis fit it ends in the ellipsis.
+    func testADeeplyNestedCuesNameIsNeverDrawnCutThroughALetter() async throws {
+        let wc = try await open(NSSize(width: 800, height: 800), show: "Nested")
+        let window = try XCTUnwrap(wc.window)
+        wc.setVisible(.sidebar, true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        wc.cueList.selectAsUser(["00000000-0000-0000-0000-000000000100"])
+        window.contentView?.layoutSubtreeIfNeeded()
+        let column = outline.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
+        var checked = 0
+        for row in 0..<outline.numberOfRows {
+            guard let cell = outline.view(atColumn: column, row: row, makeIfNecessary: true) as? CueCell else {
+                continue
+            }
+            let label = cell.label
+            XCTAssertEqual(label.lineBreakMode, .byTruncatingTail)
+            let text = label.attributedStringValue
+            let width = label.frame.width
+            let drawn = WholeGlyphLabel.fits(text, in: width)
+            if row != outline.selectedRow, width < text.size().width, drawn {
+                XCTAssertGreaterThan(inkedPixels(of: label), 0, "row \(row) is truncated and still shows its start")
+            }
+            if row == outline.selectedRow {
+                XCTAssertLessThan(width, 30, "the deepest row's name cell is the narrow case")
+                XCTAssertFalse(drawn, "no letter fits, so nothing is drawn")
+                XCTAssertEqual(inkedPixels(of: label), 0, "the label paints no pixel, so no letter is cut")
+                checked += 1
+            }
+        }
+        XCTAssertEqual(checked, 1)
+        let memo = try XCTUnwrap(
+            outline.view(atColumn: column, row: outline.numberOfRows - 1, makeIfNecessary: true) as? CueCell)
+        XCTAssertGreaterThan(inkedPixels(of: memo.label), 0, "a row with room still draws its name")
+        XCTAssertTrue(WholeGlyphLabel.fits(NSAttributedString(string: "Group 1"), in: 200), "room: drawn whole")
+    }
+
+    /// How many pixels `view` paints (its background is clear, so only text counts).
+    private func inkedPixels(of view: NSView) -> Int {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return -1 }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        var count = 0
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide where (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.05 { count += 1 }
+        }
+        return count
+    }
+
+    /// Flow: a cue selected in the middle of a long list, then the window made shorter (the width kept) until
+    /// the list shows one row: that row is the selected cue.
+    func testAShrunkListKeepsTheSelectedRowInView() async throws {
+        let wc = try await open(NSSize(width: 1200, height: 900), show: "Nested")
+        let window = try XCTUnwrap(wc.window)
+        let target: ModelID = "00000000-0000-0000-0000-00000000021c"
+        wc.cueList.selectAsUser([target])
+        window.contentView?.layoutSubtreeIfNeeded()
+        let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        let before = outline.rect(ofRow: outline.selectedRow)
+        XCTAssertGreaterThan(before.minY, scroll.contentView.bounds.height / 2, "selected well down the list")
+        window.setContentSize(NSSize(width: 1200, height: window.minSize.height))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(window.contentView?.frame.width, 1200, "only the height changed")
+        let row = outline.rect(ofRow: outline.selectedRow)
+        let visible = scroll.contentView.bounds
+        XCTAssertEqual(outline.selectedRow, outline.row(forItem: wc.cueList.node(target)))
+        XCTAssertGreaterThanOrEqual(row.minY, visible.minY - 0.5, "the selected row is not above the view")
+        XCTAssertLessThanOrEqual(row.maxY, visible.maxY + 0.5, "the selected row is not below the view")
+    }
+
+    /// A list the operator scrolled away from the selected row stays where it is when the window shrinks.
+    func testAShrunkListScrolledAwayFromTheSelectionIsLeftWhereItIs() async throws {
+        let wc = try await open(NSSize(width: 1200, height: 900), show: "Nested")
+        let window = try XCTUnwrap(wc.window)
+        wc.cueList.selectAsUser(["00000000-0000-0000-0000-00000000021c"])
+        window.contentView?.layoutSubtreeIfNeeded()
+        let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: -scroll.contentInsets.top))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let origin = scroll.contentView.bounds.origin
+        XCTAssertGreaterThan(outline.rect(ofRow: outline.selectedRow).minY, scroll.contentView.bounds.maxY)
+        window.setContentSize(NSSize(width: 1200, height: window.minSize.height))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(scroll.contentView.bounds.origin, origin, "the list was not pulled back to the selection")
+    }
+
+    /// Flow: renaming a deeply nested cue in place: the editor is wide enough to see what is typed, inside
+    /// the list, and the typed text is kept.
+    func testRenamingADeeplyNestedCueInPlaceShowsAUsableEditor() async throws {
+        let wc = try await open(NSSize(width: 800, height: 800), show: "Nested")
+        let window = try XCTUnwrap(wc.window)
+        wc.setVisible(.sidebar, true)
+        let deep: ModelID = "00000000-0000-0000-0000-000000000100"
+        wc.cueList.selectAsUser([deep])
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(wc.cueList.beginCellEdit(deep, column: "name"))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let editor = wc.cueList.cellEditor
+        XCTAssertGreaterThanOrEqual(editor.frame.width, CueListViewController.nameEditorMinWidth)
+        XCTAssertGreaterThanOrEqual(editor.frame.minX, 0)
+        XCTAssertLessThanOrEqual(editor.frame.maxX, outline.bounds.maxX + 0.5, "inside the list")
+        XCTAssertEqual(editor.stringValue, "Deep memo with a long name")
+        XCTAssertTrue(editor.cell?.isScrollable ?? false, "a long name scrolls to the caret")
+        XCTAssertGreaterThan(inkedPixels(of: editor), 0, "the editor draws the text")
     }
 
     /// With scroll bars that always show (a Mac with a mouse), the list at the least window size keeps its
