@@ -1947,7 +1947,11 @@ impl Run {
         for (id, problems) in self.engine.broken_cues() {
             prop_assert!(!problems.is_empty());
             prop_assert!(self.ws.find_cue(id).is_some());
-            prop_assert_ne!(self.engine.state(id), CueState::Idle);
+            // Two cues of one id (a show the loader refuses) share one entry: a fact kept
+            // for one can show on the other.
+            if self.unique_ids() {
+                prop_assert_ne!(self.engine.state(id), CueState::Idle);
+            }
         }
         // A group shows a warning exactly while a descendant is shown with problems, and the
         // reports say so (Broken cues: the group has no problems of its own).
