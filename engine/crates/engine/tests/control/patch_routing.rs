@@ -460,3 +460,57 @@ fn a_whole_matrix_edit_while_a_cue_plays_is_taken_whole() {
     assert!(notice_codes(&s).contains(&"patch_routing_beyond_device".to_owned()));
     assert_eq!(s.control().live_voices(), 1);
 }
+
+/// The latest patch meter sent for the patch: (per mapped device output, per cue output).
+fn patch_meter(s: &mut OfflineShow) -> (Vec<f32>, Vec<f32>) {
+    s.take_outbound()
+        .into_iter()
+        .rev()
+        .find_map(|m| match m {
+            ServerMessage::Meters { outputs, .. } => outputs
+                .into_iter()
+                .find(|o| o.patch == patch_id())
+                .map(|o| (o.peaks, o.cue_outputs)),
+            _ => None,
+        })
+        .expect("a meters message for the patch")
+}
+
+/// The patch editor's row meters are the cue outputs themselves (after their level and mute in
+/// the patch, before the crosspoints): a silenced cue output stays dark though another cue output
+/// is routed to its device output, and a cue output routed only off its mapped pair lights.
+#[test]
+fn a_patch_meters_each_cue_output_itself_not_its_mapped_device_output() {
+    let mut s = show_on(steady(true), 4);
+    // Cue output 2 silenced in the patch; cue output 1 also sent to device output 2.
+    set(
+        &mut s,
+        PatchProperty::OutputLevel {
+            output: 1,
+            value: SILENCE_DB,
+        },
+    );
+    set(&mut s, crosspoint(0, 1, Some(0.0)));
+    go(&mut s);
+    go(&mut s);
+    s.run(2000);
+    let (by_device, by_cue_output) = patch_meter(&mut s);
+    assert!(
+        near(by_device[1], LEVEL),
+        "device output 2 carries cue output 1"
+    );
+    assert!(near(by_cue_output[0], LEVEL), "{by_cue_output:?}");
+    assert_eq!(
+        by_cue_output[1], 0.0,
+        "cue output 2 is silent: its row stays dark"
+    );
+
+    // Cue output 1 off its mapped pair (1→1 at -inf), sent to device output 3 at 0 dB: its row
+    // lights though device output 1 is silent.
+    set(&mut s, crosspoint(0, 0, Some(SILENCE_DB)));
+    set(&mut s, crosspoint(0, 2, Some(0.0)));
+    s.run(2000);
+    let (by_device, by_cue_output) = patch_meter(&mut s);
+    assert_eq!(by_device[0], 0.0, "device output 1 hears nothing");
+    assert!(near(by_cue_output[0], LEVEL), "{by_cue_output:?}");
+}

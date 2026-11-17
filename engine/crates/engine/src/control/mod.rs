@@ -451,6 +451,9 @@ struct Engine {
     /// This wake's meter read, while the docs take their parts of it.
     meter_round: Option<MeterRound>,
     out_peaks: Vec<f32>,
+    /// Each output's patch bus meters, `[output][slot][cue output]`: what each cue output of a
+    /// patch carries before its matrix.
+    bus_peaks: Vec<f32>,
     meter_ids: Vec<VoiceId>,
     meter_peaks: Vec<f32>,
     /// Show-log and status bookkeeping (`observe.rs`).
@@ -767,6 +770,7 @@ impl Control {
             last_meter_read: None,
             meter_round: None,
             out_peaks: vec![0.0; device_outputs],
+            bus_peaks: Vec::new(),
             meter_ids: Vec::new(),
             meter_peaks: Vec::new(),
             observe,
@@ -909,6 +913,8 @@ impl Engine {
         self.meter_ids = vec![VoiceId(0); cap];
         self.meter_peaks = vec![0.0; cap * self.cue_outputs.max(1)];
         self.out_peaks = vec![0.0; self.device_outputs * self.outputs.len()];
+        self.bus_peaks =
+            vec![0.0; self.outputs.len() * self.patches.capacity() * self.cue_outputs.max(1)];
     }
 
     /// Reads every mixer's voice meters into `meter_ids`/`meter_peaks`, one after another.
@@ -929,15 +935,30 @@ impl Engine {
     }
 
     /// Reads every mixer's output meters into `out_peaks`, output `k`'s at `k * device_outputs`
-    /// (as many as its mixer has).
+    /// (as many as its mixer has), and its patch bus meters into `bus_peaks`.
     fn read_output_meters(&mut self) {
         let n = self.device_outputs;
+        let (slots, rows) = (self.patches.capacity(), self.cue_outputs.max(1));
         for (k, o) in self.outputs.iter_mut().enumerate() {
             let width = o.mixer.device_outputs().min(n);
             if let Some(out) = self.out_peaks.get_mut(k * n..k * n + width) {
                 o.mixer.read_output_meters_into(out);
             }
+            for slot in 0..slots {
+                let at = (k * slots + slot) * rows;
+                if let Some(out) = self.bus_peaks.get_mut(at..at + rows) {
+                    out.fill(0.0);
+                    o.mixer.read_patch_meters_into(slot, out);
+                }
+            }
         }
+    }
+
+    /// The bus meters of `slot` on output `key`'s mixer: one per cue output, as last read.
+    pub(super) fn bus_peaks(&self, key: OutputKey, slot: u16) -> &[f32] {
+        let (slots, rows) = (self.patches.capacity(), self.cue_outputs.max(1));
+        let at = (key * slots + usize::from(slot)) * rows;
+        self.bus_peaks.get(at..at + rows).unwrap_or(&[])
     }
 
     /// Says on `config.awake` whether the computer must stay awake, when that changes. Never

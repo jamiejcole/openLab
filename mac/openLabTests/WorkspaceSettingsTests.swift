@@ -715,11 +715,14 @@ final class WorkspaceSettingsTests: XCTestCase {
         let heard = try await peak(rig, channel: 1)
         XCTAssertGreaterThan(heard, 0.05, "device output 2 now carries cue output 1")
         XCTAssertEqual(rig.store.cueStates[intro]?.state, .running, "the cue plays on")
-        // What the editor's meter draws for row 2: its own source, read through the bank it is on.
-        let source = try XCTUnwrap(editor.meter.source)
+        // The editor's meter rows are the cue outputs themselves: row 1 moves, row 2 (silenced in
+        // the patch) stays dark though device output 2 now carries cue output 1.
         XCTAssertTrue(editor.meter.bank === rig.store.meters)
         XCTAssertGreaterThan(rig.store.meters.visibleCount, 0, "the editor's meter is registered")
-        XCTAssertGreaterThan(rig.store.meters.level(source, channel: 1), 0.05, "the editor's meter row moves")
+        let row1 = try await rowPeak(rig, row: 0)
+        let row2 = try await rowPeak(rig, row: 1)
+        XCTAssertGreaterThan(row1, 0.05, "row 1 moves")
+        XCTAssertEqual(row2, 0, accuracy: 0.0001, "row 2 stays dark")
         XCTAssertEqual(
             editor.deviceOutputLabels.map(\.stringValue),
             [String(format: loc("patchEditor.feeds"), "1"), String(format: loc("patchEditor.feeds"), "1, 2")])
@@ -784,6 +787,28 @@ final class WorkspaceSettingsTests: XCTestCase {
         // Typed 0 where the mapping sends it: back to the mapping, the list empty again.
         try typeCrosspoint("0", row: 1, column: 1, in: editor)
         await assertEventually { self.crosspoints(rig).isEmpty }
+    }
+
+    /// ui-qa: the patch editor's row meter shows its cue output wherever the crosspoints send it.
+    /// Cue output 1 taken off its mapped device output (1→1 at -inf) and sent to device output 2
+    /// lights row 1 though device output 1 is silent; cue output 2, silenced in the patch, keeps
+    /// row 2 dark though device output 2 is sounding.
+    func testARowMeterFollowsItsCueOutputNotTheDeviceOutputItIsMappedTo() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        try type("-inf", into: editor.outputFields[1])
+        try typeCrosspoint("", row: 0, column: 0, in: editor)
+        try typeCrosspoint("0", row: 0, column: 1, in: editor)
+        await assertEventually { self.crosspoints(rig) == [[0, 0, -120], [0, 1, 0]] }
+        await assertEventually { self.patchLevels(rig).outputs == [0, -120] }
+        let deviceOne = try await peak(rig, channel: 0)
+        let deviceTwo = try await peak(rig, channel: 1)
+        XCTAssertEqual(deviceOne, 0, accuracy: 0.0001, "device output 1 hears nothing")
+        XCTAssertGreaterThan(deviceTwo, 0.05, "device output 2 carries cue output 1")
+        let row1 = try await rowPeak(rig, row: 0)
+        let row2 = try await rowPeak(rig, row: 1)
+        XCTAssertGreaterThan(row1, 0.05, "row 1 lights")
+        XCTAssertEqual(row2, 0, accuracy: 0.0001, "row 2 stays dark")
+        XCTAssertEqual(rig.store.cueStates[intro]?.state, .running)
     }
 
     /// Opens a crosspoint's box, types and presses Esc.
@@ -1381,12 +1406,22 @@ final class WorkspaceSettingsTests: XCTestCase {
     private func peak(_ rig: Rig, channel: Int) async throws -> Float {
         // A change ramps in over a few blocks: the first half second is let go by.
         try await rig.advance(0.5)
+        rig.wire.resetDevicePeaks()
+        for _ in 0..<5 { try await rig.advance(0.1) }
+        let peaks = rig.wire.devicePeaks[patch] ?? []
+        return peaks.indices.contains(channel) ? peaks[channel] : 0
+    }
+
+    /// The loudest the patch editor's meter drew for cue output `row` (from 0) over the next half
+    /// second of device time, read as each report arrives.
+    private func rowPeak(_ rig: Rig, row: Int) async throws -> Float {
+        try await rig.advance(0.5)
         rig.store.meters.reset()
         var loudest: Float = 0
         for _ in 0..<5 {
             try await rig.advance(0.1)
             rig.store.meters.tick(0)
-            loudest = max(loudest, rig.store.meters.level(.output(patch), channel: channel))
+            loudest = max(loudest, rig.store.meters.level(.output(patch), channel: row))
         }
         return loudest
     }
@@ -1677,6 +1712,18 @@ final class PatchRoutingTests: XCTestCase {
         XCTAssertEqual(r.namedDeviceOutputs, 3)
         XCTAssertEqual(r.feeders(of: 1), [1])
         XCTAssertNil(routing(channels: nil).level(0, 0), "no device: nothing routed")
+    }
+
+    /// Only routing that sends something names a device output: a silent crosspoint, or one of a cue
+    /// output the patch no longer has, draws no column past the device and no note (the engine
+    /// raises no warning for them either).
+    func testOnlyRoutedCrosspointsOfCueOutputsThePatchHasNameDeviceOutputs() {
+        XCTAssertEqual(routing(channels: [0, 1], crosspoints: [(0, 5, -120)]).namedDeviceOutputs, 2)
+        XCTAssertEqual(routing(channels: [0, 1], crosspoints: [(2, 5, 0)]).namedDeviceOutputs, 2)
+        XCTAssertEqual(routing(channels: [0, 1], crosspoints: [(1, 5, -6)]).namedDeviceOutputs, 6)
+        var muted = routing(channels: [0, 1])
+        muted.deviceOutputs[3] = .init(level: 0, mute: true)
+        XCTAssertEqual(muted.namedDeviceOutputs, 4, "a device output's own setting names it")
     }
 
     func testTypingSendsOnlyWhatChangesAndKeepsTheListShort() {

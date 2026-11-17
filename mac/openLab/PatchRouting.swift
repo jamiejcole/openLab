@@ -82,10 +82,14 @@ struct PatchRouting: Equatable {
 
     func deviceOutput(_ d: Int) -> DeviceOutput { deviceOutputs[d] ?? DeviceOutput() }
 
-    /// The device outputs the patch names: one past the highest its mapping or settings name.
+    /// The device outputs the patch names: one past the highest its mapping, its device-output
+    /// settings or a crosspoint that routes one of its cue outputs names (as the engine counts them
+    /// for its warning; a silent crosspoint, or one of a cue output the patch no longer has, routes
+    /// nothing).
     var namedDeviceOutputs: Int {
+        let routed = crosspoints.filter { $0.key.output < outputs.count && $0.value > LevelText.silence }
         let highest = [
-            channels?.max(), crosspoints.keys.map(\.deviceOutput).max(), deviceOutputs.keys.max(),
+            channels?.max(), routed.keys.map(\.deviceOutput).max(), deviceOutputs.keys.max(),
         ]
         .compactMap { $0 }.max()
         return highest.map { $0 + 1 } ?? 0

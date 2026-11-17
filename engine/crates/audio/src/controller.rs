@@ -324,6 +324,15 @@ impl MixerController {
         self.meters.read_outputs(out)
     }
 
+    /// Peak of each cue output of patch matrix `patch` since the last read: its bus as the cues
+    /// send it, before the matrix (its levels, crosspoints and device outputs). Fills `out[o]`
+    /// for cue output `o` up to the most rows the patch has ever mixed and returns how many it
+    /// filled; the rest of `out` is left alone. Unknown patch: 0. Never blocks the audio thread;
+    /// allocates nothing.
+    pub fn read_patch_meters_into(&mut self, patch: usize, out: &mut [f32]) -> usize {
+        self.meters.read_patch(patch, out)
+    }
+
     /// [`MixerController::read_output_meters_into`] for every device output.
     pub fn output_meters(&mut self) -> Vec<f32> {
         let mut out = vec![0.0; self.meters.device_outputs()];

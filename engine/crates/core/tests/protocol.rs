@@ -1284,6 +1284,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             outputs: vec![OutputMeter {
                 patch: patch_id(1),
                 peaks: vec![0.5, 0.25],
+                cue_outputs: vec![0.5, 0.125],
             }],
             cues: vec![CueMeter {
                 cue: cue_id(10),
@@ -2564,6 +2565,13 @@ fn per_device_fields_are_optional_on_the_wire() {
     let mapping: PatchMappingEntry =
         serde_json::from_str(r#"{"patch":"00000000-0000-0000-0000-000000000070"}"#).unwrap();
     assert_eq!(mapping.resolution, None);
+    let meter: OutputMeter =
+        serde_json::from_str(r#"{"patch":"00000000-0000-0000-0000-000000000070","peaks":[0.5]}"#)
+            .unwrap();
+    assert!(
+        meter.cue_outputs.is_empty(),
+        "an older engine's meter has no cue outputs"
+    );
 }
 
 #[test]
@@ -2658,6 +2666,7 @@ fn progress_and_meters_are_sanitised_not_refused() {
         outputs: vec![OutputMeter {
             patch: patch_id(1),
             peaks: vec![peak, 0.5],
+            cue_outputs: vec![peak],
         }],
         cues: vec![CueMeter {
             cue: cue_id(1),
@@ -2670,7 +2679,8 @@ fn progress_and_meters_are_sanitised_not_refused() {
             ServerMessage::Meters {
                 outputs: vec![OutputMeter {
                     patch: patch_id(1),
-                    peaks: vec![0.0, 0.5]
+                    peaks: vec![0.0, 0.5],
+                    cue_outputs: vec![0.0],
                 }],
                 cues: vec![CueMeter {
                     cue: cue_id(1),

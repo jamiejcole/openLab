@@ -205,6 +205,49 @@ fn voice_meters_show_each_cue_output_post_fader_pre_patch() {
     assert_eq!(ctl.output_meters()[0], (0.25 + 0.75) * 0.25 * 0.5);
 }
 
+/// A patch's bus meter (the patch editor's row per cue output) is the cue output as the cues
+/// send it, summed over its voices and before the patch matrix: a row the matrix sends nowhere
+/// still shows, a row nothing feeds stays at 0 whatever the matrix sends to its device outputs,
+/// and a read takes the peaks (the next read sees only what came after).
+#[test]
+fn patch_meters_show_each_cue_output_before_the_matrix() {
+    let (mut ctl, mut r) = setup(config(3));
+    // Cue output 0 goes nowhere; cue output 1 to device outputs 0 and 2 at half level.
+    for (cue_output, device_output, gain) in [(0, 0, 0.0), (1, 1, 0.0), (1, 0, 0.5), (1, 2, 0.5)] {
+        ctl.send(
+            0,
+            CommandKind::SetPatchRouting {
+                patch: 0,
+                cue_output,
+                device_output,
+                gain,
+            },
+        );
+    }
+    render(&mut r, SETTLE, &[]);
+    let n = SETTLE as u64;
+    start(&mut ctl, n, 1, source(&dc(0.5, 20_000)), 1);
+    let mut v = voice(&ctl, 2, source(&dc(-0.25, 20_000)), 1);
+    v.set_crosspoint(0, 0, 0.0);
+    v.set_crosspoint(0, 1, 1.0);
+    send_start(&mut ctl, n, v);
+    render(&mut r, 2000, &[64, 7]);
+    let mut bus = [9.0; 3];
+    // The voices are as wide as the mixer: all three rows were mixed.
+    assert_eq!(ctl.read_patch_meters_into(0, &mut bus), 3);
+    assert_eq!(
+        bus,
+        [0.5, 0.25, 0.0],
+        "row 0 heard nowhere still meters; nothing feeds row 2"
+    );
+    assert_eq!(ctl.output_meters(), vec![0.125, 0.0, 0.125]);
+    // Read and reset: nothing more rendered, nothing more to show.
+    assert_eq!(ctl.read_patch_meters_into(0, &mut bus), 3);
+    assert_eq!(bus, [0.0; 3]);
+    // An unknown patch reads nothing.
+    assert_eq!(ctl.read_patch_meters_into(99, &mut bus), 0);
+}
+
 #[test]
 fn voice_meters_follow_fades_and_ramps_sample_exactly() {
     let (mut ctl, mut r) = setup(config(1));

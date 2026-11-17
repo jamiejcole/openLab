@@ -8,7 +8,7 @@ use openlab_core::protocol::{
     CueMeter, OutputMeter, ProgressItem, RuntimeChange, ServerMessage, WaitProgress, WireWait,
     WorkspaceInfo,
 };
-use openlab_core::{Input, SampleTime, Timer};
+use openlab_core::{Input, SampleTime, Timer, db_to_gain};
 
 use super::voices::Effects;
 use super::{Control, DocCx, DocId, Engine, Listed, MeterRound, REPORT_HZ, notice};
@@ -297,7 +297,32 @@ impl DocCx<'_> {
                             .unwrap_or(0.0)
                     })
                     .collect();
-                Some(OutputMeter { patch: p.id, peaks })
+                // Each cue output itself: its bus after its level and mute in the patch (the
+                // matrix carries them, so they are applied here), before crosspoints.
+                let bus = self
+                    .eng
+                    .patches
+                    .mixer_patch(self.doc.id, p.id)
+                    .map(|slot| self.eng.bus_peaks(key, slot))
+                    .unwrap_or(&[]);
+                let cue_outputs = p
+                    .outputs
+                    .iter()
+                    .enumerate()
+                    .map(|(o, out)| {
+                        let gain = if out.mute {
+                            0.0
+                        } else {
+                            db_to_gain(out.level_db)
+                        };
+                        bus.get(o).copied().unwrap_or(0.0) * gain
+                    })
+                    .collect();
+                Some(OutputMeter {
+                    patch: p.id,
+                    peaks,
+                    cue_outputs,
+                })
             })
             .collect();
         let live = self.doc.voices.has_playing() || !cues.is_empty();

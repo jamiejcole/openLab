@@ -75,6 +75,10 @@ impl Mixer {
                 }
                 continue;
             }
+            for (pk, bo) in p.peak.iter_mut().zip(p.bus.chunks_exact(block)).take(mixed) {
+                track_all(pk, bo.get(..len).unwrap_or_default());
+            }
+            p.peak_rows = p.peak_rows.max(mixed);
             for (d, dv) in dev.chunks_exact_mut(block).enumerate() {
                 for (o, bo) in p.bus.chunks_exact(block).enumerate().take(mixed) {
                     let Some(g) = p.gains.get_mut(o * outs + d) else {

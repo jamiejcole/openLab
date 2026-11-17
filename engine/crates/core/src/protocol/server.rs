@@ -852,7 +852,13 @@ pub enum WireWait {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutputMeter {
     pub patch: PatchId,
+    /// One per cue output of the patch: the device output this machine maps it to.
     pub peaks: Vec<f32>,
+    /// One per cue output of the patch: that cue output itself, as the cues send it after its
+    /// level and mute in the patch, before the patch's crosspoints and device outputs (what the
+    /// patch editor's rows meter). Absent from an engine that predates it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cue_outputs: Vec<f32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -891,7 +897,7 @@ impl ServerMessage {
             Self::Meters { outputs, cues } => {
                 let peaks = outputs
                     .iter_mut()
-                    .flat_map(|m| m.peaks.iter_mut())
+                    .flat_map(|m| m.peaks.iter_mut().chain(m.cue_outputs.iter_mut()))
                     .chain(cues.iter_mut().flat_map(|m| m.peaks.iter_mut()));
                 for peak in peaks {
                     *peak = clean(f64::from(*peak)) as f32;

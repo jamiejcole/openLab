@@ -71,14 +71,15 @@ final class MeterTests: XCTestCase {
         view.bank = rig.store.meters
         XCTAssertEqual(rig.store.meters.visibleCount, 1)
         let msg = try ServerMessage.decode(
-            #"{"type":"meters","outputs":[{"patch":"p1","peaks":[0.25]}],"cues":[{"cue":"\#(Self.intro)","peaks":[0.5,0.125]}]}"#
+            #"{"type":"meters","outputs":[{"patch":"p1","peaks":[0.25],"cue_outputs":[0.75]}],"cues":[{"cue":"\#(Self.intro)","peaks":[0.5,0.125]}]}"#
         )
         rig.store.receive(msg)
         rig.store.meters.tick(1.0 / 60)
         XCTAssertEqual(rig.store.meters.channelCount(.cue(Self.intro)), 2)
         XCTAssertEqual(rig.store.meters.level(.cue(Self.intro), channel: 0), 0.5)
         XCTAssertEqual(rig.store.meters.level(.cue(Self.intro), channel: 1), 0.125)
-        XCTAssertEqual(rig.store.meters.level(.output("p1"), channel: 0), 0.25)
+        // A patch meter is its cue outputs themselves, not the device outputs they are mapped to.
+        XCTAssertEqual(rig.store.meters.level(.output("p1"), channel: 0), 0.75)
     }
 
     // MARK: Coalescing

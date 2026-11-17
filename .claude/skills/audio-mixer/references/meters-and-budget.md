@@ -7,6 +7,7 @@
 | Meter | Point | Read with |
 |---|---|---|
 | Device output `d` | `out[d]`: after the patch matrices (level, mute, polarity) and master | `read_output_meters_into(&mut [f32])`, `output_meters()` |
+| Patch `P` cue output `o` | `bus_P[o]`: every voice's contribution summed; before the patch matrix (its levels, crosspoints, device outputs). Tracked over the rows mixed each segment; a patch keeps the most rows it ever flushed, so reads stop there | `read_patch_meters_into(patch, &mut [f32])` |
 | Voice cue output `o` | the voice's own contribution to `bus_P[o]`: after crosspoints, cue-output level, voice master, stop fade, integrated fades and pause declick; before the patch matrix | `read_voice_meters_into(&mut [VoiceId], &mut [f32])`, `voice_meters()` |
 
 **Mechanism**
