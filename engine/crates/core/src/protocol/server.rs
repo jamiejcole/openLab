@@ -318,7 +318,7 @@ pub struct PreshowReport {
     /// The workspace-level warnings in force (device lost or stalled, damaged media, cues whose
     /// slices cannot play, ...), as in the `warnings` message, less the notices about a patch no
     /// cue uses and a device's own notices while no cue's patch is on that device (the clock
-    /// device's count while any cue plays); by `code`, then cue, then message. `preload_over_budget` is information:
+    /// device's loss, stall or failure counts while there is any cue); by `code`, then cue, then message. `preload_over_budget` is information:
     /// listed, not counted, never a failure.
     pub system: Vec<WireWarning>,
 }

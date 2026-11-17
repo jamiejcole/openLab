@@ -23,13 +23,17 @@ use super::DocCx;
 const INFO_CODE: &str = "preload_over_budget";
 
 /// The notices about a whole audio device rather than one patch: they count in the check only
-/// while some cue's patch is on that device, or, for the clock device, while any cue plays.
+/// while some cue's patch is on that device.
 const DEVICE_CODES: [&str; 4] = [
     "device_lost",
     "device_stalled",
     "device_unrecoverable",
     "outputs_dropped",
 ];
+
+/// The clock device's notices that stop its clock, which every timed cue runs on (waits, fades,
+/// pre- and post-waits, on any device): they count while the workspace has any cue at all.
+const CLOCK_CODES: [&str; 3] = ["device_lost", "device_stalled", "device_unrecoverable"];
 
 impl DocCx<'_> {
     /// The report, from the current state. Brings the warnings up to date first so the two
@@ -173,8 +177,14 @@ impl DocCx<'_> {
         // A patch's own trouble (no device, a device missing or unusable, too few channels,
         // routing past the device, no mixer patch) stops nothing while no cue plays on it, nor
         // does a device's own trouble while no cue's patch is on it: the warnings list keeps
-        // naming them, the check leaves them out.
+        // naming them, the check leaves them out. The clock device's stall or loss stops the
+        // clock of every timed cue, so it counts while there is any cue.
         let played = self.devices_played(&uses);
+        let clock = ws
+            .cues()
+            .next()
+            .is_some()
+            .then(|| self.eng.outputs.primary().name.as_str());
         let mut system: Vec<WireWarning> = self
             .doc
             .warnings
@@ -190,6 +200,7 @@ impl DocCx<'_> {
                     ..
                 } if DEVICE_CODES.contains(&code.as_str()) => {
                     played.as_ref().is_none_or(|played| played.contains(device))
+                        || (clock == Some(device.as_str()) && CLOCK_CODES.contains(&code.as_str()))
                 }
                 _ => true,
             })
@@ -231,9 +242,7 @@ impl DocCx<'_> {
 
     /// The devices the cues' patches play on: each patch's device on this machine, the
     /// system's output device now for one on the system output, and the device its resolution
-    /// names; and, once any cue plays, the clock device, whose clock every device's cues are
-    /// dated on (its stall stops time for all of them). `None` when some cue's patch has no
-    /// device to name (not mapped, the system output with no device, a deleted patch): it may
+    /// names. `None` when some cue's patch has no device to name (not mapped, the system output with no device, a deleted patch): it may
     /// play on any device, so every device's trouble counts.
     fn devices_played(&self, uses: &Uses) -> Option<BTreeSet<String>> {
         let ws = self.doc.model.ws().id;
@@ -242,9 +251,6 @@ impl DocCx<'_> {
         for (&patch, cues) in &uses.patch {
             if cues.is_empty() {
                 continue;
-            }
-            if played.is_empty() {
-                played.insert(self.eng.outputs.primary().name.clone());
             }
             let mapped = self
                 .eng

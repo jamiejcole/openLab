@@ -784,6 +784,69 @@ fn a_stall_or_loss_of_the_clock_device_fails_the_check_while_a_cue_plays_on_anot
     assert!(counts(&r, "device_lost", DEV_NAME), "{:?}", r.system);
 }
 
+/// A show of a Network cue and a Wait cue only, no cue on any patch: the clock device's stall
+/// stops the wait's clock, so the check fails with `device_stalled`, then `device_lost`.
+#[test]
+fn a_stall_or_loss_of_the_clock_device_fails_the_check_of_a_show_with_no_audio() {
+    let mut ws = workspace(vec![
+        network_cue(5, net(51)),
+        cue(6, CueKind::Wait { duration: 2.0 }),
+    ]);
+    ws.network_patches.push(lighting(NetworkProtocol::Udp));
+    let c = config_main_only(&ws);
+    let mut s = DeviceShow::new(ws, vec![listed(DEV, DEV_NAME, 2)], c);
+    s.settle_devices();
+    s.tick();
+    s.run(BLOCK * 2);
+    let r = preshow(&mut s);
+    assert!(r.ok, "before the stall: {r:?}");
+
+    s.fake.stall();
+    idle_ms(&mut s, 600);
+    assert!(!s.control().device_down(), "a stall, not yet a loss");
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert_eq!(notice_codes(&r.system), vec!["device_stalled"]);
+    assert!(counts(&r, "device_stalled", DEV_NAME), "{:?}", r.system);
+
+    idle_ms(&mut s, 3_000);
+    assert!(s.control().device_down(), "the stall became a loss");
+    let r = preshow(&mut s);
+    assert!(!r.ok, "{r:?}");
+    assert!(counts(&r, "device_lost", DEV_NAME), "{:?}", r.system);
+}
+
+/// The clock device has fewer outputs than the show was opened with, and no cue's patch is on
+/// it: that touches neither its clock nor any cue, so the check passes and the Warnings list
+/// names the device.
+#[test]
+fn the_clock_devices_dropped_outputs_with_no_cue_on_it_pass_the_check() {
+    let mut ws = workspace(vec![on_spare(7)]);
+    ws.patches.push(twin(&ws.patches[0], 902, "Spare"));
+    let mut c = config_main_only(&ws);
+    map_to(&mut c, &ws, spare_patch(), OTHER_NAME);
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 1), listed(OTHER, OTHER_NAME, 2)],
+        c,
+    );
+    s.settle_devices();
+    s.tick();
+    let msgs = s.take_outbound();
+    assert!(
+        feed_notices(&msgs)
+            .iter()
+            .any(|(code, device, patch, _)| code == "outputs_dropped"
+                && device.as_deref() == Some(DEV_NAME)
+                && patch.is_none()),
+        "{:?}",
+        feed_notices(&msgs)
+    );
+    let r = preshow(&mut s);
+    assert!(r.ok, "{r:?}");
+    assert!(r.system.is_empty(), "{:?}", r.system);
+}
+
 /// A cue whose patch has no device to name (on the system output while the system has no output
 /// device): which device it will play on is not known, so every lost device counts.
 #[test]
