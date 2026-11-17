@@ -1478,7 +1478,7 @@ final class PlayheadFlowTests: XCTestCase {
         app?.closeAllWindows()
         app = nil
         menuBarDelegate = nil
-        engine?.stop()
+        engine?.stopInBackground()
     }
 
     // MARK: Doing what the operator does
