@@ -67,6 +67,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     let matrix = LevelMatrixView()
     let board = LevelsBoard()
     let scroll = LevelsScrollView()
+    /// An Audio cue's left column, scrolling when the tab is shorter than its controls.
+    let sideScroll = NSScrollView()
     /// The name of the chosen level, over the controls that act on it.
     let cellLabel = NSTextField(labelWithString: "")
     /// Types in the chosen level's box: laid over it while typing, hidden otherwise.
@@ -203,9 +205,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
         let buttons: [NSButton] =
             isFade ? [fromTargetButton, silentButton] : [defaultButton, silentButton, editPatchButton]
-        let gangRow = NSStackView(views: [gangLabel, gangField])
+        // Mute and Gang share a row so an Audio cue's column fits the least window's inspector.
+        let gangRow = NSStackView(views: isFade ? [gangLabel, gangField] : [muteCheck, gangLabel, gangField])
         gangRow.spacing = 6
-        let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : [cellLabel, muteCheck, gangRow, meter]
+        let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : [cellLabel, gangRow, meter]
         cellLabel.font = .systemFont(ofSize: 11)
         cellLabel.textColor = .secondaryLabelColor
         cellLabel.lineBreakMode = .byTruncatingTail
@@ -219,7 +222,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             side.addArrangedSubview(b)
             b.widthAnchor.constraint(equalTo: side.widthAnchor).isActive = true
         }
-        side.setCustomSpacing(16, after: buttons[buttons.count - 1])
+        side.setCustomSpacing(isFade ? 16 : 8, after: buttons[buttons.count - 1])
         for v in chosen { side.addArrangedSubview(v) }
         if !isFade { meter.widthAnchor.constraint(equalTo: side.widthAnchor).isActive = true }
         side.widthAnchor.constraint(equalToConstant: Self.sideWidth).isActive = true
@@ -232,7 +235,6 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         } else {
             // An Audio cue's column scrolls when the tab is shorter than its controls, so a short
             // window never has to grow for them.
-            let sideScroll = NSScrollView()
             let column = FlippedView()
             side.translatesAutoresizingMaskIntoConstraints = false
             column.addSubview(side)
@@ -250,7 +252,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
                 side.topAnchor.constraint(equalTo: column.topAnchor),
                 side.leadingAnchor.constraint(equalTo: column.leadingAnchor),
                 side.bottomAnchor.constraint(equalTo: column.bottomAnchor),
-                sideScroll.widthAnchor.constraint(equalToConstant: Self.sideWidth),
+                // Room for an always-visible scroller beside the column, as `layoutBoard` leaves for the board's.
+                sideScroll.widthAnchor.constraint(
+                    equalToConstant: Self.sideWidth + NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)),
             ])
             view.addArrangedSubview(sideScroll)
             sideScroll.heightAnchor.constraint(equalTo: view.heightAnchor).isActive = true

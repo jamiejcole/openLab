@@ -968,11 +968,18 @@ final class VideoCueTests: XCTestCase {
         try await play(4.7)
         let cell = try XCTUnwrap(duration(Self.movie), "the cell shows a time")
         XCTAssertLessThan(cell, 2.01, "inside the third pass the cell counts the pass, not the whole time")
-        let sidebar = wc.sidebar
-        sidebar.loadViewIfNeeded()
-        let row = ActiveCueCell()
-        sidebar.fill(row, Self.movie)
-        XCTAssertEqual(row.times.stringValue, CueTime.running(cell), "Active Cues shows the cell's time")
+        // The row the user sees in the open Active Cues tab: the time into the pass and the time left in it.
+        wc.setVisible(.sidebar, true)
+        wc.sidebar.tabs.selectedSegment = 1
+        wc.sidebar.tabs.performClick(nil)
+        await soon("the cue has its Active Cues row") { self.wc.sidebar.activeCues.contains(Self.movie) }
+        let index = try XCTUnwrap(wc.sidebar.activeCues.firstIndex(of: Self.movie))
+        let row = try XCTUnwrap(
+            wc.sidebar.activeTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? ActiveCueCell)
+        XCTAssertTrue(
+            row.times.stringValue.hasPrefix(CueTime.running(cell)), "Active Cues: \(row.times.stringValue) vs \(cell)")
+        XCTAssertTrue(row.times.stringValue.contains("  -"), "and the time left in the pass: \(row.times.stringValue)")
+        XCTAssertGreaterThan(row.bar.doubleValue, 0, "and a bar for the pass")
     }
 
     /// A real click in the Video cue's timeline, as the operator makes it: a press and release on the

@@ -1,9 +1,9 @@
 {
-  "about": "An Audio cue's Levels tab at the least window size (800 x least height), the sidebar closed then open: the window keeps its size, the column of buttons scrolls when the tab is short, nothing is cut.",
+  "about": "An Audio cue's Levels tab at the least window size (800 x 517, the window's least size), the sidebar closed then open: the window keeps its size, the column of buttons scrolls when the tab is short, nothing is cut.",
   "show": "Demo",
   "appearance": "light",
   "media": {"media/a.wav": 30},
-  "window": {"width": 800, "height": 500},
+  "window": {"width": 800, "height": 517},
   "steps": [
     {"advance": 0.1},
     {"select": "1"},

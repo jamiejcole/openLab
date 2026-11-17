@@ -949,13 +949,16 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         cell.pauseButton.setAccessibilityLabel(pauseName)
         cell.pauseButton.isEnabled = state != .stopping
         if let p = store.progress[id] {
-            // A cue looping a slice with no end counts inside its pass, as the cue list's Duration cell does.
+            // A cue looping a slice with no end shows its pass as the cue list's Duration cell does: the
+            // time into the pass, the time left in it and a bar for how far through it is.
             let pass = cue.flatMap { LoopPass.of($0, p, fileDuration: store.mediaDurations[id]?.file) }
-            let times = Self.timesText(elapsed: pass?.gone ?? p.elapsed, remaining: p.remaining)
+            let elapsed = pass?.gone ?? p.elapsed
+            let remaining = pass.map { $0.length - $0.gone } ?? p.remaining
+            let times = Self.timesText(elapsed: elapsed, remaining: remaining)
             cell.times.stringValue =
                 state == .paused || state == .stopping ? "\(CueStateStyle.style(for: state).label)  \(times)" : times
-            let total = p.elapsed + (p.remaining ?? 0)
-            cell.bar.doubleValue = p.remaining != nil && total > 0 ? min(1, p.elapsed / total) : 0
+            let total = elapsed + (remaining ?? 0)
+            cell.bar.doubleValue = remaining != nil && total > 0 ? min(1, elapsed / total) : 0
         } else {
             cell.times.stringValue = CueStateStyle.style(for: state).label
             cell.bar.doubleValue = 0
