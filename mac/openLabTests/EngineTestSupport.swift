@@ -842,12 +842,39 @@ final class WireTap: EngineTransport {
     /// How many results are held (`holdResults`).
     var heldCount: Int { held.count }
 
+    /// Whether the result answering the last message the app sent that `matches` is held: that request
+    /// is pending, whatever else is held beside it (the answer to a read another window started just
+    /// before the hold, say).
+    func holdsResult(of matches: (ClientMessage) -> Bool) -> Bool {
+        guard let sent = sentOn.last(where: { matches($0.message) }), let id = sent.message.resultID else {
+            return false
+        }
+        return held.contains { c, text in
+            guard c.doc == sent.doc, let v = JSONValue.parse(text), v["type"]?.stringValue == "result" else {
+                return false
+            }
+            return v["id"]?.doubleValue == Double(id)
+        }
+    }
+
     /// Forgets what was sent so far (the test's own setup).
     func forgetSent() { sentOn = [] }
 
     /// How many `request`s of this kind were sent.
     func requestCount(_ matches: (Request) -> Bool) -> Int {
         sent.filter { if case .request(_, let r) = $0 { return matches(r) } else { return false } }.count
+    }
+}
+
+extension ClientMessage {
+    /// The id of the `result` that answers it (nil: none does).
+    var resultID: UInt64? {
+        switch self {
+        case .command(let id, _, _), .transport(let id, _), .undo(let id), .redo(let id), .request(let id, _),
+            .close(let id, _, _), .panic(let id), .hotkey(let id, _, _, _):
+            return id
+        case .hello, .goodbye: return nil
+        }
     }
 }
 
