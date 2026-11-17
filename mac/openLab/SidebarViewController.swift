@@ -394,6 +394,12 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         tabs.setAX(AX.sidebarTabs, label: loc("sidebar.tabs.label"))
         tabs.target = self
         tabs.action = #selector(tabChanged)
+        // The tabs fit the sidebar, not the other way round: their labels ask for more than the column at
+        // 280 pt with two-digit counts, or on a macOS whose segmented controls measure wider, and resisting
+        // at the default would widen the sidebar past its 280 pt and squeeze the cue list and inspector.
+        // Below the sidebar's preferred width and the splits' holding priorities, they give up their spare
+        // padding first and truncate only after that.
+        tabs.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(240), for: .horizontal)
 
         configure(listTable, id: AX.sidebarList, label: loc("sidebar.list.label"), scroll: listScroll)
         configure(activeTable, id: AX.sidebarActive, label: loc("sidebar.active.label"), scroll: activeScroll)
