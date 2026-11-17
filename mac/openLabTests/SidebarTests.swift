@@ -421,7 +421,9 @@ final class SidebarTests: XCTestCase {
         let (title, pause, panic) = (inCell(cell.title), inCell(cell.pauseButton), inCell(cell.panicButton))
         let timesWidth = (cell.times.stringValue as NSString).size(withAttributes: [.font: cell.times.font!]).width
         XCTAssertGreaterThan(cell.bounds.width, 200, "the sidebar has its room")
-        XCTAssertGreaterThan(title.width, timesWidth + 60, "the name is not cut to the width of the time text")
+        // The times carry the time left too, so they can be most of a narrow row: the name is wider than
+        // them (not cut to their width) and, below, takes the room the buttons leave.
+        XCTAssertGreaterThan(title.width, timesWidth, "the name is not cut to the width of the time text")
         XCTAssertGreaterThan(title.width, cell.bounds.width - pause.width - panic.width - 40, "it takes the room")
         XCTAssertGreaterThan(panic.maxX, cell.bounds.width - 14, "the panic button is at the row's edge")
         XCTAssertLessThanOrEqual(title.maxX, panic.minX, "the name ends before the panic button")
