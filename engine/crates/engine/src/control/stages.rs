@@ -45,7 +45,7 @@ pub(super) struct Stages {
     /// Its process id, from that `hello`.
     pid: Option<u32>,
     /// What its `hello` said; `None` before the first.
-    video: Option<bool>,
+    pub(super) video: Option<bool>,
     displays: Vec<Display>,
     states: HashMap<StageId, StageState>,
     /// The stage set last handed to the supervisor.
@@ -175,6 +175,14 @@ impl Engine {
 }
 
 impl Control {
+    /// An open ahead answered (or the stage host stopped or started): one is asked at a time
+    /// across every doc, so every doc's next priming pass may open its next.
+    pub(super) fn reprime(&mut self) {
+        for d in &mut self.docs {
+            d.primes_dirty = true;
+        }
+    }
+
     /// Hands the stage host every open workspace's stages, each with the display this machine
     /// shows it on, when that set changed. Called every tick; cheap when nothing changed.
     pub(super) fn sync_stages(&mut self) {
@@ -332,8 +340,11 @@ impl Control {
                             .to_owned(),
                     );
                 }
-                // A new stage host (after a crash too) shows the pictures that are up.
+                // A new stage host (after a crash too) shows the pictures that are up, and is
+                // sent the pictures opened ahead again.
                 self.eng.resend_pictures();
+                self.eng.primes_host_started();
+                self.reprime();
             }
             StageEvent::Displays(displays) => {
                 if displays == self.eng.stages.displays {
@@ -379,6 +390,7 @@ impl Control {
                 s.pid = None;
                 s.states.clear();
                 self.eng.pictures_host_stopped(crashed);
+                self.reprime();
                 if restarting {
                     self.eng.log(
                         LogLevel::Warn,
@@ -401,9 +413,17 @@ impl Control {
                     );
                 }
             }
-            StageEvent::PictureOpened { picture } => self.eng.picture_opened(picture),
+            StageEvent::PictureOpened { picture } => {
+                if self.eng.picture_opened(picture) {
+                    self.reprime();
+                }
+            }
             StageEvent::PictureFailed { picture, reason } => {
-                self.eng.picture_failed(picture, reason);
+                if self.eng.prime_failed(picture) {
+                    self.reprime();
+                } else {
+                    self.eng.picture_failed(picture, reason);
+                }
             }
             StageEvent::Log { level, message } => {
                 let level = match level {

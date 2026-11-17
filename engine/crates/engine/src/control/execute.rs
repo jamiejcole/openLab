@@ -152,6 +152,8 @@ impl DocCx<'_> {
         let mut fx = Effects::default();
         // A Video cue's picture is a voice of the stage host's, not the mixer's.
         let pictures: Vec<bool> = actions.iter().map(|a| self.is_picture_action(a)).collect();
+        // Sound starts of a call that starts a picture wait with it (one GO's sequence).
+        let (group, hold) = self.begin_sequence(actions, &pictures);
         {
             let floor = self.stop_floor();
             let mut env = Env {
@@ -168,15 +170,21 @@ impl DocCx<'_> {
                 window: self.eng.block,
                 floor,
             };
-            for (action, picture) in actions.iter().zip(&pictures) {
+            for ((action, picture), held) in actions.iter().zip(&pictures).zip(&hold) {
                 if let Some(change) = RuntimeChange::from_action(action, self.doc.model.engine()) {
                     changes.push(change);
                 }
                 if matches!(action, Action::PlayheadChanged { .. }) {
                     self.doc.primes_dirty = true;
                 }
-                if !picture {
-                    self.doc.voices.apply(action, &mut env, &mut fx);
+                match (picture, group) {
+                    (false, Some(group)) if *held => {
+                        self.doc
+                            .voices
+                            .apply_gated(action, group, &mut env, &mut fx);
+                    }
+                    (false, _) => self.doc.voices.apply(action, &mut env, &mut fx),
+                    (true, _) => {}
                 }
             }
         }
@@ -190,6 +198,7 @@ impl DocCx<'_> {
                 self.picture_action(action, &mut fx);
             }
         }
+        self.end_sequence(&mut fx);
         self.end_pictures(actions);
         self.end_sounds(actions);
         for action in actions {

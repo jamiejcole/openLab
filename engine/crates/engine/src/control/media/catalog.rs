@@ -697,6 +697,12 @@ impl MediaCatalog {
         }
     }
 
+    /// Whether the volume `path` is on is held back as stalled (the stalled-volume gate): work
+    /// that can wait, such as opening a picture ahead, leaves it alone.
+    pub fn volume_stalled(&self, path: &Path) -> bool {
+        lock(&self.pool.gate).path_stalled(path)
+    }
+
     /// Probes `key` again (a stream of it failed: the file may have gone or changed). The last
     /// answer stands until the new one comes, so cues on it keep their primes meanwhile. Sends
     /// nothing while a probe of it runs, or once too many of them got stuck

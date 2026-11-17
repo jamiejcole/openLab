@@ -9,6 +9,11 @@
 //! timeout) until every playing stream has the frames that block will read and every prepared
 //! stream is primed. That makes a render exact and repeatable. The control loop itself never
 //! waits: only this driver does, outside [`Control::tick`].
+//!
+//! Likewise a Video cue's start that waits for its picture's file to open (live, the clock
+//! moves on in real time meanwhile) is let through before the next block, so it starts on the
+//! sample it was dated. A test of a slow open turns that off ([`OfflineShow::wait_for_pictures`])
+//! and moves the stage host's media clock by hand.
 
 use std::time::Duration;
 
@@ -45,6 +50,8 @@ pub struct OfflineShow {
     /// How long each wait for another thread may take ([`SETTLE_TIMEOUT`] unless a test
     /// lengthens it).
     settle_timeout: Duration,
+    /// Before each block, wait until no Video cue's start waits for its picture's open.
+    wait_pictures: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -110,6 +117,7 @@ impl OfflineShow {
             next_id: 0,
             stalls: 0,
             settle_timeout: SETTLE_TIMEOUT,
+            wait_pictures: true,
         })
     }
 
@@ -397,8 +405,15 @@ impl OfflineShow {
         self.control.tick();
     }
 
-    /// Renders one block: answers in, streams settled, the block rendered (and captured), then
-    /// a control tick.
+    /// Whether each block first waits for the Video cue starts that wait for their pictures'
+    /// opens (on unless a test of a slow or hung open turns it off: the clock then moves on
+    /// while the open takes, as it does live).
+    pub fn wait_for_pictures(&mut self, on: bool) {
+        self.wait_pictures = on;
+    }
+
+    /// Renders one block: answers in, streams and picture opens settled, the block rendered
+    /// (and captured), then a control tick.
     pub fn step(&mut self) {
         let _ = self.step_timed();
     }
@@ -408,6 +423,7 @@ impl OfflineShow {
     pub fn step_timed(&mut self) -> Duration {
         self.pump_inbox();
         self.settle_streams();
+        self.settle_pictures();
         let t = std::time::Instant::now();
         self.renderer.render_into(&mut self.buf, &[self.block]);
         let took = t.elapsed();
@@ -448,11 +464,13 @@ impl OfflineShow {
     }
 
     /// Renders `frames` (whole blocks, with control ticks) without waiting for the disk: a
-    /// stream that has not delivered underruns (tests of a starved voice).
+    /// stream that has not delivered underruns (tests of a starved voice). Picture opens are
+    /// still waited for, as in [`Self::step`].
     pub fn run_unsettled(&mut self, frames: u64) {
         let until = self.rendered() + frames;
         while self.rendered() < until {
             self.pump_inbox();
+            self.settle_pictures();
             self.renderer.render_into(&mut self.buf, &[self.block]);
             self.capture.extend_from_slice(&self.buf);
             self.control.tick();
@@ -471,6 +489,14 @@ impl OfflineShow {
     pub fn run_until(&mut self, at: SampleTime) {
         while self.rendered() <= at {
             self.step();
+        }
+    }
+
+    /// Waits (bounded, counted in [`Self::stalls`]) until no Video cue's start waits for its
+    /// picture's open, unless a test turned that off.
+    fn settle_pictures(&mut self) {
+        if self.wait_pictures && self.control.pictures_waiting() > 0 {
+            self.wait_for(|c| c.pictures_waiting() == 0);
         }
     }
 

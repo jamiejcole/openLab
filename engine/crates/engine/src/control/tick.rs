@@ -46,6 +46,9 @@ impl Control {
         let now = self.eng.now();
         self.eng.prune_pictures(now);
         self.eng.try_held_back_pictures(now);
+        if self.eng.trials_ended() {
+            self.reprime();
+        }
         self.eng.picture_clock(false);
         self.eng.flush_report_lines();
         self.push_video_outputs();
@@ -356,6 +359,7 @@ impl DocCx<'_> {
         let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.eng.rate);
         self.doc.voices.expire_held(now, hold, &mut fx);
         self.expire_held_pictures(now, hold, &mut fx);
+        self.start_waiting_pictures(now, &mut fx);
         self.start_seeks(now, &mut fx);
         self.follow(fx, now);
         // A move to another device given up on a slow disk is tried again when due.
