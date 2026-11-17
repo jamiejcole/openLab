@@ -1242,6 +1242,32 @@ final class InspectorWindowFrameTests: XCTestCase {
         XCTAssertEqual(sideways(content, depth: 3), [], "nothing is cut or overlapping")
     }
 
+    /// The sidebar's tabs naming more than they do here (a busy show's "12 Active Cues", or the same
+    /// labels on another macOS, whose segmented controls measure wider): opening the sidebar at the least
+    /// window size on the Basics tab keeps the sidebar's width and the window's frame; the tabs fit the
+    /// sidebar instead.
+    func testTheSidebarKeepsItsWidthWhenItsTabsAreWider() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let least = window.frame
+        await select(audio)
+        try clickTab("basics")
+        let tabs = wc.sidebar.tabs
+        tabs.setLabel("12 Cue Lists", forSegment: 0)
+        tabs.setLabel("12 Active Cues", forSegment: 1)
+        // The tabs ask for more than the sidebar's 280 pt, less its 10 pt margins, by more than the 12 pt
+        // a newer macOS adds to the shorter labels.
+        XCTAssertGreaterThan(tabs.intrinsicContentSize.width, 280 - 20 + 12)
+        try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil)
+        settleLayout()
+        XCTAssertTrue(wc.isVisible(.sidebar))
+        XCTAssertEqual(window.frame, least, "the window keeps its frame")
+        XCTAssertEqual(wc.sidebar.view.frame.width, 280, accuracy: 1, "the sidebar keeps its width")
+        let inSidebar = tabs.convert(tabs.bounds, to: wc.sidebar.view)
+        XCTAssertTrue(wc.sidebar.view.bounds.contains(inSidebar), "the tabs fit the sidebar: \(inSidebar)")
+        XCTAssertEqual(tabs.label(forSegment: 1), "12 Active Cues")
+    }
+
     /// The Triggers tab at the least window size with the sidebar open: the hotkey field's prompt stays on
     /// one line (cut short), so the field is as tall as the Clear button beside it, not two lines tall.
     func testTheHotkeyPromptStaysOnOneLineInTheNarrowTriggersTab() async throws {

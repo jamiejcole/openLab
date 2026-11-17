@@ -268,6 +268,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// The transport icons' side, the size Panic All's own picture is drawn at: well inside the 44 pt button.
     static let transportIconSize: CGFloat = 20
 
+    /// The least the sidebar may be dragged to: the transport icons keep a margin in their buttons (they
+    /// need about 230 pt here, and a newer macOS draws its bezels wider); the tabs' labels are cut short.
+    static let minWidth: CGFloat = 250
+
     static var icons: [Icon] { transport.map(\.icon) + [.activeCuePause, .activeCueResume, .activeCuePanic] }
 
     let store: WorkspaceStore
@@ -394,6 +398,12 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         tabs.setAX(AX.sidebarTabs, label: loc("sidebar.tabs.label"))
         tabs.target = self
         tabs.action = #selector(tabChanged)
+        // The tabs fit the sidebar, not the other way round: their labels ask for more than the column at
+        // 280 pt with two-digit counts, or on a macOS whose segmented controls measure wider, and resisting
+        // at the default would widen the sidebar past its 280 pt and squeeze the cue list and inspector.
+        // Below the sidebar's preferred width and the splits' holding priorities, they give up their spare
+        // padding first and truncate only after that.
+        tabs.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(240), for: .horizontal)
 
         configure(listTable, id: AX.sidebarList, label: loc("sidebar.list.label"), scroll: listScroll)
         configure(activeTable, id: AX.sidebarActive, label: loc("sidebar.active.label"), scroll: activeScroll)
@@ -437,7 +447,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             column.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             column.topAnchor.constraint(equalTo: root.topAnchor),
             column.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            root.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            root.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minWidth),
         ])
         for v in [strip, tabs, warningsCount, listScroll, activeScroll, warningsScroll, bottom] {
             v.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -20).isActive = true

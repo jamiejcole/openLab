@@ -107,9 +107,11 @@ final class SidebarTests: XCTestCase {
     func testTransportIconsFitInsideTheirButtons() async throws {
         let wc = try await make()
         wc.sidebar.loadViewIfNeeded()
-        for width: CGFloat in [280, 200] {
+        for width in [280, SidebarViewController.minWidth] {
             wc.sidebar.view.frame = NSRect(x: 0, y: 0, width: width, height: 600)
             wc.sidebar.view.layoutSubtreeIfNeeded()
+            // The column is laid out at this width (nothing in it holds the sidebar wider).
+            XCTAssertEqual(wc.sidebar.tabs.frame.width, width - 20, accuracy: 0.5, "tabs at \(width)")
             for (id, button) in wc.sidebar.transportButtons {
                 let cell = try XCTUnwrap(button.cell as? NSButtonCell)
                 let content = cell.drawingRect(forBounds: button.bounds)
