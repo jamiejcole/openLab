@@ -854,15 +854,22 @@ fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
             audio(2, &long, 1),
             audio(3, &long, 0),
             fade,
+            audio(5, &long, 1),
         ]));
         s.run(BLOCK * 2);
-        for n in [1, 2, 3, 4] {
+        for n in [1, 2, 3, 4, 5] {
             start(&mut s, n);
         }
         s.run(BLOCK * 6);
         s.transport(TransportAction::Pause { cue: id(2) });
         s.run(BLOCK * 8 + BLOCK * blocks);
+        // Cue 5 is paused and resumed just before the loss: the mixer holds peaks under the id
+        // it had before the resume too.
+        s.transport(TransportAction::Pause { cue: id(5) });
+        s.transport(TransportAction::Resume { cue: id(5) });
+        s.run(BLOCK);
         assert_eq!(s.control().engine().state(id(3)), CueState::Fading);
+        assert_eq!(s.control().engine().state(id(5)), CueState::Running);
         let before = s.take_outbound();
         assert!(!cue_meters(&before, 1).is_empty(), "cue 1 was metered");
         lose(&mut s);
@@ -871,7 +878,7 @@ fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
         // Well past the reopen and several meter periods.
         s.run(u64::from(RATE) * 2);
         let after = s.take_outbound();
-        for n in [1, 2, 3] {
+        for n in [1, 2, 3, 5] {
             assert_eq!(
                 cue_meters(&after, n),
                 Vec::<Vec<f32>>::new(),
