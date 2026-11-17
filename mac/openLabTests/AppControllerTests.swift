@@ -518,7 +518,16 @@ final class AppControllerTests: XCTestCase {
             let wc = try XCTUnwrap(app.windows[doc])
             wc.masthead.onCommitNotes?(fade, "pending")
             _ = wc.showPreshowCheck()
-            await assertEventually { self.engine.heldCount == 2 }
+            // Both wait on their answers. Others may be held beside them: a read the owned windows started
+            // before the hold (the patch editor's mappings, sent once its device list came back) can be
+            // answered after it on a slow machine.
+            await assertEventually {
+                let edit = self.engine.heldResults { if case .command = $0 { return true } else { return false } }
+                let check = self.engine.heldResults {
+                    if case .request(_, .preshowCheck) = $0 { return true } else { return false }
+                }
+                return edit == 1 && check == 1
+            }
             engine.holdResults = false
             alerts.saveChoices = [.dontSave]
             wc.window?.performClose(nil)

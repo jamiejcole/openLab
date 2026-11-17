@@ -6436,13 +6436,15 @@ final class CueListColumnLayoutTests: XCTestCase {
                 }
             }
             // The list scrolled sideways by `dx` points, as a wheel does: the clip view moved and the scroll
-            // view told, within the document's range. (A synthetic wheel event failed to scroll on a
-            // runner while it did here, so the event's routing is not what this test is about.)
+            // view told, within the range the clip view itself allows (which counts a scroll bar that
+            // always shows as an inset, so the last column can scroll clear of it). (A synthetic wheel
+            // event failed to scroll on a runner while it did here, so the event's routing is not what
+            // this test is about.)
             func wheel(_ dx: Int32) throws {
                 let clip = scroll.contentView
-                let most = max(0, outline.frame.width - clip.bounds.width)
-                let x = min(max(0, clip.bounds.minX - CGFloat(dx)), most)
-                scroll.scroll(clip, to: NSPoint(x: x, y: clip.bounds.minY))
+                var to = clip.bounds
+                to.origin.x -= CGFloat(dx)
+                scroll.scroll(clip, to: clip.constrainBoundsRect(to).origin)
                 window.contentView?.layoutSubtreeIfNeeded()
             }
             // How far the columns reach past the list the operator sees. A scroll bar that always shows
@@ -6461,7 +6463,9 @@ final class CueListColumnLayoutTests: XCTestCase {
             XCTAssertEqual(scroll.contentView.bounds.minX, 60, accuracy: 0.5, "\(bars): scrolled sideways")
             titlesOverColumns("scrolled 60 points")
             try wheel(-2000)
-            XCTAssertGreaterThan(scroll.contentView.bounds.minX, 60, "\(bars): scrolled to the far right")
+            XCTAssertEqual(
+                scroll.contentView.bounds.minX, overflow(), accuracy: 0.5,
+                "\(bars): scrolled to the far right, the last column at the list's right edge")
             titlesOverColumns("scrolled to the far right")
             // Wider step by step: the last column stays at the list's right edge, neither pulled away from
             // it nor left under the scroll bar, and the list is at its left edge once the columns fit.
