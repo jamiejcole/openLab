@@ -6397,12 +6397,14 @@ final class CueListColumnLayoutTests: XCTestCase {
         window.contentView?.layoutSubtreeIfNeeded()
         let scroller = try XCTUnwrap(scroll.horizontalScroller)
         XCTAssertEqual(scroll.scrollerStyle, .overlay)
-        XCTAssertTrue(NSScroller.isCompatibleWithOverlayScrollers, "the scroller is the overlay kind")
+        XCTAssertTrue(type(of: scroller).isCompatibleWithOverlayScrollers, "the scroller is the overlay kind")
         XCTAssertEqual(scroll.contentView.contentInsets.bottom, 0, "no room is kept below the rows")
         XCTAssertEqual(scroll.contentView.frame.height, scroll.frame.height, accuracy: 0.5)
         let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
-        let seen = scroll.convert(scroll.contentView.frame, to: nil)
-        XCTAssertGreaterThanOrEqual(row.minY, seen.minY - 0.5, "the row is whole in the list")
+        let head = try XCTUnwrap(outline.headerView).convert(try XCTUnwrap(outline.headerView).bounds, to: nil)
+        let list = scroll.convert(scroll.bounds, to: nil)
+        XCTAssertLessThanOrEqual(row.maxY, head.minY + 0.5, "the row is below the header")
+        XCTAssertGreaterThanOrEqual(row.minY, list.minY - 0.5, "and whole above the list's lower edge")
     }
 
     /// The columns wider than the list (the least width with the sidebar shown) and the list scrolled
