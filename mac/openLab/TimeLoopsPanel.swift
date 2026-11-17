@@ -533,19 +533,21 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         waveform.fadeCurve = fadeCurve
     }
 
-    /// Draws the playhead line at `position`, where the engine says the cue is in the file (playing
-    /// or paused, slices, loop passes and devamps already applied; or where it stands loaded); none
-    /// draws no line. The timeline shows one position: a click's line is kept while the cue stands
-    /// at it (loaded or paused there, drawn as that line alone) and goes once the cue is anywhere
-    /// else (playing on, loaded elsewhere by a Load cue, a click it ignored).
-    func showProgress(position: Double?) {
-        var shown = position
-        if let position, let clicked = waveform.insertion {
-            if abs(clicked - position) < 0.05 {
-                shown = nil
-            } else {
+    /// Draws the playhead line at `position`, where the engine says the cue is in the file while
+    /// playing or paused (slices, loop passes and devamps already applied), or at `loadedAt`, where
+    /// it stands loaded; none draws no line. The timeline shows one position: a click's line is
+    /// kept while the cue stands at it (paused there: the play line drawn over it; loaded there:
+    /// that line alone) and goes once the cue is anywhere else (playing on, loaded elsewhere by a
+    /// Load cue, a click it ignored).
+    func showProgress(position: Double?, loadedAt: Double? = nil) {
+        let at = position ?? loadedAt
+        var shown = at
+        if let at, let clicked = waveform.insertion {
+            if abs(clicked - at) >= 0.05 {
                 waveform.insertion = nil
                 applyLock()
+            } else if position == nil {
+                shown = nil
             }
         }
         waveform.playhead = file == nil ? nil : shown
