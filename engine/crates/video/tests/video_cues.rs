@@ -3702,7 +3702,7 @@ fn a_pause_with_a_pending_devamp_stop_keeps_picture_and_sound_together() {
 /// within 0.06 of each other and of `want`.
 fn fading_in_step(s: &mut OfflineShow, full: u8, unity: f32, want: f64, what: &str) {
     let opacity = f64::from(red_at(s)) / f64::from(full);
-    let heard = s.audio()[usize::try_from(s.rendered() - 1).unwrap() * 2 + 1];
+    let (_, heard) = outputs_at(s, s.rendered() - 1);
     let gain = f64::from(heard / unity);
     assert!(
         (opacity - want).abs() < 0.06 && (gain - want).abs() < 0.06,
