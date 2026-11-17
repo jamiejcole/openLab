@@ -24,5 +24,3 @@ PATHS_APP_ENGINE_RE='^(engine/|mac/openLab/Engine/|mac/TestShows/|mac/scripts/bu
 # The Release universal build and bundle check (`make mac`, `make verify-bundle`): on main always,
 # on a pull request only when the build itself changes.
 PATHS_BUNDLE_RE='^(mac/(project\.yml|scripts/)|engine/crates/video/|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$)'
-# Perf-sensitive code also runs on the Intel runner (closest to the 2014 Mac mini target).
-PATHS_INTEL_RE='^engine/(crates/audio/|crates/engine/tests/(perf|soak|soak_rt)\.rs$|crates/engine/tests/soak_common/|crates/engine/src/control/(watch|media|voices)/|crates/engine/src/control/watch_share\.rs$)'
