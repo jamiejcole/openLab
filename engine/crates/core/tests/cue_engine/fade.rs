@@ -27,6 +27,7 @@ fn fade_to(
             levels,
             stop_target_when_done: stop,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }
@@ -551,6 +552,7 @@ fn fade_with_missing_or_wrong_targets_is_broken() {
                 levels: master(0.0),
                 stop_target_when_done: false,
                 mode: Default::default(),
+                geometry: Default::default(),
             },
         ),
         fade_to(4, 99, 1.0, FadeCurve::Linear, master(0.0), true),

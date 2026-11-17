@@ -54,8 +54,12 @@ impl Voices {
                 curve,
                 ..
             } => {
+                // A picture's value is the stage host's: a voice has no such gain.
+                let Some(target) = target(param) else {
+                    return;
+                };
                 let cmd = Queued::Ramp {
-                    target: target(param),
+                    target,
                     gain,
                     fade: Fade::new(frames, to_curve(curve)),
                 };

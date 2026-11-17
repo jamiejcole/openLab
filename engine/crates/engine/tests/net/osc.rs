@@ -1512,6 +1512,7 @@ async fn an_osc_client_sets_and_reads_a_duration_by_number() {
         },
         stop_target_when_done: false,
         mode: Default::default(),
+        geometry: Default::default(),
     };
     let ws = workspace(vec![
         cue(1, CueKind::Wait { duration: 2.0 }),

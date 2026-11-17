@@ -1131,21 +1131,51 @@ fn fade_kind() -> impl Strategy<Value = CueKind> {
         levels,
         any::<bool>(),
         any::<bool>(),
+        fade_geometry(),
     )
         .prop_map(
-            |(target, duration, curve, levels, stop_target_when_done, relative)| CueKind::Fade {
-                target,
-                duration,
-                curve,
-                levels,
-                stop_target_when_done,
-                mode: if relative {
-                    openlab_core::FadeMode::Relative
-                } else {
-                    openlab_core::FadeMode::Absolute
-                },
+            |(target, duration, curve, levels, stop_target_when_done, relative, geometry)| {
+                CueKind::Fade {
+                    target,
+                    duration,
+                    curve,
+                    levels,
+                    stop_target_when_done,
+                    mode: if relative {
+                        openlab_core::FadeMode::Relative
+                    } else {
+                        openlab_core::FadeMode::Absolute
+                    },
+                    geometry,
+                }
             },
         )
+}
+
+/// A Fade cue's picture values within their ranges, any ticked.
+fn fade_geometry() -> impl Strategy<Value = openlab_core::FadeGeometry> {
+    use openlab_core::Pair;
+    let pair = |r: f64| (-r..=r, -r..=r).prop_map(|(x, y)| Pair { x, y });
+    (
+        vec(any::<bool>(), 5),
+        0.0..=1.0f64,
+        pair(65_536.0),
+        pair(100.0),
+        -360.0..=360.0f64,
+    )
+        .prop_map(|(ticks, opacity, translation, scale, rotation)| {
+            openlab_core::FadeGeometry {
+                fade_opacity: ticks[0],
+                opacity,
+                fade_translation: ticks[1],
+                translation,
+                fade_scale: ticks[2],
+                scale,
+                scale_locked: ticks[3],
+                fade_rotation: ticks[4],
+                rotation,
+            }
+        })
 }
 
 fn osc_arg() -> impl Strategy<Value = OscArg> {

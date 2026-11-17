@@ -325,6 +325,7 @@ fn a_fade_cue_ramps_a_running_voice() {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     );
     let mut s = show(workspace(vec![audio(1, &a, 0), fade]));

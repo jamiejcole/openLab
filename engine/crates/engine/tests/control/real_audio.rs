@@ -94,6 +94,7 @@ fn fade(n: u128, target: u128, secs: f64, curve: FadeCurve, master_db: f64, stop
             },
             stop_target_when_done: stop,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }

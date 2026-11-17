@@ -1208,10 +1208,13 @@ fn facts_of<'w>(
         }),
         _ => None,
     };
-    let nothing_to_fade = matches!(&cue.kind, CueKind::Fade { levels, .. }
+    // A ticked picture value is something to fade (QLab 5 manual p. 247: a level or a
+    // parameter), whatever the target.
+    let nothing_to_fade = matches!(&cue.kind, CueKind::Fade { levels, geometry, .. }
         if levels.master_db.is_none()
             && levels.output_db.iter().all(Option::is_none)
-            && levels.crosspoints.is_empty());
+            && levels.crosspoints.is_empty()
+            && !geometry.any());
     (target.is_some() || audio.is_some() || network.is_some() || video.is_some() || nothing_to_fade)
         .then_some(Facts {
             target,

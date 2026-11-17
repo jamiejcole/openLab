@@ -190,6 +190,7 @@ fn master_fade(n: u128, target: u128, frames: u64, db: f64) -> openlab_core::Cue
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }
@@ -741,6 +742,7 @@ fn a_faded_output_keeps_the_fade_level_when_its_patch_adds_it() {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     );
     let mut s = two_patch_show(side(), 1, vec![fade]);
@@ -1023,6 +1025,7 @@ fn a_boost_never_takes_a_rendered_sample_past_the_workspace_maximum_nor_steps() 
             },
             stop_target_when_done: false,
             mode: openlab_core::FadeMode::Absolute,
+            geometry: Default::default(),
         };
         let mut ws = workspace(vec![a, booster, fade]);
         ws.settings.output_max_db = max;

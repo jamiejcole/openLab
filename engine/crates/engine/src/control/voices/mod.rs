@@ -871,16 +871,18 @@ pub fn to_curve(c: FadeCurve) -> Curve {
     }
 }
 
-fn target(p: LevelParam) -> GainTarget {
+/// The mixer gain `p` names; `None` for a picture's value (VID-05), which no voice has.
+fn target(p: LevelParam) -> Option<GainTarget> {
     let clamp = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
-    match p {
+    Some(match p {
         LevelParam::Master => GainTarget::Master,
         LevelParam::Output(o) => GainTarget::CueOutput(clamp(o)),
         LevelParam::Crosspoint { input, output } => GainTarget::Crosspoint {
             input: clamp(input),
             output: clamp(output),
         },
-    }
+        LevelParam::Picture(_) => return None,
+    })
 }
 
 fn plan_spec(kind: &CueKind) -> Option<PlanSpec<'_>> {

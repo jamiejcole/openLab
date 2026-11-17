@@ -402,6 +402,7 @@ fn a_fade_cue_ramps_a_playing_video_cues_levels() {
             },
             stop_target_when_done: false,
             mode: FadeMode::default(),
+            geometry: Default::default(),
         },
     );
     let mut rig = rig(vec![sounding_on(1, Some(patch_id(1))), fade]);
@@ -415,4 +416,404 @@ fn a_fade_cue_ramps_a_playing_video_cues_levels() {
         )),
         "{actions:?}"
     );
+}
+
+// Fade cues on a Video cue's picture (VID-05).
+
+const OPACITY: LevelParam = LevelParam::Picture(PictureParam::Opacity);
+
+/// A Fade of Video cue `target` over `seconds` with `curve`, moving the picture values `set`
+/// ticks, in `mode`.
+fn picture_fade(
+    n: u128,
+    target: u128,
+    seconds: f64,
+    curve: FadeCurve,
+    mode: FadeMode,
+    set: impl FnOnce(&mut FadeGeometry),
+) -> Cue {
+    let mut geometry = FadeGeometry::default();
+    set(&mut geometry);
+    cue(
+        n,
+        CueKind::Fade {
+            target: Some(id(target)),
+            duration: seconds,
+            curve,
+            levels: FadeLevels {
+                master_db: None,
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+            mode,
+            geometry,
+        },
+    )
+}
+
+/// A linear absolute Fade of cue 1's opacity to `to` over `seconds`.
+fn opacity_fade(n: u128, seconds: f64, to: f64) -> Cue {
+    picture_fade(n, 1, seconds, FadeCurve::Linear, FadeMode::Absolute, |g| {
+        g.fade_opacity = true;
+        g.opacity = to;
+    })
+}
+
+/// Each picture ramp: (cue, param, at, to, frames, curve).
+fn picture_ramps(
+    actions: &[Action],
+) -> Vec<(CueId, PictureParam, SampleTime, f32, SampleTime, FadeCurve)> {
+    actions
+        .iter()
+        .filter_map(|a| match *a {
+            Action::Ramp {
+                cue,
+                at,
+                param: LevelParam::Picture(p),
+                gain,
+                frames,
+                curve,
+                ..
+            } => Some((cue, p, at, gain, frames, curve)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_fade_moves_only_the_ticked_picture_values_along_its_curve() {
+    let fade = picture_fade(2, 1, 3.0, FadeCurve::SCurve, FadeMode::Absolute, |g| {
+        g.fade_opacity = true;
+        g.opacity = 0.0;
+        // Unticked: kept, never faded.
+        g.translation = Pair { x: 500.0, y: 0.0 };
+        g.scale = Pair { x: 4.0, y: 4.0 };
+    });
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1))), fade]);
+    assert!(
+        rig.problems(2).is_empty(),
+        "a ticked picture value is something to fade"
+    );
+    rig.start(0, 1);
+    let go = rig.start(1000, 2);
+    assert_eq!(
+        picture_ramps(&go),
+        vec![(
+            id(1),
+            PictureParam::Opacity,
+            1000,
+            0.0,
+            3000,
+            FadeCurve::SCurve
+        )]
+    );
+    // No level of its sound moves: none was set.
+    assert!(go.iter().all(|a| !matches!(
+        a,
+        Action::Ramp {
+            param: LevelParam::Master | LevelParam::Output(_) | LevelParam::Crosspoint { .. },
+            ..
+        }
+    )));
+    assert_eq!(rig.state(1), CueState::Fading);
+    let half = ramp_value(1.0, 0.0, 1500, 3000, FadeCurve::SCurve) as f32;
+    assert_eq!(rig.level(1, OPACITY, 2500), Some(half));
+    assert_eq!(
+        rig.level(1, LevelParam::Picture(PictureParam::ScaleX), 2500),
+        None
+    );
+    rig.tick(4000);
+    assert_eq!(rig.state(1), CueState::Running);
+    assert_eq!(rig.level(1, OPACITY, 4000), Some(0.0));
+}
+
+#[test]
+fn a_picture_fade_with_stop_target_when_done_stops_the_video_on_its_last_sample() {
+    let mut fade = opacity_fade(2, 2.0, 0.0);
+    if let CueKind::Fade {
+        stop_target_when_done,
+        ..
+    } = &mut fade.kind
+    {
+        *stop_target_when_done = true;
+    }
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1))), fade]);
+    rig.start(0, 1);
+    rig.start(500, 2);
+    assert!(voice_stops(&rig.tick(2499)).is_empty());
+    assert_eq!(voice_stops(&rig.tick(2500)), vec![(id(1), 2500, None)]);
+}
+
+#[test]
+fn a_relative_picture_fade_multiplies_opacity_and_scale_and_adds_to_position_and_rotation() {
+    let mut target = video_on(1, Some(stage_id(1)));
+    if let CueKind::Video { geometry, .. } = &mut target.kind {
+        geometry.opacity = 0.8;
+        geometry.translation = Pair { x: 50.0, y: -20.0 };
+        geometry.scale = Pair { x: 3.0, y: 0.5 };
+        geometry.rotation = 300.0;
+    }
+    let fade = picture_fade(2, 1, 1.0, FadeCurve::Linear, FadeMode::Relative, |g| {
+        g.fade_opacity = true;
+        g.opacity = 0.5;
+        g.fade_translation = true;
+        g.translation = Pair { x: 100.0, y: 10.0 };
+        g.fade_scale = true;
+        g.scale = Pair { x: 2.0, y: 2.0 };
+        g.fade_rotation = true;
+        g.rotation = 90.0;
+    });
+    let mut rig = rig(vec![target, fade]);
+    rig.start(0, 1);
+    let go = rig.start(0, 2);
+    let to: Vec<(PictureParam, f32)> = picture_ramps(&go).iter().map(|r| (r.1, r.3)).collect();
+    assert_eq!(
+        to,
+        vec![
+            (PictureParam::Opacity, 0.4),
+            (PictureParam::TranslationX, 150.0),
+            (PictureParam::TranslationY, -10.0),
+            (PictureParam::ScaleX, 6.0),
+            (PictureParam::ScaleY, 1.0),
+            // Within its range: 390 would be past a turn.
+            (PictureParam::Rotation, 360.0),
+        ]
+    );
+    // Run again from where the first left them: relative to the values now.
+    rig.tick(1000);
+    rig.stop(1000, 2);
+    let again = rig.start(1500, 2);
+    let to: Vec<(PictureParam, f32)> = picture_ramps(&again).iter().map(|r| (r.1, r.3)).collect();
+    assert_eq!(to[0], (PictureParam::Opacity, 0.2));
+    assert_eq!(to[1], (PictureParam::TranslationX, 250.0));
+}
+
+#[test]
+fn a_relative_fade_leaves_a_transparent_picture_alone() {
+    let mut target = video_on(1, Some(stage_id(1)));
+    if let CueKind::Video { geometry, .. } = &mut target.kind {
+        geometry.opacity = 0.0;
+    }
+    let fade = picture_fade(2, 1, 1.0, FadeCurve::Linear, FadeMode::Relative, |g| {
+        g.fade_opacity = true;
+        g.opacity = 0.5;
+    });
+    let mut rig = rig(vec![target, fade]);
+    rig.start(0, 1);
+    assert!(picture_ramps(&rig.start(0, 2)).is_empty());
+}
+
+#[test]
+fn a_later_picture_fade_takes_the_value_over_from_where_it_is() {
+    let mut rig = rig(vec![
+        video_on(1, Some(stage_id(1))),
+        opacity_fade(2, 4.0, 0.0),
+        opacity_fade(3, 1.0, 1.0),
+    ]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    let second = rig.start(1000, 3);
+    assert_eq!(
+        picture_ramps(&second),
+        vec![(
+            id(1),
+            PictureParam::Opacity,
+            1000,
+            1.0,
+            1000,
+            FadeCurve::Linear
+        )]
+    );
+    // From where the first had it: no jump.
+    assert_eq!(rig.level(1, OPACITY, 1000), Some(0.75));
+    assert_eq!(rig.level(1, OPACITY, 1500), Some(0.875));
+    // The first no longer owns it: pausing or stopping it sends nothing.
+    assert!(picture_ramps(&rig.pause(1500, 2)).is_empty());
+    assert!(picture_ramps(&rig.stop(1600, 2)).is_empty());
+    rig.tick(2000);
+    assert_eq!(rig.level(1, OPACITY, 2000), Some(1.0));
+}
+
+#[test]
+fn pausing_a_picture_fade_holds_its_value_and_resuming_carries_on() {
+    let mut rig = rig(vec![
+        video_on(1, Some(stage_id(1))),
+        opacity_fade(2, 4.0, 0.0),
+    ]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    // Held where it is, at once (a picture has no de-zipper).
+    assert_eq!(
+        picture_ramps(&rig.pause(1000, 2)),
+        vec![(
+            id(1),
+            PictureParam::Opacity,
+            1000,
+            0.75,
+            0,
+            FadeCurve::Linear
+        )]
+    );
+    assert_eq!(rig.level(1, OPACITY, 2500), Some(0.75));
+    assert_eq!(
+        picture_ramps(&rig.resume(3000, 2)),
+        vec![(
+            id(1),
+            PictureParam::Opacity,
+            3000,
+            0.0,
+            3000,
+            FadeCurve::Linear
+        )]
+    );
+    assert_eq!(rig.level(1, OPACITY, 4500), Some(0.375));
+    rig.tick(6000);
+    assert_eq!(rig.level(1, OPACITY, 6000), Some(0.0));
+}
+
+#[test]
+fn a_panic_holds_a_picture_fade_where_it_is_while_the_picture_fades_out() {
+    let mut rig = rig(vec![
+        video_on(1, Some(stage_id(1))),
+        opacity_fade(2, 4.0, 0.0),
+    ]);
+    rig.ws.settings.panic_duration = 2.0;
+    rig.start(0, 1);
+    rig.start(0, 2);
+    let panic = rig.at(1000, Input::Panic);
+    assert_eq!(
+        picture_ramps(&panic),
+        vec![(
+            id(1),
+            PictureParam::Opacity,
+            1000,
+            0.75,
+            0,
+            FadeCurve::Linear
+        )]
+    );
+    let stops = voice_stops(&panic);
+    assert_eq!(stops.len(), 1, "{panic:?}");
+    assert_eq!((stops[0].0, stops[0].1), (id(1), 1000));
+    assert_eq!(stops[0].2.map(|f| f.frames), Some(2000));
+}
+
+#[test]
+fn a_picture_fade_on_a_video_that_is_not_running_moves_nothing() {
+    let mut rig = rig(vec![
+        video_on(1, Some(stage_id(1))),
+        opacity_fade(2, 1.0, 0.0),
+    ]);
+    let go = rig.start(0, 2);
+    assert!(picture_ramps(&go).is_empty());
+    // Said to the binary only; the app lists no such warning.
+    assert_eq!(
+        warnings(&go),
+        vec![EngineWarning::TargetNotRunning {
+            cue: id(2),
+            target: id(1)
+        }]
+    );
+    assert_eq!(rig.state(2), CueState::Running);
+    rig.tick(1000);
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+#[test]
+fn an_edit_of_a_value_a_fade_moves_takes_it_over_and_ends_the_fade_without_stopping() {
+    let mut fade = opacity_fade(2, 4.0, 0.0);
+    if let CueKind::Fade {
+        stop_target_when_done,
+        ..
+    } = &mut fade.kind
+    {
+        *stop_target_when_done = true;
+    }
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1))), fade]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    // An edit of another value changes nothing for the fade.
+    if let CueKind::Video { geometry, .. } = &mut rig.find_mut(1).kind {
+        geometry.layer = 3;
+    }
+    rig.engine.model_changed();
+    assert!(picture_ramps(&rig.tick(500)).is_empty());
+    assert_eq!(rig.state(2), CueState::Running);
+    if let CueKind::Video { geometry, .. } = &mut rig.find_mut(1).kind {
+        geometry.opacity = 0.5;
+    }
+    rig.engine.model_changed();
+    let edit = rig.tick(1000);
+    assert_eq!(
+        picture_ramps(&edit),
+        vec![(
+            id(1),
+            PictureParam::Opacity,
+            1000,
+            0.5,
+            10,
+            FadeCurve::Linear
+        )]
+    );
+    // The fade is over at once and does not stop its target.
+    assert_eq!(rig.state(2), CueState::Idle);
+    assert!(voice_stops(&rig.tick(4000)).is_empty());
+    assert_eq!(rig.state(1), CueState::Running);
+    assert_eq!(rig.level(1, OPACITY, 4000), None, "the model's value again");
+}
+
+#[test]
+fn a_zero_length_picture_fade_sets_the_value_at_once() {
+    let mut rig = rig(vec![
+        video_on(1, Some(stage_id(1))),
+        opacity_fade(2, 0.0, 0.25),
+    ]);
+    rig.start(0, 1);
+    let go = rig.start(700, 2);
+    assert_eq!(
+        picture_ramps(&go),
+        vec![(
+            id(1),
+            PictureParam::Opacity,
+            700,
+            0.25,
+            0,
+            FadeCurve::Linear
+        )]
+    );
+    assert_eq!(rig.level(1, OPACITY, 700), Some(0.25));
+}
+
+#[test]
+fn volume_limits_never_touch_a_picture_value() {
+    let fade = picture_fade(2, 1, 1.0, FadeCurve::Linear, FadeMode::Absolute, |g| {
+        g.fade_scale = true;
+        g.scale = Pair { x: 50.0, y: 50.0 };
+    });
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1))), fade]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    rig.tick(1000);
+    rig.ws.settings.output_max_db = -30.0;
+    rig.engine.model_changed();
+    assert!(picture_ramps(&rig.tick(1500)).is_empty());
+    assert_eq!(
+        rig.level(1, LevelParam::Picture(PictureParam::ScaleX), 1500),
+        Some(50.0)
+    );
+}
+
+#[test]
+fn a_group_fade_moves_no_picture() {
+    let fade = picture_fade(3, 2, 1.0, FadeCurve::Linear, FadeMode::Absolute, |g| {
+        g.fade_opacity = true;
+        g.opacity = 0.0;
+    });
+    let mut rig = rig(vec![
+        cue(2, group(vec![video_on(1, Some(stage_id(1)))])),
+        fade,
+    ]);
+    rig.start(0, 2);
+    assert!(picture_ramps(&rig.start(10, 3)).is_empty());
 }

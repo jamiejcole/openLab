@@ -487,6 +487,45 @@ fn a_video_cues_geometry_out_of_range_loads_clamped_with_a_warning_each() {
     }
 }
 
+/// A show file's Fade cue picture values out of range load at the end of their range (not
+/// finite: the untouched value) with a warning each; a Fade with no `geometry` loads with none
+/// ticked.
+#[test]
+fn a_fade_cues_picture_values_out_of_range_load_clamped_with_a_warning_each() {
+    let mut ws = workspace(vec![cue(1, video()), cue(2, fade(1)), cue(3, fade(1))]);
+    ws.stages = vec![Stage::new(stage_id(1), "Stage 1", 1920, 1080)];
+    let mut doc: serde_json::Value = serde_json::from_str(&show_text(&ws)).unwrap();
+    let cues = &mut doc["workspace"]["cue_lists"][0]["cues"];
+    cues[1]["kind"]["geometry"] = serde_json::json!({
+        "fade_opacity": true,
+        "opacity": 7.0,
+        "translation": {"x": -1e9, "y": 0.0},
+        "rotation": 400.0
+    });
+    cues[2]["kind"].as_object_mut().unwrap().remove("geometry");
+    let loaded = load_show(&doc.to_string()).unwrap();
+    let value = |field| warning(2, IssueKind::InvalidValue { field });
+    assert_eq!(
+        loaded.warnings,
+        vec![
+            value("geometry.opacity"),
+            value("geometry.translation.x"),
+            value("geometry.rotation")
+        ]
+    );
+    let geometry = |n| match loaded.workspace.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Fade { geometry, .. } => geometry,
+        ref other => panic!("{other:?}"),
+    };
+    let g = geometry(2);
+    assert!(g.fade_opacity && !g.fade_scale);
+    assert_eq!(
+        (g.opacity, g.translation.x, g.rotation, g.scale),
+        (1.0, -MAX_TRANSLATION, MAX_ROTATION, Pair { x: 1.0, y: 1.0 })
+    );
+    assert_eq!(geometry(3), FadeGeometry::default());
+}
+
 #[test]
 fn invalid_times_are_clamped() {
     let mut memo = cue(1, CueKind::Memo);
@@ -851,6 +890,7 @@ fn routing_beyond_128_outputs_or_64_channels_is_dropped() {
         },
         stop_target_when_done: false,
         mode: Default::default(),
+        geometry: Default::default(),
     };
     let mut ws = workspace(vec![cue(1, a), cue(2, f)]);
     ws.patches = vec![patch(1, 128)];
@@ -922,6 +962,7 @@ fn repeated_crosspoints_and_gang_members_are_removed() {
         },
         stop_target_when_done: false,
         mode: Default::default(),
+        geometry: Default::default(),
     };
     let mut ws = workspace(vec![cue(1, a), cue(2, f)]);
     let repeated = |n, field, count| warning(n, IssueKind::DuplicateEntries { field, count });

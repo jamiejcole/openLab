@@ -100,7 +100,7 @@ cue, and the cue shows as broken where it cannot run.
 | A workspace, cue list, patch or network patch name over 1024 characters or with a control character other than a newline, or a network host over 253 bytes or with one | Warning (`InvalidName`, one per kind of field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
-Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue or a
+Valid targets: a Fade cue targets an Audio, Video or Group cue; a Devamp cue targets an Audio cue or a
 Playlist group; every other targeting cue may target any cue except itself.
 
 ## 4. The workspace
@@ -256,18 +256,19 @@ Option on macOS).
 
 **Play count** (`play_count`, `last_slice_play_count`): a whole number from 1 to 4294967295 = the slice plays that many times in a row; the number `0` = it loops until devamped or stopped; the string `"skip"` = it is not played, and playback goes from the end of the slice before it straight to the start of the next slice that plays (QLab 5 manual p. 179). The stored `0` is not the 0 a user types for a skipped slice: it is what "until devamped" has always been written as, so a show saved before slices could be skipped means what it meant. Any other value (a negative or fractional number, another string, `null`) is a model error: the file is refused (§3), and an edit carrying it is refused. A cue every slice of which inside its trims is skipped loads and saves as it is and shows broken (`nothing_plays`, docs/protocol.md).
 
-**`fade`** — moves a target's levels: an Audio cue's **to** its values (absolute), each audio cue in a Group **by** them (relative, capped at +12 dB).
+**`fade`** — moves a target's levels: an Audio or Video cue's **to** its values (absolute), each audio cue in a Group **by** them (relative, capped at +12 dB); and a Video target's picture values (`geometry`).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `target` | target | An Audio or Group cue (fading a group moves each audio cue in it, at any depth, relative to its own level). |
+| `target` | target | An Audio, Video or Group cue (fading a group moves each cue with sound in it, at any depth, relative to its own level; never a picture). |
 | `duration` | seconds | |
 | `curve` | curve | |
 | `levels.master_db` | level or `null` | `null` = leave the master alone. |
 | `levels.output_db` | array of level or `null` | Indexed by cue output; `null` entries are left alone. |
 | `levels.crosspoints` | array of `{"input", "output", "db"}` | Listed crosspoints fade to their `db` (by it, for a Group target; a silent crosspoint stays silent); others are left alone. Mutes are never changed by a fade. |
 | `stop_target_when_done` | bool | Stop the target when the fade completes. |
-| `mode` | `"absolute"` \| `"relative"` | For an Audio target: `absolute` ends the target's levels at the Fade's; `relative` moves each by the Fade's dB from where it is when the Fade starts (a silent level stays silent), within the workspace limits. A Group target always moves by them. Absent: `absolute`. |
+| `mode` | `"absolute"` \| `"relative"` | For an Audio or Video target: `absolute` ends the target's levels (and picture values) at the Fade's; `relative` moves each level by the Fade's dB from where it is when the Fade starts (a silent level stays silent), within the workspace limits, and each picture value by `geometry` (below). A Group target always moves by them. Absent: `absolute`. |
+| `geometry` | object | A Video target's picture values (VID-05): `fade_opacity` (bool) with `opacity` (0 to 1), `fade_translation` with `translation` (`{x, y}` pixels, -65536 to 65536), `fade_scale` with `scale` (`{x, y}`, -100 to 100) and `scale_locked` (bool, the app edits x and y together), `fade_rotation` with `rotation` (degrees, -360 to 360). Only the ticked (`fade_*` true) values are faded, along `curve` over `duration`: absolute, to the value; relative, opacity and scale times it and position and rotation plus it, from where the picture is when the Fade starts, within each range (a value at 0 that is multiplied stays 0). An unticked value is kept. Absent, or a key missing: nothing ticked, the values of an untouched picture (opacity 1, no move, scale 1, locked, no rotation). Out of range: clamped (not finite: that default) with an `InvalidValue` warning naming `geometry.<field>`. A ticked value makes a Fade with no levels set not broken. |
 
 **`group`** — contains cues.
 

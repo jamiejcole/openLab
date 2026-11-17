@@ -345,6 +345,16 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                 },
                 stop_target_when_done: s.flag,
                 mode: Default::default(),
+                // A Video target's picture is faded too (VID-05).
+                geometry: FadeGeometry {
+                    fade_opacity: s.armed,
+                    opacity: 0.0,
+                    fade_translation: s.level % 2 == 0,
+                    translation: Pair { x: 40.0, y: -40.0 },
+                    fade_rotation: s.flag,
+                    rotation: 90.0,
+                    ..FadeGeometry::default()
+                },
             },
             _ => CueKind::Group {
                 mode: group_mode(s.group_mode),
@@ -374,6 +384,7 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                     },
                     stop_target_when_done: s.flag,
                     mode: Default::default(),
+                    geometry: Default::default(),
                 },
                 29 => CueKind::Stop {
                     target: Some(cue_id(sound)),
@@ -2992,6 +3003,7 @@ proptest! {
                 },
                 stop_target_when_done: false,
                 mode: Default::default(),
+                geometry: Default::default(),
             },
         };
         let timed = matches!(kind, CueKind::Wait { .. } | CueKind::Fade { .. });

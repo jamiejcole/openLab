@@ -913,10 +913,17 @@ impl Checker {
                 self.cue_levels(id, levels, outputs);
             }
             CueKind::Fade {
-                duration, levels, ..
+                duration,
+                levels,
+                geometry,
+                ..
             } => {
                 self.time(id, "duration", duration);
                 self.fade_levels(id, levels);
+                // Beyond its range: at its end (not finite: its default), with a warning each.
+                for field in geometry.repair() {
+                    self.warn(id, IssueKind::InvalidValue { field });
+                }
             }
             CueKind::Stop { fade_out, .. } => {
                 self.time(id, "fade_out.duration", &mut fade_out.duration);

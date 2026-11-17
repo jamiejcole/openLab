@@ -337,6 +337,7 @@ fn a_fade_on_the_cue_carries_on_on_the_moved_voice() {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     );
     let mut s = show(workspace(vec![audio(1, &tone, 0), fader]));
@@ -590,6 +591,7 @@ fn fade_and_stop(secs: f64) -> openlab_core::Cue {
             },
             stop_target_when_done: true,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }

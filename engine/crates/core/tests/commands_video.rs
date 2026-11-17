@@ -840,3 +840,143 @@ fn ganged_default_and_pasted_levels_are_a_video_cues_as_an_audio_cues() {
     }
     assert_eq!(ws, before);
 }
+
+fn fade_geometry(ws: &Workspace, n: u128) -> FadeGeometry {
+    match &ws.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Fade { geometry, .. } => *geometry,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A Fade cue's picture values (VID-05) are kind fields under `geometry`: a tick or a value is
+/// set alone (a part of a pair too), so two edits sent before either is answered both hold;
+/// each is undone and redone.
+#[test]
+fn a_fade_cues_picture_values_are_set_in_parts_undone_and_redone() {
+    use serde_json::json;
+    let mut ws = ws();
+    let at = Position {
+        list: list_id(1),
+        parent: None,
+        index: 3,
+    };
+    ws.apply(Command::AddCue {
+        at,
+        cue: cue(4, fade(1)),
+        auto_number: false,
+    })
+    .unwrap();
+    let untick = ws
+        .apply(set(
+            4,
+            fields(&[("geometry", json!({"fade_opacity": true, "opacity": 0.0}))]),
+        ))
+        .unwrap();
+    let unmove = ws
+        .apply(set(
+            4,
+            fields(&[("geometry", json!({"translation": {"x": 120.5}}))]),
+        ))
+        .unwrap();
+    let g = fade_geometry(&ws, 4);
+    assert!(g.fade_opacity && !g.fade_translation);
+    assert_eq!(g.opacity, 0.0);
+    assert_eq!(g.translation, Pair { x: 120.5, y: 0.0 });
+    // Undone in turn: each puts back what it changed.
+    ws.apply(unmove).unwrap();
+    let u = fade_geometry(&ws, 4);
+    assert!(u.fade_opacity);
+    assert_eq!((u.opacity, u.translation.x), (0.0, 0.0));
+    let retick = ws.apply(untick).unwrap();
+    assert_eq!(fade_geometry(&ws, 4), FadeGeometry::default());
+    ws.apply(retick).unwrap();
+    assert!(fade_geometry(&ws, 4).fade_opacity);
+    // An unknown part, or a value of the wrong type, is refused.
+    for bad in [
+        json!({"blur": 1}),
+        json!({"translation": {"z": 1}}),
+        json!({"fade_scale": "yes"}),
+    ] {
+        assert!(
+            matches!(
+                ws.apply(set(4, fields(&[("geometry", bad.clone())]))),
+                Err(CommandError::InvalidValue(_))
+            ),
+            "{bad}"
+        );
+    }
+}
+
+/// A Fade cue's picture values out of range are refused on every path that makes or changes
+/// one: its fields, a new cue, a paste, a clipboard paste and a kind change.
+#[test]
+fn every_path_refuses_a_fade_cues_picture_values_out_of_range() {
+    use serde_json::json;
+    let mut ws = ws();
+    let at = Position {
+        list: list_id(1),
+        parent: None,
+        index: 0,
+    };
+    ws.apply(Command::AddCue {
+        at: at.clone(),
+        cue: cue(4, fade(1)),
+        auto_number: false,
+    })
+    .unwrap();
+    let before = ws.clone();
+    for (value, field) in [
+        (json!({"opacity": 1.5}), "geometry.opacity"),
+        (json!({"opacity": -0.1}), "geometry.opacity"),
+        (
+            json!({"translation": {"x": 70000}}),
+            "geometry.translation.x",
+        ),
+        (json!({"scale": {"y": -101}}), "geometry.scale.y"),
+        (json!({"rotation": 361}), "geometry.rotation"),
+    ] {
+        refused_value(ws.apply(set(4, fields(&[("geometry", value)]))), field);
+    }
+    let bad = || {
+        let mut c = cue(10, fade(1));
+        if let CueKind::Fade { geometry, .. } = &mut c.kind {
+            geometry.scale.x = 1e9;
+        }
+        c
+    };
+    refused_value(
+        ws.apply(Command::AddCue {
+            at: at.clone(),
+            cue: bad(),
+            auto_number: false,
+        }),
+        "geometry.scale.x",
+    );
+    refused_value(
+        ws.apply(Command::Paste {
+            at: at.clone(),
+            cues: vec![cue(11, group(vec![bad()]))],
+        }),
+        "geometry.scale.x",
+    );
+    let pasted = Command::PasteClipboard {
+        at,
+        cues: vec![bad()],
+        source_dir: None,
+    }
+    .prepare(
+        &ws,
+        &MediaPaths {
+            show_dir: None,
+            style: PathStyle::Posix,
+        },
+        &mut || cue_id(500),
+    )
+    .unwrap();
+    refused_value(ws.apply(pasted), "geometry.scale.x");
+    refused_value(
+        ws.apply(set(3, CueProperty::Kind { value: bad().kind })),
+        "geometry.scale.x",
+    );
+    assert_eq!(ws, before);
+}

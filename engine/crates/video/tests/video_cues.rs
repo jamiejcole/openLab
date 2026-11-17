@@ -3839,6 +3839,7 @@ fn a_fade_cue_fades_a_video_cues_sound() {
                 },
                 stop_target_when_done: stop,
                 mode: Default::default(),
+                geometry: Default::default(),
             },
         )
     };

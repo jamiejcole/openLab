@@ -43,6 +43,7 @@ fn fade_on_idle(n: u128, target: u128, seconds: f64) -> openlab_core::Cue {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }

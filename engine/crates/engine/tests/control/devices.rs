@@ -820,6 +820,7 @@ fn each_state_on_a_lost_device_shows_as_qlab_shows_it() {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     );
     fade.continue_mode = ContinueMode::DoNotContinue;
@@ -4296,6 +4297,7 @@ fn the_same_while_the_cue_is_fading_the_fade_carries_on_on_the_new_device() {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     );
     let mut s = two_device_show(vec![audio(1, &a, 0), fade]);

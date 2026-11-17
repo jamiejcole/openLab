@@ -294,6 +294,7 @@ pub fn build() -> Built {
                 },
                 stop_target_when_done: true,
                 mode: Default::default(),
+                geometry: Default::default(),
             },
         ),
         cue(

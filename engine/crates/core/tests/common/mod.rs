@@ -118,6 +118,7 @@ pub fn fade(target: u128) -> CueKind {
         },
         stop_target_when_done: true,
         mode: Default::default(),
+        geometry: Default::default(),
     }
 }
 

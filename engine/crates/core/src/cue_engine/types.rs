@@ -434,7 +434,7 @@ impl fmt::Display for CueProblem {
             Self::TargetWrongKind { target } => {
                 write!(f, "target {target} is the wrong kind of cue")
             }
-            Self::NothingToFade => write!(f, "no levels set to fade"),
+            Self::NothingToFade => write!(f, "no levels or picture values set to fade"),
             Self::NoMedia => write!(f, "no media file"),
             Self::NoStage => write!(f, "no stage"),
             Self::StageMissing { stage } => write!(f, "stage {} does not exist", stage.0),
