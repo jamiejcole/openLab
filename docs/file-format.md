@@ -70,6 +70,7 @@ cue, and the cue shows as broken where it cannot run.
 | Every slice of an Audio or Video cue inside its trims has the play count `"skip"` | Loads as it is, no warning; the cue shows as broken (`nothing_plays`) once its file is read |
 | A Video cue's `stage` does not exist | Warning (`StageMissing`); kept, and the cue shows as broken. A `stage` of `null` ("none") loads quietly and the cue shows as broken |
 | A Video cue's geometry number outside its range (§5 `video`) | Warning (`InvalidValue`, the field); clamped. A `layer` that is not a whole number 0 to 65535 refuses the file (wrong type) |
+| A Fade cue's `geometry` number outside its range or not finite (§5 `fade`) | Warning (`InvalidValue`, `geometry.<field>`); clamped (not finite: the untouched value) |
 | A time below its minimum or above its maximum (24 h unless stated) | Warning; clamped |
 | A level above `+12` | Warning; set to `+12` |
 | A level below `-120` | Set to `-120` silently (same meaning) |
