@@ -1644,6 +1644,7 @@ fn narrowing_the_maximum_limits_crosspoints_and_device_outputs() {
         max_db: 0.0,
         min_db: -60.0,
     });
+    // One command per list, not per entry.
     assert_eq!(clamps.len(), 2, "{clamps:?}");
     let mut history = History::new();
     let mut commands = clamps;
@@ -1660,6 +1661,84 @@ fn narrowing_the_maximum_limits_crosspoints_and_device_outputs() {
     history.undo(&mut ws).unwrap();
     assert_eq!(ws.patches[0].crosspoint(0, 1), Some(6.0));
     assert_eq!(ws.patches[0].device_output(1).level_db, 9.0);
+}
+
+/// A dense matrix (128 cue outputs by 64 device outputs, every crosspoint at -50 dB) under a
+/// minimum raised to -40 dB: the limit change is the setting and one whole-list command per patch
+/// list, not one per crosspoint (each of which would check the whole patch: seconds on the control
+/// thread), every crosspoint goes silent, and one undo brings each back.
+#[test]
+fn raising_the_minimum_over_a_dense_matrix_is_one_command_per_list() {
+    let mut ws = workspace(vec![]);
+    let patch = &mut ws.patches[0];
+    patch.outputs = vec![patch_output(); 128];
+    patch.crosspoints = (0..128)
+        .flat_map(|o| (0..64).map(move |d| xp(o, d, -50.0)))
+        .collect();
+    patch.device_outputs = (0..64)
+        .map(|d| DeviceOutputLevel {
+            device_output: d,
+            level_db: -50.0,
+            mute: false,
+        })
+        .collect();
+    let before = ws.clone();
+    let mut limits = ws.settings.limits();
+    limits.min_db = -40.0;
+    let clamps = ws.limit_clamps(limits);
+    assert_eq!(
+        clamps.len(),
+        2,
+        "one crosspoint list and one device-output list"
+    );
+    let mut commands = clamps;
+    commands.push(setting(WorkspaceSetting::OutputMinDb { value: -40.0 }));
+    let mut history = History::new();
+    assert!(
+        history
+            .execute(&mut ws, Command::Transaction { commands })
+            .unwrap()
+    );
+    let p = &ws.patches[0];
+    assert_eq!(p.crosspoints.len(), 128 * 64);
+    assert!(p.crosspoints.iter().all(|c| c.db == SILENCE_DB));
+    assert!(p.device_outputs.iter().all(|d| d.level_db == SILENCE_DB));
+    assert_clean(&ws);
+    history.undo(&mut ws).unwrap();
+    assert_eq!(ws, before, "one undo restores every cell");
+}
+
+/// A device output the maximum brings to 0 dB, unmuted, leaves the list; one already at its
+/// level stays as it is.
+#[test]
+fn a_device_output_clamped_to_its_default_leaves_the_list() {
+    let mut ws = workspace(vec![]);
+    ws.patches[0].device_outputs = vec![
+        DeviceOutputLevel {
+            device_output: 0,
+            level_db: 6.0,
+            mute: false,
+        },
+        DeviceOutputLevel {
+            device_output: 1,
+            level_db: -6.0,
+            mute: false,
+        },
+    ];
+    let clamps = ws.limit_clamps(LevelLimits {
+        max_db: 0.0,
+        min_db: -60.0,
+    });
+    let [
+        Command::SetPatchProperty {
+            property: PatchProperty::DeviceOutputs { value },
+            ..
+        },
+    ] = clamps.as_slice()
+    else {
+        panic!("{clamps:?}");
+    };
+    assert_eq!(value, &vec![ws.patches[0].device_outputs[1].clone()]);
 }
 
 // ---- Network patches ----
