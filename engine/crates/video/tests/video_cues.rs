@@ -5967,6 +5967,20 @@ fn a_seek_of_a_movie_held_at_its_end_plays_picture_and_sound_from_the_point() {
         silent(&s, moved + samples(0.72), s.rendered()),
         "no sound after the end"
     );
+    // Paused there, then moved: both held at the point until the resume plays both on.
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    seek(&mut s, 1, 0.4);
+    let paused = s.now();
+    s.run(samples(0.3));
+    expect_state(&s, 1, CueState::Paused, "still paused");
+    assert_eq!(shown(&mut s), Some(10), "held on the frame at 0.4 s");
+    assert!(silent(&s, paused, s.rendered()), "nothing heard while paused");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.3));
+    let sound = in_step(&mut s, RATE, 25.0, "after the resume");
+    assert!((sound - 0.7).abs() < 0.03, "the sound at {sound} s");
 }
 
 /// A start held by its file's probe plays late; a seek then goes to the point clicked, not
@@ -6064,4 +6078,50 @@ fn a_seek_whose_sound_is_slow_to_open_keeps_picture_and_sound_together_after_the
     run_to(&mut s, moved + samples(2.4));
     expect_state(&s, 1, CueState::Idle, "ended with its sound");
     assert_eq!(shown(&mut s), None);
+}
+
+/// A seek while a stop fades past the end of the range is ignored: picture, sound and cue still
+/// end together with the range, nothing heard after. A seek in a pre-wait starts picture and
+/// sound at the point together at once.
+#[test]
+fn a_seek_while_stopping_is_ignored_and_one_in_a_pre_wait_starts_picture_and_sound_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    let mut waits = timed_sounding_cue(2, &movie, |_| {});
+    waits.pre_wait = 5.0;
+    let mut s = video_show(vec![
+        timed_sounding_cue(1, &movie, |t| t.end_time = Some(1.2)),
+        waits,
+    ]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.9));
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: Some(openlab_core::FadeSpec {
+            duration: 1.0,
+            curve: openlab_core::FadeCurve::Linear,
+        }),
+    });
+    s.run(BLOCK);
+    seek(&mut s, 1, 0.2);
+    let ends = at + samples(1.2);
+    run_to(&mut s, ends + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended with the range");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.3));
+    assert!(silent(&s, ends + 8, s.rendered()), "nothing after the range");
+
+    start(&mut s, 2);
+    s.run(samples(0.5));
+    expect_state(&s, 2, CueState::PreWaiting, "");
+    seek(&mut s, 2, 1.0);
+    let moved = s.now();
+    run_to(&mut s, moved + samples(0.4));
+    expect_state(&s, 2, CueState::Running, "started at the point");
+    let sound = in_step(&mut s, RATE, 25.0, "started from the point");
+    assert!((sound - 1.4).abs() < 0.03, "the sound at {sound} s");
+    run_to(&mut s, moved + samples(1.0) + 2 * BLOCK);
+    expect_state(&s, 2, CueState::Idle, "the rest played");
+    s.run(samples(0.2));
+    assert!(silent(&s, moved + samples(1.02), s.rendered()));
 }
