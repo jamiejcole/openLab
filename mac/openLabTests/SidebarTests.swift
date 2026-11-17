@@ -570,5 +570,6 @@ final class SidebarTests: XCTestCase {
             row.times.stringValue.hasPrefix(CueTime.running(shown)),
             "Active Cues \(row.times.stringValue) vs the cell \(cell.label.stringValue)")
         XCTAssertTrue(row.times.stringValue.contains("  -"), "with the time left in the pass: \(row.times.stringValue)")
+        XCTAssertEqual(row.bar.doubleValue, shown / pass, accuracy: 0.001, "the bar is how far through the pass it is")
     }
 }

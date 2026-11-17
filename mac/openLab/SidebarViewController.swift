@@ -8,6 +8,28 @@ final class ActiveCueButton: NSButton {
     var cue: ModelID?
 }
 
+/// The bar across the foot of an Active Cues row: filled from the left to `doubleValue` (0 to 1). It draws
+/// the value it is given at once; a system progress indicator eases toward it, so it lags a cue whose pass
+/// starts again.
+final class ActiveCueBar: NSView {
+    var doubleValue: Double = 0 {
+        didSet { if doubleValue != oldValue { needsDisplay = true } }
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 6) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3)
+        NSColor.quaternaryLabelColor.setFill()
+        track.fill()
+        let width = bounds.width * CGFloat(min(1, max(0, doubleValue)))
+        guard width >= 1 else { return }
+        track.addClip()
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(rect: NSRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height)).fill()
+    }
+}
+
 /// One Active Cues row, as QLab lays it out: pause/resume on the left, number and name with the
 /// times below, panic on the right, a progress bar across the bottom, a colour stripe on the edge.
 final class ActiveCueCell: NSTableCellView {
@@ -15,7 +37,7 @@ final class ActiveCueCell: NSTableCellView {
     let panicButton = ActiveCueButton()
     let title = NSTextField(labelWithString: "")
     let times = NSTextField(labelWithString: "")
-    let bar = NSProgressIndicator()
+    let bar = ActiveCueBar()
     let stripe = NSView()
 
     init() {
@@ -36,11 +58,6 @@ final class ActiveCueCell: NSTableCellView {
         times.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         times.textColor = .secondaryLabelColor
         times.setAccessibilityIdentifier(AX.activeCueTimes)
-        bar.style = .bar
-        bar.isIndeterminate = false
-        bar.minValue = 0
-        bar.maxValue = 1
-        bar.controlSize = .small
         bar.setAccessibilityElement(false)
         stripe.wantsLayer = true
         stripe.translatesAutoresizingMaskIntoConstraints = false

@@ -979,7 +979,8 @@ final class VideoCueTests: XCTestCase {
         XCTAssertTrue(
             row.times.stringValue.hasPrefix(CueTime.running(cell)), "Active Cues: \(row.times.stringValue) vs \(cell)")
         XCTAssertTrue(row.times.stringValue.contains("  -"), "and the time left in the pass: \(row.times.stringValue)")
-        XCTAssertGreaterThan(row.bar.doubleValue, 0, "and a bar for the pass")
+        XCTAssertEqual(
+            row.bar.doubleValue, cell / 2, accuracy: 0.01, "and a bar for how far through the 2 s pass it is")
     }
 
     /// A real click in the Video cue's timeline, as the operator makes it: a press and release on the
