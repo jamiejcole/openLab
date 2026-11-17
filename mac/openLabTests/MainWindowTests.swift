@@ -1171,6 +1171,8 @@ final class InspectorWindowFrameTests: XCTestCase {
                 let content = try XCTUnwrap(wc.inspector.tabView.selectedTabViewItem?.view)
                 XCTAssertEqual(sideways(content, depth: 3), [], "tab \(id) of cue \(cue) is cut or overlapping")
                 XCTAssertGreaterThan(wc.sidebar.view.frame.width, 150, "the sidebar has its room")
+                if id == "fadeGeometry" { try assertStageShape(wc.inspector.fadeGeometry.thumbnail, tab: id) }
+                if id == "geometry" { try assertStageShape(wc.inspector.geometry.thumbnail, tab: id) }
             }
         }
     }
@@ -1191,6 +1193,21 @@ final class InspectorWindowFrameTests: XCTestCase {
         let promptWidth = prompt.size(withAttributes: [.font: font]).width
         XCTAssertGreaterThan(promptWidth, field.frame.width - 10, "the prompt is cut")
         XCTAssertLessThanOrEqual(field.frame.height, wc.inspector.hotkeyClear.frame.height + 4, "one line tall")
+    }
+
+    /// The Geometry tab's preview draws its stage (and the black round it) in the stage's shape, inside
+    /// the view, whatever the view's own shape.
+    private func assertStageShape(_ t: GeometryThumbnail, tab: String, line: UInt = #line) throws {
+        let aspect = t.stage.width / t.stage.height
+        for (name, r) in [("stage", t.stageRect), ("backdrop", t.backdropRect)] {
+            XCTAssertGreaterThan(r.height, 0, "\(tab): the \(name) is drawn", line: line)
+            XCTAssertEqual(
+                r.width / max(r.height, 1), aspect, accuracy: 0.05, "\(tab): the \(name) keeps the stage's shape",
+                line: line)
+            let inside = t.bounds.insetBy(dx: -0.5, dy: -0.5).contains(r)
+            XCTAssertTrue(inside, "\(tab): the \(name) is inside the view", line: line)
+        }
+        XCTAssertTrue(t.backdropRect.contains(t.stageRect), "\(tab): the stage is on its black", line: line)
     }
 
     /// Where `view`'s visible children (down `depth` levels) run past it on the left or right, or lie
