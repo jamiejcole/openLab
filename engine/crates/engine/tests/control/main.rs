@@ -20,6 +20,7 @@ mod model_edits;
 mod multi_docs;
 mod network;
 mod patch_mapping;
+mod patch_routing;
 mod preshow;
 mod progress;
 mod protocol;

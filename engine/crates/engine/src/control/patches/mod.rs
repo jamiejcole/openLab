@@ -2,8 +2,9 @@
 
 //! Output patches (AUD-07) on the mixer: which mixer patch matrix (slot) each workspace patch
 //! uses, its resolution against the devices present (sent to the cue engine as `PatchStatus`),
-//! and the matrix gains (patch master × output level, mute, polarity) on the mapped device
-//! outputs. The mixer's own master stays at unity (the mixer is shared by every open doc; a
+//! and the matrix gains: patch master × cue output level (mute, polarity) × crosspoint ×
+//! device output level (mute), each cue output to its mapped device output at 0 dB unless a
+//! crosspoint of the patch names that pair, and to every device output a crosspoint names. The mixer's own master stays at unity (the mixer is shared by every open doc; a
 //! workspace has no global master).
 //!
 //! The mixer is shared by every open doc: slots are keyed by `(DocId,
@@ -20,8 +21,8 @@
 //! every mixer, and a slot's gains are sent to the mixer of its patch's device. A slot follows
 //! its patch to another device in place while no voice plays through it; under a playing voice
 //! it is retired (the voice plays on where it started) and the patch takes a fresh slot, as for
-//! a resize. Output level, mute and polarity are in the matrix: the mixer has no other
-//! per-output setting.
+//! a resize. Levels, mutes, polarity and crosspoints are all in the matrix: the mixer has no
+//! other per-output setting.
 //!
 //! Each device's mixer has as many device outputs as the device has (at most 64): a slot's
 //! matrix is kept at the widest output's stride, and only the columns its output's mixer has
@@ -31,8 +32,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use openlab_audio::{CommandKind, MAX_PATCHES};
 use openlab_core::{
-    DeviceInfo, MachineSettings, OutputPatch, PatchId, PatchOutput, PatchResolution, Workspace,
-    db_to_gain, resolve_patch,
+    DeviceInfo, MachineSettings, OutputPatch, PatchId, PatchOutput, PatchResolution, SILENCE_DB,
+    Workspace, db_to_gain, resolve_patch,
 };
 
 use super::DocId;
@@ -65,6 +66,9 @@ struct DocSlots {
     /// Patch output count, for meters.
     outputs: HashMap<PatchId, usize>,
     resolutions: HashMap<PatchId, PatchResolution>,
+    /// Mapped patches whose crosspoints or device-output levels name a device output their
+    /// device's mixer lacks: the most device outputs they name, and how many it has.
+    beyond: HashMap<PatchId, (u32, u32)>,
 }
 
 pub struct Patches {
@@ -219,6 +223,7 @@ impl Patches {
             .collect();
         let mut given = self.allocate(&mut d, ws, &resolved, &names, busy, &mut commands);
         d.outputs.clear();
+        d.beyond.clear();
         let mut seen = HashMap::new();
         for patch in &ws.patches {
             let resolution = match (d.slots.get(&patch.id), resolved.remove(&patch.id)) {
@@ -226,6 +231,12 @@ impl Patches {
                     let width = self.width(self.slot_output(slot).unwrap_or(0));
                     let base = self.matrix(patch, &r, width);
                     self.apply(slot, base, &mut commands);
+                    if matches!(r, PatchResolution::Mapped { .. })
+                        && let Some(needed) = routing_beyond(patch, width)
+                    {
+                        let available = u32::try_from(width).unwrap_or(u32::MAX);
+                        d.beyond.insert(patch.id, (needed, available));
+                    }
                     r
                 }
                 // Every mixer slot is taken: the patch cannot play.
@@ -309,35 +320,17 @@ impl Patches {
         patch: &OutputPatch,
         here: bool,
     ) -> Option<Vec<f32>> {
-        let n = self.device_outputs;
         let width = self.width(self.slot_output(slot).unwrap_or(0));
         let mut m = self.bases.get(usize::from(slot))?.clone();
         let channels: &[u32] = match d.resolutions.get(&patch.id) {
             Some(PatchResolution::Mapped { channels, .. }) if here => channels,
             _ => &holder.channels,
         };
-        let master = db_to_gain(patch.master_db);
         let rows = holder
             .outputs
             .min(patch.outputs.len())
             .min(self.cue_outputs);
-        for o in 0..rows {
-            if let Some(row) = m.get_mut(o * n..(o + 1) * n) {
-                row.fill(0.0);
-            }
-            let (Some(out), Some(&ch)) = (patch.outputs.get(o), channels.get(o)) else {
-                continue;
-            };
-            let Ok(dev) = usize::try_from(ch) else {
-                continue;
-            };
-            if dev >= width {
-                continue;
-            }
-            if let Some(g) = m.get_mut(o * n + dev) {
-                *g = output_gain(master, out);
-            }
-        }
+        fill_routing(&mut m, self.device_outputs, patch, channels, rows, width);
         Some(m)
     }
 
@@ -532,26 +525,23 @@ impl Patches {
         r
     }
 
-    /// The matrix a patch should have on a mixer with `width` device outputs: cue output `o`
-    /// → its mapped device channel at the patch's master × the output's level; silent when
-    /// unmapped.
+    /// The matrix a patch should have on a mixer with `width` device outputs ([`fill_routing`]);
+    /// silent when unmapped.
     fn matrix(&self, patch: &OutputPatch, r: &PatchResolution, width: usize) -> Vec<f32> {
-        let n = self.device_outputs;
         let mut m = vec![0.0; self.cells()];
         let PatchResolution::Mapped { channels, .. } = r else {
             return m;
         };
-        let master = db_to_gain(patch.master_db);
-        for (o, (out, &ch)) in patch.outputs.iter().zip(channels).enumerate() {
-            let Ok(d) = usize::try_from(ch) else { continue };
-            if o >= self.cue_outputs || d >= width {
-                continue;
-            }
-            if let Some(slot) = m.get_mut(o * n + d) {
-                *slot = output_gain(master, out);
-            }
-        }
+        let rows = patch.outputs.len().min(self.cue_outputs);
+        fill_routing(&mut m, self.device_outputs, patch, channels, rows, width);
         m
+    }
+
+    /// A mapped patch whose crosspoints or device-output levels name device outputs its
+    /// device's mixer lacks (kept, not heard): the most device outputs they name, and how many
+    /// that mixer has.
+    pub fn routing_beyond(&self, doc: DocId, patch: PatchId) -> Option<(u32, u32)> {
+        self.docs.get(&doc)?.beyond.get(&patch).copied()
     }
 
     /// Sends slot `p`, on its output, the entries of `want` that differ from what it has.
@@ -728,6 +718,78 @@ impl Patches {
         commands.push((out, CommandKind::SetMaster { gain: 1.0 }));
         commands
     }
+}
+
+/// Rows `0..rows` of matrix `m` (`[cue output][device output]`, `n` columns) for `patch`:
+/// cue output `o` reaches its mapped device output `channels[o]` at 0 dB unless a crosspoint
+/// names that pair, and each device output a crosspoint names at the crosspoint's level; each
+/// times the cue output's gain ([`output_gain`]) and the device output's (its level; muted: 0).
+/// Device outputs from `width` on stay silent: that mixer does not have them.
+fn fill_routing(
+    m: &mut [f32],
+    n: usize,
+    patch: &OutputPatch,
+    channels: &[u32],
+    rows: usize,
+    width: usize,
+) {
+    let master = db_to_gain(patch.master_db);
+    let width = width.min(n);
+    let device_gain = |d: u32| {
+        let setting = patch.device_output(d);
+        if setting.mute {
+            0.0
+        } else {
+            db_to_gain(setting.level_db)
+        }
+    };
+    for o in 0..rows {
+        let Some(row) = m.get_mut(o * n..(o + 1) * n) else {
+            continue;
+        };
+        row.fill(0.0);
+        let (Some(out), Some(&ch), Ok(index)) = (
+            patch.outputs.get(o),
+            channels.get(o),
+            u32::try_from(o),
+        ) else {
+            continue;
+        };
+        let Ok(d) = usize::try_from(ch) else { continue };
+        if d < width
+            && patch.crosspoint(index, ch).is_none()
+            && let Some(g) = row.get_mut(d)
+        {
+            *g = output_gain(master, out) * device_gain(ch);
+        }
+    }
+    for c in &patch.crosspoints {
+        let (Ok(o), Ok(d)) = (usize::try_from(c.output), usize::try_from(c.device_output)) else {
+            continue;
+        };
+        if o >= rows || d >= width {
+            continue;
+        }
+        let (Some(out), Some(g)) = (patch.outputs.get(o), m.get_mut(o * n + d)) else {
+            continue;
+        };
+        *g = output_gain(master, out) * db_to_gain(c.db) * device_gain(c.device_output);
+    }
+}
+
+/// The most device outputs `patch` names past the first `width` (one past the highest), counting
+/// crosspoints that route a cue output the patch has and every device-output level; `None` when
+/// all are within.
+fn routing_beyond(patch: &OutputPatch, width: usize) -> Option<u32> {
+    let routed = patch.crosspoints.iter().filter(|c| {
+        c.db > SILENCE_DB && usize::try_from(c.output).is_ok_and(|o| o < patch.outputs.len())
+    });
+    routed
+        .map(|c| c.device_output)
+        .chain(patch.device_outputs.iter().map(|d| d.device_output))
+        .filter(|&d| usize::try_from(d).map_or(true, |d| d >= width))
+        .max()
+        .map(|d| d.saturating_add(1))
 }
 
 /// One patch output's gain: patch master × level (muted: 0; polarity: negative).

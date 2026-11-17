@@ -836,8 +836,9 @@ impl DocCx<'_> {
     }
 
     /// The device's notices: an outage, a mixer that could not be recovered, patches that map
-    /// more device channels than the device has (`outputs_dropped`), patches with no free mixer
-    /// slot (`mixer_patches_exhausted`).
+    /// more device channels than the device has (`outputs_dropped`), patches whose crosspoints
+    /// or device-output levels name device outputs it lacks (`patch_routing_beyond_device`),
+    /// patches with no free mixer slot (`mixer_patches_exhausted`).
     pub(super) fn device_warnings(&self, list: &mut Vec<WireWarning>) {
         let eng = &*self.eng;
         eng.stage_faults
@@ -1000,6 +1001,23 @@ impl DocCx<'_> {
                 };
                 list.push(device_notice("outputs_dropped", message, device));
             }
+        }
+        for patch in &self.doc.model.ws().patches {
+            let (Some((needed, available)), Some(PatchResolution::Mapped { device, .. })) = (
+                self.eng.patches.routing_beyond(self.doc.id, patch.id),
+                self.eng.patches.resolution(self.doc.id, patch.id),
+            ) else {
+                continue;
+            };
+            list.push(device_notice(
+                "patch_routing_beyond_device",
+                format!(
+                    "patch \"{}\" routes to device output {needed}, but \"{device}\" has \
+                     {available} here: that routing is kept and not heard",
+                    patch.name
+                ),
+                device,
+            ));
         }
         for &id in self.eng.patches.exhausted(self.doc.id) {
             let name = self

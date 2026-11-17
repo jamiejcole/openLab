@@ -24,8 +24,13 @@
   - Still not primed `SEEK_PRIME_WAIT` after the first planned swap, or nothing left to play by the new swap: the move is given up (`give_up_move`): the old voice keeps the run, with any devamp sent for the moved one, and the waiting record and stream go. Progress shows the old voice until the swap.
   - A move given up for a late stream is tried again (`VoiceRec::retry_at`, `Voices::take_due_moves` in the doc tick, then `follow_devices`) `MOVE_RETRY` (0.25 s) later, doubling after each give-up of the run up to 16 times; each try plans afresh with `move_plan`, so opens stay bounded and nothing plays twice. The first give-up of a run writes one `warn` line and a `move_delayed` notice.
   - `relocate` tells the core the run's length for the fresh run at once (the core's count plus what the old voice still has to play), so the end and an auto-follow keep their sample whether the move is made or given up.
-  While the patch exists, every sync rebuilds the retired slot's first `min(old, new)` outputs from the current master, levels, mutes, polarity and device mapping (`Patches::retired_base`), so a mute or master pull-down still reaches the playing cue; outputs the patch no longer has keep their last gains. With no voice on the slot the resize is in place. This is openLab's rule (skill `qlab-behaviour` Q226).
-  - Level, mute, polarity, master and mapping edits apply in place, so to voices already playing.
+  While the patch exists, every sync rebuilds the retired slot's first `min(old, new)` outputs from the current master, levels, mutes, polarity, crosspoints, device-output levels and device mapping (`Patches::retired_base`), so a mute or master pull-down still reaches the playing cue; outputs the patch no longer has keep their last gains. With no voice on the slot the resize is in place. This is openLab's rule (skill `qlab-behaviour` Q226).
+  - Level, mute, polarity, master, crosspoint, device-output and mapping edits apply in place, so to voices already playing (`SetPatchRouting`, over the de-zipper).
+
+## Matrix gains (`fill_routing`)
+- Gain of cue output `o` to device output `d` = patch master x cue output level (mute: 0, polarity: negative) x crosspoint x device output `d`'s level (mute: 0).
+- The crosspoint is the patch's listed one for `(o, d)` if any (`-120` dB: silent); else 1.0 where `d` is the device channel the mapping gives `o`; else 0. So a patch with no crosspoints routes exactly as its mapping (one device output per cue output).
+- Device outputs at or past the slot's mixer width are never sent and never written into the next row. A mapped patch whose live crosspoints (above silence, for a cue output it has) or device-output entries name such outputs is kept as it is and reported: `Patches::routing_beyond` and the `patch_routing_beyond_device` device notice (QLab 5 Q510). It does not break the patch or its cues.
 - A closed doc's slots are zeroed and freed at once; a doc whose patches waited for a slot syncs on the next wake.
 
 ## Default mapping
