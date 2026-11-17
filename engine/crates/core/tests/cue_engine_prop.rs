@@ -2598,10 +2598,15 @@ impl Run {
             // A GO that double-GO protection (or the chain limit) ignored never reached the cue.
             // Only the operator's GO: a GoTo-and-GO the trigger itself set off may be ignored too
             // (its playhead on a skipped cue with nothing after it) after the cue did act.
+            // The operator's GO was ignored when its GoIgnored comes before the cue changed.
+            let ignored_at = actions
+                .iter()
+                .position(|a| matches!(a, Action::GoIgnored { .. }));
+            let acted_at = actions
+                .iter()
+                .position(|a| matches!(a, Action::StateChanged { cue: c, .. } if *c == cue));
             let go_ignored = matches!(self.input, Input::Go { .. } | Input::GoFrom { .. })
-                && actions
-                    .iter()
-                    .any(|a| matches!(a, Action::GoIgnored { .. }));
+                && ignored_at.is_some_and(|i| acted_at.is_none_or(|a| i < a));
             let option = if go_ignored {
                 SecondTrigger::Nothing
             } else {
