@@ -1360,6 +1360,7 @@ fn refused(id: openlab_core::protocol::RequestId, e: &CommandError) -> ServerMes
 
 fn notice(code: &str, message: String, cue: Option<CueId>) -> WireWarning {
     WireWarning::Notice {
+        patch: None,
         code: code.to_owned(),
         message,
         cue,
@@ -1370,6 +1371,7 @@ fn notice(code: &str, message: String, cue: Option<CueId>) -> WireWarning {
 /// A notice about the audio device named `device`.
 fn device_notice(code: &str, message: String, device: &str) -> WireWarning {
     WireWarning::Notice {
+        patch: None,
         code: code.to_owned(),
         message,
         cue: None,

@@ -266,6 +266,7 @@ impl DocCx<'_> {
                 .into_iter()
                 .map(|(code, message, cue)| RuntimeChange::Warning {
                     warning: WireWarning::Notice {
+                        patch: None,
                         code: code.to_owned(),
                         message,
                         cue,

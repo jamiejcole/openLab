@@ -87,7 +87,9 @@ fn mapping_refusal(
             },
         ));
     };
-    if mapping.channels.len() != outputs {
+    // Its first outputs; the rest have no device output of their own (a device smaller than
+    // the patch).
+    if mapping.channels.is_empty() || mapping.channels.len() > outputs {
         return Some(ErrorBody::new(
             ErrorCode::BadRequest,
             format!(
@@ -202,10 +204,11 @@ impl DocCx<'_> {
 
 impl DocCx<'_> {
     /// Maps each patch of the open workspace that has no mapping entry on this machine to the
-    /// first outputs of the primary device. Nothing happens while it does not play (an outage,
-    /// or none): the patch stays unmapped and the next sync with it maps it. A device with
-    /// fewer outputs than the patch needs leaves it unmapped (one warning per patch and
-    /// device); a different device is tried again.
+    /// first outputs of the primary device: cue output n to device output n, as QLab 5 does.
+    /// Cue outputs past the device's outputs get none (their crosspoints may still route them).
+    /// Nothing happens while it does not play (an outage, or none): the patch stays unmapped and
+    /// the next sync with it maps it. A device with no outputs leaves it unmapped (one warning
+    /// per patch and device); a different device is tried again.
     pub(super) fn map_unmapped_patches(&mut self) {
         let Some(device) = self
             .eng
@@ -239,8 +242,8 @@ impl DocCx<'_> {
             {
                 continue;
             }
-            let wanted = patch.outputs.len();
-            if wanted > have {
+            let wanted = patch.outputs.len().min(have);
+            if wanted == 0 {
                 if self
                     .eng
                     .mapping_warned
@@ -249,8 +252,7 @@ impl DocCx<'_> {
                     notes.push((
                         LogLevel::Warn,
                         format!(
-                            "device {} has {have} outputs, patch '{}' needs {wanted}: left \
-                             unmapped",
+                            "device {} has no outputs: patch '{}' left unmapped",
                             device.name, patch.name
                         ),
                     ));
@@ -308,9 +310,10 @@ impl DocCx<'_> {
     /// Keeps this machine's mapping of each patch as long as the patch: after a cue-output count
     /// edit, its undo or redo (or a show whose count differs from the stored mapping), outputs the
     /// patch keeps keep their device channels, a new one goes to the channel of its own number
-    /// counted round the outputs openLab can use on that device, and removed ones drop. So one
-    /// edit never leaves the patch `output_count_mismatch` (its cues broken). An explicitly
-    /// cleared entry stays cleared.
+    /// when openLab can use that output of the device (else it, and those after it, get none, as
+    /// QLab 5 routes cue output n only to device output n), and removed ones drop. So one edit
+    /// never leaves the patch `output_count_mismatch` (its cues broken). An explicitly cleared
+    /// entry stays cleared.
     pub(super) fn fit_mappings_to_patches(&mut self) {
         let ws = self.doc.model.ws();
         let mut fitted: Vec<(PatchId, String, PatchMapping)> = Vec::new();
@@ -322,6 +325,13 @@ impl DocCx<'_> {
             };
             let wanted = patch.outputs.len();
             if old.is_none() || old.channels.len() == wanted {
+                continue;
+            }
+            if old.channels.len() > wanted {
+                // Shrunk: the outputs it lost drop.
+                let mut fit = old.clone();
+                fit.channels.truncate(wanted);
+                fitted.push((patch.id, patch.name.clone(), fit));
                 continue;
             }
             // Listed only when an entry needs it: the list is built on each call.
@@ -347,14 +357,13 @@ impl DocCx<'_> {
                         .map_or(1, |&c| usize::try_from(c).unwrap_or(0).saturating_add(1))
                 })
                 .max(1);
-            let channels: Vec<u32> = (0..wanted)
-                .map(|i| {
-                    old.channels
-                        .get(i)
-                        .copied()
-                        .unwrap_or_else(|| u32::try_from(i % usable).unwrap_or(0))
-                })
-                .collect();
+            let mut channels = old.channels.clone();
+            channels.extend(
+                (old.channels.len()..wanted.min(usable)).filter_map(|i| u32::try_from(i).ok()),
+            );
+            if channels == old.channels {
+                continue;
+            }
             fitted.push((
                 patch.id,
                 patch.name.clone(),

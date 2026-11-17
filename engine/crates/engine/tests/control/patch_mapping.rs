@@ -295,7 +295,6 @@ fn invalid_mappings_are_refused_and_change_nothing() {
             mapping("Offline", &[0, 1, 2]),
             ErrorCode::BadRequest,
         ),
-        (patch_id(), mapping("Offline", &[0]), ErrorCode::BadRequest),
         (patch_id(), mapping("Offline", &[]), ErrorCode::BadRequest),
         (
             other_patch,
@@ -506,10 +505,7 @@ fn a_count_change_its_undo_and_redo_keep_the_patch_mapped_and_cues_playing() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
 
     assert_eq!(edit(&mut s, channel_count(6)), Ok(()));
-    assert_eq!(
-        stored(&s, &ws),
-        Some(mapping("Offline", &[1, 0, 2, 3, 0, 1]))
-    );
+    assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1, 0, 2, 3])));
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     undo(&mut s);
     assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1, 0])));
@@ -527,10 +523,7 @@ fn a_count_change_its_undo_and_redo_keep_the_patch_mapped_and_cues_playing() {
         "the next GO plays after an undo"
     );
     redo(&mut s);
-    assert_eq!(
-        stored(&s, &ws),
-        Some(mapping("Offline", &[1, 0, 2, 3, 0, 1]))
-    );
+    assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1, 0, 2, 3])));
     assert_eq!(edit(&mut s, channel_count(1)), Ok(()));
     assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1])));
     s.transport(TransportAction::HardStop { cue: id(2) });
@@ -544,9 +537,10 @@ fn a_count_change_its_undo_and_redo_keep_the_patch_mapped_and_cues_playing() {
     );
 }
 
-/// The patch's device is not connected when the count changes: the mapping still follows the
-/// count (counted round the outputs it already reaches), so the patch plays as soon as the
-/// device is back. An explicitly cleared entry stays cleared.
+/// The patch's device is not connected when the count changes: the mapping keeps the outputs it
+/// reaches and the new cue outputs past them get no device output (they could not be checked
+/// against the device), so the patch plays as soon as the device is back. An explicitly cleared
+/// entry stays cleared.
 #[test]
 fn a_count_change_while_the_device_is_missing_or_cleared_keeps_the_entry_consistent() {
     let env = env();
@@ -559,7 +553,7 @@ fn a_count_change_while_the_device_is_missing_or_cleared_keeps_the_entry_consist
     c.machine = machine;
     let mut s = start_show(ws.clone(), c);
     assert_eq!(edit(&mut s, channel_count(3)), Ok(()));
-    assert_eq!(stored(&s, &ws), Some(mapping("Gone", &[0, 1, 0])));
+    assert_eq!(stored(&s, &ws), Some(mapping("Gone", &[0, 1])));
 
     assert_eq!(set(&mut s, patch_id(), None), Ok(()));
     assert_eq!(edit(&mut s, channel_count(5)), Ok(()));
@@ -573,21 +567,25 @@ fn a_count_change_while_the_device_is_missing_or_cleared_keeps_the_entry_consist
     );
 }
 
+/// A two-output patch on a one-output device is mapped on that output (the other cue output has
+/// no device output of its own) and plays; a mapping naming a channel the device lacks is refused.
 #[test]
-fn a_patch_a_too_small_device_left_unmapped_can_be_mapped_by_hand() {
+fn a_patch_on_a_too_small_device_maps_its_first_outputs_and_refuses_channels_it_lacks() {
     let env = env();
     let path = wav(&dc(400, 0.5));
     let ws = workspace(vec![audio(1, &path, 0)]);
     let mut s = start_show(ws.clone(), from_disk(&env, vec![device("Mono", 1)]));
-    assert_eq!(stored(&s, &ws), None);
-    let report = preshow(&mut s);
-    assert_eq!(report.patches[0].resolution, Some(WireResolution::Unmapped));
-    // Two outputs on a one-channel device cannot be mapped, whatever the channels.
+    assert_eq!(stored(&s, &ws), Some(mapping("Mono", &[0])));
+    assert!(preshow(&mut s).patches.is_empty(), "no patch problem");
     assert_eq!(
         set(&mut s, patch_id(), Some(mapping("Mono", &[0, 1]))),
         Err(ErrorCode::BadRequest)
     );
-    assert_eq!(stored(&s, &ws), None);
+    assert_eq!(stored(&s, &ws), Some(mapping("Mono", &[0])));
+    // A mapping of the first outputs only is taken by request too.
+    assert_eq!(set(&mut s, patch_id(), None), Ok(()));
+    assert_eq!(set(&mut s, patch_id(), Some(mapping("Mono", &[0]))), Ok(()));
+    assert_eq!(stored(&s, &ws), Some(mapping("Mono", &[0])));
 }
 
 /// Sends `set_patch_mapping` to a show on the stand-in device; the error if it was refused.

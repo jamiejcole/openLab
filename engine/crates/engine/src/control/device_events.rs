@@ -1009,7 +1009,7 @@ impl DocCx<'_> {
             ) else {
                 continue;
             };
-            list.push(device_notice(
+            let mut warning = device_notice(
                 "patch_routing_beyond_device",
                 format!(
                     "patch \"{}\" routes to device output {needed}, but \"{device}\" has \
@@ -1017,7 +1017,11 @@ impl DocCx<'_> {
                     patch.name
                 ),
                 device,
-            ));
+            );
+            if let WireWarning::Notice { patch: about, .. } = &mut warning {
+                *about = Some(patch.id);
+            }
+            list.push(warning);
         }
         for &id in self.eng.patches.exhausted(self.doc.id) {
             let name = self

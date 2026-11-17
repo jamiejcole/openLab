@@ -231,30 +231,29 @@ fn a_show_with_no_mapping_on_this_machine_is_mapped() {
     assert_eq!(mapping(&other, &loaded).unwrap().channels, vec![6, 7]);
 }
 
+/// A device with fewer outputs than the patch: the patch is mapped on the outputs it has (cue
+/// output n to device output n, as QLab 5 routes it), the others have none, and its cues play.
 #[test]
-fn a_device_with_too_few_outputs_leaves_the_patch_unmapped_with_one_warning() {
+fn a_device_with_too_few_outputs_maps_the_outputs_it_has() {
     let env = env();
     let path = wav(&dc(400, 0.5));
     let ws = workspace(vec![audio(1, &path, 0)]);
     let c = bare(&env, vec![device("Mono", 1)]);
     let mut s = show_with(ws.clone(), c);
     let msgs = s.take_outbound();
-    assert!(infos(&msgs).is_empty());
-    let w = warns(&msgs);
-    assert_eq!(w.len(), 1, "{w:?}");
-    assert!(
-        w[0].contains("device Mono has 1 outputs") && w[0].contains("needs 2"),
-        "{w:?}"
+    assert!(warns(&msgs).is_empty(), "{:?}", warns(&msgs));
+    assert_eq!(
+        infos(&msgs),
+        vec!["mapped patch 'Main' to Mono output 1".to_owned()]
     );
-    assert_eq!(mapping(&ws, s.control().machine()), None);
-    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
-    // Not logged again on later syncs of the same workspace.
-    s.take_outbound();
-    let _ = new_workspace(&mut s);
-    let again = warns(&s.take_outbound());
-    assert_eq!(again.len(), 1, "one warning, for the new workspace's patch");
+    assert_eq!(
+        mapping(&ws, s.control().machine()).unwrap().channels,
+        vec![0]
+    );
+    assert_ne!(s.control().engine().state(id(1)), CueState::Broken);
     drop(s);
-    assert!(!env.dirs.settings_path().exists());
+    let loaded = load_machine_settings(&env.dirs).settings;
+    assert_eq!(mapping(&ws, &loaded).unwrap().channels, vec![0]);
 }
 
 #[test]

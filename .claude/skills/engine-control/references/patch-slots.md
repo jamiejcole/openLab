@@ -34,14 +34,16 @@
 - A closed doc's slots are zeroed and freed at once; a doc whose patches waited for a slot syncs on the next wake.
 
 ## Default mapping
-Before each patch resolution (`sync_patches`: start, doc opened, edits like AddPatch, device back), every patch with **no mapping entry** on this machine gets, when the primary device plays, a mapping to its outputs 1..N in `config.machine`. The settings are written by the settings writer (a failed write is a `warn`, not the control thread) with an `info` log.
+Before each patch resolution (`sync_patches`: start, doc opened, edits like AddPatch, device back), every patch with **no mapping entry** on this machine gets, when the primary device plays, a mapping of its cue outputs 1..N to device outputs 1..N in `config.machine`, N at most the device's outputs (skill `qlab-behaviour` Q515). The settings are written by the settings writer (a failed write is a `warn`, not the control thread) with an `info` log.
 - **A patch with an entry is never touched** (an operator's mapping is never overwritten).
-- A device with fewer outputs than the patch needs leaves it **unmapped** (silent, cues broken), never partly mapped; one `warn` per patch and device; a later sync with a bigger or other device maps it.
+- A device with fewer outputs than the patch is mapped on the outputs it has: the mapping lists channels for the patch's first outputs only, the rest have no default route (crosspoints may still send them anywhere). The patch plays and its cues are not broken. A device with no outputs leaves it unmapped, one `warn` per patch and device.
+- A mapping lists channels for the patch's first outputs (1 to its count; `resolve_patch` is `output_count_mismatch` only for more). A short entry is not grown by a device sync (two open docs of one workspace id must not refit each other): reopening the show on a bigger device fits it.
 - No playable device (outage, none listed): nothing is written; patches stay `Unmapped` until a sync with a device.
 - A patch the operator cleared has an explicit empty entry, so it counts as having an entry.
 
 ## Fitting a mapping to its patch (`fit_mappings_to_patches`)
-- On this doc's opening and after each of its edits, undo and redo (`sync_workspace`, not a device sync, so two open docs of one workspace id never refit each other), an entry whose channel count differs from its patch's outputs is fitted: kept outputs keep their channels, a new output `n` goes to channel `n` mod the usable outputs (the device's, at most the primary's count; a device not listed: round the channels the entry already reaches), removed ones drop.
+- When: on this doc's opening and after each of its edits, undo and redo (`sync_workspace`, not a device sync, so two open docs of one workspace id never refit each other).
+- An entry whose channel count differs from its patch's outputs is fitted: kept outputs keep their channels, a new output `n` goes to channel `n` while that is one of the usable outputs (the device's, at most the primary's count; a device not listed: the channels the entry already reaches), and it and later ones get none past them; removed ones drop.
 - Written like the default mapping, `info` log. A cleared entry is left alone. So a cue-output count edit is one request and never leaves the patch `output_count_mismatch` (skill `qlab-behaviour` Q281).
 
 ## `Request::SetPatchMapping { patch, mapping? }` (`Control::set_patch_mapping`)

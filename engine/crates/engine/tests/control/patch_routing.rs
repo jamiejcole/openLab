@@ -363,13 +363,21 @@ fn a_show_saved_with_routing_reopens_with_it_and_fewer_outputs_warn_and_keep_it(
                 code,
                 message,
                 device,
+                patch,
                 ..
-            } if code == "patch_routing_beyond_device" => Some((message.clone(), device.clone())),
+            } if code == "patch_routing_beyond_device" => {
+                Some((message.clone(), device.clone(), *patch))
+            }
             _ => None,
         })
         .unwrap_or_else(|| panic!("no warning: {warnings:?}"));
     assert!(notice.0.contains("device output 4"), "{}", notice.0);
     assert_eq!(notice.1.as_deref(), Some("Offline"));
+    assert_eq!(
+        notice.2,
+        Some(patch_id()),
+        "it names the patch, for the client to say"
+    );
     let start = go(&mut small) as usize;
     small.run(400);
     held(
@@ -533,4 +541,51 @@ fn a_resized_patch_keeps_metering_the_cue_still_playing_on_its_old_layout() {
         "row 1 still meters the playing cue: {after:?}"
     );
     assert_eq!(s.control().live_voices(), 1);
+}
+
+/// A show whose patch has 8 cue outputs, opened where the device has 2 and nothing is stored for
+/// the patch: it is put on the device (cue outputs 1 and 2 on device outputs 1 and 2, the rest
+/// with none, as QLab 5 routes them), its cues are not broken, and GO plays cue outputs 1-2.
+#[test]
+fn an_eight_output_patch_on_a_two_output_device_is_mapped_and_plays() {
+    let a = wav(&dc(RATE as usize * 10, LEVEL));
+    let mut ws = workspace(vec![audio(1, &a, 0), audio(2, &a, 1)]);
+    let output = ws.patches[0].outputs[0].clone();
+    ws.patches[0].outputs = vec![output; 8];
+    ws.patches[0].crosspoints = vec![PatchCrosspoint {
+        output: 0,
+        device_output: 4,
+        db: 0.0,
+    }];
+    let mut c = config(&ws);
+    c.machine = openlab_core::MachineSettings::default();
+    let mut s = OfflineShow::new(ws.clone(), mixer_config(), c).unwrap();
+    s.settle_media();
+    let stored = s
+        .control()
+        .machine()
+        .patch_mapping(ws.id, patch_id())
+        .cloned()
+        .expect("mapped by default");
+    assert_eq!(
+        (stored.device.as_str(), stored.channels),
+        ("Offline", vec![0, 1])
+    );
+    assert_ne!(
+        s.control().engine().state(id(1)),
+        openlab_core::CueState::Broken
+    );
+    let start = go(&mut s) as usize;
+    go(&mut s);
+    s.run(400);
+    for ch in 0..2 {
+        held(
+            &s.channel(ch)[start + 50..start + 300],
+            LEVEL,
+            "cue outputs 1-2",
+        );
+    }
+    // The crosspoint to device output 5 is kept and warned about.
+    assert!(notice_codes(&s).contains(&"patch_routing_beyond_device".to_owned()));
+    assert_eq!(patch(&s).crosspoints.len(), 1);
 }

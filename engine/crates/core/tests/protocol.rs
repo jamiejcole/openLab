@@ -105,6 +105,7 @@ fn snapshot() -> Snapshot {
         previewing: vec![cue_id(10)],
         played: vec![cue_id(10)],
         warnings: vec![WireWarning::Notice {
+            patch: None,
             code: "media_damaged".into(),
             message: "intro.wav has a damaged tail".into(),
             cue: Some(cue_id(10)),
@@ -1362,6 +1363,7 @@ fn fixtures() -> Vec<(String, Sample)> {
         server(ServerMessage::Warnings {
             warnings: vec![
                 WireWarning::Notice {
+                    patch: None,
                     code: "file_repaired".into(),
                     message: "duplicate cue number 3 was cleared".into(),
                     cue: None,
@@ -1370,6 +1372,14 @@ fn fixtures() -> Vec<(String, Sample)> {
                 WireWarning::LateStart {
                     cue: cue_id(10),
                     late_ms: 12,
+                },
+                WireWarning::Notice {
+                    patch: Some(patch_id(1)),
+                    code: "patch_routing_beyond_device".into(),
+                    message: "patch \"Main\" routes to device output 5, but \"Out\" has 2 here"
+                        .into(),
+                    cue: None,
+                    device: Some("Out".into()),
                 },
             ],
         }),
@@ -3239,6 +3249,7 @@ fn all_warnings() -> Vec<WireWarning> {
         reason: WireGoIgnored::DoubleGo,
     });
     all.push(WireWarning::Notice {
+        patch: None,
         code: "media_damaged".into(),
         message: "intro.wav has a damaged tail".into(),
         cue: Some(c),
@@ -3592,6 +3603,7 @@ fn preshow_report_sample() -> PreshowReport {
             },
         ],
         system: vec![WireWarning::Notice {
+            patch: None,
             code: "device_lost".into(),
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
@@ -3695,6 +3707,7 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
     add(
         "warnings_notice_device_lost",
         warnings(WireWarning::Notice {
+            patch: None,
             code: "device_lost".into(),
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,

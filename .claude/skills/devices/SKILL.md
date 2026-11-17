@@ -176,8 +176,8 @@ Decided from measuring QLab 5; there is no grace period and no exact-sample resu
 ## Default patch mapping
 
 QLab 5 maps a new workspace's audio patch to the current output device automatically; openLab does the same, per patch, in the engine's `sync_patches` (start, doc opened, AddPatch, device back):
-- Any patch with **no mapping entry** in this machine's `settings.json` (keyed by workspace id and patch id) gets its N outputs mapped to the primary device's outputs 1..N. An existing entry is never overwritten, including an explicit empty entry (`{"device": "", "channels": []}`, how a cleared mapping is stored so the default does not re-apply).
-- **Too-small device: no partial mapping.** A partial one would silence and break cues and block later self-healing. The patch stays `Unmapped` with one `warn` per patch and device (`device X has M outputs, patch 'P' needs N: left unmapped`); a bigger or different device is tried at the next sync.
+- Any patch with **no mapping entry** in this machine's `settings.json` (keyed by workspace id and patch id) gets its outputs 1..N mapped to the primary device's outputs 1..N, N at most the device's outputs. An existing entry is never overwritten, including an explicit empty entry (`{"device": "", "channels": []}`, how a cleared mapping is stored so the default does not re-apply).
+- **Too-small device: the outputs it has.** As QLab 5 routes cue output n to device output n only where it exists, a patch wider than the device is mapped on the device's outputs and its later cue outputs get no default route; it plays and its cues are not broken. Only a device with no outputs leaves it `Unmapped` (one `warn` per patch and device).
 - Primary not playing (none, or an outage): nothing is written; the next sync with it maps. Offline: the first configured device.
 - The settings write goes to the settings writer thread, never the control thread; a failed write is a `warn`. An `info` line says `mapped patch 'Main Outputs' to <device> outputs 1-2`.
 - No per-output delay exists (QLab 5 has none); a patch output's level, mute and polarity are its matrix gains.
