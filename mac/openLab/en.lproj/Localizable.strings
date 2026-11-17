@@ -477,6 +477,7 @@
 "warnings.device.device_unrecoverable" = "Failed and cannot recover. Restart openLab to hear it again.";
 "warnings.device.device_stalled" = "Has stopped responding. If it stays silent, it is treated as disconnected.";
 "warnings.device.outputs_dropped" = "Has fewer outputs than this show uses, so some are not heard. Check its patches in Workspace Settings, Audio.";
+"warnings.device.patch_routing_beyond_device" = "Has fewer outputs than a patch routes to. That routing is kept with the show and is not heard here; see the patch in Workspace Settings, Audio.";
 "warnings.device.patch_device_unusable" = "Listed, but openLab cannot use it, so the cues routed to it cannot play. Workspace Settings, Audio says why.";
 "warnings.systemOutputNone" = "The Mac has no output device selected, so the cues on patches set to the system output cannot play. Choose an output in the Mac’s Sound settings, or another device for those patches in Workspace Settings, Audio.";
 "warning.notice.audio_track_missing" = "The audio track chosen for it is not in its file; the file’s first track plays.";
@@ -573,7 +574,15 @@
 "patchEditor.metersShown" = "Meters show the first 64 cue outputs.";
 "patchEditor.countRange" = "A patch has 1 to 128 cue outputs.";
 "patchEditor.levelsShown" = "A cue's Levels tab shows the first 64 cue outputs.";
-"patchEditor.routeHelp" = "Click a box to send that cue output to that device output.";
+"patchEditor.routeHelp" = "Double-click a box to type the level that cue output reaches that device output at; empty it to stop sending there.";
+"patchEditor.beyond" = "This device has %1$ld outputs: the routing to device outputs past them (up to %2$ld) is kept with the show, drawn in red, and not heard here.";
+"patchEditor.mutedColumn" = "%ld M";
+"patchEditor.mute" = "Mute";
+"patchEditor.copyRouting" = "Copy Routing";
+"patchEditor.copyDefaults" = "Defaults";
+"patchEditor.copyFrom" = "From “%@”";
+"patchEditor.unmuteAll" = "Unmute All";
+"patchEditor.crosspoint" = "Cue output %1$ld to device output %2$ld";
 "patchEditor.done" = "Done";
 "patchEditor.refused" = "Level not changed: %@";
 

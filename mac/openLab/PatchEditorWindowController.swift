@@ -7,8 +7,10 @@ import Combine
 /// workspace settings' patch table, from the I/O tab's edit button or from the Levels tab. At the
 /// top: the patch's name, how many cue outputs it has and the device it plays on. Three tabs: the
 /// cue outputs' names (what a cue's Levels tab shows under its faders); the routing matrix (the
-/// main level, then a row per cue output with its level, meter and the device output it plays on);
-/// and the device outputs with what reaches each.
+/// main level, then a row per cue output with its level, meter and a box per device output holding
+/// the level it reaches that device output at); and the device outputs, each with its level, mute
+/// and what reaches it. At the foot: copying the routing from another patch or back to the
+/// defaults, and unmuting everything (QLab 5 manual pp. 189-190).
 ///
 /// It holds nothing the engine does not: every control is drawn from the model and the settings
 /// model, and an edit goes to the engine (which puts a level within the workspace volume limits);
@@ -42,11 +44,22 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     let routingNote = NSTextField(wrappingLabelWithString: "")
     /// One level box per cue output, laid over the matrix's level column.
     private(set) var outputFields: [NSTextField] = []
+    /// The box a crosspoint's level is typed in, laid over the box double-clicked.
+    let crosspointField = NSTextField()
+    /// The crosspoint being typed in (cue output, device output).
+    private(set) var typingCell: (row: Int, column: Int)?
     // Device outputs
     let deviceOutputsNote = NSTextField(wrappingLabelWithString: "")
+    /// What reaches each device output.
     private(set) var deviceOutputLabels: [NSTextField] = []
+    private(set) var deviceFaders: [LevelFader] = []
+    private(set) var deviceFields: [NSTextField] = []
+    private(set) var deviceMutes: [NSButton] = []
     private let deviceGrid = NSGridView()
 
+    /// Sets the routing from another patch of the workspace, or back to the defaults.
+    let copyPopup = NSPopUpButton(frame: .zero, pullsDown: true)
+    let unmuteButton = NSButton(title: loc("patchEditor.unmuteAll"), target: nil, action: nil)
     let doneButton = NSButton(title: loc("patchEditor.done"), target: nil, action: nil)
     /// Why the last edit did not take.
     let messageLabel = NSTextField(wrappingLabelWithString: "")
@@ -57,6 +70,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     private var dragging = false
     /// Each drag's own undo step: its edits coalesce with each other and no other drag's.
     private var gesture = 0
+    /// The device output whose fader is being dragged.
+    private var draggedDeviceOutput: Int?
     /// A coalesce key lives as long as the engine's history, which outlives the app.
     private static let launchToken = UUID().uuidString
     /// The most recent edit on its way; tests wait on it.
@@ -72,6 +87,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         var devices: [DeviceEntry]
         var usable: Int
         var loaded: Bool
+        var routing: PatchRouting
+        var others: [String]
     }
     private var drawn: Drawn?
     /// Shown (or read for a window drawn elsewhere) and not closed since: it follows the devices.
@@ -205,10 +222,20 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         doneButton.keyEquivalent = "\r"
         doneButton.target = self
         doneButton.action = #selector(doneClicked)
+        copyPopup.setAX(AX.patchEditorCopy, label: loc("patchEditor.copyRouting"))
+        copyPopup.target = self
+        copyPopup.action = #selector(copyChosen)
+        copyPopup.setContentHuggingPriority(.required, for: .horizontal)
+        copyPopup.setContentCompressionResistancePriority(.required, for: .horizontal)
+        unmuteButton.setAX(AX.patchEditorUnmute, label: loc("patchEditor.unmuteAll"))
+        unmuteButton.target = self
+        unmuteButton.action = #selector(unmuteClicked)
+        unmuteButton.setContentHuggingPriority(.required, for: .horizontal)
+        unmuteButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         messageLabel.textColor = .systemRed
         messageLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         messageLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let bottom = NSStackView(views: [messageLabel, doneButton])
+        let bottom = NSStackView(views: [copyPopup, unmuteButton, messageLabel, doneButton])
         bottom.orientation = .horizontal
         bottom.alignment = .centerY
         bottom.distribution = .fill
@@ -294,7 +321,14 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         head.spacing = 16
 
         matrix.setAX(AX.patchEditorMatrix, label: loc("patchEditor.tab.routing"))
-        matrix.onRoute = { [weak self] row, column in self?.route(row, to: column) }
+        matrix.onType = { [weak self] row, column in self?.beginTyping(row: row, column: column) }
+        crosspointField.alignment = .center
+        crosspointField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        crosspointField.controlSize = .small
+        crosspointField.delegate = self
+        crosspointField.isHidden = true
+        crosspointField.setAX(AX.patchEditorCrosspointField)
+        matrix.addSubview(crosspointField)
         meter.bank = store.meters
         meter.setAX(AX.patchEditorMeter)
         matrixRows.addSubview(meter)
@@ -336,7 +370,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         deviceOutputsNote.preferredMaxLayoutWidth = 440
         deviceOutputsNote.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         deviceGrid.rowSpacing = 6
-        deviceGrid.columnSpacing = 12
+        deviceGrid.columnSpacing = 10
         let stack = NSStackView(views: [deviceOutputsNote, deviceGrid])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -367,7 +401,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             names: outputs.map { $0["name"]?.stringValue ?? "" }, name: patch.raw["name"]?.stringValue ?? "",
             row: row, devices: model.devices,
             usable: row.flatMap(model.deviceName(of:)).map(model.usableChannels(of:)) ?? 0,
-            loaded: model.loaded)
+            loaded: model.loaded, routing: PatchRouting(patch: patch.raw, mapping: row?.mapping),
+            others: otherPatches.map(\.name))
         if let drawn, drawn == state, typedField == nil, !dragging { return }
         guard !dragging else { return }
         let rebuild = outputFields.count != state.levels.count || outputNameFields.count != state.levels.count
@@ -397,18 +432,17 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         set(mainField, LevelText.format(state.main), enabled: editable)
         for (i, db) in state.levels.enumerated() { set(outputFields[i], LevelText.format(db), enabled: editable) }
 
-        // The matrix: one row per cue output, one column per device output.
+        // The matrix: one row per cue output, one column per device output the device has or the
+        // routing names.
         let device = row.flatMap(model.deviceName(of:))
         let channels = device.map(model.channelCount(of:)) ?? 0
-        let maxRoute = row?.mapping?.channels.map { Int($0) + 1 }.max() ?? 0
+        let columns = min(PatchRouting.maxDeviceOutputs, max(channels, state.routing.namedDeviceOutputs))
         matrix.rowLabels = state.names.enumerated().map { i, name in name.isEmpty ? "\(i + 1)" : "\(i + 1)  \(name)" }
-        matrix.deviceOutputs = max(channels, maxRoute)
+        matrix.deviceOutputs = columns
         matrix.usable = state.usable
-        matrix.routes = (0..<state.levels.count).map { i in
-            guard let c = row?.mapping?.channels, c.indices.contains(i) else { return nil }
-            return Int(c[i])
-        }
-        matrix.isEnabled = state.loaded && row?.mapping != nil
+        matrix.routing = state.routing
+        matrix.isEnabled = state.loaded && row?.mapping != nil && editable
+        if let cell = typingCell, !matrix.canType(row: cell.row, column: cell.column) { endTyping() }
         fitMatrixWidth()
         let metered = min(state.levels.count, MeterBank.maxChannels)
         meter.frame = matrix.meterRect(rows: metered).offsetBy(dx: 0, dy: -PatchRoutingView.headerH)
@@ -424,17 +458,24 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         if channels > state.usable, row?.mapping != nil {
             notes.append(String(format: loc("patchEditor.usable"), state.usable, channels))
         }
+        let beyond = row?.mapping != nil && state.routing.namedDeviceOutputs > state.usable
+        if beyond { notes.append(String(format: loc("patchEditor.beyond"), state.usable, columns)) }
         if state.levels.count > MeterBank.maxChannels {
             notes.append(loc("patchEditor.metersShown"))
             notes.append(loc("patchEditor.levelsShown"))
         }
         routingNote.stringValue = notes.joined(separator: " ")
-        deviceOutputsNote.stringValue =
-            row?.mapping == nil
-            ? loc("patchEditor.noDevice")
-            : channels > state.usable ? String(format: loc("patchEditor.usable"), state.usable, channels) : ""
+        var deviceNotes: [String] = []
+        if row?.mapping == nil {
+            deviceNotes.append(loc("patchEditor.noDevice"))
+        } else if channels > state.usable {
+            deviceNotes.append(String(format: loc("patchEditor.usable"), state.usable, channels))
+        }
+        if beyond { deviceNotes.append(String(format: loc("patchEditor.beyond"), state.usable, columns)) }
+        deviceOutputsNote.stringValue = deviceNotes.joined(separator: " ")
         deviceOutputsNote.isHidden = deviceOutputsNote.stringValue.isEmpty
-        renderDeviceOutputs(channels: max(channels, maxRoute), state: state)
+        renderDeviceOutputs(columns: columns, state: state, editable: editable)
+        renderFoot(state: state, editable: editable)
     }
 
     /// The floating panes take the matrix's header row and its left columns.
@@ -502,33 +543,122 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         mainField.tag = 0
     }
 
-    private func renderDeviceOutputs(channels: Int, state: Drawn) {
+    /// The Device Outputs tab: a row per device output with its fader, level box, mute and what
+    /// reaches it. Rows are made again only when their number changes, so a box being typed in or a
+    /// fader being dragged is never replaced under the operator.
+    private func renderDeviceOutputs(columns: Int, state: Drawn, editable: Bool) {
+        if deviceFaders.count != columns { rebuildDeviceRows(columns) }
+        for d in 0..<columns {
+            let setting = state.routing.deviceOutput(d)
+            let fader = deviceFaders[d]
+            fader.minValue = state.limits.min
+            fader.maxValue = state.limits.max
+            if draggedDeviceOutput != d {
+                fader.doubleValue = min(max(setting.level, state.limits.min), state.limits.max)
+            }
+            fader.isEnabled = editable
+            set(deviceFields[d], LevelText.format(setting.level), enabled: editable)
+            deviceMutes[d].state = setting.mute ? .on : .off
+            deviceMutes[d].isEnabled = editable
+            let feeders = state.routing.feeders(of: d).map { i in
+                state.names.indices.contains(i) && !state.names[i].isEmpty ? "\(i + 1) \(state.names[i])" : "\(i + 1)"
+            }
+            let text =
+                feeders.isEmpty
+                ? loc("patchEditor.unused") : String(format: loc("patchEditor.feeds"), feeders.joined(separator: ", "))
+            let detail = deviceOutputLabels[d]
+            detail.stringValue = text
+            detail.toolTip = text
+            detail.textColor = d < state.usable ? .secondaryLabelColor : .systemRed
+        }
+    }
+
+    private func rebuildDeviceRows(_ columns: Int) {
         while deviceGrid.numberOfRows > 0 {
             let last = deviceGrid.row(at: deviceGrid.numberOfRows - 1)
             for c in 0..<last.numberOfCells { last.cell(at: c).contentView?.removeFromSuperview() }
             deviceGrid.removeRow(at: deviceGrid.numberOfRows - 1)
         }
+        if let typed = typedField, deviceFields.contains(where: { $0 === typed }) { typedField = nil }
         deviceOutputLabels = []
-        let routes = matrix.routes
-        for c in 0..<channels {
-            let title = NSTextField(labelWithString: String(format: loc("patchEditor.deviceOutput"), c + 1))
-            let feeders = routes.enumerated().compactMap { i, r -> String? in
-                guard r == c else { return nil }
-                return state.names[i].isEmpty ? "\(i + 1)" : "\(i + 1) \(state.names[i])"
+        deviceFaders = []
+        deviceFields = []
+        deviceMutes = []
+        for d in 0..<columns {
+            let name = String(format: loc("patchEditor.deviceOutput"), d + 1)
+            let title = NSTextField(labelWithString: name)
+            let fader = LevelFader(value: 0, minValue: LevelText.floorDb, maxValue: 0, target: self, action: nil)
+            fader.isVertical = false
+            fader.isContinuous = true
+            fader.action = #selector(deviceFaderMoved(_:))
+            fader.tag = d
+            fader.onGestureBegin = { [weak self] in
+                self?.draggedDeviceOutput = d
+                self?.gesture += 1
             }
-            let text =
-                feeders.isEmpty
-                ? loc("patchEditor.unused") : String(format: loc("patchEditor.feeds"), feeders.joined(separator: ", "))
-            let detail = NSTextField(labelWithString: text)
-            detail.textColor = c < state.usable ? .secondaryLabelColor : .tertiaryLabelColor
-            detail.toolTip = text
+            fader.onGestureEnd = { [weak self] in
+                self?.draggedDeviceOutput = nil
+                self?.render()
+            }
+            fader.widthAnchor.constraint(equalToConstant: 100).isActive = true
+            fader.setAX("\(AX.patchEditorDeviceFader)-\(d + 1)", label: name)
+            let field = NSTextField()
+            field.alignment = .right
+            field.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            field.controlSize = .small
+            field.delegate = self
+            field.widthAnchor.constraint(equalToConstant: 56).isActive = true
+            field.setAX("\(AX.patchEditorDeviceField)-\(d + 1)", label: "\(name), \(loc("patchEditor.level"))")
+            let mute = NSButton(
+                checkboxWithTitle: loc("patchEditor.mute"), target: self, action: #selector(muteClicked(_:)))
+            mute.tag = d
+            mute.setAX("\(AX.patchEditorDeviceMute)-\(d + 1)", label: "\(name), \(loc("patchEditor.mute"))")
+            let detail = NSTextField(labelWithString: "")
             detail.lineBreakMode = .byTruncatingTail
             // Cut only when it would pass the page's width (many cue outputs on one device output).
-            detail.widthAnchor.constraint(lessThanOrEqualToConstant: 320).isActive = true
-            detail.setAX("\(AX.patchEditorDeviceOutputs)-\(c + 1)")
-            deviceGrid.addRow(with: [title, detail])
+            detail.widthAnchor.constraint(lessThanOrEqualToConstant: 220).isActive = true
+            // Gives way only to a window too narrow for it (below the priority a window keeps its size at).
+            detail.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(490), for: .horizontal)
+            detail.setAX("\(AX.patchEditorDeviceOutputs)-\(d + 1)")
+            deviceGrid.addRow(with: [title, fader, field, mute, detail])
             deviceOutputLabels.append(detail)
+            deviceFaders.append(fader)
+            deviceFields.append(field)
+            deviceMutes.append(mute)
         }
+        deviceGrid.rowAlignment = .firstBaseline
+    }
+
+    /// The copy pull-down's items as last built.
+    private var footTitles: [String] = []
+
+    /// The other patches of the workspace, whose routing can be copied here.
+    private var otherPatches: [(id: ModelID, name: String)] {
+        (store.model?.patches ?? []).filter { $0.id != patchID }.map { p in
+            let name = p.raw["name"]?.stringValue ?? ""
+            return (p.id, name.isEmpty ? loc("settings.audio.untitledPatch") : name)
+        }
+    }
+
+    /// The foot: the copy pull-down lists the defaults and every other patch; Unmute All is live
+    /// while something is muted.
+    private func renderFoot(state: Drawn, editable: Bool) {
+        let titles =
+            [loc("patchEditor.copyDefaults")] + state.others.map { String(format: loc("patchEditor.copyFrom"), $0) }
+        if footTitles != titles {
+            footTitles = titles
+            copyPopup.removeAllItems()
+            copyPopup.addItem(withTitle: loc("patchEditor.copyRouting"))
+            copyPopup.addItem(withTitle: titles[0])
+            copyPopup.lastItem?.representedObject = nil
+            if !state.others.isEmpty { copyPopup.menu?.addItem(.separator()) }
+            for (other, title) in zip(otherPatches, titles.dropFirst()) {
+                copyPopup.addItem(withTitle: title)
+                copyPopup.lastItem?.representedObject = other.id.raw
+            }
+        }
+        copyPopup.isEnabled = editable
+        unmuteButton.isEnabled = editable && state.routing.hasMutes
     }
 
     // MARK: Editing
@@ -546,7 +676,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
 
     /// Sends one level. `coalesce` joins a drag's edits into one undo step.
     private func send(_ db: Double, tag: Int, coalesce: String?) {
-        let command = Command.setPatchLevel(patchID, output: tag == 0 ? nil : tag - 1, db: db)
+        send(.setPatchLevel(patchID, output: tag == 0 ? nil : tag - 1, db: db), coalesce: coalesce)
+    }
+
+    private func send(_ command: Command, coalesce: String? = nil) {
         edit { [self] in
             switch await store.send(command: command, coalesce: coalesce) {
             case .success: model.message = nil
@@ -570,16 +703,86 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         edit { [self] in await model.choose(choice, for: row) }
     }
 
-    private func route(_ output: Int, to column: Int) {
-        guard let row else { return }
-        edit { [self] in await model.route(row, output: output, to: UInt32(column)) }
+    @objc private func deviceFaderMoved(_ sender: LevelFader) {
+        let d = sender.tag
+        let db = LevelText.clamp((sender.doubleValue * 10).rounded() / 10, limits: limits)
+        let key =
+            draggedDeviceOutput == d ? "patch-device-fader:\(patchID.raw):\(Self.launchToken):\(gesture):\(d)" : nil
+        send(.setPatchDeviceOutputLevel(patchID, deviceOutput: d, db: db), coalesce: key)
+        if deviceFields.indices.contains(d) { deviceFields[d].stringValue = LevelText.format(db) }
+    }
+
+    @objc private func muteClicked(_ sender: NSButton) {
+        send(.setPatchDeviceOutputMute(patchID, deviceOutput: sender.tag, mute: sender.state == .on))
+    }
+
+    /// The routing the editor shows now.
+    private var routing: PatchRouting { matrix.routing }
+
+    private var outputsJSON: [JSONValue] { patch?.raw["outputs"]?.arrayValue ?? [] }
+
+    @objc private func copyChosen() {
+        guard let item = copyPopup.selectedItem, copyPopup.indexOfSelectedItem > 0 else { return }
+        let command: Command?
+        if let raw = item.representedObject as? String {
+            let id = ModelID(raw)
+            guard let source = store.model?.patches.first(where: { $0.id == id }) else { return }
+            let mapping = model.patches.first { $0.id == id }?.mapping
+            command = routing.copyCommands(
+                patchID, from: PatchRouting(patch: source.raw, mapping: mapping), outputsJSON: outputsJSON)
+        } else {
+            command = routing.defaultsCommands(patchID, outputsJSON: outputsJSON)
+        }
+        if let command { send(command) }
+    }
+
+    @objc private func unmuteClicked() {
+        if let command = routing.unmuteCommands(patchID, outputsJSON: outputsJSON) { send(command) }
+    }
+
+    /// Opens the box of cue output `row` and device output `column` for typing, its level selected.
+    func beginTyping(row: Int, column: Int) {
+        guard matrix.canType(row: row, column: column) else { return }
+        typingCell = (row, column)
+        crosspointField.frame = matrix.boxRect(row: row, column: column).insetBy(dx: -1, dy: -1)
+        crosspointField.stringValue = routing.level(row, column).map(LevelText.format) ?? ""
+        crosspointField.setAccessibilityLabel(String(format: loc("patchEditor.crosspoint"), row + 1, column + 1))
+        crosspointField.isHidden = false
+        window?.makeFirstResponder(crosspointField)
+        crosspointField.currentEditor()?.selectAll(nil)
+    }
+
+    /// Hides the crosspoint box; what was typed is not sent.
+    private func endTyping() {
+        typingCell = nil
+        if typedField === crosspointField { typedField = nil }
+        crosspointField.isHidden = true
+        if window?.firstResponder === crosspointField.currentEditor() { window?.makeFirstResponder(matrix) }
+    }
+
+    /// The level typed into a crosspoint's box goes out as the crosspoint the routing needs for it
+    /// (none when it is what the routing has).
+    private func commitCrosspoint(_ text: String) {
+        guard let cell = typingCell else { return }
+        endTyping()
+        // Emptied is -inf (QLab 5 manual p. 204); only white space is no change (ours).
+        guard !LevelText.isStraySpace(text) else { return }
+        let db = LevelText.parse(text, limits: limits)
+        guard let value = routing.typed(db, output: cell.row, deviceOutput: cell.column) else { return }
+        send(.setPatchCrosspoint(patchID, output: cell.row, deviceOutput: cell.column, db: value))
     }
 
     func controlTextDidChange(_ obj: Notification) { typedField = obj.object as? NSTextField }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         // Esc aborts the editor, which posts no end of editing: the typing ends here.
-        if selector == #selector(NSResponder.cancelOperation(_:)) { typedField = nil }
+        if selector == #selector(NSResponder.cancelOperation(_:)) {
+            typedField = nil
+            if control === crosspointField {
+                endTyping()
+                return true
+            }
+        }
         return control.endTyping(by: selector)
     }
 
@@ -589,12 +792,22 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         let typed = typedField
         typedField = nil
         guard let field = obj.object as? NSTextField, field === typed else {
+            if (obj.object as? NSTextField) === crosspointField { endTyping() }
             drawn = nil
             render()
             return
         }
         let text = field.stringValue
-        if field === nameField {
+        if field === crosspointField {
+            commitCrosspoint(text)
+        } else if let d = deviceFields.firstIndex(where: { $0 === field }) {
+            if LevelText.isStraySpace(text) {
+                drawn = nil
+                render()
+            } else {
+                send(.setPatchDeviceOutputLevel(patchID, deviceOutput: d, db: LevelText.parse(text, limits: limits)))
+            }
+        } else if field === nameField {
             edit { [self] in await model.renamePatch(patchID, to: text) }
         } else if field === countField {
             guard let count = Int(text.trimmingCharacters(in: .whitespaces)) else {

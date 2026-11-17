@@ -360,20 +360,6 @@ final class WorkspaceSettingsModel: ObservableObject {
         return false
     }
 
-    /// Sends cue output `output` of the patch to device output `channel`. The whole routing goes at
-    /// once, so a cue playing through the patch moves to it at once.
-    func route(_ row: PatchRow, output: Int, to channel: UInt32) async {
-        guard var mapping = row.mapping, mapping.channels.indices.contains(output),
-            mapping.channels[output] != channel
-        else { return }
-        mapping.channels[output] = channel
-        if mapping.system {
-            await setSystemOutput(row, channels: mapping.channels)
-        } else {
-            await setMapping(row, device: mapping.device, channels: mapping.channels)
-        }
-    }
-
     // MARK: General
 
     static let panicRange = 0.0...60.0
