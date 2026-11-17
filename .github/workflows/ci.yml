@@ -68,9 +68,9 @@ jobs:
           if [ "$all" = true ] || match "$PATHS_INTEL_RE"; then echo "intel=true"; else echo "intel=false"; fi >> "$GITHUB_OUTPUT"
 
       # The macOS app job's matrix. A pull request or push that runs the real-engine app tests (app_engine)
-      # splits them into three shards (scripts/mac-test-shards.txt); one that does not runs the engine-free
+      # splits them into two shards (scripts/mac-test-shards.txt); one that does not runs the engine-free
       # unit tests in one job (a fraction of the time, so a split would only add setups). When the build
-      # changes (bundle), a fourth entry builds and checks the Release bundle in parallel with the tests, so
+      # changes (bundle), one more entry builds and checks the Release bundle in parallel with the tests, so
       # it adds no time to a shard. Nightly and on demand run the core flows, the whole UI suite and the
       # bundle in one job. `lint` marks the one entry that runs the format lint; `bundle` the one that
       # builds the bundle.
@@ -85,7 +85,7 @@ jobs:
               m='[{"name":"macOS app","shard":"full","target":"test-mac-ui-full","lint":true,"bundle":true}]' ;;
             *)
               if [ "$APP_ENGINE" = true ]; then
-                m='[{"name":"macOS app (1/3)","shard":"1","target":"test-mac-shard SHARD=1","lint":true,"bundle":false},{"name":"macOS app (2/3)","shard":"2","target":"test-mac-shard SHARD=2","lint":false,"bundle":false},{"name":"macOS app (3/3)","shard":"3","target":"test-mac-shard SHARD=3","lint":false,"bundle":false}'
+                m='[{"name":"macOS app (1/2)","shard":"1","target":"test-mac-shard SHARD=1","lint":true,"bundle":false},{"name":"macOS app (2/2)","shard":"2","target":"test-mac-shard SHARD=2","lint":false,"bundle":false}'
               else
                 m='[{"name":"macOS app","shard":"unit","target":"test-mac-unit","lint":true,"bundle":false}'
               fi
@@ -279,8 +279,8 @@ jobs:
           key: ${{ matrix.check }}
       - run: make ${{ matrix.check }} SAN_TOOLCHAIN="$SAN_TOOLCHAIN" SAN_TARGET="$SAN_TARGET"
 
-  # Pull request or push with the real-engine app tests: three shards in parallel, each building the app and
-  # running its share (`make test-mac-shard`, scripts/mac-test-shards.txt); shard 3 also runs the UI smoke
+  # Pull request or push with the real-engine app tests: two shards in parallel, each building the app and
+  # running its share (`make test-mac-shard`, scripts/mac-test-shards.txt); shard 2 also runs the UI smoke
   # set. Otherwise one job (see the `changes` job's matrix step).
   mac:
     name: ${{ matrix.name }}
@@ -294,7 +294,7 @@ jobs:
     runs-on: xcode-27
     # Backstop: a hung test fails the job (seen holding a runner past 75 min). Setup before the test step is
     # about 0.7 min; the app and engine build (about 5 min) is inside the test step. Job limit = setup + step
-    # limits, with headroom, so the step is cancelled first: shard 0.7 + 25 (5 build + about 12 tests) -> 30;
+    # limits, with headroom, so the step is cancelled first: shard 0.7 + 25 (about 6 build + about 9 tests) -> 30;
     # engine-free 0.7 + 30 -> 35; bundle entry 0.7 + about 11 for the three bundle steps -> 30; nightly and on
     # demand 0.7 + core flows 12 + tests 55 = 67.7, leaving 22 of the 90 for the bundle (about 11) and rebuild.
     timeout-minutes: ${{ matrix.shard == 'full' && 90 || (matrix.shard == 'unit' && 35 || 30) }}
@@ -331,8 +331,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: swift format lint --strict -r mac/
         if: matrix.lint
-      # The app tests that start the real engine are expensive: a PR or push runs them in three shards, the UI
-      # smoke set in shard 3 (`make test-mac-shard`, together the same tests as `make test-mac`), only when the
+      # The app tests that start the real engine are expensive: a PR or push runs them in two shards, the UI
+      # smoke set in shard 2 (`make test-mac-shard`, together the same tests as `make test-mac`), only when the
       # engine, the protocol, the app's engine client, its tests or project changed (`changes.app_engine`,
       # scripts/paths.sh); otherwise the engine-free unit tests (`make test-mac-unit`, where the real-engine
       # tests report a skip). The full UI suite is slow and flaky,
@@ -344,9 +344,9 @@ jobs:
       - run: make test-mac-core-flows
         timeout-minutes: 12
         if: matrix.shard == 'full'
-      # A shard's step is about 5 min of building and 12 of tests (25 is a stop for a run that stalls); the
-      # engine-free run is shorter. A hung run is cancelled here and the step below still uploads its results. A hung test does not get that far: the wrapper ends the run
-      # (exit 76) and no second process starts (scripts/run-mac-tests.sh).
+      # A shard's step is about 6 min of building and 9 of tests (25 is a stop for a run that stalls); the
+      # engine-free run is shorter. A hung run is cancelled here and the step below still uploads its
+      # results. A hung test does not get that far: the wrapper ends the run (exit 76) and no second process starts (scripts/run-mac-tests.sh).
       - timeout-minutes: ${{ matrix.shard == 'full' && 55 || (matrix.shard == 'unit' && 30 || 25) }}
         if: ${{ !cancelled() && matrix.target != '' }}
         run: make ${{ matrix.target }}

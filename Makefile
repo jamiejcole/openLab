@@ -8,10 +8,9 @@ MAC_TESTS_WITH_LIMIT := scripts/run-mac-tests.sh $(XCODEBUILD) -destination "pla
 UI_SMOKE := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-smoke.txt),-only-testing:$(t))
 # The unit test classes `make test-mac` runs in its second test process.
 LATE_TEST_CLASSES := $(shell grep -hoE 'class [M-Z][A-Za-z0-9_]*: XCTestCase' mac/openLabTests/*.swift | sed 's/class //; s/:.*//' | sort -u)
-# The unit test classes shards 1 and 2 of the CI app job run, and every class either lists (scripts/mac-test-shards.txt).
-# One parser for both: field 1 is the shard, field 2 the class; a comment's first field is `#`.
-SHARD_CLASSES := $(shell awk -v s='$(SHARD)' '$$1 == s { print $$2 }' scripts/mac-test-shards.txt)
-SHARDED_CLASSES := $(shell awk '$$1 ~ /^[12]$$/ { print $$2 }' scripts/mac-test-shards.txt)
+# The unit test classes shard 1 of the CI app job runs and shard 2 skips (scripts/mac-test-shards.txt):
+# field 1 is the shard, field 2 the class; a comment's first field is `#`.
+SHARD1_CLASSES := $(shell awk '$$1 == "1" { print $$2 }' scripts/mac-test-shards.txt)
 # The everyday-flow tests (scripts/core-flows.txt), unit and UI, as -only-testing arguments.
 CORE_FLOWS := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/core-flows.txt),-only-testing:$(t))
 
@@ -111,7 +110,7 @@ test-mac-unit: project
 
 # Every unit test, real-engine ones included, plus the UI smoke set (scripts/ui-smoke.txt): what a PR
 # that changes the engine, the protocol, the app's engine client, its tests or project runs (scripts/paths.sh).
-# CI runs the same tests as three parallel shards (`test-mac-shard` below); this target stays the local run.
+# CI runs the same tests as two parallel shards (`test-mac-shard` below); this target stays the local run.
 # Two test processes: later classes ran about twice as fast in a fresh one when a hang forced a restart
 # (one process gathers windows and connections over 1,100 tests). Both always run, so a failure in the
 # first still reports the second's, except after a run cut short by a proven stall (exit 75 of
@@ -121,19 +120,18 @@ test-mac: project
 	@test -n "$(LATE_TEST_CLASSES)" || { echo "no test classes for the second test process"; exit 1; }
 	$(call two_test_processes,test-mac,-only-testing:openLabTests $(foreach c,$(LATE_TEST_CLASSES),-skip-testing:openLabTests/$(c)),$(foreach c,$(LATE_TEST_CLASSES),-only-testing:openLabTests/$(c)) $(UI_SMOKE))
 
-# One third of `make test-mac`, as the CI app job runs them in parallel (SHARD=1, 2 or 3; the lists are
-# scripts/mac-test-shards.txt). Shards 1 and 2 run their listed classes. Shard 3 runs every other unit test
-# (the whole target minus both lists, so an unlisted class still runs), then the UI smoke set in a second
+# Half of `make test-mac`, as the CI app job runs them in parallel (SHARD=1 or 2; the list is
+# scripts/mac-test-shards.txt). Shard 1 runs its listed classes. Shard 2 runs every other unit test (the
+# whole target minus the list, so an unlisted class still runs), then the UI smoke set in a second
 # process; like `test-mac`, it starts none after a run cut short by a stall (75) or a hang (76).
 test-mac-shard: project
-	@case "$(SHARD)" in 1|2|3) ;; *) echo "usage: make test-mac-shard SHARD=1|2|3"; exit 2;; esac
-	@test -n "$(SHARDED_CLASSES)" || { echo "scripts/mac-test-shards.txt lists no classes"; exit 1; }
-ifeq ($(SHARD),3)
+	@case "$(SHARD)" in 1|2) ;; *) echo "usage: make test-mac-shard SHARD=1|2"; exit 2;; esac
+	@test -n "$(SHARD1_CLASSES)" || { echo "scripts/mac-test-shards.txt lists no classes"; exit 1; }
+ifeq ($(SHARD),2)
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
-	$(call two_test_processes,test-mac-shard,-only-testing:openLabTests $(foreach c,$(SHARDED_CLASSES),-skip-testing:openLabTests/$(c)),$(UI_SMOKE))
+	$(call two_test_processes,test-mac-shard,-only-testing:openLabTests $(foreach c,$(SHARD1_CLASSES),-skip-testing:openLabTests/$(c)),$(UI_SMOKE))
 else
-	@test -n "$(SHARD_CLASSES)" || { echo "scripts/mac-test-shards.txt lists no classes for shard $(SHARD)"; exit 1; }
-	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(SHARD_CLASSES),-only-testing:openLabTests/$(c))
+	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(SHARD1_CLASSES),-only-testing:openLabTests/$(c))
 endif
 
 # The everyday QLab-user flows on the real engine (scripts/core-flows.txt): nightly before the full suite,

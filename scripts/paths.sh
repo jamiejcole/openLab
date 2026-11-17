@@ -16,7 +16,7 @@ PATHS_ENGINE_RE='^(engine/|docs/osc\.md$)'
 PATHS_MAC_PR_RE='^(mac/|engine/fixtures/protocol/|engine/crates/core/src/(protocol|show_file)|engine/crates/engine/src/(main\.rs|host/)|engine/crates/video/|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$)'
 PATHS_MAC_MAIN_RE='^(mac|engine)/'
 # The app tests that start the real engine (its virtual device) and the UI smoke set: expensive, so on
-# a pull request or push (three parallel CI shards, `make test-mac-shard`) only when the engine, the protocol, the app's engine client, the app's tests
+# a pull request or push (two parallel CI shards, `make test-mac-shard`) only when the engine, the protocol, the app's engine client, the app's tests
 # (unit and UI: a new or changed real-engine test runs before merge), the test shows or the project
 # (how the tests and shows are built and bundled) change; nightly and on demand always. Other app
 # changes run the engine-free unit tests (`make test-mac-unit`; the real-engine tests report a skip).
