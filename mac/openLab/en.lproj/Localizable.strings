@@ -864,6 +864,9 @@
 "inspector.io.codec.h264" = "H.264";
 "inspector.io.codec.hevc" = "HEVC";
 "inspector.io.codec.prores" = "ProRes";
+"inspector.io.codec.hap" = "HAP";
+"inspector.io.codec.hap_alpha" = "HAP Alpha";
+"inspector.io.codec.hap_q" = "HAP Q";
 "inspector.io.still.png" = "PNG";
 "inspector.io.still.jpeg" = "JPEG";
 "inspector.io.still.tiff" = "TIFF";

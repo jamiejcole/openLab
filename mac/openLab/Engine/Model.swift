@@ -195,9 +195,9 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
     }
 }
 
-/// A Video cue's file as the engine's probe read it: a video (`type` "video": codec `h264`, `hevc`
-/// or `prores`, frame rate and length) or a still (`type` "still": format `png`, `jpeg` or
-/// `tiff`), each with its pixel size.
+/// A Video cue's file as the engine's probe read it: a video (`type` "video": codec `h264`, `hevc`,
+/// `prores`, `hap`, `hap_alpha` or `hap_q`, frame rate and length) or a still (`type` "still":
+/// format `png`, `jpeg` or `tiff`), each with its pixel size.
 struct PictureFormat: Hashable, Sendable, Decodable {
     let type: String
     let codec: String?

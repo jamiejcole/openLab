@@ -7,6 +7,7 @@
 
 #[cfg(feature = "test-support")]
 pub mod card;
+pub mod hap;
 pub mod host;
 mod platform;
 

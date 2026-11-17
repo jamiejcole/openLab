@@ -8,9 +8,9 @@
 //! with grey instead of failing). A picture over `MAX_PICTURE_PIXELS` is refused before it is
 //! decoded. Movies go through AVFoundation: the first video track's codec (its four-character
 //! code), pixel size and nominal frame rate, and the asset's length. A movie in a codec the
-//! platform decodes has its first frame decoded too, for the same reason. HAP is not played
-//! yet (the platform has no decoder for it and openLab's own is not built): it is reported
-//! unsupported with that reason.
+//! platform decodes has its first frame decoded too, for the same reason. HAP, HAP Alpha and
+//! HAP Q have no platform decoder: their first frame is read and unwrapped as the stage host
+//! reads it (`media::hap_first_frame`). HAP's other flavours are reported unsupported.
 //!
 //! The process does nothing else and exits after its one line: a decoder that crashes or hangs
 //! on a hostile file takes only this process with it, and the engine kills one that does not
@@ -18,11 +18,13 @@
 
 use std::path::Path;
 
+use super::media;
+use crate::hap::Variant;
 use objc2::rc::Retained;
 use objc2_av_foundation::{AVAssetImageGenerator, AVMediaTypeVideo, AVURLAsset};
 use objc2_core_foundation::{CFRetained, CFURL};
 use objc2_core_graphics::{CGDataProvider, CGImage};
-use objc2_core_media::{CMFormatDescription, CMTime};
+use objc2_core_media::CMTime;
 use objc2_foundation::{NSString, NSURL};
 use objc2_image_io::CGImageSource;
 use openlab_core::video_probe::{
@@ -145,16 +147,12 @@ fn codec_of(code: u32) -> Option<VideoCodec> {
         b"avc1" | b"avc3" => Some(VideoCodec::H264),
         b"hvc1" | b"hev1" => Some(VideoCodec::Hevc),
         b"apco" | b"apcs" | b"apcn" | b"apch" | b"ap4h" | b"ap4x" => Some(VideoCodec::ProRes),
-        _ => None,
+        _ => match Variant::of_code(code)? {
+            Variant::Hap => Some(VideoCodec::Hap),
+            Variant::HapAlpha => Some(VideoCodec::HapAlpha),
+            Variant::HapQ => Some(VideoCodec::HapQ),
+        },
     }
-}
-
-/// Whether the four-character code is one of HAP's.
-fn is_hap(code: u32) -> bool {
-    matches!(
-        &code.to_be_bytes(),
-        b"Hap1" | b"Hap5" | b"HapY" | b"HapM" | b"HapA" | b"Hap7" | b"HapH"
-    )
 }
 
 fn fourcc_text(code: u32) -> String {
@@ -179,20 +177,15 @@ fn movie(path: &str) -> ProbeReport {
     let Some(track) = tracks.firstObject() else {
         return unsupported("it is not a video file openLab can read (no picture found)".into());
     };
-    // SAFETY: an asset track's format descriptions are CMFormatDescriptions.
-    let descriptions = unsafe { track.formatDescriptions() };
-    let Some(first) = descriptions.firstObject() else {
+    let Some(code) = media::codec_code(&track) else {
         return unsupported("its video track has no format".into());
     };
-    let description: *const CMFormatDescription = Retained::as_ptr(&first).cast();
-    // SAFETY: the object is a CMFormatDescription kept alive by `first`.
-    let code = unsafe { (*description).media_sub_type() };
-    if is_hap(code) {
-        return unsupported("HAP movies are not played yet; use H.264, HEVC or ProRes".into());
+    if let Err(why) = media::hap_variant(code) {
+        return unsupported(why);
     }
     let Some(codec) = codec_of(code) else {
         return unsupported(format!(
-            "its video codec ({}) is not supported; use H.264, HEVC or ProRes",
+            "its video codec ({}) is not supported; use H.264, HEVC, ProRes or HAP",
             fourcc_text(code)
         ));
     };
@@ -226,7 +219,11 @@ fn movie(path: &str) -> ProbeReport {
     if !(seconds.is_finite() && seconds > 0.0 && seconds <= openlab_core::MAX_TIME) {
         return unsupported("its length cannot be read".into());
     }
-    if !first_frame_decodes(&asset) {
+    if Variant::of_code(code).is_some() {
+        if let Err(why) = media::hap_first_frame(path) {
+            return unsupported(format!("its first frame cannot be read: {why}"));
+        }
+    } else if !first_frame_decodes(&asset) {
         return unsupported("its first frame cannot be decoded".into());
     }
     ProbeReport::Video {

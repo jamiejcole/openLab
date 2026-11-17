@@ -7,7 +7,9 @@
 //!
 //! The decode thread owns the file. A still is decoded once with ImageIO; a movie is read in
 //! order with AVFoundation's asset reader (the platform's hardware decoders), one BGRA frame at
-//! a time. The main thread posts the position it wants (the newest only: an older ask is
+//! a time. A HAP movie's frames are read as the file holds them (no platform decoder) and
+//! unwrapped here ([`crate::hap`]) into the block-compressed texture the GPU draws as it is.
+//! The main thread posts the position it wants (the newest only: an older ask is
 //! dropped, never queued) and takes the newest decoded frame from a one-slot mailbox (a newer
 //! frame replaces one not yet taken), uploads it to one of the picture's two textures and
 //! draws. The frame for a position is the last whose time is at or before it, so the picture
@@ -59,6 +61,7 @@ use objc2_core_graphics::{
     CGBitmapContextCreate, CGBitmapInfo, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo,
 };
+use objc2_core_media::{CMFormatDescription, CMSampleBuffer};
 use objc2_core_media::{CMTime, CMTimeRange};
 use objc2_core_video::{
     CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
@@ -68,11 +71,14 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 use objc2_image_io::CGImageSource;
-use objc2_metal::{MTLCommandBuffer, MTLCommandBufferStatus, MTLDevice};
+use objc2_metal::{
+    MTLCommandBuffer, MTLCommandBufferStatus, MTLDevice, MTLPixelFormat, MTLTexture,
+};
 use openlab_core::stage_link::MAX_PICTURES;
 use openlab_core::video_probe::{MAX_PICTURE_PIXELS, picture_size_plays};
 
-use super::gpu::{Texture, empty_texture, replace};
+use super::gpu::{Colour, Texture, empty_texture, hap_texture, replace};
+use crate::hap::{self, Variant};
 
 /// How far past the frame held a position may be before reading starts again there instead of
 /// reading every frame in between (a jump, or a decoder that fell behind: it skips to where the
@@ -128,8 +134,8 @@ const FRAME_TIME_SLACK: f64 = 1e-9;
 /// the display's next refresh.
 pub const FRAME_AHEAD: f64 = 1.0 / 60.0;
 
-/// A texture to draw, and its picture's pixel size.
-pub type Drawable = (Texture, (u32, u32));
+/// A texture to draw, its picture's pixel size, and how it holds its colour.
+pub type Drawable = (Texture, (u32, u32), Colour);
 
 /// How long an offscreen probe waits between looks at a picture's decode thread.
 const WAIT_SLICE: Duration = Duration::from_millis(5);
@@ -167,12 +173,23 @@ pub enum Polled {
 }
 
 /// One decoded frame: its time in the movie (0 for a still), its size, and its BGRA pixels in
-/// rows of `stride` bytes.
+/// rows of `stride` bytes, or (`hap`) a HAP flavour's texture in rows of 4 x 4 blocks.
 struct Frame {
     time: f64,
     size: (u32, u32),
     pixels: Vec<u8>,
     stride: usize,
+    hap: Option<Variant>,
+}
+
+impl Frame {
+    /// The texture format the frame is uploaded into, and how it holds its colour.
+    fn texture(&self) -> (MTLPixelFormat, Colour) {
+        self.hap.map_or(
+            (MTLPixelFormat::BGRA8Unorm, Colour::Premultiplied),
+            hap_texture,
+        )
+    }
 }
 
 /// What the main thread and a picture's decode thread share.
@@ -224,6 +241,7 @@ impl Shared {
 /// is written only when that buffer is done with it, so a frame never changes under the GPU.
 struct Slot {
     texture: Texture,
+    colour: Colour,
     used_by: Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
 }
 
@@ -426,7 +444,7 @@ impl Picture {
             .and_then(|f| self.slots.get(f))
             .and_then(Option::as_ref)
             .zip(self.size())
-            .map(|(slot, size)| (slot.texture.clone(), size)))
+            .map(|(slot, size)| (slot.texture.clone(), size, slot.colour)))
     }
 
     fn wait<'a>(&self, mail: MutexGuard<'a, Mail>, left: Duration) -> MutexGuard<'a, Mail> {
@@ -450,10 +468,15 @@ impl Picture {
         let Some(place) = self.slots.get_mut(slot) else {
             return Err("no texture slot".into());
         };
-        if place.is_none() {
+        let (format, colour) = frame.texture();
+        if place
+            .as_ref()
+            .is_none_or(|s| s.texture.pixelFormat() != format)
+        {
             let (w, h) = frame.size;
             *place = Some(Slot {
-                texture: empty_texture(device, w as usize, h as usize)?,
+                texture: empty_texture(device, w as usize, h as usize, format)?,
+                colour,
                 used_by: None,
             });
         }
@@ -726,6 +749,7 @@ fn still_frame(file: &str) -> Result<Frame, String> {
         size,
         pixels: px,
         stride: w * 4,
+        hap: None,
     })
 }
 
@@ -753,6 +777,8 @@ struct Spare {
 struct Movie {
     asset: Retained<AVURLAsset>,
     track: Retained<AVAssetTrack>,
+    /// A HAP movie's flavour: its frames are read as stored and unwrapped here.
+    hap: Option<Variant>,
     reader: Option<Reader>,
     /// The next pass's reader, ready before a loop's seam.
     spare: Option<Spare>,
@@ -812,6 +838,10 @@ impl Movie {
             let track = tracks.firstObject().ok_or("the file has no picture")?;
             (asset, track)
         };
+        let hap = match codec_code(&track) {
+            Some(code) => hap_variant(code)?,
+            None => None,
+        };
         // SAFETY: a plain property of a loaded track.
         let natural = unsafe { track.naturalSize() };
         let (w, h) = (natural.width.round(), natural.height.round());
@@ -827,6 +857,7 @@ impl Movie {
         Ok(Self {
             asset,
             track,
+            hap,
             reader: None,
             spare: None,
             prime_failed: None,
@@ -945,9 +976,15 @@ impl Movie {
             let format = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
             let values: [&AnyObject; 1] = [format.as_ref()];
             let settings = NSDictionary::from_slices(&[key], &values);
+            // A HAP movie's samples come as the file holds them: no platform decoder reads HAP.
+            let settings = if self.hap.is_some() {
+                None
+            } else {
+                Some(&*settings)
+            };
             let output = AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(
                 &self.track,
-                Some(&settings),
+                settings,
             );
             output.setAlwaysCopiesSampleData(false);
             reader.addOutput(&output);
@@ -995,6 +1032,10 @@ impl Movie {
                         None => return Ok(None),
                     }
                 };
+                // A read holding no frame (a marker the file may carry) is passed over.
+                if self.hap.is_some() && sample.num_samples() == 0 {
+                    continue;
+                }
                 let time = sample.presentation_time_stamp().seconds();
                 if time + self.frame <= before + FRAME_TIME_SLACK {
                     passed = Some(sample);
@@ -1005,6 +1046,12 @@ impl Movie {
             #[cfg(test)]
             self.copied.set(self.copied.get() + 1);
             let time = sample.presentation_time_stamp().seconds();
+            if let Some(variant) = self.hap {
+                if !time.is_finite() {
+                    return Err("a frame has no time".into());
+                }
+                return self.hap_frame(&sample, variant, time).map(Some);
+            }
             let Some(image) = sample.image_buffer() else {
                 return Err("a frame had no picture".into());
             };
@@ -1046,8 +1093,52 @@ impl Movie {
                 size: self.size,
                 pixels,
                 stride,
+                hap: None,
             }))
         }
+    }
+
+    /// A HAP frame read as the file holds it (`sample`), unwrapped into its texture. Its bytes
+    /// are bounded by what a frame of the movie's size may need before they are copied.
+    fn hap_frame(
+        &self,
+        sample: &CMSampleBuffer,
+        variant: Variant,
+        time: f64,
+    ) -> Result<Frame, String> {
+        let (w, h) = self.size;
+        // SAFETY: a sample buffer the reader handed out, alive for this call.
+        let (samples, data) = unsafe { (sample.num_samples(), sample.data_buffer()) };
+        if samples != 1 {
+            return Err(format!("a read of {samples} HAP frames at once"));
+        }
+        let data = data.ok_or("a HAP frame has no data")?;
+        // SAFETY: the length of a block buffer the sample holds.
+        let len = unsafe { data.data_length() };
+        if variant.max_frame_len(w, h).is_none_or(|most| len > most) {
+            return Err(format!(
+                "a HAP frame of {len} bytes is larger than a {w} x {h} picture allows"
+            ));
+        }
+        let mut bytes = vec![0u8; len];
+        if len > 0 {
+            let to = std::ptr::NonNull::new(bytes.as_mut_ptr().cast::<c_void>())
+                .ok_or("no memory for a HAP frame")?;
+            // SAFETY: copies exactly `len` bytes, the block buffer's own length, into `bytes`,
+            // which holds `len`.
+            let status = unsafe { data.copy_data_bytes(0, len, to) };
+            if status != 0 {
+                return Err(format!("a HAP frame could not be read (error {status})"));
+            }
+        }
+        let pixels = hap::unwrap(&bytes, variant, w, h)?;
+        Ok(Frame {
+            time,
+            size: self.size,
+            pixels,
+            stride: variant.row_bytes(w),
+            hap: Some(variant),
+        })
     }
 
     /// The frame at `position` seconds: the last whose time is at or before it (the first
@@ -1120,6 +1211,37 @@ impl Movie {
             return Err("the movie stops before its end (the file may be damaged)".into());
         }
         Ok(best)
+    }
+}
+
+/// The four-character code of `track`'s first format, if it has one.
+pub(super) fn codec_code(track: &AVAssetTrack) -> Option<u32> {
+    // SAFETY: an asset track's format descriptions are CMFormatDescriptions.
+    let descriptions = unsafe { track.formatDescriptions() };
+    let first = descriptions.firstObject()?;
+    let description: *const CMFormatDescription = Retained::as_ptr(&first).cast();
+    // SAFETY: the object is a CMFormatDescription kept alive by `first`.
+    Some(unsafe { (*description).media_sub_type() })
+}
+
+/// The HAP flavour a track's code names (`None` for any other codec), or why a HAP flavour
+/// openLab does not play is refused.
+pub(super) fn hap_variant(code: u32) -> Result<Option<Variant>, String> {
+    if let Some(name) = Variant::unplayed(code) {
+        return Err(format!(
+            "{name} movies are not supported; use HAP, HAP Alpha or HAP Q"
+        ));
+    }
+    Ok(Variant::of_code(code))
+}
+
+/// Whether a HAP movie's first frame reads and unwraps as the stage host would read it: the
+/// probe's check that a HAP file plays (no platform decoder can say so).
+pub fn hap_first_frame(file: &str) -> Result<(), String> {
+    let mut movie = Movie::open(file)?;
+    match movie.frame_at(0.0, 0, &|| {})? {
+        Some(_) => Ok(()),
+        None => Err("it has no frames".into()),
     }
 }
 
