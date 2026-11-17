@@ -5932,10 +5932,11 @@ fn a_seek_past_a_loop_until_devamped_loops_picture_and_sound_together() {
     );
 }
 
-/// The last slice plays twice; a seek past the end trim goes to the end of the plan: picture,
-/// sound and cue end there, and nothing is heard after.
+/// The last slice plays twice; a seek past the end trim goes to the end of its first play, as an
+/// Audio cue's does: picture and sound play the pass left together and end together, with
+/// nothing heard after.
 #[test]
-fn a_seek_past_the_end_trim_ends_picture_sound_and_cue_together() {
+fn a_seek_past_the_end_trim_plays_the_passes_left_and_ends_picture_sound_and_cue_together() {
     let dir = tempfile::tempdir().unwrap();
     let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
     let twice = timed_sounding_cue(1, &movie, |t| {
@@ -5947,12 +5948,18 @@ fn a_seek_past_the_end_trim_ends_picture_sound_and_cue_together() {
     run_to(&mut s, at + samples(0.5));
     seek(&mut s, 1, 3.0);
     let moved = s.now();
-    run_to(&mut s, moved + samples(0.2));
-    expect_state(&s, 1, CueState::Idle, "nothing left to play");
+    run_to(&mut s, moved + samples(0.3));
+    let sound = in_step(&mut s, RATE, 25.0, "in the pass left");
+    assert!((sound - 0.3).abs() < 0.03, "the sound at {sound} s");
+    run_to(&mut s, moved + samples(1.9));
+    expect_state(&s, 1, CueState::Running, "the pass left still playing");
+    let end = moved + samples(2.0);
+    run_to(&mut s, end + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended after the pass left");
     assert_eq!(shown(&mut s), None);
     s.run(samples(2.5));
     assert!(
-        silent(&s, moved + samples(0.05), s.rendered()),
+        silent(&s, end + samples(0.02), s.rendered()),
         "nothing heard after the cue ended"
     );
     assert_eq!(s.control().live_voices(), 0);

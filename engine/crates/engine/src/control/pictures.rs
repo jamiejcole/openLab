@@ -267,10 +267,12 @@ fn position_in(passes: &[PlanPass], into: f64) -> f64 {
 
 /// Seconds into `passes` at which a movie following them first stands at file second `at`: the
 /// start of the pass that holds it (a point in a pass that repeats is its first play), the start
-/// of the next pass for a point in a gap or before the first (the nearest trim), the plan's end
-/// for a point past it. A pass that loops until devamped is left after one play.
+/// of the next pass for a point in a gap or before the first (the nearest trim), and for a point
+/// at or past the end trim the end of the last pass's first play (as an Audio cue's seek: its
+/// other plays follow). A pass that loops until devamped is left after one play.
 fn action_at(passes: &[PlanPass], at: f64) -> f64 {
     let mut elapsed = 0.0;
+    let mut end_trim = 0.0;
     for p in passes {
         if at < p.from {
             return elapsed;
@@ -278,9 +280,10 @@ fn action_at(passes: &[PlanPass], at: f64) -> f64 {
         if at < p.from + p.length || p.plays == 0 {
             return elapsed + (at - p.from).clamp(0.0, p.length);
         }
+        end_trim = elapsed + p.length;
         elapsed += p.length * f64::from(p.plays);
     }
-    elapsed
+    end_trim
 }
 
 /// Where a devamp at `elapsed` samples into `table` leaves its loop: the table with the pass
@@ -1785,8 +1788,8 @@ mod tests {
     }
 
     /// A seek's file time is counted through the plan: into a pass, the first play of a pass that
-    /// repeats, the nearest trim for a point before the plan or in a gap, the plan's end past it,
-    /// and one play into a loop that never ends.
+    /// repeats, the nearest trim for a point before the plan or in a gap, the end of the last
+    /// pass's first play past it, and one play into a loop that never ends.
     #[test]
     fn a_file_time_is_placed_in_the_plan_at_its_first_play() {
         let pass = |from, length, plays| PlanPass {
@@ -1813,7 +1816,17 @@ mod tests {
             "in the gap: the next pass's start"
         );
         assert_eq!(action_at(&plan, 5.25), 4.25);
-        assert_eq!(action_at(&plan, 9.0), 5.0, "past the end: the plan's end");
+        assert_eq!(
+            action_at(&plan, 9.0),
+            5.0,
+            "past the end: the last pass played once"
+        );
+        let twice = [pass(1.0, 2.0, 2)];
+        assert_eq!(
+            action_at(&twice, 9.0),
+            2.0,
+            "past the end: the end of the first play, the other to come"
+        );
         let endless = [pass(0.0, 2.0, 0), pass(2.0, 1.0, 1)];
         assert_eq!(action_at(&endless, 1.0), 1.0);
         assert_eq!(
