@@ -925,6 +925,16 @@ final class ScenarioRunner {
             focused = tool.window
             note("find_missing_files in \(name): \(tool.rows.count) row(s); \(tool.summaryLabel.stringValue)")
         case .shot(let name, let displays):
+            // The settings window reads devices and resolutions again on an output's change only
+            // while it is visible, and the runner draws it offscreen: it reads them here, as a
+            // visible window would have by now.
+            var rows = ""
+            if let sc = wc.existingSettingsWindow, focused != nil, focused === sc.window {
+                await sc.model.refresh()
+                sc.render()
+                let problems = sc.patchProblemLabels.map { "\"\($0.stringValue)\"" }
+                rows = " (patch rows: " + problems.joined(separator: ", ") + ")"
+            }
             await catchUp()
             await wc.inspector.timeLoops.loading?.value
             await catchUp()
@@ -932,7 +942,7 @@ final class ScenarioRunner {
             let url = out.appendingPathComponent(String(format: "%02d-%@.png", shots, name))
             try shot(to: url)
             written.append(url)
-            note("shot \(url.lastPathComponent) (footer: \(wc.footer.statusButton.title))")
+            note("shot \(url.lastPathComponent) (footer: \(wc.footer.statusButton.title))\(rows)")
             for display in displays {
                 let beside = out.appendingPathComponent(String(format: "%02d-%@-display-%@.png", shots, name, display))
                 try await displayShot(display, to: beside)
@@ -1780,7 +1790,7 @@ final class ScenarioShotTests: XCTestCase {
                 """
                 {"show": "Demo", "steps": [
                   {"device": "restore", "output": 2}, {"advance": 2}, {"focus": "settings"}, {"tab": "audio"},
-                  {"choose": "settings-patch-device-1", "item": "\(second)"}, {"advance": 1},
+                  {"choose": "settings-patch-device-1", "item": "\(second)"}, {"advance": 1}, {"shot": "opened"},
                   {"device": "default", "output": 2}, {"advance": 2}, {"focus": "settings"},
                   {"choose": "settings-patch-device-1", "item": "\(system)"}, {"advance": 1},
                   {"device": "lose", "output": 2}, {"advance": 2}, {"shot": "unplugged"}]}
@@ -1796,7 +1806,9 @@ final class ScenarioShotTests: XCTestCase {
         ] {
             XCTAssertTrue(log.contains(line), "\(line)\n\(log)")
         }
-        XCTAssertEqual(runner.written.count, 1, log)
+        // Drawn offscreen, the settings window is read again before a shot: the device has opened.
+        XCTAssertTrue(log.contains("01-opened.png (footer: Audio OK  Dropouts 0) (patch rows: \"\")"), log)
+        XCTAssertEqual(runner.written.count, 2, log)
     }
 
     func testTheDisplayGridFollowsTheDisplaysShapeWithinOneProbeEach() {
