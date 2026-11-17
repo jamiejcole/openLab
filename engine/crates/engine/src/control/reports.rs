@@ -268,6 +268,10 @@ impl DocCx<'_> {
         let mut listed = Vec::with_capacity(n);
         for (k, id) in self.eng.meter_ids.iter().take(n).enumerate() {
             listed.push(*id);
+            // Cut by a lost device: what its mixer still holds was rendered before the loss.
+            if self.doc.voices.is_unmetered(*id) {
+                continue;
+            }
             let cue = self
                 .doc
                 .voices
@@ -297,6 +301,7 @@ impl DocCx<'_> {
                 }),
             }
         }
+        self.doc.voices.forget_unmetered();
         self.reconcile(&listed, rendered, prev);
         let outputs: Vec<OutputMeter> = self
             .doc

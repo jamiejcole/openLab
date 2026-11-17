@@ -1195,6 +1195,32 @@ final class InspectorWindowFrameTests: XCTestCase {
         }
     }
 
+    /// A control in the Basics target row 16 pt wider than here (as on another macOS, whose controls and
+    /// fonts measure differently): opening the sidebar at the least window size narrows the file's path,
+    /// not the sidebar, and the window keeps its frame.
+    func testTheBasicsTargetRowGivesWayWhenItsControlsAreWider() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let least = window.frame
+        await select(audio)
+        try clickTab("basics")
+        let path = wc.inspector.targetPath
+        XCTAssertFalse(path.isHidden, "an Audio cue's target is its file's path")
+        let choose = wc.inspector.chooseButton
+        let wider = choose.widthAnchor.constraint(equalToConstant: choose.frame.width + 16)
+        wider.isActive = true
+        defer { wider.isActive = false }
+        try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil)
+        settleLayout()
+        XCTAssertTrue(wc.isVisible(.sidebar))
+        XCTAssertEqual(window.frame, least, "the window keeps its frame")
+        XCTAssertEqual(wc.sidebar.view.frame.width, 280, accuracy: 3, "the sidebar keeps its width")
+        XCTAssertLessThan(path.frame.width, 90, "the path gave way")
+        XCTAssertGreaterThanOrEqual(path.frame.width, 40, "and keeps a usable width")
+        let content = try XCTUnwrap(wc.inspector.tabView.selectedTabViewItem?.view)
+        XCTAssertEqual(sideways(content, depth: 3), [], "nothing is cut or overlapping")
+    }
+
     /// The Triggers tab at the least window size with the sidebar open: the hotkey field's prompt stays on
     /// one line (cut short), so the field is as tall as the Clear button beside it, not two lines tall.
     func testTheHotkeyPromptStaysOnOneLineInTheNarrowTriggersTab() async throws {

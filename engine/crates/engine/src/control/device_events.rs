@@ -9,7 +9,7 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     BrokenReason, CueId, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES, MIN_BUFFER_FRAMES,
-    PatchResolution, RunId, SYSTEM_OUTPUT, SampleTime,
+    PatchId, PatchResolution, RunId, SYSTEM_OUTPUT, SampleTime,
 };
 
 use super::devices::{Device, DeviceAnswer, DeviceEvent, OutputKey};
@@ -71,6 +71,7 @@ impl Control {
                 DeviceEvent::Restored => {
                     // It plays: no reason it could not be used holds any more.
                     self.eng.unusable.remove(&name);
+                    self.eng.drop_held_meters(key);
                     self.device_restored(&name, "is back");
                     self.eng.check_buffer(key);
                 }
@@ -671,6 +672,11 @@ impl DocCx<'_> {
             .eng
             .outputs
             .on_output(key, self.doc.voices.playing_ids());
+        self.doc.voices.unmeter(&voices);
+        // A voice whose end was handled since the last meter read still has its last peaks
+        // there, to be reported once more: rendered before the loss, they are not.
+        let ended = (self.eng.outputs).on_output(key, self.doc.voices.gone_ids());
+        self.doc.voices.unmeter(&ended);
         let commands = voices
             .into_iter()
             .map(|voice| {
@@ -835,6 +841,16 @@ impl DocCx<'_> {
         }
     }
 
+    /// Whether some cue's sound plays on `patch`: an Audio cue, or a Video cue not known to
+    /// have nothing to hear (as the pre-show check counts a patch's users).
+    fn patch_in_use(&self, patch: PatchId) -> bool {
+        self.doc
+            .model
+            .engine()
+            .cues_on_patch(patch)
+            .any(|c| !self.known_silent(c))
+    }
+
     /// The device's notices: an outage, a mixer that could not be recovered, patches that map
     /// more device channels than the device has (`outputs_dropped`), patches whose crosspoints
     /// or device-output levels name device outputs it lacks (`patch_routing_beyond_device`),
@@ -952,14 +968,16 @@ impl DocCx<'_> {
                         device,
                     ));
                 }
-                // The operator chose no device for it (a patch never mapped gets the default).
+                // The operator chose no device for it (a patch never mapped gets the default),
+                // and some cue plays on it: a spare patch with no device stops nothing.
                 Some(PatchResolution::Unmapped)
                     if self
                         .eng
                         .config
                         .machine
                         .patch_entry(ws_id, patch.id)
-                        .is_some_and(|m| m.is_none()) =>
+                        .is_some_and(|m| m.is_none())
+                        && self.patch_in_use(patch.id) =>
                 {
                     list.push(notice(
                         "patch_no_device",

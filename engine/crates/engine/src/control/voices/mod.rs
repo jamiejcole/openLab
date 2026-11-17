@@ -19,7 +19,7 @@
 //! sound). The other frame counts of its commands are converted where commands are routed to
 //! the device.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -429,6 +429,9 @@ pub struct Voices {
     /// Ids that left since the last voice-meter read, and their cue: the read reports them once
     /// more.
     gone: Vec<(VoiceId, CueId)>,
+    /// Ids a lost device cut: the peaks their mixer still holds from before the loss are never
+    /// reported (their cues make no sound any more). Kept while the id can still be named.
+    unmetered: HashSet<VoiceId>,
     /// Per cue, the sample before which a seek (or a load at a point of the file) prepares no
     /// stream ([`SEEK_PREPARE_INTERVAL`]).
     seek_gate: HashMap<CueId, SampleTime>,

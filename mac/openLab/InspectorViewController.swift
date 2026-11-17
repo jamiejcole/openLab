@@ -402,7 +402,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // A long path gives up its middle folders; it must not hold the inspector, and so the window, wider.
         targetPath.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         targetPath.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        targetPath.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+        Self.prefersWidth(targetPath)
         let targetRow = NSStackView(
             views: [targetField, targetPath, targetNote, clearTargetButton, jumpTargetButton, chooseButton])
         targetRow.spacing = 6
@@ -414,7 +414,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // A long path truncates; it must not hold the inspector, and so the window, wider.
         targetField.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         targetField.lineBreakMode = .byTruncatingMiddle  // the file name at the end is the part that matters
-        targetField.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+        Self.prefersWidth(targetField)
         chooseButton.setContentHuggingPriority(.required, for: .horizontal)
         chooseButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         let centre = column([
@@ -589,6 +589,18 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// instead, its first fields pushed up over the tabs.
     static func clipsAtTheBottom(_ columns: NSStackView) {
         columns.setClippingResistancePriority(.defaultLow, for: .vertical)
+    }
+
+    /// The target's field or path keeps 90 pt where there is room, but gives that up (down to 40 pt)
+    /// before anything else in the window does: it sits below the splits' holding priorities and the
+    /// window's stay-put priority, so a control a few points wider on another macOS (the Basics tab
+    /// had 2 pt to spare at the least window with the sidebar open) narrows the field instead of
+    /// moving the sidebar's divider or growing the window.
+    static func prefersWidth(_ view: NSView) {
+        view.widthAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        let preferred = view.widthAnchor.constraint(greaterThanOrEqualToConstant: 90)
+        preferred.priority = NSLayoutConstraint.Priority(240)
+        preferred.isActive = true
     }
 
     /// The last view of a tab's column: it takes the height the column is stretched to, so the

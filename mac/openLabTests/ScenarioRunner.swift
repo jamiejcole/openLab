@@ -20,10 +20,12 @@ final class ScenarioRunner {
     }
 
     /// One step of a scenario: one JSON object whose single action key names the step.
-    /// A part of a table a step aims at instead of the whole control.
+    /// A part of a control a step aims at instead of the whole control: a table's header or row, or
+    /// a segment (named by its tooltip, else its label) of a segmented control inside it.
     enum Part: Equatable {
         case header(String)
         case row(String)
+        case segment(String)
     }
 
     enum Step {
@@ -40,7 +42,8 @@ final class ScenarioRunner {
         /// fractions are of that column header (and may lie outside 0 to 1, to drag past it). A row
         /// cannot be dragged: AppKit's drag session needs real input and would wait for ever.
         case drag(id: String, from: CGPoint, to: CGPoint, modifiers: NSEvent.ModifierFlags, part: Part?)
-        /// `{"hover": id, "at": [fx, fy]}` (or `"header"`/`"row"` as `drag`): the pointer rests on the
+        /// `{"hover": id, "at": [fx, fy]}` (or `"header"`/`"row"` as `drag`, or `"segment": "Wait"`,
+        /// fractions of that segment as AppKit lays it out): the pointer rests on the
         /// control. The next shots draw the tooltip text AppKit would show there, as a bubble under the
         /// pointer; a point with no tooltip stops the run.
         case hover(id: String, at: CGPoint, part: Part?)
@@ -228,7 +231,8 @@ final class ScenarioRunner {
         }
         let options: [String: Set<String>] = [
             "click": ["at", "modifiers"], "double_click": ["at", "modifiers"],
-            "drag": ["from", "to", "modifiers", "header"], "hover": ["at", "header", "row"], "shot": ["display"],
+            "drag": ["from", "to", "modifiers", "header"], "hover": ["at", "header", "row", "segment"],
+            "shot": ["display"],
             "type": ["text", "enter"], "key": ["modifiers"], "scroll": ["dx", "dy", "precise", "modifiers", "at"],
             "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"], "set_media": ["file"],
             "choose": ["item"],
@@ -259,11 +263,16 @@ final class ScenarioRunner {
             return CGPoint(x: a[0], y: a[1])
         }
         func part() throws -> Part? {
-            switch (o["header"], o["row"]) {
-            case (nil, nil): return nil
-            case (.some, nil): return .header(try string("header"))
-            case (nil, .some): return .row(try string("row"))
-            default: throw Failure("a step aims at a \"header\" or a \"row\", not both")
+            let named = ["header", "row", "segment"].filter { o[$0] != nil }
+            guard named.count <= 1 else {
+                throw Failure(
+                    "a step aims at one \"header\", \"row\" or \"segment\", not \(named.joined(separator: " and "))")
+            }
+            switch named.first {
+            case "header": return .header(try string("header"))
+            case "row": return .row(try string("row"))
+            case "segment": return .segment(try string("segment"))
+            default: return nil
             }
         }
         let mods = try modifiers(o["modifiers"])
@@ -988,11 +997,16 @@ final class ScenarioRunner {
     private func aim(_ id: String, _ part: Part?) throws -> (NSView, NSRect?) {
         let view = try control(id)
         guard let part else { return (view, nil) }
-        guard let table = view as? NSOutlineView else {
-            throw Failure("\"\(id)\" is not an outline: no headers or rows")
+        func outline() throws -> NSOutlineView {
+            guard let table = view as? NSOutlineView else {
+                throw Failure("\"\(id)\" is not an outline: no headers or rows")
+            }
+            return table
         }
         switch part {
+        case .segment(let name): return try segment(name, in: view, id: id)
         case .header(let title):
+            let table = try outline()
             guard let header = table.headerView else { throw Failure("\"\(id)\" has no header") }
             let titles = table.tableColumns.map { $0.title.isEmpty ? $0.identifier.rawValue : $0.title }
             guard let i = titles.firstIndex(of: title) else {
@@ -1000,11 +1014,49 @@ final class ScenarioRunner {
             }
             return (header, header.headerRect(ofColumn: i))
         case .row(let what):
+            let table = try outline()
             let node = try cue(what)
             let row = table.row(forItem: node)
             guard row >= 0 else { throw Failure("cue \(what) has no row in \"\(id)\" (inside a closed group?)") }
             return (table, table.rect(ofRow: row))
         }
+    }
+
+    /// The segmented control in `view` with a segment named `name` (its tooltip, else its label), and
+    /// that segment's rectangle.
+    private func segment(_ name: String, in view: NSView, id: String) throws -> (NSView, NSRect) {
+        var bars: [NSSegmentedControl] = []
+        func walk(_ v: NSView) {
+            if let bar = v as? NSSegmentedControl, !v.isHiddenOrHasHiddenAncestor { bars.append(bar) }
+            v.subviews.forEach(walk)
+        }
+        walk(view)
+        var names: [String] = []
+        for bar in bars {
+            for i in 0..<bar.segmentCount {
+                let n = bar.toolTip(forSegment: i).flatMap { $0.isEmpty ? nil : $0 } ?? bar.label(forSegment: i) ?? ""
+                names.append(n)
+                guard n == name else { continue }
+                guard let rects = Self.segmentRects(of: bar) else {
+                    throw Failure("AppKit gives no layout for the segments of \"\(id)\"")
+                }
+                return (bar, rects[i])
+            }
+        }
+        throw Failure("no segment \"\(name)\" in \"\(id)\"; segments: \(names.joined(separator: ", "))")
+    }
+
+    /// Each segment's rectangle in `bar`'s coordinates, as AppKit lays the segments out: the frames of
+    /// the accessibility elements its cell gives them (no public call gives a segment's rectangle, and
+    /// working them out from widths and dividers drifts between macOS versions). Nil when the cell
+    /// gives no element a segment or a frame outside the control (it is not laid out yet).
+    static func segmentRects(of bar: NSSegmentedControl) -> [NSRect]? {
+        guard let window = bar.window else { return nil }
+        let elements = (bar.cell?.accessibilityChildren() ?? []).compactMap { $0 as? NSAccessibilityElement }
+        guard elements.count == bar.segmentCount else { return nil }
+        let rects = elements.map { bar.convert(window.convertFromScreen($0.accessibilityFrame()), from: nil) }
+        let room = bar.bounds.insetBy(dx: -1, dy: -1)
+        return rects.allSatisfy { room.contains($0) } ? rects : nil
     }
 
     /// The column a header part names, to log its width around a drag.
@@ -1021,24 +1073,11 @@ final class ScenarioRunner {
             let i = header.column(at: local)
             if i >= 0, let tip = table.tableColumns[i].headerToolTip, !tip.isEmpty { return tip }
         }
-        if let bar = view as? NSSegmentedControl {
-            // The segments' own widths and the dividers between them: what is left of the control's
-            // width after the fixed widths, shared by the automatic ones, less one point a divider.
-            let widths = (0..<bar.segmentCount).map { bar.width(forSegment: $0) }
-            let automatic = CGFloat(widths.filter { $0 == 0 }.count)
-            let gaps = CGFloat(max(0, widths.count - 1))
-            let spare = bar.bounds.width - widths.reduce(0, +)
-            let divider = automatic == 0 ? (gaps > 0 ? max(0, spare / gaps) : 0) : 1
-            let each = automatic > 0 ? max(0, spare - gaps * divider) / automatic : 0
-            var x: CGFloat = 0
-            for (i, w) in widths.enumerated() {
-                x += (w == 0 ? each : w) + divider / 2
-                if local.x < x {
-                    if let tip = bar.toolTip(forSegment: i), !tip.isEmpty { return tip }
-                    break
-                }
-                x += divider / 2
-            }
+        // The segment under the pointer, from where AppKit lays the segments out; a divider is none's.
+        if let bar = view as? NSSegmentedControl, let rects = Self.segmentRects(of: bar),
+            let i = rects.firstIndex(where: { $0.contains(local) }), let tip = bar.toolTip(forSegment: i), !tip.isEmpty
+        {
+            return tip
         }
         var up: NSView? = view
         while let v = up {
@@ -1413,6 +1452,7 @@ final class ScenarioRunner {
         case nil: return ""
         case .header(let t)?: return " header \(t)"
         case .row(let r)?: return " row \(r)"
+        case .segment(let n)?: return " segment \(n)"
         }
     }
 
@@ -1674,7 +1714,10 @@ final class ScenarioShotTests: XCTestCase {
         try refused(#"{"menu_command": "undo", "at": [0, 0]}"#, "\"menu_command\" does not take \"at\"")
         try refused(#"{"open_menu": ""}"#, "\"open_menu\" must be a non-empty string")
         try refused(#"{"hover": "x", "at": [1.5, 0.5]}"#, "fractions 0 to 1 of the control")
-        try refused(#"{"hover": "x", "header": "a", "row": "1"}"#, "a \"header\" or a \"row\", not both")
+        try refused(
+            #"{"hover": "x", "header": "a", "row": "1"}"#, "one \"header\", \"row\" or \"segment\", not header and row")
+        try refused(#"{"hover": "x", "row": "1", "segment": "Wait"}"#, "not row and segment")
+        try refused(#"{"drag": "x", "segment": "Wait"}"#, "\"drag\" does not take \"segment\"")
         try refused(#"{"drag": "x", "header": "a", "to": [0, 99]}"#, "fractions -20 to 20 of the header or row")
         try refused(#"{"drag": "x", "row": "1"}"#, "\"drag\" does not take \"row\"")
         try refused(#"{"drag": "x", "to": [0, 2]}"#, "fractions 0 to 1 of the control")
@@ -1720,6 +1763,9 @@ final class ScenarioShotTests: XCTestCase {
         XCTAssertTrue(noRow.contains("no cue numbered or named \"99\""), noRow)
         let notPopUp = try await failure(of: #"{"show": "Demo", "steps": [{"open_menu": "toggle-sidebar"}]}"#)
         XCTAssertTrue(notPopUp.contains("\"toggle-sidebar\" is not a pop-up button"), notPopUp)
+        let noSegment = try await failure(
+            of: #"{"show": "Demo", "steps": [{"hover": "cue-toolbar", "segment": "Nope"}]}"#)
+        XCTAssertTrue(noSegment.contains("no segment \"Nope\" in \"cue-toolbar\"; segments: Group, Audio, "), noSegment)
         let noTip = try await failure(of: #"{"show": "Demo", "steps": [{"hover": "cue-list"}]}"#)
         XCTAssertTrue(noTip.contains("no tooltip at"), noTip)
     }
@@ -1736,20 +1782,46 @@ final class ScenarioShotTests: XCTestCase {
                 {"show": "Demo", "steps": [
                   {"hover": "cue-list", "header": "Duration"},
                   {"hover": "cue-toolbar", "at": [0.06, 0.5]},
-                  {"hover": "cue-toolbar", "at": [0.478, 0.5]},
-                  {"hover": "cue-toolbar", "at": [0.492, 0.5]}]}
+                  {"hover": "cue-toolbar", "segment": "Wait"},
+                  {"hover": "cue-toolbar", "segment": "Wait", "at": [0.97, 0.5]},
+                  {"hover": "cue-toolbar", "segment": "Memo", "at": [0.03, 0.5]}]}
                 """)
         let tips = log.split(separator: "\n").compactMap { line -> String? in
             guard let r = line.range(of: "tooltip \"") else { return nil }
             return String(line[r.upperBound...].prefix { $0 != "\"" })
         }
-        XCTAssertEqual(tips.count, 4, log)
+        XCTAssertEqual(tips.count, 5, log)
         XCTAssertEqual(tips[0], loc("cuelist.time.showRemaining"), log)
         XCTAssertEqual(tips[1], "Audio", log)
-        // Inside a segment near its right edge, where widths summed without the dividers named the next one.
+        // The middle of a segment, a point just inside its right edge, and one just past the divider.
         XCTAssertEqual(tips[2], "Wait", log)
-        XCTAssertNotEqual(tips[3], tips[2], "a point past the divider is the next segment's: \(log)")
+        XCTAssertEqual(tips[3], "Wait", log)
+        XCTAssertEqual(tips[4], "Memo", log)
         XCTAssertTrue(log.contains("drawn by the runner, not AppKit"), log)
+    }
+
+    /// The segment rectangles the runner aims at and reads tooltips by are AppKit's layout: each as wide
+    /// as the toolbar sets it, left to right, apart, inside the control; none before it is laid out.
+    func testSegmentRectsAreTheSegmentsAsLaidOut() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 60), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let toolbar = CueToolbarView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView?.addSubview(toolbar)
+        let bar = try XCTUnwrap(toolbar.segmentedControls.last)
+        XCTAssertNil(ScenarioRunner.segmentRects(of: NSSegmentedControl()), "a control in no window has none")
+        window.orderFront(nil)
+        window.layoutIfNeeded()
+        window.displayIfNeeded()
+        let rects = try XCTUnwrap(ScenarioRunner.segmentRects(of: bar))
+        XCTAssertEqual(rects.count, bar.segmentCount)
+        for (i, r) in rects.enumerated() {
+            XCTAssertEqual(r.width, bar.width(forSegment: i), accuracy: 0.5, "segment \(i): \(rects)")
+            XCTAssertTrue(bar.bounds.insetBy(dx: -1, dy: -1).contains(r), "segment \(i): \(r) in \(bar.bounds)")
+            if i > 0 { XCTAssertGreaterThanOrEqual(r.minX, rects[i - 1].maxX, "segment \(i) after \(i - 1)") }
+        }
     }
 
     func testOpenMenuListsTheItemsWithTheChosenOneTickedAndLeavesOutAPullDownsTitle() async throws {
