@@ -310,7 +310,7 @@ fn a_click_after_the_sound_ended_in_the_post_wait_is_ignored() {
 }
 
 #[test]
-fn a_click_on_a_stopping_cue_or_one_that_is_not_audio_is_ignored() {
+fn a_click_on_a_stopping_cue_is_ignored_silently_and_one_that_is_not_audio_with_a_warning() {
     let mut rig = Rig::new(vec![sound(1), memo(2)]);
     rig.start(0, 1);
     rig.at(
@@ -324,10 +324,7 @@ fn a_click_on_a_stopping_cue_or_one_that_is_not_audio_is_ignored() {
         },
     );
     let click = rig.seek(200, 1, 0.5);
-    assert_eq!(
-        warnings(&click),
-        vec![EngineWarning::LoadIgnored { cue: id(1) }]
-    );
+    assert_eq!(warnings(&click), vec![], "a stopping cue says nothing");
     assert!(seeks(&click).is_empty());
     let memo = rig.seek(200, 2, 0.5);
     assert_eq!(

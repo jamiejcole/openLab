@@ -6147,7 +6147,10 @@ fn a_seek_while_stopping_is_ignored_and_one_in_a_pre_wait_starts_picture_and_sou
         }),
     });
     s.run(BLOCK);
+    s.take_outbound();
     seek(&mut s, 1, 0.2);
+    s.run(BLOCK);
+    assert_eq!(warnings(&s.take_outbound()), vec![], "a stopping cue says nothing");
     let ends = at + samples(1.2);
     run_to(&mut s, ends + 2 * BLOCK);
     expect_state(&s, 1, CueState::Idle, "ended with the range");

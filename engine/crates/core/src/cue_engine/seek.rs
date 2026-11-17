@@ -98,8 +98,10 @@ impl CueEngine {
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
+        // A stop with a fade ends where it is: a click while it fades changes nothing and is
+        // not a fault of the cue, so it says nothing.
         if run.stop_end.is_some() {
-            return cx.warn(EngineWarning::LoadIgnored { cue });
+            return;
         }
         match (run.phase, run.voice) {
             (Phase::PreWait { .. }, voice) => {
