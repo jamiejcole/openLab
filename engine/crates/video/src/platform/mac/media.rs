@@ -17,7 +17,10 @@
 //! milliseconds) holds the frame.
 //!
 //! An open or decode that fails, or does not answer within its limit, fails the picture alone
-//! (the main thread finds it when it polls). A decode thread stuck in the platform's code
+//! (the main thread finds it when it polls). A movie whose reader fails after its open (a
+//! decoder fault, a media-services reset) is first opened again, once, on its decode thread at
+//! the newest position asked ([`REOPEN_SETTLE`]); only if that fails too does the picture fail,
+//! so a damaged file is still reported. A decode thread stuck in the platform's code
 //! cannot be stopped: it is left to end by itself, and the number of decode threads alive is
 //! capped, so a dead volume cannot use up the process.
 //!
@@ -79,6 +82,12 @@ const SKIP_AHEAD: f64 = 0.5;
 /// the keyframe before it: the clock the picture follows is corrected backwards by a few
 /// milliseconds now and then, and that must never restart the reader or show an earlier frame.
 const BACK_HOLD_FRAMES: f64 = 1.0;
+
+/// A movie whose reader failed and was opened again may be opened again at a later failure
+/// only after reading this many seconds of its frames without one: a fault that comes back at
+/// once (a damaged part of the file, a decoder that keeps failing) breaks the cue at its second
+/// failure instead of re-opening the movie over and over.
+pub const REOPEN_SETTLE: f64 = 10.0;
 
 /// Decode threads alive at once, stuck ones included: past this a new picture is refused
 /// instead of starting another thread.
@@ -171,6 +180,9 @@ struct Mail {
     /// Decoder to main: the newest frame not yet taken.
     frame: Option<Frame>,
     failed: Option<String>,
+    /// Decoder to main: the movie was opened again after its reader failed, and why (for the
+    /// show log), not yet taken.
+    reopened: Option<String>,
     /// The main thread let the picture go: the decode thread ends.
     closed: bool,
 }
@@ -304,6 +316,12 @@ impl Picture {
         }
         self.told_open = true;
         Some(Polled::Opened)
+    }
+
+    /// Why the movie was opened again after its reader failed, once, if it was since the last
+    /// call: one line for the show log.
+    pub fn take_reopened(&mut self) -> Option<String> {
+        self.shared.lock().reopened.take()
     }
 
     /// The texture to draw at `position` seconds and its pixel size, if a frame has been
@@ -534,25 +552,84 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits)
         fault::hang_if(shared, file, fault::HANG_DECODE);
         #[cfg(feature = "test-support")]
         fault::crash_if(file, fault::CRASH_DECODE);
-        match movie.frame_at(position, pass, &progress) {
-            Ok(frame) => {
-                let mut mail = shared.lock();
-                if mail.failed.is_some() {
-                    return;
-                }
-                if frame.is_some() {
-                    mail.frame = frame;
-                }
-                mail.answered = asked;
-                mail.waiting_since = match mail.want {
-                    Some((n, ..)) if n > asked => Some(now()),
-                    _ => None,
-                };
-                shared.wake.notify_all();
-            }
-            Err(why) => return shared.fail(why),
+        let (asked, frame) = match movie.frame_at(position, pass, &progress) {
+            Ok(frame) => (asked, frame),
+            Err(why) => match reopen(shared, file, &mut movie, why, &progress) {
+                Ok(answer) => answer,
+                Err(why) => return shared.fail(why),
+            },
+        };
+        let mut mail = shared.lock();
+        if mail.failed.is_some() || mail.closed {
+            return;
         }
+        if frame.is_some() {
+            mail.frame = frame;
+        }
+        mail.answered = asked;
+        mail.waiting_since = match mail.want {
+            Some((n, ..)) if n > asked => Some(now()),
+            _ => None,
+        };
+        shared.wake.notify_all();
     }
+}
+
+/// After `movie`'s reader failed (`why`) mid-stream: opens its file again, at the newest
+/// position asked, and reads the frame there; returns that ask's number and frame. A fresh
+/// asset and reader, as a reset media service or decoder needs. AVFoundation's asset reader
+/// has no supported way to ask for a software decoder (VideoToolbox takes that only when a
+/// session of its own is made), so the system picks the decoder again.
+///
+/// Allowed once per failure ([`REOPEN_SETTLE`]); the time it takes counts against the frame
+/// limit of the position waiting (the main thread fails the picture past it, as for any slow
+/// frame). An error when it is not allowed or fails too: the picture then fails, and a damaged
+/// file is reported as before.
+fn reopen(
+    shared: &Shared,
+    file: &str,
+    movie: &mut Movie,
+    why: String,
+    progress: &dyn Fn(),
+) -> Result<(u64, Option<Frame>), String> {
+    if !movie.may_reopen() {
+        return Err(format!(
+            "{why}; it failed again {:.1} s of frames after it was opened again",
+            movie.good_seconds()
+        ));
+    }
+    let (asked, position, pass) = {
+        let mail = shared.lock();
+        // Let go, or already failed (a frame past its limit on a stalled volume): nothing to
+        // open again for, and no line saying it was.
+        if mail.closed || mail.failed.is_some() {
+            return Err(why);
+        }
+        mail.want.ok_or_else(|| why.clone())?
+    };
+    let failed_again = |e: String| format!("{why}; opening it again failed: {e}");
+    // The failed readers and the frames read ahead go first: a picture never holds more than
+    // its share of frames, opening again or not.
+    movie.let_go();
+    let mut fresh = Movie::open(file).map_err(failed_again)?;
+    if fresh.size != movie.size {
+        return Err(failed_again("the file changed".into()));
+    }
+    fresh.reopened = true;
+    #[cfg(feature = "test-support")]
+    {
+        fresh.slow = movie.slow;
+    }
+    let frame = fresh
+        .frame_at(position, pass, progress)
+        .map_err(failed_again)?;
+    let name = Path::new(file)
+        .file_name()
+        .map_or_else(|| file.into(), |n| n.to_string_lossy());
+    let note = format!("reading {name} failed ({why}); opened it again at {position:.2} s");
+    *movie = fresh;
+    shared.lock().reopened = Some(note);
+    Ok((asked, frame))
 }
 
 /// Multiplies each BGRA pixel's colour by its alpha (straight to premultiplied), rounding to
@@ -654,6 +731,10 @@ struct Movie {
     /// The movie's length and one frame's time, in seconds, as its file says.
     length: f64,
     frame: f64,
+    /// This movie was opened again after the reader of the one before it failed.
+    reopened: bool,
+    /// Frames read since it was opened.
+    good: u32,
     /// Times reading started again, and of those how many took a reader primed ahead (tests).
     #[cfg(test)]
     restarts: u32,
@@ -662,6 +743,12 @@ struct Movie {
     /// Test support: each frame takes `fault::SLOW_FRAME` to read.
     #[cfg(feature = "test-support")]
     slow: bool,
+    /// Test support: the reader failures its file's name asks for, and the frames asked of it
+    /// so far (the open's own first).
+    #[cfg(feature = "test-support")]
+    fault: Option<fault::Fail>,
+    #[cfg(feature = "test-support")]
+    asks: u32,
 }
 
 impl Movie {
@@ -705,13 +792,30 @@ impl Movie {
             ended: false,
             length,
             frame: 1.0 / f64::from(fps),
+            reopened: false,
+            good: 0,
             #[cfg(test)]
             restarts: 0,
             #[cfg(test)]
             spares_taken: 0,
             #[cfg(feature = "test-support")]
             slow: false,
+            #[cfg(feature = "test-support")]
+            fault: fault::fail_of(file),
+            #[cfg(feature = "test-support")]
+            asks: 0,
         })
+    }
+
+    /// Seconds of frames read since it was opened.
+    fn good_seconds(&self) -> f64 {
+        f64::from(self.good) * self.frame
+    }
+
+    /// Whether a reader failure may open the movie again: the first time, or once the movie
+    /// opened again has read [`REOPEN_SETTLE`] of frames without one.
+    fn may_reopen(&self) -> bool {
+        !self.reopened || self.good_seconds() >= REOPEN_SETTLE
     }
 
     /// Starts reading at `from` seconds: with the reader primed for there when there is one.
@@ -884,6 +988,16 @@ impl Movie {
         pass: u64,
         progress: &dyn Fn(),
     ) -> Result<Option<Frame>, String> {
+        #[cfg(feature = "test-support")]
+        {
+            let ask = self.asks;
+            self.asks += 1;
+            if let Some(fault) = self.fault
+                && fault.fails(ask, position, self.reopened, self.good_seconds())
+            {
+                return Err("the movie could not be read (test fault)".into());
+            }
+        }
         let seam = pass != self.pass;
         self.pass = pass;
         let back = self.shown.is_some_and(|t| {
@@ -902,6 +1016,9 @@ impl Movie {
                 None => {
                     let read = self.read()?;
                     progress();
+                    if read.is_some() {
+                        self.good = self.good.saturating_add(1);
+                    }
                     read
                 }
             };
@@ -940,13 +1057,21 @@ fn reader_error(reader: &AVAssetReader) -> String {
     )
 }
 
-impl Drop for Movie {
-    fn drop(&mut self) {
+impl Movie {
+    /// Cancels its readers and drops the frames it read ahead.
+    fn let_go(&mut self) {
+        self.next = None;
         let spare = self.spare.take().map(|s| s.reader);
         for (reader, _) in self.reader.take().into_iter().chain(spare) {
             // SAFETY: cancelling a reader this movie owns.
             unsafe { reader.cancelReading() };
         }
+    }
+}
+
+impl Drop for Movie {
+    fn drop(&mut self) {
+        self.let_go();
     }
 }
 
@@ -967,6 +1092,49 @@ pub mod fault {
     /// Reads every frame slowly: each moves the hand-moved media clock on by `SLOW_FRAME`, a
     /// decoder slower than real time that keeps going, whatever the machine's speed.
     pub const SLOW_DECODE: &str = "openlab-test-slow-decode";
+    /// The reader fails at the first frame asked at or past [`FAIL_FROM`] seconds after the
+    /// open; the movie opened again reads on.
+    pub const FAIL_DECODE_ONCE: &str = "openlab-test-fail-decode-once";
+    /// As `FAIL_DECODE_ONCE`, and the movie opened again fails the same way at the next frame
+    /// asked after the one it opened at.
+    pub const FAIL_DECODE_AGAIN: &str = "openlab-test-fail-decode-again";
+    /// Each movie (the one opened first, and each opened again) fails at the first frame asked
+    /// once it has read a second more than `REOPEN_SETTLE` of frames.
+    pub const FAIL_DECODE_OFTEN: &str = "openlab-test-fail-decode-often";
+    /// Where `FAIL_DECODE_ONCE` and `FAIL_DECODE_AGAIN` fail: mid-stream, well after the open.
+    pub const FAIL_FROM: f64 = 1.0;
+
+    /// A reader failure a file's name asks for.
+    #[derive(Clone, Copy, Debug)]
+    pub enum Fail {
+        Once,
+        Again,
+        Often,
+    }
+
+    pub(super) fn fail_of(file: &str) -> Option<Fail> {
+        [
+            (FAIL_DECODE_ONCE, Fail::Once),
+            (FAIL_DECODE_AGAIN, Fail::Again),
+            (FAIL_DECODE_OFTEN, Fail::Often),
+        ]
+        .into_iter()
+        .find(|(name, _)| file.contains(name))
+        .map(|(_, fail)| fail)
+    }
+
+    impl Fail {
+        /// Whether the frame asked (`ask`: 0 is the one the movie opened at, never failed) at
+        /// `position` fails, on a movie opened again or not, with `good` seconds of frames read.
+        pub(super) fn fails(self, ask: u32, position: f64, reopened: bool, good: f64) -> bool {
+            ask > 0
+                && match self {
+                    Self::Once => !reopened && position >= FAIL_FROM,
+                    Self::Again => position >= FAIL_FROM,
+                    Self::Often => good >= super::REOPEN_SETTLE + 1.0,
+                }
+        }
+    }
 
     /// The hand-moved media clock: its origin, and how far it has been moved.
     static HAND: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
@@ -1061,6 +1229,151 @@ mod tests {
         assert_eq!(got.err().as_deref(), Some("the file is not there"));
         assert!(matches!(p.poll(), Some(Polled::Failed(_))));
         assert_eq!(p.asked(), Some(0.0));
+        assert_eq!(
+            p.take_reopened(),
+            None,
+            "an open that fails is not tried again"
+        );
+    }
+
+    /// A movie of `frames` at 25 fps in `dir`, under `name` (a fault switch's, for some).
+    fn clip(dir: &Path, name: &str, frames: u16) -> String {
+        let file = dir.join(name).to_str().unwrap().to_owned();
+        super::super::testmedia::make(&[
+            "h264".into(),
+            file.clone(),
+            frames.to_string(),
+            "25".into(),
+        ])
+        .unwrap();
+        file
+    }
+
+    /// Asks `p` for the frame at each position in turn, as a probe does (waiting for it):
+    /// whether each was answered with a picture, and the re-open notes said meanwhile.
+    fn play_through(p: &mut Picture, positions: impl Iterator<Item = f64>) -> Vec<String> {
+        let device = objc2_metal::MTLCreateSystemDefaultDevice().unwrap();
+        let mut notes = Vec::new();
+        for at in positions {
+            let got = p.frame(&device, at, 0, None, true);
+            notes.extend(p.take_reopened());
+            assert!(
+                matches!(got, Ok(Some(_))),
+                "at {at} s: {:?} after {notes:?}",
+                got.err()
+            );
+            assert!(
+                !matches!(p.poll(), Some(Polled::Failed(_))),
+                "failed at {at} s"
+            );
+        }
+        notes
+    }
+
+    const FOREVER: Limits = Limits {
+        open: Duration::from_secs(60),
+        frame: Duration::from_secs(60),
+    };
+
+    /// A reader that fails mid-stream: the decode thread opens the movie again at the position
+    /// asked and answers it there, says so once, and the picture plays on.
+    #[test]
+    fn a_reader_failure_mid_stream_opens_the_movie_again_once_and_it_plays_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = clip(dir.path(), "openlab-test-fail-decode-once.mov", 75);
+        let mut p = Picture::open(&file, false, 0.0, FOREVER).unwrap();
+        let notes = play_through(&mut p, (0..60).map(|i| f64::from(i) * 0.04));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("openlab-test-fail-decode-once.mov")
+                && notes[0].contains("at 1.00 s")
+                && notes[0].contains("opened it again"),
+            "{}",
+            notes[0]
+        );
+        assert_eq!(p.asked(), Some(59.0 * 0.04));
+    }
+
+    /// The movie opened again fails again before it has read a stretch of good frames: the
+    /// picture fails, with both reasons, and the movie is not opened a third time.
+    #[test]
+    fn a_movie_that_fails_again_after_it_was_opened_again_fails_the_picture() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = clip(dir.path(), "openlab-test-fail-decode-again.mov", 75);
+        let mut p = Picture::open(&file, false, 0.0, FOREVER).unwrap();
+        let device = objc2_metal::MTLCreateSystemDefaultDevice().unwrap();
+        let mut notes = Vec::new();
+        let mut failed = None;
+        for i in 0..60 {
+            let at = f64::from(i) * 0.04;
+            match p.frame(&device, at, 0, None, true) {
+                Ok(_) => notes.extend(p.take_reopened()),
+                Err(why) => {
+                    notes.extend(p.take_reopened());
+                    failed = Some((at, why));
+                    break;
+                }
+            }
+        }
+        let (at, why) = failed.expect("the picture failed");
+        assert_eq!(notes.len(), 1, "opened again once: {notes:?}");
+        assert!((at - 1.04).abs() < 1e-9, "at the next frame asked: {at}");
+        assert!(why.contains("opened again"), "{why}");
+        assert!(matches!(p.poll(), Some(Polled::Failed(_))));
+    }
+
+    /// After the movie opened again has read `REOPEN_SETTLE` of good frames, a later failure
+    /// may open it again: a fault every eleven seconds never breaks a picture.
+    #[test]
+    fn the_movie_may_be_opened_again_after_a_stretch_of_good_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = clip(dir.path(), "openlab-test-fail-decode-often.mov", 750);
+        let mut p = Picture::open(&file, false, 0.0, FOREVER).unwrap();
+        // Every frame read, a frame at a time, to 29 s: failures at about 11 s and 22 s.
+        let notes = play_through(&mut p, (0..725).map(|i| f64::from(i) * 0.04));
+        assert_eq!(notes.len(), 2, "{notes:?}");
+    }
+
+    /// A picture that already failed (a frame past its limit) is not opened again when its
+    /// reader then fails too: no note says it was, and the reason is the reader's.
+    #[test]
+    fn a_picture_that_already_failed_is_not_opened_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = clip(dir.path(), "clip.mov", 5);
+        let mut movie = Movie::open(&file).unwrap();
+        let shared = Shared {
+            mail: Mutex::new(Mail::default()),
+            wake: Condvar::new(),
+        };
+        {
+            let mut mail = shared.lock();
+            mail.want = Some((1, 0.04, 0));
+            mail.failed = Some(frame_overrun(LIMITS));
+        }
+        let got = reopen(&shared, &file, &mut movie, "reader failed".into(), &|| {});
+        assert_eq!(got.err().as_deref(), Some("reader failed"));
+        assert_eq!(shared.lock().reopened, None);
+        assert!(!movie.reopened);
+        // Not failed: the same call opens it again.
+        shared.lock().failed = None;
+        let got = reopen(&shared, &file, &mut movie, "reader failed".into(), &|| {});
+        assert!(matches!(got, Ok((1, Some(_)))), "{:?}", got.err());
+        assert!(movie.reopened && shared.lock().reopened.is_some());
+    }
+
+    /// A movie opened again has its allowance back only after `REOPEN_SETTLE` of frames read.
+    #[test]
+    fn a_movie_opened_again_may_be_opened_again_only_after_the_settle() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = clip(dir.path(), "clip.mov", 5);
+        let mut m = Movie::open(&file).unwrap();
+        assert!(m.may_reopen(), "the first failure");
+        m.reopened = true;
+        assert!(!m.may_reopen(), "at once again");
+        m.good = (REOPEN_SETTLE * 25.0) as u32 - 1;
+        assert!(!m.may_reopen(), "a frame short of the settle");
+        m.good += 1;
+        assert!(m.may_reopen());
     }
 
     /// The frame number a decoded test-card frame carries (its time at 25 fps).

@@ -311,8 +311,8 @@ pub trait Platform {
     }
     /// Lets the picture's file go.
     fn close_picture(&mut self, _picture: u64) {}
-    /// What happened to pictures since the last call: opened, or failed (could not be opened,
-    /// decoded or drawn, or took too long) with why.
+    /// What happened to pictures since the last call: opened, opened again after its reader
+    /// failed, or failed (could not be opened, decoded or drawn, or took too long) with why.
     fn take_picture_events(&mut self) -> Vec<PictureEvent> {
         Vec::new()
     }
@@ -332,6 +332,8 @@ const CLOCK_HOLD: std::time::Duration = std::time::Duration::from_millis(30);
 #[derive(Clone, Debug, PartialEq)]
 pub enum PictureEvent {
     Opened(u64),
+    /// Its movie's reader failed and the movie was opened again, and why: it plays on.
+    Reopened(u64, String),
     Failed(u64, String),
 }
 
@@ -558,6 +560,11 @@ impl<P: Platform> Host<P> {
                     out.push(FromStage::PictureOpened { picture });
                 }
                 PictureEvent::Opened(_) => {}
+                // One line in the show log; the cue is not told, as it plays on.
+                PictureEvent::Reopened(_, why) => out.push(FromStage::Log {
+                    level: LinkLevel::Warn,
+                    message: short(why),
+                }),
                 PictureEvent::Failed(picture, reason) => {
                     self.drop_picture(picture);
                     out.push(FromStage::PictureFailed {
@@ -1301,6 +1308,42 @@ mod tests {
             matches!((failed, probed), (Some(f), Some(p)) if f < p),
             "{out:?}"
         );
+    }
+
+    /// A movie opened again after its reader failed is one warning line for the show log and
+    /// plays on: no failure is reported and it is still drawn.
+    #[test]
+    fn a_movie_opened_again_is_one_log_line_and_stays_drawn() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 1000);
+        load(&mut h, 7, 1);
+        send(&mut h, plain_play(7, 1000, 0.0));
+        h.platform_mut().events.push(PictureEvent::Reopened(
+            7,
+            "reading clip.mov failed (Cannot Decode); opened it again at 1.20 s".into(),
+        ));
+        let mut out = Vec::new();
+        h.poll(&mut out);
+        assert_eq!(
+            logs(&out),
+            vec![(
+                LinkLevel::Warn,
+                "reading clip.mov failed (Cannot Decode); opened it again at 1.20 s".into()
+            )]
+        );
+        assert!(
+            !out.iter()
+                .any(|m| matches!(m, FromStage::PictureFailed { .. })),
+            "{out:?}"
+        );
+        clock(&mut h, 2000);
+        assert_eq!(cues(&mut h, 1).len(), 1, "still drawn");
     }
 
     /// A picture is drawn from its play's sample, its position following the clock; a pause
