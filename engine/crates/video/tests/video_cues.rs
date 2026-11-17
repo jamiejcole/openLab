@@ -4623,6 +4623,14 @@ fn sound_but_nowhere_to_play_it_marks_the_cue_broken() {
     assert_eq!(problems(&s, 3), vec![CueProblem::NoPatch]);
 }
 
+/// A show of `ws` whose disk stalls on `movie`'s opens until the test releases it. The gate is
+/// set before the show is built: the playhead primes the cue's sound as the show starts, on an
+/// opener thread, so a gate set after could come too late and the sound be heard at GO.
+fn starved_show(ws: Workspace, movie: &Path) -> OfflineShow {
+    gate(movie);
+    video_show_config(ws, &[], |_| {}, |c| c.streamer.before_open = gated_open)
+}
+
 /// The sound is the clock: a voice the disk starved (its file's open stalled) plays late by
 /// what it missed, its picture is put back by as much, and the cue ends when the sound does.
 #[test]
@@ -4630,8 +4638,7 @@ fn a_starved_sound_puts_its_picture_back_so_they_stay_together() {
     let dir = tempfile::tempdir().unwrap();
     let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
     let ws = workspace(vec![sounding_cue(1, &movie)]);
-    let mut s = video_show_config(ws, &[], |_| {}, |c| c.streamer.before_open = gated_open);
-    gate(&movie);
+    let mut s = starved_show(ws, &movie);
     let at = go(&mut s);
     s.run_unsettled(samples(0.4));
     assert!(
@@ -4666,8 +4673,7 @@ fn a_pause_as_the_starved_sound_comes_back_still_puts_the_picture_back() {
     let dir = tempfile::tempdir().unwrap();
     let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
     let ws = workspace(vec![sounding_cue(1, &movie)]);
-    let mut s = video_show_config(ws, &[], |_| {}, |c| c.streamer.before_open = gated_open);
-    gate(&movie);
+    let mut s = starved_show(ws, &movie);
     let at = go(&mut s);
     s.run_unsettled(samples(0.4));
     release(&movie);
@@ -5402,8 +5408,7 @@ fn a_devamp_stop_asked_while_the_sound_is_starved_ends_both_after_the_whole_pass
         },
     );
     let ws = workspace(vec![looping, stop]);
-    let mut s = video_show_config(ws, &[], |_| {}, |c| c.streamer.before_open = gated_open);
-    gate(&movie);
+    let mut s = starved_show(ws, &movie);
     let at = start(&mut s, 1);
     s.run_unsettled(samples(0.2));
     start(&mut s, 2);
