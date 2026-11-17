@@ -1926,8 +1926,18 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let from = marks.last { $0 <= position } ?? start
         let to = marks.first { $0 > position } ?? end
         guard to > from else { return nil }
+        // A Video cue devamped out of its loop and held on its last frame stands at the very end of
+        // its last pass (the engine reports a hair before it): it is in no pass any more and counts up,
+        // as a held cue that never looped does.
+        if node.cue.kindType == "video", kind["hold_at_end"] == .bool(true), to - position < Self.heldWithin {
+            return nil
+        }
         return (min(max(0, position - from), to - from), to - from)
     }
+
+    /// How near a pass's end a Video cue's position must be to count as held there (the engine's is
+    /// a microsecond short of it).
+    private static let heldWithin = 1e-4
 
     private func restingDuration(_ node: CueNode) -> Double? {
         switch node.cue.kindType {

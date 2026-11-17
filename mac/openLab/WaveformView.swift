@@ -100,6 +100,8 @@ class WaveformView: NSView {
     }
 
     static let rulerHeight: CGFloat = 18
+    /// The width of a trim handle's triangle in the ruler.
+    static let handleWidth: CGFloat = 8
     /// How near a handle (points) a click must be to take it.
     static let grab: CGFloat = 6
     /// The band along the top of the waves where the fade handles are taken, and along the bottom
@@ -744,7 +746,7 @@ class WaveformView: NSView {
         NSColor.systemOrange.setFill()
         NSRect(x: x - 0.5, y: Self.rulerHeight, width: 1, height: waveRect.height).fill()
         let tri = NSBezierPath()
-        let w: CGFloat = 8
+        let w = Self.handleWidth
         tri.move(to: NSPoint(x: x, y: Self.rulerHeight))
         tri.line(to: NSPoint(x: x, y: 2))
         tri.line(to: NSPoint(x: start ? x + w : x - w, y: 2))
@@ -752,24 +754,43 @@ class WaveformView: NSView {
         tri.fill()
     }
 
-    /// Ticks at a step that leaves room for a label.
-    private func drawRuler(_ dirtyRect: NSRect) {
-        guard scale.end > scale.start, bounds.width > 0 else { return }
+    /// The ruler's ticks (x, time) at a step that leaves room for a label, and where each label starts.
+    /// The handles' triangles lie over the ruler's lower part: a label starting under the start handle
+    /// starts beside it, and one running under the end handle is left out (its tick stays).
+    func rulerMarks(labelWidth: (String) -> CGFloat) -> [(x: CGFloat, text: String, labelX: CGFloat?)] {
+        guard scale.end > scale.start, bounds.width > 0 else { return [] }
         let span = scale.end - scale.start
         let minStep = span * 70 / Double(bounds.width)
         let steps: [Double] = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
         let step = steps.first { $0 >= minStep } ?? 3600
+        let handles = duration != nil
+        let startEdge = min(max(scale.x(trimStart), 0.5), bounds.width - 0.5)
+        let endEdge = min(max(scale.x(endTime), 0.5), bounds.width - 0.5)
+        var marks: [(x: CGFloat, text: String, labelX: CGFloat?)] = []
+        var t = (scale.start / step).rounded(.up) * step
+        while t <= scale.end {
+            let x = scale.x(t)
+            let text = CueTime.running(t)
+            let width = labelWidth(text)
+            var at: CGFloat? = x + 2
+            let clear = startEdge + Self.handleWidth + 2
+            if handles, let a = at, a < clear, a + width > startEdge { at = clear }
+            if handles, let a = at, a + width > endEdge - Self.handleWidth, a < endEdge { at = nil }
+            marks.append((x, text, at))
+            t += step
+        }
+        return marks
+    }
+
+    private func drawRuler(_ dirtyRect: NSRect) {
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular),
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
         NSColor.tertiaryLabelColor.setFill()
-        var t = (scale.start / step).rounded(.up) * step
-        while t <= scale.end {
-            let x = scale.x(t)
-            NSRect(x: x, y: Self.rulerHeight - 6, width: 1, height: 6).fill()
-            CueTime.running(t).draw(at: NSPoint(x: x + 2, y: 2), withAttributes: attrs)
-            t += step
+        for mark in rulerMarks(labelWidth: { $0.size(withAttributes: attrs).width }) {
+            NSRect(x: mark.x, y: Self.rulerHeight - 6, width: 1, height: 6).fill()
+            if let labelX = mark.labelX { mark.text.draw(at: NSPoint(x: labelX, y: 2), withAttributes: attrs) }
         }
     }
 }

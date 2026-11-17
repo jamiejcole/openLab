@@ -385,17 +385,18 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         left.setHuggingPriority(.defaultHigh, for: .vertical)
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        // A Video cue's keep-last-frame box is with the play count on the left: the row under the
-        // timeline is as wide for a Video cue as for an Audio cue, and fits the least window.
-        let strip = NSStackView(views: [
-            deleteSlicesButton, addSliceButton, fadeCheck, fadeCurvePopup, spacer, zoomOutButton, zoomInButton,
-        ])
+        // A Video cue's keep-last-frame box is with the play count on the left. Two rows under the
+        // timeline, each narrow enough that the tab fits the least window with the sidebar open: the
+        // slice and zoom buttons, then the built-in fades.
+        let strip = NSStackView(views: [deleteSlicesButton, addSliceButton, spacer, zoomOutButton, zoomInButton])
         strip.spacing = 4
+        let fadeStrip = NSStackView(views: [fadeCheck, fadeCurvePopup])
+        fadeStrip.spacing = 6
         waveform.translatesAutoresizingMaskIntoConstraints = false
         waveform.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         waveform.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         waveform.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
-        let right = NSStackView(views: [waveform, strip])
+        let right = NSStackView(views: [waveform, strip, fadeStrip])
         right.orientation = .vertical
         right.alignment = .leading
         right.spacing = 4

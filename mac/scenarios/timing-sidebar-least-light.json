@@ -1,0 +1,24 @@
+{
+  "about": "At the least window size (800x500) with an Audio cue's Time & Loops tab shown: opening the sidebar leaves the window as it is and the tab fits the room left; then the Triggers and Basics tabs with the sidebar open, then the sidebar closed again.",
+  "show": "Demo",
+  "appearance": "light",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"advance": 0.1},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 0.2},
+    {"shot": "sidebar-closed"},
+    {"click": "toggle-sidebar"},
+    {"advance": 0.2},
+    {"shot": "sidebar-open"},
+    {"tab": "triggers"},
+    {"shot": "triggers"},
+    {"tab": "basics"},
+    {"shot": "basics"},
+    {"click": "toggle-sidebar"},
+    {"advance": 0.1},
+    {"shot": "sidebar-closed-again"}
+  ]
+}

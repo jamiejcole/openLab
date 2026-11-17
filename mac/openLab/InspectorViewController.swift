@@ -454,7 +454,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         columns.distribution = .fill
         Self.clipsAtTheBottom(columns)
         centre.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        columns.spacing = 10
+        columns.spacing = 8
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
 
         let item = NSTabViewItem(identifier: "basics")
@@ -560,7 +560,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         hotkeyEnableCheck.toolTip = loc("inspector.hotkey.enabled")
         hotkeyEnableCheck.target = self
         hotkeyEnableCheck.action = #selector(hotkeyEnableChanged)
-        hotkeyField.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        hotkeyField.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        // One line: its prompt is cut short, not wrapped, in the narrow column.
+        hotkeyField.usesSingleLineMode = true
+        hotkeyField.lineBreakMode = .byTruncatingTail
         let hotkeyRow = NSStackView(views: [hotkeyEnableCheck, hotkeyField, hotkeyClear])
         hotkeyRow.spacing = 6
         let left = column(
@@ -572,7 +575,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         right.addArrangedSubview(Self.columnFiller())
         let columns = NSStackView(views: [left, right])
         columns.alignment = .top
-        columns.spacing = 28
+        columns.spacing = 16
         Self.clipsAtTheBottom(columns)
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         let item = NSTabViewItem(identifier: "triggers")

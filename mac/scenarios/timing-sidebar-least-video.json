@@ -1,0 +1,28 @@
+{
+  "about": "At the least window size (800x500) with a Video cue's Time & Loops tab shown, trimmed and looped with its keep-last-frame box on: opening the sidebar leaves the window as it is and the tab fits the room left; then its other tabs with the sidebar open.",
+  "show": "Video",
+  "displays": "V1:1920x1080",
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1,
+    "media/card.jpg": 1,
+    "media/A very long name for a projection clip used in the second act.mov": 2
+  },
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"advance": 0.1},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"type": "time-loops-end", "text": "3"},
+    {"click": "time-loops-hold-at-end"},
+    {"advance": 0.1},
+    {"shot": "sidebar-closed"},
+    {"click": "toggle-sidebar"},
+    {"advance": 0.2},
+    {"shot": "sidebar-open"},
+    {"tab": "io"},
+    {"shot": "io"},
+    {"tab": "geometry"},
+    {"shot": "geometry"}
+  ]
+}

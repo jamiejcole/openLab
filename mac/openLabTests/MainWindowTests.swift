@@ -1137,6 +1137,73 @@ final class InspectorWindowFrameTests: XCTestCase {
         XCTAssertEqual(window.frame, small, "the window neither grows nor shrinks")
     }
 
+    /// Opening the sidebar (the footer's toggle) on each tab of each kind at the least window size: the
+    /// window keeps the size the user gave it, the sidebar is shown and the inspector's content stays
+    /// inside the inspector.
+    func testOpeningTheSidebarAtTheLeastSizeKeepsTheWindowOnEveryTab() async throws {
+        let video = try await addVideoCue()
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let least = window.frame
+        XCTAssertEqual(least.size, window.minSize)
+        let sidebar = try XCTUnwrap(wc.footer.toggles[.sidebar])
+        for cue in [audio, video, fade, group, memo] {
+            await select(cue)
+            let ids = InspectorTabs.ids(forKind: wc.store.model?.cue(cue)?.kindType ?? "")
+            for id in ids {
+                // Each tab from the same start: the least window with the sidebar closed.
+                if wc.isVisible(.sidebar) { sidebar.performClick(nil) }
+                window.setFrame(least, display: true)
+                try clickTab(id)
+                settleLayout()
+                let before = window.frame
+                XCTAssertFalse(wc.isVisible(.sidebar), "the sidebar starts closed")
+                sidebar.performClick(nil)
+                settleLayout()
+                XCTAssertTrue(wc.isVisible(.sidebar), "the sidebar opens (tab \(id))")
+                XCTAssertEqual(window.frame, before, "the window keeps its frame with the sidebar open on tab \(id)")
+                // Nothing is cut or overlapping sideways: what a tab lays out sits inside its width and
+                // no two things side by side share a place.
+                let content = try XCTUnwrap(wc.inspector.tabView.selectedTabViewItem?.view)
+                XCTAssertEqual(sideways(content, depth: 3), [], "tab \(id) of cue \(cue) is cut or overlapping")
+                XCTAssertGreaterThan(wc.sidebar.view.frame.width, 150, "the sidebar has its room")
+            }
+        }
+    }
+
+    /// Where `view`'s visible children (down `depth` levels) run past it on the left or right, or lie
+    /// over one another, as text.
+    private func sideways(_ view: NSView, depth: Int) -> [String] {
+        let kids = view.subviews.filter { !$0.isHidden && $0.frame.width > 0 && $0.frame.height > 0 }
+        var found: [String] = []
+        for (n, kid) in kids.enumerated() {
+            if kid.frame.minX < -3 || kid.frame.maxX > view.bounds.width + 3 {
+                found.append("\(type(of: kid)) \(kid.frame) runs outside \(view.bounds.width) pt")
+            }
+            for other in kids.dropFirst(n + 1) {
+                let over = kid.frame.intersection(other.frame)
+                if over.width > 0.5, over.height > 0.5, !(kid is NSScrollView), !(other is NSScrollView) {
+                    found.append("\(type(of: kid)) \(kid.frame) overlaps \(type(of: other)) \(other.frame)")
+                }
+            }
+            if depth > 1, !(kid is NSControl), !(kid is NSScrollView) {
+                found += sideways(kid, depth: depth - 1)
+            }
+        }
+        return found
+    }
+
+    private func addVideoCue() async throws -> ModelID {
+        let id: ModelID = "00000000-0000-0000-0000-0000000000e2"
+        let list = try XCTUnwrap(rig.store.model?.cueLists.first?.id)
+        let cue = try XCTUnwrap(NewCueKind.video.cueJSON(id: id, patch: nil))
+        guard case .success = await rig.store.send(command: .addCue(cue, list: list, parent: nil, index: 4)) else {
+            throw XCTSkip("no video cue")
+        }
+        await assertEventually { self.rig.store.model?.cue(id) != nil }
+        return id
+    }
+
     func testSelectingACueWithoutTheCurveTabKeepsTheWindow() async throws {
         await select(fade)
         try clickTab("curve")

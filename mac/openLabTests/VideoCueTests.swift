@@ -909,6 +909,51 @@ final class VideoCueTests: XCTestCase {
         XCTAssertNil(after, "its picture left the stage")
     }
 
+    /// A looping Video cue with hold at end, devamped out of its loop and standing on its last frame:
+    /// the Duration cell counts up with the time Active Cues shows, as for a held cue that never
+    /// looped, and its bar is not a full pass.
+    func testALoopingVideoCueDevampedAndHeldCountsUpInTheCellAndInActiveCuesAlike() async throws {
+        try await openVideoShow()
+        let panel = try await timeLoopsTab()
+        try typeInto(panel.endField, "2")
+        panel.loopRadio.state = .on
+        _ = panel.loopRadio.target?.perform(panel.loopRadio.action, with: panel.loopRadio)
+        panel.holdCheck.state = .on
+        _ = panel.holdCheck.target?.perform(panel.holdCheck.action, with: panel.holdCheck)
+        await soon("looping and held") {
+            self.movieField("last_slice_play_count") == .int(0) && self.movieField("hold_at_end") == .bool(true)
+        }
+        let devamp: ModelID = "00000000-0000-0000-0000-0000000000d1"
+        var cue = try XCTUnwrap(NewCueKind.devamp.cueJSON(id: devamp, patch: nil))
+        var kind = try XCTUnwrap(cue["kind"])
+        kind.set("target", .string(Self.movie.raw))
+        cue.set("kind", kind)
+        let lists = try XCTUnwrap(store.model?.cueLists.first)
+        let added = await store.send(command: .addCue(cue, list: lists.id, parent: nil, index: lists.cues.count))
+        guard case .success = added else { return XCTFail("add the Devamp cue: \(added)") }
+        await soon("the Devamp cue is in") { self.store.model?.cue(devamp) != nil }
+        click(Self.movie)
+        try await go()
+        try await play(3)
+        XCTAssertLessThan(duration(Self.movie) ?? 99, 2.01, "inside the loop the cell counts one pass")
+        try await perform(.startSelected, on: devamp)
+        try await play(2.5)
+        let held = try XCTUnwrap(store.progress[Self.movie], "a held cue still has times")
+        XCTAssertEqual(status(Self.movie), loc("cue.state.running"), "held on its last frame")
+        let first = duration(Self.movie) ?? -1
+        XCTAssertEqual(first, held.elapsed, accuracy: 0.02, "the cell shows the time gone, not a frozen pass")
+        XCTAssertGreaterThan(first, 3, "it counts on past the pass length")
+        let activeText = CueTime.running(held.elapsed)
+        let sidebar = wc.sidebar
+        sidebar.loadViewIfNeeded()
+        let row = ActiveCueCell()
+        sidebar.fill(row, Self.movie)
+        XCTAssertEqual(row.times.stringValue, activeText, "Active Cues shows the same time, the same way")
+        XCTAssertEqual(cueCell(Self.movie, "duration")?.progress.progress?.fraction ?? 0, 0, "no bar for a held cue")
+        try await play(1)
+        XCTAssertEqual(duration(Self.movie) ?? -1, first + 1, accuracy: 0.1, "and it goes on counting")
+    }
+
     /// Integrated fade in and out → opacity and sound follow the fade lengths: the box sets both
     /// fades, the tab draws them over the timeline, and halfway into the fade in the picture is
     /// half faded and the sound at half its level.

@@ -23,7 +23,8 @@ final class TimeLoopsTests: XCTestCase {
     /// The tests of pure drawing and editing logic: they need no engine (and run in engine-free runs).
     private static let engineFree = [
         "testDrawingStacksChannelsAndSpansMinToMax", "testDrawingFollowsTheZoom",
-        "testALiveResizeAsksForPeaksOnceWhenItEnds", "testSliceChangesApplyToTheCurrentKind",
+        "testALiveResizeAsksForPeaksOnceWhenItEnds",
+        "testTheRulersFirstLabelIsNotUnderTheStartHandle", "testSliceChangesApplyToTheCurrentKind",
         "testTheDrawnFadeShapeIsCoresCurve", "testViewportZoomKeepsTheAnchorAndStaysInTheFile",
         "testViewportPanStopsAtTheFileEnds",
         "testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown",
@@ -128,6 +129,27 @@ final class TimeLoopsTests: XCTestCase {
             peaks: peaks, scale: WaveformScale(start: 0, end: 4, width: 4),
             in: CGRect(x: 0, y: 0, width: 4, height: 100))
         XCTAssertEqual(wide.lanes[0].columns.count, 2, "nothing is drawn past the file's end")
+    }
+
+    /// The ruler's first label starts beside the start handle's triangle, wherever the handle is, and a
+    /// label that would run under the end handle is left out.
+    func testTheRulersFirstLabelIsNotUnderTheStartHandle() {
+        let wave = WaveformView(frame: NSRect(x: 0, y: 0, width: 600, height: 120))
+        wave.duration = 60
+        wave.scale = WaveformScale(start: 0, end: 60, width: 600)
+        let width: (String) -> CGFloat = { _ in 42 }
+        let first = wave.rulerMarks(labelWidth: width).first
+        XCTAssertEqual(first?.text, "00:00.00")
+        XCTAssertGreaterThanOrEqual(first?.labelX ?? 0, wave.scale.x(0) + WaveformView.handleWidth, "beside the handle")
+        wave.trimStart = 10
+        let moved = wave.rulerMarks(labelWidth: width).first { $0.text == "00:10.00" }
+        XCTAssertGreaterThanOrEqual(moved?.labelX ?? 0, wave.scale.x(10) + WaveformView.handleWidth)
+        let before = wave.rulerMarks(labelWidth: width).first { $0.text == "00:00.00" }
+        XCTAssertEqual(before?.labelX ?? 0, 2, "a label clear of the handle stays where it was")
+        wave.trimEnd = 22
+        let marks = wave.rulerMarks(labelWidth: width)
+        XCTAssertNil(marks.first { $0.text == "00:20.00" }?.labelX, "no label under the end handle's triangle")
+        XCTAssertNotNil(marks.first { $0.text == "00:20.00" }, "its tick stays")
     }
 
     // MARK: The tab
