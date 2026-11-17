@@ -377,6 +377,54 @@ final class SidebarTests: XCTestCase {
         XCTAssertLessThanOrEqual(title.maxX, panic.minX, "and ends before the panic button")
     }
 
+    /// Flow: an active cue with a long name and a single time under it (Intro loops until devamped, so it
+    /// has no time left to show) → in the window's own Active Cues the name uses the row's width up to the
+    /// buttons and is not cut to the width of the time text.
+    func testAnActiveCueWithALongNameAndASingleTimeUsesTheRowsWidthInActiveCues() async throws {
+        let long = "Thunder rumble in the distance, rolling in from stage left"
+        let wired = try await Rig.open(
+            "Demo",
+            edit: { folder in
+                try editShow(folder.appendingPathComponent("Demo.openlab")) { ws in
+                    guard var list = ws["cue_lists"]?.arrayValue?.first, var cues = list["cues"]?.arrayValue,
+                        var intro = cues.first
+                    else { return }
+                    intro.set("name", .string(long))
+                    cues[0] = intro
+                    list.set("cues", .array(cues))
+                    var lists = ws["cue_lists"]?.arrayValue ?? []
+                    lists[0] = list
+                    ws.set("cue_lists", .array(lists))
+                }
+            })
+        let wc = WorkspaceWindowController(store: wired.store)
+        defer { wc.window?.close() }
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(NSRect(x: 0, y: 0, width: 1100, height: 700), display: true)
+        wc.setVisible(.sidebar, true)
+        wc.sidebar.tabs.selectedSegment = 1
+        wc.sidebar.tabs.performClick(nil)
+        guard case .success = await wired.store.transport(.start(cue: Self.intro)) else {
+            return XCTFail("start Intro")
+        }
+        try await wired.advance(0.5)
+        await assertEventually { wc.sidebar.activeCues == [Self.intro] && wired.store.progress[Self.intro] != nil }
+        window.layoutIfNeeded()
+        let cell = try XCTUnwrap(
+            wc.sidebar.activeTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? ActiveCueCell)
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertTrue(cell.title.stringValue.hasSuffix(long), "the row names Intro: \(cell.title.stringValue)")
+        XCTAssertFalse(cell.times.stringValue.contains("-"), "a single time: \(cell.times.stringValue)")
+        func inCell(_ v: NSView) -> NSRect { v.convert(v.bounds, to: cell) }
+        let (title, pause, panic) = (inCell(cell.title), inCell(cell.pauseButton), inCell(cell.panicButton))
+        let timesWidth = (cell.times.stringValue as NSString).size(withAttributes: [.font: cell.times.font!]).width
+        XCTAssertGreaterThan(cell.bounds.width, 200, "the sidebar has its room")
+        XCTAssertGreaterThan(title.width, timesWidth + 60, "the name is not cut to the width of the time text")
+        XCTAssertGreaterThan(title.width, cell.bounds.width - pause.width - panic.width - 40, "it takes the room")
+        XCTAssertGreaterThan(panic.maxX, cell.bounds.width - 14, "the panic button is at the row's edge")
+        XCTAssertLessThanOrEqual(title.maxX, panic.minX, "the name ends before the panic button")
+    }
+
     func testPausedAndStoppingCuesKeepTheirProgressAcrossStateChanges() async throws {
         _ = try await make()
         try state(Self.door, "running")
