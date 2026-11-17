@@ -304,7 +304,7 @@ fn damaged_or_unsupported_files_give_a_reason() {
 
 /// A movie cut short in its picture data gives an answer within the limit, never a crash or a
 /// hang: where its index (`moov`) survives the cut its first frames still decode, so it may
-/// play (its frames then run out on stage: `a_decode_failure_mid_play_breaks_only_that_cue_with_a_notice`);
+/// play (its frames then run out on stage: `a_damaged_file_breaks_its_cue_with_no_loop_of_reopens`);
 /// otherwise it is unsupported. Which depends on the encoder's output (Apple silicon and Intel
 /// Macs encode the test movie to different sizes).
 #[test]
@@ -854,11 +854,24 @@ fn notices(s: &mut OfflineShow) -> Vec<String> {
         .collect()
 }
 
-/// A picture that cannot be decoded mid-show (a movie whose first frames are good, so it
-/// probes as playable, cut short further in) stops only its own cue, broken with
-/// `decode_failed` and a notice; another cue on the stage plays on.
+/// The show log's lines saying a movie was opened again after its reader failed.
+fn reopened(c: &openlab_engine::control::Control) -> Vec<String> {
+    c.show_log()
+        .tail(2000)
+        .into_iter()
+        .map(|e| e.message)
+        .filter(|m| m.contains("opened it again"))
+        .collect()
+}
+
+/// Flow: a damaged file (fails on open or on every read) → the cue breaks as before, with no
+/// loop of re-opens. (a) A movie whose first frames are good, so it probes as playable, cut
+/// short further in: its frames run out mid-play, the movie opened again has none there
+/// either, and only its own cue breaks, with `decode_failed` and a notice, while another cue
+/// on the stage plays on. (b) A file that turns to noise after its probe fails at its open on
+/// the stage host, which is never tried again.
 #[test]
-fn a_decode_failure_mid_play_breaks_only_that_cue_with_a_notice() {
+fn a_damaged_file_breaks_its_cue_with_no_loop_of_reopens() {
     let dir = tempfile::tempdir().unwrap();
     // ProRes: every frame is whole in itself, so a cut removes the frames after it.
     let doomed = movie!(dir.path(), "doomed.mov", (250, 25), "prores");
@@ -897,6 +910,88 @@ fn a_decode_failure_mid_play_breaks_only_that_cue_with_a_notice() {
     let at = (s.now() - first) as f64 / f64::from(RATE);
     let now = on_stage(&mut s, "cue 1 still shown");
     assert!(now.abs_diff(frame_at(at)) <= 1, "{now} at {at} s");
+    s.run(samples(0.5));
+    assert_eq!(
+        reopened(s.control()),
+        Vec::<String>::new(),
+        "no re-open took"
+    );
+    let reason = s
+        .control()
+        .show_log()
+        .tail(2000)
+        .into_iter()
+        .map(|e| e.message)
+        .find(|m| m.contains("opening it again failed"));
+    assert!(
+        reason.is_some(),
+        "tried once, said in the failure\n{}",
+        seen(&s)
+    );
+
+    // (b) Damaged after its probe: the stage host's open fails, and nothing is tried again.
+    let noise = dir.path().join("noise.mov");
+    std::fs::copy(&fine, &noise).unwrap();
+    let mut s = video_show(vec![video_cue(3, Some(&noise))]);
+    assert_eq!(problems(&s, 3), vec![], "probed as playable");
+    std::fs::write(&noise, vec![0x5a; 64 * 1024]).unwrap();
+    s.take_outbound();
+    start(&mut s, 3);
+    assert!(wait_broken(&mut s, 3), "cue 3 never broke\n{}", seen(&s));
+    assert_eq!(
+        s.control().engine().broken_reason(id(3)),
+        Some(openlab_core::BrokenReason::DecodeFailed)
+    );
+    assert!(notices(&mut s).iter().any(|c| c == "video_decode_failed"));
+    s.run(samples(0.5));
+    assert_eq!(reopened(s.control()), Vec::<String>::new());
+    assert!(
+        !s.control()
+            .show_log()
+            .tail(2000)
+            .iter()
+            .any(|e| e.message.contains("opening it again")),
+        "an open that fails is not tried again\n{}",
+        seen(&s)
+    );
+}
+
+/// Flow: a Video cue plays; its decoder fails once mid-stream → the picture comes back at the
+/// current position within the frame limit, the cue keeps running and is not broken, and the
+/// show log has one entry saying the movie was re-opened. Drawn every fifth of a second, as
+/// frames are read in order, through the failure at 1 s; a re-open slower than the frame limit
+/// would fail the picture and break the cue.
+#[test]
+fn a_decoder_failing_once_mid_stream_brings_the_picture_back_at_the_clock_with_one_log_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = movie!(dir.path(), "good.mov", (250, 25));
+    let flaky = faulty(dir.path(), &good, "openlab-test-fail-decode-once");
+    let mut s = video_show(vec![video_cue(1, Some(&flaky))]);
+    let at = go(&mut s);
+    s.take_outbound();
+    for step in 1..=15 {
+        let played = 0.2 * f64::from(step);
+        run_to(&mut s, at + samples(played));
+        let now = on_stage(&mut s, &format!("{played} s after GO"));
+        assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played} s");
+        expect_state(&s, 1, CueState::Running, &format!("{played} s after GO"));
+    }
+    assert!(
+        s.wait_for(|c| !reopened(c).is_empty()),
+        "no log line\n{}",
+        seen(&s)
+    );
+    s.run(samples(0.5));
+    let lines = reopened(s.control());
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("openlab-test-fail-decode-once.mov") && lines[0].contains("at 1.00 s"),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(problems(&s, 1), vec![]);
+    assert_eq!(s.control().engine().broken_reason(id(1)), None);
+    assert!(!notices(&mut s).iter().any(|c| c == "video_decode_failed"));
 }
 
 /// The stage host killed mid-play: the engine keeps running, the cue keeps its state, and a
@@ -3236,6 +3331,96 @@ fn sound_is(s: &OfflineShow, at: u64, want: f64, what: &str) {
         (got - want).abs() < 0.0005,
         "{what}: the sound is at {got} s, not {want} s"
     );
+}
+
+/// Flow: the re-opened movie fails again → only that cue breaks with its notice; other cues on
+/// the stage and the sound keep playing. Cue 2's movie fails at 1 s and, opened again, at the
+/// next frame drawn; cue 1, a movie with sound on the same stage, is seen and heard throughout.
+#[test]
+fn a_reopened_movie_failing_again_breaks_only_its_cue_and_the_rest_plays_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let fine = sound_movie!(dir.path(), "fine.mov", (250, 25), "pcm:2:48000");
+    let good = movie!(dir.path(), "good.mov", (250, 25));
+    let doomed = faulty(dir.path(), &good, "openlab-test-fail-decode-again");
+    let mut s = video_show(vec![sounding_cue(1, &fine), video_cue(2, Some(&doomed))]);
+    // Cue 2 first, so cue 1 is drawn over it; both are decoded at each draw.
+    start(&mut s, 2);
+    let at = start(&mut s, 1);
+    s.take_outbound();
+    let mut broke = false;
+    for step in 1..=15 {
+        let played = 0.2 * f64::from(step);
+        run_to(&mut s, at + samples(played));
+        in_step(&mut s, RATE, 25.0, &format!("cue 1, {played} s after GO"));
+        s.run(BLOCK);
+        if state(&s, 2) == CueState::Broken {
+            broke = true;
+            break;
+        }
+    }
+    assert!(broke, "cue 2 never broke\n{}", seen(&s));
+    assert_eq!(
+        s.control().engine().broken_reason(id(2)),
+        Some(openlab_core::BrokenReason::DecodeFailed)
+    );
+    let texts = notice_texts(&mut s);
+    assert!(
+        texts
+            .iter()
+            .any(|(c, t)| c == "video_decode_failed" && t.contains("opened again")),
+        "{texts:?}"
+    );
+    assert_eq!(
+        reopened(s.control()).len(),
+        1,
+        "opened again once, not a third time"
+    );
+    expect_state(&s, 1, CueState::Running, "cue 1 plays on");
+    let later = s.now() + samples(0.5);
+    run_to(&mut s, later);
+    in_step(&mut s, RATE, 25.0, "cue 1 after cue 2 broke");
+    heard_throughout(&s, at, at + samples(0.1), s.rendered());
+}
+
+/// Cue sound started at sample `at` from its file's start is heard at its place on every
+/// hundredth of a second of `from..to`: never interrupted, never moved. (Not within 5 ms of a
+/// whole second, where the test track's ramp wraps and the resampled read is not exact.)
+fn heard_throughout(s: &OfflineShow, at: u64, from: u64, to: u64) {
+    for k in (from..to).step_by(usize::try_from(RATE / 100).unwrap()) {
+        let want = (k - at) as f64 / f64::from(RATE);
+        if (want - want.round()).abs() > 0.005 {
+            sound_is(s, k, want, "heard throughout");
+        }
+    }
+}
+
+/// Flow: a Video cue with sound → its decoder fails once mid-stream; the sound is not
+/// interrupted by the re-open, and picture and sound stay together afterwards.
+#[test]
+fn a_movie_with_sound_is_heard_unbroken_through_a_reopen_and_stays_in_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(
+        dir.path(),
+        "openlab-test-fail-decode-once.mov",
+        (250, 25),
+        "pcm:2:48000"
+    );
+    let mut s = video_show(vec![sounding_cue(1, &movie)]);
+    let at = go(&mut s);
+    for step in 1..=15 {
+        let played = 0.2 * f64::from(step);
+        run_to(&mut s, at + samples(played));
+        in_step(&mut s, RATE, 25.0, &format!("{played} s after GO"));
+    }
+    assert!(
+        s.wait_for(|c| reopened(c).len() == 1),
+        "opened again once\n{}",
+        seen(&s)
+    );
+    expect_state(&s, 1, CueState::Running, "after the re-open");
+    run_to(&mut s, at + samples(4.0));
+    in_step(&mut s, RATE, 25.0, "a second after the re-open");
+    heard_throughout(&s, at, at + samples(0.1), s.rendered());
 }
 
 /// Flow 8 (a), (b), (d): pause holds the frame and stops the sound, resume goes on from the

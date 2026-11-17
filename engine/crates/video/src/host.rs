@@ -1326,7 +1326,7 @@ mod tests {
         send(&mut h, plain_play(7, 1000, 0.0));
         h.platform_mut().events.push(PictureEvent::Reopened(
             7,
-            "the movie clip.mov could not be read at 1.20 s; opened it again there".into(),
+            "reading clip.mov failed (Cannot Decode); opened it again at 1.20 s".into(),
         ));
         let mut out = Vec::new();
         h.poll(&mut out);
@@ -1334,7 +1334,7 @@ mod tests {
             logs(&out),
             vec![(
                 LinkLevel::Warn,
-                "the movie clip.mov could not be read at 1.20 s; opened it again there".into()
+                "reading clip.mov failed (Cannot Decode); opened it again at 1.20 s".into()
             )]
         );
         assert!(

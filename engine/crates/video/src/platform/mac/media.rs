@@ -594,7 +594,7 @@ fn reopen(
 ) -> Result<(u64, Option<Frame>), String> {
     if !movie.may_reopen() {
         return Err(format!(
-            "{why}; it had been opened again after a failure {:.1} s of frames before",
+            "{why}; it failed again {:.1} s of frames after it was opened again",
             movie.good_seconds()
         ));
     }
@@ -606,6 +606,9 @@ fn reopen(
         mail.want.ok_or_else(|| why.clone())?
     };
     let failed_again = |e: String| format!("{why}; opening it again failed: {e}");
+    // The failed readers and the frames read ahead go first: a picture never holds more than
+    // its share of frames, opening again or not.
+    movie.let_go();
     let mut fresh = Movie::open(file).map_err(failed_again)?;
     if fresh.size != movie.size {
         return Err(failed_again("the file changed".into()));
@@ -621,9 +624,7 @@ fn reopen(
     let name = Path::new(file)
         .file_name()
         .map_or_else(|| file.into(), |n| n.to_string_lossy());
-    let note = format!(
-        "the movie {name} could not be read at {position:.2} s ({why}); opened it again there"
-    );
+    let note = format!("reading {name} failed ({why}); opened it again at {position:.2} s");
     *movie = fresh;
     shared.lock().reopened = Some(note);
     Ok((asked, frame))
@@ -1054,13 +1055,21 @@ fn reader_error(reader: &AVAssetReader) -> String {
     )
 }
 
-impl Drop for Movie {
-    fn drop(&mut self) {
+impl Movie {
+    /// Cancels its readers and drops the frames it read ahead.
+    fn let_go(&mut self) {
+        self.next = None;
         let spare = self.spare.take().map(|s| s.reader);
         for (reader, _) in self.reader.take().into_iter().chain(spare) {
             // SAFETY: cancelling a reader this movie owns.
             unsafe { reader.cancelReading() };
         }
+    }
+}
+
+impl Drop for Movie {
+    fn drop(&mut self) {
+        self.let_go();
     }
 }
 
