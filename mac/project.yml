@@ -93,6 +93,8 @@ targets:
     platform: macOS
     sources:
       - openLabUITests
+      # The test media writers, shared with the unit tests.
+      - path: openLabTests/TestMedia.swift
       - path: TestShows
         type: folder
         buildPhase: resources
