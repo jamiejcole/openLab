@@ -1697,14 +1697,14 @@ impl Run {
             self.engine.has_active_cues(),
             self.engine.cue_states().any(|(_, s)| s.is_active())
         );
-        // Only audio cues have levels to fade.
+        // Only audio cues and video cues (whose sound a Fade cue fades) have levels to fade.
         for (id, state) in self.engine.cue_states() {
             if state == CueState::Fading {
-                let audio = matches!(
+                let has_levels = matches!(
                     self.ws.find_cue(id).map(|c| &c.kind),
-                    Some(CueKind::Audio { .. })
+                    Some(CueKind::Audio { .. } | CueKind::Video { .. })
                 );
-                prop_assert!(audio, "cue {} fading", id);
+                prop_assert!(has_levels, "cue {} fading", id);
             }
         }
         // The binary applies Arm/Disarm changes to the model before the next call.
@@ -1947,7 +1947,11 @@ impl Run {
         for (id, problems) in self.engine.broken_cues() {
             prop_assert!(!problems.is_empty());
             prop_assert!(self.ws.find_cue(id).is_some());
-            prop_assert_ne!(self.engine.state(id), CueState::Idle);
+            // Two cues of one id (a show the loader refuses) share one entry: a fact kept
+            // for one can show on the other.
+            if self.unique_ids() {
+                prop_assert_ne!(self.engine.state(id), CueState::Idle);
+            }
         }
         // A group shows a warning exactly while a descendant is shown with problems, and the
         // reports say so (Broken cues: the group has no problems of its own).
@@ -2594,10 +2598,25 @@ impl Run {
             // A GO that double-GO protection (or the chain limit) ignored never reached the cue.
             // Only the operator's GO: a GoTo-and-GO the trigger itself set off may be ignored too
             // (its playhead on a skipped cue with nothing after it) after the cue did act.
+            // The operator's GO was ignored when its GoIgnored comes before the cue changed.
+            let ignored_at = actions
+                .iter()
+                .position(|a| matches!(a, Action::GoIgnored { .. }));
+            let acted_at = actions
+                .iter()
+                .position(|a| matches!(a, Action::StateChanged { cue: c, .. } if *c == cue));
             let go_ignored = matches!(self.input, Input::Go { .. } | Input::GoFrom { .. })
-                && actions
-                    .iter()
-                    .any(|a| matches!(a, Action::GoIgnored { .. }));
+                && (ignored_at.is_some_and(|i| acted_at.is_none_or(|a| i < a))
+                    // Double-GO protection only ever answers the operator's GO.
+                    || actions.iter().any(|a| {
+                        matches!(
+                            a,
+                            Action::GoIgnored {
+                                reason: GoIgnoredReason::DoubleGo,
+                                ..
+                            }
+                        )
+                    }));
             let option = if go_ignored {
                 SecondTrigger::Nothing
             } else {
@@ -2641,10 +2660,50 @@ impl Run {
                         ) => *c == cue,
                         _ => false,
                     });
-                    prop_assert!(restarted || cut_or_broken, "{} was not restarted", cue);
+                    // A cue a Disarm cue disarmed while it played is stopped, and its fresh run
+                    // passes over its action: with no pre-wait nothing shows that it started,
+                    // but the run it played is gone.
+                    let disarmed = self.ws.find_cue(cue).is_some_and(|c| !c.armed)
+                        && self.engine.run_of(cue) != run;
+                    prop_assert!(
+                        restarted || cut_or_broken || disarmed,
+                        "{} was not restarted",
+                        cue
+                    );
                 }
                 SecondTrigger::Devamp | SecondTrigger::PlayNext | SecondTrigger::PlayPrevious => {
-                    prop_assert!(!restarted, "{:?} restarted {}", option, cue);
+                    // Play next past a playlist's last child completes that playlist; a
+                    // looping playlist around it may then start it again as its next child,
+                    // which is that group's doing: the cue ended first.
+                    let ended = actions.iter().position(|a| {
+                        matches!(a, Action::StateChanged { cue: c, state: CueState::Idle, .. }
+                            if *c == cue)
+                    });
+                    let started = actions.iter().position(|a| match a {
+                        Action::StartVoice { cue: c, .. }
+                        | Action::StateChanged {
+                            cue: c,
+                            state: CueState::PreWaiting,
+                            ..
+                        } => *c == cue,
+                        _ => false,
+                    });
+                    let in_a_looping_playlist = groups_around(&self.ws.cue_lists[0].cues, cue)
+                        .last()
+                        .and_then(|g| self.ws.find_cue(*g))
+                        .is_some_and(|g| {
+                            matches!(
+                                g.kind,
+                                CueKind::Group {
+                                    mode: GroupMode::Playlist { loop_: true, .. },
+                                    ..
+                                }
+                            )
+                        });
+                    let by_its_group = option == SecondTrigger::PlayNext
+                        && in_a_looping_playlist
+                        && matches!((ended, started), (Some(e), Some(s)) if e < s);
+                    prop_assert!(!restarted || by_its_group, "{:?} restarted {}", option, cue);
                 }
             }
         }

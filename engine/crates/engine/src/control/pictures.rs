@@ -61,8 +61,11 @@ struct Live {
     /// the stacking, so a picture paused (or stopping) when the stage host starts again comes
     /// back where it was.
     first: Option<ToStage>,
-    /// Its last `play`, `pause` or `stop`, likewise.
+    /// Its last `play` or `pause`, likewise.
     now: Option<ToStage>,
+    /// Its `stop`, likewise, sent after `now`: a stop never takes the place of the play or
+    /// pause before it, so a stopping picture comes back where it was (a pause counted).
+    stop: Option<ToStage>,
     /// It is stopping: gone from the stage host after this sample.
     ends: Option<SampleTime>,
     /// The stage host said its file is open (since the load was last sent).
@@ -105,6 +108,22 @@ struct RunPlan {
     /// The last devamp of it: its stop, and the sample it leaves the loop on. Pending until
     /// the picture is there, carried out from then on.
     devamp: Option<(bool, SampleTime)>,
+}
+
+impl Live {
+    /// What a new stage host is sent for it: its load, first play, last play or pause, and
+    /// stop.
+    fn messages(&self) -> Vec<ToStage> {
+        let now = self
+            .now
+            .as_ref()
+            .filter(|n| Some(*n) != self.first.as_ref());
+        std::iter::once(self.load.clone())
+            .chain(self.first.clone())
+            .chain(now.cloned())
+            .chain(self.stop.clone())
+            .collect()
+    }
 }
 
 impl RunPlan {
@@ -317,12 +336,7 @@ impl Engine {
             .live
             .values()
             .filter(|l| !l.held_back)
-            .flat_map(|l| {
-                let now = l.now.as_ref().filter(|n| Some(*n) != l.first.as_ref());
-                std::iter::once(l.load.clone())
-                    .chain(l.first.clone())
-                    .chain(now.cloned())
-            })
+            .flat_map(Live::messages)
             .collect();
         for m in messages {
             self.picture(m);
@@ -441,11 +455,7 @@ impl Engine {
         l.held_back = false;
         l.trial = Some(now);
         l.opened = false;
-        let now_msg = l.now.as_ref().filter(|n| Some(*n) != l.first.as_ref());
-        let messages: Vec<ToStage> = std::iter::once(l.load.clone())
-            .chain(l.first.clone())
-            .chain(now_msg.cloned())
-            .collect();
+        let messages = l.messages();
         self.picture_clock(true);
         for m in messages {
             self.picture(m);
@@ -988,6 +998,7 @@ impl DocCx<'_> {
                 load: load.clone(),
                 first: None,
                 now: None,
+                stop: None,
                 ends: None,
                 opened: false,
                 suspected: 0,
@@ -1179,7 +1190,8 @@ impl DocCx<'_> {
         let Some(l) = self.eng.pictures.live.get_mut(&id) else {
             return fx.picture_says(ignored);
         };
-        let playing = matches!(l.motion, Some((Some(_), _)));
+        // A stopping picture is going whatever its plan.
+        let playing = matches!(l.motion, Some((Some(_), _))) && l.ends.is_none();
         let Some(plan) = l.plan.as_mut().filter(|_| playing) else {
             return fx.picture_says(ignored);
         };
@@ -1244,12 +1256,12 @@ impl DocCx<'_> {
         {
             l.first = Some(message.clone());
         }
+        // With `stop` the plan sent ends where the loop is left, and so does the action: the
+        // cue ends there and its end takes the picture (`end_pictures`). No stop is dated
+        // ahead for it, so a pause before then keeps the picture and the resume moves the end.
         let held_back = l.held_back;
         if !held_back {
             self.eng.picture(message);
-        }
-        if stop {
-            self.stop_picture(id, leaves_at, 0);
         }
         fx.picture_says(Input::DevampScheduled {
             cue,
@@ -1263,11 +1275,11 @@ impl DocCx<'_> {
 
     /// The run's sound was starved by the disk and plays on from sample `at`, `frames` later
     /// than planned: its picture is put back by as much from there (the sound is the clock),
-    /// and the run's end moves with them. A devamp's stop already on the stage host moves too,
-    /// so the pass under way is played whole. A paused picture (the pause came before this
-    /// report was read) is held that much earlier and its plan counts the lateness, so the
-    /// resume plays both on together and tells the later end. A picture stopping for any other
-    /// reason is left as it is: it ends with its sound on the stop's sample whatever the plan.
+    /// and the run's end moves with them. A devamp's leave sample moves too, so the pass under
+    /// way is played whole (with a stop, the cue is told the later end). A paused picture (the
+    /// pause came before this report was read) is held that much earlier and its plan counts
+    /// the lateness, so the resume plays both on together and tells the later end. A stopping
+    /// picture is left as it is: it ends with its sound on the stop's sample whatever the plan.
     pub(super) fn picture_late(
         &mut self,
         run: RunId,
@@ -1313,11 +1325,7 @@ impl DocCx<'_> {
             }
             return;
         }
-        // Stopping where a devamp leaves its loop, and not there yet.
-        let devamp_stop = plan
-            .devamp
-            .is_some_and(|(stop, leaves)| stop && l.ends == Some(leaves) && at < leaves);
-        if l.ends.is_some() && !devamp_stop {
+        if l.ends.is_some() {
             return;
         }
         let fades = plan.fades;
@@ -1347,23 +1355,10 @@ impl DocCx<'_> {
         let ends = l.length.is_some();
         l.now = Some(message.clone());
         l.motion = Some((Some(at), own));
-        let stop = plan.devamp.filter(|_| devamp_stop).map(|(_, leaves)| {
-            let stop = ToStage::Stop {
-                picture: id,
-                at: leaves,
-                fade: 0,
-            };
-            l.ends = Some(leaves);
-            l.now = Some(stop.clone());
-            stop
-        });
         let held_back = l.held_back;
         if !held_back {
             self.eng.picture_clock(true);
             self.eng.picture(message);
-            if let Some(stop) = stop {
-                self.eng.picture(stop);
-            }
         }
         if let (Some(frames), true) = (total, ends) {
             feedback.push(Input::ActionLength { cue, run, frames });
@@ -1396,14 +1391,30 @@ impl DocCx<'_> {
         }
     }
 
+    /// Stops picture `id` from sample `at`, fading out over `frames`. A playing picture whose
+    /// devamp stops it at the end of its pass before that fade is over leaves there, as its
+    /// sound does: its plan ends there.
     fn stop_picture(&mut self, id: u64, at: SampleTime, frames: SampleTime) {
-        let end = at.saturating_add(frames);
+        let mut at = at;
+        let mut frames = frames;
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
+            let playing = matches!(l.motion, Some((Some(_), _)));
+            let leaves = (l.plan.as_ref())
+                .and_then(|p| p.devamp)
+                .and_then(|(stop, leaves)| stop.then_some(leaves))
+                .filter(|_| playing);
+            if let Some(leaves) = leaves
+                && at < leaves
+                && leaves < at.saturating_add(frames)
+            {
+                (at, frames) = (leaves, 0);
+            }
+            let end = at.saturating_add(frames);
             if l.ends.is_some_and(|e| e <= end) {
                 return;
             }
             l.ends = Some(end);
-            l.now = Some(ToStage::Stop {
+            l.stop = Some(ToStage::Stop {
                 picture: id,
                 at,
                 fade: frames,
