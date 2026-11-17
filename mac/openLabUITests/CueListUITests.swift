@@ -58,6 +58,118 @@ final class CueListUITests: XCTestCase {
     }
 }
 
+/// The cue list's group, header and columns while a cue plays and the window changes size, with
+/// real keys and presses (QLab 5 manual, the cue list).
+@MainActor
+final class CueListLayoutUITests: XCTestCase {
+    private static let titles = ["Number", "Name", "Target", "Pre-Wait", "Duration", "Post-Wait"]
+
+    /// The demo show, Intro a 30 s tone playing.
+    private func launchPlaying() -> XCUIApplication {
+        let app = launchApp(opening: ["Demo"]) { copies in
+            try writeWAV(copies.appendingPathComponent("Demo/media/a.wav"), seconds: 30)
+        }
+        XCTAssertTrue(waitFor("isHittable == true", app.staticTexts["Intro"]), "the demo is ready")
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        XCTAssertTrue(cueState("Running", of: "Intro", in: app).waitForExistence(timeout: 10), "Intro plays")
+        return app
+    }
+
+    private func header(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        app.outlines["cue-list"].buttons[title]
+    }
+
+    /// The window dragged by its corner to its least size.
+    private func shrinkToLeast(_ app: XCUIApplication) {
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
+            .press(forDuration: 0.2, thenDragTo: window.coordinate(withNormalizedOffset: .zero))
+    }
+
+    /// Each cell `row` shows lies under its column's title.
+    private func assertUnderTitles(_ row: String, cells: [String: String], in app: XCUIApplication, line: UInt = #line)
+    {
+        let r = cueRow(row, in: app)
+        for (title, value) in cells {
+            let cell = r.staticTexts[value].firstMatch
+            let column = header(title, in: app)
+            XCTAssertTrue(cell.exists && column.exists, "\(row): \(title) \(value)", line: line)
+            XCTAssertTrue(
+                column.frame.minX - 1 <= cell.frame.minX && cell.frame.maxX <= column.frame.maxX + 1,
+                "\(row)'s \(value) \(cell.frame) under \(title) \(column.frame)", line: line)
+        }
+    }
+
+    func testGroupClosedAndOpenedByTriangleAndArrowsWhileACuePlaysAndTheWindowIsResized() {
+        let app = launchPlaying()
+        let door = app.staticTexts["Door slam"]
+        selectCue("Act One", in: app)
+        app.typeKey(XCUIKeyboardKey.leftArrow.rawValue, modifierFlags: [])
+        XCTAssertTrue(waitFor("exists == false", door), "Left closes the group")
+        shrinkToLeast(app)
+        app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
+        XCTAssertTrue(door.waitForExistence(timeout: 5), "Right opens it at the least size")
+        assertUnderTitles("Door slam", cells: ["Number": "2.1", "Name": "Door slam"], in: app)
+        let triangle = cueRow("Act One", in: app).disclosureTriangles.firstMatch
+        triangle.click()
+        XCTAssertTrue(waitFor("exists == false", door), "the triangle closes it")
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1))
+                    .withOffset(CGVector(dx: 300, dy: 100)))
+        triangle.click()
+        XCTAssertTrue(door.waitForExistence(timeout: 5), "and opens it in the larger window")
+        assertUnderTitles("Door slam", cells: ["Number": "2.1", "Name": "Door slam"], in: app)
+        assertUnderTitles("Intro", cells: ["Number": "1", "Name": "Intro"], in: app)
+        XCTAssertTrue(cueState("Running", of: "Intro", in: app).exists, "Intro played on throughout")
+        XCTAssertTrue(cueRow("Act One", in: app).isSelected, "the group stays selected")
+    }
+
+    /// At the least window size every column title is shown, in order, side by side inside the
+    /// list, and above the inspector.
+    func testTheHeaderAtTheLeastWindowSize() {
+        let app = launchPlaying()
+        shrinkToLeast(app)
+        let list = app.outlines["cue-list"]
+        let inspector = app.descendants(matching: .any)["inspector-tabs"]
+        var right = -CGFloat.infinity
+        for title in Self.titles {
+            let h = header(title, in: app)
+            XCTAssertTrue(
+                h.isHittable, "\(title) is shown; headers: \(list.buttons.allElementsBoundByIndex.map(\.label))")
+            XCTAssertGreaterThanOrEqual(h.frame.minX, right - 0.5, "\(title) is right of the one before")
+            XCTAssertLessThanOrEqual(h.frame.maxX, app.windows.firstMatch.frame.maxX + 0.5, "\(title) is in the window")
+            XCTAssertLessThan(h.frame.maxY, inspector.frame.minY, "\(title) is above the inspector")
+            right = h.frame.maxX
+        }
+    }
+
+    /// A column made wider than the window has room for: the list scrolls sideways and every title
+    /// stays over its column.
+    func testASidewaysScrollKeepsTitlesOverTheirColumns() {
+        let app = launchPlaying()
+        shrinkToLeast(app)
+        let list = app.outlines["cue-list"]
+        let pre = header("Pre-Wait", in: app)
+        let edge = pre.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(CGVector(dx: -1, dy: 0))
+        edge.press(forDuration: 0.2, thenDragTo: edge.withOffset(CGVector(dx: 600, dy: 0)))
+        let before = header("Duration", in: app).frame.minX
+        list.scroll(byDeltaX: -400, deltaY: 0)
+        XCTAssertLessThan(header("Duration", in: app).frame.minX, before - 50, "the list scrolled sideways")
+        assertUnderTitles("Intro", cells: ["Number": "1", "Name": "Intro"], in: app)
+        let duration = cueRow("Intro", in: app).staticTexts.matching(NSPredicate(format: "value BEGINSWITH '00:'"))
+        XCTAssertGreaterThan(duration.count, 0, "Intro's times are shown")
+        let column = header("Duration", in: app).frame
+        XCTAssertTrue(
+            duration.allElementsBoundByIndex.contains {
+                column.minX - 1 <= $0.frame.minX && $0.frame.maxX <= column.maxX + 1
+            },
+            "a time under Duration \(column): \(duration.allElementsBoundByIndex.map(\.frame))")
+    }
+}
+
 /// #489's click flows with real presses, on a show of three looping Audio cues: the table's mouse
 /// tracking, its action and a press that ends an edit (QLab 5: pp. 91, 99-102).
 @MainActor
