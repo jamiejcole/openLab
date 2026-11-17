@@ -97,6 +97,7 @@ test-mac-unit: project
 
 # Every unit test, real-engine ones included, plus the UI smoke set (scripts/ui-smoke.txt): what a PR
 # that changes the engine, the protocol, the app's engine client, its tests or project runs (scripts/paths.sh).
+# CI runs the same tests as three parallel shards (`test-mac-shard` below); this target stays the local run.
 # Two test processes: later classes ran about twice as fast in a fresh one when a hang forced a restart
 # (one process gathers windows and connections over 1,100 tests). Both always run, so a failure in the
 # first still reports the second's, except after a run cut short by a proven stall (exit 75 of
