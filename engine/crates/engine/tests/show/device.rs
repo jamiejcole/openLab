@@ -30,6 +30,9 @@ use super::{BLOCK, RATE, mixer_config};
 
 /// How long the driver waits for the device thread or a disk worker before failing the test.
 const WAIT: Duration = Duration::from_secs(30);
+/// How long a picture's open may take: Apple's media framework has stalled a good file's open
+/// past 10 s on CI's virtual machines.
+const PICTURE_OPEN_WAIT: Duration = Duration::from_secs(180);
 /// Timed-out 20 ms waits before a wait for another thread is called a hang.
 const WAIT_STEPS: u32 = 1_500;
 
@@ -598,6 +601,22 @@ impl DeviceShow {
         }
     }
 
+    /// Waits until no Video cue's start waits for its picture's open, as the offline driver
+    /// does: live the clock moves on in real time meanwhile, here it would run far ahead.
+    fn settle_pictures(&mut self) {
+        let deadline = std::time::Instant::now() + PICTURE_OPEN_WAIT;
+        while self.control.pictures_waiting() > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a picture's file never opened"
+            );
+            if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
+                let _ = self.control.handle(msg);
+            }
+            self.control.tick();
+        }
+    }
+
     fn settle_media(&mut self) {
         let mut timeouts = 0;
         while self.control.probes_pending() > 0 {
@@ -667,10 +686,11 @@ impl DeviceShow {
         self.control.tick();
     }
 
-    /// One block: answers in, streams settled, one device callback (if the device is up),
-    /// then a control tick.
+    /// One block: answers in, streams and picture opens settled, one device callback (if the
+    /// device is up), then a control tick.
     pub fn step(&mut self) {
         self.pump_inbox();
+        self.settle_pictures();
         self.callback(self.fake.block() as usize);
         self.control.tick();
     }

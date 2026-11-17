@@ -289,6 +289,27 @@ impl Control {
         self.eng.pictures_opened()
     }
 
+    /// Pictures opened ahead for cues standing by, and of those the ones the stage host has
+    /// open, every doc's.
+    pub fn pictures_primed(&self) -> (usize, usize) {
+        self.eng.primes_up()
+    }
+
+    /// Pictures being tried alone after stage host crashes, every doc's.
+    pub fn picture_trials(&self) -> usize {
+        self.eng.picture_trials()
+    }
+
+    /// Pictures' opens asked ahead so far, for the cues standing by.
+    pub fn picture_opens_ahead(&self) -> u64 {
+        self.eng.primes_asked()
+    }
+
+    /// Video cue starts waiting for their pictures' files to open (not paused), every doc's.
+    pub fn pictures_waiting(&self) -> usize {
+        self.eng.pictures_waiting()
+    }
+
     /// Memory taken from the first doc's preload budget.
     pub fn preload_reserved(&self) -> u64 {
         self.first().map_or(0, |d| d.media.preload_reserved())
