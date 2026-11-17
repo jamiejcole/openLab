@@ -5182,7 +5182,8 @@ final class CueListDrawingTests: XCTestCase {
             return XCTFail("network patch")
         }
         let net = try await add(.network, h.rig)
-        guard let engine = h.rig.realEngine, case .success = await engine.request(.setOutputOverrides(networkDisabled: true))
+        guard let engine = h.rig.realEngine,
+            case .success = await engine.request(.setOutputOverrides(networkDisabled: true))
         else { return XCTFail("override") }
         await assertEventually {
             try? await h.rig.advance(0.3)
@@ -6206,7 +6207,9 @@ final class CueListColumnLayoutTests: XCTestCase {
 
     /// Every control shown in the selected inspector tab, whole inside the tab's content box, and the
     /// selected row whole in the list below its header. Real window, real engine.
-    private func assertBasicsInsideTheInspector(_ what: String, file: StaticString = #filePath, line: UInt = #line) throws {
+    private func assertBasicsInsideTheInspector(_ what: String, file: StaticString = #filePath, line: UInt = #line)
+        throws
+    {
         let wc = try XCTUnwrap(self.wc)
         let window = try XCTUnwrap(wc.window)
         window.contentView?.layoutSubtreeIfNeeded()
@@ -6235,7 +6238,8 @@ final class CueListColumnLayoutTests: XCTestCase {
         let head = try XCTUnwrap(outline.headerView).convert(outline.headerView?.bounds ?? .zero, to: nil)
         let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
         XCTAssertGreaterThanOrEqual(outline.selectedRow, 0, what, file: file, line: line)
-        XCTAssertLessThanOrEqual(row.maxY, head.minY + 0.5, "\(what): the selected row is below the header", file: file, line: line)
+        XCTAssertLessThanOrEqual(
+            row.maxY, head.minY + 0.5, "\(what): the selected row is below the header", file: file, line: line)
         XCTAssertGreaterThanOrEqual(row.minY, list.minY - 0.5, "\(what): and inside the list", file: file, line: line)
     }
 
@@ -6243,7 +6247,9 @@ final class CueListColumnLayoutTests: XCTestCase {
     /// Mode entered and left: all of Basics is inside the inspector's box and the selected row is visible.
     /// Unit test (openLabTests).
     func testTheInspectorHiddenThenShownAgainKeepsAllOfBasicsInsideItsBoxAndTheSelectedRowInView() async throws {
-        for size in [NSSize(width: 900, height: 640), NSSize(width: 900, height: 520), NSSize(width: 1200, height: 800)] {
+        for size in [
+            NSSize(width: 900, height: 640), NSSize(width: 900, height: 520), NSSize(width: 1200, height: 800),
+        ] {
             let wc = try await open(size)
             wc.cueList.selectAsUser([H.radio])
             outline.scrollRowToVisible(outline.selectedRow)
