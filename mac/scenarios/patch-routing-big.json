@@ -1,0 +1,86 @@
+{
+  "about": "24 cue outputs with long names routed to device outputs up to 40 on the 2-output device, one cue output and one device output muted (dark): the routing grid scrolled down and sideways (the column titles stay in their corner, the device-output numbers pass under it), at a large and the least window size, and the Device Outputs tab.",
+  "show": "patch-routing-big/patch-routing-big.openlab",
+  "window": {
+    "width": 1400,
+    "height": 900
+  },
+  "steps": [
+    {
+      "shot": "workspace-open"
+    },
+    {
+      "click": "toggle-sidebar"
+    },
+    {
+      "shot": "sidebar"
+    },
+    {
+      "focus": "settings"
+    },
+    {
+      "tab": "audio"
+    },
+    {
+      "shot": "table-big"
+    },
+    {
+      "click": "settings-patch-edit-1"
+    },
+    {
+      "focus": "patch-editor"
+    },
+    {
+      "tab": "routing"
+    },
+    {
+      "shot": "routing-big"
+    },
+    {
+      "scroll": "patch-editor-matrix",
+      "dy": -3000
+    },
+    {
+      "shot": "routing-scrolled-bottom"
+    },
+    {
+      "scroll": "patch-editor-matrix",
+      "dx": -5000
+    },
+    {
+      "shot": "routing-scrolled-right"
+    },
+    {
+      "resize": [
+        1800,
+        1100
+      ]
+    },
+    {
+      "shot": "routing-large"
+    },
+    {
+      "resize": [
+        520,
+        460
+      ]
+    },
+    {
+      "shot": "routing-least"
+    },
+    {
+      "scroll": "patch-editor-matrix",
+      "dx": 5000,
+      "dy": 5000
+    },
+    {
+      "shot": "routing-least-top-left"
+    },
+    {
+      "tab": "deviceOutputs"
+    },
+    {
+      "shot": "device-least"
+    }
+  ]
+}

@@ -39,11 +39,15 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     /// The matrix's header row and left columns, kept in view while it scrolls.
     let matrixHeader = PatchRoutingPane(.header)
     let matrixRows = PatchRoutingPane(.rows)
+    /// Over both, at the scroll view's top left: the header row scrolls sideways under it.
+    let matrixCorner = PatchRoutingPane(.corner)
     let meter = MeterView()
     /// What the routing tab cannot show or do here: openLab's limits on this device and this patch.
     let routingNote = NSTextField(wrappingLabelWithString: "")
     /// One level box per cue output, laid over the matrix's level column.
     private(set) var outputFields: [NSTextField] = []
+    /// One mute button per cue output, at the right end of its row's label.
+    private(set) var outputMutes: [NSButton] = []
     /// The box a crosspoint's level is typed in, laid over the box double-clicked.
     let crosspointField = NSTextField()
     /// The crosspoint being typed in (cue output, device output).
@@ -122,8 +126,23 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             self.model.rereadSoon()
         }
         subs.append(store.$warnings.removeDuplicates().dropFirst().sink(receiveValue: reread))
+        // The device list can lag a status by a read, and a device back is reopened in steps
+        // (listed, opening, up with its outputs): every step reads again, and a status alone
+        // redraws (the outputs openLab can use follow the clock device's), as the table does.
         subs.append(
-            store.$status.map { $0?.outputs.map(\.state) }.removeDuplicates().dropFirst().sink(receiveValue: reread))
+            store.$status.map { $0?.outputs.map { "\($0.name)\u{0}\($0.state)\u{0}\($0.channels)" } }.removeDuplicates()
+                .dropFirst().sink(receiveValue: reread))
+        subs.append(store.$status.sink(receiveValue: later))
+        // A read made as the device came back can still miss it (the engine lists devices on its
+        // own schedule): while a device plays that the list lacks, each status reads again.
+        subs.append(
+            store.$status.sink { [weak self] status in
+                guard let self, self.isOpen, let outputs = status?.outputs else { return }
+                let listed = Set(self.model.devices.map(\.name))
+                if outputs.contains(where: { $0.state == .up && !listed.contains($0.name) }) {
+                    self.model.rereadSoon()
+                }
+            })
         window.delegate = self
         render()
     }
@@ -335,7 +354,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         matrixHeader.matrix = matrix
         matrixRows.matrix = matrix
         matrix.onChange = { [weak self] in self?.placePanes() }
-        let scroll = NSScrollView()
+        let scroll = TilingScrollView()
+        scroll.onTile = { [weak self] in self?.placeCorner() }
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
@@ -346,6 +366,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         // when scrolled up and down (laid out in the matrix's coordinates).
         scroll.addFloatingSubview(matrixRows, for: .horizontal)
         scroll.addFloatingSubview(matrixHeader, for: .vertical)
+        // Not a floating subview: a sibling above the clip view, fixed to its top left.
+        matrixCorner.matrix = matrix
+        scroll.addSubview(matrixCorner)
         // The floating panes are as tall or wide as the matrix: the scroll view shows only its part.
         scroll.clipsToBounds = true
         // No inset at the top: the header row sits on the visible top edge, nothing peeks above it.
@@ -430,7 +453,21 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         mainFader.doubleValue = min(max(state.main, state.limits.min), state.limits.max)
         mainFader.isEnabled = editable
         set(mainField, LevelText.format(state.main), enabled: editable)
-        for (i, db) in state.levels.enumerated() { set(outputFields[i], LevelText.format(db), enabled: editable) }
+        for (i, db) in state.levels.enumerated() {
+            set(outputFields[i], LevelText.format(db), enabled: editable)
+            // A muted cue output keeps its level: the button says it is muted, the level reads red.
+            let muted = state.routing.outputs.indices.contains(i) && state.routing.outputs[i].mute
+            outputMutes[i].state = muted ? .on : .off
+            // On, the letter turns red, as a muted device output's column number does.
+            outputMutes[i].attributedTitle = NSAttributedString(
+                string: loc("patchEditor.muteShort"),
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 9, weight: muted ? .heavy : .semibold),
+                    .foregroundColor: muted ? NSColor.systemRed : NSColor.controlTextColor,
+                ])
+            outputMutes[i].isEnabled = editable
+            outputFields[i].textColor = muted ? .systemRed : .controlTextColor
+        }
 
         // The matrix: one row per cue output, one column per device output the device has or the
         // routing names.
@@ -458,8 +495,13 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         if channels > state.usable, row?.mapping != nil {
             notes.append(String(format: loc("patchEditor.usable"), state.usable, channels))
         }
+        // A device not connected now has no outputs to count: say that, not that it has none.
+        let connected = device.map { name in state.devices.contains { $0.name == name } } ?? false
         let beyond = row?.mapping != nil && state.routing.namedDeviceOutputs > state.usable
-        if beyond { notes.append(String(format: loc("patchEditor.beyond"), state.usable, columns)) }
+        let beyondNote =
+            connected
+            ? String(format: loc("patchEditor.beyond"), state.usable, columns) : loc("patchEditor.notConnectedNote")
+        if beyond { notes.append(beyondNote) }
         if state.levels.count > MeterBank.maxChannels {
             notes.append(loc("patchEditor.metersShown"))
             notes.append(loc("patchEditor.levelsShown"))
@@ -471,7 +513,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         } else if channels > state.usable {
             deviceNotes.append(String(format: loc("patchEditor.usable"), state.usable, channels))
         }
-        if beyond { deviceNotes.append(String(format: loc("patchEditor.beyond"), state.usable, columns)) }
+        if beyond { deviceNotes.append(beyondNote) }
         deviceOutputsNote.stringValue = deviceNotes.joined(separator: " ")
         deviceOutputsNote.isHidden = deviceOutputsNote.stringValue.isEmpty
         renderDeviceOutputs(columns: columns, state: state, editable: editable)
@@ -490,11 +532,34 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             height: matrix.frame.height - PatchRoutingView.headerH)
         matrixHeader.needsDisplay = true
         matrixRows.needsDisplay = true
+        placeCorner()
+    }
+
+    /// The corner sits on the clip view's top left, over the header row and the left columns.
+    func placeCorner() {
+        guard let scroll = matrix.enclosingScrollView else { return }
+        let clip = scroll.contentView.frame
+        guard clip.width > 0, clip.height > 0 else { return }
+        let top = scroll.isFlipped ? clip.minY : clip.maxY - PatchRoutingView.headerH
+        matrixCorner.autoresizingMask = [.maxXMargin, scroll.isFlipped ? .maxYMargin : .minYMargin]
+        let frame = NSRect(
+            x: clip.minX, y: top, width: min(PatchRoutingView.crossX, clip.width),
+            height: min(PatchRoutingView.headerH, clip.height))
+        if matrixCorner.frame != frame {
+            matrixCorner.frame = frame
+            matrixCorner.needsDisplay = true
+        }
+        // Over every other part of the scroll view, the container of its floating panes (which
+        // AppKit adds above the clip view) included.
+        if scroll.subviews.last !== matrixCorner {
+            scroll.addSubview(matrixCorner, positioned: .above, relativeTo: nil)
+        }
     }
 
     /// The matrix is at least as wide as its scroll view (followed on each layout of the window).
     func fitMatrixWidth() {
         if let clip = matrix.enclosingScrollView?.contentView { matrix.minWidth = clip.bounds.width }
+        placeCorner()
     }
 
     /// A field shows `text` unless it is being typed in.
@@ -511,6 +576,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         outputNameFields = []
         for f in outputFields { f.removeFromSuperview() }
         outputFields = []
+        for b in outputMutes { b.removeFromSuperview() }
+        outputMutes = []
         for i in 0..<count {
             let label = NSTextField(labelWithString: String(format: loc("patchEditor.cueOutput"), i + 1))
             label.alignment = .right
@@ -539,6 +606,20 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
                 label: "\(String(format: loc("patchEditor.cueOutput"), i + 1)), \(loc("patchEditor.level"))")
             matrixRows.addSubview(level)
             outputFields.append(level)
+
+            let mute = NSButton(
+                title: loc("patchEditor.muteShort"), target: self, action: #selector(outputMuteClicked(_:)))
+            mute.setButtonType(.pushOnPushOff)
+            mute.bezelStyle = .recessed
+            mute.controlSize = .mini
+            mute.font = .systemFont(ofSize: 9, weight: .semibold)
+            mute.tag = i
+            mute.frame = matrix.muteRect(row: i).offsetBy(dx: 0, dy: -PatchRoutingView.headerH)
+            mute.setAX(
+                "\(AX.patchEditorOutputMute)-\(i + 1)",
+                label: "\(String(format: loc("patchEditor.cueOutput"), i + 1)), \(loc("patchEditor.mute"))")
+            matrixRows.addSubview(mute)
+            outputMutes.append(mute)
         }
         mainField.tag = 0
     }
@@ -710,6 +791,16 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             draggedDeviceOutput == d ? "patch-device-fader:\(patchID.raw):\(Self.launchToken):\(gesture):\(d)" : nil
         send(.setPatchDeviceOutputLevel(patchID, deviceOutput: d, db: db), coalesce: key)
         if deviceFields.indices.contains(d) { deviceFields[d].stringValue = LevelText.format(db) }
+    }
+
+    @objc private func outputMuteClicked(_ sender: NSButton) {
+        send(
+            .setPatchProperty(
+                patchID,
+                [
+                    "type": .string("output_mute"), "output": .int(Int64(sender.tag)),
+                    "value": .bool(sender.state == .on),
+                ]))
     }
 
     @objc private func muteClicked(_ sender: NSButton) {
@@ -896,8 +987,6 @@ extension WorkspaceSettingsModel {
     func problemText(_ problem: PatchProblem) -> String {
         switch problem {
         case .unmapped: return loc("settings.audio.problem.unmapped")
-        case .unmappedDeviceTooSmall(let device, let outputs, let needed):
-            return String(format: loc("settings.audio.problem.tooSmall"), device, outputs, needed)
         case .deviceMissing(let name): return String(format: loc("settings.audio.problem.deviceMissing"), name)
         case .deviceUnusable(let name, let reason):
             return String(format: loc("settings.audio.problem.deviceUnusable"), name, reason)

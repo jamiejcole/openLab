@@ -191,6 +191,8 @@ enum WarningRows {
         var order: [String] = []
         var latest: [String: (warning: WireWarning, count: Int)] = [:]
         var devices: [String: (name: String, codes: [String])] = [:]
+        // A patch routing past its device: one entry per device and patch, naming both.
+        var beyond: [String: (device: String, patch: String)] = [:]
         for (prefix, w) in notices {
             // Told on the broken cue's own entry, or past: the cue plays again.
             if w.type == "cue_broken" { continue }
@@ -201,6 +203,18 @@ enum WarningRows {
                 if latest[key] == nil {
                     order.append(key)
                     latest[key] = (w, 1)
+                }
+                continue
+            }
+            if w.type == "notice", let device = w.json["device"]?.stringValue,
+                w.json["code"]?.stringValue == "patch_routing_beyond_device",
+                let patch = w.json["patch"]?.stringValue
+            {
+                let key = "b:\(device):\(patch)"
+                if beyond[key] == nil {
+                    order.append(key)
+                    let name = model?.patches.first { $0.id == ModelID(patch) }?.raw["name"]?.stringValue ?? ""
+                    beyond[key] = (device, name.isEmpty ? loc("settings.audio.untitledPatch") : name)
                 }
                 continue
             }
@@ -226,6 +240,14 @@ enum WarningRows {
         for key in order {
             if let device = devices[key] {
                 rows.append(deviceRow(key: key, name: device.name, codes: device.codes))
+            } else if let b = beyond[key] {
+                rows.append(
+                    WarningRow(
+                        id: key, cue: nil,
+                        title: String(
+                            format: loc("warnings.device"),
+                            WorkspaceSettingsModel.middleCut(b.device, limit: deviceNameLength)),
+                        detail: String(format: loc("warnings.patchRoutingBeyond"), b.patch), canRelink: false))
             } else if key == "s:system-output" {
                 rows.append(
                     WarningRow(

@@ -1,0 +1,13 @@
+{
+  "about": "A show whose patch has 8 cue outputs (one crosspoint to device output 5) opened on the 2-output virtual device with nothing stored for it: the patch is on the device, cue outputs 1-2 on its outputs, the rest with none, and device output 5 kept past the device (media not included: the cues show missing).",
+  "show": "patch-wider-than-device/patch-wider-than-device.openlab",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "audio"},
+    {"shot": "table"},
+    {"click": "settings-patch-edit-1"},
+    {"focus": "patch-editor"},
+    {"tab": "routing"},
+    {"shot": "editor-8"}
+  ]
+}

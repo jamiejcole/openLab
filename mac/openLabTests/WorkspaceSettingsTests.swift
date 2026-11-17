@@ -237,9 +237,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
     }
 
-    /// A device whose usable outputs are fewer than the patch's cue outputs is refused before
-    /// anything is sent, saying how many it has.
-    func testADeviceWithTooFewOutputsIsRefusedBeforeAnythingIsSent() async throws {
+    /// A device with fewer outputs than the patch's cue outputs is picked anyway: cue outputs 1 and
+    /// 2 go to its two outputs and the third has none of its own (as QLab routes it); no problem is
+    /// shown and the patch's cues play.
+    func testADeviceWithFewerOutputsThanThePatchTakesItsFirstOutputs() async throws {
         let (rig, sc) = try await open { show in
             try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
                 guard var patches = ws["patches"]?.arrayValue, var outputs = patches.first?["outputs"]?.arrayValue,
@@ -253,10 +254,40 @@ final class WorkspaceSettingsTests: XCTestCase {
         await sc.model.setMapping(try XCTUnwrap(sc.model.patches.first), device: nil)
         let row = try XCTUnwrap(sc.model.patches.first)
         XCTAssertEqual(row.outputCount, 3)
-        let before = requests(rig).count
         await sc.model.setMapping(row, device: device)
-        XCTAssertEqual(requests(rig).count, before, "nothing is sent for a mapping that cannot fit")
-        XCTAssertEqual(sc.model.message, String(format: loc("settings.audio.tooFewChannels"), device, 3, 2))
+        let mapped = try await mapping(rig)
+        XCTAssertEqual(mapped, PatchMapping(device: device, channels: [0, 1]))
+        XCTAssertNil(sc.model.message)
+        let again = try XCTUnwrap(sc.model.patches.first)
+        XCTAssertNil(sc.model.problem(of: again), "no problem shown")
+    }
+
+    /// Checklist (ui-qa D1): a show whose patch has 8 cue outputs, opened where the device has 2
+    /// and nothing is stored for it, opens on that device: no problem in the editor, and GO plays
+    /// the patch's first two cue outputs.
+    func testAnEightOutputPatchOnATwoOutputDeviceOpensOnTheDeviceAndPlays() async throws {
+        let (rig, sc) = try await open { show in
+            try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
+                guard var patches = ws["patches"]?.arrayValue, let first = patches.first?["outputs"]?.arrayValue?.first
+                else { return XCTFail("the demo show has no patch") }
+                patches[0].set("outputs", .array(Array(repeating: first, count: 8)))
+                ws.set("patches", .array(patches))
+            }
+            try self.sounding()(show)
+        }
+        let editor = try await edit(in: sc)
+        await assertEventually { editor.devicePopup.titleOfSelectedItem == self.device }
+        XCTAssertEqual(editor.problemLabel.stringValue, "")
+        XCTAssertEqual(editor.matrix.rowLabels.count, 8)
+        XCTAssertEqual(drawnLevels(editor)[0], [0, nil])
+        XCTAssertEqual(drawnLevels(editor)[2], [nil, nil], "cue output 3 has no device output")
+        guard case .success = await rig.store.transport(.start(cue: intro)) else { return XCTFail("start") }
+        try await rig.advance(1)
+        XCTAssertEqual(rig.store.cueStates[intro]?.state, .running)
+        let one = try await peak(rig, channel: 0)
+        let two = try await peak(rig, channel: 1)
+        XCTAssertGreaterThan(one, 0.01, "cue output 1 is heard")
+        XCTAssertGreaterThan(two, 0.01, "cue output 2 is heard")
     }
 
     func testPickingTheDeviceAPatchAlreadyUsesKeepsItsRouting() async throws {
@@ -412,9 +443,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually("4 outputs (\(editor.messageLabel.stringValue))") { editor.outputFields.count == 4 }
         XCTAssertEqual(editor.outputNameFields.count, 4)
         XCTAssertEqual(editor.matrix.rowLabels.count, 4)
-        // The routing on this machine follows: the kept output where it was, new ones on outputs 2, 1, 2.
+        // The routing on this machine follows: the kept outputs where they were, the new ones (the
+        // device has only two) with no device output of their own (Q515).
         let mapped = try await mapping(rig)
-        XCTAssertEqual(mapped, PatchMapping(device: device, channels: [0, 1, 0, 1]))
+        XCTAssertEqual(mapped, PatchMapping(device: device, channels: [0, 1]))
         XCTAssertEqual(editor.problemLabel.stringValue, "", "the patch still plays")
 
         let wc = WorkspaceWindowController(store: rig.store)
@@ -511,8 +543,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(header.minY, visible.minY, "header \(header) inside \(visible)")
         XCTAssertLessThanOrEqual(header.minY, visible.maxY - PatchRoutingView.headerH + 0.5, "the labels show")
         XCTAssertTrue(visible.intersects(last.convert(last.bounds, to: nil)), "the last row is in view")
+        // The device's two outputs take cue outputs 1 and 2; the rest have none of their own (Q515).
         let mapped = try await mapping(rig)
-        XCTAssertEqual(mapped?.channels.count, 128)
+        XCTAssertEqual(mapped?.channels, [0, 1])
     }
 
     /// Checklist: an Audio cue is selected → the I/O tab's edit button, and a button on the Levels
@@ -811,6 +844,99 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(rig.store.cueStates[intro]?.state, .running)
     }
 
+    /// A show whose patch routes cue output 1 to device output `to` (from 1) and, with `muted`, has
+    /// cue output 2 muted.
+    private func routedFar(to: Int, muted: Bool = false) -> (URL) throws -> Void {
+        { url in
+            try editShow(url.appendingPathComponent("Demo.openlab")) { ws in
+                guard var patches = ws["patches"]?.arrayValue, !patches.isEmpty else { return }
+                patches[0].set(
+                    "crosspoints",
+                    .array([.object(["output": .int(0), "device_output": .int(Int64(to - 1)), "db": .double(0)])]))
+                if muted, var outputs = patches[0]["outputs"]?.arrayValue, outputs.count > 1 {
+                    outputs[1].set("mute", .bool(true))
+                    patches[0].set("outputs", .array(outputs))
+                }
+                ws.set("patches", .array(patches))
+            }
+        }
+    }
+
+    /// ui-qa D2: the routing grid scrolled sideways: the column titles stay in their corner over
+    /// the left columns, and the device-output numbers pass under it, never over the names, levels
+    /// or meters.
+    func testScrollingTheRoutingGridSidewaysKeepsTheColumnTitlesInTheirCorner() async throws {
+        let (_, sc) = try await open(edit: routedFar(to: 40))
+        let editor = try await edit(in: sc)
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        await assertEventually { editor.matrix.deviceOutputs == 40 }
+        let scroll = try XCTUnwrap(editor.matrix.enclosingScrollView)
+        editor.window?.contentView?.layoutSubtreeIfNeeded()
+        editor.matrix.scroll(NSPoint(x: 900, y: 0))
+        scroll.tile()
+        XCTAssertGreaterThan(scroll.contentView.bounds.minX, 0, "scrolled sideways")
+        let clip = scroll.contentView.frame
+        let corner = editor.matrixCorner.frame
+        XCTAssertEqual(corner.minX, clip.minX)
+        if scroll.isFlipped {
+            XCTAssertEqual(corner.minY, clip.minY, "on the clip's top edge")
+        } else {
+            XCTAssertEqual(corner.maxY, clip.maxY, "on the clip's top edge")
+        }
+        XCTAssertEqual(corner.width, PatchRoutingView.crossX, "as wide as the left columns")
+        XCTAssertEqual(corner.height, PatchRoutingView.headerH)
+        // Over everything else in the scroll view: the floating panes' container too.
+        XCTAssertTrue(scroll.subviews.last === editor.matrixCorner, "\(scroll.subviews)")
+        XCTAssertTrue(editor.matrixCorner.isOpaque, "what passes under it is hidden")
+    }
+
+    /// ui-qa D3, D6: an editor left open while its device is lost says the device is not connected
+    /// (not that it has no outputs), and once the device is back shows it as it is again, with no
+    /// stale note, by itself.
+    func testAnOpenEditorFollowsItsNamedDeviceLostAndBack() async throws {
+        let (rig, sc) = try await open()
+        let editor = try await edit(in: sc)
+        try await status(rig)
+        try await loseDevice(rig)
+        await assertEventually("the editor shows the device gone") {
+            editor.devicePopup.titleOfSelectedItem == String(format: loc("settings.audio.notConnected"), self.device)
+        }
+        await assertEventually { editor.routingNote.stringValue.contains(loc("patchEditor.notConnectedNote")) }
+        XCTAssertFalse(editor.routingNote.stringValue.contains("0 outputs"))
+        guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore_device") }
+        try await rig.advance(6)
+        await assertEventually("the editor shows the device back") {
+            editor.devicePopup.titleOfSelectedItem == self.device && editor.matrix.usable == 2
+                && !editor.routingNote.stringValue.contains(loc("patchEditor.notConnectedNote"))
+                && editor.deviceOutputLabels.allSatisfy { $0.textColor == .secondaryLabelColor }
+        }
+    }
+
+    /// ui-qa D4: a cue output's mute shows on its row (its button on, its level red) and is set
+    /// and cleared there; Unmute All clears it too.
+    func testACueOutputsMuteShowsOnItsRowAndIsToggledThere() async throws {
+        let (rig, sc) = try await open(edit: routedFar(to: 2, muted: true))
+        let editor = try await edit(in: sc)
+        await assertEventually { editor.outputMutes.count == 2 }
+        XCTAssertEqual(editor.outputMutes.map(\.state), [.off, .on])
+        XCTAssertEqual(editor.outputFields[1].textColor, .systemRed)
+        XCTAssertEqual(editor.outputFields[1].stringValue, "0.0", "muting keeps the level")
+        XCTAssertTrue(editor.matrixRows.bounds.contains(editor.outputMutes[0].frame), "on its row")
+        editor.outputMutes[0].performClick(nil)
+        let mutes = {
+            (rig.store.model?.patches.first?.raw["outputs"]?.arrayValue ?? []).map { o -> Bool in
+                if case .bool(true) = o["mute"] { return true }
+                return false
+            }
+        }
+        await assertEventually { mutes() == [true, true] }
+        await assertEventually { editor.outputMutes.map(\.state) == [.on, .on] }
+        editor.unmuteButton.performClick(nil)
+        await assertEventually { mutes() == [false, false] }
+        await assertEventually { editor.outputMutes.map(\.state) == [.off, .off] }
+        XCTAssertEqual(editor.outputFields[1].textColor, .controlTextColor)
+    }
+
     /// Opens a crosspoint's box, types and presses Esc.
     private func typeCrosspointThenEscape(_ text: String, row: Int, column: Int, in editor: PatchEditorWindowController)
         throws
@@ -961,11 +1087,12 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(editor.deviceFaders.count, 5)
         XCTAssertEqual(editor.deviceMutes[4].state, .on)
         XCTAssertEqual(editor.deviceFields[4].stringValue, "-10.0")
-        // Warned in the status window, under the device.
+        // Warned in the status window, naming the device and the patch (Q510).
         try await status(rig)
         await assertEventually {
             WarningRows.make(store: rig.store).contains {
-                $0.detail == loc("warnings.device.patch_routing_beyond_device")
+                $0.title == String(format: loc("warnings.device"), self.device)
+                    && $0.detail == String(format: loc("warnings.patchRoutingBeyond"), "Main")
             }
         }
 

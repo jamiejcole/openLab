@@ -17,6 +17,8 @@ final class PatchRoutingView: NSView {
     static let levelW: CGFloat = 60
     static let meterW: CGFloat = 52
     static let cellW: CGFloat = 46
+    /// A cue output's mute button, at the right end of its label.
+    static let muteW: CGFloat = 22
     static var crossX: CGFloat { labelW + levelW + meterW }
 
     /// Each cue output's label: its number, and its name when it has one.
@@ -90,6 +92,13 @@ final class PatchRoutingView: NSView {
             height: Self.rowH - 2)
     }
 
+    /// A cue output's mute button.
+    func muteRect(row: Int) -> NSRect {
+        NSRect(
+            x: Self.labelW - Self.muteW - 2, y: Self.headerH + CGFloat(row) * Self.rowH + 2, width: Self.muteW,
+            height: Self.rowH - 4)
+    }
+
     /// Where the meter goes: one bar per row, for the first `rows` rows.
     func meterRect(rows: Int) -> NSRect {
         NSRect(
@@ -148,7 +157,8 @@ final class PatchRoutingView: NSView {
             let lit: NSColor = usableHere ? .controlAccentColor : .systemRed
             lit.withAlphaComponent(!isEnabled ? 0.4 : deviceMuted ? 0.45 : 0.85).setFill()
         } else {
-            NSColor(white: 0, alpha: usableHere ? 0.35 : 0.12).setFill()
+            // Empty reads as empty: the field colour on this device's outputs, a faint wash past them.
+            (usableHere ? NSColor.textBackgroundColor : NSColor.labelColor.withAlphaComponent(0.06)).setFill()
         }
         path.fill()
         let isSelected = selected.map { $0.row == row && $0.column == column } ?? false
@@ -166,19 +176,32 @@ final class PatchRoutingView: NSView {
     // MARK: The floating panes
 
     /// The header row: what each column is (fixed above the rows as they scroll).
-    func drawHeader(in pane: NSRect) {
-        let small: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor,
-        ]
-        draw(loc("patchEditor.cueOutputs"), in: NSRect(x: 4, y: 0, width: Self.labelW - 8, height: Self.headerH), small)
+    private static let small: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor,
+    ]
+
+    /// The titles of the left columns, in the corner that stays put however the matrix scrolls.
+    func drawCorner() {
+        draw(
+            loc("patchEditor.cueOutputs"), in: NSRect(x: 4, y: 0, width: Self.labelW - 8, height: Self.headerH),
+            Self.small)
         centred(
-            loc("patchEditor.level"), in: NSRect(x: Self.labelW, y: 0, width: Self.levelW, height: Self.headerH), small)
+            loc("patchEditor.level"), in: NSRect(x: Self.labelW, y: 0, width: Self.levelW, height: Self.headerH),
+            Self.small)
+    }
+
+    /// The device outputs' numbers over their columns (the corner covers the left columns' part).
+    func drawHeader(in pane: NSRect) {
+        let small = Self.small
         let muted: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: NSColor.systemRed,
         ]
+        // Columns scrolled under the corner (over the left columns) are not drawn: no digit of
+        // theirs shows at its edge.
+        let shown = visibleRect.minX + Self.crossX
         for c in 0..<deviceOutputs {
             let r = NSRect(x: Self.crossX + CGFloat(c) * Self.cellW, y: 0, width: Self.cellW, height: Self.headerH)
-            guard r.intersects(pane) else { continue }
+            guard r.intersects(pane), r.maxX > shown else { continue }
             // A muted device output says so over its column.
             if routing.deviceOutput(c).mute {
                 centred(String(format: loc("patchEditor.mutedColumn"), c + 1), in: r, muted)
@@ -204,7 +227,8 @@ final class PatchRoutingView: NSView {
                 NSColor.labelColor.withAlphaComponent(0.04).setFill()
                 NSRect(x: 0, y: y, width: width, height: Self.rowH).fill()
             }
-            draw(rowLabels[row], in: NSRect(x: 4, y: y, width: Self.labelW - 8, height: Self.rowH), label)
+            // The row's mute button sits at the label column's right end.
+            draw(rowLabels[row], in: NSRect(x: 4, y: y, width: Self.labelW - Self.muteW - 8, height: Self.rowH), label)
         }
     }
 
@@ -269,11 +293,12 @@ final class PatchRoutingView: NSView {
 }
 
 /// A part of the routing matrix that stays in view as the matrix scrolls: the header row (above the
-/// rows, as they scroll up and down) or the left columns with the cue outputs' labels, level boxes
-/// and meter (beside the boxes, as they scroll sideways). Opaque, so what scrolls under it is hidden.
+/// rows, as they scroll up and down), the left columns with the cue outputs' labels, level boxes
+/// and meter (beside the boxes, as they scroll sideways), or the corner where the two meet, with the
+/// left columns' titles, which stays put either way. Opaque, so what scrolls under it is hidden.
 @MainActor
 final class PatchRoutingPane: NSView {
-    enum Part { case header, rows }
+    enum Part { case header, rows, corner }
     let part: Part
     weak var matrix: PatchRoutingView?
 
@@ -295,6 +320,24 @@ final class PatchRoutingPane: NSView {
         switch part {
         case .header: matrix?.drawHeader(in: dirty)
         case .rows: matrix?.drawRowLabels(in: dirty, width: bounds.width)
+        case .corner: matrix?.drawCorner()
         }
+    }
+}
+
+/// A scroll view that says when it has laid out its clip view and scrollers, so what sits beside
+/// them follows.
+@MainActor
+final class TilingScrollView: NSScrollView {
+    var onTile: (() -> Void)?
+
+    override func tile() {
+        super.tile()
+        onTile?()
+    }
+
+    override func layout() {
+        super.layout()
+        onTile?()
     }
 }
