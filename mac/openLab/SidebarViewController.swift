@@ -139,7 +139,7 @@ final class WarningCell: NSTableCellView {
     let title = NSTextField(wrappingLabelWithString: "")
     let detail = NSTextField(wrappingLabelWithString: "")
     let relinkButton = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
-    let marker = NSImageView(image: WarningCell.markerImage)
+    private let marker = NSImageView(image: WarningCell.markerImage)
 
     private static let markerImage = Icon.warningMarker.image(loc("warnings.marker"), compact: true)
     private static let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)

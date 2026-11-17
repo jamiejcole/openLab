@@ -5190,8 +5190,17 @@ final class CueListDrawingTests: XCTestCase {
             return (try? self.drawnMark(h, net, 2))?.icon == .outputOverridden
         }
         XCTAssertEqual(try drawnMark(h, net, 2)?.colour, .systemRed, "output-overridden is red")
-        // A warning is yellow in the Warnings list.
-        XCTAssertEqual(WarningCell().marker.contentTintColor, MarkColour.caution, "a warning is yellow")
+        // A warning is yellow in the Warnings list: the mark drawn on Radio's row (the engine reports it broken).
+        let side = SidebarViewController(store: h.store)
+        side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
+        side.view.layoutSubtreeIfNeeded()
+        let warning = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == H.radio }, "Radio is in the Warnings list")
+        let cell = try XCTUnwrap(
+            side.warningsTable.view(atColumn: 0, row: warning, makeIfNecessary: true) as? WarningCell)
+        let marker = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSImageView }.first, "the row has its mark")
+        XCTAssertFalse(marker.isHidden)
+        XCTAssertNotNil(marker.image)
+        XCTAssertEqual(marker.contentTintColor, MarkColour.caution, "a warning is yellow")
         guard case .success = await h.store.transport(.start(cue: H.intro)) else { return XCTFail("start") }
         try await h.rig.advance(0.2)
         await assertEventually { (try? self.drawnMark(h, H.intro, 1))?.icon == .stateRunning }
@@ -6259,12 +6268,10 @@ final class CueListColumnLayoutTests: XCTestCase {
             wc.setVisible(.inspector, false)
             wc.window?.contentView?.layoutSubtreeIfNeeded()
             wc.setVisible(.inspector, true)
-            outline.scrollRowToVisible(outline.selectedRow)
             try assertBasicsInsideTheInspector("\(name) hidden then shown")
             wc.setShowMode(true)
             wc.window?.contentView?.layoutSubtreeIfNeeded()
             wc.setShowMode(false)
-            outline.scrollRowToVisible(outline.selectedRow)
             try assertBasicsInsideTheInspector("\(name) Show Mode entered and left")
             wc.window?.close()
         }
@@ -6287,6 +6294,7 @@ final class CueListColumnLayoutTests: XCTestCase {
             let ink = try rowInk(threshold: 0.004)  // a faint see-through counts
             XCTAssertEqual(ink.header, 0, "rows drawn through the header (row \(target))")
             XCTAssertEqual(ink.above, 0, "rows drawn above the header (row \(target))")
+            XCTAssertGreaterThan(ink.below, 100, "the rows are drawn below the header (row \(target))")
         }
     }
 
