@@ -499,18 +499,83 @@ impl Voices {
                 id
             }
         };
-        if let Some(VoiceRec {
-            phase: Phase::Waiting { start, .. },
-            ..
-        }) = self.recs.get_mut(&id)
-        {
-            *start = Some(at);
+        let gating = self.gating;
+        if let Some(r) = self.recs.get_mut(&id) {
+            if let Phase::Waiting { start, .. } = &mut r.phase {
+                *start = Some(at);
+            }
+            if let Some(group) = gating {
+                r.gate = Some((group, at));
+            }
         }
         self.try_start(id, env, fx);
     }
 
+    /// Carries out `action` with any start in it held with sequence `group` (prepared, not put
+    /// in the mixer): stops, pauses, resumes and level changes then act on it as on any start
+    /// still waiting, until `open_gate`.
+    pub fn apply_gated(
+        &mut self,
+        action: &Action,
+        group: u64,
+        env: &mut Env<'_>,
+        fx: &mut Effects,
+    ) {
+        self.gating = Some(group);
+        self.apply(action, env, fx);
+        self.gating = None;
+    }
+
+    /// The samples the starts held with `group` (not paused) were dated in it.
+    pub fn gated(&self, group: u64) -> Vec<SampleTime> {
+        (self.recs.values())
+            .filter(|r| matches!(r.phase, Phase::Waiting { paused: false, .. }))
+            .filter_map(|r| r.gate.filter(|(g, _)| *g == group).map(|(_, at)| at))
+            .collect()
+    }
+
+    /// The sequences holding starts.
+    pub fn gated_groups(&self) -> Vec<u64> {
+        let mut groups: Vec<u64> = self
+            .recs
+            .values()
+            .filter_map(|r| r.gate.map(|g| g.0))
+            .collect();
+        groups.sort_unstable();
+        groups.dedup();
+        groups
+    }
+
+    /// Lets the starts held with `group` go, each `shift` after the sample the sequence dated it
+    /// (or now if later): the hold is counted into its length. One paused meanwhile starts on
+    /// its resume; one resumed meanwhile starts with the sequence.
+    pub fn open_gate(
+        &mut self,
+        group: u64,
+        shift: SampleTime,
+        env: &mut Env<'_>,
+        fx: &mut Effects,
+    ) {
+        let held: Vec<(VoiceId, SampleTime)> = (self.recs.iter())
+            .filter_map(|(id, r)| r.gate.filter(|(g, _)| *g == group).map(|(_, at)| (*id, at)))
+            .collect();
+        let now = env.now;
+        for (id, dated) in held {
+            if let Some(r) = self.recs.get_mut(&id) {
+                r.gate = None;
+            }
+            env.now = dated.saturating_add(shift).max(now);
+            self.try_start(id, env, fx);
+        }
+        env.now = now;
+    }
+
     /// Puts a waiting voice into the mixer once it has a stream and a start and is not paused.
     pub(super) fn try_start(&mut self, id: VoiceId, env: &mut Env<'_>, fx: &mut Effects) {
+        // Held with a sequence whose pictures are not all open yet.
+        if self.recs.get(&id).is_some_and(|r| r.gate.is_some()) {
+            return;
+        }
         // A stream made for another device rate than its patch's device has now (the patch was
         // moved to a device at another rate since) would play at the wrong pitch: made again.
         let rate = self.recs.get(&id).map(|r| rate_for(env, r.cue));

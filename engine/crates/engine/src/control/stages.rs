@@ -177,7 +177,7 @@ impl Engine {
 impl Control {
     /// An open ahead answered (or the stage host stopped or started): one is asked at a time
     /// across every doc, so every doc's next priming pass may open its next.
-    fn reprime(&mut self) {
+    pub(super) fn reprime(&mut self) {
         for d in &mut self.docs {
             d.primes_dirty = true;
         }

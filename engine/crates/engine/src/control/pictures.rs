@@ -216,6 +216,8 @@ pub(super) struct Pictures {
     primes: primes::Primes,
     /// Cues started together that wait for a picture among them to open.
     sequence: sequence::Sequences,
+    /// Pictures were being tried alone after crashes at the last look (`trials_ended`).
+    on_trial: bool,
     /// Pictures the stage host reported failed, for their doc's next tick, and whether their
     /// start was still waiting for the open (nothing seen or heard: the cue was only skipped).
     failed: Vec<(DocId, CueId, RunId, String, bool)>,
@@ -440,14 +442,16 @@ impl Engine {
     ///   running unseen) and tried again one at a time, the earliest suspected last
     ///   (`try_held_back_pictures`), so the bad file ends up alone and only its cue breaks.
     /// - Everything else is sent to the next stage host.
-    /// - A crash while a picture was being opened ahead is that file's doing: it is not
-    ///   opened ahead again, and no running picture is suspected.
+    /// - A picture being opened ahead at the crash is a suspect too, counted by its file (a
+    ///   run's picture of that file later takes the count over). A file opened ahead that is
+    ///   the only repeat suspect is not opened ahead again; with others, the running ones are
+    ///   tried alone and nothing is opened ahead meanwhile, so it ends up alone too.
     pub(super) fn pictures_host_stopped(&mut self, crashed: bool) {
         let ahead = self.primes_host_stopped(crashed);
         for l in self.pictures.live.values_mut() {
             l.trial = l.trial.filter(|_| crashed);
         }
-        if !crashed || ahead {
+        if !crashed {
             return;
         }
         let now = self.now();
@@ -487,13 +491,15 @@ impl Engine {
                 repeat.push(*id);
             }
         }
-        match repeat.as_slice() {
-            [] => {}
-            [culprit] => self.picture_failed(
+        let ahead = ahead.filter(|file| self.pictures.primes.suspect(file, now, window) >= 2);
+        match (repeat.as_slice(), ahead) {
+            ([], None) => {}
+            ([], Some(file)) => self.bar_prime_file(&file),
+            ([culprit], None) => self.picture_failed(
                 *culprit,
                 "the video output crashed twice while it played this file".to_owned(),
             ),
-            several => {
+            (several, _) => {
                 for id in several {
                     if let Some(l) = self.pictures.live.get_mut(id) {
                         l.held_back = true;
@@ -544,6 +550,21 @@ impl Engine {
         }
     }
 
+    /// Whether the pictures tried alone after crashes are all done since the last call (passed
+    /// or broken): pictures may be opened ahead again.
+    pub(super) fn trials_ended(&mut self) -> bool {
+        let on = self.pictures_on_trial();
+        let ended = self.pictures.on_trial && !on;
+        self.pictures.on_trial = on;
+        ended
+    }
+
+    /// Pictures are being tried alone after crashes (held back, or on trial): nothing is
+    /// opened ahead meanwhile, so a crash names the picture on trial.
+    fn pictures_on_trial(&self) -> bool {
+        (self.pictures.live.values()).any(|l| l.held_back || l.trial.is_some())
+    }
+
     /// The stage host could not decode or draw `picture`: its cue breaks at its doc's next
     /// tick.
     pub(super) fn picture_failed(&mut self, picture: u64, reason: String) {
@@ -565,7 +586,6 @@ impl Engine {
     /// A doc closed: its pictures go.
     pub(super) fn drop_doc_pictures(&mut self, doc: DocId) {
         self.drop_doc_primes(doc);
-        self.drop_doc_sequences(doc);
         let gone: Vec<u64> = self
             .pictures
             .live
@@ -1534,6 +1554,17 @@ impl DocCx<'_> {
                 plan: None,
             },
         );
+        // A file suspected of a crash while it was opened ahead stays suspected in the run.
+        let file = match &load {
+            ToStage::Load { file, .. } => file.as_str(),
+            _ => "",
+        };
+        if let Some((count, since)) = self.eng.pictures.primes.take_suspicion(file)
+            && let Some(l) = self.eng.pictures.live.get_mut(&id)
+        {
+            l.suspected = count;
+            l.suspected_at = Some(since);
+        }
         match primed {
             // Already on the stage host: only a geometry edited since it was opened goes.
             Some((_, _, ToStage::Load { geometry: was, .. })) => {

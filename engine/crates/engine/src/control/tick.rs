@@ -46,6 +46,9 @@ impl Control {
         let now = self.eng.now();
         self.eng.prune_pictures(now);
         self.eng.try_held_back_pictures(now);
+        if self.eng.trials_ended() {
+            self.reprime();
+        }
         self.eng.picture_clock(false);
         self.eng.flush_report_lines();
         self.push_video_outputs();

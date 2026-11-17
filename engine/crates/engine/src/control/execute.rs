@@ -153,7 +153,7 @@ impl DocCx<'_> {
         // A Video cue's picture is a voice of the stage host's, not the mixer's.
         let pictures: Vec<bool> = actions.iter().map(|a| self.is_picture_action(a)).collect();
         // Sound starts of a call that starts a picture wait with it (one GO's sequence).
-        let (hold, due) = self.hold_sounds(actions, &pictures);
+        let (group, hold) = self.begin_sequence(actions, &pictures);
         {
             let floor = self.stop_floor();
             let mut env = Env {
@@ -170,10 +170,6 @@ impl DocCx<'_> {
                 window: self.eng.block,
                 floor,
             };
-            // Sounds held with an earlier sequence that this call acts on start first.
-            for start in &due {
-                self.doc.voices.apply(start, &mut env, &mut fx);
-            }
             for ((action, picture), held) in actions.iter().zip(&pictures).zip(&hold) {
                 if let Some(change) = RuntimeChange::from_action(action, self.doc.model.engine()) {
                     changes.push(change);
@@ -181,8 +177,14 @@ impl DocCx<'_> {
                 if matches!(action, Action::PlayheadChanged { .. }) {
                     self.doc.primes_dirty = true;
                 }
-                if !picture && !held {
-                    self.doc.voices.apply(action, &mut env, &mut fx);
+                match (picture, group) {
+                    (false, Some(group)) if *held => {
+                        self.doc
+                            .voices
+                            .apply_gated(action, group, &mut env, &mut fx);
+                    }
+                    (false, _) => self.doc.voices.apply(action, &mut env, &mut fx),
+                    (true, _) => {}
                 }
             }
         }
@@ -191,17 +193,12 @@ impl DocCx<'_> {
                 self.relocate_picture(run, from, &mut fx);
             }
         }
-        self.begin_sequence(actions, &pictures);
         for (action, picture) in actions.iter().zip(&pictures) {
             if *picture {
                 self.picture_action(action, &mut fx);
             }
         }
-        let held: Vec<Action> = (actions.iter().zip(&hold))
-            .filter(|(_, h)| **h)
-            .map(|(a, _)| a.clone())
-            .collect();
-        self.end_sequence(held, &mut fx);
+        self.end_sequence(&mut fx);
         self.end_pictures(actions);
         self.end_sounds(actions);
         for action in actions {

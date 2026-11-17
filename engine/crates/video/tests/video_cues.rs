@@ -1635,6 +1635,15 @@ fn a_picture_that_crashes_the_stage_host_as_it_opens_breaks_only_its_cue() {
     let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
     let mut s = video_show_of(ws);
+    // Standing by, the bad file is opened ahead after cue 1's: it crashes the stage host twice,
+    // alone, and is not opened ahead again.
+    assert!(
+        s.wait_for(|c| stage_host_stops(c) == 2
+            && c.stage_host_pid().is_some()
+            && c.pictures_primed() == (1, 1)),
+        "{}",
+        seen(&s)
+    );
     s.settle_stages();
     let mut pids = vec![s.control().stage_host_pid().unwrap()];
     let at = start(&mut s, 1);
@@ -3752,8 +3761,8 @@ fn stage_host_stops(c: &openlab_engine::control::Control) -> usize {
 }
 
 /// A file that crashes the stage host as it is opened ahead for the cue standing by is not
-/// opened ahead again: one crash, not one at every playhead move; the other cue standing by is
-/// still opened ahead.
+/// opened ahead again once it has crashed it twice alone, not at every playhead move; the
+/// other cue standing by is still opened ahead.
 #[test]
 fn a_file_that_crashes_the_stage_host_opened_ahead_is_not_opened_ahead_again() {
     let dir = tempfile::tempdir().unwrap();
@@ -3761,7 +3770,7 @@ fn a_file_that_crashes_the_stage_host_opened_ahead_is_not_opened_ahead_again() {
     let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
     let ws = workspace(vec![video_cue(1, Some(&bomb)), video_cue(2, Some(&good))]);
     let mut s = video_show_of(ws);
-    assert!(s.wait_for(|c| stage_host_stops(c) == 1), "{}", seen(&s));
+    assert!(s.wait_for(|c| stage_host_stops(c) == 2), "{}", seen(&s));
     assert!(
         s.wait_for(|c| c.stage_host_pid().is_some() && c.pictures_primed() == (1, 1)),
         "the other cue is opened ahead again\n{}",
@@ -3775,7 +3784,7 @@ fn a_file_that_crashes_the_stage_host_opened_ahead_is_not_opened_ahead_again() {
         s.run(samples(0.5));
     }
     s.settle_stages();
-    assert_eq!(stage_host_stops(s.control()), 1, "{}", seen(&s));
+    assert_eq!(stage_host_stops(s.control()), 2, "{}", seen(&s));
     assert_eq!(s.control().pictures_primed(), (1, 1));
 }
 
@@ -3805,6 +3814,45 @@ fn a_crash_opening_ahead_is_not_held_against_the_cue_playing() {
     let played = (s.now() - at) as f64 / f64::from(RATE);
     let now = on_stage(&mut s, "the good picture is back");
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+}
+
+/// A cue whose file crashes the stage host as it opens, started while four other cues are
+/// opened ahead: each relaunched stage host is sent one of those again, opening when the bad
+/// file crashes it once more. The bad cue still breaks within three crashes, without the video
+/// output being paused at its restart limit, and every cue opened ahead is opened ahead again.
+#[test]
+fn a_cue_crashing_the_stage_host_as_it_opens_breaks_within_three_crashes_beside_cues_opened_ahead()
+{
+    let dir = tempfile::tempdir().unwrap();
+    let good = movie!(dir.path(), "good.mov", (500, 25));
+    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+    let cues: Vec<Cue> = (1..=8u128)
+        .map(|n| video_cue(n, Some(&good)))
+        .chain([video_cue(9, Some(&bomb))])
+        .collect();
+    let mut s = video_show_of(workspace(cues));
+    assert!(
+        s.wait_for(|c| c.pictures_primed() == (4, 4)),
+        "{}",
+        seen(&s)
+    );
+    let mut pids = vec![s.control().stage_host_pid().unwrap()];
+    start(&mut s, 9);
+    assert!(
+        play_until_broken(&mut s, 9, &mut pids),
+        "{pids:?}\n{}",
+        seen(&s)
+    );
+    let stops = stage_host_stops(s.control());
+    assert!(stops <= 3, "{stops} crashes\n{}", seen(&s));
+    let paused = (s.control().show_log().tail(200).iter())
+        .any(|e| e.message.contains("stages are not shown"));
+    assert!(!paused, "{}", seen(&s));
+    assert!(
+        s.wait_for(|c| c.pictures_primed() == (4, 4)),
+        "every cue is opened ahead again\n{}",
+        seen(&s)
+    );
 }
 
 /// A Video cue standing by in a second open workspace, made while the first workspace's cue
@@ -4093,6 +4141,132 @@ fn a_held_audio_cue_stopped_while_its_sequence_waits_ends_and_is_never_heard_aft
     assert!(
         silent(&s, stopped, s.rendered()),
         "the stopped cue is never heard"
+    );
+}
+
+/// A Video cue whose file opens slowly auto-continuing into an Audio cue (a 0.5 tone on output
+/// 0), GO'd and still waiting for the open 0.2 s later: the show and the GO's sample.
+fn held_sequence() -> (OfflineShow, u64, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let good = make(
+        dir.path(),
+        "good.mov",
+        play_codec().unwrap_or("h264"),
+        Some((75, 25)),
+    );
+    let slow = slow_to_open(dir.path(), &good);
+    let mut v = video_cue(1, Some(&slow));
+    v.continue_mode = openlab_core::ContinueMode::AutoContinue;
+    let tone = wav(&dc(20_000, 0.5));
+    let ws = workspace(vec![v, audio(2, &tone, 0)]);
+    let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 0);
+    s.wait_for_pictures(false);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.2));
+    (s, at, dir)
+}
+
+/// Opens the held sequence's picture and lets the show run `seconds` on.
+fn release_held(s: &mut OfflineShow, seconds: f64) {
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    assert!(s.wait_for(|c| c.pictures_waiting() == 0), "{}", seen(s));
+    s.wait_for_pictures(true);
+    s.run(samples(seconds));
+}
+
+/// A panic with a fade while the sequence waits: the held Audio cue ends with nothing heard,
+/// then or ever.
+#[test]
+fn a_panic_while_a_sequence_waits_never_lets_its_held_audio_cue_be_heard() {
+    if play_codec().is_none() {
+        return skipped("no codec decodes reliably on this machine");
+    }
+    let (mut s, at, _dir) = held_sequence();
+    s.transport(TransportAction::Panic);
+    s.run(samples(3.0));
+    expect_state(&s, 2, CueState::Idle, "the panic ended it");
+    release_held(&mut s, 0.5);
+    assert!(silent(&s, at, s.rendered()), "never heard");
+}
+
+/// A stop with a fade-out of the held Audio cue while the sequence waits: it ends with nothing
+/// heard, and is not heard once the picture opens.
+#[test]
+fn a_stop_with_a_fade_while_a_sequence_waits_ends_its_held_audio_cue_unheard() {
+    if play_codec().is_none() {
+        return skipped("no codec decodes reliably on this machine");
+    }
+    let (mut s, at, _dir) = held_sequence();
+    s.transport(TransportAction::Stop {
+        cue: id(2),
+        fade_out: Some(openlab_core::FadeSpec {
+            duration: 1.0,
+            curve: openlab_core::FadeCurve::Linear,
+        }),
+    });
+    s.run(samples(1.5));
+    expect_state(&s, 2, CueState::Idle, "stopped");
+    release_held(&mut s, 0.5);
+    assert_eq!(
+        shown(&mut s).map(|f| f > 0),
+        Some(true),
+        "the picture plays"
+    );
+    assert!(silent(&s, at, s.rendered()), "never heard");
+}
+
+/// A pause of the held Audio cue while the sequence waits, then its resume before the picture
+/// opens: nothing is heard until the picture's first frame, and it starts with it.
+#[test]
+fn a_held_audio_cue_paused_and_resumed_while_its_sequence_waits_starts_with_the_first_frame() {
+    if play_codec().is_none() {
+        return skipped("no codec decodes reliably on this machine");
+    }
+    let (mut s, at, _dir) = held_sequence();
+    s.transport(TransportAction::Pause { cue: id(2) });
+    s.run(samples(0.2));
+    expect_state(&s, 2, CueState::Paused, "");
+    s.transport(TransportAction::Resume { cue: id(2) });
+    s.run(samples(0.2));
+    assert!(
+        silent(&s, at, s.rendered()),
+        "not heard while the picture opens"
+    );
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    assert!(s.wait_for(|c| c.pictures_waiting() == 0), "{}", seen(&s));
+    let started = s.now();
+    s.wait_for_pictures(true);
+    s.run(samples(0.2));
+    let heard = first_nonzero(&s.channel(0)).expect("heard once the picture opens");
+    assert_eq!(heard as u64, started, "with the first frame");
+}
+
+/// A level change of the held Audio cue while the sequence waits: nothing heard before the
+/// picture opens, and the cue is heard at the new level from its start.
+#[test]
+fn a_level_change_of_a_held_audio_cue_is_heard_from_its_start() {
+    if play_codec().is_none() {
+        return skipped("no codec decodes reliably on this machine");
+    }
+    let (mut s, at, _dir) = held_sequence();
+    let levels = serde_json::json!({"levels": {
+        "master_db": -6.0206,
+        "outputs": [{"db": 0.0, "mute": false}, {"db": 0.0, "mute": false}],
+        "crosspoints": [{"input": 0, "output": 0, "db": 0.0, "mute": false}],
+        "gangs": []}});
+    assert!(set_fields(&mut s, 2, levels));
+    s.run(samples(0.2));
+    assert!(
+        silent(&s, at, s.rendered()),
+        "not heard while the picture opens"
+    );
+    release_held(&mut s, 0.3);
+    let left = s.channel(0);
+    let first = first_nonzero(&left).expect("heard once the picture opens");
+    let level = left[first + 100];
+    assert!(
+        (level - 0.25).abs() < 0.01,
+        "heard at the new level from its start: {level}"
     );
 }
 

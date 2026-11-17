@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::{DocCx, DocId, Engine, ToStage};
-use openlab_core::CueId;
+use openlab_core::{CueId, SampleTime};
 
 /// The most pictures one doc keeps open ahead: each holds a decoder and a few frames on the
 /// stage host.
@@ -52,6 +52,8 @@ pub(in crate::control) struct Primes {
     unprimed: BTreeSet<String>,
     /// Opens asked ahead so far (tests).
     asked: u64,
+    /// Files being opened ahead at stage host crashes: how many crashes, from when.
+    suspected: BTreeMap<String, (u32, SampleTime)>,
 }
 
 impl Primes {
@@ -72,6 +74,25 @@ impl Primes {
             p.sent = false;
             p.opened = false;
         }
+    }
+
+    /// Counts a crash against `file`, opening ahead then (a count older than `window` starts
+    /// again): the count now.
+    pub(super) fn suspect(&mut self, file: &str, now: SampleTime, window: SampleTime) -> u32 {
+        if self.suspected.len() >= MAX_UNPRIMED {
+            self.suspected.clear();
+        }
+        let entry = self.suspected.entry(file.to_owned()).or_insert((0, now));
+        if now.saturating_sub(entry.1) >= window {
+            *entry = (0, now);
+        }
+        entry.0 += 1;
+        entry.0
+    }
+
+    /// The crashes counted against `file` while it opened ahead, handed to a run's picture.
+    pub(super) fn take_suspicion(&mut self, file: &str) -> Option<(u32, SampleTime)> {
+        self.suspected.remove(file)
     }
 
     /// Whether a prime's open is under way (the next waits for it).
@@ -125,6 +146,10 @@ impl Engine {
             return false;
         };
         p.opened = true;
+        // Opened without a crash: not suspected any more.
+        if let Some(file) = file_of(&p.load) {
+            self.pictures.primes.suspected.remove(file);
+        }
         if p.dropped {
             self.pictures.primes.by_id.remove(&picture);
             self.picture(ToStage::Unload { picture });
@@ -142,27 +167,30 @@ impl Engine {
         true
     }
 
-    /// The stage host stopped. After a crash the prime that was opening (one at most) goes and
-    /// its file is not opened ahead again; `true` then: the crash is that file's doing, not a
-    /// running picture's. Primes let go go now (the next stage host never had them); the others
+    /// The stage host stopped: after a crash, the file of the prime that was opening (one at
+    /// most), a suspect. Primes let go go now (the next stage host never had them); the others
     /// are sent again one at a time.
-    pub(in crate::control) fn primes_host_stopped(&mut self, crashed: bool) -> bool {
+    pub(in crate::control) fn primes_host_stopped(&mut self, crashed: bool) -> Option<String> {
         let primes = &mut self.pictures.primes;
-        let opening: Vec<u64> = (primes.by_id.iter())
-            .filter(|(_, p)| p.opening())
-            .map(|(id, _)| *id)
-            .collect();
-        let mut blamed = false;
-        if crashed {
-            for id in opening {
-                if let Some(p) = primes.by_id.remove(&id) {
-                    primes.bar(&p.load);
-                    blamed = true;
-                }
-            }
-        }
+        let opening = (primes.by_id.values())
+            .find(|p| p.opening())
+            .and_then(|p| file_of(&p.load))
+            .filter(|_| crashed)
+            .map(str::to_owned);
         primes.forget_sent();
-        blamed
+        opening
+    }
+
+    /// `file` crashed the stage host twice while opened ahead, alone the second time: it is
+    /// not opened ahead again.
+    pub(super) fn bar_prime_file(&mut self, file: &str) {
+        let primes = &mut self.pictures.primes;
+        primes.suspected.remove(file);
+        primes.by_id.retain(|_, p| file_of(&p.load) != Some(file));
+        if primes.unprimed.len() >= MAX_UNPRIMED {
+            primes.unprimed.clear();
+        }
+        primes.unprimed.insert(file.to_owned());
     }
 
     /// A stage host started: it has no picture opened ahead (one sent before it was ready was
@@ -268,7 +296,7 @@ impl DocCx<'_> {
                 None => self.eng.let_go_prime(id),
             }
         }
-        if self.eng.pictures.primes.opening() {
+        if self.eng.pictures.primes.opening() || self.eng.pictures_on_trial() {
             return;
         }
         // The most urgent prime the stage host does not have yet is sent.

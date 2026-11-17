@@ -168,6 +168,10 @@ pub struct VoiceRec {
     cuts: Vec<u64>,
     /// Its start waited for the file's probe, since this sample (`now`).
     held: Option<SampleTime>,
+    /// Its start is held with a cue sequence that waits for a picture to open, and the sample
+    /// the sequence dated it: it is not put in the mixer until the sequence opens the gate
+    /// (`Voices::open_gate`).
+    gate: Option<(u64, SampleTime)>,
     /// How much later than the engine dated it the voice started (held by its probe).
     delay: u64,
     /// The id its `StartVoice` was sent with: a rejection under that id refused the start, so
@@ -438,6 +442,8 @@ pub struct Voices {
     /// A show cue's record left since the last [`Voices::take_freed`]: a priming pass skips a
     /// cue that still has one, so the one after it is gone may prime the cue again.
     freed: bool,
+    /// While set, starts are held with this sequence (`Voices::apply_gated`).
+    gating: Option<u64>,
 }
 
 /// Why a voice could not be prepared.
@@ -729,6 +735,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         devamp_stop: false,
         cuts: Vec::new(),
         held: None,
+        gate: None,
         delay: 0,
         start_id: None,
         slot: None,
