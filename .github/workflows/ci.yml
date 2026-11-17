@@ -69,23 +69,30 @@ jobs:
 
       # The macOS app job's matrix. A pull request or push that runs the real-engine app tests (app_engine)
       # splits them into three shards (scripts/mac-test-shards.txt); one that does not runs the engine-free
-      # unit tests in one job (they take a fraction of the time, so a split would only add three setups);
-      # nightly and on demand run the core flows and the whole UI suite in one job. `once` marks the one
-      # entry that also runs the steps that need no repeating (format lint, the Release bundle).
+      # unit tests in one job (a fraction of the time, so a split would only add setups). When the build
+      # changes (bundle), a fourth entry builds and checks the Release bundle in parallel with the tests, so
+      # it adds no time to a shard. Nightly and on demand run the core flows, the whole UI suite and the
+      # bundle in one job. `lint` marks the one entry that runs the format lint; `bundle` the one that
+      # builds the bundle.
       - id: matrix
         env:
           EVENT: ${{ github.event_name }}
           APP_ENGINE: ${{ steps.diff.outputs.app_engine }}
+          BUNDLE: ${{ steps.diff.outputs.bundle }}
         run: |
           case "$EVENT" in
             schedule|workflow_dispatch)
-              m='[{"name":"macOS app","shard":"full","target":"test-mac-ui-full","once":true}]' ;;
+              m='[{"name":"macOS app","shard":"full","target":"test-mac-ui-full","lint":true,"bundle":true}]' ;;
             *)
               if [ "$APP_ENGINE" = true ]; then
-                m='[{"name":"macOS app (1/3)","shard":"1","target":"test-mac-shard SHARD=1","once":true},{"name":"macOS app (2/3)","shard":"2","target":"test-mac-shard SHARD=2","once":false},{"name":"macOS app (3/3)","shard":"3","target":"test-mac-shard SHARD=3","once":false}]'
+                m='[{"name":"macOS app (1/3)","shard":"1","target":"test-mac-shard SHARD=1","lint":true,"bundle":false},{"name":"macOS app (2/3)","shard":"2","target":"test-mac-shard SHARD=2","lint":false,"bundle":false},{"name":"macOS app (3/3)","shard":"3","target":"test-mac-shard SHARD=3","lint":false,"bundle":false}'
               else
-                m='[{"name":"macOS app","shard":"unit","target":"test-mac-unit","once":true}]'
-              fi ;;
+                m='[{"name":"macOS app","shard":"unit","target":"test-mac-unit","lint":true,"bundle":false}'
+              fi
+              if [ "$BUNDLE" = true ]; then
+                m="$m"',{"name":"macOS app (bundle)","shard":"bundle","target":"","lint":false,"bundle":true}'
+              fi
+              m="$m]" ;;
           esac
           echo "mac_matrix=$m" >> "$GITHUB_OUTPUT"
 
@@ -285,11 +292,12 @@ jobs:
     # The app bundles the engine, so an engine change rebuilds it too.
     if: needs.changes.outputs.mac == 'true'
     runs-on: xcode-27
-    # Backstop: a hung test fails the job (seen holding a runner past 75 min). A shard or the engine-free
-    # run: about 5 min of setup, the test step's 25 and up to 10 for the Release bundle steps of shard 1 or
-    # the single job. Nightly and on demand: above the core-flows (12) and test (55) step limits plus setup.
-    # Either way the steps are cancelled first.
-    timeout-minutes: ${{ matrix.shard == 'full' && 75 || 40 }}
+    # Backstop: a hung test fails the job (seen holding a runner past 75 min). Setup before the test step is
+    # about 0.7 min; the app and engine build (about 5 min) is inside the test step. Job limit = setup + step
+    # limits, with headroom, so the step is cancelled first: shard 0.7 + 25 (5 build + about 12 tests) -> 30;
+    # engine-free 0.7 + 30 -> 35; bundle entry 0.7 + about 11 for the three bundle steps -> 30; nightly and on
+    # demand 0.7 + core flows 12 + tests 55 = 67.7, leaving 22 of the 90 for the bundle (about 11) and rebuild.
+    timeout-minutes: ${{ matrix.shard == 'full' && 90 || (matrix.shard == 'unit' && 35 || 30) }}
     steps:
       - uses: actions/checkout@v7
       - name: Select Xcode
@@ -322,7 +330,7 @@ jobs:
           # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: swift format lint --strict -r mac/
-        if: matrix.once
+        if: matrix.lint
       # The app tests that start the real engine are expensive: a PR or push runs them in three shards, the UI
       # smoke set in shard 3 (`make test-mac-shard`, together the same tests as `make test-mac`), only when the
       # engine, the protocol, the app's engine client, its tests or project changed (`changes.app_engine`,
@@ -336,27 +344,27 @@ jobs:
       - run: make test-mac-core-flows
         timeout-minutes: 12
         if: matrix.shard == 'full'
-      # Nightly: 12 + 55 plus about 1.5 of setup fit the job's 75 minutes. A shard's tests take about 12 minutes
-      # (25 is a stop for a run that stalls); the engine-free run is shorter. A hung run is cancelled here and
-      # the step below still uploads its results. A hung test does not get that far: the wrapper ends the run
+      # A shard's step is about 5 min of building and 12 of tests (25 is a stop for a run that stalls); the
+      # engine-free run is shorter. A hung run is cancelled here and the step below still uploads its results. A hung test does not get that far: the wrapper ends the run
       # (exit 76) and no second process starts (scripts/run-mac-tests.sh).
       - timeout-minutes: ${{ matrix.shard == 'full' && 55 || (matrix.shard == 'unit' && 30 || 25) }}
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.target != '' }}
         run: make ${{ matrix.target }}
       # A hung or crashed test run leaves its result bundle (stacks, per-test logs) here; keep it a few days.
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: mac-xcresult-${{ matrix.shard }}
+          if-no-files-found: ignore
           path: build/Logs/Test/*.xcresult
           retention-days: 5
-      # The Release bundle is built once, by the entry that has `once` set.
+      # The Release bundle is built once, by the entry that has `bundle` set (about 11 min in all).
       - run: make mac
-        if: matrix.once && needs.changes.outputs.bundle == 'true'
+        if: matrix.bundle
       - run: make verify-bundle
-        if: matrix.once && needs.changes.outputs.bundle == 'true'
+        if: matrix.bundle
       - run: make dmg
-        if: matrix.once && needs.changes.outputs.bundle == 'true'
+        if: matrix.bundle
       # Rebuilds the universal engine twice, so nightly and on demand only (those events have bundle=true).
       - run: make test-bundle-rebuild
         if: matrix.shard == 'full'

@@ -583,8 +583,9 @@ FAKE
 }
 # `make test-mac` with a stub in place of the test wrapper: the stub exits with the given codes, one per
 # call; wanted is make's exit code and the number of processes it started.
+# MAKE_TARGET: what to run (`test-mac`, or `test-mac-shard SHARD=3`); MAKE_TAG names its directories.
 make_test_mac_case() { # dir, name, wanted exit code, wanted calls, stub exit codes
-  local c="$1/make-$2" rc n want
+  local c="$1/make-$MAKE_TAG-$2" rc n want
   mkdir -p "$c"
   printf '%s\n' $5 >"$c/rcs"
   : >"$c/calls"
@@ -595,7 +596,7 @@ echo "$*" >>"$d/calls"
 exit "$(sed -n "$(wc -l <"$d/calls" | tr -d ' ')p" "$d/rcs")"
 STUB
   chmod +x "$c/stub"
-  make -s -o project test-mac MAC_TESTS_WITH_LIMIT="$c/stub" >"$c/out" 2>&1
+  make -s -o project $MAKE_TARGET MAC_TESTS_WITH_LIMIT="$c/stub" >"$c/out" 2>&1
   rc=$?
   n=$(wc -l <"$c/calls" | tr -d ' ')
   # make reports a failed recipe as exit 2 and "Error <recipe's code>".
@@ -604,14 +605,19 @@ STUB
     || fail make-test-mac "$2: want exit $3 and $4 process(es), got make exit $rc and $n: $(cat "$c/out")"
 }
 make_test_mac_cases() {
-  make_test_mac_case "$1" cut-short 75 1 "75 0"
-  grep -q 'not starting the second' "$1/make-cut-short/out" || fail make-test-mac "a skipped second process must say why"
-  make_test_mac_case "$1" hung 76 1 "76 0"
-  grep -q 'not starting the second' "$1/make-hung/out" || fail make-test-mac "a hang must stop the second process and say why"
-  make_test_mac_case "$1" pass 0 2 "0 0"
-  make_test_mac_case "$1" first-fails 65 2 "65 0"
-  make_test_mac_case "$1" second-fails 70 2 "0 70"
-  make_test_mac_case "$1" both-fail 70 2 "65 70"
+  local d="$1" tag
+  for MAKE_TARGET in "test-mac" "test-mac-shard SHARD=3"; do
+    MAKE_TAG=$(printf '%s' "$MAKE_TARGET" | tr -c 'A-Za-z0-9\n' '-')
+    tag=$MAKE_TAG
+    make_test_mac_case "$d" cut-short 75 1 "75 0"
+    grep -q 'not starting the second' "$d/make-$tag-cut-short/out" || fail make-test-mac "$MAKE_TARGET: a skipped second process must say why"
+    make_test_mac_case "$d" hung 76 1 "76 0"
+    grep -q 'not starting the second' "$d/make-$tag-hung/out" || fail make-test-mac "$MAKE_TARGET: a hang must stop the second process and say why"
+    make_test_mac_case "$d" pass 0 2 "0 0"
+    make_test_mac_case "$d" first-fails 65 2 "65 0"
+    make_test_mac_case "$d" second-fails 70 2 "0 70"
+    make_test_mac_case "$d" both-fail 70 2 "65 70"
+  done
 }
 
 # 12. Every identifier in scripts/ui-smoke.txt and scripts/core-flows.txt names an existing test, so a
@@ -688,28 +694,36 @@ test_mac_split() {
 # The CI app job's three shards (scripts/mac-test-shards.txt): the listed classes exist and are listed once,
 # shards 1 and 2 run exactly their lists, and shard 3 skips exactly both lists, so every class runs somewhere.
 test_mac_shards() {
-  local list=scripts/mac-test-shards.txt n=0 shard cls extra s plan only skipped
-  while read -r shard cls extra; do
-    case "$shard" in ''|'#'*) continue ;; esac
+  local list=scripts/mac-test-shards.txt n=0 line cls s plan only skipped
+  # A line is `1 <class>` or `2 <class>`, nothing else: the Makefile reads fields, so stray whitespace
+  # must not make a class skipped by shard 3 yet selected by no shard.
+  while IFS= read -r line; do
+    printf '%s\n' "$line" | grep -qE '^[[:space:]]*(#|$)' && continue
     n=$((n + 1))
-    case "$shard$extra" in 1|2) ;; *) fail mac-shards "'$shard $cls $extra' is not '1 <class>' or '2 <class>' (shard 3 runs the rest)"; continue ;; esac
+    if ! printf '%s\n' "$line" | grep -qE '^[12] [A-Za-z0-9_]+$'; then
+      fail mac-shards "'$line' is not '1 <class>' or '2 <class>' (shard 3 runs the rest; no leading or trailing space)"
+      continue
+    fi
+    cls=${line#* }
     grep -qE "^(@[A-Za-z0-9_]+[[:space:]]+)*((public|internal|open)[[:space:]]+)?(final[[:space:]]+)?class[[:space:]]+$cls[[:space:]]*:[[:space:]]*XCTestCase" mac/openLabTests/*.swift \
       || fail mac-shards "$cls is no XCTestCase class in mac/openLabTests"
   done <"$list"
   [ "$n" -gt 0 ] || fail mac-shards "$list lists no classes"
-  for cls in $(grep -Ev '^[[:space:]]*(#|$)' "$list" | awk '{print $2}' | sort | uniq -d); do
+  # The line rule itself: an indented line must be refused.
+  printf '  1 CueListTests\n' | grep -qE '^[12] [A-Za-z0-9_]+$' && fail mac-shards "an indented shard line must not pass the line rule"
+  for cls in $(grep -E '^[12] ' "$list" | awk '{print $2}' | sort | uniq -d); do
     fail mac-shards "$cls is listed more than once"
   done
   for s in 1 2; do
     plan=$(make -n test-mac-shard SHARD=$s | tr ' ' '\n')
     only=$(printf '%s\n' "$plan" | sed -n 's/^-only-testing:openLabTests\/\([^/]*\)$/\1/p' | sort | tr '\n' ' ')
-    [ -n "$only" ] && [ "$only" = "$(grep -E "^$s[[:space:]]" "$list" | awk '{print $2}' | sort | tr '\n' ' ')" ] \
+    [ -n "$only" ] && [ "$only" = "$(grep -E "^$s " "$list" | awk '{print $2}' | sort | tr '\n' ' ')" ] \
       || fail mac-shards "make test-mac-shard SHARD=$s must run exactly its listed classes (and shard $s needs one), got: $only"
     printf '%s\n' "$plan" | grep -q -- '-only-testing:openLabUITests/' && fail mac-shards "only shard 3 runs the UI smoke set"
   done
   plan=$(make -n test-mac-shard SHARD=3 | tr ' ' '\n')
   skipped=$(printf '%s\n' "$plan" | sed -n 's/^-skip-testing:openLabTests\/\(.*\)$/\1/p' | sort -u | tr '\n' ' ')
-  [ "$skipped" = "$(grep -Ev '^[[:space:]]*(#|$)' "$list" | awk '{print $2}' | sort | tr '\n' ' ')" ] \
+  [ "$skipped" = "$(grep -E '^[12] ' "$list" | awk '{print $2}' | sort | tr '\n' ' ')" ] \
     || fail mac-shards "make test-mac-shard SHARD=3 must skip exactly the classes of shards 1 and 2, got: $skipped"
   printf '%s\n' "$plan" | grep -qx -- '-only-testing:openLabTests' || fail mac-shards "shard 3 must select the whole unit target"
   printf '%s\n' "$plan" | grep -q -- '-only-testing:openLabUITests/' || fail mac-shards "shard 3 must run the UI smoke set"

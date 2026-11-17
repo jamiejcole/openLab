@@ -9,8 +9,9 @@ UI_SMOKE := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-smoke
 # The unit test classes `make test-mac` runs in its second test process.
 LATE_TEST_CLASSES := $(shell grep -hoE 'class [M-Z][A-Za-z0-9_]*: XCTestCase' mac/openLabTests/*.swift | sed 's/class //; s/:.*//' | sort -u)
 # The unit test classes shards 1 and 2 of the CI app job run, and every class either lists (scripts/mac-test-shards.txt).
-SHARD_CLASSES := $(shell grep -E '^$(SHARD)[[:space:]]' scripts/mac-test-shards.txt | awk '{print $$2}')
-SHARDED_CLASSES := $(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/mac-test-shards.txt | awk '{print $$2}')
+# One parser for both: field 1 is the shard, field 2 the class; a comment's first field is `#`.
+SHARD_CLASSES := $(shell awk -v s='$(SHARD)' '$$1 == s { print $$2 }' scripts/mac-test-shards.txt)
+SHARDED_CLASSES := $(shell awk '$$1 ~ /^[12]$$/ { print $$2 }' scripts/mac-test-shards.txt)
 # The everyday-flow tests (scripts/core-flows.txt), unit and UI, as -only-testing arguments.
 CORE_FLOWS := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/core-flows.txt),-only-testing:$(t))
 
@@ -90,6 +91,19 @@ MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly
 miri:
 	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
+# Two test processes one after the other: $(1) names the target in messages, $(2) the first selection, $(3)
+# the second. The second does not start after a run cut short by a proven stall (exit 75 of
+# scripts/run-mac-tests.sh) or a hang (76): the runner is wedged, so it would most likely hang to the step's
+# limit. Otherwise both run, and the failing code is kept (the second's if both fail).
+define two_test_processes
+	rc=0; \
+	$(MAC_TESTS_WITH_LIMIT) -- $(2) || rc=$$?; \
+	if [ "$$rc" = 75 ]; then echo "$(1): the first test process was cut short by a WindowServer stall on the runner; not starting the second. Re-run the job."; exit $$rc; fi; \
+	if [ "$$rc" = 76 ]; then echo "$(1): a test hung in the first test process; not starting the second, which would most likely hang to the step's limit. Read the hang report in the result bundle, then re-run the job."; exit $$rc; fi; \
+	$(MAC_TESTS_WITH_LIMIT) -- $(3) || rc=$$?; \
+	exit $$rc
+endef
+
 # The engine-free unit tests: what every app PR runs. The tests that start the real engine report a
 # skip (OPENLAB_ENGINE_TESTS=skip reaches the test process through xcodebuild's TEST_RUNNER_ prefix).
 test-mac-unit: project
@@ -105,12 +119,7 @@ test-mac-unit: project
 test-mac: project
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
 	@test -n "$(LATE_TEST_CLASSES)" || { echo "no test classes for the second test process"; exit 1; }
-	rc=0; \
-	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(foreach c,$(LATE_TEST_CLASSES),-skip-testing:openLabTests/$(c)) || rc=$$?; \
-	if [ "$$rc" = 75 ]; then echo "test-mac: the first test process was cut short by a WindowServer stall on the runner; not starting the second. Re-run the job."; exit $$rc; fi; \
-	if [ "$$rc" = 76 ]; then echo "test-mac: a test hung in the first test process; not starting the second, which would most likely hang to the step's limit. Read the hang report in the result bundle, then re-run the job."; exit $$rc; fi; \
-	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(LATE_TEST_CLASSES),-only-testing:openLabTests/$(c)) $(UI_SMOKE) || rc=$$?; \
-	exit $$rc
+	$(call two_test_processes,test-mac,-only-testing:openLabTests $(foreach c,$(LATE_TEST_CLASSES),-skip-testing:openLabTests/$(c)),$(foreach c,$(LATE_TEST_CLASSES),-only-testing:openLabTests/$(c)) $(UI_SMOKE))
 
 # One third of `make test-mac`, as the CI app job runs them in parallel (SHARD=1, 2 or 3; the lists are
 # scripts/mac-test-shards.txt). Shards 1 and 2 run their listed classes. Shard 3 runs every other unit test
@@ -121,12 +130,7 @@ test-mac-shard: project
 	@test -n "$(SHARDED_CLASSES)" || { echo "scripts/mac-test-shards.txt lists no classes"; exit 1; }
 ifeq ($(SHARD),3)
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
-	rc=0; \
-	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(foreach c,$(SHARDED_CLASSES),-skip-testing:openLabTests/$(c)) || rc=$$?; \
-	if [ "$$rc" = 75 ]; then echo "test-mac-shard: the unit tests were cut short by a WindowServer stall on the runner; not starting the smoke set. Re-run the job."; exit $$rc; fi; \
-	if [ "$$rc" = 76 ]; then echo "test-mac-shard: a test hung in the unit tests; not starting the smoke set, which would most likely hang too. Read the hang report in the result bundle, then re-run the job."; exit $$rc; fi; \
-	$(MAC_TESTS_WITH_LIMIT) -- $(UI_SMOKE) || rc=$$?; \
-	exit $$rc
+	$(call two_test_processes,test-mac-shard,-only-testing:openLabTests $(foreach c,$(SHARDED_CLASSES),-skip-testing:openLabTests/$(c)),$(UI_SMOKE))
 else
 	@test -n "$(SHARD_CLASSES)" || { echo "scripts/mac-test-shards.txt lists no classes for shard $(SHARD)"; exit 1; }
 	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(SHARD_CLASSES),-only-testing:openLabTests/$(c))
