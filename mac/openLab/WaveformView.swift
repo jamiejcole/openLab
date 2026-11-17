@@ -782,7 +782,12 @@ class WaveformView: NSView {
         return marks
     }
 
+    /// Times are marked along the top only once the file's length is known: a still, or a file not
+    /// read or missing, has no time to mark.
+    var showsRuler: Bool { duration != nil }
+
     private func drawRuler(_ dirtyRect: NSRect) {
+        guard showsRuler else { return }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular),
             .foregroundColor: NSColor.secondaryLabelColor,

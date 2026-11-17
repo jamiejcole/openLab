@@ -1176,6 +1176,7 @@ final class VideoCueTests: XCTestCase {
         // A still has no timeline: said so, every control off.
         click(Self.still)
         await soon("the still shown") { panel.waveform.message == loc("timeLoops.still") }
+        XCTAssertFalse(panel.waveform.showsRuler, "no times marked over the still's message")
         XCTAssertFalse(panel.startField.isEnabled)
         XCTAssertFalse(panel.holdCheck.isEnabled)
         XCTAssertFalse(panel.fadeCheck.isEnabled)
