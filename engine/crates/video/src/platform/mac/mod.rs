@@ -84,21 +84,14 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
         }
         #[cfg(feature = "test-support")]
-        [flag, list] if flag == "--virtual-displays" => match virtual_displays(list) {
-            Some(displays) => offscreen(displays, media::LIMITS),
-            None => ExitCode::from(super::USAGE_EXIT),
-        },
-        #[cfg(feature = "test-support")]
-        [flag, list, limits_flag, limits, rest @ ..]
-            if flag == "--virtual-displays"
-                && limits_flag == "--media-limits"
-                && (rest.is_empty() || rest == ["--media-clock-by-hand"]) =>
-        {
-            if !rest.is_empty() {
-                media::fault::use_hand_clock();
-            }
-            match (virtual_displays(list), media_limits(limits)) {
-                (Some(displays), Some(limits)) => offscreen(displays, limits),
+        [flag, list, options @ ..] if flag == "--virtual-displays" => {
+            match (virtual_displays(list), offscreen_options(options)) {
+                (Some(displays), Some(options)) => {
+                    if options.hand_clock {
+                        media::fault::use_hand_clock();
+                    }
+                    offscreen(displays, options)
+                }
                 _ => ExitCode::from(super::USAGE_EXIT),
             }
         }
@@ -118,6 +111,9 @@ pub struct Mac {
     /// (`limits_of`).
     #[cfg(feature = "test-support")]
     fault_limits: media::Limits,
+    /// Test support: the limits on every other file's open and frames (`limits_of`).
+    #[cfg(feature = "test-support")]
+    good_limits: media::Limits,
     /// The displays last read, with their CoreGraphics ids.
     found: Vec<Found>,
     /// Test support: displays that stand in for real ones, drawn offscreen only.
@@ -290,15 +286,22 @@ impl Platform for Mac {
 }
 
 impl Mac {
-    /// The limits on `file`'s open and frames: the shipped ones, or (test support) the shorter
-    /// ones a test gave for the files whose names ask for a fault, so a hung test file fails
-    /// quickly while a good file is never failed by a slow machine.
+    /// Test support: the limits on `file`'s open and frames the test gave (each the shipped one
+    /// unless given): shorter for the files whose names ask for a fault, so a hung test file
+    /// fails quickly, and longer for every other file, so a good file is never failed by a slow
+    /// machine (a CI virtual machine whose media framework stalls for seconds).
+    #[cfg(feature = "test-support")]
     fn limits_of(&self, file: &str) -> media::Limits {
-        #[cfg(feature = "test-support")]
         if media::fault::named(file) {
-            return self.fault_limits;
+            self.fault_limits
+        } else {
+            self.good_limits
         }
-        let _ = file;
+    }
+
+    /// The limits on a file's open and frames: the shipped ones.
+    #[cfg(not(feature = "test-support"))]
+    fn limits_of(&self, _file: &str) -> media::Limits {
         media::LIMITS
     }
 }
@@ -438,6 +441,7 @@ fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
         media: HashMap::new(),
         failed: Vec::new(),
         fault_limits: media::LIMITS,
+        good_limits: media::LIMITS,
         found: Vec::new(),
         virtual_displays: None,
     };
@@ -572,6 +576,8 @@ fn windowed() -> ExitCode {
         failed: Vec::new(),
         #[cfg(feature = "test-support")]
         fault_limits: media::LIMITS,
+        #[cfg(feature = "test-support")]
+        good_limits: media::LIMITS,
         found: Vec::new(),
         #[cfg(feature = "test-support")]
         virtual_displays: None,
@@ -723,26 +729,73 @@ fn virtual_displays(list: &str) -> Option<Vec<Display>> {
         .collect()
 }
 
-/// Test support: `OPEN_MS,FRAME_MS`, the limits on a picture's open and frames.
+/// Test support: `OPEN_MS,FRAME_MS`, the limits on a picture's open and frames, each at most
+/// an hour (so a deadline counted from now never overflows).
 #[cfg(feature = "test-support")]
 fn media_limits(text: &str) -> Option<media::Limits> {
+    const MOST_MS: u64 = 3_600_000;
+    let ms = |t: &str| t.parse::<u64>().ok().filter(|ms| *ms <= MOST_MS);
     let (open, frame) = text.split_once(',')?;
     Some(media::Limits {
-        open: std::time::Duration::from_millis(open.parse().ok()?),
-        frame: std::time::Duration::from_millis(frame.parse().ok()?),
+        open: std::time::Duration::from_millis(ms(open)?),
+        frame: std::time::Duration::from_millis(ms(frame)?),
     })
+}
+
+/// Test support: what follows `--virtual-displays LIST`, in any order, each at most once.
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+struct Offscreen {
+    /// `--media-limits OPEN_MS,FRAME_MS`: the limits on a file a fault switch names.
+    fault_limits: media::Limits,
+    /// `--good-media-limits OPEN_MS,FRAME_MS`: the limits on every other file.
+    good_limits: media::Limits,
+    /// `--media-clock-by-hand`: the limits run on a media clock only the test moves.
+    hand_clock: bool,
+}
+
+/// Test support: the offscreen options, or `None` for anything unknown, malformed or repeated.
+/// Without an option its shipped value stays.
+#[cfg(feature = "test-support")]
+fn offscreen_options(mut args: &[String]) -> Option<Offscreen> {
+    let (mut fault, mut good, mut hand_clock) = (None, None, false);
+    loop {
+        args = match args {
+            [] => {
+                return Some(Offscreen {
+                    fault_limits: fault.unwrap_or(media::LIMITS),
+                    good_limits: good.unwrap_or(media::LIMITS),
+                    hand_clock,
+                });
+            }
+            [flag, value, rest @ ..] if flag == "--media-limits" && fault.is_none() => {
+                fault = Some(media_limits(value)?);
+                rest
+            }
+            [flag, value, rest @ ..] if flag == "--good-media-limits" && good.is_none() => {
+                good = Some(media_limits(value)?);
+                rest
+            }
+            [flag, rest @ ..] if flag == "--media-clock-by-hand" && !hand_clock => {
+                hand_clock = true;
+                rest
+            }
+            _ => return None,
+        };
+    }
 }
 
 /// Test support: the host on the main thread with no windows, its stages drawn offscreen for
 /// probes. A `hang` stops answering but still ends with the engine's pipe.
 #[cfg(feature = "test-support")]
-fn offscreen(displays: Vec<Display>, limits: media::Limits) -> ExitCode {
+fn offscreen(displays: Vec<Display>, options: Offscreen) -> ExitCode {
     let mut host = Host::new(Mac {
         gpu: Gpu::new(),
         windows: None,
         media: HashMap::new(),
         failed: Vec::new(),
-        fault_limits: limits,
+        fault_limits: options.fault_limits,
+        good_limits: options.good_limits,
         found: Vec::new(),
         virtual_displays: Some(displays),
     });
@@ -765,6 +818,68 @@ mod tests {
         assert_eq!((d[1].id.as_str(), d[1].width, d[1].height), ("B", 640, 480));
         for bad in ["", "A", "A:1920", "A:x1080", "A:1920x"] {
             assert!(virtual_displays(bad).is_none(), "{bad}");
+        }
+    }
+
+    /// A file a fault switch names gets the fault limits, every other file the good ones.
+    #[test]
+    fn fault_files_and_good_files_get_their_own_limits() {
+        let ms = |ms| std::time::Duration::from_millis(ms);
+        let mac = Mac {
+            gpu: Err("no GPU needed".into()),
+            windows: None,
+            media: HashMap::new(),
+            failed: Vec::new(),
+            fault_limits: media::Limits {
+                open: ms(1),
+                frame: ms(2),
+            },
+            good_limits: media::Limits {
+                open: ms(3),
+                frame: ms(4),
+            },
+            found: Vec::new(),
+            virtual_displays: None,
+        };
+        let fault = mac.limits_of("/shows/openlab-test-hang-open.mov");
+        assert_eq!((fault.open, fault.frame), (ms(1), ms(2)));
+        let good = mac.limits_of("/shows/clip.mov");
+        assert_eq!((good.open, good.frame), (ms(3), ms(4)));
+    }
+
+    fn options(args: &[&str]) -> Option<Offscreen> {
+        offscreen_options(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn offscreen_options_are_parsed_in_any_order_or_refused() {
+        let none = options(&[]).unwrap();
+        assert_eq!(none.fault_limits.open, media::LIMITS.open);
+        assert_eq!(none.good_limits.frame, media::LIMITS.frame);
+        assert!(!none.hand_clock);
+        let all = options(&[
+            "--good-media-limits",
+            "60000,30000",
+            "--media-clock-by-hand",
+            "--media-limits",
+            "400,500",
+        ])
+        .unwrap();
+        assert_eq!(all.good_limits.open.as_millis(), 60_000);
+        assert_eq!(all.good_limits.frame.as_millis(), 30_000);
+        assert_eq!(all.fault_limits.open.as_millis(), 400);
+        assert_eq!(all.fault_limits.frame.as_millis(), 500);
+        assert!(all.hand_clock);
+        for bad in [
+            &["--media-limits"][..],
+            &["--media-limits", "400"],
+            &["--good-media-limits", "x,1"],
+            &["--good-media-limits", "3600001,1"],
+            &["--media-limits", "1,1", "--media-limits", "2,2"],
+            &["--media-clock-by-hand", "--media-clock-by-hand"],
+            &["--other"],
+        ] {
+            assert!(options(bad).is_none(), "{bad:?}");
         }
     }
 }
