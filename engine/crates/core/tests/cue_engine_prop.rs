@@ -1121,7 +1121,7 @@ impl Sim {
                     } else if let Some(v) = self.dead.remove(from) {
                         self.dead.insert(*run, v);
                     } else if let Some(cue) = self.ended.remove(from) {
-                        // It ended before the move: this simulation reports the end under the new run (the real engine starts the moved voice from the seek point instead; both end the run).
+                        // It ended before the move: this simulation reports the end under the new run (the real engine instead starts the moved voice from the seek point and plays on; the cue engine handles both).
                         self.ended.insert(*run, cue);
                         self.late.push((
                             *at,
