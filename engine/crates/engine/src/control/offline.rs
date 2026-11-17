@@ -35,6 +35,13 @@ use super::{
 /// counting it in [`OfflineShow::stalls`]).
 pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A wait for another thread longer than this is reported on standard error as it ends (the
+/// thread, the caller and what was waited for), passing or not: a run that is only slow, where
+/// no test fails to say why, still names the waits that took the time.
+pub const SLOW_WAIT: Duration = Duration::from_secs(10);
+/// Slow-wait reports kept for [`OfflineShow::slow_waits`]; later ones are only written.
+const MAX_SLOW_WAITS_KEPT: usize = 64;
+
 pub struct OfflineShow {
     control: Control,
     renderer: OfflineRenderer,
@@ -52,6 +59,10 @@ pub struct OfflineShow {
     settle_timeout: Duration,
     /// Before each block, wait until no Video cue's start waits for its picture's open.
     wait_pictures: bool,
+    /// Waits this long or longer are reported ([`SLOW_WAIT`] unless a test changes it).
+    slow_wait: Duration,
+    /// The reports of slow waits so far.
+    slow_waits: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -118,6 +129,8 @@ impl OfflineShow {
             stalls: 0,
             settle_timeout: SETTLE_TIMEOUT,
             wait_pictures: true,
+            slow_wait: SLOW_WAIT,
+            slow_waits: Vec::new(),
         })
     }
 
@@ -130,6 +143,17 @@ impl OfflineShow {
     #[cfg(feature = "test-support")]
     pub fn set_settle_timeout(&mut self, timeout: Duration) {
         self.settle_timeout = timeout;
+    }
+
+    /// Test support: reports waits of `at_least` or longer ([`SLOW_WAIT`] otherwise).
+    #[cfg(feature = "test-support")]
+    pub fn set_slow_wait(&mut self, at_least: Duration) {
+        self.slow_wait = at_least;
+    }
+
+    /// The waits reported as slow so far, as written to standard error.
+    pub fn slow_waits(&self) -> &[String] {
+        &self.slow_waits
     }
 
     /// Ends the show as the control thread does at shutdown ([`Control::shutdown`]: a hard stop
@@ -164,6 +188,7 @@ impl OfflineShow {
     /// Sends a client message, then waits until `done` holds (answers from other threads
     /// handled, as [`Self::wait_for`]) and returns every reply to it, those sent meanwhile
     /// included.
+    #[track_caller]
     pub fn send_until(
         &mut self,
         message: ClientMessage,
@@ -179,16 +204,20 @@ impl OfflineShow {
     /// Waits until the document worker and the writer thread have answered everything asked of
     /// them and the answers are applied (ticking, which is where the control loop collects
     /// them). Bounded by the settle timeout, counted in [`Self::stalls`].
+    #[track_caller]
     pub fn settle_docs(&mut self) {
-        let deadline = std::time::Instant::now() + self.settle_timeout;
+        let began = std::time::Instant::now();
+        let deadline = began + self.settle_timeout;
         loop {
             self.pump_inbox();
             self.control.tick();
             if self.control.docs_busy() == 0 {
+                self.note_slow("the document worker", began);
                 break;
             }
             if std::time::Instant::now() >= deadline {
                 self.stalls += 1;
+                self.note_slow("the document worker (gave up)", began);
                 break;
             }
             // The answer comes from another thread: wait for it rather than spin.
@@ -201,22 +230,27 @@ impl OfflineShow {
     /// Waits until the stage host has been told every stage and has said where each one is, and
     /// no probe waits (answers handled, ticking). Bounded by the settle timeout, counted in
     /// [`Self::stalls`].
+    #[track_caller]
     pub fn settle_stages(&mut self) {
         self.wait_for(|c| c.stages_settled());
     }
 
     /// Handles inbox messages and ticks until `done` holds. Bounded by the settle timeout,
     /// counted in [`Self::stalls`]; `false` when it gave up.
+    #[track_caller]
     pub fn wait_for(&mut self, done: impl Fn(&Control) -> bool) -> bool {
-        let deadline = std::time::Instant::now() + self.settle_timeout;
+        let began = std::time::Instant::now();
+        let deadline = began + self.settle_timeout;
         loop {
             self.pump_inbox();
             self.control.tick();
             if done(&self.control) {
+                self.note_slow("a condition", began);
                 return true;
             }
             if std::time::Instant::now() >= deadline {
                 self.stalls += 1;
+                self.note_slow("a condition (gave up)", began);
                 return false;
             }
             if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
@@ -236,18 +270,22 @@ impl OfflineShow {
 
     /// Waits until every host look-up and queued network message has been handled by its worker
     /// and the answers are applied. Bounded by the settle timeout, counted in [`Self::stalls`].
+    #[track_caller]
     pub fn settle_net(&mut self) {
-        let deadline = std::time::Instant::now() + self.settle_timeout;
+        let began = std::time::Instant::now();
+        let deadline = began + self.settle_timeout;
         loop {
             self.pump_inbox();
             if self.control.net_busy() == 0 {
                 // A worker reports before it counts itself off, so everything is in by now.
                 self.pump_inbox();
                 self.control.tick();
+                self.note_slow("the network workers", began);
                 break;
             }
             if std::time::Instant::now() >= deadline {
                 self.stalls += 1;
+                self.note_slow("the network workers (gave up)", began);
                 break;
             }
             if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
@@ -378,8 +416,10 @@ impl OfflineShow {
 
     /// Waits until every probe, preload and waveform read has answered (or was given up on by
     /// the watchdog) and the answers are in, then ticks. Ticks while it waits, so the probe watchdog runs.
+    #[track_caller]
     pub fn settle_media(&mut self) {
-        let deadline = std::time::Instant::now() + self.settle_timeout;
+        let began = std::time::Instant::now();
+        let deadline = began + self.settle_timeout;
         // `probes_pending` scans every probe entry: ask once per batch of answers, not once
         // per answer (a show of thousands of files would make the wait quadratic).
         loop {
@@ -401,6 +441,7 @@ impl OfflineShow {
                 Err(_) => self.control.tick(),
             }
         }
+        self.note_slow("probes, preloads and waveforms", began);
         self.pump_inbox();
         self.control.tick();
     }
@@ -414,12 +455,14 @@ impl OfflineShow {
 
     /// Renders one block: answers in, streams and picture opens settled, the block rendered
     /// (and captured), then a control tick.
+    #[track_caller]
     pub fn step(&mut self) {
         let _ = self.step_timed();
     }
 
     /// [`Self::step`], returning how long the render alone took (the mixer callback: not the
     /// waits for the disk workers, not the tick). For the render budget gates.
+    #[track_caller]
     pub fn step_timed(&mut self) -> Duration {
         self.pump_inbox();
         self.settle_streams();
@@ -435,17 +478,23 @@ impl OfflineShow {
     /// Waits (bounded by the settle timeout, counted in [`Self::stalls`]) for the document
     /// worker's next answer, handling every other message meanwhile, and returns it unhandled,
     /// so a test can time what the control thread does with it ([`Self::deliver`]).
+    #[track_caller]
     pub fn next_doc_answer(&mut self) -> Option<Inbox> {
-        let deadline = std::time::Instant::now() + self.settle_timeout;
+        let began = std::time::Instant::now();
+        let deadline = began + self.settle_timeout;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match self.inbox.recv_timeout(left) {
-                Ok(msg @ Inbox::Doc(_)) => return Some(msg),
+                Ok(msg @ Inbox::Doc(_)) => {
+                    self.note_slow("the document worker's answer", began);
+                    return Some(msg);
+                }
                 Ok(msg) => {
                     let _ = self.control.handle(msg);
                 }
                 Err(_) => {
                     self.stalls += 1;
+                    self.note_slow("the document worker's answer (gave up)", began);
                     return None;
                 }
             }
@@ -454,6 +503,7 @@ impl OfflineShow {
 
     /// Renders `frames` (whole blocks) with no control tick in between: a control thread that
     /// is late, so mixer events pile up (tests of the event queue overflowing).
+    #[track_caller]
     pub fn render_only(&mut self, frames: u64) {
         let until = self.rendered() + frames;
         while self.rendered() < until {
@@ -466,6 +516,7 @@ impl OfflineShow {
     /// Renders `frames` (whole blocks, with control ticks) without waiting for the disk: a
     /// stream that has not delivered underruns (tests of a starved voice). Picture opens are
     /// still waited for, as in [`Self::step`].
+    #[track_caller]
     pub fn run_unsettled(&mut self, frames: u64) {
         let until = self.rendered() + frames;
         while self.rendered() < until {
@@ -478,6 +529,7 @@ impl OfflineShow {
     }
 
     /// Renders whole blocks until at least `frames` more have been rendered.
+    #[track_caller]
     pub fn run(&mut self, frames: u64) {
         let until = self.rendered() + frames;
         while self.rendered() < until {
@@ -486,6 +538,7 @@ impl OfflineShow {
     }
 
     /// Renders until sample `at` has been rendered (whole blocks).
+    #[track_caller]
     pub fn run_until(&mut self, at: SampleTime) {
         while self.rendered() <= at {
             self.step();
@@ -494,15 +547,44 @@ impl OfflineShow {
 
     /// Waits (bounded, counted in [`Self::stalls`]) until no Video cue's start waits for its
     /// picture's open, unless a test turned that off.
+    #[track_caller]
     fn settle_pictures(&mut self) {
         if self.wait_pictures && self.control.pictures_waiting() > 0 {
             self.wait_for(|c| c.pictures_waiting() == 0);
         }
     }
 
+    #[track_caller]
     fn settle_streams(&mut self) {
+        let began = std::time::Instant::now();
         let end = self.rendered() + self.block as u64;
         self.stalls += self.control.wait_streams(end, self.settle_timeout);
+        self.note_slow("the disk workers", began);
+    }
+
+    /// Reports a wait that began at `began` if it took the slow wait ([`SLOW_WAIT`]) or longer:
+    /// kept, and written straight to standard error, past the test harness's capture, so it
+    /// reaches the log as it happens even in a run that is cut off.
+    #[track_caller]
+    fn note_slow(&mut self, what: &str, began: std::time::Instant) {
+        use std::io::Write;
+        let took = began.elapsed();
+        if took < self.slow_wait {
+            return;
+        }
+        let caller = std::panic::Location::caller();
+        let thread = std::thread::current();
+        let line = format!(
+            "offline show: waited {:.1} s for {what} at sample {} ({}, {caller})",
+            took.as_secs_f64(),
+            self.rendered(),
+            thread.name().unwrap_or("unnamed thread"),
+        );
+        let _ = writeln!(std::io::stderr().lock(), "{line}");
+        // Kept for a test to read: the first ones are enough.
+        if self.slow_waits.len() < MAX_SLOW_WAITS_KEPT {
+            self.slow_waits.push(line);
+        }
     }
 
     /// Blocks the driver could not settle in time (a test asserts 0).
