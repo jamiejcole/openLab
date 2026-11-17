@@ -2657,7 +2657,25 @@ impl Run {
                     );
                 }
                 SecondTrigger::Devamp | SecondTrigger::PlayNext | SecondTrigger::PlayPrevious => {
-                    prop_assert!(!restarted, "{:?} restarted {}", option, cue);
+                    // Play next past a playlist's last child completes that playlist; a
+                    // looping playlist around it may then start it again as its next child,
+                    // which is that group's doing: the cue ended first.
+                    let ended = actions.iter().position(|a| {
+                        matches!(a, Action::StateChanged { cue: c, state: CueState::Idle, .. }
+                            if *c == cue)
+                    });
+                    let started = actions.iter().position(|a| match a {
+                        Action::StartVoice { cue: c, .. }
+                        | Action::StateChanged {
+                            cue: c,
+                            state: CueState::PreWaiting,
+                            ..
+                        } => *c == cue,
+                        _ => false,
+                    });
+                    let by_its_group = matches!((ended, started), (Some(e), Some(s)) if e < s)
+                        && !groups_around(&self.ws.cue_lists[0].cues, cue).is_empty();
+                    prop_assert!(!restarted || by_its_group, "{:?} restarted {}", option, cue);
                 }
             }
         }
