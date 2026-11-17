@@ -576,7 +576,7 @@ pub enum Action {
     /// its stream is ready; a paused one moves and stays paused (a `ResumeVoice` with
     /// `paused: run` plays it); a voice not playing yet starts there. Previews too. For a Video
     /// cue's run `position` is samples into the action instead (its picture follows its plan
-    /// from there; its sound, if it has any, is moved to the file's frame for that point).
+    /// from there; its sound, if it has any, goes on from the same point of the same plan).
     SeekVoice {
         cue: CueId,
         run: RunId,
