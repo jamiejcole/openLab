@@ -153,6 +153,7 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
   It also waits until no Video cue's start waits for its picture's open (`wait_for_pictures(false)` turns that off for a test of a slow or hung open).
   What a voice will read is counted in voice frames (`StreamHandle::wait_fed`), not frames written: after a devamp cut the ring also holds the stale loop frames the voice skips, so the written count runs ahead of the voice and waiting on it lets the voice run dry. `settle_media()` waits for probes and started preloads; `render_only(frames)` renders with no tick (a late control thread).
   Every wait for another thread (`settle_*`, `wait_for`, `send_until`) gives up after `SETTLE_TIMEOUT` (30 s), counted in `stalls()`; test support `set_settle_timeout` changes it for tests whose workers lean on a slow platform framework (the video tests).
+  A wait of `SLOW_WAIT` (10 s) or longer is reported as it ends, straight to stderr past the test capture (what was waited for, the test thread, the calling line via `#[track_caller]`) and kept in `slow_waits()`, so a run that is only slow (no test fails) still names where its time went; test support `set_slow_wait` changes the threshold.
 
 ## Performance budgets
 Numbers are asserted in `engine/crates/engine/tests/perf.rs` (a 2,110-cue show built in the test); the CI performance gate runs the timed ones on an Intel runner. NFR-24/25 stay unticked (minimum-spec hardware is not measured).

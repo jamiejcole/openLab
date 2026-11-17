@@ -2030,3 +2030,27 @@ fn the_offline_drivers_waits_end_at_the_settle_timeout_a_test_sets() {
     assert_eq!(looks.get(), 1);
     assert_eq!(s.stalls(), 1);
 }
+
+/// A wait for another thread that takes the slow-wait time or longer is reported as it ends,
+/// naming what was waited for, the test and the line that waited, so a run that is only slow
+/// still says where its time went; a quick wait is not reported.
+#[test]
+fn the_offline_driver_reports_a_slow_wait_with_the_test_and_line_that_waited() {
+    let mut s = show(workspace(vec![]));
+    assert!(s.wait_for(|_| true));
+    assert!(s.slow_waits().is_empty(), "{:?}", s.slow_waits());
+    s.set_settle_timeout(std::time::Duration::ZERO);
+    s.set_slow_wait(std::time::Duration::ZERO);
+    let line = line!() + 1;
+    assert!(!s.wait_for(|_| false));
+    let [report] = s.slow_waits() else {
+        panic!("{:?}", s.slow_waits())
+    };
+    assert!(report.contains("a condition (gave up)"), "{report}");
+    assert!(
+        report
+            .contains("the_offline_driver_reports_a_slow_wait_with_the_test_and_line_that_waited"),
+        "{report}"
+    );
+    assert!(report.contains(&format!("media.rs:{line}:")), "{report}");
+}
