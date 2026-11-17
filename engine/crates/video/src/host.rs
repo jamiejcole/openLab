@@ -633,14 +633,20 @@ impl<P: Platform> Host<P> {
             #[cfg(feature = "test-support")]
             ToStage::Probe { stage, points } => {
                 let probed = self.probe_stage(stage, &points, out);
-                out.push(probed);
+                // A picture that failed as the probe drew it is reported first, so the engine
+                // has it (and a test that finds nothing on a stage can say why) once it has the
+                // probe's answer.
                 self.report_failures(out);
+                out.push(probed);
             }
             #[cfg(feature = "test-support")]
             ToStage::ProbeDisplay { display, points } => {
                 let probed = self.probe_display(display, &points, out);
-                out.push(probed);
+                // A picture that failed as the probe drew it is reported first, so the engine
+                // has it (and a test that finds nothing on a stage can say why) once it has the
+                // probe's answer.
                 self.report_failures(out);
+                out.push(probed);
             }
             #[cfg(feature = "test-support")]
             ToStage::Hang => return Flow::Hang,
@@ -766,12 +772,16 @@ impl<P: Platform> Host<P> {
         size: (u32, u32),
         layers: &[Layer],
         points: &[[f32; 2]],
-    ) -> Result<(Option<u16>, Vec<[u8; 4]>), String> {
+    ) -> Result<Read, String> {
         let mut all: Vec<[f32; 2]> = crate::card::barcode_points().to_vec();
         all.extend_from_slice(points);
         let colours = self.platform.probe(size, layers, &all)?;
         let (code, asked) = colours.split_at(colours.len().min(crate::card::CELLS));
-        Ok((crate::card::read_frame(code), asked.to_vec()))
+        Ok(Read {
+            frame: crate::card::read_frame(code),
+            colours: asked.to_vec(),
+            code: code.to_vec(),
+        })
     }
 
     /// One stage's own picture, at its own size.
@@ -849,29 +859,48 @@ impl<P: Platform> Host<P> {
     }
 }
 
+/// Test support: what a probe drew: the test card's frame read from its barcode cells, if
+/// they make one, the colours at the points asked, and the cells' own colours.
+#[cfg(feature = "test-support")]
+struct Read {
+    frame: Option<u16>,
+    colours: Vec<[u8; 4]>,
+    code: Vec<[u8; 4]>,
+}
+
 /// Test support: a probe's frame and colours. A probe that could not be drawn, or that read no
 /// frame with cue pictures loaded (`loaded`, of which `due` were drawn at the clock), is said
-/// in the show log, so a test that finds
-/// nothing on a stage shows why (a GPU failure, or no frame decoded at that clock).
+/// in the show log with the barcode cells' colours, so a test that finds nothing on a stage
+/// shows why (a GPU failure, no frame decoded at that clock: black cells, or a frame drawn
+/// that is not a whole test card: other colours).
 #[cfg(feature = "test-support")]
 fn probe_answer(
-    read: Result<(Option<u16>, Vec<[u8; 4]>), String>,
+    read: Result<Read, String>,
     (due, loaded): (usize, usize),
     (clock, rate): (u64, u32),
     out: &mut Vec<FromStage>,
 ) -> (Option<u16>, Vec<[u8; 4]>) {
     match read {
-        Ok((None, colours)) if loaded > 0 => {
+        Ok(Read {
+            frame: None,
+            colours,
+            code,
+        }) if loaded > 0 => {
+            let cells: Vec<String> = code
+                .iter()
+                .map(|[r, g, b, _]| format!("{r:02x}{g:02x}{b:02x}"))
+                .collect();
             out.push(FromStage::Log {
                 level: LinkLevel::Info,
                 message: short(format!(
                     "probe at sample {clock} ({rate} Hz): {loaded} picture(s) loaded, {due} due, \
-                     no frame read"
+                     no frame read; cells {}",
+                    cells.join(" ")
                 )),
             });
             (None, colours)
         }
-        Ok(answer) => answer,
+        Ok(Read { frame, colours, .. }) => (frame, colours),
         Err(why) => {
             out.push(FromStage::Log {
                 level: LinkLevel::Warn,
@@ -1166,8 +1195,11 @@ mod tests {
         clock(&mut h, 1000);
         load(&mut h, 7, 1);
         let said = logs(&send(&mut h, probe.clone()));
+        // With the barcode cells' colours: here all black, nothing drawn.
+        let black = ["000000"; crate::card::CELLS].join(" ");
         assert!(
-            matches!(said.as_slice(), [(LinkLevel::Info, m)] if m.contains("1 picture(s) loaded, 0 due")),
+            matches!(said.as_slice(), [(LinkLevel::Info, m)]
+                if m.contains("1 picture(s) loaded, 0 due") && m.ends_with(&format!("cells {black}"))),
             "{said:?}"
         );
         h.platform_mut().fail = true;
@@ -1180,6 +1212,45 @@ mod tests {
             out.iter()
                 .any(|m| matches!(m, FromStage::Probed { frame: None, .. })),
             "still answered: {out:?}"
+        );
+    }
+
+    /// A picture that fails as a probe draws it (its decoder failed while the probe waited for
+    /// its frame) is reported before the probe's answer, so the engine knows why the probe found
+    /// nothing once it has that answer.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_picture_that_fails_as_a_probe_draws_it_is_reported_before_the_answer() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 1000);
+        load(&mut h, 7, 1);
+        send(&mut h, plain_play(7, 1000, 0.0));
+        h.platform_mut().events.push(PictureEvent::Failed(
+            7,
+            "the movie could not be read".into(),
+        ));
+        let out = send(
+            &mut h,
+            ToStage::Probe {
+                stage: id(1),
+                points: vec![[0.5, 0.5]],
+            },
+        );
+        let failed = out
+            .iter()
+            .position(|m| matches!(m, FromStage::PictureFailed { picture: 7, .. }));
+        let probed = out
+            .iter()
+            .position(|m| matches!(m, FromStage::Probed { .. }));
+        assert!(
+            matches!((failed, probed), (Some(f), Some(p)) if f < p),
+            "{out:?}"
         );
     }
 
