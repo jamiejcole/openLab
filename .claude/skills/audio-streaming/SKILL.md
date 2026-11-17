@@ -74,7 +74,7 @@ A file (`Media::Path`, `Media::Reader`) is opened on the opener pool, in order, 
 - An extra only takes an open on a volume with nothing in flight, so opens queued on a dead volume never use up the extras (each dead volume holds at most one); it exits as soon as there is none. Spawn decisions are made under the queue lock and the spawns after releasing it.
 - Past the bound no thread starts: an open on yet another volume waits for a free opener, and a started cue on it breaks after the engine's start limit (skill `engine-control`). Streams already open and preloaded cues are never affected.
 - A stream whose open has not answered is neither primed nor failed. A stream dropped while its open waits in the queue is never opened.
-- `StreamerConfig::before_open` (feature `test-support` only) runs on the opener just before a path is opened, so tests can stand in a stalled volume.
+- `StreamerConfig::before_open` (feature `test-support` only) runs on the opener just before a path is opened, so tests can stand in a stalled volume. A test that stalls a cue's first open gates the file before the show is built, or sets `prime_cues = 0`: the playhead's prime queues the open at once, and a gate set later races it.
 
 ### Loop cache
 - The first play of a loop entry (`Infinite`, or `Times(n)` with plays to come) that starts at its first frame is recorded as it goes into the ring: exactly the device-rate frames written, after decoding and resampling. Later plays are written from the recording instead of seeking back, several per worker step for short loops (up to one 4096-frame chunk).
