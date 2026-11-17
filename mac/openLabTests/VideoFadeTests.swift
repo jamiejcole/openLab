@@ -320,4 +320,42 @@ extension VideoCueTests {
         XCTAssertEqual(red14699, 0, "the Fade ran on its target")
         XCTAssertEqual(store.playheads, playhead, "the playhead did not move")
     }
+
+    // MARK: Broken, whole percents, a target filling its stage
+
+    /// A Fade with only picture values ticked is something to fade for a Video target only:
+    /// aimed at an Audio cue it is broken for nothing to fade (its row shows the mark and the
+    /// reason), and aimed back at the Video cue it is not. Opacity is typed in whole percents.
+    /// While the target fills its stage the tab says only its opacity changes.
+    func testAFadeWithOnlyPictureValuesIsBrokenOnAnAudioTargetAndNotOnAVideoTarget() async throws {
+        try await openVideoShow()
+        let id = try await fade(on: Self.still, seconds: 1)
+        tick(fg.opacityCheck)
+        try typeInto(fg.opacityField, "33.7")
+        await soon("whole percents") { self.fadeGeometry(id).fadeOpacity && self.fadeGeometry(id).opacity == 0.34 }
+        await soon { self.fg.opacityField.stringValue == "34" }
+        await soon("not broken on the Video cue") { self.status(id) == nil }
+        XCTAssertFalse(fg.fillsStageNote.isHiddenOrHasHiddenAncestor, "the still fills its stage: said so")
+        XCTAssertFalse(fg.fillsStageNote.frame.isEmpty)
+
+        let sound = await wc.editor.add(.audio)
+        let audio = try XCTUnwrap(sound)
+        guard case .success = await store.send(command: .setProperty(id, .target(audio))) else {
+            return XCTFail("retarget")
+        }
+        await soon("broken on an Audio cue") { self.status(id) == loc("cue.state.broken") }
+        XCTAssertTrue(brokenTip(id)?.contains(loc("problem.nothing_to_fade")) == true, "\(brokenTip(id) ?? "")")
+        guard case .success = await store.send(command: .setProperty(id, .target(Self.still))) else {
+            return XCTFail("retarget")
+        }
+        await soon("not broken on the Video cue again") { self.status(id) == nil }
+
+        // Custom placement: the note goes.
+        guard
+            case .success = await store.send(
+                command: .setProperty(Self.still, .kindFields(["fill_stage": .bool(false)])))
+        else { return XCTFail("custom") }
+        click(id)
+        await soon("no note for a custom target") { self.fg.fillsStageNote.isHidden }
+    }
 }

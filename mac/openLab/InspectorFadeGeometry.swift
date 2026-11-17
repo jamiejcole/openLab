@@ -95,6 +95,8 @@ final class FadeGeometryPanel: NSObject, NSTextFieldDelegate {
     let modePopup = NSPopUpButton()
     let previewButton = NSButton(title: loc("inspector.preview"), target: nil, action: nil)
     let thumbnail = GeometryThumbnail()
+    /// Says that a target filling its stage draws only the opacity of these values.
+    let fillsStageNote = NSTextField(wrappingLabelWithString: loc("inspector.fadeGeometry.fillsStage"))
 
     /// Sends the parts of `geometry` an edit changed.
     var onEdit: (([String: JSONValue]) -> Void)?
@@ -205,6 +207,14 @@ final class FadeGeometryPanel: NSObject, NSTextFieldDelegate {
         let fields = GeometryFieldsView()
         grid.translatesAutoresizingMaskIntoConstraints = false
         fields.addSubview(grid)
+        fillsStageNote.setAX("fade-geometry-fills-stage")
+        fillsStageNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        fillsStageNote.textColor = .secondaryLabelColor
+        fillsStageNote.translatesAutoresizingMaskIntoConstraints = false
+        // Wraps within the fields' width; never widens them.
+        fillsStageNote.preferredMaxLayoutWidth = 280
+        fillsStageNote.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        fields.addSubview(fillsStageNote)
         let scroll = NSScrollView()
         scroll.setAX("fade-geometry-scroll")
         scroll.documentView = fields
@@ -236,7 +246,10 @@ final class FadeGeometryPanel: NSObject, NSTextFieldDelegate {
             grid.topAnchor.constraint(equalTo: fields.topAnchor, constant: 10),
             grid.leadingAnchor.constraint(equalTo: fields.leadingAnchor, constant: 4),
             grid.trailingAnchor.constraint(equalTo: fields.trailingAnchor, constant: -4),
-            grid.bottomAnchor.constraint(lessThanOrEqualTo: fields.bottomAnchor, constant: -8),
+            fillsStageNote.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 10),
+            fillsStageNote.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
+            fillsStageNote.trailingAnchor.constraint(equalTo: grid.trailingAnchor),
+            fillsStageNote.bottomAnchor.constraint(lessThanOrEqualTo: fields.bottomAnchor, constant: -8),
             scroll.topAnchor.constraint(equalTo: view.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: side.trailingAnchor, constant: 12),
@@ -285,6 +298,8 @@ final class FadeGeometryPanel: NSObject, NSTextFieldDelegate {
         thumbnail.hasStage = stage != nil
         thumbnail.picture = picture
         thumbnail.geometry = v.applied(to: target ?? VideoGeometry(), relative: relative)
+        // A target filling its stage ignores position, scale and rotation, as an edit of them.
+        fillsStageNote.isHidden = target?.fillStage != true
         applyLock()
     }
 
@@ -355,7 +370,8 @@ final class FadeGeometryPanel: NSObject, NSTextFieldDelegate {
         func pair(_ p: CGPoint) -> JSONValue { VideoGeometry.pairJSON(p) }
         var parts: [String: JSONValue] = [:]
         switch f {
-        case opacityField where v / 100 != g.opacity: parts["opacity"] = .double(v / 100)
+        // Whole percents, as QLab takes them (p. 243).
+        case opacityField where v.rounded() / 100 != g.opacity: parts["opacity"] = .double(v.rounded() / 100)
         case xField where v != g.translation.x: parts["translation"] = .object(["x": .double(v)])
         case yField where v != g.translation.y: parts["translation"] = .object(["y": .double(v)])
         case scaleXField where v != g.scale.x || (g.scaleLocked && v != g.scale.y):

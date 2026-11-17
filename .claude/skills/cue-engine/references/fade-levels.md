@@ -23,7 +23,7 @@ Audio levels, and a Video cue's picture values (below, "Picture values"). A Vide
 - Not a gain: no de-zipper (a 0-frame ramp, a hold, is at once from its sample, and the `Level` is tracked so), no volume limits (`follow_limits` and a re-timed or resumed Fade skip them), no duck. The binary sends them to the stage host, never the mixer (skill `video`).
 - An edit of the Video cue's geometry value that a Fade set or moves on a playing picture takes it over as a level edit does (`follow_geometry_edits`: `Run::geometry` is the model's geometry as of the last comparison; the value goes to the model's over the 10 ms edit ramp and its Fade completes at once without stopping the target).
   - The value's `Level` is kept, owned by no Fade, so every later edit of it goes out the same way while the run lasts (the binary draws a value a Fade has touched by its ramps). An untouched value is drawn from the model by the binary.
-- A Fade with only picture values ticked is not `nothing_to_fade`, whatever its target.
+- Ticked picture values count against `nothing_to_fade` only when the target is a Video cue, or not set or missing (its target problem shows); aimed at an Audio cue or a Group, a Fade with only picture values is broken. The fact reads the target's kind, so it follows a retarget or the target's kind changing.
 
 ### Engine-side level tracking
 - The mixer starts every ramp from the gain's value on its first sample, so interrupted fades continue without a jump. The engine tracks the same: each running audio cue keeps the gains Fade cues set or are moving as `from -> to over frames from start`, evaluated with the mixer's formula (`ramp_gain`, `curve_shape`, `db_to_gain`).

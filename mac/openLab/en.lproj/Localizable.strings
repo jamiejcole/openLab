@@ -932,6 +932,7 @@
 "inspector.fadeGeometry.tick.scale" = "Fade the scale";
 "inspector.fadeGeometry.tick.rotation" = "Fade the rotation";
 "inspector.fadeGeometry.thumbnail" = "The target's picture on its stage as the fade leaves it";
+"inspector.fadeGeometry.fillsStage" = "The target fills its stage: only its opacity changes. Position, scale and rotation apply when its placement is custom.";
 "levels.editPatch" = "Edit Patch";
 "inspector.network.patch" = "Patch";
 "inspector.network.message" = "Message";

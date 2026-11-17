@@ -833,3 +833,35 @@ fn a_group_fade_moves_no_picture() {
     rig.start(0, 2);
     assert!(picture_ramps(&rig.start(10, 3)).is_empty());
 }
+
+#[test]
+fn picture_values_alone_are_nothing_to_fade_for_a_target_without_a_picture() {
+    let fade = picture_fade(3, 1, 1.0, FadeCurve::Linear, FadeMode::Absolute, |g| {
+        g.fade_opacity = true;
+        g.opacity = 0.0;
+    });
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1))), cue(2, audio()), fade]);
+    assert!(rig.problems(3).is_empty());
+    let retarget = |rig: &mut Rig, to: u128, now| {
+        if let CueKind::Fade { target, .. } = &mut rig.find_mut(3).kind {
+            *target = Some(id(to));
+        }
+        rig.engine.model_changed();
+        rig.tick(now);
+    };
+    retarget(&mut rig, 2, 1);
+    assert_eq!(rig.problems(3), vec![CueProblem::NothingToFade]);
+    assert_eq!(rig.state(3), CueState::Broken);
+    retarget(&mut rig, 1, 2);
+    assert!(rig.problems(3).is_empty());
+    // The target itself made into an Audio cue: the same.
+    rig.find_mut(1).kind = audio();
+    rig.engine.model_changed();
+    rig.tick(3);
+    assert_eq!(rig.problems(3), vec![CueProblem::NothingToFade]);
+    // A Group target is moved by levels only.
+    rig.find_mut(1).kind = group(vec![]);
+    rig.engine.model_changed();
+    rig.tick(4);
+    assert_eq!(rig.problems(3), vec![CueProblem::NothingToFade]);
+}
