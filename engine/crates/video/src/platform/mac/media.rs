@@ -905,8 +905,13 @@ impl Movie {
         });
     }
 
-    /// A reader of BGRA frames from `from` seconds on.
+    /// A reader of BGRA frames from the one on show at `from` seconds on. AVFoundation starts
+    /// a time range at the first frame dated at or after its start, so a range from inside a
+    /// frame would skip that frame and show the next (past an end trim, when `from` is in the
+    /// range's last frame): the range starts a frame earlier, and the frames before `from` are
+    /// passed over as they are read.
     fn open_reader(&self, from: f64) -> Result<Reader, String> {
+        let start = (from - self.frame).max(0.0);
         // SAFETY: AVFoundation calls on the movie's own asset and track; results are checked.
         unsafe {
             let reader = AVAssetReader::assetReaderWithAsset_error(&self.asset)
@@ -923,7 +928,7 @@ impl Movie {
             output.setAlwaysCopiesSampleData(false);
             reader.addOutput(&output);
             reader.setTimeRange(CMTimeRange {
-                start: CMTime::with_seconds(from.max(0.0), 600),
+                start: CMTime::with_seconds(start, 600),
                 duration: objc2_core_media::kCMTimePositiveInfinity,
             });
             if !reader.startReading() {
@@ -1490,6 +1495,22 @@ mod tests {
         assert_eq!(m.restarts, restarts + 1);
     }
 
+    /// A reader opened inside a frame (a load to time, a pause on a new decoder, a seam at a
+    /// loop start between frames) starts with the frame on show there, not the next one.
+    #[test]
+    fn a_reader_opened_inside_a_frame_starts_with_that_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mov");
+        let file = path.to_str().unwrap().to_owned();
+        super::super::testmedia::make(&["h264".into(), file.clone(), "50".into(), "25".into()])
+            .unwrap();
+        for (at, want) in [(1.19, 29), (0.41, 10), (0.0, 0), (1.96, 49)] {
+            let mut m = Movie::open(&file).unwrap();
+            let f = m.frame_at(at, 0, &|| {}).unwrap().unwrap();
+            assert_eq!(number(&f), want, "opened at {at} s");
+        }
+    }
+
     /// A loop's seam (VID-07): with the loop's start primed ahead, the jump back takes the
     /// primed reader and shows the loop's first frame, with no new reader opened at the seam; a
     /// jump somewhere else still opens one, and the primed reader is let go.
@@ -1576,6 +1597,99 @@ mod tests {
         m.prime(0.8);
         assert!(m.primed(0.8) && m.spare.is_some(), "primed there");
         assert_eq!(m.prime_failed, None, "a new place forgets the old failure");
+    }
+
+    /// A movie with an end trim, paused or loaded to within one refresh of the trim, asked for
+    /// with the real display's look-ahead → the frame drawn is the range's last frame, never one
+    /// past it. Driven as a display's window draws: the host's picture at each refresh, asked
+    /// of the decoder a refresh ahead. A paused picture stands still, so the pause neither
+    /// moves the frame nor starts reading again.
+    #[test]
+    fn a_movie_paused_or_loaded_within_a_refresh_of_its_end_trim_draws_the_ranges_last_frame() {
+        use crate::host::Host;
+        use crate::host::tests::{Fake, clock, drawn, host, load, send, stage};
+        use openlab_core::stage_link::ToStage;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mov");
+        let file = path.to_str().unwrap().to_owned();
+        super::super::testmedia::make(&["h264".into(), file.clone(), "50".into(), "25".into()])
+            .unwrap();
+        // File 0.4 to 1.2 s twice (frames 10 to 29 each pass), on a 1 kHz clock; paused 10 ms
+        // before the end trim in the last pass, on frame 29.
+        let play = ToStage::Play {
+            picture: 1,
+            at: 0,
+            offset: 0.4,
+            action: 0.0,
+            plan: vec![openlab_core::PlanPass {
+                from: 0.4,
+                length: 0.8,
+                plays: 2,
+            }],
+            into: 0.0,
+            fades: openlab_core::PictureFades::NONE,
+        };
+        let pause = ToStage::Pause {
+            picture: 1,
+            at: 1590,
+            offset: 1.19,
+            action: 1.59,
+        };
+        let shown = |m: &mut Movie, h: &mut Host<Fake>, sample: u64| {
+            clock(h, sample);
+            let c = *drawn(h, 1).first().expect("drawn");
+            m.frame_at(
+                c.position_after(FRAME_AHEAD),
+                c.pass_after(FRAME_AHEAD),
+                &|| {},
+            )
+            .unwrap()
+            .map(|f| number(&f))
+        };
+        let refreshes =
+            |from: u64, to: u64| (from * 60 / 1000..to * 60 / 1000).map(|r| r * 1000 / 60);
+        let up = |h: &mut Host<Fake>| {
+            send(
+                h,
+                ToStage::Stages {
+                    stages: vec![stage(1, Some("D"), false)],
+                },
+            );
+            load(h, 1, 1);
+            send(h, play.clone());
+        };
+
+        // Paused while it plays.
+        let mut h = host(&["D"]);
+        up(&mut h);
+        let mut m = Movie::open(&file).unwrap();
+        let mut on = None;
+        for sample in refreshes(0, 1590) {
+            on = shown(&mut m, &mut h, sample).or(on);
+        }
+        assert_eq!(on, Some(29), "the range's last frame as it pauses");
+        send(&mut h, pause.clone());
+        let restarts = m.restarts;
+        for sample in refreshes(1590, 3000) {
+            on = shown(&mut m, &mut h, sample).or(on);
+        }
+        assert_eq!(on, Some(29), "held on the range's last frame while paused");
+        assert_eq!(
+            m.restarts, restarts,
+            "the pause did not start reading again"
+        );
+
+        // Loaded there: a stage host started again is sent the load, the first play and the
+        // pause, and a fresh decoder draws its first frame.
+        let mut h = host(&["D"]);
+        up(&mut h);
+        send(&mut h, pause);
+        let mut m = Movie::open(&file).unwrap();
+        let mut seen = Vec::new();
+        for sample in refreshes(1600, 3000) {
+            seen.extend(shown(&mut m, &mut h, sample));
+        }
+        assert_eq!(seen, vec![29], "the range's last frame, and only it");
     }
 
     /// On a real display the frame asked for is the one due a refresh on. In the last pass that
