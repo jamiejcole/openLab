@@ -12,7 +12,7 @@ A build without the feature has no such option: a usage error, exit 2. Test-only
 ## Modes
 
 - **Stepped:** device time moves only on the test-only `advance { frames }` request (wire shape in `docs/protocol.md`, "Test support"), handled on the control thread.
-  - First it waits for background work (`settle`: probes, preloads, device jobs, document reads and saves, network sends, waveform reads; at most 30 s, then `internal`).
+  - First it waits for background work (`settle`: probes, preloads, device jobs, document reads and saves, network sends, waveform reads, and the stage host's opens of pictures whose starts wait for them; at most 30 s, then `internal`).
   - Then per block of up to 256 frames: wait for the disk streams the block reads (`Control::wait_streams`, shared with the offline driver), have the render thread render it and wait for that, move device time, tick, settle again.
   - Device time is the frames rendered (while the device is down, the frames that would have been). The device policy's `WallClock` and `SleepClock`, the engine's `EpochClock` (from 2026-01-01 00:00:00 UTC), and so the status interval, autosave pacing and log times all follow it. The random seed is fixed; `status.cpu_seconds` and `engine_load` are absent.
   - Workers' answers arriving between requests (`Inbox::Probe`, `Device`, `Net`, `Watch`) are **held** and taken in at the next settle, which ticks only once no answer is outstanding (or after 50 ms without one), so what they change goes out at the same point of a script whatever their timing. Document answers and waveforms are not held (they answer a request).

@@ -650,7 +650,7 @@ impl Control {
     }
 
     /// Waits until no media probe, preload or waveform read, device job, document read or
-    /// save, or network send is outstanding, taking in the held answers first, then what
+    /// save, network send, or picture open a start waits for is outstanding, taking in the held answers first, then what
     /// arrives. Device time stands still meanwhile. The loop ticks only once no worker's
     /// answer is outstanding, so the changes those answers make go out together in one tick
     /// whatever order and timing they came in (a tick also collects saves, and may start
@@ -706,12 +706,16 @@ impl Control {
         }
     }
 
-    /// Work a worker answers through the inbox, handled as it arrives.
+    /// Work a worker answers through the inbox, handled as it arrives. A Video cue's start
+    /// waiting for its picture's open counts: live, device time moves on while the stage host
+    /// opens the file, but a stepped `advance` would run its frames before the open answered, so
+    /// the picture would start late by however far the request moved time.
     fn answers_outstanding(&self) -> bool {
         self.probes_pending() > 0
             || self.preloads_pending() > 0
             || self.device_jobs_pending() > 0
             || self.net_busy() > 0
+            || self.pictures_waiting() > 0
     }
 
     /// Work the control loop collects in a tick (document reads and saves) or that answers a
