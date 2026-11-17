@@ -221,6 +221,7 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
                 },
                 stop_target_when_done: false,
                 mode: Default::default(),
+                geometry: Default::default(),
             }
         }
         5 => CueKind::Arm {

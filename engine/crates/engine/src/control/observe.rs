@@ -553,13 +553,15 @@ impl DocCx<'_> {
                         .get("cue")
                         .and_then(|c| serde_json::from_value(c.clone()).ok());
                     let text = value.to_string();
-                    self.record(
-                        LogKind::Engine,
-                        LogLevel::Warn,
-                        format!("warning {text}"),
-                        cue,
-                        None,
-                    );
+                    // A Fade or Devamp of a cue that is not running does nothing, as in QLab,
+                    // and the app lists no warning for it: not a fault.
+                    let level = match warning {
+                        openlab_core::protocol::WireWarning::TargetNotRunning { .. } => {
+                            LogLevel::Info
+                        }
+                        _ => LogLevel::Warn,
+                    };
+                    self.record(LogKind::Engine, level, format!("warning {text}"), cue, None);
                 }
                 _ => {}
             }

@@ -170,6 +170,9 @@ pub(super) struct Run {
     pub faders: BTreeSet<CueId>,
     /// Audio cues with a started voice: what the voice has been given (`live_levels.rs`).
     pub given: Option<Given>,
+    /// Video cues whose picture a Fade has moved: the cue's geometry in the model as of the
+    /// last comparison, so an edit of a value a Fade holds takes it over (`live_levels.rs`).
+    pub geometry: Option<crate::video_geometry::VideoGeometry>,
     /// Audio cues: a devamp sent for its voice and not yet carried out.
     pub devamp: Option<DevampWait>,
     /// Its patch moved to another device while a devamp sent was not answered yet
@@ -402,6 +405,7 @@ impl Run {
             levels: BTreeMap::new(),
             faders: BTreeSet::new(),
             given: None,
+            geometry: None,
             devamp: None,
             move_pending: false,
             fade: None,

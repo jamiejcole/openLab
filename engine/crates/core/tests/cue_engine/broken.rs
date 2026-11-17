@@ -1155,6 +1155,7 @@ fn fade_with(n: u128, levels: FadeLevels, stop: bool) -> Cue {
             levels,
             stop_target_when_done: stop,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }
@@ -1180,7 +1181,7 @@ fn a_fade_that_sets_no_level_is_broken_and_go_skips_it_even_with_stop_target() {
     assert_eq!(rig.state(2), CueState::Broken);
     assert_eq!(
         CueProblem::NothingToFade.to_string(),
-        "no levels set to fade"
+        "no levels or picture values set to fade"
     );
     // Cue 1 plays; GO on the broken Fade does not stop it, even with "stop target when done".
     rig.go(0);

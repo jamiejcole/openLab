@@ -1208,10 +1208,18 @@ fn facts_of<'w>(
         }),
         _ => None,
     };
-    let nothing_to_fade = matches!(&cue.kind, CueKind::Fade { levels, .. }
+    // A ticked picture value is something to fade (QLab 5 manual p. 247: a level or a
+    // parameter) only for a target that has a picture: a Video cue, or a target not set or not
+    // there yet (its own problem shows). An Audio or Group target is moved by levels alone.
+    let pictured = |target: &Option<CueId>| match target.and_then(&kind_of) {
+        Some(kind) => matches!(kind, CueKind::Video { .. }),
+        None => true,
+    };
+    let nothing_to_fade = matches!(&cue.kind, CueKind::Fade { levels, geometry, target, .. }
         if levels.master_db.is_none()
             && levels.output_db.iter().all(Option::is_none)
-            && levels.crosspoints.is_empty());
+            && levels.crosspoints.is_empty()
+            && !(geometry.any() && pictured(target)));
     (target.is_some() || audio.is_some() || network.is_some() || video.is_some() || nothing_to_fade)
         .then_some(Facts {
             target,

@@ -234,6 +234,7 @@ fn clipboard() -> Vec<openlab_core::Cue> {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     );
     fade_cue.number = Some("9".into());

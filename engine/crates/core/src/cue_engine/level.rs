@@ -11,6 +11,7 @@ use crate::cue::{
     SILENCE_DB,
 };
 use crate::model::CueId;
+use crate::video_geometry::PictureParam;
 
 use super::time::SampleTime;
 
@@ -23,6 +24,20 @@ pub enum LevelParam {
     Output(u32),
     /// The crosspoint from file channel `input` to cue output `output`.
     Crosspoint { input: u32, output: u32 },
+    /// A value of a Video cue's picture (VID-05): carried out on the stage host, never by the
+    /// mixer. Not a gain: no limits, no de-zipper (0 frames is at once), relative by its own
+    /// rule ([`PictureParam::relative`]).
+    Picture(PictureParam),
+}
+
+impl LevelParam {
+    /// Its picture value, if it is one.
+    pub fn picture(self) -> Option<PictureParam> {
+        match self {
+            Self::Picture(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 /// How long the mixer takes over a gain change that has no fade of its own (5 ms, at least one
@@ -200,14 +215,25 @@ pub fn ramp_gain(from: f32, to: f32, pos: u64, len: u64, curve: FadeCurve) -> f3
     if pos >= len {
         return to;
     }
+    ramp_value(f64::from(from), f64::from(to), pos, len, curve) as f32
+}
+
+/// [`ramp_gain`] for any value, in f64 (a picture's geometry: VID-05): the same steps and
+/// curve, so a picture's fade moves as a level's does.
+pub fn ramp_value(from: f64, to: f64, pos: u64, len: u64, curve: FadeCurve) -> f64 {
+    if pos == 0 {
+        return from;
+    }
+    if pos >= len {
+        return to;
+    }
     let t = pos as f64 / len as f64;
     let s = if to >= from {
         curve_shape(curve, t)
     } else {
         1.0 - curve_shape(curve, 1.0 - t)
     };
-    let (a, b) = (f64::from(from), f64::from(to));
-    (a + (b - a) * s) as f32
+    from + (to - from) * s
 }
 
 /// A gain a Fade cue has set or is moving, as [`CueEngine::fade_ramps`](super::CueEngine::fade_ramps)
@@ -291,6 +317,7 @@ pub(super) fn model_gain(levels: &CueLevels, param: LevelParam) -> Option<f32> {
                 None => Some(0.0),
             }
         }
+        LevelParam::Picture(_) => None,
     }
 }
 

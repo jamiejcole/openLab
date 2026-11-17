@@ -702,6 +702,10 @@ pub enum CueKind {
         /// file: absolute.
         #[serde(default)]
         mode: FadeMode,
+        /// What it does to a Video target's picture (VID-05), read in `mode` as the levels are.
+        /// Absent in a file: nothing.
+        #[serde(default)]
+        geometry: crate::video_geometry::FadeGeometry,
     },
     Group {
         mode: GroupMode,

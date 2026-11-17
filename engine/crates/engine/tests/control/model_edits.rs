@@ -726,6 +726,7 @@ fn fade_of_steady(
             },
             stop_target_when_done,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }

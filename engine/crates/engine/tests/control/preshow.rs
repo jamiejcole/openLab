@@ -73,6 +73,7 @@ fn fade_to(n: u128, target: u128) -> Cue {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }

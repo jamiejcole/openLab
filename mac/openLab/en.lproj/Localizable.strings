@@ -603,7 +603,7 @@
 "problem.target_missing" = "Its target, {target}, does not exist.";
 "problem.target_self" = "It targets itself.";
 "problem.target_wrong_kind" = "Its target, {target}, is the wrong kind of cue.";
-"problem.nothing_to_fade" = "It sets no level to fade.";
+"problem.nothing_to_fade" = "It sets no level or picture value to fade.";
 "problem.no_media" = "No media file is chosen.";
 "problem.media_missing" = "Media file not found: {media}";
 "problem.media_unsupported" = "Media file cannot be played: {media}";
@@ -925,6 +925,14 @@
 "inspector.geometry.reset.rotation" = "Reset the rotation";
 "inspector.geometry.reset.crop" = "Reset the crop";
 "inspector.geometry.reset.anchor" = "Reset the anchor";
+
+/* A Fade cue's Geometry tab: a tick box per picture value it fades. */
+"inspector.fadeGeometry.tick.opacity" = "Fade the opacity";
+"inspector.fadeGeometry.tick.position" = "Fade the position";
+"inspector.fadeGeometry.tick.scale" = "Fade the scale";
+"inspector.fadeGeometry.tick.rotation" = "Fade the rotation";
+"inspector.fadeGeometry.thumbnail" = "The target's picture on its stage as the fade leaves it";
+"inspector.fadeGeometry.fillsStage" = "The target fills its stage: only its opacity changes. Position, scale and rotation apply when its placement is custom.";
 "levels.editPatch" = "Edit Patch";
 "inspector.network.patch" = "Patch";
 "inspector.network.message" = "Message";

@@ -35,7 +35,9 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-pub use level::{EDIT_RAMP_SECONDS, LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
+pub use level::{
+    EDIT_RAMP_SECONDS, LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain, ramp_value,
+};
 pub use preview::{PREVIEW_RUN_BASE, PREVIEW_STOP_FADE_SECONDS};
 pub use time::*;
 pub use timers::{Timer, TimerProgress};

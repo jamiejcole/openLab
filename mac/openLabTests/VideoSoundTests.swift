@@ -342,12 +342,14 @@ extension VideoCueTests {
         }
         click(fadeID)
         await soon("the Fade has no Levels tab") {
-            inspector.cue?.id == fadeID && self.tabs() == ["basics", "triggers", "curve"]
+            inspector.cue?.id == fadeID && self.tabs() == ["basics", "triggers", "curve", "fadeGeometry"]
         }
 
         // With sound again: the levels come back.
         await wc.editor.replaceFile(of: Self.movie, with: withSound)
-        await soon("the Fade's Levels tab follows its target's sound") { self.tabs().last == "fadeLevels" }
+        await soon("the Fade's Levels tab follows its target's sound") {
+            self.tabs() == ["basics", "triggers", "curve", "fadeLevels", "fadeGeometry"]
+        }
         try await show(Self.movie, tab: "levels")
         XCTAssertEqual(inspector.audioLevels.levels?.master, -7)
     }
@@ -670,7 +672,8 @@ extension VideoCueTests {
         typeLevel(inspector.audioLevels, .master, "-4")
         await soon { self.levels(Self.movie)?.master == -4 }
         try await show(down, tab: "fadeLevels")
-        XCTAssertEqual(tabs(), ["basics", "triggers", "curve", "fadeLevels"], "as for an Audio target")
+        XCTAssertEqual(
+            tabs(), ["basics", "triggers", "curve", "fadeLevels", "fadeGeometry"], "Levels as for an Audio target")
         let fadePanel = inspector.fadeLevels
         XCTAssertTrue(fadePanel.fromTargetButton.isEnabled)
         fire(fadePanel.fromTargetButton)
@@ -741,7 +744,7 @@ extension VideoCueTests {
         click(quiet)
         await soon("no Levels tab for a silent target") {
             inspector.cue?.id == quiet && self.kind(quiet)?["target"]?.stringValue == Self.long.raw
-                && self.tabs() == ["basics", "triggers", "curve"]
+                && self.tabs() == ["basics", "triggers", "curve", "fadeGeometry"]
         }
     }
 

@@ -111,8 +111,10 @@ impl Voices {
                     .collect();
                 let new = r.levelled..outputs;
                 let mut give = |param: LevelParam, gain: f32| {
-                    if gain != 0.0 && !faded.contains(&param) {
-                        let target = target(param);
+                    if gain != 0.0
+                        && !faded.contains(&param)
+                        && let Some(target) = target(param)
+                    {
                         let fade = Fade::NONE;
                         commands.push((
                             at,

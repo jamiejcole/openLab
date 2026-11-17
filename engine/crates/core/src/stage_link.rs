@@ -15,11 +15,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::StageId;
 use crate::video::{MAX_STAGES, side_ok};
-use crate::video_geometry::VideoGeometry;
+use crate::video_geometry::{PictureParam, PictureRamp, VideoGeometry};
 use crate::video_timing::{PictureFades, PlanPass, picture_run_ok};
 
 /// The link version both ends speak; a stage host answering another version is not used.
-pub const LINK_VERSION: u32 = 3;
+pub const LINK_VERSION: u32 = 4;
 /// Longest line either end accepts, newline excluded: enough for a `stages` set of
 /// [`MAX_LINK_STAGES`] stages whose display ids are all [`MAX_TEXT_BYTES`] long.
 pub const MAX_LINE_BYTES: usize = 512 * 1024;
@@ -70,6 +70,14 @@ pub enum ToStage {
     Geometry {
         picture: u64,
         geometry: VideoGeometry,
+    },
+    /// One value of the picture's geometry moves (a Fade cue, VID-05): drawn as `ramp` says
+    /// from its sample on, over the geometry's own value, until the picture goes or the next
+    /// `ramp` of that value (from its own sample; before it, this one still applies).
+    Ramp {
+        picture: u64,
+        param: PictureParam,
+        ramp: PictureRamp,
     },
     /// The picture plays from sample `at` (engine clock), `offset` seconds into the file then;
     /// a picture not loaded is ignored. A movie follows its `plan` (its trims, slices and loops
@@ -361,6 +369,9 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
         {
             Err(LinkError::Invalid("picture geometry out of range"))
         }
+        ToStage::Ramp { param, ramp, .. } if !ramp.ok(*param) => {
+            Err(LinkError::Invalid("picture value out of range"))
+        }
         ToStage::Play { offset, .. } | ToStage::Pause { offset, .. } if !offset_ok(*offset) => {
             Err(LinkError::Invalid("picture offset out of range"))
         }
@@ -600,6 +611,45 @@ mod tests {
         let line = encode(&message).unwrap();
         assert!(line.len() <= MAX_LINE_BYTES + 1, "{} bytes", line.len());
         assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), message);
+    }
+
+    /// A picture value's ramp (VID-05) reads back; one with an end outside the value's range,
+    /// or not a number, is refused.
+    #[test]
+    fn a_picture_ramp_reads_back_and_one_out_of_range_is_refused() {
+        let ramp = |param, from, to| ToStage::Ramp {
+            picture: 3,
+            param,
+            ramp: PictureRamp {
+                from,
+                to,
+                at: 48_000,
+                frames: 144_000,
+                curve: crate::FadeCurve::SCurve,
+            },
+        };
+        let good = ramp(PictureParam::TranslationX, -300.5, 1200.0);
+        let line = encode(&good).unwrap();
+        assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), good);
+        for bad in [
+            ramp(PictureParam::Opacity, 1.0, 1.01),
+            ramp(PictureParam::Rotation, 361.0, 0.0),
+            ramp(PictureParam::ScaleY, 1.0, -101.0),
+        ] {
+            let line = serde_json::to_string(&bad).unwrap();
+            assert!(matches!(
+                decode_to_stage(line.as_bytes()),
+                Err(LinkError::Invalid(_))
+            ));
+        }
+        for line in [
+            r#"{"type":"ramp","picture":1,"param":"opacity","ramp":{"from":1,"to":null,"at":0,"frames":0,"curve":"linear"}}"#,
+            r#"{"type":"ramp","picture":1,"param":"crop","ramp":{"from":1,"to":1,"at":0,"frames":0,"curve":"linear"}}"#,
+            r#"{"type":"ramp","picture":1,"param":"opacity","ramp":{"from":1,"to":1,"at":-1,"frames":0,"curve":"linear"}}"#,
+            r#"{"type":"ramp","picture":1,"param":"scale_x","ramp":{"from":1e999,"to":1,"at":0,"frames":0,"curve":"linear"}}"#,
+        ] {
+            assert!(decode_to_stage(line.as_bytes()).is_err(), "{line}");
+        }
     }
 
     /// Geometry out of range is refused on the link as everywhere else (VID-04).

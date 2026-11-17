@@ -16,7 +16,7 @@ One structured record per event, made on the control thread (`control/observe.rs
 | `cue_fail` | A cue breaks **at run time** (`voice_rejected`, `stream_failed`, `device_lost`). Static problems are not run-time failures |
 | `device` | Device lost, reopen attempts, restored, stuck list |
 | `document` | Workspace opened or created, saved, save failed |
-| `engine` | Everything else the loop reports: cue-engine warnings, faults, lost events, clients not keeping up |
+| `engine` | Everything else the loop reports: cue-engine warnings (`warn`; `target_not_running`, a Fade or Devamp of a cue that is not running, `info`, as the app lists no warning for it), faults, lost events, clients not keeping up |
 
 - **Trigger limit:** 5 per source per 10 s (wall clock); the rest are counted and one record at window end says `N more input(s) not logged`. Why: a chatty controller must not flush GO history out of the ring or rotated files. `go` records are not limited. At most 256 sources tracked; later ones share one `other sources` entry.
 - Every message the loop sends as `log` is still sent unchanged and also recorded; the other kinds are only in the log. A client reads history with `log_tail` and follows with `log_entry`.
