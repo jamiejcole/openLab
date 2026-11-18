@@ -212,7 +212,13 @@ extension InspectorViewController {
         let sets = cues.compactMap { LevelSet(kind: $0.raw["kind"] ?? .null) }
         guard let base = sets.first else { return audioLevels.show(nil, inputs: 0, outputs: 0) }
         let inputs = cues.map { Self.inputRows(of: $0, durations: store.mediaDurations) }.max() ?? 0
-        let outputs = sets.map(\.outputs.count).max() ?? 0
+        // As many columns as the widest of them shows on its own (its patch's count), or more where
+        // a cue's own levels name more.
+        let outputs =
+            cues.compactMap { cue -> Int? in
+                guard let model = store.model, let set = LevelSet(kind: cue.raw["kind"] ?? .null) else { return nil }
+                return max(Self.shownOutputs(of: cue, set, model: model), set.outputs.count)
+            }.max() ?? 0
         audioLevels.show(base, inputs: inputs, outputs: outputs)
         audioLevels.gangsMixed = Set(sets.map(\.gangs)).count > 1
         audioLevels.editsSeveral = true
@@ -404,9 +410,11 @@ extension InspectorViewController {
         if case .mute(let slot) = action { audioLevels.mixed.remove(slot) }
         let limits = audioLevels.limits
         sendKindEach(
-            { _, kind in
+            { [store] cue, kind in
                 guard let own = LevelSet(kind: kind) else { return kind }
-                return own.taking(action, from: set, limits: limits, drag: gesture != nil).json(into: kind)
+                let outputs = store.model.map { Self.shownOutputs(of: cue, own, model: $0) } ?? 0
+                return own.taking(action, from: set, limits: limits, drag: gesture != nil, outputs: outputs)
+                    .json(into: kind)
             }, key: "levels", coalesce: gesture.map { "levels:batch:\(Self.launchToken):\($0)" })
     }
 }
