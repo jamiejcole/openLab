@@ -45,8 +45,16 @@ enum GroupBoxes {
     static let rightStep: CGFloat = 3
     /// The inset of the outermost edges from the Name column's sides and from a row's top and bottom.
     static let edge: CGFloat = 1.5
-    /// How much higher an inner box's bottom edge is than the one around it, on a row both end on.
-    static let bottomStep: CGFloat = 2
+    /// How much higher an inner box's bottom edge is than the one around it, on a row both end on, and
+    /// how many steps there are: deeper boxes share the highest, so no bottom edge reaches the row's text
+    /// (its lowest ink is about 6 pt above the row's bottom) however deep the nesting.
+    static let bottomStep: CGFloat = 1
+    static let bottomSteps = 2
+
+    /// How far up from the row's bottom the bottom edge of a box of `rank` is drawn.
+    static func bottomOffset(rank: Int) -> CGFloat {
+        edge.rounded(.down) + 0.5 + CGFloat(min(rank, bottomSteps)) * bottomStep
+    }
     /// The next child's pointer: a solid triangle on the box's left edge, pointing at the row.
     static let markSize = NSSize(width: 6, height: 9)
 
@@ -136,8 +144,7 @@ enum GroupBoxes {
             guard right - left > 2 else { continue }
             let line = edge.rounded(.down) + 0.5
             let top: CGFloat? = part.top ? topY + down * line : nil
-            let bottom: CGFloat? =
-                part.bottom ? bottomY - down * (line + CGFloat(part.bottomRank) * bottomStep) : nil
+            let bottom: CGFloat? = part.bottom ? bottomY - down * bottomOffset(rank: part.bottomRank) : nil
             let path = edgePath(
                 left: left, right: right, top: top, bottom: bottom, rowTop: topY, rowBottom: bottomY,
                 radius: part.outline.rounded ? 4 : 0)
