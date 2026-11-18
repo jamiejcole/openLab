@@ -1294,8 +1294,8 @@ fn a_stage_display_changed_while_a_cue_plays_moves_the_picture_there_at_once() {
 
 /// #642 flow: remove is refused while a cue uses the stage, with the reason (the stage's
 /// name and the cue), whether asked directly, in a transaction, or by an undo or redo; the
-/// picture stays up. Once the cue has stopped the same removal goes ahead (QLab-behaviour
-/// Q300: a stage cues only aim at may be removed).
+/// picture stays up. Once the cue has stopped the same removal goes ahead: a stage cues only
+/// aim at may be removed.
 #[test]
 fn removing_a_stage_a_cue_plays_on_is_refused_with_the_reason() {
     let dir = tempfile::tempdir().unwrap();
