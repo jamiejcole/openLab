@@ -65,7 +65,7 @@ The app's tests run the real engine as the Debug-only test engine (`-OpenLabEngi
 
 ## Pre-Show Check window (app half; engine half is `preshow_check`, skill `engine-control`)
 
-- Window > Pre-Show Check (Shift-Cmd-W), enabled while the workspace's engine connection is up, opens a floating panel that never takes the keys from the workspace window (`PreshowReport.swift`, `PreshowWindowController.swift`).
+- Window > Workspace Status (Shift-Cmd-W), enabled while the workspace's engine connection is up, opens the workspace status window on its Warnings page, which holds the check (`PreshowReport.swift`, `PreshowWindowController.swift`'s content; its own window is never shown); the status window never takes the keys from the workspace window.
 - Entries are grouped as broken cues, media files, patches without a device, network destinations and engine warnings. Empty groups are left out, the engine's order is kept, information-only entries are dimmed.
 - Choosing an entry makes its workspace window key (so the next GO goes there, not to another open workspace) and selects its cue without moving the playhead; in Edit Mode it shows the inspector (Basics tab for file and target problems).
 - A cue deleted since the check is marked and cannot be chosen. Check Again reruns it; a lost connection or failed request clears the list rather than leave an old report standing.

@@ -54,8 +54,9 @@ final class CueListUITests: XCTestCase {
         // outline, which lists only its rows to accessibility, so it is reached by keyboard focus.
         app.typeText("1:30\r")
         XCTAssertTrue(app.staticTexts["01:30.00"].waitForExistence(timeout: 10), "the cell shows the stored duration")
+        // The inspector's time fields show milliseconds; the list keeps hundredths.
         let inspector = app.textFields["inspector-duration"]
-        XCTAssertTrue(waitFor("value == '01:30.00'", inspector, timeout: 5), "the inspector follows")
+        XCTAssertTrue(waitFor("value == '01:30.000'", inspector, timeout: 5), "the inspector follows")
     }
 }
 
@@ -156,6 +157,8 @@ final class CueListLayoutUITests: XCTestCase {
         let pre = header("Pre-Wait", in: app)
         let edge = pre.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(CGVector(dx: -1, dy: 0))
         edge.press(forDuration: 0.2, thenDragTo: edge.withOffset(CGVector(dx: 600, dy: 0)))
+        // AppKit scrolls the list along as the edge is dragged past the list's right edge: back to its start first.
+        list.scroll(byDeltaX: 2000, deltaY: 0)
         let before = header("Duration", in: app).frame.minX
         list.scroll(byDeltaX: -400, deltaY: 0)
         XCTAssertLessThan(header("Duration", in: app).frame.minX, before - 50, "the list scrolled sideways")
@@ -193,9 +196,11 @@ final class PlayheadClickUITests: XCTestCase {
         let number = ["One": "1", "Two": "2", "Three": "3"][title] ?? ""
         let standby = app.staticTexts["standby-field"]
         XCTAssertTrue(waitFor("value == '\(number) \u{00B7} \(title)'", standby), "standby on \(title)", line: line)
-        XCTAssertTrue(waitFor("isSelected == true", row(title, in: app)), "\(title) highlighted", line: line)
+        let lit = highlighted ?? [title]
+        let awaited = lit.contains(title) ? title : lit.first ?? title
+        XCTAssertTrue(waitFor("isSelected == true", row(awaited, in: app)), "\(awaited) highlighted", line: line)
         for name in ["One", "Two", "Three"] {
-            let on = (highlighted ?? [title]).contains(name)
+            let on = lit.contains(name)
             XCTAssertEqual(row(name, in: app).isSelected, on, "\(name) highlight", line: line)
             let marker = row(name, in: app).images.matching(identifier: "cue-playhead").firstMatch
             XCTAssertEqual(marker.exists, name == title, "\(name) marker", line: line)
@@ -318,12 +323,17 @@ final class PlayheadClickUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["2"].exists, "the number is unchanged")
     }
 
+    /// A press in the status column moves the playhead there and leaves the highlight where it was;
+    /// the next GO fires that cue.
     func testClickingTheStatusColumn() {
         let app = launchThree()
         // The status column is the row's first 80 points; its images only show state.
         row("Three", in: app).coordinate(withNormalizedOffset: .zero)
             .withOffset(CGVector(dx: 60, dy: 12)).click()
-        assertAllOn("Three", in: app)
+        assertAllOn("Three", highlighted: ["One"], in: app)
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        XCTAssertTrue(cueState("Running", of: "Three", in: app).waitForExistence(timeout: 10), "GO fires Three")
+        XCTAssertFalse(cueState("Running", of: "One", in: app).exists, "and not the highlighted One")
     }
 
     func testMultiSelection() {
@@ -414,6 +424,13 @@ final class ListToolsUITests: XCTestCase {
         (0..<rows.count).first { rows.element(boundBy: $0).isSelected }
     }
 
+    /// Drags `button` onto `row` as a hand would: slowly, resting over the row before the release. The
+    /// drag session starts only once the press has moved, and on a slow runner a fast drag was released
+    /// before the session had seen the list under it.
+    private func drag(_ button: XCUIElement, onto row: XCUIElement) {
+        button.press(forDuration: 0.3, thenDragTo: row, withVelocity: .slow, thenHoldForDuration: 0.5)
+    }
+
     func testAToolbarButtonDraggedIntoTheListMakesACueWhereItLandsAndInAnOpenGroupJoinsIt() {
         let app = launchDemo()
         let rows = app.outlines["cue-list"].outlineRows
@@ -422,13 +439,13 @@ final class ListToolsUITests: XCTestCase {
         let memo = toolbarButton("Memo", in: app)
         XCTAssertTrue(memo.waitForExistence(timeout: 10), "the Memo button")
         // Dropped on Intro's row: the new cue is made just after it, and selected.
-        memo.press(forDuration: 0.3, thenDragTo: cueRow("Intro", in: app))
+        drag(memo, onto: cueRow("Intro", in: app))
         XCTAssertTrue(waitFor("count == 7", rows), "a cue was made: \(rows.count)")
         XCTAssertTrue(waitFor("selected == true", rows.element(boundBy: 1)), "right after Intro")
         XCTAssertTrue(rows.element(boundBy: 0).staticTexts["Intro"].exists, "Intro keeps its place")
         // Dropped on the open group's row: the new cue joins the group, after its last cue.
         let wait = toolbarButton("Wait", in: app)
-        wait.press(forDuration: 0.3, thenDragTo: cueRow("Act One", in: app))
+        drag(wait, onto: cueRow("Act One", in: app))
         XCTAssertTrue(waitFor("count == 8", rows), "a second cue was made: \(rows.count)")
         XCTAssertEqual(selectedIndex(rows), 7, "after Radio, the group's last cue")
         // Closing the group hides it with the group's other cues: it is inside.
@@ -440,7 +457,8 @@ final class ListToolsUITests: XCTestCase {
 
     func testEnterFullScreenTakesTheWorkspaceWindowFullScreenAndBack() {
         let app = launchDemo()
-        let window = app.windows.firstMatch
+        // The workspace window itself: the first window in the list need not be it while the app comes up.
+        let window = app.windows.matching(identifier: "main-window").firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10))
         let before = window.frame
         app.menuBars.menuBarItems["View"].click()
@@ -455,7 +473,9 @@ final class ListToolsUITests: XCTestCase {
             "the window fills the screen: \(window.frame) of \(screen)")
         // The menu bar hides in full screen; the item's keys take it back.
         app.typeKey("f", modifierFlags: [.command, .shift])
-        XCTAssertTrue(waitUntil { abs(window.frame.width - before.width) <= 1 }, "the window is back: \(window.frame)")
+        XCTAssertTrue(
+            waitUntil { abs(window.frame.width - before.width) <= 1 },
+            "the window is back: \(window.frame), was \(before)")
     }
 
     /// True once `condition` holds, false after `timeout` seconds; the waiter polls it.
