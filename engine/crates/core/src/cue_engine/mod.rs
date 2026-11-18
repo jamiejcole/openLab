@@ -73,6 +73,8 @@ pub struct CueEngine {
     slots: BTreeMap<CueId, Slot>,
     playheads: BTreeMap<CueListId, Playhead>,
     last_go: Option<SampleTime>,
+    /// When double-GO protection ends, while it is in force (reported as `GoProtection`).
+    go_protect_until: Option<SampleTime>,
     next_run: u64,
     next_seq: u64,
     /// Random groups and shuffled playlists draw from this, seeded from the config.
@@ -175,6 +177,7 @@ impl CueEngine {
             slots: BTreeMap::new(),
             playheads: BTreeMap::new(),
             last_go: None,
+            go_protect_until: None,
             next_run: 1,
             next_seq: 0,
             rng: SplitMix64::new(config.seed()),
@@ -360,6 +363,7 @@ impl CueEngine {
         self.apply(input, &mut cx);
         self.drain(&mut cx);
         self.advance(&mut cx);
+        self.end_go_protection(&mut cx);
         self.settle_groups(&mut cx);
         self.sync_ducks(&mut cx);
         // `limit - budget` is what this call and the earlier ones at `now` started (a raised
@@ -374,6 +378,10 @@ impl CueEngine {
     /// device reopen), so this guards the API: samples dated on the old clock mean nothing on the
     /// new one, and must not hold back what is dated from now on.
     fn clock_went_back(&mut self, now: SampleTime) {
+        // Protection dated on the old clock ends at the next call.
+        if self.go_protect_until.is_some() {
+            self.go_protect_until = Some(now);
+        }
         for slot in self.slots.values_mut() {
             let Slot::Active(run) = slot else { continue };
             run.committed = run.committed.min(now);
@@ -404,6 +412,7 @@ impl CueEngine {
                 Slot::Active(run) => run.next_deadline(),
                 Slot::Loaded(_) | Slot::Broken(_) | Slot::Lost(_) => None,
             })
+            .chain(self.go_protect_until)
             .min()
     }
 

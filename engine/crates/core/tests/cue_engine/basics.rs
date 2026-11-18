@@ -535,6 +535,47 @@ fn clock_going_backwards_does_not_block_go() {
     assert!(!double_go(&rig.go(10)));
 }
 
+fn protection(actions: &[Action]) -> Vec<bool> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::GoProtection { active } => Some(*active),
+            _ => None,
+        })
+        .collect()
+}
+
+/// QLab 5, manual p. 100: after a GO the protection is in force until the time passes, a GO
+/// inside it starts nothing and does not extend it, and the first GO after it is accepted.
+#[test]
+fn go_protection_is_reported_from_the_accepted_go_until_its_time_passes() {
+    let mut rig = double_go_rig();
+    assert_eq!(protection(&rig.go(1000)), [true]);
+    assert!(
+        rig.engine.next_deadline() == Some(1500),
+        "the end is a deadline"
+    );
+    let ignored = rig.go(1200);
+    assert!(double_go(&ignored));
+    assert!(
+        protection(&ignored).is_empty(),
+        "an ignored GO does not extend it"
+    );
+    assert!(protection(&rig.tick(1400)).is_empty());
+    assert_eq!(protection(&rig.tick(1500)), [false]);
+    assert!(protection(&rig.tick(1600)).is_empty(), "it ends once");
+    let accepted = rig.go(1600);
+    assert!(!double_go(&accepted));
+    assert_eq!(protection(&accepted), [true]);
+}
+
+#[test]
+fn a_zero_interval_reports_no_protection() {
+    let mut rig = Rig::new(vec![memo(1), memo(2)]);
+    assert!(protection(&rig.go(1000)).is_empty());
+    assert!(rig.engine.next_deadline().is_none());
+}
+
 // ----- playhead navigation (PB-05, CL-06) -----
 
 fn numbered_rig() -> Rig {

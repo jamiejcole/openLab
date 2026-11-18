@@ -492,6 +492,74 @@ fn auto_number_replaces_the_cues_own_number_and_survives_undo_and_redo() {
     assert_eq!(ws, after);
 }
 
+/// QLab 5, manual p. 100: with an increment of 1 and cues 2, 4 and 6, a cue added after 6 is 7,
+/// one between 2 and 4 is 3, and one then added between 2 and 3 is 2.5.
+#[test]
+fn auto_number_new_cue_between_neighbours_takes_the_gap() {
+    let mut ws = workspace(vec![
+        numbered(1, "2", CueKind::Memo),
+        numbered(2, "4", CueKind::Memo),
+        numbered(3, "6", CueKind::Memo),
+    ]);
+    let add = |n: u128, index: usize| Command::AddCue {
+        at: pos(None, index),
+        cue: memo(n),
+        auto_number: true,
+    };
+    ws.apply(add(10, 3)).unwrap();
+    assert_eq!(number(&ws, 10).as_deref(), Some("7"));
+    ws.apply(add(11, 1)).unwrap();
+    assert_eq!(number(&ws, 11).as_deref(), Some("3"));
+    ws.apply(add(12, 1)).unwrap();
+    assert_eq!(number(&ws, 12).as_deref(), Some("2.5"));
+    assert_clean(&ws);
+}
+
+/// With auto-numbering off a cue made with `auto_number` keeps the number it has (none for a
+/// new cue); paste and the clipboard never number.
+#[test]
+fn auto_number_off_leaves_a_new_cue_without_a_number_and_a_paste_is_never_numbered() {
+    let mut ws = workspace(vec![numbered(1, "3", CueKind::Memo)]);
+    ws.settings.auto_number_new_cues = false;
+    ws.apply(Command::AddCue {
+        at: pos(None, 1),
+        cue: memo(2),
+        auto_number: true,
+    })
+    .unwrap();
+    assert_eq!(number(&ws, 2), None);
+    ws.settings.auto_number_new_cues = true;
+    ws.apply(Command::Paste {
+        at: pos(None, 2),
+        cues: vec![memo(3)],
+    })
+    .unwrap();
+    assert_eq!(number(&ws, 3), None, "a paste is not auto-numbered");
+}
+
+/// The workspace switches that only the app and OSC read are plain settings: set, undone and
+/// kept.
+#[test]
+fn the_general_switches_are_workspace_settings_with_undo() {
+    let mut ws = workspace(vec![]);
+    let before = ws.clone();
+    let mut history = History::new();
+    for setting in [
+        WorkspaceSetting::AutoNumberNewCues { value: false },
+        WorkspaceSetting::LockPlayhead { value: false },
+        WorkspaceSetting::GoNeedsKeyUp { value: true },
+        WorkspaceSetting::OscEnabled { value: false },
+    ] {
+        history
+            .execute(&mut ws, Command::SetWorkspaceSetting { setting })
+            .unwrap();
+    }
+    assert!(!ws.settings.auto_number_new_cues && !ws.settings.lock_playhead);
+    assert!(ws.settings.go_needs_key_up && !ws.settings.osc_enabled);
+    while history.undo(&mut ws).unwrap() {}
+    assert_eq!(ws, before);
+}
+
 /// Workspace Settings, General, "new cues auto-load" (QLab 5, manual p. 128): a cue made
 /// afterwards has auto-load set (a group's children with it); cues already there, a pasted copy
 /// and an undo keep what they had.

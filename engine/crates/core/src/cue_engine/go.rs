@@ -25,6 +25,29 @@ impl CueEngine {
             return ignored(reason, cx);
         }
         self.last_go = Some(cx.now);
+        self.begin_go_protection(cx);
+    }
+
+    /// Double-GO protection starts with an accepted GO when the interval is above zero; the app
+    /// shows the GO button's border until `end_go_protection` says it is over.
+    fn begin_go_protection(&mut self, cx: &mut Ctx) {
+        let interval = cx.secs(cx.ws.settings.min_go_interval, &self.config);
+        if interval == 0 {
+            return;
+        }
+        self.go_protect_until = Some(cx.now.saturating_add(interval));
+        cx.out.push(Action::GoProtection { active: true });
+    }
+
+    /// Ends protection once its time is inside this call's window (as every deadline is).
+    pub(super) fn end_go_protection(&mut self, cx: &mut Ctx) {
+        if self
+            .go_protect_until
+            .is_some_and(|until| until <= cx.horizon)
+        {
+            self.go_protect_until = None;
+            cx.out.push(Action::GoProtection { active: false });
+        }
     }
 
     /// Whether a GO now is within `min_go_interval` of the last one. A clock that went backwards

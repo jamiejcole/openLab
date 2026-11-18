@@ -6,11 +6,12 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
+use crate::cue::Cue;
 use crate::model::{CueId, Workspace};
 use crate::tree::walk_mut;
 use crate::validate::{MAX_AUTO_NUMBER, visit};
 
-use super::{Command, CommandError, Inverse, NumberAssignment, no_change};
+use super::{Command, CommandError, Inverse, NumberAssignment, Position, no_change};
 
 /// Largest cue number auto-numbering reads from existing cues; larger ones are ignored.
 const NUMBERING_LIMIT: f64 = 1e12;
@@ -18,9 +19,12 @@ const NUMBERING_LIMIT: f64 = 1e12;
 // ---------------------------------------------------------------------------------------------
 // Numbers
 
-/// The number a cue created now gets (ED-08): one step above the highest numeric cue number in
-/// the workspace, but not below `auto_number_start`.
-pub fn next_auto_number(ws: &Workspace) -> Result<String, CommandError> {
+/// The number a cue created at `at` gets (ED-08; QLab 5, manual p. 100): one step above the
+/// numeric cue before the insertion point, or half way to the numeric cue after it when that
+/// step is taken or reaches it (2, 3 and a cue between them: 2.5). With no numeric cue before
+/// it, one step above the highest numeric cue number in the workspace, but not below
+/// `auto_number_start`.
+pub fn next_auto_number(ws: &Workspace, at: &Position) -> Result<String, CommandError> {
     let settings = &ws.settings;
     let (start, increment) = (settings.auto_number_start, settings.auto_number_increment);
     check_numbering(start, increment)?;
@@ -30,15 +34,16 @@ pub fn next_auto_number(ws: &Workspace) -> Result<String, CommandError> {
         visit(&list.cues, &mut |cue| {
             let Some(number) = &cue.number else { return };
             used.insert(number.as_str());
-            if let Ok(value) = number.trim().parse::<f64>()
-                && value.is_finite()
-                && (0.0..=NUMBERING_LIMIT).contains(&value)
-            {
+            if let Some(value) = numeric(number) {
                 highest = Some(highest.map_or(value, |h| h.max(value)));
             }
         });
     }
-    let next = highest.map_or(start, |h| start.max(h + increment));
+    let (before, after) = neighbours(ws, at);
+    let next = match before {
+        Some(prev) => step_from(prev, after, increment, &used),
+        None => highest.map_or(start, |h| start.max(h + increment)),
+    };
     let text = format_number(next);
     if used.contains(text.as_str()) {
         return Err(CommandError::InvalidNumbering(
@@ -46,6 +51,69 @@ pub fn next_auto_number(ws: &Workspace) -> Result<String, CommandError> {
         ));
     }
     Ok(text)
+}
+
+fn numeric(number: &str) -> Option<f64> {
+    number
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && (0.0..=NUMBERING_LIMIT).contains(value))
+}
+
+/// One `increment` above `prev`; half way to `after` when that is used or not below it. When
+/// neither is free the plain step comes back and the caller refuses it as used.
+fn step_from(prev: f64, after: Option<f64>, increment: f64, used: &HashSet<&str>) -> f64 {
+    let free = |value: f64| !used.contains(format_number(value).as_str());
+    let step = prev + increment;
+    if after.is_none_or(|a| step < a) && free(step) {
+        return step;
+    }
+    if let Some(a) = after {
+        let middle = (prev + a) / 2.0;
+        if middle > prev && middle < a && free(middle) {
+            return middle;
+        }
+    }
+    step
+}
+
+/// The numeric numbers of the nearest numbered cue before and after where a cue made at `at`
+/// would sit, in the order the list shows its cues (groups before their children).
+fn neighbours(ws: &Workspace, at: &Position) -> (Option<f64>, Option<f64>) {
+    let Some(list) = ws.cue_lists.iter().find(|l| l.id == at.list) else {
+        return (None, None);
+    };
+    let flat: Vec<&Cue> = crate::tree::descendants(&list.cues).collect();
+    let children: &[Cue] = match at.parent {
+        None => &list.cues,
+        Some(parent) => match flat.iter().find(|c| c.id == parent) {
+            Some(cue) => cue.children(),
+            None => return (None, None),
+        },
+    };
+    let place = match children.get(at.index) {
+        Some(cue) => flat.iter().position(|c| c.id == cue.id),
+        None => match at.parent {
+            None => Some(flat.len()),
+            Some(parent) => flat.iter().position(|c| c.id == parent).map(|i| {
+                let own: usize = crate::tree::descendants(
+                    flat.get(i).map_or(&[][..], |c| std::slice::from_ref(*c)),
+                )
+                .count();
+                i + own
+            }),
+        },
+    };
+    let Some(place) = place else {
+        return (None, None);
+    };
+    let value = |cue: &&Cue| cue.number.as_deref().and_then(numeric);
+    let before = flat
+        .get(..place)
+        .and_then(|s| s.iter().rev().find_map(value));
+    let after = flat.get(place..).and_then(|s| s.iter().find_map(value));
+    (before, after)
 }
 
 fn check_numbering(start: f64, increment: f64) -> Result<(), CommandError> {

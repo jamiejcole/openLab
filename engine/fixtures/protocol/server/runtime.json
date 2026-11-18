@@ -57,6 +57,10 @@
       "played": true
     },
     {
+      "type": "go_protection",
+      "active": true
+    },
+    {
       "type": "warning",
       "warning": {
         "type": "trigger_ignored",

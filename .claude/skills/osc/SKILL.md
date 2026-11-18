@@ -115,6 +115,7 @@ The cue-number part of `/cue/{number}/{verb}` is a pattern when it has `*`, `?`,
 - A connected UDP peer is only an IP, so any packet from that IP, forged included, can switch its `/updates` on or off; it cannot disconnect it.
 
 ## Rights
+- `settings.osc_enabled` off (Workspace Settings, OSC): that doc is judged by a table that grants nothing, so every message to it is `denied` (`/connect` included) and sessions made before end when its copy sees the change. Other docs and the app's own engine connection are unaffected.
 Every message except `/connect`, `/version`, `/workspaces` and `/updates` needs a right in the doc it reaches. A peer lacking it gets a `denied` reply over **both** UDP and TCP: `address`, `status`, and `workspace_id` (application messages such as `/udpReplyPort`: no `workspace_id`). A UDP `denied` to a peer without View is held to the strict byte budget and 1400 bytes.
 
 | Right | Allows |

@@ -1458,14 +1458,34 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
         (num(0.0..=10.0), num(0.0..=60.0), num(5.0..=3600.0)),
         any_access(),
         hotkeys,
-        (num(0.0..=100.0), num(0.1..=10.0), any::<bool>()),
+        (
+            num(0.0..=100.0),
+            num(0.1..=10.0),
+            (
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+            ),
+        ),
     )
         .prop_map(
             |(
                 (min_go_interval, panic_duration, autosave_interval),
                 osc_access,
                 hotkeys,
-                (start, step, new_cues_auto_load),
+                (
+                    start,
+                    step,
+                    (
+                        new_cues_auto_load,
+                        auto_number_new_cues,
+                        lock_playhead,
+                        go_needs_key_up,
+                        osc_enabled,
+                    ),
+                ),
             )| {
                 WorkspaceSettings {
                     min_go_interval,
@@ -1479,6 +1499,10 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                     auto_number_start: start,
                     auto_number_increment: step,
                     new_cues_auto_load,
+                    auto_number_new_cues,
+                    lock_playhead,
+                    go_needs_key_up,
+                    osc_enabled,
                 }
             },
         )
@@ -2132,11 +2156,19 @@ fn a_file_without_the_basics_and_triggers_keys_loads_with_their_defaults() {
     let triggers = cue["triggers"].as_object_mut().unwrap();
     triggers.remove("hotkey_enabled").unwrap();
     triggers.insert("osc".into(), "/lights/blackout".into());
-    doc["workspace"]["settings"]
-        .as_object_mut()
-        .unwrap()
-        .remove("new_cues_auto_load")
-        .unwrap();
+    for key in [
+        "new_cues_auto_load",
+        "auto_number_new_cues",
+        "lock_playhead",
+        "go_needs_key_up",
+        "osc_enabled",
+    ] {
+        doc["workspace"]["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove(key)
+            .unwrap();
+    }
     let loaded = load_show(&doc.to_string()).unwrap();
     assert_eq!(loaded.warnings, vec![]);
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
@@ -2145,6 +2177,10 @@ fn a_file_without_the_basics_and_triggers_keys_loads_with_their_defaults() {
     assert!(!first.auto_load && !first.skip_if_disarmed);
     assert!(first.triggers.hotkey_enabled);
     assert!(!loaded.workspace.settings.new_cues_auto_load);
+    // Auto-numbering, the playhead lock and OSC access are on in a file that never said.
+    let settings = &loaded.workspace.settings;
+    assert!(settings.auto_number_new_cues && settings.lock_playhead && settings.osc_enabled);
+    assert!(!settings.go_needs_key_up);
 }
 
 /// A value that is not one of the colours (or not a boolean) is refused like any wrongly typed

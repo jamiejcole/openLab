@@ -1217,6 +1217,54 @@ async fn a_new_passcode_in_a_snapshot_ends_every_session() {
     assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
 }
 
+/// Workspace Settings, OSC: the access switch off answers every message with `denied` and starts
+/// nothing, and switching it off ends the sessions of peers that had connected.
+#[tokio::test]
+async fn the_osc_switch_off_denies_every_message_and_ends_sessions() {
+    let f = fixture(with_passcode("sesame")).await;
+    let mut t = f.tcp().await;
+    t.send(&msg("/connect", vec![text("sesame")])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+    t.send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("the GO while the switch is on", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 1
+        })
+        .await;
+    {
+        let mut guard = f.control.workspace.lock().unwrap();
+        guard.as_mut().unwrap().settings.osc_enabled = false;
+    }
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 9,
+            upserts: vec![],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    // Each probe is a different message: an identical one within 100 ms is dropped unanswered.
+    guard("the connection to lose its rights", async {
+        let mut n = 10;
+        loop {
+            n += 1;
+            t.send(&msg(&format!("/cue/{n}/name"), vec![])).await;
+            if body(&t.recv().await.unwrap())["status"] == "denied" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    // The right passcode no longer helps, and a GO over UDP is refused too.
+    t.send(&msg("/connect", vec![text("sesame")])).await;
+    t.recv().await.unwrap();
+    t.send(&msg("/go", vec![])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "denied");
+    f.udp_send(&msg("/go", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["status"], "denied");
+}
+
 #[tokio::test]
 async fn updates_to_a_subscriber_are_not_held_to_the_byte_budget_of_a_stranger() {
     let f = fixture(test_workspace()).await;

@@ -1181,6 +1181,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     cue: cue_id(10),
                     played: true,
                 },
+                RuntimeChange::GoProtection { active: true },
                 RuntimeChange::Warning {
                     warning: WireWarning::TriggerIgnored {
                         cue: cue_id(10),
@@ -2939,6 +2940,10 @@ fn engine_actions_map_to_runtime_changes() {
             cue: c,
             played: false
         })
+    );
+    assert_eq!(
+        map(Action::GoProtection { active: true }),
+        Some(RuntimeChange::GoProtection { active: true })
     );
     assert_eq!(
         map(Action::GroupWarningChanged {
