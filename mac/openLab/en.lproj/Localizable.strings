@@ -690,6 +690,8 @@
 "status.tooltip" = "Engine status. Click for details.";
 "status.device.lost" = "Audio device lost";
 "status.device.failed" = "Audio device failed";
+"status.output.lost" = "Audio device lost: %@";
+"status.output.failed" = "Audio device failed: %@";
 "status.device.absent" = "No audio device";
 "status.device.other" = "Audio device state: %@";
 "status.disk.unhealthy" = "Disk reads are falling behind";
@@ -700,6 +702,10 @@
 "status.state.lost" = "lost";
 "status.state.failed" = "failed";
 "status.state.absent" = "none";
+"status.state.up" = "OK";
+"status.state.opening" = "opening";
+"status.state.reconfiguring" = "reconfiguring";
+"status.state.closed" = "closed";
 "status.detail.none" = "none";
 "status.detail.device" = "Output device: %@ (%@)";
 "status.detail.format" = "%d Hz, %d channels";

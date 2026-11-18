@@ -11,6 +11,7 @@ extension AppController {
     /// choice is made, which keeps it away until `applyLaunchBehavior` has run.
     func beginLaunch() {
         launching = launchPreferences.behavior != .launcher
+        awaitingLaunch = true
         if !launching { showLauncher() }
     }
 
@@ -29,19 +30,31 @@ extension AppController {
             switch behavior {
             case .launcher, .nothing: break
             // The app was started by opening a show: that show, not a blank one beside it.
-            case .newBlank: if asked.isEmpty { await newWorkspace() }
+            case .newBlank: if asked.isEmpty { await createWorkspace() }
             case .restore: await restoreWorkspaces(launchPreferences.openFiles)
             }
         }
-        for url in asked { await openWorkspace(url: url) }
+        for url in asked { await openNow(url: url) }
         launching = false
         launchApplied = true
         // Asked for while those were opening.
         let late = filesToOpen
         filesToOpen = []
-        for url in late { await openWorkspace(url: url) }
+        for url in late { await openNow(url: url) }
         // Nothing opened (nothing to restore, every file missing): the launcher, not an empty app.
         if live || behavior != .nothing { showLauncherIfNoWindows() }
+        // New, Open and recents asked for before the engine was ready go ahead now.
+        awaitingLaunch = false
+        let waiting = launchWaiters
+        launchWaiters = []
+        for waiter in waiting { waiter.resume() }
+    }
+
+    /// New, Open and a recent workspace asked for while the app is still starting its engine wait
+    /// here and then run, instead of failing for want of a connection. A no-op once launched.
+    func afterLaunch() async {
+        guard awaitingLaunch else { return }
+        await withCheckedContinuation { launchWaiters.append($0) }
     }
 
     /// Show files the system asked the app to open (a double-click in Finder, a drop on the Dock
@@ -63,7 +76,7 @@ extension AppController {
         for path in paths {
             await windowsKnowTheirMode()
             var failed: EngineError?
-            await openWorkspace(url: URL(fileURLWithPath: path)) { failed = $0 }
+            await openNow(url: URL(fileURLWithPath: path)) { failed = $0 }
             if let failed {
                 let name = URL(fileURLWithPath: path).lastPathComponent
                 let message: String

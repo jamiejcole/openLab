@@ -8,6 +8,12 @@ extension AppController {
     // MARK: File New / Open
 
     func newWorkspace() async {
+        await afterLaunch()
+        await createWorkspace()
+    }
+
+    /// `newWorkspace` without the wait for the engine: what the launch choice itself uses.
+    func createWorkspace() async {
         await opened { await self.session.newWorkspace() }
     }
 
@@ -18,6 +24,12 @@ extension AppController {
 
     /// `onFailure`: told of a failed open instead of the error alert (the launch restore).
     func openWorkspace(url: URL, onFailure: ((EngineError) -> Void)? = nil) async {
+        await afterLaunch()
+        await openNow(url: url, onFailure: onFailure)
+    }
+
+    /// `openWorkspace(url:)` without the wait for the engine: what the launch choice itself uses.
+    func openNow(url: URL, onFailure: ((EngineError) -> Void)? = nil) async {
         let result = await opened(onFailure: onFailure) {
             let first = await self.session.open(path: url.path)
             // An autosave newer than the file (NFR-05): the engine opened nothing; ask, then open.

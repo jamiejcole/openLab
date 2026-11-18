@@ -164,4 +164,62 @@ final class FooterWarningsTests: XCTestCase {
         XCTAssertEqual(rowCount(rig), 2)
         XCTAssertEqual(wc.footer.warningsButton.title, "2")
     }
+
+    // MARK: The footer names a lost second device (#753)
+
+    /// Two devices, a patch on the second: it is unplugged → the footer says so, naming it, and the
+    /// status window lists it; plugged back in → the footer is OK again.
+    func testTheFooterNamesASecondDeviceThatIsLostAndReturnsToOkWhenItIsBack() async throws {
+        let engine = try await TestEngine.start()
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        let second = TestEngine.deviceNames[1]
+        let lostSecond = loc("status.alarm") + " " + String(format: loc("status.output.lost"), second)
+        guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("plug in")
+        }
+        try await engine.advance(seconds: 2)
+        let patch = try XCTUnwrap(rig.store.model?.patches.first?.id)
+        guard case .success = await rig.store.setPatchMapping(patch, PatchMapping(device: second, channels: [0, 1]))
+        else { return XCTFail("map") }
+        try await rig.advance(1)
+        await assertEventually("the footer is OK with the second device up") {
+            try? await rig.advance(1)
+            return wc.footer.statusButton.title.hasPrefix(loc("status.ok"))
+        }
+
+        guard case .success = await engine.request(.loseDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("unplug")
+        }
+        await assertEventually("the footer names the lost device") {
+            try? await rig.advance(1)
+            return wc.footer.statusButton.title == lostSecond
+        }
+        XCTAssertEqual(wc.footer.presentation.icon, .statusAlarm)
+        XCTAssertTrue(
+            wc.footer.presentation.details.contains(String(format: loc("status.output.lost"), second)))
+        let line = String(format: loc("status.detail.device"), second, loc("status.state.lost"))
+        XCTAssertTrue(wc.footer.presentation.details.contains(line))
+
+        guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("plug back in")
+        }
+        await assertEventually("the footer is OK again") {
+            try? await rig.advance(1)
+            return wc.footer.statusButton.title.hasPrefix(loc("status.ok"))
+        }
+        XCTAssertEqual(wc.footer.presentation.icon, .statusNormal)
+    }
+
+    /// Only the first device, unplugged → as before: the alarm names the audio device, not a second one.
+    func testOnlyTheFirstDeviceUnpluggedIsTheSameAlarmAsBefore() async throws {
+        let engine = try await TestEngine.start()
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        guard case .success = await engine.request(.loseDevice()) else { return XCTFail("unplug") }
+        await assertEventually("the footer says the device is lost") {
+            try? await rig.advance(1)
+            return wc.footer.statusButton.title == loc("status.alarm") + " " + loc("status.device.lost")
+        }
+    }
 }

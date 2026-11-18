@@ -34,6 +34,8 @@
     {"shot": "preferences-second-unplugged"},
     {"device": "restore", "output": 2},
     {"advance": 3},
+    {"focus": "workspace"},
+    {"shot": "second-back-footer"},
     {"focus": "preferences"},
     {"shot": "preferences-second-back"},
     {"focus": "settings"},
