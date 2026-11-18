@@ -129,6 +129,10 @@ final class AppController {
     var launching = false
     /// `applyLaunchBehavior` has run: the engine is up and a show file can be opened at once.
     var launchApplied = false
+    /// The real app is starting: `applyLaunchBehavior` has not finished. Commands that need the engine
+    /// (`afterLaunch`) wait while it is true.
+    var awaitingLaunch = false
+    var launchWaiters: [CheckedContinuation<Void, Never>] = []
     /// Show files asked for before `launchApplied`.
     var filesToOpen: [URL] = []
     /// Files just saved with Save As, by store: the save's reply may overtake the message that gives

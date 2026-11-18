@@ -915,6 +915,9 @@ final class EngineCrashFlowTests: XCTestCase {
         // engine.json appears once the engine is up: the reconnect backoff is fired until then.
         let up = await pump { session.connectionState == .connected }
         XCTAssertTrue(up, "the supervisor started the engine and the app reached it")
+        // The tests that follow ask for opens themselves, once connected, and run the launch choice
+        // (if any) themselves: nothing waits for it.
+        app.awaitingLaunch = false
     }
 
     private func openShows() async throws {
@@ -1833,7 +1836,7 @@ final class EngineCrashFlowTests: XCTestCase {
     /// The app started as the system starts it: the delegate's launch, on a real engine run (an
     /// engine already running is attached to), until the launch choice has been carried out.
     /// `opening`: show files the system hands over as it starts the app (a double-click in Finder).
-    private func startApp(opening: [URL] = []) async throws {
+    private func startApp(opening: [URL] = [], duringStart: (() -> Void)? = nil) async throws {
         let support = runs.support
         processes = SystemEngineProcesses(
             infoURL: runs.infoURL, watchStderr: false,
@@ -1856,6 +1859,8 @@ final class EngineCrashFlowTests: XCTestCase {
         delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
         if !opening.isEmpty { delegate.application(NSApplication.shared, open: opening) }
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        // What the operator does before the engine has connected.
+        duringStart?()
         let wanted = LaunchPreferences(defaults: prefs).behavior == .launcher
         XCTAssertEqual(launcherShown, wanted, "the launcher shows at once only when it is the choice")
         let up = await pump { session.connectionState == .connected && !self.app.launching }
@@ -2183,6 +2188,37 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(openNames(), ["A"], "the show that was asked for, and no blank workspace beside it")
         try XCTUnwrap(delegate).application(NSApplication.shared, open: [b, URL(fileURLWithPath: "/tmp/notes.txt")])
         await assertEventually { self.openNames() == ["A", "B"] }
+    }
+
+    /// #754: Cmd-N the moment the app opens, before it has an engine → no error; the new workspace
+    /// opens once the engine is ready.
+    func testNewWorkspaceAskedForBeforeTheEngineIsConnectedOpensOnceItIsReadyWithNoError() async throws {
+        makePrefs(.launcher)
+        try await startApp {
+            XCTAssertNotEqual(self.app.session.connectionState, .connected)
+            Task { await self.app.newWorkspace() }
+        }
+        await assertEventually("the new workspace opens") { self.app.allWindows.count == 1 }
+        await settle()
+        XCTAssertEqual(app.allWindows.count, 1)
+        XCTAssertEqual(alerts.errors, [], "no error alert")
+        XCTAssertFalse(launcherShown)
+    }
+
+    /// #754: File > Open and a recent workspace chosen before the engine is connected, and a show
+    /// double-clicked at launch, open once it is, with no error.
+    func testOpenAndAShowFileAskedForBeforeTheEngineIsConnectedOpenOnceItIsReadyWithNoError() async throws {
+        makePrefs(.launcher)
+        let a = URL(fileURLWithPath: try runs.show("Demo", named: "A"))
+        let b = URL(fileURLWithPath: try runs.show("Demo", named: "B"))
+        let c = URL(fileURLWithPath: try runs.show("Demo", named: "C"))
+        try await startApp(opening: [a]) {
+            self.app.pickOpenURL = { b }
+            Task { await self.app.openWorkspace() }
+            Task { await self.app.openWorkspace(url: c) }
+        }
+        await assertEventually("all three open") { self.openNames() == ["A", "B", "C"] }
+        XCTAssertEqual(alerts.errors, [], "no error alert")
     }
 
     func testNothingToRestoreShowsTheLauncher() async throws {
