@@ -115,7 +115,8 @@ final class StatusWindowController: NSWindowController {
             field.setAX(id)
             field.isSelectable = true
             field.lineBreakMode = .byTruncatingMiddle
-            field.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            field.setContentCompressionResistancePriority(
+                field === fileValue ? NSLayoutConstraint.Priority(1) : .defaultHigh, for: .horizontal)
         }
         copyIDButton.bezelStyle = .rounded
         copyIDButton.target = self
