@@ -429,7 +429,7 @@ final class AppControllerTests: XCTestCase {
         editor.showWindow(nil)
         wc.missingFiles.showWindow(nil)
         await wc.showPreshowCheck().value
-        wc.logWindow.showWindow(nil)
+        await wc.showLog().value
         wc.footer.showStatusDetails()
         XCTAssertEqual(wc.footer.popover?.isShown, true)
         if sheet { wc.showNotice("a refusal") }
@@ -439,7 +439,7 @@ final class AppControllerTests: XCTestCase {
         released.settings = wc.existingSettingsWindow?.window
         released.patchEditor = editor.window
         released.missingFiles = wc.existingMissingFiles?.window
-        released.preshow = wc.preshowWindow.window
+        released.preshow = wc.existingStatusWindow?.window
         released.log = wc.existingLogWindow?.window
         released.sheet = wc.window?.attachedSheet
         released.popover = wc.footer.popover
@@ -574,7 +574,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "", "", ",", "", "", "w", "w", "s", "S"])
+                \.keyEquivalent), ["n", "o", "", "", "", "", "", "", "w", "w", "s", "S"])
     }
 
     // MARK: Front-window routing
@@ -1343,6 +1343,70 @@ final class AppControllerTests: XCTestCase {
         XCTAssertNil(app.handleKeyDown(try keyEvent(" ", repeats: true)))
         await settle()
         XCTAssertEqual(transports(go).count, 1)
+    }
+
+    private func spaceUp() throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyUp, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
+    }
+
+    private let group: ModelID = "00000000-0000-0000-0000-000000000020"
+
+    /// Checklist: Workspace Settings, General: "key up before the next GO" on → holding Space fires
+    /// one GO; a second GO needs the key released first. Seen on the real engine: the standby cue
+    /// moves on once for the held key, stays after a press with no release between, and moves
+    /// again after the release.
+    func testWithKeyUpRequiredASecondGoNeedsTheKeyReleasedFirst() async throws {
+        keyDoc = "1"
+        let store = try XCTUnwrap(app.session.stores["1"])
+        guard case .success = await store.send(command: .setSwitch(.goNeedsKeyUp, true)) else {
+            return XCTFail("set switch")
+        }
+        await assertEventually { store.isOn(.goNeedsKeyUp) == true }
+        XCTAssertEqual(store.playheads[list], fade, "standing by on the Fade cue")
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("the first press went") { store.playheads[self.list] == self.group }
+        XCTAssertEqual(store.cueStates[fade]?.state, .running, "the Fade cue started")
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ", repeats: true)), "the held key is taken")
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")), "a press with no release between is taken too")
+        try await advance()
+        await settle()
+        XCTAssertEqual(store.playheads[list], group, "still standing by on the group: nothing started")
+        XCTAssertNotEqual(store.cueStates[group]?.state, .running)
+        app.handleKeyUp(try spaceUp())
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("the press after the release went") { store.playheads[self.list] == nil }
+        try await advance()
+        await assertEventually("the group started") { store.cueStates[self.group]?.state.isActive == true }
+    }
+
+    /// With the box off a fresh press always fires, whether or not a release came (a lost key-up
+    /// must not mute GO), and leaving the app forgets a key held with the box on.
+    func testWithoutKeyUpRequiredAFreshPressAlwaysFiresAndLeavingTheAppForgetsAHeldKey() async throws {
+        keyDoc = "1"
+        let store = try XCTUnwrap(app.session.stores["1"])
+        XCTAssertEqual(store.playheads[list], fade)
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("first press") { store.playheads[self.list] == self.group }
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("second press, no release between") { store.playheads[self.list] == nil }
+        guard case .success = await store.send(command: .setSwitch(.goNeedsKeyUp, true)) else {
+            return XCTFail("set switch")
+        }
+        await assertEventually { store.isOn(.goNeedsKeyUp) == true }
+        // Back on the Fade cue; a press with the box on, held, then the app is left.
+        guard case .success = await store.transport(.setPlayhead(list: list, cue: fade)) else {
+            return XCTFail("set_playhead")
+        }
+        await assertEventually { store.playheads[self.list] == self.fade }
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("held press went") { store.playheads[self.list] == self.group }
+        // The release goes to another app: nothing may hold GO shut.
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("GO fires after the app was left") { store.playheads[self.list] == nil }
     }
 
     func testSpaceWhileTypingStaysWithTheTextField() async throws {

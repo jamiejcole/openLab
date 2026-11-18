@@ -1,0 +1,61 @@
+{
+  "about": "Workspace Settings as categories (#637): the category list on the left and the General page (GO time, key-up rule, panic, auto-number, auto-load, playhead lock); Controls, Audio and Network (with its page bar) pages; every page at the least window size.",
+  "show": "Demo",
+  "steps": [
+    {
+      "focus": "settings"
+    },
+    {
+      "shot": "general"
+    },
+    {
+      "tab": "keys"
+    },
+    {
+      "shot": "controls"
+    },
+    {
+      "tab": "audio"
+    },
+    {
+      "shot": "audio"
+    },
+    {
+      "tab": "network"
+    },
+    {
+      "shot": "network"
+    },
+    {
+      "tab": "osc"
+    },
+    {
+      "shot": "osc-access"
+    },
+    {
+      "resize": [
+        680,
+        552
+      ]
+    },
+    {
+      "tab": "general"
+    },
+    {
+      "shot": "general-least"
+    },
+    {
+      "tab": "audio"
+    },
+    {
+      "shot": "audio-least"
+    },
+    {
+      "tab": "osc"
+    },
+    {
+      "shot": "osc-least"
+    }
+  ],
+  "appearance": "light"
+}

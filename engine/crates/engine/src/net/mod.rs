@@ -6,6 +6,7 @@
 //! and the outbound broadcast channel; it never touches the workspace.
 
 mod hub;
+pub use hub::TapSlot;
 mod liveness;
 mod osc;
 mod osc_mirror;
@@ -15,7 +16,9 @@ mod stopping;
 mod token;
 mod ws;
 
-pub use osc::{MAX_HELD_INPUTS, OscConfig, OscListenerStats, OscPorts, TAP_QUEUE};
+pub use osc::{
+    MAX_HELD_INPUTS, OscConfig, OscListenerStats, OscPorts, OscServer, OscState, TAP_QUEUE,
+};
 pub use relaunch::{AppProcess, ProcessNameFn, Relaunch, RelaunchFn};
 pub use stopping::Stopping;
 pub use token::{constant_time_eq, generate_token};

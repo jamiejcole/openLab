@@ -92,8 +92,9 @@ final class WorkspaceSettingsTests: XCTestCase {
 
     func testTheFileMenuHasWorkspaceSettingsOnCommandComma() {
         let item = MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") }?.items
+            .first { $0.title == loc("menu.file.workspaceSettings") }?.submenu?.items
             .first { $0.action == #selector(AppDelegate.showWorkspaceSettings(_:)) }
-        XCTAssertEqual(item?.title, loc("menu.file.workspaceSettings"))
+        XCTAssertEqual(item?.title, loc("menu.file.workspaceSettings.window"))
         XCTAssertEqual(item?.keyEquivalent, ",")
     }
 
@@ -1384,7 +1385,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(
             sc.patchEditButtons[0].convert(sc.patchEditButtons[0].bounds, to: nil).minX, editX, accuracy: 0.5,
             "a scroller does not move the rows")
-        window.setContentSize(NSSize(width: 1100, height: 1000))
+        window.setContentSize(NSSize(width: 1300, height: 1000))
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(sc.patchDevicePopups[0].bounds.width, narrow + 300, "the device column widens")
         let title = try XCTUnwrap(
@@ -1454,6 +1455,132 @@ final class WorkspaceSettingsTests: XCTestCase {
                     fa.intersects(b.frame.insetBy(dx: 1, dy: 1)),
                     "\(what): \(a.accessibilityIdentifier()) overlaps \(b.accessibilityIdentifier())")
             }
+        }
+    }
+
+    // MARK: Categories and pages
+
+    /// Checklist: Workspace Settings → a list of categories on the left; picking one shows its pages
+    /// on the right (a bar of its pages when it has more than one).
+    func testSettingsListsCategoriesAndPickingOneShowsItsPages() async throws {
+        let (_, sc) = try await open()
+        let titles = (0..<sc.categoryTable.numberOfRows).compactMap {
+            (sc.categoryTable.view(atColumn: 0, row: $0, makeIfNecessary: true) as? NSTableCellView)?.textField?
+                .stringValue
+        }
+        XCTAssertEqual(titles, SettingsCategory.allCases.map { loc($0.titleKey) })
+        sc.show(page: .general)
+        XCTAssertEqual(sc.categoryTable.selectedRow, 0, "General is selected")
+        XCTAssertTrue(sc.pageBar.isHidden, "one page needs no bar")
+        let network = try XCTUnwrap(SettingsCategory.allCases.firstIndex(of: .network))
+        sc.categoryTable.selectRowIndexes(IndexSet(integer: network), byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .network, "a category shows its first page")
+        XCTAssertFalse(sc.pageBar.isHidden)
+        XCTAssertEqual(
+            (0..<sc.pageBar.segmentCount).compactMap { sc.pageBar.label(forSegment: $0) },
+            [loc(SettingsPage.network.titleKey), loc(SettingsPage.osc.titleKey)])
+        sc.pageBar.selectedSegment = 1
+        _ = sc.pageBar.target?.perform(sc.pageBar.action, with: sc.pageBar)
+        XCTAssertEqual(sc.shownPage, .osc)
+        XCTAssertEqual(sc.categoryTable.selectedRow, network, "the category stays selected")
+        let audio = try XCTUnwrap(SettingsCategory.allCases.firstIndex(of: .audio))
+        sc.categoryTable.selectRowIndexes(IndexSet(integer: audio), byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .audio)
+        XCTAssertTrue(sc.pageBar.isHidden)
+        // Back to the category on show keeps its page.
+        sc.show(page: .osc)
+        let again = IndexSet(integer: network)
+        sc.categoryTable.selectRowIndexes(again, byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .osc)
+    }
+
+    /// The note about the red border sits under the time between GOs, above the key-up box.
+    func testTheRedBorderNoteSitsUnderTheTimeBetweenGos() async throws {
+        let (_, sc) = try await open()
+        sc.show(page: .general)
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        func minY(_ v: NSView) -> CGFloat { v.convert(v.bounds, to: nil).maxY }
+        let note = try XCTUnwrap(
+            sc.tabs.selectedTabViewItem?.view.flatMap { Self.find(loc("settings.general.keyUp.note"), in: $0) })
+        XCTAssertLessThan(minY(sc.goIntervalField), minY(note) + 40, "the note follows the field")
+        XCTAssertGreaterThan(minY(note), minY(sc.keyUpCheck), "and sits above the key-up box")
+    }
+
+    static func find(_ text: String, in view: NSView) -> NSTextField? {
+        if let f = view as? NSTextField, f.stringValue == text { return f }
+        for s in view.subviews { if let f = find(text, in: s) { return f } }
+        return nil
+    }
+
+    /// The selected category reads in light and dark: its row, drawn, holds ink that contrasts with
+    /// the selection behind it, and its label is in the middle of the row.
+    func testTheSelectedCategoryReadsInLightAndDark() async throws {
+        let (_, sc) = try await open()
+        sc.show(page: .network)
+        let table = sc.categoryTable
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            sc.window?.appearance = NSAppearance(named: name)
+            sc.window?.contentView?.layoutSubtreeIfNeeded()
+            let row = table.selectedRow
+            let rect = table.rect(ofRow: row)
+            let rep = try XCTUnwrap(table.bitmapImageRepForCachingDisplay(in: rect))
+            table.cacheDisplay(in: rect, to: rep)
+            var lum: [CGFloat] = []
+            for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
+                for y in 0..<rep.pixelsHigh {
+                    if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) {
+                        lum.append(0.3 * c.redComponent + 0.6 * c.greenComponent + 0.1 * c.blueComponent)
+                    }
+                }
+            }
+            XCTAssertGreaterThan((lum.max() ?? 0) - (lum.min() ?? 0), 0.3, "\(name): the label contrasts")
+            let cell = try XCTUnwrap(table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)
+            let label = try XCTUnwrap(cell.textField)
+            XCTAssertEqual(label.frame.midY, cell.bounds.midY, accuracy: 1.5, "\(name): centred in its row")
+        }
+    }
+
+    /// Checklist: the File menu's settings submenu opens each category directly: every page has an
+    /// item, and opening a page shows it with its category selected.
+    func testTheFileMenusSettingsSubmenuOpensEachCategoryDirectly() async throws {
+        let file = try XCTUnwrap(MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") })
+        let submenu = try XCTUnwrap(file.items.first { $0.title == loc("menu.file.workspaceSettings") }?.submenu)
+        let window = try XCTUnwrap(
+            submenu.items.first { $0.action == #selector(AppDelegate.showWorkspaceSettings(_:)) })
+        XCTAssertEqual(window.keyEquivalent, ",")
+        let categories = submenu.items.filter { $0.submenu != nil }
+        XCTAssertEqual(categories.map(\.title), SettingsCategory.allCases.map { loc($0.titleKey) })
+        let pages = categories.flatMap { $0.submenu?.items ?? [] }
+        XCTAssertEqual(pages.compactMap { $0.representedObject as? String }, SettingsPage.allCases.map(\.rawValue))
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in wc.settingsWindow.close() }
+        for item in pages {
+            let page = try XCTUnwrap((item.representedObject as? String).flatMap(SettingsPage.init))
+            XCTAssertEqual(item.action, #selector(AppDelegate.showWorkspaceSettingsPage(_:)))
+            await wc.showSettings(page: page).value
+            XCTAssertEqual(wc.settingsWindow.shownPage, page)
+            XCTAssertEqual(
+                wc.settingsWindow.categoryTable.selectedRow,
+                SettingsCategory.allCases.firstIndex(of: page.category), "\(page)")
+        }
+    }
+
+    /// Checklist: Settings window at its smallest size → no page is clipped.
+    func testEveryPageAtTheSmallestSizeClipsNothing() async throws {
+        let (_, sc) = try await open()
+        let window = try XCTUnwrap(sc.window)
+        window.setContentSize(window.contentMinSize)
+        for page in SettingsPage.allCases {
+            sc.show(page: page)
+            window.contentView?.layoutSubtreeIfNeeded()
+            assertNothingClippedOrOverlapping(in: sc.tabs.selectedTabViewItem?.view, "the \(page) page")
+            let list = try XCTUnwrap(sc.categoryTable.enclosingScrollView)
+            XCTAssertGreaterThanOrEqual(
+                list.frame.height, sc.categoryTable.rect(ofRow: sc.categoryTable.numberOfRows - 1).maxY,
+                "the category list shows every category")
+            XCTAssertTrue(window.contentView?.bounds.contains(list.convert(list.bounds, to: nil)) == true)
+            if !sc.pageBar.isHidden { assertNothingClippedOrOverlapping(in: sc.pageBar, "the page bar") }
         }
     }
 

@@ -90,6 +90,7 @@ A cue is skipped when it is disarmed (`is_armed`, an Arm/Disarm cue's change in 
 - `GoIgnored { reason }`: `no_cue` (past the end or empty list), `unknown_list`, `double_go`, `chain_limit`.
 - GoTo-and-GO is not an operator GO: double-GO never blocks it and it does not restart the interval.
 - Double-GO: a GO less than `min_go_interval` after the previous accepted GO (samples, any list) is ignored; exactly at the interval is accepted; ignored GOs do not restart it; 0 = off; if `now` is earlier than the last accepted GO (clock restart) the GO is accepted. Read at each GO. Panic does not touch it.
+- Protection report: an accepted GO with the interval above 0 emits `GoProtection { active: true }` and keeps its end in `go_protection_ends()` and `next_wake()` (the control loop wakes for it; `next_deadline()` stays the cues' own); the first call whose horizon reaches it emits `active: false` (once, last in the call). An ignored GO neither starts nor extends it.
 - `Input::GoFrom { list, cue }` moves the playhead to `cue` and GOes as one input; a cue not a position of the list warns `NotInList` and does nothing. A GO that double-GO refuses leaves the playhead where it was.
 
 ## Playhead (PB-05, CL-06)

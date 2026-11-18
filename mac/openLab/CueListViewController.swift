@@ -811,7 +811,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         lastSelection = Set(selected)
         let lastRow = outlineView.selectedRow >= 0 ? outlineView.selectedRow : nil
         let latest = lastRow.flatMap { (outlineView.item(atRow: $0) as? CueNode)?.id }
-        guard !restoringSelection, !batching, !followingPlayhead,
+        guard !restoringSelection, !batching, !followingPlayhead, locksPlayhead,
             let id = Self.playheadTarget(selected: selected, previous: previous, latest: latest)
         else { return }
         sendPlayhead(id)
@@ -863,11 +863,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func rowClicked(_ row: Int) {
-        guard row >= 0, let node = outlineView.item(atRow: row) as? CueNode, selectedIDs() == [node.id] else {
-            return
-        }
+        guard row >= 0, locksPlayhead, let node = outlineView.item(atRow: row) as? CueNode,
+            selectedIDs() == [node.id]
+        else { return }
         sendPlayhead(node.id)
     }
+
+    /// Workspace Settings, General, "lock playhead to selection" (on by default): the selection and
+    /// the playhead move together. Off, a click or an arrow key moves only the selection and a GO
+    /// or an OSC move of the playhead only the playhead. A new workspace window still opens on the
+    /// playhead's cue.
+    private var locksPlayhead: Bool { store.isOn(.lockPlayhead) != false }
 
     /// Moves the playhead to `id` for the selection. Compared only with what was last sent: A, B, A
     /// within one round trip must still end on A, and the store's playhead can be behind the engine's
@@ -935,7 +941,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let moved = headMovedWhileSending
         headMovedWhileSending = false
         // The list changed meanwhile: its follow waited for this answer.
-        guard list == listID else { return followPlayhead() }
+        guard list == listID else { return followPlayhead(force: true) }
         // On the cue sent last: its echo is in and the selection is already there. Elsewhere, it
         // moved on by itself after the click (a GO straight after it, another client): follow.
         if moved, store.playheads[list] != lastSentHead { followPlayhead() }
@@ -946,7 +952,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// even if that moves nothing, as a rebuild's own restore of the selection does not tell it.
     private func followAfterLoad() {
         unlinkedHead = nil
-        if playheadSends > 0 { headMovedWhileSending = true } else { followPlayhead() }
+        if playheadSends > 0 { headMovedWhileSending = true } else { followPlayhead(force: true) }
         onSelectionChange?(selectedIDs())
     }
 
@@ -1002,8 +1008,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// that already holds the playhead's cue (several selected by hand) is left as it is. While text
     /// is being typed in the window, or a `FollowHold` lasts, the selection stays, and follows once
     /// that ends.
-    private func followPlayhead() {
-        guard playheadSends == 0, let list = listID else { return }
+    private func followPlayhead(force: Bool = false) {
+        guard playheadSends == 0, force || locksPlayhead, let list = listID else { return }
         if isTextEditing || !followHolds.isEmpty {
             followHeld = true
             return

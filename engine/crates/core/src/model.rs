@@ -123,6 +123,10 @@ impl Workspace {
                 auto_number_start: 1.0,
                 auto_number_increment: 1.0,
                 new_cues_auto_load: false,
+                auto_number_new_cues: true,
+                lock_playhead: true,
+                go_needs_key_up: false,
+                osc_enabled: true,
             },
             patches: vec![OutputPatch {
                 id: patch,
@@ -349,6 +353,27 @@ pub struct WorkspaceSettings {
     /// p. 128). Cues already in the workspace are not changed. Absent in a file: off.
     #[serde(default)]
     pub new_cues_auto_load: bool,
+    /// Whether a cue made with `AddCue { auto_number }` gets the next number (QLab 5, Workspace
+    /// Settings, General; manual p. 100). Absent in a file: on. Paste and OSC never number.
+    #[serde(default = "default_true")]
+    pub auto_number_new_cues: bool,
+    /// Whether the app keeps the selection and the playhead together (manual p. 100). Absent in
+    /// a file: on. The engine only stores it; the app acts on it.
+    #[serde(default = "default_true")]
+    pub lock_playhead: bool,
+    /// Whether the app accepts another GO from the GO key only after the key was released
+    /// (manual p. 100). Absent in a file: off. The engine only stores it; the app acts on it.
+    #[serde(default)]
+    pub go_needs_key_up: bool,
+    /// Whether OSC may reach this workspace at all (QLab 5, Network, OSC Access; manual p. 112).
+    /// Off: every OSC message to it is refused with `denied`, whoever the peer, and peers
+    /// connected before lose their rights. Absent in a file: on.
+    #[serde(default = "default_true")]
+    pub osc_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl WorkspaceSettings {

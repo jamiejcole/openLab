@@ -44,7 +44,7 @@ Variants are in `command.rs` / `command_model.rs`; only non-obvious rules here.
 
 | Command | Rules |
 |---|---|
-| `AddCue { at, cue, auto_number }` | A Group brings its children. `auto_number` replaces the number with `next_auto_number`. With the setting `new_cues_auto_load` on, the cue and its children get `auto_load` (not on undo or redo, which put back what was there; a `Paste` keeps the copied value). |
+| `AddCue { at, cue, auto_number }` | A Group brings its children. With `auto_number` and `auto_number_new_cues` on, the number is `next_auto_number(at)` (see settings reference). With the setting `new_cues_auto_load` on, the cue and its children get `auto_load` (not on undo or redo, which put back what was there; a `Paste` keeps the copied value). |
 | `Paste { at, cues }` | One undo step. Ids must be fresh (build with `prepare_paste`). Still accepted on the wire; its media is converted too. |
 | `PasteClipboard { at, cues, source_dir? }` | The raw clipboard (cues copied in any workspace). Core's `apply` refuses it (`NotPrepared`); only `Command::prepare` turns it into a `Paste` of `prepare_paste` (one undo step). A clipboard nested deeper than the limit is refused. |
 | `source_dir` of `PasteClipboard` | Absolute folder of the show the cues came from (absent for a never-saved show). Relative media paths are read against it and stored for this show by the media-path rule. Missing, relative or same-as-this-show leaves paths as written. |

@@ -1,0 +1,8 @@
+{
+  "about": "Application preferences, General tab (#637): the launch choice and the backups-kept row.",
+  "show": "Demo",
+  "steps": [
+    {"focus": "preferences"},
+    {"shot": "general"}
+  ]
+}

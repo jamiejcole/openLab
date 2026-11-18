@@ -15,7 +15,7 @@ Anything not listed here is not implemented: openLab answers it with an `error` 
 
 | What | Where |
 |---|---|
-| Messages to openLab | UDP or TCP port **53000**, on every IPv4 network interface of the show computer |
+| Messages to openLab | UDP or TCP port **53000** (changed on the workspace settings' OSC page), on every IPv4 network interface of the show computer |
 | Replies and updates over UDP | the sender's IP address, port **53001** (whatever port it sent from), unless it asked for another with `/udpReplyPort` |
 | Replies and updates over TCP | back on the same connection |
 

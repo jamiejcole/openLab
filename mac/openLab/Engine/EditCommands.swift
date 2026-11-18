@@ -125,6 +125,34 @@ enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
     case toggleFlag = "toggle_flag"
 }
 
+/// The on/off switches of the workspace settings that are the engine's to store (`WorkspaceSetting`
+/// variants of the same names). A show file that never said has `fallback`.
+enum WorkspaceSwitch: String, CaseIterable, Sendable {
+    case autoNumberNewCues = "auto_number_new_cues"
+    case lockPlayhead = "lock_playhead"
+    case goNeedsKeyUp = "go_needs_key_up"
+    case oscEnabled = "osc_enabled"
+
+    var fallback: Bool { self != .goNeedsKeyUp }
+}
+
+extension Command {
+    /// `SetWorkspaceSetting` for one switch.
+    static func setSwitch(_ item: WorkspaceSwitch, _ on: Bool) -> Command {
+        let setting = JSONValue.object(["type": .string(item.rawValue), "value": .bool(on)])
+        return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
+    }
+}
+
+extension WorkspaceStore {
+    /// The workspace's switch, or its default while the show has no word on it; nil until the
+    /// show is in.
+    func isOn(_ item: WorkspaceSwitch) -> Bool? {
+        guard let settings = model?.settings else { return nil }
+        return settings[item.rawValue].map { $0 == .bool(true) } ?? item.fallback
+    }
+}
+
 extension Command {
     /// `SetWorkspaceSetting { hotkey { key, value } }`: one key of the map; nil clears it. The
     /// engine refuses Esc, Up/Down with any modifiers, a key already in the map and a cue's hotkey

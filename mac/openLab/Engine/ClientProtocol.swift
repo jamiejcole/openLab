@@ -185,6 +185,15 @@ enum Request: Hashable, Sendable, Codable {
     /// Chooses the primary output device the engine opens at its next start (nil: the system
     /// default). App-scope; the engine keeps its primary device for its whole run.
     case setOutputDevice(device: String?)
+    /// How many backups of each workspace this machine keeps. App-scope.
+    case backupKeep
+    /// Keeps this many backups of each workspace (0: none are made). App-scope.
+    case setBackupKeep(count: UInt32)
+    /// The port OSC listens on and whether it is open. App-scope.
+    case oscState
+    /// Listens for OSC on this port from now on (1 to 65535). The engine opens it first and closes the
+    /// old one after; one that cannot be opened is refused and the old one stays. App-scope.
+    case setOscPort(port: UInt16)
     /// AUD-21: frames per callback asked of an output device on this machine, 16 to 1024. A
     /// device the engine plays on reopens at that size. App-scope.
     case setBufferSize(device: String, frames: UInt32)
@@ -276,6 +285,10 @@ enum Request: Hashable, Sendable, Codable {
         case .setOutputDevice(let device):
             opt(&f, "device", device)
             return ("set_output_device", f)
+        case .backupKeep: return ("backup_keep", [])
+        case .setBackupKeep(let count): return ("set_backup_keep", [("count", Int(count))])
+        case .oscState: return ("osc_state", [])
+        case .setOscPort(let port): return ("set_osc_port", [("port", Int(port))])
         case .listPatchMappings: return ("list_patch_mappings", [])
         case .preshowCheck: return ("preshow_check", [])
         case .logTail(let max):
@@ -350,6 +363,10 @@ enum Request: Hashable, Sendable, Codable {
         case "list_devices": self = .listDevices
         case "set_output_device":
             self = .setOutputDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
+        case "backup_keep": self = .backupKeep
+        case "set_backup_keep": self = .setBackupKeep(count: try c.decode(UInt32.self, forKey: "count"))
+        case "osc_state": self = .oscState
+        case "set_osc_port": self = .setOscPort(port: try c.decode(UInt16.self, forKey: "port"))
         case "list_patch_mappings": self = .listPatchMappings
         case "preshow_check": self = .preshowCheck
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))

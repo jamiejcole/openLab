@@ -22,6 +22,19 @@ final class MastheadView: NSView, NSTextViewDelegate {
     private var goHeight: NSLayoutConstraint!
     private var notesHeight: NSLayoutConstraint!
     private let notesScroll = BoxedScrollView()
+    /// The red area behind the GO button that flashes when a GO was ignored (double-GO protection).
+    let goFlash = NSView()
+    /// Whether the GO button shows its protection border.
+    private(set) var goProtectionShown = false
+    /// How many times the area flashed (tests: a flash fades by itself).
+    private(set) var goFlashes = 0
+    /// How long the flash stays up.
+    var flashDuration: TimeInterval = 0.4
+    private var flashEnd: DispatchWorkItem?
+    /// Runs the clearing of the flash after a delay (a test fires it by hand instead).
+    var scheduleFlashEnd: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -58,6 +71,14 @@ final class MastheadView: NSView, NSTextViewDelegate {
         notesView.placeholder = loc("masthead.notes.placeholder")
         notesView.textContainerInset = NSSize(width: 4, height: 3)
 
+        goFlash.wantsLayer = true
+        goFlash.layer?.cornerRadius = 14
+        goFlash.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.9).cgColor
+        goFlash.alphaValue = 0
+        goFlash.translatesAutoresizingMaskIntoConstraints = false
+        goFlash.setAX("go-flash")
+        addSubview(goFlash)
+
         let right = NSStackView(views: [standbyField, notesScroll])
         right.orientation = .vertical
         right.alignment = .leading
@@ -82,6 +103,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
             row.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
             right.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            goFlash.leadingAnchor.constraint(equalTo: goButton.leadingAnchor, constant: -8),
+            goFlash.trailingAnchor.constraint(equalTo: goButton.trailingAnchor, constant: 8),
+            goFlash.topAnchor.constraint(equalTo: goButton.topAnchor, constant: -8),
+            goFlash.bottomAnchor.constraint(equalTo: goButton.bottomAnchor, constant: 8),
         ])
         apply(showMode: false, window: NSSize(width: 1200, height: 800))
     }
@@ -110,6 +135,29 @@ final class MastheadView: NSView, NSTextViewDelegate {
         needsLayout = true
     }
 
+    /// Double-GO protection (QLab 5, manual p. 100): a red border around the GO button while a GO
+    /// would be ignored.
+    func setGoProtection(_ on: Bool) {
+        goProtectionShown = on
+        // The flash belongs to the protection: it is gone when the protection is.
+        if !on {
+            flashEnd?.cancel()
+            goFlash.alphaValue = 0
+        }
+        applyColours()
+    }
+
+    /// A GO came while protected: the area around the button flashes red and fades.
+    func flashGo() {
+        goFlashes += 1
+        goFlash.alphaValue = 1
+        // Held, then gone: the drawn state is what a shot or a test reads, so no animation hides it.
+        flashEnd?.cancel()
+        let end = DispatchWorkItem { [weak self] in self?.goFlash.alphaValue = 0 }
+        flashEnd = end
+        scheduleFlashEnd(flashDuration, end)
+    }
+
     /// The GO button's text: white on its grey-violet fill in both appearances.
     static let goText = NSColor.white
     /// QLab's GO button: a grey-violet face with a green edge. Dark enough under white text to read in the
@@ -125,7 +173,9 @@ final class MastheadView: NSView, NSTextViewDelegate {
     private func applyColours() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             goButton.layer?.backgroundColor = Self.goFill.cgColor
-            goButton.layer?.borderColor = NSColor.systemGreen.cgColor
+            // The green edge, red while double-GO protection is in force.
+            goButton.layer?.borderWidth = goProtectionShown ? 4 : 3
+            goButton.layer?.borderColor = (goProtectionShown ? NSColor.systemRed : NSColor.systemGreen).cgColor
             standbyField.layer?.backgroundColor = Self.boxFill.cgColor
             notesScroll.needsDisplay = true
         }

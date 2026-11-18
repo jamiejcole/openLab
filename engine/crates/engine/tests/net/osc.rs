@@ -1217,6 +1217,149 @@ async fn a_new_passcode_in_a_snapshot_ends_every_session() {
     assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
 }
 
+/// Workspace Settings, OSC: the access switch off answers every message with `denied` and starts
+/// nothing, and switching it off ends the sessions of peers that had connected.
+#[tokio::test]
+async fn the_osc_switch_off_denies_every_message_and_ends_sessions() {
+    let f = fixture(with_passcode("sesame")).await;
+    let mut t = f.tcp().await;
+    t.send(&msg("/connect", vec![text("sesame")])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+    t.send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("the GO while the switch is on", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 1
+        })
+        .await;
+    {
+        let mut guard = f.control.workspace.lock().unwrap();
+        guard.as_mut().unwrap().settings.osc_enabled = false;
+    }
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 9,
+            upserts: vec![],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    // Each probe is a different message: an identical one within 100 ms is dropped unanswered.
+    guard("the connection to lose its rights", async {
+        let mut n = 10;
+        loop {
+            n += 1;
+            t.send(&msg(&format!("/cue/{n}/name"), vec![])).await;
+            if body(&t.recv().await.unwrap())["status"] == "denied" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    // The right passcode no longer helps: /connect is refused too, and a GO over UDP as well.
+    t.send(&msg("/connect", vec![text("sesame")])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "denied");
+    t.send(&msg("/go", vec![])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "denied");
+    f.udp_send(&msg("/go", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["status"], "denied");
+}
+
+/// A port both a UDP and a TCP socket can take on the loopback.
+fn free_osc_port() -> u16 {
+    loop {
+        let tcp = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = tcp.local_addr().unwrap().port();
+        if std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
+            return port;
+        }
+    }
+}
+
+/// Workspace Settings, OSC: a changed port moves both listeners; the old port stops answering, the
+/// new one reaches control, and the choice is the state the page reads.
+#[tokio::test]
+async fn changing_the_osc_port_moves_the_listeners_and_closes_the_old_ones() {
+    let f = fixture(test_workspace()).await;
+    let osc = f.server.osc_server().unwrap();
+    assert!(osc.state().open);
+    let old = f.tcp_port;
+    let new = free_osc_port();
+    let state = osc.set_port(new).unwrap();
+    assert_eq!((state.port, state.open, state.error), (new, true, None));
+    assert_eq!(
+        f.server.osc_ports().map(|p| (p.udp, p.tcp)),
+        Some((new, new))
+    );
+    f.udp
+        .send_to(
+            &encode_message(&msg("/go", vec![])).unwrap(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, new)),
+        )
+        .await
+        .unwrap();
+    f.control
+        .wait_seen("a GO on the new port", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 1
+        })
+        .await;
+    let t = TcpStream::connect((Ipv4Addr::LOCALHOST, new))
+        .await
+        .unwrap();
+    t.set_nodelay(true).unwrap();
+    // The old TCP port is closed (its listener goes with the old runtime, which is stopped in the
+    // background: the refusal may take a moment).
+    guard("the old port to close", async {
+        loop {
+            if TcpStream::connect((Ipv4Addr::LOCALHOST, old))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    // The same port again changes nothing, and port 0 is refused.
+    assert_eq!(osc.set_port(new).unwrap().port, new);
+    assert!(osc.set_port(0).is_err());
+    assert_eq!(osc.state().port, new);
+}
+
+/// Workspace Settings, OSC: a port that is in use is refused with its reason, the old port goes on
+/// serving, and nothing is left half open (the UDP socket bound before the TCP one failed is
+/// closed again).
+#[tokio::test]
+async fn an_osc_port_in_use_is_refused_and_the_old_one_keeps_serving_with_nothing_half_open() {
+    let f = fixture(test_workspace()).await;
+    let osc = f.server.osc_server().unwrap();
+    let old = f.udp_port;
+    // Taken for TCP only: the UDP bind comes first and must be undone.
+    let taken = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let why = osc.set_port(port).unwrap_err();
+    assert!(why.contains("already in use"), "{why}");
+    let state = osc.state();
+    assert_eq!((state.port, state.open), (old, true));
+    assert_eq!(state.error.as_deref(), Some(why.as_str()));
+    assert!(
+        std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_ok(),
+        "the UDP socket of the failed attempt was closed"
+    );
+    // Still serving on the old port.
+    f.udp_send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("a GO on the old port", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 1
+        })
+        .await;
+    // A free port then works and clears the reason.
+    let free = free_osc_port();
+    let state = osc.set_port(free).unwrap();
+    assert_eq!((state.port, state.open, state.error), (free, true, None));
+}
+
 #[tokio::test]
 async fn updates_to_a_subscriber_are_not_held_to_the_byte_budget_of_a_stranger() {
     let f = fixture(test_workspace()).await;

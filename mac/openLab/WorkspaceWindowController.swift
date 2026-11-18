@@ -88,6 +88,21 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var sub: AnyCancellable?
     private var statusSub: AnyCancellable?
     private var showModeSub: AnyCancellable?
+    private var goProtectionSub: AnyCancellable?
+    private var goBlockedSub: AnyCancellable?
+    private var statusController: StatusWindowController?
+    /// The workspace status window if it was ever made (closing a workspace must not make one just to
+    /// close it).
+    var existingStatusWindow: StatusWindowController? { statusController }
+    /// The workspace status window, made on first use: the pre-show check, the log and the workspace's
+    /// info as its pages. It closes with this window.
+    var statusWindow: StatusWindowController {
+        if let statusController { return statusController }
+        let made = StatusWindowController(store: store, warnings: preshowWindow, logs: logWindow)
+        made.retitle(workspaceName)
+        statusController = made
+        return made
+    }
     private var logController: LogWindowController?
     private var closeObserver: NSObjectProtocol?
     var logWindow: LogWindowController {
@@ -184,7 +199,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: window, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.logController?.close() }
+            MainActor.assumeIsolated { self?.statusController?.close() }
         }
         cueList.onSelectionChange = { [weak inspector, weak cueList] in
             inspector?.setSelection($0, byFollow: cueList?.followingPlayhead == true)
@@ -305,10 +320,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         showModeSub = store.$showMode.sink { [weak self] on in
             MainActor.assumeIsolated { self?.applyShowMode(on) }
         }
+        goProtectionSub = store.$goProtected.sink { [weak self] on in
+            MainActor.assumeIsolated { self?.masthead.setGoProtection(on) }
+        }
+        goBlockedSub = store.$goBlockedCount.dropFirst().sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.masthead.flashGo() }
+        }
         footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         footer.onSettings = { [weak self] in self?.showSettings() }
-        footer.onWarnings = { [weak self] in self?.showWarnings() }
+        // The footer's warning mark opens the status window on its Warnings page.
+        footer.onWarnings = { [weak self] in self?.showStatus(.warnings) }
         setVisible(.sidebar, false)
         refreshTitle()
         startSavingLayout()
@@ -332,16 +354,25 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cues.contains { $0.id == id || contains(id, in: $0.children) }
     }
 
-    func showLog() {
-        logWindow.showWindow(nil)
-        Task { await logWindow.refresh() }
+    /// Window > Log: the status window on its Logs page.
+    @discardableResult
+    func showLog() -> Task<Void, Never> { showStatus(.logs) }
+
+    /// Opens the status window on `page` and reads what it shows. The task's value tells tests it is
+    /// done.
+    @discardableResult
+    func showStatus(_ page: StatusWindowController.Page) -> Task<Void, Never> {
+        let status = statusWindow
+        status.retitle(workspaceName)
+        return status.present(page)
     }
 
     /// Opens the workspace settings (the footer gear, File > Workspace Settings).
     @discardableResult
-    func showSettings() -> Task<Void, Never> {
+    func showSettings(page: SettingsPage? = nil) -> Task<Void, Never> {
         let sc = settingsWindow
         sc.window?.title = String(format: loc("settings.title.workspace"), workspaceName)
+        if let page { sc.show(page: page) }
         return sc.present()
     }
 
@@ -359,11 +390,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Opens the pre-show check (SM-06) and runs it. The task's value tells tests it answered.
     @discardableResult
-    func showPreshowCheck() -> Task<Void, Never> {
-        let pc = preshowWindow
-        pc.window?.title = String(format: loc("preshow.title.workspace"), workspaceName)
-        return Task { await pc.present() }
-    }
+    func showPreshowCheck() -> Task<Void, Never> { showStatus(.warnings) }
 
     /// A pre-show report entry was chosen: reveals the cue (the playhead stays) and, in Edit Mode,
     /// shows the inspector on the tab that holds what to fix, as QLab's "Inspect Cue" does.
@@ -615,6 +642,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let named = list.map { String(format: loc("window.main.title.list"), workspaceName, $0) } ?? workspaceName
         window?.title = isShowMode ? String(format: loc("window.main.title.showMode"), named) : named
         missingFilesController?.retitle(workspaceName)
+        statusController?.retitle(workspaceName)
     }
 
     /// The footer's cue count follows the model (adds, deletes, a new snapshot).
@@ -665,7 +693,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         setVisible(.sidebar, true)
     }
 
-    /// The footer's warnings button: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
+    /// View > Show Warnings: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
     func showWarnings() {
         sidebar.showTab(2)  // before setVisible, which saves the layout
         setVisible(.sidebar, true)
@@ -750,7 +778,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         footer.popover?.close()
         if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
         pasteSheet = nil
-        preshowController?.close()
+        statusController?.close()
         settingsController?.close()
         missingFilesController?.close()
     }

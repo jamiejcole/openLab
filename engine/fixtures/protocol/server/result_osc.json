@@ -1,0 +1,12 @@
+{
+  "type": "result",
+  "id": 47,
+  "ok": {
+    "data": {
+      "type": "osc",
+      "port": 53000,
+      "open": true,
+      "error": "could not listen on 0.0.0.0:53100: it is already in use"
+    }
+  }
+}

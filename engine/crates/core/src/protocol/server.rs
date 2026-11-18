@@ -230,6 +230,17 @@ pub enum ResultData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         span: Option<f64>,
     },
+    /// Answer to `backup_keep` and `set_backup_keep`: how many backups of each workspace are kept.
+    BackupKeep { count: u32 },
+    /// Answer to `osc_state` and `set_osc_port`: the port OSC listens on (the one in use while
+    /// `open`, else the one asked for), whether its sockets are open, and why the last start or
+    /// change failed (absent: no failure).
+    Osc {
+        port: u16,
+        open: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Answer to `list_patch_mappings`: every patch of the workspace, in workspace order.
     PatchMappings { patches: Vec<PatchMappingEntry> },
     /// Answer to `list_displays`. `video` is false where this machine's openLab has no video

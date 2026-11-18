@@ -1,0 +1,38 @@
+{
+  "about": "The OSC page of the workspace settings (#637): the access switch, the listening port with its state, this Mac's addresses and the passcode table; the engine listens on a port of its own on the loopback.",
+  "show": "Demo",
+  "settings": {
+    "settings_version": 1,
+    "osc_port": 53977
+  },
+  "steps": [
+    {
+      "focus": "settings"
+    },
+    {
+      "tab": "osc"
+    },
+    {
+      "shot": "osc-open"
+    },
+    {
+      "click": "settings-osc-enabled"
+    },
+    {
+      "advance": 0.1
+    },
+    {
+      "shot": "osc-switch-off"
+    },
+    {
+      "resize": [
+        680,
+        552
+      ]
+    },
+    {
+      "shot": "osc-least"
+    }
+  ],
+  "appearance": "light"
+}

@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 70,
+  "request": {
+    "type": "osc_state"
+  }
+}

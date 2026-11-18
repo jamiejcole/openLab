@@ -73,6 +73,8 @@ pub struct CueEngine {
     slots: BTreeMap<CueId, Slot>,
     playheads: BTreeMap<CueListId, Playhead>,
     last_go: Option<SampleTime>,
+    /// When double-GO protection ends, while it is in force (reported as `GoProtection`).
+    go_protect_until: Option<SampleTime>,
     next_run: u64,
     next_seq: u64,
     /// Random groups and shuffled playlists draw from this, seeded from the config.
@@ -175,6 +177,7 @@ impl CueEngine {
             slots: BTreeMap::new(),
             playheads: BTreeMap::new(),
             last_go: None,
+            go_protect_until: None,
             next_run: 1,
             next_seq: 0,
             rng: SplitMix64::new(config.seed()),
@@ -362,6 +365,8 @@ impl CueEngine {
         self.advance(&mut cx);
         self.settle_groups(&mut cx);
         self.sync_ducks(&mut cx);
+        // Last: whatever this call went on to do, its protection is judged on the call's horizon.
+        self.end_go_protection(&mut cx);
         // `limit - budget` is what this call and the earlier ones at `now` started (a raised
         // limit raises the budget by as much, see `budget_left`).
         self.spent = (now, cx.limit.saturating_sub(cx.budget));
@@ -374,6 +379,10 @@ impl CueEngine {
     /// device reopen), so this guards the API: samples dated on the old clock mean nothing on the
     /// new one, and must not hold back what is dated from now on.
     fn clock_went_back(&mut self, now: SampleTime) {
+        // Protection dated on the old clock ends at the next call.
+        if self.go_protect_until.is_some() {
+            self.go_protect_until = Some(now);
+        }
         for slot in self.slots.values_mut() {
             let Slot::Active(run) = slot else { continue };
             run.committed = run.committed.min(now);
@@ -396,6 +405,20 @@ impl CueEngine {
         }
     }
 
+    /// When double-GO protection ends, while it is in force.
+    pub fn go_protection_ends(&self) -> Option<SampleTime> {
+        self.go_protect_until
+    }
+
+    /// The earliest sample the control loop must wake for: [`CueEngine::next_deadline`] or the end
+    /// of double-GO protection (which no cue owns).
+    pub fn next_wake(&self) -> Option<SampleTime> {
+        self.next_deadline()
+            .into_iter()
+            .chain(self.go_protect_until)
+            .min()
+    }
+
     /// The earliest sample at which a timer of a cue expires, if any.
     pub fn next_deadline(&self) -> Option<SampleTime> {
         self.slots
@@ -411,7 +434,7 @@ impl CueEngine {
     /// deadline is due once it falls inside the call's window (`..now + lookahead`, end excluded,
     /// and always `now` itself, so with lookahead 0 a deadline at `now` is due at `now`).
     pub fn is_due(&self, now: SampleTime) -> bool {
-        self.next_deadline()
+        self.next_wake()
             .is_some_and(|d| d <= self.config.horizon(now))
     }
 

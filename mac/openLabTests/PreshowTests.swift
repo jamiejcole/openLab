@@ -226,9 +226,9 @@ final class PreshowTests: XCTestCase {
         wc.workspaceName = "Lear"
         wc.showWindow(nil)
         await wc.showPreshowCheck().value
-        let panel = try XCTUnwrap(wc.preshowWindow.window)
+        let panel = try XCTUnwrap(wc.existingStatusWindow?.window)
         XCTAssertTrue(panel.isVisible)
-        XCTAssertEqual(panel.title, String(format: loc("preshow.title.workspace"), "Lear"))
+        XCTAssertEqual(panel.title, String(format: loc("status.title.workspace"), "Lear"))
         wc.window?.close()
         XCTAssertFalse(panel.isVisible)
     }

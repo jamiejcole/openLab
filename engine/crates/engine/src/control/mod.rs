@@ -267,6 +267,8 @@ pub struct ControlConfig {
     /// Where the loop says whether the computer must stay awake (SM-07: a doc in Show Mode or
     /// a cue running; `platform::power`). `None`: nobody listens (offline tests).
     pub awake: Option<Sender<bool>>,
+    /// The OSC server, for the settings page's port and state (`None`: no OSC).
+    pub osc: Option<std::sync::Arc<crate::net::OscServer>>,
     /// The stage host the engine runs for video output (docs/protocol.md section 5); `None`: no video
     /// output (tests that do not need it).
     pub stage_host: Option<crate::stage::StageHostConfig>,
@@ -324,6 +326,7 @@ impl ControlConfig {
             net: NetTransport::default(),
             watch: watch::WatchConfig::default(),
             awake: None,
+            osc: None,
             stage_host: None,
             #[cfg(feature = "test-support")]
             picture_probe: None,
@@ -1437,6 +1440,10 @@ fn request_name(r: &Request) -> &'static str {
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
         Request::SetOutputDevice { .. } => "set_output_device",
+        Request::BackupKeep => "backup_keep",
+        Request::SetBackupKeep { .. } => "set_backup_keep",
+        Request::OscState => "osc_state",
+        Request::SetOscPort { .. } => "set_osc_port",
         Request::SetBufferSize { .. } => "set_buffer_size",
         Request::PreshowCheck => "preshow_check",
         Request::ListPatchMappings => "list_patch_mappings",
@@ -1610,6 +1617,10 @@ mod tests {
                 auto_number_start: 1.0,
                 auto_number_increment: 1.0,
                 new_cues_auto_load: false,
+                auto_number_new_cues: true,
+                lock_playhead: true,
+                go_needs_key_up: false,
+                osc_enabled: true,
             },
             patches: vec![],
             network_patches: vec![],
