@@ -52,7 +52,8 @@ pub(in crate::control) struct Primes {
     unprimed: BTreeSet<String>,
     /// Opens asked ahead so far (tests).
     asked: u64,
-    /// Files being opened ahead at stage host crashes: how many crashes, from when.
+    /// Files being opened ahead at stage host crashes: how many crashes, from when. Kept when
+    /// the file is barred, until a run of it takes the count over.
     suspected: BTreeMap<String, (u32, SampleTime)>,
 }
 
@@ -182,10 +183,12 @@ impl Engine {
     }
 
     /// `file` crashed the stage host twice while opened ahead, alone the second time: it is
-    /// not opened ahead again.
+    /// not opened ahead again. Its crash count stays for its cue's next run to take over, so a
+    /// GO that crashes the stage host once more within the window breaks the cue: a bad file
+    /// costs three crashes in all, not four (which with the relaunches would near the stage
+    /// host's restart limit, blacking out every stage each time).
     pub(super) fn bar_prime_file(&mut self, file: &str) {
         let primes = &mut self.pictures.primes;
-        primes.suspected.remove(file);
         primes.by_id.retain(|_, p| file_of(&p.load) != Some(file));
         if primes.unprimed.len() >= MAX_UNPRIMED {
             primes.unprimed.clear();

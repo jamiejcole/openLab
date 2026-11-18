@@ -4643,6 +4643,8 @@ fn a_crash_while_a_cue_is_tried_alone_and_another_opens_is_not_blamed_on_the_cue
 /// opened ahead: each relaunched stage host is sent one of those again, opening when the bad
 /// file crashes it once more. The bad cue still breaks within three crashes, without the video
 /// output being paused at its restart limit, and every cue opened ahead is opened ahead again.
+/// That holds whichever file's probe answers first: a bad file probed first is opened ahead
+/// and crashes the stage host before the GO, and its GO takes those crashes over.
 #[test]
 fn a_cue_crashing_the_stage_host_as_it_opens_breaks_within_three_crashes_beside_cues_opened_ahead()
 {
@@ -4674,6 +4676,43 @@ fn a_cue_crashing_the_stage_host_as_it_opens_breaks_within_three_crashes_beside_
     assert!(
         s.wait_for(|c| c.pictures_primed() == (4, 4)),
         "every cue is opened ahead again\n{}",
+        seen(&s)
+    );
+}
+
+/// A cue whose file crashed the stage host twice as it was opened ahead (it is first of the
+/// cues standing by, so it is opened ahead before the others): its GO takes the two crashes
+/// over, so the GO's own crash breaks it. Three crashes in all, the video output never paused
+/// at its restart limit, and the other cues are opened ahead again.
+#[test]
+fn a_cue_whose_file_crashed_twice_opened_ahead_breaks_at_its_gos_first_crash() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = movie!(dir.path(), "good.mov", (500, 25));
+    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+    let cues: Vec<Cue> = [video_cue(1, Some(&bomb))]
+        .into_iter()
+        .chain((2..=9u128).map(|n| video_cue(n, Some(&good))))
+        .collect();
+    let mut s = video_show_of(workspace(cues));
+    assert!(
+        s.wait_for(|c| stage_host_stops(c) == 2 && c.pictures_primed() == (4, 4)),
+        "{}",
+        seen(&s)
+    );
+    let mut pids = vec![s.control().stage_host_pid().unwrap()];
+    start(&mut s, 1);
+    assert!(
+        play_until_broken(&mut s, 1, &mut pids),
+        "{pids:?}\n{}",
+        seen(&s)
+    );
+    assert_eq!(stage_host_stops(s.control()), 3, "{}", seen(&s));
+    let paused = (s.control().show_log().tail(200).iter())
+        .any(|e| e.message.contains("stages are not shown"));
+    assert!(!paused, "{}", seen(&s));
+    assert!(
+        s.wait_for(|c| c.pictures_primed() == (4, 4)),
+        "every other cue is opened ahead again\n{}",
         seen(&s)
     );
 }
