@@ -6567,25 +6567,24 @@ extension PlayheadFlowTests {
 
     // MARK: Toolbar drag
 
-    func testAToolbarButtonDraggedIntoTheListMakesACueWhereItLandsAndInAnOpenGroupJoinsIt() async throws {
+    /// The drop logic behind the toolbar drag (the drag itself, with a real mouse, is the UI test of
+    /// the same flow): each place proposed is taken, the cue is made where it is dropped, and dropped
+    /// in an open group it is the group's child.
+    func testAToolbarKindDroppedOnTheListIsMadeAtThePlaceProposed() async throws {
         try await threeCues()
         let outline = wc.cueList.outlineView
         let drag = ToolbarDrag(try toolbarItem(.memo))
-        // The insertion line follows the pointer: each place the pointer is over is proposed.
-        XCTAssertEqual(
-            wc.cueList.outlineView(outline, validateDrop: drag, proposedItem: nil, proposedChildIndex: 3), .copy)
-        XCTAssertEqual(wc.cueList.kindDropProposal?.index, 3)
-        XCTAssertEqual(
-            wc.cueList.outlineView(outline, validateDrop: drag, proposedItem: nil, proposedChildIndex: 1), .copy)
-        XCTAssertNil(wc.cueList.kindDropProposal?.parent)
-        XCTAssertEqual(wc.cueList.kindDropProposal?.index, 1)
+        for index in [3, 1] {
+            XCTAssertEqual(
+                wc.cueList.outlineView(outline, validateDrop: drag, proposedItem: nil, proposedChildIndex: index),
+                .copy, "\(index)")
+        }
         XCTAssertTrue(wc.cueList.outlineView(outline, acceptDrop: drag, item: nil, childIndex: 1))
         await assertEventually("a Memo cue where it was dropped") {
             self.wc.cueList.roots.count == 4 && self.wc.cueList.roots[1].cue.kindType == "memo"
         }
         XCTAssertEqual(
             wc.cueList.roots.map(\.id).filter { self.cues.contains($0) }, cues, "the others keep their order")
-        XCTAssertNil(wc.cueList.kindDropProposal, "the line goes with the drop")
 
         // Into a group: dropped inside it, the cue is its child.
         let addedGroup = await wc.editor.add(.group, after: [])
@@ -6596,7 +6595,6 @@ extension PlayheadFlowTests {
         let into = ToolbarDrag(try toolbarItem(.wait))
         XCTAssertEqual(
             wc.cueList.outlineView(outline, validateDrop: into, proposedItem: node, proposedChildIndex: 0), .copy)
-        XCTAssertEqual(wc.cueList.kindDropProposal?.parent, group)
         XCTAssertTrue(wc.cueList.outlineView(outline, acceptDrop: into, item: node, childIndex: 0))
         await assertEventually("the Wait cue joined the group") {
             self.wc.cueList.node(group)?.children.map(\.cue.kindType) == ["wait"]
@@ -6693,8 +6691,9 @@ extension PlayheadFlowTests {
         let cue = cues[0]
         let total = try await length(cue)
         wc.toggleLoadToTime()
-        await assertEventually("the slider spans the cue") { self.wc.loadBar.slider.maxValue == total }
-        XCTAssertTrue(wc.loadBar.slider.isEnabled)
+        await assertEventually("the slider spans the cue") {
+            self.wc.loadBar.slider.isEnabled && abs(self.wc.loadBar.slider.maxValue - total) < 0.01
+        }
         // A time typed.
         let at = (total / 2 * 100).rounded() / 100
         wc.loadBar.field.stringValue = CueTime.format(at)
@@ -6702,7 +6701,7 @@ extension PlayheadFlowTests {
             wc.loadBar.control(
                 wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
         await assertEventually("loaded there") {
-            self.store.cueStates[cue]?.state == .loaded && abs((self.store.loadedAt[cue] ?? -1) - at) < 0.02
+            self.store.cueStates[cue]?.state == .loaded && abs((self.store.loadedAt[cue]?.time ?? -1) - at) < 0.02
         }
         await assertEventually("the row shows it") { self.cellText(cue, "duration") == CueTime.running(at) }
         XCTAssertNil(store.loadedAt[cues[1]], "only the standing-by cue was loaded")
@@ -6721,7 +6720,7 @@ extension PlayheadFlowTests {
             wc.loadBar.control(
                 wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
         await assertEventually("loaded 0.2 s before the end") {
-            abs((self.store.loadedAt[self.cues[1]] ?? -1) - (other - 0.2)) < 0.02
+            abs((self.store.loadedAt[self.cues[1]]?.time ?? -1) - (other - 0.2)) < 0.02
         }
         // The slider.
         wc.loadBar.slider.doubleValue = 0.3
@@ -6729,7 +6728,7 @@ extension PlayheadFlowTests {
         XCTAssertTrue(slider.sendAction(slider.action, to: slider.target))
         try await play(0.1)
         await assertEventually("the slider loaded it: \(String(describing: self.store.loadedAt[self.cues[1]]))") {
-            abs((self.store.loadedAt[self.cues[1]] ?? -1) - 0.3) < 0.02
+            abs((self.store.loadedAt[self.cues[1]]?.time ?? -1) - 0.3) < 0.02
         }
         XCTAssertEqual(wc.loadBar.field.stringValue, CueTime.format(0.3), "the field follows the slider")
     }
@@ -6740,9 +6739,136 @@ extension PlayheadFlowTests {
         var sent: [TransportAction] = []
         wc.onCueAction = { sent.append($0) }
         for bad in ["", "abc", "1:75", "--3"] {
+            wc.loadBar.field.stringValue = bad
             XCTAssertEqual(wc.applyLoadTime(bad, to: cues[0]), loc("cue.prompt.badTime"), bad)
+            XCTAssertEqual(wc.loadBar.field.stringValue, "", "\(bad): nothing was loaded yet, so the field empties")
         }
         XCTAssertEqual(sent, [])
+        // After a time was loaded, text that is not a time goes back to it.
+        wc.loadBar.field.stringValue = "0.5"
+        XCTAssertNil(wc.applyLoadTime("0.5", to: cues[0]))
+        wc.loadBar.field.stringValue = "soon"
+        XCTAssertEqual(wc.applyLoadTime("soon", to: cues[0]), loc("cue.prompt.badTime"))
+        XCTAssertEqual(wc.loadBar.field.stringValue, "0.5")
+        XCTAssertEqual(sent, [.load(cue: cues[0], at: 0.5)])
+    }
+
+    /// Flow: the standing-by cue auto-follows into the next: the slider spans both, a time past the
+    /// first cue's end loads the second that far into it and its row shows it, and a negative time
+    /// counts back from the end of both, the knob with it.
+    func testATimeTypedLoadsTheStandingBySequenceAndEachRowShowsIt() async throws {
+        try await threeCues()
+        let first = try await length(cues[0])
+        let second = try await length(cues[1])
+        await wc.editor.setContinue(of: cues[0], to: "auto_follow")
+        await assertEventually {
+            self.store.model?.cue(self.cues[0])?.raw["continue_mode"]?.stringValue == "auto_follow"
+        }
+        wc.toggleLoadToTime()
+        await assertEventually("the slider spans the sequence: \(self.wc.loadBar.slider.maxValue)") {
+            self.wc.loadBar.slider.isEnabled && abs(self.wc.loadBar.slider.maxValue - (first + second)) < 0.01
+        }
+        let into = 0.3
+        let at = ((first + into) * 100).rounded() / 100
+        wc.loadBar.field.stringValue = CueTime.format(at)
+        XCTAssertTrue(
+            wc.loadBar.control(
+                wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        try await play(0.1)
+        await assertEventually("the second cue is loaded into its time") {
+            self.store.cueStates[self.cues[1]]?.state == .loaded
+                && abs((self.store.loadedAt[self.cues[1]]?.time ?? -1) - (at - first)) < 0.02
+        }
+        await assertEventually("its row shows it") {
+            self.cellText(self.cues[1], "duration") == CueTime.running(self.store.loadedAt[self.cues[1]]?.time ?? -1)
+        }
+        XCTAssertEqual(store.cueStates[cues[0]]?.state, .loaded)
+        XCTAssertEqual(cellText(cues[0], "duration"), CueTime.running(first), "the first stands at its end")
+        XCTAssertNil(store.loadedAt[cues[2]], "the third is not in the sequence")
+        // Back from the end of the whole sequence: 0.2 s before the second cue's end.
+        wc.loadBar.field.stringValue = "-0.2"
+        XCTAssertTrue(
+            wc.loadBar.control(
+                wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        try await play(0.1)
+        await assertEventually(
+            "loaded 0.2 s before the end of the sequence: \(String(describing: self.store.loadedAt[self.cues[1]]))"
+        ) {
+            abs((self.store.loadedAt[self.cues[1]]?.time ?? -1) - (second - 0.2)) < 0.02
+        }
+        XCTAssertEqual(
+            wc.loadBar.slider.doubleValue, wc.loadBar.slider.maxValue - 0.2, accuracy: 0.001, "the knob follows")
+    }
+
+    /// Flow: a Wait, a Fade and a Group loaded to a time each show it in their row's Duration cell.
+    func testAWaitFadeOrGroupLoadedToATimeShowsItInItsRow() async throws {
+        try await threeCues()
+        var made: [ModelID] = []
+        for kind in [NewCueKind.wait, .fade, .group] {
+            let added = await wc.editor.add(kind, after: [])
+            made.append(try XCTUnwrap(added, "\(kind)"))
+        }
+        await assertEventually { made.allSatisfy { self.wc.cueList.node($0) != nil } }
+        for id in made.prefix(2) {
+            let set = await wc.editor.setDuration(of: id, text: "10")
+            XCTAssertTrue(set)
+        }
+        // A Fade with a target and a level to fade, so it is not broken.
+        let fade = made[1]
+        await wc.editor.setProperty(.target(cues[0]), of: [fade])
+        let levels = JSONValue.object(["master_db": .double(-6), "output_db": .array([]), "crosspoints": .array([])])
+        await wc.editor.setProperty(.kindFields(["levels": levels]), of: [fade])
+        await assertEventually("the Fade can play") { self.store.problems[fade] == nil }
+        wc.toggleLoadToTime()
+        for id in made {
+            wc.cueList.setPlayhead(id)
+            await assertEventually("standing by") { self.wc.standingByCue == id }
+            wc.loadBar.field.stringValue = "4"
+            XCTAssertTrue(
+                wc.loadBar.control(
+                    wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+            try await play(0.1)
+            await assertEventually("\(id) shows its time: \(String(describing: self.cellText(id, "duration")))") {
+                self.store.cueStates[id]?.state == .loaded && self.cellText(id, "duration") == CueTime.running(4)
+            }
+        }
+    }
+
+    /// The knob stands at a negative time counted back from the slider's end, is placed again for a new
+    /// span, and rests at the start while no span is known (the slider is off).
+    func testTheLoadBarsKnobFollowsANegativeTimeAndRestsAtTheStartWithNoSpan() {
+        let bar = LoadTimeBarView(frame: .zero)
+        bar.setLength(10)
+        bar.field.stringValue = "-2"
+        bar.show(loaded: -2)
+        XCTAssertEqual(bar.slider.doubleValue, 8, accuracy: 0.001)
+        bar.setLength(12)
+        XCTAssertEqual(bar.slider.doubleValue, 10, accuracy: 0.001)
+        bar.setLength(nil)
+        XCTAssertFalse(bar.slider.isEnabled)
+        XCTAssertEqual(bar.slider.doubleValue, 0)
+    }
+
+    /// The bar follows the playhead: another standing-by cue clears the time and the slider spans that cue.
+    func testTheLoadBarStartsAfreshForANewStandingByCue() async throws {
+        try await threeCues()
+        let first = try await length(cues[0])
+        wc.toggleLoadToTime()
+        await assertEventually {
+            self.wc.loadBar.slider.isEnabled && abs(self.wc.loadBar.slider.maxValue - first) < 0.01
+        }
+        wc.loadBar.field.stringValue = "0.5"
+        XCTAssertNil(wc.applyLoadTime("0.5", to: cues[0]))
+        XCTAssertEqual(wc.loadBar.slider.doubleValue, 0.5, accuracy: 0.001)
+        let added = await wc.editor.add(.wait, after: [])
+        let wait = try XCTUnwrap(added)
+        await assertEventually { self.wc.cueList.node(wait) != nil }
+        let set = await wc.editor.setDuration(of: wait, text: "7")
+        XCTAssertTrue(set)
+        wc.cueList.setPlayhead(wait)
+        await assertEventually("the slider spans the Wait") { abs(self.wc.loadBar.slider.maxValue - 7) < 0.01 }
+        XCTAssertEqual(wc.loadBar.field.stringValue, "", "the last cue's time is gone")
+        XCTAssertEqual(wc.loadBar.slider.doubleValue, 0)
     }
 
     func testInShowModeTheListToolsAreOffAndLoadToTimeStillWorks() async throws {
@@ -6769,7 +6895,7 @@ extension PlayheadFlowTests {
         let at = (total / 2 * 100).rounded() / 100
         XCTAssertNil(wc.applyLoadTime(CueTime.format(at), to: cue))
         await assertEventually("loaded in Show Mode") {
-            self.store.cueStates[cue]?.state == .loaded && abs((self.store.loadedAt[cue] ?? -1) - at) < 0.02
+            self.store.cueStates[cue]?.state == .loaded && abs((self.store.loadedAt[cue]?.time ?? -1) - at) < 0.02
         }
         delegate.loadToTime(nil)
         delegate.loadToTime(nil)

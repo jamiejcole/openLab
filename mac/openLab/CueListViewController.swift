@@ -583,7 +583,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.setAX(AX.cueList, label: loc("cuelist.label"))
         (outlineView as? CueOutlineView)?.onDragExit = { [weak self] in
             self?.showTargetOutline(nil)
-            self?.kindDropProposal = nil
         }
         outlineView.registerForDraggedTypes([Self.dragType, CueToolbarView.dragType, .fileURL])
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
@@ -1349,9 +1348,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// A toolbar button was dropped: a new cue of that kind goes at that place (parent nil: the list's top
     /// level).
     var onKindDrop: ((NewCueKind, ModelID?, Int) -> Void)?
-    /// Where the toolbar button now being dragged would land, for the insertion line (nil: not over a
-    /// place it can go).
-    private(set) var kindDropProposal: (parent: ModelID?, index: Int)?
 
     /// The kind a drag from the toolbar carries.
     private func draggedKind(_ info: NSDraggingInfo) -> NewCueKind? {
@@ -1397,11 +1393,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         proposedChildIndex index: Int
     ) -> NSDragOperation {
         if draggedKind(info) != nil {
-            kindDropProposal = nil
             guard !isEditLocked else { return [] }
+            // The outline draws its insertion line where the drop is set.
             let place = dropTarget(item, index)
             outlineView.setDropItem(place.parent, dropChildIndex: place.index)
-            kindDropProposal = (place.parent?.id, place.index)
             return .copy
         }
         let files = fileURLs(info)
@@ -1426,7 +1421,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         _ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int
     ) -> Bool {
         showTargetOutline(nil)
-        kindDropProposal = nil
         if let kind = draggedKind(info) {
             guard !isEditLocked else { return false }
             let place = dropTarget(item, index)
@@ -1926,7 +1920,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let remaining = timeShown["duration"] == .remaining
         // A cue loaded to a time stands there like a paused one: its Duration reads the point.
         if let stand = loadedStand(node) {
-            return CueTime.running(remaining ? stand.length - stand.at : stand.at)
+            guard let length = stand.length else { return CueTime.running(stand.at) }
+            return CueTime.running(remaining ? length - stand.at : stand.at)
         }
         if let p = store.progress[node.id] {
             if let left = p.remaining { return CueTime.running(remaining ? left : p.elapsed) }
@@ -1937,15 +1932,16 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return ""
     }
 
-    /// Where a loaded cue stands in its length (Load to Time); nil for one loaded at its start or whose
-    /// length is not known.
-    private func loadedStand(_ node: CueNode) -> (at: Double, length: Double)? {
-        guard store.cueStates[node.id]?.state == .loaded, let position = store.loadedAt[node.id],
-            let length = restingDuration(node), length > 0
-        else { return nil }
-        // The engine's point is in the file; the cue's own time starts at its start trim.
-        let at = position - (node.cue.raw["kind"]?["start_time"]?.doubleValue ?? 0)
-        return at > 0 ? (min(at, length), length) : nil
+    /// Where a loaded cue stands in its action (Load to Time, a Load cue, a click in its timeline), and
+    /// its length when known; nil for one loaded at its start.
+    private func loadedStand(_ node: CueNode) -> (at: Double, length: Double?)? {
+        guard store.cueStates[node.id]?.state == .loaded, let stand = store.loadedAt[node.id] else { return nil }
+        // A click in the timeline stands at a point of the file; the cue's own time starts at its start trim.
+        let fromFile = stand.position.map { $0 - (node.cue.raw["kind"]?["start_time"]?.doubleValue ?? 0) } ?? 0
+        let at = stand.time > 0 ? stand.time : fromFile
+        guard at > 0 else { return nil }
+        guard let length = restingDuration(node), length > 0 else { return (at, nil) }
+        return (min(at, length), length)
     }
 
     private func loopPass(_ node: CueNode, _ p: ProgressItem) -> (gone: Double, length: Double)? {
@@ -1964,7 +1960,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// How far a running or paused cue is, drawn in its Duration cell: green running, yellow paused
     /// (the Active Cues bar's colours).
     private func durationProgress(_ node: CueNode) -> (fraction: Double, colour: NSColor)? {
-        if let stand = loadedStand(node) { return (stand.at / stand.length, MarkColour.caution) }
+        if let stand = loadedStand(node) {
+            guard let length = stand.length else { return nil }
+            return (stand.at / length, MarkColour.caution)
+        }
         guard let p = store.progress[node.id] else { return nil }
         let paused = displayState(node.id).state == .paused
         let colour: NSColor = paused ? MarkColour.caution : .systemGreen

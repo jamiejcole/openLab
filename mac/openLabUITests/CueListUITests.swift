@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import AppKit
 import XCTest
 
 /// The cue list on the real engine's demo show: Intro, a Fade cue of Intro, and a
@@ -281,5 +282,74 @@ final class CueTargetUITests: XCTestCase {
         // A key, not the Cancel button: the first element of that name is the panel's Touch Bar one.
         app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
         XCTAssertTrue(waitFor("exists == false", app.buttons["Choose"]), "and closes")
+    }
+}
+
+/// The list tools with a real mouse and the real menu bar: a cue-type button dragged into the list,
+/// and the window taken full screen (QLab 5, manual pp. 119 and 91).
+@MainActor
+final class ListToolsUITests: XCTestCase {
+    /// The cue-type button labelled `name` in the toolbar above the list (a segment of one of its
+    /// segmented controls).
+    private func toolbarButton(_ name: String, in app: XCUIApplication) -> XCUIElement {
+        let kinds = [XCUIElement.ElementType.radioButton, .button].map(\.rawValue)
+        return app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == %@ AND elementType IN %@", name, kinds)
+        ).firstMatch
+    }
+
+    private func selectedIndex(_ rows: XCUIElementQuery) -> Int? {
+        (0..<rows.count).first { rows.element(boundBy: $0).isSelected }
+    }
+
+    func testAToolbarButtonDraggedIntoTheListMakesACueWhereItLandsAndInAnOpenGroupJoinsIt() {
+        let app = launchDemo()
+        let rows = app.outlines["cue-list"].outlineRows
+        // Intro, the Fade, Act One and its three cues, the group open.
+        XCTAssertTrue(waitFor("count == 6", rows), "the demo's rows: \(rows.count)")
+        let memo = toolbarButton("Memo", in: app)
+        XCTAssertTrue(memo.waitForExistence(timeout: 10), "the Memo button")
+        // Dropped on Intro's row: the new cue is made just after it, and selected.
+        memo.press(forDuration: 0.3, thenDragTo: cueRow("Intro", in: app))
+        XCTAssertTrue(waitFor("count == 7", rows), "a cue was made: \(rows.count)")
+        XCTAssertTrue(waitFor("selected == true", rows.element(boundBy: 1)), "right after Intro")
+        XCTAssertTrue(rows.element(boundBy: 0).staticTexts["Intro"].exists, "Intro keeps its place")
+        // Dropped on the open group's row: the new cue joins the group, after its last cue.
+        let wait = toolbarButton("Wait", in: app)
+        wait.press(forDuration: 0.3, thenDragTo: cueRow("Act One", in: app))
+        XCTAssertTrue(waitFor("count == 8", rows), "a second cue was made: \(rows.count)")
+        XCTAssertEqual(selectedIndex(rows), 7, "after Radio, the group's last cue")
+        // Closing the group hides it with the group's other cues: it is inside.
+        let twisty = cueRow("Act One", in: app).disclosureTriangles.firstMatch
+        XCTAssertTrue(twisty.exists)
+        twisty.click()
+        XCTAssertTrue(waitFor("count == 4", rows), "the group's four cues are hidden: \(rows.count)")
+    }
+
+    func testEnterFullScreenTakesTheWorkspaceWindowFullScreenAndBack() {
+        let app = launchDemo()
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 10))
+        let before = window.frame
+        app.menuBars.menuBarItems["View"].click()
+        let enter = app.menuBars.menuItems["Enter Full Screen"].firstMatch
+        XCTAssertTrue(enter.waitForExistence(timeout: 5))
+        XCTAssertTrue(enter.isEnabled)
+        enter.click()
+        // Full screen: the window fills its screen, and the item now takes it back.
+        let screen = NSScreen.main?.frame.size ?? .zero
+        XCTAssertTrue(
+            waitUntil { window.frame.width >= screen.width - 1 && window.frame.height >= screen.height - 1 },
+            "the window fills the screen: \(window.frame) of \(screen)")
+        // The menu bar hides in full screen; the item's keys take it back.
+        app.typeKey("f", modifierFlags: [.command, .shift])
+        XCTAssertTrue(waitUntil { abs(window.frame.width - before.width) <= 1 }, "the window is back: \(window.frame)")
+    }
+
+    /// True once `condition` holds, false after `timeout` seconds; the waiter polls it.
+    private func waitUntil(timeout: TimeInterval = 10, _ condition: @escaping @MainActor () -> Bool) -> Bool {
+        let met = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in MainActor.assumeIsolated { condition() } }, object: nil)
+        return XCTWaiter().wait(for: [met], timeout: timeout) == .completed
     }
 }

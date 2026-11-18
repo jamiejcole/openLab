@@ -652,13 +652,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     private var footerWarned: Set<ModelID> = []
 
-    /// The footer's warnings button: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
     /// View > Switch Sidebar Between Lists and Active Cues: shows the sidebar on the other of its two tabs.
     func toggleSidebarTab() {
         sidebar.showTab(sidebar.tabs.selectedSegment == 0 ? 1 : 0)
         setVisible(.sidebar, true)
     }
 
+    /// The footer's warnings button: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
     func showWarnings() {
         sidebar.showTab(2)  // before setVisible, which saves the layout
         setVisible(.sidebar, true)

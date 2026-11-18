@@ -812,17 +812,14 @@
 "cue.prompt.number" = "Cue number";
 "cue.prompt.playhead" = "Playhead";
 "cue.prompt.notFound" = "No cue is numbered %@.";
-"cue.prompt.time" = "Time (minutes:seconds)";
 "cue.prompt.badTime" = "That is not a time. Use seconds, minutes:seconds or hours:minutes:seconds, up to 24 hours.";
 "menu.tools" = "Tools";
 "menu.tools.loadToTime" = "Load to Time…";
-"menu.tools.loadToTime.title" = "Load to Time";
 "loadTime.label" = "Load to Time";
 "loadTime.field" = "Time to load the standing-by cue to";
 "loadTime.slider" = "Scrub the standing-by cue";
 "loadTime.done" = "Done";
 "loadTime.nothing" = "No cue is standing by.";
-"menu.tools.loadToTime.ok" = "Load";
 "menu.tools.revealTarget" = "Reveal Target File in Finder";
 "menu.tools.findMissingFiles" = "Find Missing Files…";
 

@@ -1,0 +1,27 @@
+{
+  "about": "Load to Time on a sequence and on cues without a voice: the Fade auto-follows into the group Act One, so 7 s stands the Fade at its end and the group and its cues 2 s in (each row shows its time; the group's own row has no fill, its length unknown). Rain loops, so the sequence has no known end: the slider is off with its knob at the start, and -1 s loads the Fade at its start and unloads the group. A new standing-by cue clears the bar, and text that is not a time goes back to the last time loaded.",
+  "show": "Demo",
+  "media": {"media/a.wav": 8, "media/d.wav": 6, "media/r.wav": 6, "media/o.wav": 6},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"key": "down"},
+    {"choose": "inspector-continue", "item": "Auto-follow"},
+    {"tool": "load_to_time"},
+    {"advance": 0.2},
+    {"shot": "bar-spans-the-sequence"},
+    {"tool": "load_to_time"},
+    {"type": "load-time-field", "text": "7"},
+    {"advance": 0.5},
+    {"shot": "loaded-into-the-group"},
+    {"type": "load-time-field", "text": "-1"},
+    {"advance": 0.5},
+    {"shot": "one-second-before-the-end"},
+    {"type": "load-time-field", "text": "soon"},
+    {"advance": 0.2},
+    {"shot": "not-a-time-reverts"},
+    {"select": "2.1"},
+    {"advance": 0.2},
+    {"shot": "bar-cleared-for-another-cue"}
+  ]
+}

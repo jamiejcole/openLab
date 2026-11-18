@@ -8,6 +8,10 @@ struct LoadTimeState {
     var isOpen = false
     /// Whether the cue-type row was hidden when the bar opened; it comes back so.
     var toolbarWasHidden = false
+    /// The standing-by cue the bar was last set up for: another one starts the bar afresh.
+    var cue: ModelID?
+    /// Counts the span requests, so only the newest answer sets the slider.
+    var spanAsked = 0
 }
 
 /// Load to Time (QLab manual p. 149): Tools > Load to Time cycles the bar through three states, and a
@@ -64,22 +68,41 @@ extension WorkspaceWindowController {
         if hadFocus { window?.makeFirstResponder(cueList.outlineView) }
     }
 
-    /// The slider spans the standing-by cue's length; it follows the playhead.
+    /// The slider spans the standing-by cue's whole sequence, as the engine times it (a group, a
+    /// chain of auto-continues and auto-follows); it follows the playhead, and a new standing-by cue
+    /// clears the time shown for the last one. The answer comes later; only the newest counts.
     func syncLoadBar() {
         guard loadTime.isOpen else { return }
-        loadBar.setLength(standingByCue.flatMap { cueList.node($0) }.flatMap { cueList.restingDuration($0) })
+        let id = standingByCue
+        if id != loadTime.cue {
+            loadTime.cue = id
+            loadBar.clear()
+        }
+        loadTime.spanAsked += 1
+        let asked = loadTime.spanAsked
+        guard let id else { return loadBar.setLength(nil) }
+        Task { [weak self] in
+            guard let self else { return }
+            let span = await store.sequenceSpan(id)
+            guard loadTime.isOpen, loadTime.spanAsked == asked else { return }
+            loadBar.setLength(span)
+        }
     }
 
-    /// The field's answer for Load to Time. Nil: the load was sent; else the notice to show. A
-    /// negative time counts back from the cue's end (the engine's `load` takes it as such).
+    /// The field's answer for Load to Time. Nil: the load was sent; else the notice to show, and the
+    /// field goes back to the last time loaded. A negative time counts back from the end of the cue's
+    /// sequence (the engine's `load` takes it as such).
     func applyLoadTime(_ text: String, to id: ModelID) -> String? {
-        guard let seconds = CueTime.parseSigned(text) else { return loc("cue.prompt.badTime") }
+        guard let seconds = CueTime.parseSigned(text) else {
+            loadBar.revert()
+            return loc("cue.prompt.badTime")
+        }
         loadBar.show(loaded: seconds)
         loadToTime(id, seconds)
         return nil
     }
 
-    /// Loads the standing-by cue (a group: its sequence) to `seconds`; negative counts back from its end.
+    /// Loads the standing-by cue and its sequence to `seconds`; negative counts back from its end.
     func loadStandingBy(to seconds: Double) {
         guard let id = standingByCue else { return showNotice(loc("loadTime.nothing")) }
         loadToTime(id, seconds)

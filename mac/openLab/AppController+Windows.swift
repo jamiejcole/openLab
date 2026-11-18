@@ -156,8 +156,6 @@ extension AppController {
         ]
     }
 
-    /// Shows the crash folders that exist in Finder, so a report can be attached by hand; says so
-    /// when there are none.
     /// The front workspace's file, when it was saved and is still there.
     private var frontWorkspaceURL: URL? {
         guard let path = frontController?.store.document?.path, FileManager.default.fileExists(atPath: path) else {
@@ -173,6 +171,8 @@ extension AppController {
         if let url = frontWorkspaceURL { revealInFinder([url]) }
     }
 
+    /// Shows the crash folders that exist in Finder, so a report can be attached by hand; says so
+    /// when there are none.
     func revealCrashReports() {
         let existing = crashFolders().filter {
             var isDirectory: ObjCBool = false

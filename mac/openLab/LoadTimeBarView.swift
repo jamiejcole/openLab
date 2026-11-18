@@ -28,25 +28,45 @@ final class LoadTimeBarView: NSView, NSTextFieldDelegate {
         field.currentEditor()?.selectAll(nil)
     }
 
-    /// The slider spans the standing-by cue's length; none while that is not known.
+    /// The time last loaded from the field or the slider, as the field showed it.
+    private var loadedText = ""
+    /// That time, seconds (negative: back from the end), so a new span places the knob again.
+    private var loaded: Double?
+
+    /// The slider spans the standing-by cue's sequence; none while that is not known.
     func setLength(_ length: Double?) {
         slider.isEnabled = (length ?? 0) > 0
         slider.maxValue = max(length ?? 1, 0.001)
-        if slider.doubleValue > slider.maxValue { slider.doubleValue = slider.maxValue }
+        placeKnob()
     }
 
-    /// The slider follows a time that was loaded (a negative one leaves it where it is).
+    /// The slider follows a time that was loaded; a negative one counts back from the slider's end.
     func show(loaded seconds: Double) {
-        if seconds >= 0 { slider.doubleValue = min(seconds, slider.maxValue) }
+        loaded = seconds
+        loadedText = field.stringValue
+        placeKnob()
     }
+
+    /// Text that is not a time goes back to the last time loaded.
+    func revert() { field.stringValue = loadedText }
 
     func clear() {
         field.stringValue = ""
+        loadedText = ""
+        loaded = nil
         slider.doubleValue = 0
+    }
+
+    private func placeKnob() {
+        // With no span known the slider is off and its knob rests at the start.
+        var at = slider.isEnabled ? slider.doubleValue : 0
+        if let loaded, slider.isEnabled { at = loaded < 0 ? slider.maxValue + loaded : loaded }
+        slider.doubleValue = min(max(at, 0), slider.maxValue)
     }
 
     @objc private func sliderLet(_ sender: NSSlider) {
         field.stringValue = CueTime.format(sender.doubleValue)
+        show(loaded: sender.doubleValue)
         onLoad?(sender.doubleValue)
     }
 
