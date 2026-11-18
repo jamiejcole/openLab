@@ -28,6 +28,8 @@ final class CueRowView: NSTableRowView {
     var isPlayhead = false { didSet { if isPlayhead != oldValue { needsDisplay = true } } }
     /// Disarmed or skipped: drawn over the colour, and over the highlight of a selected row.
     var pattern: RowPattern? { didSet { if pattern != oldValue { needsDisplay = true } } }
+    /// The parts of the group boxes that cross this row's Name cell (`GroupBoxes`).
+    var boxes: [GroupBoxPart] = [] { didSet { if boxes != oldValue { needsDisplay = true } } }
     static let pointerWidth: CGFloat = 10
     /// The distance between a pattern's lines.
     static let patternPitch: CGFloat = 8
@@ -41,6 +43,7 @@ final class CueRowView: NSTableRowView {
         if !isSelected {
             drawPattern()
             drawPointer()
+            drawBoxes()
         }
     }
 
@@ -48,6 +51,26 @@ final class CueRowView: NSTableRowView {
         super.drawSelection(in: dirtyRect)
         drawPattern()
         drawPointer()
+        drawBoxes()
+    }
+
+    /// The Name column's rect in this row's coordinates and the outline's indentation per level, from
+    /// the table the row is in; nil outside one.
+    var nameColumn: (rect: NSRect, indent: CGFloat)? {
+        var view = superview
+        while let v = view, !(v is NSOutlineView) { view = v.superview }
+        guard let table = view as? NSOutlineView else { return nil }
+        let index = table.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
+        guard index >= 0 else { return nil }
+        let rect = convert(table.rect(ofColumn: index), from: table)
+        return (
+            NSRect(x: rect.minX, y: bounds.minY, width: rect.width, height: bounds.height), table.indentationPerLevel
+        )
+    }
+
+    private func drawBoxes() {
+        guard !boxes.isEmpty, let column = nameColumn else { return }
+        GroupBoxes.draw(boxes, rowBounds: bounds, column: column.rect, indent: column.indent, flipped: isFlipped)
     }
 
     private func drawPattern() {
@@ -175,22 +198,6 @@ final class CueOutlineView: NSOutlineView {
     }
 }
 
-/// The box a Group's Name cell is drawn with, by the group's mode.
-struct GroupOutline: Equatable {
-    var colour: NSColor
-    var rounded: Bool
-
-    static func of(mode: String?) -> GroupOutline {
-        switch mode {
-        case "playlist": return GroupOutline(colour: .systemOrange, rounded: false)
-        case "start_random": return GroupOutline(colour: .systemPurple, rounded: false)
-        case "start_first_and_enter", "start_first_and_go_to_next":
-            return GroupOutline(colour: .systemBlue, rounded: true)
-        default: return GroupOutline(colour: .systemGreen, rounded: false)
-        }
-    }
-}
-
 /// A running cue's progress behind its Duration text: the cell filled and outlined from the left up
 /// to `fraction` of its width (nothing drawn when nil).
 final class ProgressFillView: NSView {
@@ -240,21 +247,10 @@ final class WholeGlyphLabel: NSTextField {
 /// a fixed slot (`statusSlots`): playhead (0), state (1), the cue's type icon (4), preview or flag (2, 3).
 /// Duration column: `progress` behind the label.
 final class CueCell: NSTableCellView {
-    /// A Group's Name cell is boxed in its mode's colour (QLab: Timeline green, Playlist orange, Start Random
-    /// purple, the Start First modes blue with rounded corners).
-    var groupOutline: GroupOutline? { didSet { if groupOutline != oldValue { needsDisplay = true } } }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard let outline = groupOutline else { return }
-        NSBezierPath.clip(bounds)
-        let path = NSBezierPath(
-            roundedRect: bounds.insetBy(dx: 0.5, dy: 1.5), xRadius: outline.rounded ? 4 : 0,
-            yRadius: outline.rounded ? 4 : 0)
-        path.lineWidth = 1
-        outline.colour.setStroke()
-        path.stroke()
-    }
+    /// How far in from the cell's right side the text ends, so the group boxes' right edges never cross
+    /// it (`GroupBoxes.textInset`).
+    var textInset: CGFloat = 0 { didSet { trailing?.constant = -2 - textInset } }
+    private var trailing: NSLayoutConstraint?
 
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView(), NSImageView()]
     /// The first column's slots, left to right, as (image, x from the cell's left edge, width). Each mark
@@ -307,6 +303,7 @@ final class CueCell: NSTableCellView {
             // contradicts the stack's own minimum ("Conflicting constraints detected").
             let trailing = stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
             trailing.priority = .defaultHigh
+            self.trailing = trailing
             NSLayoutConstraint.activate([
                 stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
                 trailing,
@@ -1157,6 +1154,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if !pointing.isEmpty { refresh(pointing, columns: ["target", "name"]) }
         let flagRows = flagGroups.filter { nodes[$0] != nil }
         if !flagRows.isEmpty { refresh(flagRows, columns: ["status"]) }
+        refreshBoxes()
         placeCellEditor()
     }
 
@@ -1288,6 +1286,28 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         view.tint = CueKindStyle.colours[colour]?.tint
         view.pattern = RowPattern.of(node.cue)
         view.isPlayhead = isPlayheadRow(node.id)
+        view.boxes = boxParts(node)
+    }
+
+    /// The group boxes `node`'s row draws: every open group around it, and its own when it is an open
+    /// or empty group, with the Playlist groups' next children marked.
+    func boxParts(_ node: CueNode) -> [GroupBoxPart] {
+        GroupBoxes.parts(
+            for: node, expanded: { [outlineView] in outlineView.isItemExpanded($0) },
+            next: { [store] in store.playlistNext[$0] })
+    }
+
+    /// Opening, closing, adding, removing or moving rows changes which row each box ends on, so every
+    /// shown row looks again (only the rows on screen have views).
+    private func refreshBoxes() {
+        outlineView.enumerateAvailableRowViews { view, row in
+            guard let view = view as? CueRowView, let node = outlineView.item(atRow: row) as? CueNode else { return }
+            view.boxes = boxParts(node)
+            let name = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
+            guard name >= 0 else { return }
+            (outlineView.view(atColumn: name, row: row, makeIfNecessary: false) as? CueCell)?.textInset =
+                GroupBoxes.textInset(view.boxes)
+        }
     }
 
     // MARK: NSOutlineViewDataSource
@@ -1720,10 +1740,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
         refreshFlag(notification)
+        refreshBoxes()
         replaceEditorAfterLayoutChange()
     }
     func outlineViewItemDidExpand(_ notification: Notification) {
         refreshFlag(notification)
+        refreshBoxes()
         replaceEditorAfterLayoutChange()
     }
 
@@ -1747,6 +1769,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         // Not while the Name column itself is being measured or set.
         let resized = notification.userInfo?["NSTableColumn"] as? NSTableColumn
         if resized?.identifier.rawValue != "name" { fitNameColumn() }
+        // The group boxes are drawn by the rows at the Name column's edges.
+        outlineView.enumerateAvailableRowViews { view, _ in
+            if let view = view as? CueRowView, !view.boxes.isEmpty { view.needsDisplay = true }
+        }
         replaceEditorAfterLayoutChange()
     }
     func outlineViewColumnDidMove(_ notification: Notification) { replaceEditorAfterLayoutChange() }
@@ -1861,7 +1887,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cell.chooseButton.isHidden = true
         cell.onChoose = nil
         cell.progress.progress = nil
-        cell.groupOutline = nil
+        cell.textInset = 0
         func text(_ s: String) {
             cell.label.isHidden = false
             cell.label.stringValue = s
@@ -1913,9 +1939,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case "name":
             // An unnamed cue with no default name shows an empty cell (QLab 5, manual p. 93).
             text(shownName(cue))
-            if cue.kindType == "group" {
-                cell.groupOutline = .of(mode: cue.raw["kind"]?["mode"]?["type"]?.stringValue)
-            }
+            cell.textInset = GroupBoxes.textInset(boxParts(node))
         case "target":
             if cue.takesFile {
                 fillFileTargetButton(cell, cue)
