@@ -196,10 +196,18 @@ final class FooterWarningsTests: XCTestCase {
             return wc.footer.statusButton.title == lostSecond
         }
         XCTAssertEqual(wc.footer.presentation.icon, .statusAlarm)
-        XCTAssertTrue(
-            wc.footer.presentation.details.contains(String(format: loc("status.output.lost"), second)))
+        // The status details the operator opens from the footer list it.
+        wc.footer.showStatusDetails()
+        addTeardownBlock { @MainActor in wc.footer.popover?.close() }
+        let shown = try XCTUnwrap(
+            wc.footer.popover?.contentViewController?.view.subviews
+                .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField,
+            "the status details are open")
+        let lines = shown.stringValue.components(separatedBy: "\n")
+        XCTAssertTrue(lines.contains(String(format: loc("status.output.lost"), second)), "\(lines)")
         let line = String(format: loc("status.detail.device"), second, loc("status.state.lost"))
-        XCTAssertTrue(wc.footer.presentation.details.contains(line))
+        XCTAssertTrue(lines.contains(line), "\(lines)")
+        wc.footer.popover?.close()
 
         guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
             return XCTFail("plug back in")
