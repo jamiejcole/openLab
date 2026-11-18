@@ -170,7 +170,7 @@ extension InspectorViewController {
         renderMode(first)
         let modes = cues.map { $0.raw["kind"]?["mode"] }
         let types = modes.map { $0?["type"]?.stringValue ?? "timeline" }
-        showChoice(groupModePopup, Self.groupModes, types)
+        showGroupModes(types)
         let playlists = types.allSatisfy { $0 == "playlist" }
         groupLoopCheck.isEnabled = playlists
         groupShuffleCheck.isEnabled = playlists
@@ -389,7 +389,7 @@ extension InspectorViewController {
         // Notes sent to several cues and not saved are offered back as one cue's are.
         send(command, cue: first.id, key: "\(f)", revert: [f], notes: f == .notes ? text : nil)
         if InspectorField.times.contains(f), let s = CueTime.parse(text) {
-            field(f)?.stringValue = CueTime.format(s)
+            field(f)?.stringValue = CueTime.precise(s)
             field(f)?.placeholderString = nil
         }
         return true

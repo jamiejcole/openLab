@@ -24,6 +24,13 @@ enum CueTime {
         return ms % 10 == 0 ? text(ms / 10, perSecond: 100) : text(ms, perSecond: 1000)
     }
 
+    /// A time in an inspector field: always milliseconds, as QLab's inspector shows them, so every field
+    /// of the inspector reads the same and gives back exactly what it shows.
+    static func precise(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "" }
+        return text(Int(min(seconds, 1e9) * 1000 + 0.5), perSecond: 1000)
+    }
+
     /// A running time (elapsed, remaining): always hundredths, so the width does not flicker.
     static func running(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "" }

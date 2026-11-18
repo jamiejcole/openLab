@@ -1205,12 +1205,13 @@ final class InspectorWindowFrameTests: XCTestCase {
                 XCTAssertLessThanOrEqual(column.frame.width, clip.bounds.width + 0.5, "no scroller over it: \(what)")
                 let meter = levels.meter.convert(levels.meter.bounds, to: clip)
                 XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(meter), "the meter shows: \(what)")
-                for control in [levels.defaultButton, levels.silentButton, levels.editPatchButton, levels.muteCheck] {
+                for control in [
+                    levels.defaultButton, levels.silentButton, levels.gangsButton, levels.clearMutesButton,
+                    levels.editPatchButton,
+                ] {
                     let frame = control.convert(control.bounds, to: clip)
                     XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "\(control.title): \(what)")
                 }
-                let gang = levels.gangField.convert(levels.gangField.bounds, to: clip)
-                XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(gang), "the gang box: \(what)")
             }
             levels.sideScroll.scrollerStyle = .overlay
         }

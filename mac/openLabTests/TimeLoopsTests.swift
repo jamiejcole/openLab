@@ -152,6 +152,77 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertNotNil(marks.first { $0.text == "00:20.00" }, "its tick stays")
     }
 
+    /// Time & Loops: the slice buttons sit in the left column with the trims, under the play controls; the reset and
+    /// preview buttons sit under the waveform beside zoom; preview plays the cue and reset ends it.
+    func testSliceButtonsSitInTheLeftColumnWithResetAndPreviewButtons() async throws {
+        vc.onTransport = { action in Task { _ = await self.rig.store.transport(action) } }
+        await showIntro()
+        let host: NSView = vc.view
+        func frame(_ v: NSView) -> NSRect { host.convert(v.bounds, from: v) }
+        let wave = frame(self.wave)
+        for b in [panel.deleteSlicesButton, panel.addSliceButton] {
+            XCTAssertLessThanOrEqual(frame(b).maxX, wave.minX + 0.5, "\(b.title) is left of the waveform")
+            XCTAssertLessThanOrEqual(frame(b).minX, frame(panel.startField).maxX, "in the trims' column")
+            XCTAssertLessThanOrEqual(frame(b).maxY, frame(panel.loopRadio).minY + 0.5, "under the play controls")
+        }
+        let zoom = frame(panel.zoomInButton)
+        for b in [panel.resetButton, panel.previewButton] {
+            XCTAssertLessThanOrEqual(
+                frame(b).maxY, wave.minY + 0.5, "\(b.accessibilityLabel() ?? "") is under the waveform")
+            XCTAssertEqual(frame(b).midY, zoom.midY, accuracy: 3, "level with zoom")
+            XCTAssertGreaterThanOrEqual(frame(b).minX, zoom.minX, "right of the zoom buttons")
+        }
+        XCTAssertFalse(panel.resetButton.isEnabled, "nothing to reset before a preview")
+        panel.previewButton.performClick(nil)
+        await assertEventually("the engine previews the cue") { self.rig.store.previewing.contains(Self.intro) }
+        XCTAssertEqual(panel.previewButton.toolTip, loc("timeLoops.stopPreview"))
+        XCTAssertTrue(panel.resetButton.isEnabled)
+        panel.resetButton.performClick(nil)
+        await assertEventually("reset ends the preview") { !self.rig.store.previewing.contains(Self.intro) }
+        XCTAssertEqual(panel.previewButton.toolTip, loc("timeLoops.preview"))
+        XCTAssertFalse(panel.resetButton.isEnabled)
+    }
+
+    /// The ruler's first label is drawn whole beside the start marker, and no label runs past the view's edge,
+    /// idle, while the cue plays, zoomed in and scrolled.
+    func testTheRulersFirstLabelIsWholeBesideTheStartMarkerIdlePlayingZoomedAndScrolled() async throws {
+        await showIntro()
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+        ]
+        func check(_ what: String) {
+            let width: (String) -> CGFloat = { $0.size(withAttributes: attrs).width }
+            let marks = wave.rulerMarks(labelWidth: width)
+            XCTAssertFalse(marks.isEmpty, what)
+            let edge = min(max(wave.scale.x(wave.trimStart), 0.5), wave.bounds.width - 0.5)
+            for m in marks {
+                guard let at = m.labelX else { continue }
+                XCTAssertLessThanOrEqual(at + width(m.text), wave.bounds.width + 0.01, "\(what): \(m.text) is whole")
+                let underMarker = at < edge + WaveformView.handleWidth && at + width(m.text) > edge
+                XCTAssertFalse(underMarker, "\(what): \(m.text) is beside the marker, not under it")
+            }
+            if let first = marks.first, first.x < edge + WaveformView.handleWidth, first.x >= 0 {
+                XCTAssertNotNil(first.labelX, "\(what): the first label is drawn")
+            }
+        }
+        check("idle")
+        panel.showProgress(position: 23)
+        check("playing")
+        for _ in 0..<5 { pinch(0.5, at: windowPoint(atSeconds: 22)) }
+        await peaksSettled()
+        check("zoomed")
+        for direction: CGFloat in [-1, 1] {
+            scroll(
+                dx: direction * 100 * wave.bounds.width, precise: true,
+                at: windowPoint(atSeconds: panel.visible.start + 1))
+            await peaksSettled()
+            check("scrolled \(direction)")
+        }
+        type(panel.startField, "10")
+        await assertEventually { self.panel.startTime == 10 }
+        check("start trimmed")
+    }
+
     // MARK: The tab
 
     func testTheTabFollowsIOForAudioCuesOnly() {
@@ -524,7 +595,7 @@ final class TimeLoopsTests: XCTestCase {
         window.sendEvent(mouse(.leftMouseDragged, atSeconds: 10))
         window.sendEvent(mouse(.leftMouseUp, atSeconds: 10))
         XCTAssertNil(wave.dragging)
-        XCTAssertEqual(panel.startField.stringValue, "00:00.00")
+        XCTAssertEqual(panel.startField.stringValue, "00:00.000")
         XCTAssertTrue(kinds.isEmpty)
         XCTAssertNil(wave.insertion)
     }
@@ -538,7 +609,7 @@ final class TimeLoopsTests: XCTestCase {
         deliver(mouse(.leftMouseDragged, atSeconds: 10))
         deliver(mouse(.leftMouseUp, atSeconds: 10))
         await assertEventually { self.kinds.last?["start_time"] == .double(10) }
-        XCTAssertEqual(panel.startField.stringValue, "00:10.00")
+        XCTAssertEqual(panel.startField.stringValue, "00:10.000")
     }
 
     /// Zoomed to 0-10 s, a horizontal scroll moves along the file to 20-30 s, and stops at both ends.
@@ -584,7 +655,7 @@ final class TimeLoopsTests: XCTestCase {
         await showIntro()
         XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(0) + 2))
         wave.drag(toX: wave.scale.x(10))
-        XCTAssertEqual(panel.startField.stringValue, "00:10.00")
+        XCTAssertEqual(panel.startField.stringValue, "00:10.000")
         XCTAssertTrue(kinds.isEmpty, "nothing is sent mid-drag")
         wave.endDrag()
         await assertEventually { self.kinds.count == 1 }
@@ -646,7 +717,7 @@ final class TimeLoopsTests: XCTestCase {
         await answered()
         type(panel.endField, "4")
         XCTAssertEqual(vc.messageLabel.stringValue, loc("timeLoops.invalid.trim"))
-        XCTAssertEqual(panel.endField.stringValue, "01:02.50", "the file's end is shown again")
+        XCTAssertEqual(panel.endField.stringValue, "01:02.500", "the file's end is shown again")
         type(panel.endField, "1:00")
         await assertEventually { self.kinds.count == 2 }
         XCTAssertEqual(kinds.last?["end_time"], .double(60))
@@ -737,7 +808,7 @@ final class TimeLoopsTests: XCTestCase {
         panel.show(cue: Self.intro, kind: rig.store.model?.cue(Self.intro)?.raw["kind"] ?? .null, duration: nil)
         type(panel.startField, "5")
         XCTAssertEqual(vc.messageLabel.stringValue, loc("timeLoops.invalid.unknownLength"))
-        XCTAssertEqual(panel.startField.stringValue, "00:00.00")
+        XCTAssertEqual(panel.startField.stringValue, "00:00.000")
         XCTAssertTrue(kinds.isEmpty)
     }
 
@@ -1571,12 +1642,13 @@ extension PlayheadFlowTests {
     }
 
     /// The span of the waves drawn with the section's light wash, or nil.
-    private func shadedSpan() throws -> ClosedRange<CGFloat>? {
+    private func shadedSpan(awayFrom lineX: CGFloat? = nil) throws -> ClosedRange<CGFloat>? {
         // The wash over the dark waves is a pale blue-grey: blue above red, unlike a line's edge.
         let shaded = try drawnColumns {
             (0.1..<0.4).contains($0.redComponent) && $0.blueComponent < 0.4 && $0.blueComponent > $0.redComponent
         }
-        guard let a = shaded.min(), let b = shaded.max() else { return nil }
+        let wash = shaded.filter { column in lineX.map { abs(column - $0) > 2 } ?? true }
+        guard let a = wash.min(), let b = wash.max() else { return nil }
         return a...b
     }
 
@@ -1920,8 +1992,8 @@ extension PlayheadFlowTests {
         await assertEventually("the start is the section's left edge") { self.loops.startTime == 8 }
         try shiftO()
         await assertEventually("the end is its right edge") { self.loops.endTime == 16 }
-        XCTAssertEqual(loops.startField.stringValue, CueTime.format(8))
-        XCTAssertEqual(loops.endField.stringValue, CueTime.format(16))
+        XCTAssertEqual(loops.startField.stringValue, CueTime.precise(8))
+        XCTAssertEqual(loops.endField.stringValue, CueTime.precise(16))
         XCTAssertEqual(seeks, [], "the keys move no playback")
         XCTAssertNil(rowMark(id))
         await wc.editor.undo()
@@ -2086,7 +2158,8 @@ extension PlayheadFlowTests {
         XCTAssertNotNil(waveView.selection)
         XCTAssertEqual(waveView.insertion ?? -1, 12, accuracy: 0.05)
         XCTAssertTrue(try lineDrawn(at: waveX(12)), "the loaded position is still drawn")
-        let shaded = try XCTUnwrap(try shadedSpan())
+        // The position line's own anti-aliased edge is bluish too: it is not the section's wash.
+        let shaded = try XCTUnwrap(try shadedSpan(awayFrom: waveX(12)))
         XCTAssertEqual(shaded.lowerBound, waveX(18), accuracy: 1.5)
         await assertEventually("loaded") { self.rowMark(id) == loc("cue.state.loaded") }
     }

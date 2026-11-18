@@ -80,10 +80,13 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         if case .output(let o) = selection, faders.indices.contains(o + 1) { return faders[o + 1] }
         return faders[0]
     }
-    let muteCheck = NSButton(checkboxWithTitle: loc("levels.mute"), target: nil, action: nil)
     let activeCheck = NSButton(checkboxWithTitle: loc("levels.active"), target: nil, action: nil)
-    let gangField = NSTextField()
-    let gangLabel = NSTextField(labelWithString: loc("levels.gang"))
+    /// Gang assignment (an Audio cue): the levels are hidden and a letter typed in a cue output's box puts
+    /// it in that gang (QLab 5 manual p. 181).
+    let gangsButton = NSButton(title: loc("levels.gangs"), target: nil, action: nil)
+    /// Un-mutes every cue output and crosspoint.
+    let clearMutesButton = NSButton(title: loc("levels.clearMutes"), target: nil, action: nil)
+    private(set) var gangMode = false
     /// Peaks of the cue's output channels (an Audio cue's Levels tab only).
     let meter = MeterView()
     let defaultButton = NSButton(title: loc("levels.setDefault"), target: nil, action: nil)
@@ -154,9 +157,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         cellLabel.setAX("\(prefix)-cell")
         levelField.setAX("\(prefix)-field")
         meter.setAX("\(prefix)-meter")
-        muteCheck.setAX("\(prefix)-mute")
+        gangsButton.setAX("\(prefix)-gangs")
+        clearMutesButton.setAX("\(prefix)-clear-mutes")
         activeCheck.setAX("\(prefix)-active")
-        gangField.setAX("\(prefix)-gang")
         defaultButton.setAX("\(prefix)-default")
         silentButton.setAX("\(prefix)-silent")
         fromTargetButton.setAX("\(prefix)-from-target")
@@ -164,15 +167,18 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         editPatchButton.target = self
         editPatchButton.action = #selector(editPatchClicked)
         levelField.delegate = self
-        gangField.delegate = self
         levelField.alignment = .center
         levelField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         levelField.isHidden = true
-        gangField.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        for c in [muteCheck, activeCheck, defaultButton, silentButton, fromTargetButton] as [NSControl] {
+        for c in [activeCheck, defaultButton, silentButton, fromTargetButton, gangsButton, clearMutesButton]
+            as [NSControl]
+        {
             c.target = self
         }
-        muteCheck.action = #selector(muteToggled)
+        gangsButton.setButtonType(.pushOnPushOff)
+        gangsButton.action = #selector(gangsToggled)
+        clearMutesButton.action = #selector(clearMutes)
+        matrix.onMute = { [weak self] slot in self?.toggleMute(slot) }
         activeCheck.action = #selector(activeToggled)
         defaultButton.action = #selector(setDefaults)
         silentButton.action = #selector(silenceAll)
@@ -203,12 +209,13 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
         scroll.onLayout = { [weak self] in self?.layoutBoard() }
 
+        // An Audio cue's column is buttons and the meter only, as QLab's is: a level's mute is in the
+        // box's menu, its gang is typed in gang mode. A Fade keeps the chosen level's block.
         let buttons: [NSButton] =
-            isFade ? [fromTargetButton, silentButton] : [defaultButton, silentButton, editPatchButton]
-        // Mute and Gang share a row so an Audio cue's column fits the least window's inspector.
-        let gangRow = NSStackView(views: isFade ? [gangLabel, gangField] : [muteCheck, gangLabel, gangField])
-        gangRow.spacing = 6
-        let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : [cellLabel, gangRow, meter]
+            isFade
+            ? [fromTargetButton, silentButton]
+            : [defaultButton, silentButton, gangsButton, clearMutesButton, editPatchButton]
+        let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : [meter]
         cellLabel.font = .systemFont(ofSize: 11)
         cellLabel.textColor = .secondaryLabelColor
         cellLabel.lineBreakMode = .byTruncatingTail
@@ -404,7 +411,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         // Opening the editor changes nothing; Show Mode keeps it shut like every other edit.
         editPatchButton.isEnabled = !isLocked && levels != nil && hasPatch
         guard let levels else {
-            for c in [levelField, muteCheck, activeCheck, gangField, defaultButton, silentButton, fromTargetButton]
+            for c in [
+                levelField, activeCheck, defaultButton, silentButton, fromTargetButton, gangsButton, clearMutesButton,
+            ]
                 as [NSControl]
             {
                 c.isEnabled = false
@@ -417,37 +426,37 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         cellLabel.stringValue = Self.name(of: slot)
         let active = levels.isActive(slot)
         let db = levels.db(slot)
-        if !isDirty { levelField.stringValue = mixed.contains(slot) ? "" : db.map(LevelText.format) ?? "" }
+        if !isDirty {
+            if gangMode {
+                if case .output(let o) = slot, !gangsMixed {
+                    levelField.stringValue = levels.gang(of: o).map(LevelSet.gangLetter) ?? ""
+                } else {
+                    levelField.stringValue = ""
+                }
+            } else {
+                levelField.stringValue = mixed.contains(slot) ? "" : db.map(LevelText.format) ?? ""
+            }
+        }
         let free = !isLocked
-        // A fader runs from the minimum limit and stops at 0 dB (QLab manual p. 181), or at the
-        // maximum if that is lower; a level above it shows pinned there.
+        // A fader runs from the workspace's minimum level to its maximum, 0 dB part-way up.
         for (n, f) in faders.enumerated() {
             f.minValue = limits.min
-            f.maxValue = min(limits.max, 0)
+            f.maxValue = limits.max
             f.doubleValue = min(max(levels.db(Self.slot(ofFader: n)) ?? limits.min, limits.min), f.maxValue)
             f.isMixed = mixed.contains(Self.slot(ofFader: n))
             f.isEnabled = free
+            f.isHidden = gangMode
         }
         activeCheck.state = active ? .on : .off
-        muteCheck.state = levels.isMuted(slot) ? .on : .off
-        var isOutput = false
-        var gangText = ""
-        if case .output(let o) = slot {
-            isOutput = true
-            gangText = levels.gang(of: o).map(LevelSet.gangLetter) ?? ""
-        }
-        if !isDirty { gangField.stringValue = gangsMixed ? "" : gangText }
         levelField.isEnabled = free
         activeCheck.isEnabled = free
-        // A mute belongs to a cue output or a route that exists (a route not listed is silent already).
-        var hasMute = false
-        switch slot {
-        case .master: hasMute = false
-        case .output: hasMute = true
-        case .cross(let i, let o): hasMute = levels.crosspoints[.init(input: i, output: o)] != nil
-        }
-        muteCheck.isEnabled = free && hasMute && !levels.isFade
-        gangField.isEnabled = free && isOutput && !levels.isFade && !gangsMixed
+        let isOutput: Bool
+        if case .output = slot { isOutput = true } else { isOutput = false }
+        // Gang mode types in a cue output's box only, and only while the cues shown agree on their gangs.
+        levelField.isEnabled = free && (!gangMode || (isOutput && !gangsMixed))
+        gangsButton.isEnabled = !levels.isFade && free && !gangsMixed
+        gangsButton.state = gangMode ? .on : .off
+        clearMutesButton.isEnabled = free && !levels.isFade && levels.hasMute
         defaultButton.isEnabled = free
         silentButton.isEnabled = free
         fromTargetButton.isEnabled = free && canSetFromTarget
@@ -505,10 +514,30 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         edit(gesture: gesture, as: .level(slot)) { $0.set(slot, db: db, drag: true, limits: limits) }
     }
 
-    @objc private func muteToggled() {
-        let slot = selection
-        let mute = muteCheck.state == .on
+    /// Mutes or un-mutes a cue output or a listed crosspoint (its box's menu).
+    func toggleMute(_ slot: LevelSet.Slot) {
+        guard let levels, isMuteable(slot, levels) else { return }
+        let mute = !levels.isMuted(slot)
         edit(as: .mute(slot)) { $0.setMute(slot, mute) }
+    }
+
+    /// A mute belongs to a cue output or a route that exists (a route not listed is silent already).
+    func isMuteable(_ slot: LevelSet.Slot, _ levels: LevelSet) -> Bool {
+        guard !isLocked, !levels.isFade else { return false }
+        switch slot {
+        case .master: return false
+        case .output: return true
+        case .cross(let i, let o): return levels.crosspoints[.init(input: i, output: o)] != nil
+        }
+    }
+
+    @objc private func clearMutes() { edit(as: .clearMutes) { $0.clearMutes() } }
+
+    @objc private func gangsToggled() {
+        commitTyping()
+        gangMode = gangsButton.state == .on
+        matrix.gangMode = gangMode
+        refreshStrip()
     }
 
     @objc private func activeToggled() {
@@ -561,18 +590,20 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     private func commitText(of field: NSTextField) {
         let slot = selection
-        if field === levelField {
-            let text = levelField.stringValue
-            // Emptied is -inf (QLab 5 manual p. 204), except on a level a Fade is not moving, which
-            // it leaves alone. Only white space is no change: a stray Space, the GO key, leaves that
-            // (ours).
-            if LevelText.isStraySpace(text) || (text.isEmpty && levels?.isActive(slot) == false) { return }
-            let limits = limits
-            let db = LevelText.parse(text, limits: limits)
-            edit(as: .level(slot)) { $0.set(slot, db: db, limits: limits) }
-        } else if field === gangField, case .output(let o) = slot {
-            let text = gangField.stringValue
-            edit(as: .gang(output: o, letter: text)) { $0.setGang(of: o, letter: text) }
+        guard field === levelField else { return }
+        let text = levelField.stringValue
+        if gangMode {
+            if case .output(let o) = slot, !gangsMixed {
+                edit(as: .gang(output: o, letter: text)) { $0.setGang(of: o, letter: text) }
+            }
+            return
         }
+        // Emptied is -inf (QLab 5 manual p. 204), except on a level a Fade is not moving, which
+        // it leaves alone. Only white space is no change: a stray Space, the GO key, leaves that
+        // (ours).
+        if LevelText.isStraySpace(text) || (text.isEmpty && levels?.isActive(slot) == false) { return }
+        let limits = limits
+        let db = LevelText.parse(text, limits: limits)
+        edit(as: .level(slot)) { $0.set(slot, db: db, limits: limits) }
     }
 }

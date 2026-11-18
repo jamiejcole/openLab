@@ -81,6 +81,8 @@ enum AX {
     static let timeLoopsWaveform = "time-loops-waveform"
     static let timeLoopsZoomOut = "time-loops-zoom-out"
     static let timeLoopsZoomIn = "time-loops-zoom-in"
+    static let timeLoopsReset = "time-loops-reset"
+    static let timeLoopsPreview = "time-loops-preview"
     static let timeLoopsAddSlice = "time-loops-add-slice"
     static let timeLoopsDeleteSlices = "time-loops-delete-slices"
     static let timeLoopsSliceCount = "time-loops-slice-count"

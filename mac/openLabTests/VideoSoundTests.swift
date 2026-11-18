@@ -553,8 +553,7 @@ extension VideoCueTests {
         await pictureWentOn(1.1, "main level")
 
         panel.select(.output(0))
-        panel.muteCheck.state = .on
-        fire(panel.muteCheck)
+        XCTAssertTrue(panel.muteFromMenu(.output(0)))
         await soon { self.levels(Self.movie)?.outputs.first?.mute == true }
         try await play(0.1)
         let muted = try await loudest(.cue(Self.movie), over: 1)
@@ -570,12 +569,7 @@ extension VideoCueTests {
 
         // Two outputs ganged: one typed moves both.
         for o in 0..<2 {
-            panel.select(.output(o))
-            panel.gangField.stringValue = "A"
-            panel.controlTextDidChange(
-                Notification(name: NSControl.textDidChangeNotification, object: panel.gangField))
-            panel.controlTextDidEndEditing(
-                Notification(name: NSControl.textDidEndEditingNotification, object: panel.gangField))
+            panel.assignGang("A", to: .output(o))
         }
         await soon("ganged") { self.levels(Self.movie)?.gangs == [[0, 1]] }
         typeLevel(panel, .output(0), "-6")

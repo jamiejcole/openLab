@@ -1,0 +1,22 @@
+{
+  "about": "Every time field of the inspector shows milliseconds (Basics, a Fade's Curve tab, Time & Loops); an Audio cue whose file is missing says so beside its target.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
+  "window": {"width": 1400, "height": 900},
+  "steps": [
+    {"select": "2"},
+    {"tab": "basics"},
+    {"shot": "basics-times"},
+    {"tab": "timeLoops"},
+    {"shot": "time-loops-times"},
+    {"select": "3"},
+    {"tab": "curve"},
+    {"shot": "fade-curve-times"},
+    {"select": "2"},
+    {"tab": "basics"},
+    {"set_media": "2", "file": "media/not-there.wav"},
+    {"advance": 1},
+    {"shot": "file-missing"},
+    {"tab": "io"},
+    {"shot": "file-missing-io"}
+  ]
+}

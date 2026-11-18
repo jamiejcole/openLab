@@ -1523,9 +1523,9 @@ final class PlayheadFlowTests: XCTestCase {
 
     /// The Mode tab's popup set to `mode`, as the operator picks it.
     private func choose(_ mode: String) async throws {
-        let popup = wc.inspector.groupModePopup
-        popup.selectItem(at: try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode)))
-        XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+        let radio = wc.inspector.groupModeRadios[
+            try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode))]
+        radio.performClick(nil)
         await assertEventually("the engine took the mode") { self.mode(self.group) == mode }
     }
 
@@ -5677,9 +5677,8 @@ final class CueListDrawingTests: XCTestCase {
         let modes = InspectorViewController.groupModes.dropFirst() + ["timeline"]
         for mode in modes {
             let expected = try XCTUnwrap(CueKindStyle.groupModes[mode], mode)
-            let popup = inspector.groupModePopup
-            popup.selectItem(at: try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode)))
-            _ = popup.sendAction(popup.action, to: popup.target)  // the menu choice, without a tracking menu
+            inspector.groupModeRadios[try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode))]
+                .performClick(nil)
             await assertEventually(mode) {
                 rig.store.model?.cue(group)?.raw["kind"]?["mode"]?["type"]?.stringValue == mode
             }

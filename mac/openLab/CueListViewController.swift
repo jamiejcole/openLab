@@ -1549,7 +1549,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cellEditor.isEditable = true
         editingCell = (id, column)
         cellEditor.stringValue = InspectorEdit.display(
-            field, cue: node.cue, model: model, media: store.mediaDurations[node.id])
+            field, cue: node.cue, model: model, media: store.mediaDurations[node.id], inList: true)
         // An unnamed cue's editor starts empty, with the name it follows as a hint.
         cellEditor.placeholderString = column == "name" ? node.cue.targetDefaultName(lookup: cueLookup) : nil
         switch column {

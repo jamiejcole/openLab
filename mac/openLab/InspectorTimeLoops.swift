@@ -10,6 +10,11 @@ extension InspectorViewController {
         timeLoops.onChange = { [weak self] change in self?.sendTimeLoops(change) }
         timeLoops.onHold = { [weak self] in self?.gestureHold($0) }
         timeLoops.onInvalid = { [weak self] key in self?.showRefusal(loc(key)) }
+        timeLoops.onPreview = { [weak self] in self?.previewClicked() }
+        timeLoops.onReset = { [weak self] in
+            guard let self, let id = cue?.id, store.previewing.contains(id) else { return }
+            onTransport?(.stopPreview(cue: id))
+        }
         timeLoops.onSeek = { [weak self] cue, position in self?.seek(cue, to: position) }
         timeLoops.loadPeaks = { [weak self] cue, start, end, buckets in
             guard let self else { return .failure(.notConnected) }
@@ -64,6 +69,7 @@ extension InspectorViewController {
 
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         endGestures()
+        tabBar.select(tabViewItem?.identifier as? String)
         updateTimeLoopsActive()
     }
 

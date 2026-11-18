@@ -776,6 +776,8 @@ class WaveformView: NSView {
             let clear = startEdge + Self.handleWidth + 2
             if handles, let a = at, a < clear, a + width > startEdge { at = clear }
             if handles, let a = at, a + width > endEdge - Self.handleWidth, a < endEdge { at = nil }
+            // A label that would run past the view's edge is left out, never drawn cut.
+            if let a = at, a + width > bounds.width { at = nil }
             marks.append((x, text, at))
             t += step
         }

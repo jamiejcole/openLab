@@ -1404,3 +1404,33 @@ func stageHostPids(of engine: Int32) -> [Int32] {
         return String(cString: name) == "openlab-stage"
     }
 }
+
+/// What the operator does in the Levels tab: right-click a box and choose Mute; switch gang mode
+/// on, type a letter in an output's box, and switch it off again.
+@MainActor
+extension LevelsPanel {
+    @discardableResult
+    func muteFromMenu(_ slot: LevelSet.Slot) -> Bool {
+        let box = matrix.rect(of: slot)
+        let at = matrix.convert(NSPoint(x: box.midX, y: box.midY), to: nil)
+        guard
+            let event = NSEvent.mouseEvent(
+                with: .rightMouseDown, location: at, modifierFlags: [], timestamp: 0,
+                windowNumber: matrix.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1,
+                pressure: 1),
+            let item = matrix.menu(for: event)?.items.first, item.isEnabled
+        else { return false }
+        _ = item.target?.perform(item.action, with: item)
+        return true
+    }
+
+    func assignGang(_ letter: String, to slot: LevelSet.Slot) {
+        if gangsButton.state != .on { gangsButton.performClick(nil) }
+        select(slot)
+        beginTyping(slot)
+        levelField.stringValue = letter
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: levelField))
+        controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: levelField))
+        gangsButton.performClick(nil)
+    }
+}

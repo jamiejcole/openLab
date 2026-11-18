@@ -82,29 +82,32 @@ enum InspectorEdit {
         "fade", "start", "stop", "pause", "load", "reset", "devamp", "go_to", "arm", "disarm",
     ]
 
-    /// What the field shows for `cue`.
+    /// What the field shows for `cue`: times in milliseconds, or as the cue list draws them (`inList`: the
+    /// list's in-place editor).
     static func display(
-        _ field: InspectorField, cue: Cue, model: WorkspaceModel, media: CueMediaDuration? = nil
+        _ field: InspectorField, cue: Cue, model: WorkspaceModel, media: CueMediaDuration? = nil,
+        inList: Bool = false
     ) -> String {
+        let shown: (Double) -> String = { inList ? CueTime.format($0) : CueTime.precise($0) }
         switch field {
         case .number: return cue.number ?? ""
         // Real text, as in QLab: an unnamed cue shows the name it follows. Committing the text
         // unchanged sends nothing (below), so the derived name is never written back.
         case .name: return cue.displayName
         case .notes: return cue.raw["notes"]?.stringValue ?? ""
-        case .preWait: return CueTime.format(cue.raw["pre_wait"]?.doubleValue ?? 0)
-        case .postWait: return CueTime.format(cue.postWait)
+        case .preWait: return shown(cue.raw["pre_wait"]?.doubleValue ?? 0)
+        case .postWait: return shown(cue.postWait)
         case .duration:
             // An Audio cue's length is read-only: what its file gives, as the cue list shows it.
-            if cue.kindType == "audio" { return media?.shownDuration.map(CueTime.format) ?? "" }
-            if cue.kindType == "video" { return videoDuration(cue, media: media).map(CueTime.format) ?? "" }
+            if cue.kindType == "audio" { return media?.shownDuration.map(shown) ?? "" }
+            if cue.kindType == "video" { return videoDuration(cue, media: media).map(shown) ?? "" }
             guard durationKinds.contains(cue.kindType) else { return "" }
-            return CueTime.format(cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
+            return shown(cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         case .loadTime:
             guard cue.kindType == "load" else { return "" }
             let time = cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0
             // Negative: that long before the target's end (QLab 5).
-            return time < 0 ? "-" + CueTime.format(-time) : CueTime.format(time)
+            return time < 0 ? "-" + shown(-time) : shown(time)
         case .message:
             guard cue.kindType == "network" else { return "" }
             let kind = cue.raw["kind"]
@@ -116,9 +119,9 @@ enum InspectorEdit {
             guard let target = model.cue(ModelID(id)) else { return "" }
             // The number only; the name shows beside the field (QLab 5, manual p. 127).
             return target.number ?? ""
-        case .fadeOthersTime: return CueTime.format(fadeOthers(cue).duration)
+        case .fadeOthersTime: return shown(fadeOthers(cue).duration)
         case .duckDb: return OthersLevel.format(duckOthers(cue).db)
-        case .duckTime: return CueTime.format(duckOthers(cue).duration)
+        case .duckTime: return shown(duckOthers(cue).duration)
         }
     }
 
@@ -130,7 +133,12 @@ enum InspectorEdit {
         // An empty field over a target that is gone is a target to clear only when the operator emptied it:
         // a field that was only passed through must not change the cue.
         let dangling = typed && field == .target && hasMissingTarget(cue, model: model)
-        if text == display(field, cue: cue, model: model, media: media) && !dangling { return .success(nil) }
+        if !dangling,
+            text == display(field, cue: cue, model: model, media: media)
+                || text == display(field, cue: cue, model: model, media: media, inList: true)
+        {
+            return .success(nil)
+        }
         switch field {
         case .name:
             // Clearing an unnamed cue's field changes nothing: it goes on following its file.
