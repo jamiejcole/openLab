@@ -19,8 +19,8 @@ codesign --verify --deep --strict "$stage/openLab $version.app"
 dmg="$out/openLab-$version.dmg"
 rm -f "$dmg"
 # Not -quiet, so a failure shows its reason. On CI runners hdiutil fails now and then with
-# "Resource busy" while the system still holds the image or the folder (runs 44175952127 and
-# 44368937589); only that failure is tried again, up to three times. Any other failure stops here.
+# "Resource busy" while the system still holds the image or the folder (run 44368937589); only that
+# failure is tried again, up to three times. Any other failure stops here.
 attempt=1
 while :; do
   rm -f "$dmg"
@@ -29,9 +29,10 @@ while :; do
     break
   fi
   printf '%s\n' "$result" >&2
-  if [ "$attempt" -ge 3 ] || ! printf '%s' "$result" | grep -q "Resource busy"; then
-    exit 1
-  fi
+  case "$result" in
+    *"Resource busy"*) [ "$attempt" -lt 3 ] || exit 1 ;;
+    *) exit 1 ;;
+  esac
   attempt=$((attempt + 1))
   echo "make-dmg: hdiutil was busy; trying again ($attempt of 3)" >&2
   sleep 5
