@@ -16,3 +16,5 @@
 {"type":"ramp","picture":1,"param":"rotation","ramp":{"from":0.0,"to":90.0,"at":0,"frames":0,"curve":"linear"}}
 {"type":"stop","picture":1,"at":960,"fade":480}
 {"type":"stop","picture":1,"at":960,"fade":480,"cut":1200}
+{"type":"stages","stages":[{"id":"00000000-0000-0000-0000-000000000001","width":1920,"height":1080,"keep_black":false,"monitor":"Stage 1"}]}
+{"type":"raise_monitor","stage":"00000000-0000-0000-0000-000000000001"}

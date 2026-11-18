@@ -335,6 +335,9 @@ impl Platform for Mac {
 
     fn raise_monitor(&mut self, stage: StageId) {
         if let Some(m) = self.windows.as_ref().and_then(|w| w.monitors.get(&stage)) {
+            if m.window.isMiniaturized() {
+                m.window.deminiaturize(None);
+            }
             order_front(&m.window);
         }
     }
