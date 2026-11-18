@@ -10,6 +10,7 @@ use crate::model::{CueId, Workspace};
 
 use super::operations::StartPath;
 use super::run::{Phase, Run, Slot};
+use super::time::SampleTime;
 use super::{Action, Ctx, CueEngine};
 
 /// What an edit not yet followed changed, for the marks: every cue, or these.
@@ -21,8 +22,8 @@ pub(super) enum MarksEdit {
 impl CueEngine {
     /// The child the Playlist group `group` plays next. Not running: the first child that a
     /// start plays, as `start` decides ([`Self::start_path`]): a run of its own is kept as the
-    /// one playing (a broken one too) unless its second trigger ends it (a stop, or a panic with
-    /// no panic time); a cue broken at run time with no run, one left paused by a lost device
+    /// one playing (a broken one too) unless its second trigger ends it (a stop, or a panic that
+    /// stops it at once rather than fading it out); a cue broken at run time with no run, one left paused by a lost device
     /// still away, a skipped one and a new run of one with static problems are passed over.
     /// Playing: the one after its current child as the group stands (wrapping when it loops).
     /// None once it is stopping, devamped or halted, past its last child, or for a shuffled
@@ -114,7 +115,7 @@ impl CueEngine {
             let next = tree
                 .locate(ws, id)
                 .filter(|c| is_playlist(c))
-                .and_then(|group| self.compute_next(ws, group));
+                .and_then(|group| self.compute_next(ws, group, cx.now));
             if self.playlist_marks.get(&id).copied() != next {
                 changed.push((id, next));
             }
@@ -129,7 +130,7 @@ impl CueEngine {
     }
 
     /// [`Self::next_in_playlist`] worked out from the group's run and children now.
-    fn compute_next(&self, ws: &Workspace, group: &Cue) -> Option<CueId> {
+    fn compute_next(&self, ws: &Workspace, group: &Cue, now: SampleTime) -> Option<CueId> {
         let CueKind::Group {
             mode: GroupMode::Playlist { loop_, shuffle },
             children,
@@ -147,7 +148,7 @@ impl CueEngine {
                 matches!(self.slots.get(&c.id), Some(Slot::Active(_)))
             }
             StartPath::Trigger(SecondTrigger::HardStopAndRestart) => fresh(c),
-            StartPath::Trigger(option) => !self.trigger_stops(option, ws),
+            StartPath::Trigger(option) => !self.trigger_stops(c, option, now, ws),
             StartPath::Resume => true,
             StartPath::Fresh => fresh(c),
         };

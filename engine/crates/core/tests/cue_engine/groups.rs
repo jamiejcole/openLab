@@ -1066,6 +1066,72 @@ fn the_mark_passes_over_a_child_whose_panic_trigger_stops_it_with_no_panic_time(
     );
 }
 
+/// Checks that 11 is marked and that a start of group 1 at `now` stops 10 at once and plays 11.
+fn start_stops_child_10_and_plays_11(rig: &mut Rig, now: SampleTime) {
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let go = rig.start(now, 1);
+    assert_eq!(rig.state(10), CueState::Idle, "the panic stopped it at once");
+    assert_eq!(
+        running_at(&go, 11),
+        Some(now),
+        "the start plays the marked child"
+    );
+}
+
+#[test]
+fn the_mark_passes_over_a_child_in_its_pre_wait_whose_panic_trigger_stops_it_at_once() {
+    let mut rig = sound_then_waits(SecondTrigger::Panic);
+    assert!(rig.ws.settings.panic_duration > 0.0);
+    rig.start(100, 10);
+    assert_eq!(rig.state(10), CueState::PreWaiting);
+    start_stops_child_10_and_plays_11(&mut rig, 1000);
+}
+
+#[test]
+fn the_mark_passes_over_a_wait_child_whose_panic_trigger_stops_it_at_once() {
+    let mut first = wait(10, 5.0);
+    first.second_trigger = SecondTrigger::Panic;
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![first, wait(11, 5.0)],
+    )]);
+    rig.start(100, 10);
+    assert_eq!(rig.state(10), CueState::Running);
+    start_stops_child_10_and_plays_11(&mut rig, 1000);
+}
+
+#[test]
+fn the_mark_passes_over_a_group_child_with_nothing_to_fade_whose_panic_trigger_stops_it() {
+    // Group 10's only child is in its pre-wait: the panic stops that child at once, so the
+    // group has no child left fading out and stops at once too.
+    let inner = timed(sound(100), 2.0, 0.0, DNC);
+    let mut group = grp(10, TIMELINE, vec![inner]);
+    group.second_trigger = SecondTrigger::Panic;
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![group, wait(11, 5.0)],
+    )]);
+    rig.start(100, 10);
+    assert_eq!(rig.state(10), CueState::Running);
+    assert_eq!(rig.state(100), CueState::PreWaiting);
+    start_stops_child_10_and_plays_11(&mut rig, 1000);
+    assert_eq!(rig.state(100), CueState::Idle);
+}
+
+#[test]
+fn the_mark_keeps_a_playing_child_whose_panic_trigger_fades_it_out() {
+    let mut rig = sound_then_waits(SecondTrigger::Panic);
+    rig.start(100, 10);
+    rig.tick(2100);
+    assert_eq!(rig.state(10), CueState::Running);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let go = rig.start(2500, 1);
+    assert!(rig.state(10).is_active(), "fading out in the panic: {go:?}");
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+}
+
 #[test]
 fn a_shuffled_playlist_marks_the_child_its_pass_plays_next_and_none_before_it_is_drawn() {
     let kids = (10..15).map(|n| wait(n, 1.0)).collect();

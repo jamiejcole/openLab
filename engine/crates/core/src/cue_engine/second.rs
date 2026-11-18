@@ -3,7 +3,7 @@
 //! Second triggers (QLab 5): what a trigger does to a cue that is already active, by the
 //! cue's `second_trigger` option, and the "second trigger on release" input.
 
-use crate::cue::{DevampMode, SecondTrigger};
+use crate::cue::{Cue, DevampMode, SecondTrigger};
 use crate::model::{CueId, Workspace};
 
 use super::control::DevampOrder;
@@ -49,12 +49,22 @@ impl CueEngine {
         }
     }
 
-    /// Whether a second trigger with `option` ends the cue's run at once (a stop, or a panic
-    /// with no panic time), so that a start of its playlist goes on to the next child.
-    pub(super) fn trigger_stops(&self, option: SecondTrigger, ws: &Workspace) -> bool {
+    /// Whether a second trigger with `option` at `now` ends the cue's run at once (a stop, or a
+    /// panic that stops it at once rather than fading it out), so that a start of its playlist
+    /// goes on to the next child.
+    pub(super) fn trigger_stops(
+        &self,
+        cue: &Cue,
+        option: SecondTrigger,
+        now: SampleTime,
+        ws: &Workspace,
+    ) -> bool {
         match option {
             SecondTrigger::Stop | SecondTrigger::HardStop => true,
-            SecondTrigger::Panic => self.panic_frames(ws) == 0,
+            SecondTrigger::Panic => {
+                let frames = self.panic_frames(ws);
+                frames == 0 || !self.panic_tree_keeps(cue, now, now.saturating_add(frames))
+            }
             _ => false,
         }
     }

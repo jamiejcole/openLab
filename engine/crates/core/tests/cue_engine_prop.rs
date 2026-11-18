@@ -3517,6 +3517,68 @@ fn a_playlists_mark_names_a_child_of_its_own_that_the_start_takes_as_playing() {
     }
 }
 
+/// A playlist's child started on its own is in its pre-wait, with a panic as its second trigger
+/// and a panic time above 0. A start of the playlist stops it at once (a panic fades out only a
+/// voice that is playing) and plays the next child, so the mark names that one.
+#[test]
+fn a_playlists_mark_passes_over_a_child_in_its_pre_wait_that_its_panic_stops_at_once() {
+    let spec = |kind: u8| Spec {
+        kind,
+        pre: 0,
+        post: 0,
+        mode: 0,
+        armed: true,
+        dup: false,
+        level: 1,
+        group_mode: 0,
+        target: 0,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    // The playlist (id 1) holds the sound (id 2: a pre-wait, a panic on a second trigger) and a
+    // Wait (id 3).
+    let case = Case {
+        specs: vec![
+            Spec {
+                level: 0,
+                group_mode: 4,
+                ..spec(4)
+            },
+            Spec {
+                pre: 1,
+                second: 8,
+                ..spec(2)
+            },
+            Spec {
+                post: 2,
+                ..spec(1)
+            },
+        ],
+        // Start the sound, then let a little time pass inside its pre-wait.
+        steps: vec![
+            Step {
+                dt: 0,
+                op: 2,
+                a: 3,
+                b: 0,
+            },
+            Step {
+                dt: 10,
+                op: 0,
+                a: 0,
+                b: 0,
+            },
+        ],
+        lookahead: 0,
+        min_go: 0,
+        panic: 1,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
+}
+
 /// Play next on a playlist that does not loop, playing its last child, completes the playlist:
 /// it never goes round to its first child again. The playlist has no pre-wait, so going round
 /// shows nothing of its own (no start, no voice): only its child starting again does. At the top

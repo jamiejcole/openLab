@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use crate::cue::FadeCurve;
+use crate::cue::{Cue, FadeCurve};
 use crate::model::{CueId, Workspace};
 
 use super::run::{Phase, Run, Slot, Voice};
@@ -154,11 +154,11 @@ impl CueEngine {
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return self.stop_one(cue, None, cx);
         };
-        let in_action = !run.is_broken()
-            && run.paused_at.is_none()
-            && matches!(run.phase, Phase::Action { .. });
-        match (in_action, run.voice, run.group.as_mut()) {
-            (true, _, Some(g)) if busy_children => {
+        if !panic_keeps(run, busy_children, now, end) {
+            return self.stop_one(cue, None, cx);
+        }
+        match (run.voice, run.group.as_mut()) {
+            (_, Some(g)) => {
                 g.stopping = true;
                 g.devamp = None;
                 run.post_wait = None;
@@ -166,16 +166,13 @@ impl CueEngine {
                 run.panicked = true;
                 self.report(cue, before, now, cx);
             }
-            (true, Voice::Started { at: started, .. }, None) => {
+            (Voice::Started { at: started, .. }, None) => {
                 // Part of the panic either way (see `Run::panicked`).
                 run.panicked = true;
                 if run.stop_end.is_some_and(|e| e <= end) {
                     return;
                 }
                 let at = run.commit(now.max(started));
-                if at >= end {
-                    return self.stop_one(cue, None, cx);
-                }
                 cx.out.push(Action::StopVoice {
                     cue,
                     run: run.run,
@@ -195,6 +192,33 @@ impl CueEngine {
             }
             _ => self.stop_one(cue, None, cx),
         }
+    }
+
+    /// Whether the panic of `cue` that a trigger at `now` would set off (its own panic, ending
+    /// `end`) leaves its run going rather than stopping it at once: [`panic_keeps`] for it and,
+    /// for a group, for the children that would be left fading out, worked out children before
+    /// their groups as [`Self::panic_tree`] goes. Changes nothing.
+    pub(super) fn panic_tree_keeps(&self, cue: &Cue, now: SampleTime, end: SampleTime) -> bool {
+        let tree = self.problems.tree();
+        // The runs left fading out so far, with the group each started in.
+        let mut kept: Vec<(CueId, Option<CueId>)> = Vec::new();
+        let keeps = |id: CueId, kept: &[(CueId, Option<CueId>)]| {
+            let Some(Slot::Active(run)) = self.slots.get(&id) else {
+                return None;
+            };
+            // As `release_moved_runs`: a run that started in `id` but was moved out of it is
+            // not waited on.
+            let busy = kept.iter().any(|(k, started_in)| {
+                *started_in == Some(id) && tree.ancestors(*k).any(|a| a == id)
+            });
+            panic_keeps(run, busy, now, end).then_some(run.started_in)
+        };
+        for id in super::group::descendants(cue).into_iter().rev() {
+            if let Some(started_in) = keeps(id, &kept) {
+                kept.push((id, started_in));
+            }
+        }
+        keeps(cue.id, &kept).is_some()
     }
 
     /// One press of a cue's panic: a second press on a cue already fading out in a panic stops
@@ -286,5 +310,24 @@ impl CueEngine {
     /// The sample the panic fade under way ends on: a Panic before it stops everything at once.
     pub fn panic_end(&self) -> Option<SampleTime> {
         self.panic.map(|(_, end)| end)
+    }
+}
+
+/// What a panic ending on `end`, as of `now`, does with one run (the single test for both a
+/// panic and the playlist mark): true when the run goes on, a group in its action waiting for
+/// `busy_children` still fading out, or a voice in its action fading out to `end` (or keeping a
+/// stop fade that ends sooner). Anything else stops at once: a pre-wait, a paused
+/// or broken run, a cue with no voice playing (a Wait, a Fade, a Memo), a group with no child
+/// fading out, a voice that would only start on or after `end`.
+pub(super) fn panic_keeps(run: &Run, busy_children: bool, now: SampleTime, end: SampleTime) -> bool {
+    if run.is_broken() || run.paused_at.is_some() || !matches!(run.phase, Phase::Action { .. }) {
+        return false;
+    }
+    match (run.voice, &run.group) {
+        (_, Some(_)) => busy_children,
+        (Voice::Started { at: started, .. }, None) => {
+            run.stop_end.is_some_and(|e| e <= end) || now.max(started).max(run.committed) < end
+        }
+        _ => false,
     }
 }
