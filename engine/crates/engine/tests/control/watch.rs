@@ -804,3 +804,63 @@ fn a_shared_file_gone_and_back_while_a_doc_opens_beside_it_is_present_for_both()
         problems_in(&s, b, 9000)
     );
 }
+
+#[test]
+fn two_docs_opened_back_to_back_on_the_same_files_both_hear_them_go() {
+    use openlab_engine::control::DocSource;
+    let fs = FakeFs::new();
+    let first = PathBuf::from("/two-docs/first.wav");
+    fs.put(&first, 1);
+    let ws = workspace(vec![audio(1, &first, 0)]);
+    let mut c = manual(&ws, &fs);
+    c.probe = fake_probe;
+    let mut s = show_with(ws, c);
+    let paths: Vec<PathBuf> = (0..2000)
+        .map(|n| PathBuf::from(format!("/two-docs/sounds/{n:04}.wav")))
+        .collect();
+    for p in &paths {
+        fs.put(p, 1);
+    }
+    // Two shows on the same 2,000 files, the second opened before the watch has the first's.
+    let mut docs = Vec::new();
+    for n in 0..2u128 {
+        let cues = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| audio(20_000 + i as u128, p, 0))
+            .collect();
+        let mut ws = workspace(cues);
+        ws.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(40 + n));
+        let rid = s.request_id();
+        let (tx, _rx) = openlab_engine::control::reply_channel();
+        s.control_mut()
+            .open_doc(DocSource::Workspace(Box::new(ws)), rid, &tx);
+        let answer = s.next_doc_answer().expect("the document worker answers");
+        s.deliver(answer);
+        let (_, doc) = s.control_mut().take_opened().pop().expect("opened");
+        docs.push(doc);
+    }
+    s.settle_media();
+    for _ in 0..20 {
+        if s.control().watched_files() == 2001 {
+            break;
+        }
+        s.tick();
+    }
+    assert_eq!(s.control().watched_files(), 2001);
+    for p in &paths {
+        fs.remove(p);
+    }
+    s.watch_pass();
+    follow(&mut s);
+    for doc in docs {
+        let missing = (0..2000u128)
+            .filter(|i| {
+                problems_in(&s, doc, 20_000 + i)
+                    .iter()
+                    .any(|p| matches!(p, CueProblem::MediaMissing { .. }))
+            })
+            .count();
+        assert_eq!(missing, 2000, "doc {doc}: cues with their file missing");
+    }
+}

@@ -848,6 +848,25 @@ fn longest_wake(s: &mut OfflineShow) -> Duration {
     panic!("the media watch share still has work waiting after 20 wakes");
 }
 
+/// Every Audio cue in `cues` names its file by name alone: relative to the show's folder, which
+/// holds the test's media and show files alike.
+fn relative_media(cues: &mut [Cue]) {
+    for c in cues {
+        match &mut c.kind {
+            CueKind::Audio { media: Some(m), .. } => {
+                let name = std::path::Path::new(m.as_str())
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap()
+                    .to_owned();
+                *m = openlab_core::MediaRef::new(name);
+            }
+            CueKind::Group { children, .. } => relative_media(children),
+            _ => {}
+        }
+    }
+}
+
 /// One open and close of the doc at `path` beside the playing one, each step's time kept in
 /// `took` (install, wakes after it, remove, wakes after it) if it is the shortest so far.
 fn install_remove_once(s: &mut OfflineShow, path: &std::path::Path, took: &mut [Duration]) {
@@ -883,8 +902,8 @@ fn install_remove_once(s: &mut OfflineShow, path: &std::path::Path, took: &mut [
 /// (the install of the parts the document worker built; the close) and each wake after it
 /// while the media watch follows fit in one audio block ([`ARCH_BLOCK`], or the show's block if
 /// shorter) over [`HEADROOM`], and the playing doc's cue plays on without a late start. Once
-/// for a doc with files of its own, once for a copy of the playing show, whose every file the
-/// watch has already (each is taken up in the wake after the install).
+/// for a doc with files of its own, once for a copy of the playing show saved beside its media
+/// (relative keys), whose every file the watch has already (each is taken up in the wake after the install).
 fn install_and_remove(second: &std::path::Path) -> Option<String> {
     let block = Duration::from_secs_f64(secs(BLOCK));
     let limit = block.min(ARCH_BLOCK) / HEADROOM;
@@ -895,6 +914,8 @@ fn install_and_remove(second: &std::path::Path) -> Option<String> {
     let mut copy = first.clone();
     copy.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(3));
     copy.name = "copy".into();
+    // Saved beside its media, as most shows are: its keys are relative, not its files' paths.
+    relative_media(&mut copy.cue_lists[0].cues);
     let copy_path = show_file(&copy);
     let mut c = config(&first);
     map(&mut c, &second_workspace());
