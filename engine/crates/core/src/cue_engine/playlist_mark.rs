@@ -60,8 +60,10 @@ impl CueEngine {
     /// Brings the marks up to date at the end of a call and reports each that changed, in group id
     /// order. Looked at: every group after an edit with no footprint; else the cues an edit touched,
     /// the groups they were and are in, and the groups inside a touched group (an added subtree);
-    /// the groups that had a mark (one may be gone); every group with a run; and each cue whose
-    /// state or arming changed in this call, with its group. So a call costs what it touched.
+    /// the groups that had a mark (one may be gone); every group with a run; each lost or broken
+    /// cue, with its group; the groups around a run whose voice start or a committed command is
+    /// still ahead; and each cue whose state, arming or length changed in this call, with the
+    /// groups around it. So a call costs what it touched (and how deep it is nested).
     pub(super) fn sync_playlist_marks(&mut self, edit: Option<MarksEdit>, cx: &mut Ctx) {
         let ws = cx.ws;
         let tree = self.problems.tree();
@@ -111,7 +113,8 @@ impl CueEngine {
                 _ => {}
             }
         }
-        // A length that arrived may put a playlist loaded to a time past its span.
+        // A length that arrived, or a cue that broke or was disarmed, may put every playlist
+        // above it loaded to a time past its span (the span counts nested children).
         for cue in std::mem::take(&mut self.lengths_changed) {
             look.extend(tree.ancestors(cue));
         }
@@ -121,7 +124,7 @@ impl CueEngine {
                 _ => continue,
             };
             look.insert(cue);
-            look.extend(tree.parent(cue));
+            look.extend(tree.ancestors(cue));
         }
         let mut changed = Vec::new();
         for id in look {

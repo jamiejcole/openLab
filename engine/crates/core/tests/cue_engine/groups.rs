@@ -1407,6 +1407,80 @@ fn a_length_arriving_after_a_load_to_time_moves_the_mark() {
     assert_ne!(rig.state(10), CueState::Running);
 }
 
+/// Playlist 1 (no loop) [Timeline 5 [sound 10, 5 s]] and `more` after it, loaded to 3 s: its
+/// span is 10's length, so the mark names 5.
+fn nested_sound_loaded_to_3_s(more: Vec<Cue>) -> Rig {
+    let mut cues = vec![grp(
+        1,
+        playlist(false, false),
+        vec![grp(5, TIMELINE, vec![sound(10)])],
+    )];
+    cues.extend(more);
+    let mut rig = Rig::new(cues);
+    rig.at(
+        0,
+        Input::CueLengths {
+            lengths: vec![(id(10), Some(5000))],
+        },
+    );
+    rig.at(
+        10,
+        Input::Load {
+            cue: id(1),
+            time: 3.0,
+        },
+    );
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(5)));
+    rig
+}
+
+/// Checks that a start of 1 at `now` plays none of its children.
+fn start_plays_no_child(rig: &mut Rig, now: SampleTime) {
+    let go = rig.start(now, 1);
+    for n in [5, 10] {
+        assert!(
+            changes(&go, n).iter().all(|(s, _)| !s.is_active()),
+            "{n}: {go:?}"
+        );
+    }
+}
+
+#[test]
+fn a_grandchilds_media_going_missing_clears_a_loaded_playlists_mark() {
+    let mut rig = nested_sound_loaded_to_3_s(vec![]);
+    let missing = rig.at(
+        100,
+        Input::MediaStatus {
+            media: MediaRef::new("media/a.wav"),
+            status: MediaStatus::Missing,
+        },
+    );
+    assert_eq!(rig.state(10), CueState::Broken);
+    assert_eq!(marks(&missing), vec![(id(1), None)], "nothing left to play");
+    start_plays_no_child(&mut rig, 200);
+}
+
+#[test]
+fn a_disarm_cue_on_a_grandchild_clears_a_loaded_playlists_mark() {
+    let disarm = cue(
+        2,
+        CueKind::Disarm {
+            target: Some(id(10)),
+        },
+    );
+    let mut rig = nested_sound_loaded_to_3_s(vec![disarm]);
+    let disarmed = rig.start(100, 2);
+    assert_eq!(
+        marks(&disarmed),
+        vec![(id(1), None)],
+        "nothing left to play"
+    );
+    // The binary writes the change into the model, as `SetArmed` asks.
+    rig.find_mut(10).armed = false;
+    assert!(marks(&rig.tick(150)).is_empty());
+    start_plays_no_child(&mut rig, 200);
+}
+
 #[test]
 fn a_shuffled_playlist_marks_the_child_its_pass_plays_next_and_none_before_it_is_drawn() {
     let kids = (10..15).map(|n| wait(n, 1.0)).collect();
