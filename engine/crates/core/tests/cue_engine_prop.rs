@@ -1941,20 +1941,15 @@ impl Run {
                 _ => None,
             });
             if let Some(started) = started {
-                // A disarmed child, or one refused for static problems, plays only its pre-wait and
-                // reports no state of its own when that is zero: the first state reported may be a
-                // later child's, after the marked one and such children only.
+                // A disarmed child plays only its pre-wait and reports no state of its own when
+                // that is zero: the first state reported may be a later child's, after the marked
+                // one and disarmed children only.
                 let at = |id: CueId| children.iter().position(|(k, _)| *k == id);
-                let refused = |id: CueId| {
-                    actions
-                        .iter()
-                        .any(|a| matches!(a, Action::Warning(EngineWarning::CueBroken { cue }) if *cue == id))
-                };
                 let passed = marked.and_then(at).zip(at(started)).is_some_and(|(m, s)| {
                     m <= s
-                        && children.get(m..s).is_some_and(|between| {
-                            between.iter().all(|(k, armed)| !armed || refused(*k))
-                        })
+                        && children
+                            .get(m..s)
+                            .is_some_and(|between| between.iter().all(|(_, armed)| !armed))
                 });
                 prop_assert!(
                     passed,

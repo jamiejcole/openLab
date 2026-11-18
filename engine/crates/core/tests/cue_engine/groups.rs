@@ -919,6 +919,27 @@ fn the_mark_passes_over_a_skipped_child_and_one_broken_at_run_time() {
 }
 
 #[test]
+fn the_mark_passes_over_a_child_with_static_problems_as_the_start_does() {
+    let mut broken = cue(10, audio());
+    if let CueKind::Audio { patch, .. } = &mut broken.kind {
+        *patch = patch_id(99);
+    }
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![broken, wait(11, 1.0)],
+    )]);
+    assert!(!rig.problems(10).is_empty());
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let go = rig.go(0);
+    assert_eq!(
+        running_at(&go, 11),
+        Some(0),
+        "the start plays the marked child"
+    );
+}
+
+#[test]
 fn a_shuffled_playlist_marks_the_child_its_pass_plays_next_and_none_before_it_is_drawn() {
     let kids = (10..15).map(|n| wait(n, 1.0)).collect();
     let mut rig = Rig::seeded(vec![grp(1, playlist(false, true), kids)], 7);

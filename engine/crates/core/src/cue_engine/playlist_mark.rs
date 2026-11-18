@@ -19,11 +19,10 @@ pub(super) enum MarksEdit {
 
 impl CueEngine {
     /// The child the Playlist group `group` plays next: the first child that a start does not
-    /// pass over (skipped, broken at run time, left paused by a lost device still away) while
-    /// it is not running, the one after its current
-    /// child as the group stands while it plays (wrapping when it loops), none once it is
-    /// stopping, devamped or halted, past its last child, or for a shuffled playlist whose order
-    /// is not drawn yet (not running, or between passes). `None` too for any other cue.
+    /// pass over (skipped, with static problems, broken at run time, left paused by a lost device
+    /// still away) while it is not running, the one after its current child as the group stands
+    /// while it plays (wrapping when it loops), none once it is stopping, devamped or halted, past
+    /// its last child, or for a shuffled playlist whose order is not drawn yet (not running, or between passes). `None` too for any other cue.
     /// `Action::PlaylistNextChanged` reports each change.
     pub fn next_in_playlist(&self, group: CueId) -> Option<CueId> {
         self.playlist_marks.get(&group).copied()
@@ -133,6 +132,7 @@ impl CueEngine {
         // is back.
         let plays = |c: &&Cue| {
             !self.is_skipped(c)
+                && !self.has_problems(c.id)
                 && match self.slots.get(&c.id) {
                     Some(Slot::Broken(_)) => false,
                     Some(Slot::Lost(_)) => self.lost_may_clear(c.id),
