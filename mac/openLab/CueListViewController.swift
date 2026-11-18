@@ -556,7 +556,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             borderType: scroll.borderType, controlSize: .regular, scrollerStyle: .legacy
         ).width
         let room = inside - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
-        let extra = tableExtra(name, others: outlineView.tableColumns.filter { $0 !== name }.reduce(0) { $0 + $1.width })
+        let others = outlineView.tableColumns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
+        let extra = tableExtra(name, others: others)
         let left = (room - fitTimeColumns(room: room, extra: extra, name: name) - extra).rounded(.down)
         let width = max(name.minWidth, left)
         if abs(name.width - width) >= 1 { name.width = width }
@@ -583,7 +584,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         for c in timed where preferredTimeWidths[c.identifier.rawValue] == nil {
             preferredTimeWidths[c.identifier.rawValue] = c.width
         }
-        func preferred(_ c: NSTableColumn) -> CGFloat { max(preferredTimeWidths[c.identifier.rawValue] ?? c.width, c.minWidth) }
+        func preferred(_ c: NSTableColumn) -> CGFloat {
+            max(preferredTimeWidths[c.identifier.rawValue] ?? c.width, c.minWidth)
+        }
         let fixed = columns.filter { $0 !== name && !timed.contains($0) }.reduce(0) { $0 + $1.width }
         let wanted = timed.reduce(0) { $0 + preferred($1) }
         let slack = timed.reduce(0) { $0 + (preferred($1) - Self.timeLeast(of: $1)) }
