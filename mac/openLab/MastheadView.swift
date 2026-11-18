@@ -22,6 +22,12 @@ final class MastheadView: NSView, NSTextViewDelegate {
     private var goHeight: NSLayoutConstraint!
     private var notesHeight: NSLayoutConstraint!
     private let notesScroll = NSScrollView()
+    /// The red area behind the GO button that flashes when a GO was ignored (double-GO protection).
+    let goFlash = NSView()
+    /// Whether the GO button shows its protection border.
+    private(set) var goProtectionShown = false
+    /// How many times the area flashed (tests: a flash fades by itself).
+    private(set) var goFlashes = 0
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -55,6 +61,14 @@ final class MastheadView: NSView, NSTextViewDelegate {
         notesScroll.drawsBackground = false
         notesScroll.borderType = .bezelBorder
 
+        goFlash.wantsLayer = true
+        goFlash.layer?.cornerRadius = 14
+        goFlash.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.6).cgColor
+        goFlash.alphaValue = 0
+        goFlash.translatesAutoresizingMaskIntoConstraints = false
+        goFlash.setAX("go-flash")
+        addSubview(goFlash)
+
         let right = NSStackView(views: [standbyField, notesScroll])
         right.orientation = .vertical
         right.alignment = .leading
@@ -79,6 +93,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
             row.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
             right.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            goFlash.leadingAnchor.constraint(equalTo: goButton.leadingAnchor, constant: -6),
+            goFlash.trailingAnchor.constraint(equalTo: goButton.trailingAnchor, constant: 6),
+            goFlash.topAnchor.constraint(equalTo: goButton.topAnchor, constant: -6),
+            goFlash.bottomAnchor.constraint(equalTo: goButton.bottomAnchor, constant: 6),
         ])
         apply(showMode: false, window: NSSize(width: 1200, height: 800))
     }
@@ -106,6 +124,24 @@ final class MastheadView: NSView, NSTextViewDelegate {
         notesView.textColor = showMode ? p.notesText.color : .secondaryLabelColor
         layer?.backgroundColor = showMode ? p.background.color.cgColor : nil
         needsLayout = true
+    }
+
+    /// Double-GO protection (QLab 5, manual p. 100): a red border around the GO button while a GO
+    /// would be ignored.
+    func setGoProtection(_ on: Bool) {
+        goProtectionShown = on
+        goButton.layer?.borderWidth = on ? 4 : 0
+        goButton.layer?.borderColor = NSColor.systemRed.cgColor
+    }
+
+    /// A GO came while protected: the area around the button flashes red and fades.
+    func flashGo() {
+        goFlashes += 1
+        goFlash.alphaValue = 1
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.5
+            goFlash.animator().alphaValue = 0
+        }
     }
 
     private func applyEditable() {

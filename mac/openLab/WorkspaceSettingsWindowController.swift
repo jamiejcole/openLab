@@ -14,11 +14,22 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let model: WorkspaceSettingsModel
     /// Sized before its tabs are added: a zero-sized tab view lays its tab strip out at a negative width.
     let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+    /// The categories on the left and the bar of the shown category's pages above them (`+Pages`).
+    let categoryTable = NSTableView()
+    let pageBar = NSSegmentedControl()
+    var pageBarCategory: SettingsCategory?
+    var syncingCategories = false
 
     // General
     let panicField = NSTextField()
     let goIntervalField = NSTextField()
     let autoLoadCheck = NSButton(checkboxWithTitle: loc("settings.general.autoLoad"), target: nil, action: nil)
+    let keyUpCheck = NSButton(checkboxWithTitle: loc("settings.general.keyUp"), target: nil, action: nil)
+    let autoNumberCheck = NSButton(
+        checkboxWithTitle: loc("settings.general.autoNumber"), target: nil, action: nil)
+    let autoNumberField = NSTextField()
+    let lockPlayheadCheck = NSButton(
+        checkboxWithTitle: loc("settings.general.lockPlayhead"), target: nil, action: nil)
     // Audio: the patch table (`+Audio`) and the volume limits beside it.
     let maxLimitField = NSTextField()
     let minLimitField = NSTextField()
@@ -93,7 +104,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         let window = NSWindow(
             // Wide enough by default for a device's whole name in the patch table, also as the
             // system output's choice names it.
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 540),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = loc("settings.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.settingsWindow)
@@ -115,7 +126,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 self?.rereadSoon()
             })
         // Taller than the pages need by the message row's two lines, which never take the pages' room.
-        window.contentMinSize = NSSize(width: 520, height: 552)
+        window.contentMinSize = NSSize(width: 680, height: 552)
         window.delegate = self
         tabs.delegate = self
         // The table takes its width only once its tab is laid out, after the lines were wrapped:
@@ -130,6 +141,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 }
             }
         }
+        syncCategories()
         render()
     }
 
@@ -163,6 +175,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
     /// A refusal line is about the tab it came from.
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        syncCategories()
         model.message = nil
         model.keyRefusal = nil
         render()
@@ -230,29 +243,15 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     // MARK: Building
 
     private func buildContent() -> NSView {
-        panicField.setAX(AX.settingsPanicField, label: loc("settings.general.panic"))
-        goIntervalField.setAX(AX.settingsGoIntervalField, label: loc("settings.general.goInterval"))
-        for field in [panicField, goIntervalField] {
-            field.alignment = .right
-            field.delegate = self
-            field.widthAnchor.constraint(equalToConstant: 70).isActive = true
-        }
-
-        let general = NSStackView(views: [
-            row(loc("settings.general.panic"), panicField, loc("settings.seconds")),
-            row(loc("settings.general.goInterval"), goIntervalField, loc("settings.seconds")),
-            autoLoadBox(),
-        ])
-        general.orientation = .vertical
-        general.alignment = .leading
-        general.spacing = 12
+        let general = buildGeneralTab()
 
         for (label, view, id) in [
-            (loc("settings.tab.general"), general, "general"), (loc("settings.tab.keys"), buildKeysTab(), "keys"),
-            (loc("settings.tab.audio"), buildAudioTab(), "audio"),
-            (loc("settings.tab.osc"), buildOscTab(), "osc"),
-            (loc("settings.tab.network"), buildNetworkTab(), "network"),
-            (loc("settings.tab.video"), videoPane.view, "video"),
+            (loc(SettingsPage.general.titleKey), general, "general"),
+            (loc(SettingsPage.keys.titleKey), buildKeysTab(), "keys"),
+            (loc(SettingsPage.audio.titleKey), buildAudioTab(), "audio"),
+            (loc(SettingsPage.osc.titleKey), buildOscTab(), "osc"),
+            (loc(SettingsPage.network.titleKey), buildNetworkTab(), "network"),
+            (loc(SettingsPage.video.titleKey), videoPane.view, "video"),
         ] {
             let item = NSTabViewItem(identifier: id)
             item.label = label
@@ -276,6 +275,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             tabs.addTabViewItem(item)
         }
         tabs.setAX(AX.settingsTabs)
+        // The category list and the page bar choose the page; the tab view only holds them.
+        tabs.tabViewType = .noTabsNoBorder
+        buildPageBar()
 
         messageLabel.setAX(AX.settingsMessage)
         messageLabel.textColor = .systemRed
@@ -300,22 +302,38 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         messageLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         doneButton.setContentHuggingPriority(.required, for: .horizontal)
         messageLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let root = NSStackView(views: [tabs, bottom])
+        let pages = NSStackView(views: [pageBar, tabs])
+        pages.orientation = .vertical
+        pages.alignment = .leading
+        pages.distribution = .fill
+        pages.spacing = 8
+        for v in [pageBar, tabs] { v.widthAnchor.constraint(equalTo: pages.widthAnchor).isActive = true }
+        let body = NSStackView(views: [buildCategoryList(), pages])
+        body.orientation = .horizontal
+        body.alignment = .top
+        body.spacing = 8
+        body.distribution = .fill
+        pages.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let root = NSStackView(views: [body, bottom])
         root.orientation = .vertical
         root.alignment = .width
         root.spacing = 10
         // The tabs take any height the window is given; the Done row keeps its own.
         root.distribution = .fill
         tabs.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        body.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        categoryTable.enclosingScrollView?.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
+        pages.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
         bottom.setContentHuggingPriority(.required, for: .vertical)
         root.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
         // Every tab fills the window's width, whatever its page would choose for itself (the Keys
         // page's wrapping labels would otherwise size the tab view to them).
-        tabs.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -24).isActive = true
+        pages.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -24 - 8 - Self.categoryWidth)
+            .isActive = true
         return root
     }
 
-    private func row(_ title: String?, _ control: NSView, _ suffix: Any?) -> NSStackView {
+    func row(_ title: String?, _ control: NSView, _ suffix: Any?) -> NSStackView {
         var views: [NSView] = title.map { [NSTextField(labelWithString: $0), control] } ?? [control]
         if let suffix = suffix as? String {
             views.append(NSTextField(labelWithString: suffix))
@@ -359,7 +377,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             field.stringValue = value.map(Self.format) ?? ""
             field.isEnabled = value != nil
         }
-        renderAutoLoad()
+        renderSwitches()
+        // A field being typed in keeps its text.
+        if !((editing as? NSTextView)?.delegate === autoNumberField) {
+            autoNumberField.stringValue = model.autoNumberStep.map(Self.format) ?? ""
+        }
     }
 
     static func format(_ seconds: Double) -> String {
@@ -415,6 +437,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 await model.setPanicDuration(text)
             } else if field === goIntervalField {
                 await model.setMinGoInterval(text)
+            } else if field === autoNumberField {
+                await model.setAutoNumberStep(text)
             } else if field === maxLimitField {
                 await model.setOutputMax(text)
             } else if field === minLimitField {

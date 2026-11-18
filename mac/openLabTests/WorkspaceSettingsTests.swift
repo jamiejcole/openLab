@@ -92,8 +92,9 @@ final class WorkspaceSettingsTests: XCTestCase {
 
     func testTheFileMenuHasWorkspaceSettingsOnCommandComma() {
         let item = MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") }?.items
+            .first { $0.title == loc("menu.file.workspaceSettings") }?.submenu?.items
             .first { $0.action == #selector(AppDelegate.showWorkspaceSettings(_:)) }
-        XCTAssertEqual(item?.title, loc("menu.file.workspaceSettings"))
+        XCTAssertEqual(item?.title, loc("menu.file.workspaceSettings.window"))
         XCTAssertEqual(item?.keyEquivalent, ",")
     }
 
@@ -1395,6 +1396,84 @@ final class WorkspaceSettingsTests: XCTestCase {
                     fa.intersects(b.frame.insetBy(dx: 1, dy: 1)),
                     "\(what): \(a.accessibilityIdentifier()) overlaps \(b.accessibilityIdentifier())")
             }
+        }
+    }
+
+    // MARK: Categories and pages
+
+    /// Checklist: Workspace Settings → a list of categories on the left; picking one shows its pages
+    /// on the right (a bar of its pages when it has more than one).
+    func testSettingsListsCategoriesAndPickingOneShowsItsPages() async throws {
+        let (_, sc) = try await open()
+        let titles = (0..<sc.categoryTable.numberOfRows).compactMap {
+            (sc.categoryTable.view(atColumn: 0, row: $0, makeIfNecessary: true) as? NSTextField)?.stringValue
+        }
+        XCTAssertEqual(titles, SettingsCategory.allCases.map { loc($0.titleKey) })
+        sc.show(page: .general)
+        XCTAssertEqual(sc.categoryTable.selectedRow, 0, "General is selected")
+        XCTAssertTrue(sc.pageBar.isHidden, "one page needs no bar")
+        let network = try XCTUnwrap(SettingsCategory.allCases.firstIndex(of: .network))
+        sc.categoryTable.selectRowIndexes(IndexSet(integer: network), byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .network, "a category shows its first page")
+        XCTAssertFalse(sc.pageBar.isHidden)
+        XCTAssertEqual(
+            (0..<sc.pageBar.segmentCount).compactMap { sc.pageBar.label(forSegment: $0) },
+            [loc(SettingsPage.network.titleKey), loc(SettingsPage.osc.titleKey)])
+        sc.pageBar.selectedSegment = 1
+        _ = sc.pageBar.target?.perform(sc.pageBar.action, with: sc.pageBar)
+        XCTAssertEqual(sc.shownPage, .osc)
+        XCTAssertEqual(sc.categoryTable.selectedRow, network, "the category stays selected")
+        let audio = try XCTUnwrap(SettingsCategory.allCases.firstIndex(of: .audio))
+        sc.categoryTable.selectRowIndexes(IndexSet(integer: audio), byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .audio)
+        XCTAssertTrue(sc.pageBar.isHidden)
+        // Back to the category on show keeps its page.
+        sc.show(page: .osc)
+        let again = IndexSet(integer: network)
+        sc.categoryTable.selectRowIndexes(again, byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .osc)
+    }
+
+    /// Checklist: the File menu's settings submenu opens each category directly: every page has an
+    /// item, and opening a page shows it with its category selected.
+    func testTheFileMenusSettingsSubmenuOpensEachCategoryDirectly() async throws {
+        let file = try XCTUnwrap(MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") })
+        let submenu = try XCTUnwrap(file.items.first { $0.title == loc("menu.file.workspaceSettings") }?.submenu)
+        let window = try XCTUnwrap(submenu.items.first { $0.action == #selector(AppDelegate.showWorkspaceSettings(_:)) })
+        XCTAssertEqual(window.keyEquivalent, ",")
+        let categories = submenu.items.filter { $0.submenu != nil }
+        XCTAssertEqual(categories.map(\.title), SettingsCategory.allCases.map { loc($0.titleKey) })
+        let pages = categories.flatMap { $0.submenu?.items ?? [] }
+        XCTAssertEqual(pages.compactMap { $0.representedObject as? String }, SettingsPage.allCases.map(\.rawValue))
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in wc.settingsWindow.close() }
+        for item in pages {
+            let page = try XCTUnwrap((item.representedObject as? String).flatMap(SettingsPage.init))
+            XCTAssertEqual(item.action, #selector(AppDelegate.showWorkspaceSettingsPage(_:)))
+            await wc.showSettings(page: page).value
+            XCTAssertEqual(wc.settingsWindow.shownPage, page)
+            XCTAssertEqual(
+                wc.settingsWindow.categoryTable.selectedRow,
+                SettingsCategory.allCases.firstIndex(of: page.category), "\(page)")
+        }
+    }
+
+    /// Checklist: Settings window at its smallest size → no page is clipped.
+    func testEveryPageAtTheSmallestSizeClipsNothing() async throws {
+        let (_, sc) = try await open()
+        let window = try XCTUnwrap(sc.window)
+        window.setContentSize(window.contentMinSize)
+        for page in SettingsPage.allCases {
+            sc.show(page: page)
+            window.contentView?.layoutSubtreeIfNeeded()
+            assertNothingClippedOrOverlapping(in: sc.tabs.selectedTabViewItem?.view, "the \(page) page")
+            let list = try XCTUnwrap(sc.categoryTable.enclosingScrollView)
+            XCTAssertGreaterThanOrEqual(
+                list.frame.height, sc.categoryTable.rect(ofRow: sc.categoryTable.numberOfRows - 1).maxY,
+                "the category list shows every category")
+            XCTAssertTrue(window.contentView?.bounds.contains(list.convert(list.bounds, to: nil)) == true)
+            if !sc.pageBar.isHidden { assertNothingClippedOrOverlapping(in: sc.pageBar, "the page bar") }
         }
     }
 

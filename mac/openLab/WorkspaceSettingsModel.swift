@@ -218,13 +218,17 @@ final class WorkspaceSettingsModel: ObservableObject {
         var keys: [WorkspaceKey: KeyChord]
         var keyRefusal: KeyRefusal?
         var newCuesAutoLoad: Bool?
+        var switches: [WorkspaceSwitch: Bool]
+        var autoNumberStep: Double?
     }
 
     var displayState: DisplayState {
         DisplayState(
             devices: devices, patches: patches, loaded: loaded, message: message, panic: panicDuration,
             goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches, keys: keyMap.bound,
-            keyRefusal: keyRefusal, newCuesAutoLoad: newCuesAutoLoad)
+            keyRefusal: keyRefusal, newCuesAutoLoad: newCuesAutoLoad,
+            switches: Dictionary(uniqueKeysWithValues: WorkspaceSwitch.allCases.compactMap { item in isOn(item).map { (item, $0) } }),
+            autoNumberStep: autoNumberStep)
     }
 
     /// What keeps the patch from playing now, as the engine resolves it (or, from an engine that
@@ -407,7 +411,7 @@ final class WorkspaceSettingsModel: ObservableObject {
         return await setNumber(type, trimmed, range)
     }
 
-    private func setNumber(_ type: String, _ text: String, _ range: ClosedRange<Double>) async -> Bool {
+    func setNumber(_ type: String, _ text: String, _ range: ClosedRange<Double>) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard let value = Double(trimmed), value.isFinite, range.contains(value) else {
             message = String(format: loc("settings.general.outOfRange"), range.lowerBound, range.upperBound)

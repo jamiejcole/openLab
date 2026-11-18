@@ -1345,6 +1345,56 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(go).count, 1)
     }
 
+    private func spaceUp() throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyUp, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
+    }
+
+    /// Checklist: Workspace Settings, General: "key up before the next GO" on → holding Space fires
+    /// one GO; a second GO needs the key released first (it is taken and fires nothing); after the
+    /// release the next press fires.
+    func testWithKeyUpRequiredASecondGoNeedsTheKeyReleasedFirst() async throws {
+        let go = TransportAction.go(list: list)
+        keyDoc = "1"
+        let store = try XCTUnwrap(app.session.stores["1"])
+        guard case .success = await store.send(command: .setSwitch(.goNeedsKeyUp, true)) else {
+            return XCTFail("set switch")
+        }
+        await assertEventually { store.isOn(.goNeedsKeyUp) == true }
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually { !transports(go).isEmpty }
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ", repeats: true)), "the held key is taken")
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")), "a press with no release between is taken too")
+        await settle()
+        XCTAssertEqual(transports(go).count, 1, "one GO for the held key")
+        app.handleKeyUp(try spaceUp())
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("the next press after a release fires") { transports(go).count == 2 }
+    }
+
+    /// With the box off a fresh press always fires, whether or not a release came (a lost key-up
+    /// must not mute GO), and leaving the app forgets a key held with the box on.
+    func testWithoutKeyUpRequiredAFreshPressAlwaysFiresAndLeavingTheAppForgetsAHeldKey() async throws {
+        let go = TransportAction.go(list: list)
+        keyDoc = "1"
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually { transports(go).count == 2 }
+        let store = try XCTUnwrap(app.session.stores["1"])
+        guard case .success = await store.send(command: .setSwitch(.goNeedsKeyUp, true)) else {
+            return XCTFail("set switch")
+        }
+        await assertEventually { store.isOn(.goNeedsKeyUp) == true }
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually { transports(go).count == 3 }
+        // The release goes to another app: nothing may hold GO shut.
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("GO fires after the app was left") { transports(go).count == 4 }
+    }
+
     func testSpaceWhileTypingStaysWithTheTextField() async throws {
         keyDoc = "1"
         app.isTextEditing = { true }

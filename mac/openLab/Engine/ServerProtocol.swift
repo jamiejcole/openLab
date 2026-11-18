@@ -57,6 +57,8 @@ enum RuntimeChange: Sendable, Decodable {
     /// The cue was started since it was last reset (`true`) or a reset undid that: a played cue shows
     /// its second colour.
     case played(cue: ModelID, played: Bool)
+    /// Double-GO protection began (a GO now is ignored) or ended.
+    case goProtection(active: Bool)
     case warning(WireWarning)
     /// Every field nil: the cue's lengths are not known now (drop what is held).
     case mediaDuration(CueMediaDuration)
@@ -86,6 +88,8 @@ enum RuntimeChange: Sendable, Decodable {
         case "played":
             self = .played(
                 cue: try c.decode(ModelID.self, forKey: "cue"), played: try c.decode(Bool.self, forKey: "played"))
+        case "go_protection":
+            self = .goProtection(active: try c.decode(Bool.self, forKey: "active"))
         case "warning":
             self = .warning(try c.decode(WireWarning.self, forKey: "warning"))
         case "media_duration":

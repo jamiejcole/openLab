@@ -134,6 +134,8 @@ enum AX {
     static let settingsButton = "settings-button"
     static let settingsWindow = "settings-window"
     static let settingsTabs = "settings-tabs"
+    static let settingsCategories = "settings-categories"
+    static let settingsPageBar = "settings-page-bar"
     static let settingsPanicField = "settings-panic-field"
     static let settingsGoIntervalField = "settings-go-interval-field"
     /// The Audio tab's patch table: `-name-N`, `-device-N`, `-edit-N`, `-remove-N`, `-problem-N` (rows from 1).

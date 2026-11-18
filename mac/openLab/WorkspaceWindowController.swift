@@ -88,6 +88,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var sub: AnyCancellable?
     private var statusSub: AnyCancellable?
     private var showModeSub: AnyCancellable?
+    private var goProtectionSub: AnyCancellable?
+    private var goBlockedSub: AnyCancellable?
     private var logController: LogWindowController?
     private var closeObserver: NSObjectProtocol?
     var logWindow: LogWindowController {
@@ -303,6 +305,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         showModeSub = store.$showMode.sink { [weak self] on in
             MainActor.assumeIsolated { self?.applyShowMode(on) }
         }
+        goProtectionSub = store.$goProtected.sink { [weak self] on in
+            MainActor.assumeIsolated { self?.masthead.setGoProtection(on) }
+        }
+        goBlockedSub = store.$goBlockedCount.dropFirst().sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.masthead.flashGo() }
+        }
         footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         footer.onSettings = { [weak self] in self?.showSettings() }
@@ -336,9 +344,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Opens the workspace settings (the footer gear, File > Workspace Settings).
     @discardableResult
-    func showSettings() -> Task<Void, Never> {
+    func showSettings(page: SettingsPage? = nil) -> Task<Void, Never> {
         let sc = settingsWindow
         sc.window?.title = String(format: loc("settings.title.workspace"), workspaceName)
+        if let page { sc.show(page: page) }
         return sc.present()
     }
 
