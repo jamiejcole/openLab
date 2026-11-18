@@ -446,7 +446,7 @@ extension ClientMessage {
             case .listDevices, .setOutputDevice, .setBufferSize, .listPatchMappings, .preshowCheck, .logTail,
                 .setOutputOverrides,
                 .setShowMode, .setPatchMapping, .listDisplays, .listStageMappings, .setStageMapping,
-                .snapshot:
+                .sequenceSpan, .snapshot:
                 return true
             #if DEBUG
                 // A stepped engine waits for its background work (up to 30 s) before it answers these.

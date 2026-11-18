@@ -425,6 +425,13 @@ pub enum Request {
         #[serde(default)]
         display: Option<String>,
     },
+    /// How long the sequence that starts at `cue` lasts: its pre-waits and actions through its
+    /// auto-continue and auto-follow chain, as a run would time them (what the `load` transport
+    /// action's negative time counts back from), for the Load to Time bar's slider. Answers
+    /// `sequence_span`. Workspace-bound.
+    SequenceSpan {
+        cue: CueId,
+    },
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
     PreshowCheck,

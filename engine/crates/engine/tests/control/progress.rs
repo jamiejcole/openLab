@@ -389,3 +389,86 @@ fn a_devamp_stop_keeps_the_position_inside_the_loop() {
     assert!(!pos.is_empty());
     assert!(pos.iter().all(|(_, p)| frames_of(*p) < 800.0), "{pos:?}");
 }
+
+/// Flow: Load to Time on a cue without a voice (a Fade, a Wait, a Group) shows the loaded time
+/// in its row: the progress message carries how far into its action each one stands, once,
+/// and nothing more while they stand there.
+#[test]
+fn a_cue_without_a_voice_loaded_to_a_time_reports_where_it_stands() {
+    // No continues, so no sequence carries one load into the next cue.
+    let mut fade = fade_on_idle(1, 3, 6.0);
+    fade.pre_wait = 1.0;
+    let mut s = show(workspace(vec![
+        fade,
+        wait(2, 6.0),
+        cue(
+            3,
+            CueKind::Group {
+                mode: openlab_core::GroupMode::Timeline,
+                children: vec![],
+            },
+        ),
+    ]));
+    s.take_outbound();
+    for (cue, at) in [(1, 5.0), (2, 4.0), (3, 4.0)] {
+        s.transport(TransportAction::Load { cue: id(cue), at });
+    }
+    s.run(SEC);
+    let r = reports(&s.take_outbound());
+    let (items, _) = r.last().expect("a progress message for the loaded set");
+    let stands: Vec<(u128, f64, Option<f64>)> = items
+        .iter()
+        .map(|i| (i.cue.0.as_u128(), i.elapsed, i.position))
+        .collect();
+    // The Fade's 1 s pre-wait is behind it: 4 s into its action.
+    assert_eq!(
+        stands,
+        vec![(1, 4.0, None), (2, 4.0, None), (3, 4.0, None)],
+        "{r:?}"
+    );
+    s.run(SEC);
+    assert!(reports(&s.take_outbound()).is_empty());
+}
+
+/// The Load to Time bar's slider spans the standing-by cue's whole sequence (`sequence_span`):
+/// a 1 s pre-wait and 2 s Fade that auto-continues after a 3 s post-wait into a 6 s Wait is
+/// 1 + 3 + 6 = 10 s; an unknown cue has none.
+#[test]
+fn sequence_span_answers_the_length_of_the_cues_sequence() {
+    use openlab_core::protocol::{ClientMessage, OkBody, Outcome, Request, ResultData};
+    let mut s = show(workspace(vec![
+        timed(fade_on_idle(1, 3, 2.0), 1.0, 3.0),
+        wait(2, 6.0),
+        cue(
+            3,
+            CueKind::Group {
+                mode: openlab_core::GroupMode::Timeline,
+                children: vec![],
+            },
+        ),
+    ]));
+    let mut span = |cue: u128| {
+        let id = s.request_id();
+        s.send(ClientMessage::Request {
+            id,
+            request: Request::SequenceSpan {
+                cue: openlab_core::CueId(Uuid::from_u128(cue)),
+            },
+        })
+        .into_iter()
+        .find_map(|m| match m {
+            ServerMessage::Result {
+                outcome:
+                    Outcome::Ok(OkBody {
+                        data: Some(ResultData::SequenceSpan { span }),
+                        ..
+                    }),
+                ..
+            } => Some(span),
+            _ => None,
+        })
+        .expect("sequence_span")
+    };
+    assert_eq!(span(1), Some(10.0));
+    assert_eq!(span(99), None);
+}

@@ -339,6 +339,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 device: "openlab:virtual-2".into(),
             },
         ),
+        ("sequence_span", Request::SequenceSpan { cue: cue_id(10) }),
     ]
 }
 
@@ -448,6 +449,21 @@ fn fixtures() -> Vec<(String, Sample)> {
                 property: CueProperty::Name {
                     value: "Storm".into(),
                 },
+            }),
+            coalesce: None,
+        }),
+    );
+    // Renumber with a prefix and a suffix: cues read "A10b", "A11b".
+    add(
+        "command_renumber",
+        client(ClientMessage::Command {
+            id: rid(4),
+            command: Box::new(Command::Renumber {
+                ids: vec![cue_id(10), cue_id(11)],
+                start: 10.0,
+                increment: 1.0,
+                prefix: "A".into(),
+                suffix: "b".into(),
             }),
             coalesce: None,
         }),
@@ -1271,6 +1287,27 @@ fn fixtures() -> Vec<(String, Sample)> {
             waits: vec![],
         }),
     );
+    // Loaded to a time: a Wait cue 4 s into its action, an Audio cue 2.5 s in at its file point.
+    add(
+        "progress_loaded",
+        server(ServerMessage::Progress {
+            items: vec![
+                ProgressItem {
+                    cue: cue_id(10),
+                    elapsed: 2.5,
+                    remaining: None,
+                    position: Some(32.5),
+                },
+                ProgressItem {
+                    cue: cue_id(14),
+                    elapsed: 4.0,
+                    remaining: None,
+                    position: None,
+                },
+            ],
+            waits: vec![],
+        }),
+    );
     // Pre-wait and post-wait countdowns; cue 12's Wait action runs beside its post-wait.
     add(
         "progress_waits",
@@ -1567,6 +1604,26 @@ fn fixtures() -> Vec<(String, Sample)> {
                     }],
                     video: Some(true),
                 }),
+            }),
+        }),
+    );
+    add(
+        "result_sequence_span",
+        server(ServerMessage::Result {
+            id: rid(63),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::SequenceSpan { span: Some(9.5) }),
+            }),
+        }),
+    );
+    add(
+        "result_sequence_span_unknown",
+        server(ServerMessage::Result {
+            id: rid(64),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::SequenceSpan { span: None }),
             }),
         }),
     );
@@ -2105,7 +2162,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 25);
-    assert_eq!(all_requests().len(), 29);
+    assert_eq!(all_requests().len(), 30);
 }
 
 #[test]
@@ -4607,6 +4664,9 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::ListPatchMappings),
         Just(Request::ListDisplays),
         Just(Request::ListStageMappings),
+        any::<u128>().prop_map(|c| Request::SequenceSpan {
+            cue: CueId(uuid::Uuid::from_u128(c))
+        }),
         (any::<u128>(), proptest::option::of("[!-~]{1,40}")).prop_map(|(stage, display)| {
             Request::SetStageMapping {
                 stage: StageId(uuid::Uuid::from_u128(stage)),

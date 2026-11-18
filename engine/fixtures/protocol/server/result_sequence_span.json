@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "id": 63,
+  "ok": {
+    "data": {
+      "type": "sequence_span",
+      "span": 9.5
+    }
+  }
+}

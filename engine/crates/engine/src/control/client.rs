@@ -530,6 +530,23 @@ impl DocCx<'_> {
                         },
                     );
                 }
+                Request::SequenceSpan { cue } => {
+                    let span = self
+                        .doc
+                        .model
+                        .engine()
+                        .sequence_span(self.doc.model.ws(), cue);
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::SequenceSpan { span }),
+                            }),
+                        },
+                    );
+                }
                 Request::PreshowCheck => {
                     let report = self.preshow_report();
                     reply(

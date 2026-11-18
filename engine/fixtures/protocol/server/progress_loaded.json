@@ -1,0 +1,16 @@
+{
+  "type": "progress",
+  "items": [
+    {
+      "cue": "00000000-0000-0000-0000-00000000000a",
+      "elapsed": 2.5,
+      "remaining": null,
+      "position": 32.5
+    },
+    {
+      "cue": "00000000-0000-0000-0000-00000000000e",
+      "elapsed": 4.0,
+      "remaining": null
+    }
+  ]
+}

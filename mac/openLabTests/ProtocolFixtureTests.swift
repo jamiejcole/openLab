@@ -135,6 +135,29 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertNil(entries[1].mapping)
     }
 
+    /// The Load to Time slider's span: `sequence_span` and its answer, with and without an end.
+    func testSequenceSpanRequestAndResultMatchTheFixtures() throws {
+        guard
+            case .request(_, .sequenceSpan(let cue)) = try JSONDecoder().decode(
+                ClientMessage.self, from: Data(try Fixtures.text("client", "request_sequence_span").utf8))
+        else { return XCTFail("sequence_span") }
+        XCTAssertEqual(cue, "00000000-0000-0000-0000-00000000000a")
+        for (file, span) in [("result_sequence_span", 9.5 as Double?), ("result_sequence_span_unknown", nil)] {
+            guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", file)),
+                case .sequenceSpan(let got)? = ok.data
+            else { return XCTFail(file) }
+            XCTAssertEqual(got, span, file)
+        }
+    }
+
+    /// A cue loaded to a time: how far into its action it stands, and a voice's file point beside it.
+    func testLoadedProgressCarriesTheTimeIntoTheAction() throws {
+        guard case .progress(let items, _) = try ServerMessage.decode(try Fixtures.text("server", "progress_loaded"))
+        else { return XCTFail("progress_loaded") }
+        XCTAssertEqual(items.map(\.elapsed), [2.5, 4.0])
+        XCTAssertEqual(items.map(\.position), [32.5, nil])
+    }
+
     /// AUD-02: `status` describes every open output device, the primary first.
     func testStatusListsEveryOutputDevice() throws {
         guard case .status(let ok) = try ServerMessage.decode(try Fixtures.text("server", "status")) else {
