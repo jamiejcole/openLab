@@ -95,7 +95,7 @@ final class TimeLoopsUITests: XCTestCase {
 
         // A press on the start handle dragged right trims the start; the playback does not move.
         point(0, on: wave).withOffset(CGVector(dx: 1, dy: 0)).press(
-            forDuration: 0.2, thenDragTo: point(3, on: wave))
+            forDuration: 0.3, thenDragTo: point(3, on: wave), withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertTrue(waitForTime(start, near: 3, tolerance: 0.6), "the start is trimmed: \(text(start))")
         XCTAssertFalse(cueState("Loaded", of: "Door slam", in: app).exists, "a handle drag loads nothing")
 
@@ -117,7 +117,8 @@ final class TimeLoopsUITests: XCTestCase {
         XCTAssertTrue(waitForTime(end, near: 30, tolerance: 0.01), "Door slam's waveform: \(text(end))")
 
         // A drag across the waveform selects a section and moves nothing; Shift-I and Shift-O crop to it.
-        point(18, on: wave).press(forDuration: 0.2, thenDragTo: point(24, on: wave))
+        point(18, on: wave).press(
+            forDuration: 0.3, thenDragTo: point(24, on: wave), withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertFalse(
             cueState("Loaded", of: "Door slam", in: app).waitForExistence(timeout: 1), "a drag loads nothing")
         XCTAssertTrue(waitForTime(start, near: 3, tolerance: 0.6), "and trims nothing")
@@ -216,7 +217,11 @@ final class VideoUITests: XCTestCase {
         let thumbnail = app.images["inspector-geometry-thumbnail"]
         XCTAssertTrue(thumbnail.exists, "the thumbnail")
         let centre = thumbnail.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        centre.press(forDuration: 0.2, thenDragTo: centre.withOffset(CGVector(dx: 30, dy: 20)))
+        // Slowly, resting over the end before the release, as the toolbar drag is: on a loaded runner a quick
+        // one is over before the app has taken the press.
+        centre.press(
+            forDuration: 0.3, thenDragTo: centre.withOffset(CGVector(dx: 60, dy: 40)), withVelocity: .slow,
+            thenHoldForDuration: 0.3)
         XCTAssertTrue(waitFor("value != '100'", field("x", in: app)), "x follows the drag: \(shown(in: app))")
         XCTAssertTrue(waitFor("value != '-50'", field("y", in: app)), "y follows the drag: \(shown(in: app))")
         let moved = shown(in: app)
@@ -244,13 +249,14 @@ final class VideoUITests: XCTestCase {
         XCTAssertTrue(waitFor("isHittable == true", field("x", in: app)), "the custom fields are shown")
         // The window at its least size, the inspector at its least height: the divider above it
         // dragged down as far as it goes.
+        shrinkWindowToLeast(app)
         let window = app.windows.firstMatch
-        window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
-            .press(forDuration: 0.2, thenDragTo: window.coordinate(withNormalizedOffset: .zero))
         let divider = app.splitters.allElementsBoundByIndex.first { $0.frame.width > $0.frame.height }
         let top = try XCTUnwrap(divider, "the divider above the inspector").coordinate(
             withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        top.press(forDuration: 0.2, thenDragTo: top.withOffset(CGVector(dx: 0, dy: 400)))
+        // Down to the window's foot, not past it: the window of a small screen ends near the screen's edge.
+        let down = window.frame.maxY - 6 - (divider?.frame.midY ?? 0)
+        top.press(forDuration: 0.2, thenDragTo: top.withOffset(CGVector(dx: 0, dy: down)))
         let scroll = app.scrollViews["inspector-geometry-scroll"]
         // A small field's frame as XCUITest reads it is a point or two taller than its bezel.
         func wholeInView(_ id: String) -> Bool {

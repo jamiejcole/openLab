@@ -81,13 +81,6 @@ final class CueListLayoutUITests: XCTestCase {
         app.outlines["cue-list"].buttons[title]
     }
 
-    /// The window dragged by its corner to its least size.
-    private func shrinkToLeast(_ app: XCUIApplication) {
-        let window = app.windows.firstMatch
-        window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
-            .press(forDuration: 0.2, thenDragTo: window.coordinate(withNormalizedOffset: .zero))
-    }
-
     /// Each cell `row` shows lies under its column's title.
     private func assertUnderTitles(_ row: String, cells: [String: String], in app: XCUIApplication, line: UInt = #line)
     {
@@ -108,7 +101,7 @@ final class CueListLayoutUITests: XCTestCase {
         selectCue("Act One", in: app)
         app.typeKey(XCUIKeyboardKey.leftArrow.rawValue, modifierFlags: [])
         XCTAssertTrue(waitFor("exists == false", door), "Left closes the group")
-        shrinkToLeast(app)
+        shrinkWindowToLeast(app)
         app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
         XCTAssertTrue(door.waitForExistence(timeout: 5), "Right opens it at the least size")
         assertUnderTitles("Door slam", cells: ["Number": "2.1", "Name": "Door slam"], in: app)
@@ -133,7 +126,7 @@ final class CueListLayoutUITests: XCTestCase {
     /// list, and above the inspector.
     func testTheHeaderAtTheLeastWindowSize() {
         let app = launchPlaying()
-        shrinkToLeast(app)
+        shrinkWindowToLeast(app)
         let list = app.outlines["cue-list"]
         let inspector = app.descendants(matching: .any)["inspector-tabs"]
         var right = -CGFloat.infinity
@@ -152,12 +145,27 @@ final class CueListLayoutUITests: XCTestCase {
     /// stays over its column.
     func testASidewaysScrollKeepsTitlesOverTheirColumns() {
         let app = launchPlaying()
-        shrinkToLeast(app)
+        shrinkWindowToLeast(app)
         let list = app.outlines["cue-list"]
-        let pre = header("Pre-Wait", in: app)
-        let edge = pre.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(CGVector(dx: -1, dy: 0))
-        edge.press(forDuration: 0.2, thenDragTo: edge.withOffset(CGVector(dx: 600, dy: 0)))
-        // AppKit scrolls the list along as the edge is dragged past the list's right edge: back to its start first.
+        // Each time column dragged as far right as the window goes: a drag past the screen's edge is lost, and
+        // a small screen's window ends at it. Name gives up what it can; the columns together then need more
+        // than the list's width, and it scrolls.
+        func widen(_ title: String) {
+            let column = header(title, in: app)
+            let room = app.windows.firstMatch.frame.maxX - 4 - (column.frame.maxX - 1)
+            guard room > 20 else { return }
+            let edge = column.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(
+                CGVector(dx: -1, dy: 0))
+            edge.press(forDuration: 0.2, thenDragTo: edge.withOffset(CGVector(dx: room, dy: 0)))
+        }
+        widen("Pre-Wait")
+        widen("Duration")
+        // The last column's edge, brought into view by the scroll, widened again each time.
+        for _ in 0..<3 {
+            list.scroll(byDeltaX: -2000, deltaY: 0)
+            widen("Post-Wait")
+        }
+        // AppKit scrolls the list along as an edge is dragged past the list's right edge: back to its start first.
         list.scroll(byDeltaX: 2000, deltaY: 0)
         let before = header("Duration", in: app).frame.minX
         list.scroll(byDeltaX: -400, deltaY: 0)

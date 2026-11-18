@@ -61,6 +61,24 @@ extension XCTestCase {
         return app
     }
 
+    /// The workspace window dragged to its least width (800 points), by a corner. The window of a small
+    /// screen (the hosted runner's is 1024 wide) fills it, and a press at its bottom-right corner, at the
+    /// screen's edge, left it full width there: the top-left corner is tried first, then the bottom-right
+    /// one. The window ends up against the screen's right edge. A window that stays wide fails here, by name, instead of in the assertions that rely on it.
+    @MainActor func shrinkWindowToLeast(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let window = app.windows.firstMatch
+        let narrow = NSPredicate { _, _ in MainActor.assumeIsolated { window.frame.width <= 801 } }
+        func shrunk() -> Bool {
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: narrow, object: nil)], timeout: 3) == .completed
+        }
+        window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 3, dy: 3))
+            .press(forDuration: 0.2, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9)))
+        if shrunk() { return }
+        window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -3, dy: -3))
+            .press(forDuration: 0.2, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.1)))
+        XCTAssertTrue(shrunk(), "the window is at its least width: \(window.frame)", file: file, line: line)
+    }
+
     /// The demo show alone, its list loaded.
     @MainActor func launchDemo() -> XCUIApplication {
         let app = launchApp(opening: ["Demo"])
