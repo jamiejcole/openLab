@@ -195,7 +195,8 @@ final class StatusLogTests: XCTestCase {
                 .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField)
         let lines = details.stringValue.components(separatedBy: "\n")
         let device = status.device
-        XCTAssertTrue(lines.contains { $0.hasPrefix(String(format: loc("status.detail.format"), Int(device.sampleRate), Int(device.channels))) }, "\(lines)")
+        let format = String(format: loc("status.detail.format"), Int(device.sampleRate), Int(device.channels))
+        XCTAssertTrue(lines.contains { $0.hasPrefix(format) }, "\(lines)")
         XCTAssertTrue(lines.contains(String(format: loc("status.detail.xruns"), Int(status.xruns))), "\(lines)")
         let cpu = String(format: loc("status.detail.cpu"), "")
         let load = String(format: loc("status.detail.load"), "")
