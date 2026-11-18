@@ -271,7 +271,7 @@ impl MediaWatch {
                         generation: self.generation,
                     }
                 }
-                KeyChange::Watch { key, path, id } => WatchJob::Watch { key, path, id },
+                KeyChange::Watch { key, path, id, .. } => WatchJob::Watch { key, path, id },
                 KeyChange::Unwatch { key } => WatchJob::Unwatch { key },
                 KeyChange::ProbeFailed { key, id, missing } => {
                     WatchJob::ProbeFailed { key, id, missing }

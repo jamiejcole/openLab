@@ -10,48 +10,136 @@
 //! With one doc open this is the watch as it was: a doc's reset is the watch's reset (a new
 //! generation, so batches of the old one are dropped).
 //!
-//! A doc opening or closing beside another changes thousands of keys at once. The share takes
-//! at most [`CHANGES_PER_WAKE`] of them in one control wake and the rest in the wakes after, in
-//! order, so neither costs most of an audio block; the watch thread learns of the files a few
-//! wakes later, which only delays its first pass over them. A doc that takes up a file another
-//! doc already watches, after the file had an event its change was queued before, is handed
-//! the file's last event ([`WatchShare::take_missed`]): its probe may have seen the file as it
-//! was before, and the watch does not repeat an event.
+//! A doc opening or closing beside another changes thousands of keys at once. A key for a file
+//! the watch has already is taken up in the wake its change comes, so the doc hears every event
+//! of the file from then on (its probe was sent before) and no other doc letting go of the file
+//! can stop its watch first. Keys for files not watched yet, and a closed doc's keys, are
+//! handled at most [`CHANGES_PER_WAKE`] a wake, the rest in the wakes after, in order, so neither
+//! costs most of an audio block; the watch thread learns of new files a few wakes later, which
+//! only delays its first pass over them. The maps are keyed by text hashed where the change was
+//! made ([`KeyHashes`]): taking up 2,000 watched files hashes no text on the control thread.
 
+use std::borrow::Borrow;
 use std::collections::hash_map::{self, Entry};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use super::DocId;
-use super::media::KeyChange;
+use super::media::{KeyChange, KeyHashes, text_hash};
 use super::watch::{MediaWatch, WatchBatch, WatchEvent};
 
-/// Key changes (a doc's, or a closed doc's keys let go of) the share handles in one control
-/// wake. A key costs about a microsecond on the slowest runner, so this stays well inside an
-/// audio block; 2,000 files take eight wakes.
+/// Keys for files not watched yet, and closed docs' keys let go of, the share handles in one
+/// control wake. A key costs about a microsecond on the slowest runner, so this stays well inside
+/// an audio block; 2,000 new files take eight wakes.
 pub const CHANGES_PER_WAKE: usize = 256;
 
+/// Text with its hash ([`text_hash`]), as the share's maps key it.
+#[derive(Clone, Debug)]
+struct Text {
+    hash: u64,
+    text: Arc<str>,
+}
+
+/// A map key, owned ([`Text`]) or a borrowed text with its hash, so a lookup copies nothing.
+trait Hashed {
+    fn hash_value(&self) -> u64;
+    fn text(&self) -> &str;
+}
+
+impl Hashed for Text {
+    fn hash_value(&self) -> u64 {
+        self.hash
+    }
+    fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+impl Hashed for (u64, &str) {
+    fn hash_value(&self) -> u64 {
+        self.0
+    }
+    fn text(&self) -> &str {
+        self.1
+    }
+}
+
+impl<'a> Borrow<dyn Hashed + 'a> for Text {
+    fn borrow(&self) -> &(dyn Hashed + 'a) {
+        self
+    }
+}
+
+impl Hash for dyn Hashed + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash_value());
+    }
+}
+
+impl PartialEq for dyn Hashed + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash_value() == other.hash_value() && self.text() == other.text()
+    }
+}
+
+impl Eq for dyn Hashed + '_ {}
+
+// As the borrowed form, so a lookup by either finds the same entry.
+impl Hash for Text {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+impl PartialEq for Text {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.text == other.text
+    }
+}
+
+impl Eq for Text {}
+
+/// Hands on the keyed hash a [`Text`] carries: the maps do not hash it again.
+#[derive(Default)]
+struct HashedHasher(u64);
+
+impl Hasher for HashedHasher {
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        // Only `write_u64` is used; anything else still hashes, slowly.
+        for b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*b);
+        }
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type Map<V> = HashMap<Text, V, BuildHasherDefault<HashedHasher>>;
+
+fn lookup(hash: u64, text: &str) -> (u64, &str) {
+    (hash, text)
+}
+
 /// A doc's use of a watched file: its key and its watch id for it.
-type Sub = (DocId, String);
+type Sub = (DocId, Arc<str>);
 
 /// One doc's keys: the watch key each of its keys is counted under.
-type DocKeys = HashMap<String, String>;
+type DocKeys = Map<Text>;
 
 /// One file the watch thread stats.
 struct Watched {
+    key: Text,
     path: PathBuf,
     /// The engine's watch id for it (the watch thread reports events under it).
     id: u64,
     /// Every doc key that names this file, with that doc's watch id for it.
     subs: BTreeMap<Sub, u64>,
-    /// The file's last event, numbered by the share's count of events then.
-    last_event: Option<(u64, WatchEvent)>,
-}
-
-/// Changes a doc's catalog handed over at once, with the share's event count then.
-struct Batch {
-    since: u64,
-    changes: VecDeque<KeyChange>,
 }
 
 /// What came off the share's maps, only there to be dropped: the caller hands it to the
@@ -60,49 +148,49 @@ struct Batch {
 struct Gone {
     subs: Vec<Sub>,
     files: Vec<Watched>,
+    paths: Vec<PathBuf>,
+    strings: Vec<String>,
     bulk: Vec<Box<dyn Send>>,
 }
 
 impl Gone {
     fn is_empty(&self) -> bool {
-        self.subs.is_empty() && self.files.is_empty() && self.bulk.is_empty()
+        self.subs.is_empty()
+            && self.files.is_empty()
+            && self.paths.is_empty()
+            && self.strings.is_empty()
+            && self.bulk.is_empty()
     }
 }
 
 pub struct WatchShare {
     watch: MediaWatch,
     /// Watched files by the watch thread's key for them.
-    files: HashMap<String, Watched>,
+    files: Map<Watched>,
     /// Each open doc's keys.
     keys: HashMap<DocId, DocKeys>,
-    /// Each open doc's changes not handled yet, in order.
-    queued: BTreeMap<DocId, VecDeque<Batch>>,
+    /// Each open doc's changes not handled yet, in order: keys for files not watched yet when
+    /// their change came, and probe failures behind them.
+    queued: BTreeMap<DocId, VecDeque<KeyChange>>,
     /// Closed docs' keys not let go of yet (a closed doc's events find no doc meanwhile).
-    leaving: VecDeque<(DocId, hash_map::IntoIter<String, String>)>,
+    leaving: VecDeque<(DocId, hash_map::IntoIter<Text, Text>)>,
     /// What this wake may still handle.
     budget: usize,
     gone: Gone,
     next_id: u64,
-    /// Events accepted so far.
-    events: u64,
-    /// Events of files doc keys were taken up for after the event, which their doc did not hear,
-    /// as that doc sees them.
-    missed: Vec<(DocId, WatchEvent)>,
 }
 
 impl WatchShare {
     pub fn new(watch: MediaWatch) -> Self {
         Self {
             watch,
-            files: HashMap::new(),
+            files: Map::default(),
             keys: HashMap::new(),
             queued: BTreeMap::new(),
             leaving: VecDeque::new(),
             budget: CHANGES_PER_WAKE,
             gone: Gone::default(),
             next_id: 0,
-            events: 0,
-            missed: Vec::new(),
         }
     }
 
@@ -120,24 +208,140 @@ impl WatchShare {
     }
 
     /// Doc `doc`'s catalog changes ([`super::media::MediaCatalog::take_key_changes`]), turned
-    /// into the watch thread's jobs, after its earlier ones, within this wake's budget.
+    /// into the watch thread's jobs. A key for a file already watched is taken up now, a reset
+    /// or a key let go of is done now; a key for a file not watched yet (and a probe failure
+    /// behind one) waits its turn within this wake's budget.
     pub fn apply(&mut self, doc: DocId, changes: Vec<KeyChange>) {
         if changes.is_empty() {
             return;
         }
-        // A doc opening asks for thousands at once: room for them is made once.
+        // A doc opening asks for thousands at once: room for its keys is made once. The files'
+        // map grows as new files are taken up, a few hundred a wake.
         let watches = changes
             .iter()
             .filter(|c| matches!(c, KeyChange::Watch { .. }))
             .count();
-        self.files.reserve(watches);
-        self.keys.entry(doc).or_default().reserve(watches);
-        let batch = Batch {
-            since: self.events,
-            changes: VecDeque::from(changes),
-        };
-        self.queued.entry(doc).or_default().push_back(batch);
+        let mut keys = self.keys.remove(&doc).unwrap_or_default();
+        keys.reserve(watches);
+        let mut out = Vec::new();
+        let mut waiting = self.queued.get(&doc).is_some_and(|q| !q.is_empty());
+        for change in changes {
+            match change {
+                KeyChange::Reset => {
+                    // What waited is from before the reset.
+                    if let Some(queue) = self.queued.remove(&doc) {
+                        self.gone.bulk.push(Box::new(queue));
+                    }
+                    waiting = false;
+                    self.keys.insert(doc, keys);
+                    self.reset_doc(doc, &mut out);
+                    keys = self.keys.remove(&doc).unwrap_or_default();
+                }
+                KeyChange::Watch {
+                    key,
+                    path,
+                    id,
+                    hashes,
+                } => {
+                    if let Some((key, path)) =
+                        self.join(&mut keys, doc, key, path, id, hashes, &mut out)
+                    {
+                        waiting = true;
+                        self.queued
+                            .entry(doc)
+                            .or_default()
+                            .push_back(KeyChange::Watch {
+                                key,
+                                path,
+                                id,
+                                hashes,
+                            });
+                    }
+                }
+                KeyChange::Unwatch { key } => {
+                    // Its key may still be waiting to be taken up: it never is.
+                    if waiting && let Some(queue) = self.queued.get_mut(&doc) {
+                        queue
+                            .retain(|c| !matches!(c, KeyChange::Watch { key: k, .. } if *k == key));
+                    }
+                    let hash = text_hash(&key);
+                    unsubscribe(
+                        &mut self.files,
+                        &mut keys,
+                        doc,
+                        hash,
+                        &key,
+                        &mut self.gone,
+                        &mut out,
+                    );
+                }
+                failed @ KeyChange::ProbeFailed { .. } => {
+                    if waiting {
+                        self.queued.entry(doc).or_default().push_back(failed);
+                    } else {
+                        probe_failed(&self.files, &keys, doc, failed, &mut out);
+                    }
+                }
+            }
+        }
+        self.keys.insert(doc, keys);
+        self.watch.apply(out);
         self.pump();
+    }
+
+    /// Doc `doc`'s key `doc_key` (watch id `id`) for `path` is taken up if the watch has the
+    /// file already; else the key and path are given back.
+    #[allow(clippy::too_many_arguments)]
+    fn join(
+        &mut self,
+        keys: &mut DocKeys,
+        doc: DocId,
+        doc_key: String,
+        path: PathBuf,
+        id: u64,
+        hashes: KeyHashes,
+        out: &mut Vec<KeyChange>,
+    ) -> Option<(String, PathBuf)> {
+        let Some(text) = path.to_str() else {
+            return Some((doc_key, path));
+        };
+        let found = self
+            .files
+            .get_mut(&lookup(hashes.path, text) as &dyn Hashed)
+            .filter(|f| f.path == path);
+        let Some(file) = found else {
+            return Some((doc_key, path));
+        };
+        // Most keys read as their file's path: they share its text.
+        let doc_key = if *doc_key == *file.key.text {
+            self.gone.strings.push(doc_key);
+            file.key.clone()
+        } else {
+            Text {
+                hash: hashes.key,
+                text: doc_key.into(),
+            }
+        };
+        file.subs.insert((doc, Arc::clone(&doc_key.text)), id);
+        let key = file.key.clone();
+        match keys.entry(doc_key) {
+            Entry::Vacant(e) => {
+                e.insert(key);
+            }
+            // It named another file (an edit it missed): that one is let go of.
+            Entry::Occupied(mut e) => {
+                if *e.get() != key {
+                    let old = std::mem::replace(e.get_mut(), key);
+                    let sub = (doc, Arc::clone(&e.key().text));
+                    self.gone
+                        .files
+                        .extend(release(&mut self.files, &sub, old, out));
+                }
+            }
+        }
+        // Freed off the control thread, with what the share lets go of.
+        self.gone.paths.push(path);
+        None
     }
 
     /// Everything doc `doc` watched is let go (the doc closed): its changes not handled yet are
@@ -156,13 +360,6 @@ impl WatchShare {
         self.watch.apply(out);
     }
 
-    /// The last event of each file a doc key was taken up for since the last call, when the
-    /// event came after the doc's catalog asked for it: the doc did not hear it. As the doc
-    /// sees it (its key and watch id).
-    pub fn take_missed(&mut self) -> Vec<(DocId, WatchEvent)> {
-        std::mem::take(&mut self.missed)
-    }
-
     /// What came off the maps since the last call, for the caller to drop off the control
     /// thread (`None`: nothing).
     pub fn take_gone(&mut self) -> Option<Box<dyn Send>> {
@@ -170,13 +367,8 @@ impl WatchShare {
     }
 
     /// Changes and closed docs' keys still waiting for a wake.
-    #[cfg(test)]
     pub fn waiting(&self) -> usize {
-        self.queued
-            .values()
-            .flatten()
-            .map(|b| b.changes.len())
-            .sum::<usize>()
+        self.queued.values().map(VecDeque::len).sum::<usize>()
             + self.leaving.iter().map(|(_, k)| k.len()).sum::<usize>()
     }
 
@@ -194,7 +386,7 @@ impl WatchShare {
             match keys.next() {
                 Some((key, watch_key)) => {
                     self.budget -= 1;
-                    let sub = (doc, key);
+                    let sub = (doc, key.text);
                     self.gone
                         .files
                         .extend(release(&mut self.files, &sub, watch_key, &mut out));
@@ -212,48 +404,40 @@ impl WatchShare {
                 break;
             };
             let doc = *queued.key();
-            let batches = queued.get_mut();
-            let Some(batch) = batches.front_mut() else {
+            let Some(change) = queued.get_mut().pop_front() else {
                 queued.remove();
                 continue;
             };
-            let since = batch.since;
-            let Some(change) = batch.changes.pop_front() else {
-                batches.pop_front();
-                continue;
-            };
             self.budget -= 1;
-            self.change(doc, change, since, &mut out);
+            let mut keys = self.keys.remove(&doc).unwrap_or_default();
+            match change {
+                KeyChange::Watch {
+                    key,
+                    path,
+                    id,
+                    hashes,
+                } => {
+                    unsubscribe(
+                        &mut self.files,
+                        &mut keys,
+                        doc,
+                        hashes.key,
+                        &key,
+                        &mut self.gone,
+                        &mut out,
+                    );
+                    self.subscribe(&mut keys, doc, key, path, id, hashes, &mut out);
+                }
+                failed @ KeyChange::ProbeFailed { .. } => {
+                    probe_failed(&self.files, &keys, doc, failed, &mut out);
+                }
+                // Done at once by `apply`: never queued.
+                KeyChange::Reset | KeyChange::Unwatch { .. } => {}
+            }
+            self.keys.insert(doc, keys);
         }
         self.queued.retain(|_, q| !q.is_empty());
         self.watch.apply(out);
-    }
-
-    /// One of doc `doc`'s changes, handed over when the share had counted `since` events.
-    fn change(&mut self, doc: DocId, change: KeyChange, since: u64, out: &mut Vec<KeyChange>) {
-        match change {
-            KeyChange::Reset => self.reset_doc(doc, out),
-            KeyChange::Watch { key, path, id } => {
-                self.unsubscribe(doc, &key, out);
-                self.subscribe(doc, key, path, id, since, out);
-            }
-            KeyChange::Unwatch { key } => self.unsubscribe(doc, &key, out),
-            KeyChange::ProbeFailed { key, id, missing } => {
-                let Some(watch_key) = self.keys.get(&doc).and_then(|k| k.get(&key)) else {
-                    return;
-                };
-                let Some(file) = self.files.get(watch_key) else {
-                    return;
-                };
-                if file.subs.get(&(doc, key)) == Some(&id) {
-                    out.push(KeyChange::ProbeFailed {
-                        key: watch_key.clone(),
-                        id: file.id,
-                        missing,
-                    });
-                }
-            }
-        }
     }
 
     /// When no other open doc watches anything, the watch's own reset (a new generation, the
@@ -284,7 +468,7 @@ impl WatchShare {
         let keys = self.keys.remove(&doc).unwrap_or_default();
         self.gone.subs.reserve(keys.len());
         for (key, watch_key) in keys {
-            let sub = (doc, key);
+            let sub = (doc, key.text);
             self.gone
                 .files
                 .extend(release(&mut self.files, &sub, watch_key, out));
@@ -292,58 +476,65 @@ impl WatchShare {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn subscribe(
         &mut self,
+        keys: &mut DocKeys,
         doc: DocId,
         doc_key: String,
         path: PathBuf,
         id: u64,
-        since: u64,
+        hashes: KeyHashes,
         out: &mut Vec<KeyChange>,
     ) {
-        let mut key = path.to_string_lossy().into_owned();
+        let mut text = path.to_string_lossy().into_owned();
+        let mut hash = hashes.path;
         // Two paths that read the same once made text (not valid Unicode): kept apart.
-        if self.files.get(&key).is_some_and(|f| f.path != path) {
+        if self
+            .files
+            .get(&lookup(hash, &text) as &dyn Hashed)
+            .is_some_and(|f| f.path != path)
+        {
             self.next_id += 1;
-            key = format!("{key}\u{0}{}", self.next_id);
+            text = format!("{text}\u{0}{}", self.next_id);
+            hash = text_hash(&text);
         }
+        let key = Text {
+            hash,
+            text: text.into(),
+        };
         let file = match self.files.entry(key.clone()) {
             Entry::Occupied(file) => file.into_mut(),
             Entry::Vacant(file) => {
                 self.next_id += 1;
                 out.push(KeyChange::Watch {
-                    key: file.key().clone(),
+                    key: key.text.to_string(),
                     path: path.clone(),
                     id: self.next_id,
+                    hashes: KeyHashes {
+                        key: hash,
+                        path: hash,
+                    },
                 });
                 file.insert(Watched {
+                    key: key.clone(),
                     path,
                     id: self.next_id,
                     subs: BTreeMap::new(),
-                    last_event: None,
                 })
             }
         };
-        // The file had an event after the doc's catalog asked for it (and probed it): the doc
-        // did not hear it, and the watch will not repeat it.
-        if let Some((n, event)) = &file.last_event
-            && *n > since
-        {
-            self.missed.push((doc, retarget(event, &doc_key, id)));
-        }
-        file.subs.insert((doc, doc_key.clone()), id);
-        self.keys.entry(doc).or_default().insert(doc_key, key);
-    }
-
-    fn unsubscribe(&mut self, doc: DocId, doc_key: &str, out: &mut Vec<KeyChange>) {
-        let Some((doc_key, key)) = self
-            .keys
-            .get_mut(&doc)
-            .and_then(|keys| keys.remove_entry(doc_key))
-        else {
-            return;
+        let doc_key = if *doc_key == *key.text {
+            self.gone.strings.push(doc_key);
+            key.clone()
+        } else {
+            Text {
+                hash: hashes.key,
+                text: doc_key.into(),
+            }
         };
-        release(&mut self.files, &(doc, doc_key), key, out);
+        file.subs.insert((doc, Arc::clone(&doc_key.text)), id);
+        keys.insert(doc_key, key);
     }
 
     /// A batch from the watch thread: its events (of the current generation) for each doc that
@@ -355,18 +546,17 @@ impl WatchShare {
         };
         let mut out = Vec::new();
         for event in events {
+            let key = lookup(text_hash(event.key()), event.key());
             let Some(file) = self
                 .files
-                .get_mut(event.key())
+                .get(&key as &dyn Hashed)
                 .filter(|f| f.id == event.id())
             else {
                 continue;
             };
-            self.events += 1;
             for ((doc, key), id) in &file.subs {
                 out.push((*doc, retarget(&event, key, *id)));
             }
-            file.last_event = Some((self.events, event));
         }
         out
     }
@@ -378,16 +568,63 @@ impl WatchShare {
     }
 }
 
+/// Doc `doc` lets go of its key `doc_key` (hashed `hash`), if it has it.
+fn unsubscribe(
+    files: &mut Map<Watched>,
+    keys: &mut DocKeys,
+    doc: DocId,
+    hash: u64,
+    doc_key: &str,
+    gone: &mut Gone,
+    out: &mut Vec<KeyChange>,
+) {
+    let Some((doc_key, key)) = keys.remove_entry(&lookup(hash, doc_key) as &dyn Hashed) else {
+        return;
+    };
+    let sub = (doc, doc_key.text);
+    gone.files.extend(release(files, &sub, key, out));
+    gone.subs.push(sub);
+}
+
+/// Doc `doc`'s probe of its key's file failed: the watch is told, under its own key and id, if
+/// the key still names the file under that watch id.
+fn probe_failed(
+    files: &Map<Watched>,
+    keys: &DocKeys,
+    doc: DocId,
+    failed: KeyChange,
+    out: &mut Vec<KeyChange>,
+) {
+    let KeyChange::ProbeFailed { key, id, missing } = failed else {
+        return;
+    };
+    let Some((doc_key, watch_key)) =
+        keys.get_key_value(&lookup(text_hash(&key), &key) as &dyn Hashed)
+    else {
+        return;
+    };
+    let Some(file) = files.get(watch_key) else {
+        return;
+    };
+    if file.subs.get(&(doc, Arc::clone(&doc_key.text))) == Some(&id) {
+        out.push(KeyChange::ProbeFailed {
+            key: watch_key.text.to_string(),
+            id: file.id,
+            missing,
+        });
+    }
+}
+
 /// `sub`, no longer in the share's keys, lets go of its file `key`; the last one to do so
 /// stops the file's watch and gets the file back.
 fn release(
-    files: &mut HashMap<String, Watched>,
+    files: &mut Map<Watched>,
     sub: &Sub,
-    key: String,
+    key: Text,
     out: &mut Vec<KeyChange>,
 ) -> Option<Watched> {
-    // One hash of the path, whatever becomes of the file, and no walk of `subs` for its last sub
-    // (`sub` is in them: it was still in the share's keys).
+    // One look-up of the path, whatever becomes of the file, and no walk of `subs` for its last
+    // sub (`sub` is in them: it was still in the share's keys).
     let Entry::Occupied(mut file) = files.entry(key) else {
         return None;
     };
@@ -396,7 +633,9 @@ fn release(
         return None;
     }
     let (key, file) = file.remove_entry();
-    out.push(KeyChange::Unwatch { key });
+    out.push(KeyChange::Unwatch {
+        key: key.text.to_string(),
+    });
     Some(file)
 }
 
@@ -445,6 +684,7 @@ mod tests {
             key: key.into(),
             path: PathBuf::from(path),
             id,
+            hashes: KeyHashes::of(key, std::path::Path::new(path)),
         }
     }
 
@@ -798,5 +1038,56 @@ mod tests {
                 }
             )]
         );
+    }
+
+    /// A doc's keys for files the watch has already are taken up in the wake they come, however
+    /// many: only keys for new files wait their turn.
+    #[test]
+    fn keys_for_files_already_watched_are_taken_up_at_once() {
+        let (mut s, fs) = share();
+        for i in 0..2_000 {
+            fs.put(format!("/show/{i}.wav"), 1);
+        }
+        s.apply(A, many(0, 2_000));
+        while s.waiting() > 0 {
+            wake(&mut s);
+        }
+        wake(&mut s);
+        // B names every one of A's files and one of its own.
+        let mut b = many(0, 2_000);
+        b.push(watch("new.wav", "/show/new.wav", 1));
+        s.apply(B, b);
+        assert_eq!(s.waiting(), 0);
+        assert_eq!(s.watched_files(), 2_001);
+        pass(&mut s);
+        fs.remove("/show/0.wav");
+        let docs: Vec<_> = pass(&mut s).into_iter().map(|(d, _)| d).collect();
+        assert_eq!(docs, vec![A, B]);
+    }
+
+    /// A key let go of while its file waits to be watched is never watched; a reset drops what
+    /// waited from before it.
+    #[test]
+    fn a_waiting_key_let_go_of_or_reset_is_never_watched() {
+        let (mut s, fs) = share();
+        fs.put("/show/b.wav", 1);
+        s.apply(B, vec![watch("b.wav", "/show/b.wav", 1)]);
+        wake(&mut s);
+        s.apply(A, many(0, 1_000));
+        s.apply(
+            A,
+            vec![KeyChange::Unwatch {
+                key: "999.wav".into(),
+            }],
+        );
+        while s.waiting() > 0 {
+            wake(&mut s);
+        }
+        assert_eq!(s.watched_files(), 1_000, "B's file and 999 of A's");
+        s.apply(A, many(1_000, 2_000));
+        assert!(s.waiting() > 0);
+        s.apply(A, vec![KeyChange::Reset, watch("b.wav", "/show/b.wav", 9)]);
+        assert_eq!(s.waiting(), 0);
+        assert_eq!(s.watched_files(), 1, "only the file both docs name");
     }
 }

@@ -109,13 +109,25 @@ impl Control {
         self.follow_key_changes();
         for batch in std::mem::take(&mut self.eng.watch_batches) {
             let events = self.eng.watch.accept(batch);
-            self.watch_events(events);
+            let mut touched: Vec<DocId> = Vec::new();
+            for (doc, event) in events {
+                if let Some(mut cx) = self.cx_of(doc) {
+                    cx.watch_event(event);
+                    if !touched.contains(&doc) {
+                        touched.push(doc);
+                    }
+                }
+            }
+            for doc in &mut self.docs {
+                if touched.contains(&doc.id) {
+                    // Primes of a file gone are dropped; a file probed again near a playhead
+                    // is probed first.
+                    doc.primes_dirty = true;
+                    doc.warnings_dirty = true;
+                }
+            }
         }
         self.follow_key_changes();
-        // A doc that took up a file another doc watches after the file had an event the doc did
-        // not hear gets that event now: its probe may have seen the file before it.
-        let missed = self.eng.watch.take_missed();
-        self.watch_events(missed);
         let watch = self.eng.watch.watch_mut();
         watch.supervise();
         let logs = watch.take_logs();
@@ -129,27 +141,6 @@ impl Control {
         }
         if changed {
             self.mark_warnings_dirty();
-        }
-    }
-
-    /// Watch events, each to the doc whose file it is about.
-    fn watch_events(&mut self, events: Vec<(DocId, WatchEvent)>) {
-        let mut touched: Vec<DocId> = Vec::new();
-        for (doc, event) in events {
-            if let Some(mut cx) = self.cx_of(doc) {
-                cx.watch_event(event);
-                if !touched.contains(&doc) {
-                    touched.push(doc);
-                }
-            }
-        }
-        for doc in &mut self.docs {
-            if touched.contains(&doc.id) {
-                // Primes of a file gone are dropped; a file probed again near a playhead
-                // is probed first.
-                doc.primes_dirty = true;
-                doc.warnings_dirty = true;
-            }
         }
     }
 

@@ -260,7 +260,7 @@ fn the_watch_follows_the_files_the_catalog_knows() {
     assert_eq!(changes.first(), Some(&KeyChange::Reset));
     watched.clear();
     for c in changes.into_iter().skip(1) {
-        let KeyChange::Watch { key, id, path } = c else {
+        let KeyChange::Watch { key, id, path, .. } = c else {
             panic!("{c:?}")
         };
         assert_eq!(path, PathBuf::from(&key));

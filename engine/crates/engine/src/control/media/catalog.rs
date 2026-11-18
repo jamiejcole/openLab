@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::lock;
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeSet, HashMap, HashSet, hash_map};
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use openlab_audio::{Fit, Media, MediaError, MovieSound, MovieTrack, Preloaded, Probed};
 use openlab_core::video_probe::ProbeReport;
@@ -184,6 +186,7 @@ impl Indexed {
                 Some(path) => {
                     prepared.key_changes.push(KeyChange::Watch {
                         key: file.key.clone(),
+                        hashes: KeyHashes::of(&file.key, &path),
                         path: path.clone(),
                         id: ticket,
                     });
@@ -317,6 +320,32 @@ impl PlanChanges {
     }
 }
 
+/// A keyed hash of `text`, the same on every thread of this process (its key is drawn once): the
+/// watch share's maps are keyed by it, so text hashed where a change is made is not hashed again
+/// on the control thread.
+pub fn text_hash(text: &str) -> u64 {
+    static STATE: OnceLock<RandomState> = OnceLock::new();
+    STATE.get_or_init(RandomState::new).hash_one(text)
+}
+
+/// The hashes ([`text_hash`]) of a watched key and of its file's path as text, worked out where
+/// the key's change is made (for a doc being opened, on the document worker). The media watch
+/// ignores them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyHashes {
+    pub key: u64,
+    pub path: u64,
+}
+
+impl KeyHashes {
+    pub fn of(key: &str, path: &Path) -> Self {
+        let text = path.to_string_lossy();
+        let path = text_hash(&text);
+        let key = if *key == *text { path } else { text_hash(key) };
+        Self { key, path }
+    }
+}
+
 /// A file the media watch is to start or stop watching.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyChange {
@@ -326,6 +355,7 @@ pub enum KeyChange {
         key: String,
         path: PathBuf,
         id: u64,
+        hashes: KeyHashes,
     },
     Unwatch {
         key: String,
@@ -911,6 +941,7 @@ impl MediaCatalog {
                 if let Some(path) = path {
                     self.key_changes.push(KeyChange::Watch {
                         key: e.key().clone(),
+                        hashes: KeyHashes::of(e.key(), &path),
                         path,
                         id: ticket,
                     });

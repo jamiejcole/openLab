@@ -759,3 +759,48 @@ fn a_doc_closing_while_another_takes_up_their_shared_file_leaves_it_heard() {
         problems_in(&s, b, 9000)
     );
 }
+
+#[test]
+fn a_doc_beside_one_that_lets_go_of_a_replaced_shared_file_probes_it_again() {
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-released/shared.wav");
+    let (mut s, _) = shared_beside_a_big_doc(&fs, &shared);
+    assert_eq!(probes_of(&shared), 2, "one probe per doc");
+    // Replaced: seen the same on two passes, then A closes before B's other files are all
+    // taken up. Each doc probed the new file.
+    fs.put(&shared, 2);
+    assert!(!s.watch_pass());
+    assert!(s.watch_pass());
+    s.settle_media();
+    let a = s.control().doc_ids()[0];
+    s.close_doc(a, false).unwrap();
+    follow(&mut s);
+    assert_eq!(probes_of(&shared), 4, "B probed the new file too");
+}
+
+#[test]
+fn a_shared_file_gone_and_back_while_a_doc_opens_beside_it_is_present_for_both() {
+    use openlab_engine::control::watch::WatchAnswer;
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-back/shared.wav");
+    let (mut s, b) = shared_beside_a_big_doc(&fs, &shared);
+    fs.remove(&shared);
+    assert!(s.watch_pass(), "A hears it is gone");
+    fs.put(&shared, 1);
+    assert!(s.watch_pass_batch().is_none(), "seen once: not back yet");
+    let back = s.watch_pass_batch().expect("back on the second pass");
+    // B's last files are taken up in the wake that hears the file is back.
+    while 2001 - s.control().watched_files() > 256 {
+        s.tick();
+    }
+    s.deliver(Inbox::Watch(WatchAnswer::Batch(back)));
+    s.tick();
+    follow(&mut s);
+    assert_eq!(s.control().watched_files(), 2001);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert!(
+        problems_in(&s, b, 9000).is_empty(),
+        "{:?}",
+        problems_in(&s, b, 9000)
+    );
+}
