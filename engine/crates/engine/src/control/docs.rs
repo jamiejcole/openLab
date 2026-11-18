@@ -459,10 +459,9 @@ struct MoveStart {
 struct Moved {
     /// The copy as written, its media references re-spelled for the new folder (`None`: none
     /// was, or the re-spelling was refused and the copy was written as it was).
-    workspace: Option<Workspace>,
-    /// A second copy of `workspace`, for the snapshot every client is sent once it is taken up
+    /// With a second copy of it, for the snapshot every client is sent once it is taken up
     /// (cloning 2,000 cues takes the control thread a third of a millisecond).
-    snapshot_workspace: Option<Workspace>,
+    workspace: Option<(Workspace, Workspace)>,
     /// Some re-spelled reference was relative (older history entries then name wrong paths).
     respelled: bool,
     /// The re-spelling failed part way (logged once the save is answered).
@@ -1341,8 +1340,7 @@ fn prepare_move(copy: &mut Workspace, old_dir: Option<&Path>, new_dir: &Path) ->
     let mut indexed = index_workspace(copy, Some(new_dir));
     indexed.prepare();
     Moved {
-        workspace: rebased.then(|| copy.clone()),
-        snapshot_workspace: rebased.then(|| copy.clone()),
+        workspace: rebased.then(|| (copy.clone(), copy.clone())),
         respelled: rebased && respelled,
         failure,
         indexed,
@@ -1757,14 +1755,14 @@ impl DocCx<'_> {
     fn take_up_move(&mut self, moved: Moved, old_dir: Option<&Path>, clean_before: bool) {
         let Moved {
             workspace,
-            snapshot_workspace,
             respelled,
             indexed,
             ..
         } = moved;
         self.doc.file.moves_taken_up += 1;
         let changed = workspace.is_some();
-        if let Some(mut ws) = workspace {
+        let mut prebuilt = None;
+        if let Some((mut ws, mut snapshot_ws)) = workspace {
             // The copy is the workspace with the relinks applied, but for the Show Mode flag,
             // which a save writes from the doc's own.
             let mut edit = self.doc.model.edit();
@@ -1772,12 +1770,10 @@ impl DocCx<'_> {
             let old = std::mem::replace(&mut *edit, ws);
             drop(edit);
             self.eng.docs.discard(Box::new(old));
+            // The snapshot's copy is the same workspace, show mode included.
+            snapshot_ws.show_mode = self.doc.model.ws().show_mode;
+            prebuilt = Some((self.doc.model.edits(), snapshot_ws));
         }
-        // The snapshot's copy is the same workspace, show mode included.
-        let prebuilt = snapshot_workspace.map(|mut ws| {
-            ws.show_mode = self.doc.model.ws().show_mode;
-            (self.doc.model.edits(), ws)
-        });
         let gone = self.doc.media.reset_indexed(self.show_dir(), indexed);
         self.eng.docs.discard(gone);
         self.after_move(
@@ -1851,8 +1847,6 @@ impl DocCx<'_> {
         }
         if changed {
             self.resend_snapshot_with(prebuilt);
-        } else if let Some((_, ws)) = prebuilt {
-            self.eng.docs.discard(Box::new(ws));
         }
     }
 
@@ -3040,6 +3034,30 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::tests::memo_show;
+
+    /// A workspace copy made for the snapshot before the model was edited is not sent: the
+    /// snapshot holds the model as it is now.
+    #[test]
+    fn a_stale_prebuilt_snapshot_workspace_is_not_sent() {
+        let mut s = memo_show();
+        let mut stale = s.control().workspace().clone();
+        stale.name = "made before an edit".into();
+        s.take_outbound();
+        let c = s.control_mut();
+        let at = c.docs[0].model.edits() + 1;
+        c.first_cx().resend_snapshot_with(Some((at, stale)));
+        let sent = s.take_outbound();
+        let snap = sent
+            .iter()
+            .find_map(|m| match m {
+                ServerMessage::Snapshot { snapshot } => Some(snapshot),
+                _ => None,
+            })
+            .expect("a snapshot");
+        assert_eq!(snap.workspace, *s.control().workspace());
+        assert_ne!(snap.workspace.name, "made before an edit");
+    }
 
     /// A relink result lists whole cues until their paths reach the byte cap, and says it
     /// stopped: a folder of many same-named files cannot make a reply bigger than a frame.
