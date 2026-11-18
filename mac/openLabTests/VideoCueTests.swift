@@ -190,8 +190,8 @@ final class VideoCueTests: XCTestCase {
     // MARK: Flow 1: adding a Video cue
 
     /// The Video toolbar button, then its Cues menu item (Cmd-3, as QLab 5's): each adds a Video cue
-    /// on the workspace's first stage, drawn with the Video drawing and named "Video"; with no file
-    /// it is broken with that reason, as an Audio cue with no file is.
+    /// on the workspace's first stage, drawn with the Video drawing and an empty name (its default
+    /// name is its file's); with no file it is broken with that reason, as an Audio cue with no file is.
     func testTheVideoToolbarButtonOrItsShortcutAddsAVideoCueBrokenWithNoFile() async throws {
         try await openNewWorkspace()
         let firstStage = try XCTUnwrap(store.model?.stages.first?.id, "a new workspace has a stage per display")
@@ -232,7 +232,7 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(Icon.drawing(shownBy: type.image), .kindVideo, line: line)
         XCTAssertEqual(type.accessibilityLabel(), loc("cue.type.video"), line: line)
         XCTAssertEqual(
-            cell(id, "name"), loc("cue.type.video"), "an unnamed cue with no file reads as its kind", line: line)
+            cell(id, "name"), "", "an unnamed cue with no file has an empty Name cell", line: line)
         XCTAssertEqual(cell(id, "duration"), "", line: line)
         XCTAssertFalse(brokenTip(id)?.contains(loc("problem.no_stage")) ?? true, "it has a stage", line: line)
         // For its file's sound: the workspace's first patch and a new Audio cue's levels on it.

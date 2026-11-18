@@ -3107,7 +3107,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(prop_cases(256)))]
 
     /// Loading a Wait, Fade, memo or control cue (armed or not) to a time at or past
-    /// `pre-wait + action` leaves it loaded, holding nothing; started, its action is over at
+    /// `pre-wait + action` leaves it loaded, holding nothing (the cue it auto-continues into is
+    /// loaded too); started, its action is over at
     /// once, and its post-wait counts from the load time (`W - (t - P)` left, none if <= 0).
     #[test]
     fn a_load_past_the_end_ends_the_action_and_counts_the_post_wait_from_the_time(
@@ -3174,7 +3175,13 @@ proptest! {
             0,
         );
         prop_assert_eq!(engine.state(cue_id(1)), CueState::Loaded);
-        prop_assert_eq!(engine.state(cue_id(2)), CueState::Idle);
+        // The cue it continues into is loaded with it: the time left once it starts, or at its
+        // top when the time does not reach it.
+        let next = if auto_continue { CueState::Loaded } else { CueState::Idle };
+        prop_assert_eq!(engine.state(cue_id(2)), next);
+        if auto_continue && time <= pre + post {
+            prop_assert!(engine.loaded_offsets().all(|(c, _)| c != cue_id(2)));
+        }
         prop_assert_eq!(engine.next_deadline(), None);
         call(
             &mut engine,

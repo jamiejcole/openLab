@@ -224,6 +224,12 @@ pub enum ResultData {
     PreshowCheck(Box<PreshowReport>),
     /// Answer to `waveform` (AUD-14). Boxed, as the report is.
     Waveform(Box<WaveformData>),
+    /// Answer to `sequence_span`: seconds; absent when the end is unknown (audio not probed,
+    /// a loop or group with no end) or the cue is unknown.
+    SequenceSpan {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        span: Option<f64>,
+    },
     /// Answer to `list_patch_mappings`: every patch of the workspace, in workspace order.
     PatchMappings { patches: Vec<PatchMappingEntry> },
     /// Answer to `list_displays`. `video` is false where this machine's openLab has no video

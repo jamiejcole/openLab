@@ -1487,6 +1487,8 @@ fn renumber(ids: &[u128], start: f64, increment: f64) -> Command {
         ids: ids.iter().map(|&n| cue_id(n)).collect(),
         start,
         increment,
+        prefix: String::new(),
+        suffix: String::new(),
     }
 }
 
@@ -1535,18 +1537,59 @@ fn renumber_uses_whatever_start_and_increment_it_is_given() {
     );
 }
 
+/// Flow: a number a cue outside the selection already has is skipped, like a prefix and a suffix
+/// around the number (QLab 5 manual p. 150: cue 11 elsewhere gives 10, 12, 13).
 #[test]
-fn renumber_refuses_numbers_used_by_cues_outside_the_selection() {
-    let mut ws = workspace(vec![memo(1), memo(2), numbered(3, "2", CueKind::Memo)]);
-    assert_eq!(
-        refused(&mut ws, renumber(&[1, 2], 1.0, 1.0)),
-        CommandError::DuplicateNumber {
-            number: "2".into(),
-            used_by: cue_id(2)
-        }
-    );
-    // Selecting every cue is fine: the old numbers are all replaced.
-    round_trip(&mut ws, renumber(&[1, 2, 3], 1.0, 1.0));
+fn renumber_skips_numbers_used_by_cues_outside_the_selection() {
+    let mut ws = workspace(vec![
+        memo(1),
+        memo(2),
+        memo(3),
+        numbered(4, "11", CueKind::Memo),
+    ]);
+    round_trip(&mut ws, renumber(&[1, 2, 3], 10.0, 1.0));
+    let numbers: Vec<_> = [1, 2, 3, 4].map(|n| number(&ws, n).unwrap()).to_vec();
+    assert_eq!(numbers, ["10", "12", "13", "11"]);
+    // The selection's own old numbers are free again.
+    let mut ws = workspace(vec![numbered(1, "2", CueKind::Memo), memo(2)]);
+    round_trip(&mut ws, renumber(&[1, 2], 1.0, 1.0));
+    assert_eq!(number(&ws, 1).unwrap(), "1");
+    assert_eq!(number(&ws, 2).unwrap(), "2");
+}
+
+#[test]
+fn renumber_puts_the_prefix_and_suffix_around_each_number_and_skips_by_full_text() {
+    let mut ws = workspace(vec![
+        memo(1),
+        memo(2),
+        memo(3),
+        numbered(4, "Test-11bak", CueKind::Memo),
+        numbered(5, "12", CueKind::Memo),
+    ]);
+    let command = Command::Renumber {
+        ids: vec![cue_id(1), cue_id(2), cue_id(3)],
+        start: 10.0,
+        increment: 1.0,
+        prefix: "Test-".into(),
+        suffix: "bak".into(),
+    };
+    round_trip(&mut ws, command);
+    let numbers: Vec<_> = [1, 2, 3].map(|n| number(&ws, n).unwrap()).to_vec();
+    assert_eq!(numbers, ["Test-10bak", "Test-12bak", "Test-13bak"]);
+    assert_eq!(number(&ws, 5).unwrap(), "12");
+    assert_clean(&ws);
+    // Too long an affix is refused on this path.
+    let long = Command::Renumber {
+        ids: vec![cue_id(1)],
+        start: 1.0,
+        increment: 1.0,
+        prefix: "x".repeat(65),
+        suffix: String::new(),
+    };
+    assert!(matches!(
+        refused(&mut ws, long),
+        CommandError::InvalidNumbering(_)
+    ));
 }
 
 #[test]
@@ -1578,7 +1621,7 @@ fn renumber_refuses_bad_arguments() {
     // So small an increment that rounding would give two cues the same number.
     assert!(matches!(
         refused(&mut ws, renumber(&[1, 2], 1.0, 1e-12)),
-        CommandError::DuplicateNumber { .. }
+        CommandError::InvalidNumbering(_)
     ));
 }
 
@@ -2015,6 +2058,8 @@ fn a_transaction_is_one_undo_step() {
                 ids: vec![cue_id(1), cue_id(10)],
                 start: 1.0,
                 increment: 1.0,
+                prefix: String::new(),
+                suffix: String::new(),
             },
         ],
     };
@@ -2113,6 +2158,8 @@ fn a_session_of_edits_still_saves_and_loads_back_unchanged() {
             ids: vec![cue_id(1), cue_id(3), cue_id(11)],
             start: 1.0,
             increment: 1.0,
+            prefix: String::new(),
+            suffix: String::new(),
         },
         reparent(10, pos(None, 0)),
         Command::MoveCue {

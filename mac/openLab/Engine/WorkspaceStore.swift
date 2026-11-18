@@ -45,11 +45,16 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// Cues started since they were last reset: their rows show the second colour, if they have one.
     @Published private(set) var played: Set<ModelID> = []
     @Published private(set) var progress: [ModelID: ProgressItem] = [:]
-    /// Where in its file each loaded cue stands (seconds), as the engine's progress says: a Load
-    /// cue's time, a click in a timeline. Only loaded cues are here; a cue leaving that state leaves.
-    private(set) var loadedAt: [ModelID: Double] = [:]
+    /// Where each loaded cue stands, as the engine's progress says: Load to Time or a Load cue's
+    /// time into its action, a click in a timeline's point of its file. Only loaded cues are here;
+    /// a cue leaving that state leaves.
+    private(set) var loadedAt: [ModelID: LoadedStand] = [:]
     /// Audio cues' media lengths as the engine probed them (`media_durations`, `media_duration`).
-    @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:]
+    @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:] {
+        didSet { mediaDurationsVersion &+= 1 }
+    }
+    /// Counts changes to `mediaDurations`, so a view can tell a length changed without comparing them.
+    private(set) var mediaDurationsVersion: UInt64 = 0
     /// Pre-wait and post-wait countdowns in progress (`progress.waits`), by cue.
     @Published private(set) var waits: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
     /// The displays and where each stage is (VID-01), replaced by each `video_outputs` push or
@@ -236,6 +241,15 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         }
     }
 
+    /// How long the sequence that starts at `cue` lasts, seconds (its auto-continue and auto-follow
+    /// chain, as the engine times it); nil when its end is not known or the engine did not answer.
+    func sequenceSpan(_ cue: ModelID) async -> Double? {
+        guard case .success(let ok) = await client.send({ .request(id: $0, .sequenceSpan(cue: cue)) }),
+            case .sequenceSpan(let span)? = ok.data
+        else { return nil }
+        return span
+    }
+
     /// The pre-show check (SM-06): one report of what would keep the show from running.
     func preshowCheck() async -> Result<PreshowReport, EngineError> {
         switch await client.send({ .request(id: $0, .preshowCheck) }) {
@@ -358,8 +372,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             let oldLoaded = loadedAt
             loadedAt = Dictionary(
                 items.compactMap { item in
-                    guard cueStates[item.cue]?.state == .loaded, let at = item.position else { return nil }
-                    return (item.cue, at)
+                    guard cueStates[item.cue]?.state == .loaded else { return nil }
+                    return (item.cue, LoadedStand(time: item.elapsed, position: item.position))
                 }, uniquingKeysWith: { $1 })
             var next: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
             for wait in w { next[wait.cue, default: [:]][wait.wait] = wait }
@@ -609,4 +623,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         if noticed { self.changes.send(.notices) }
         return .applied
     }
+}
+
+/// Where a loaded cue stands until it starts: seconds into its action (0 when loaded by a click in
+/// its timeline, or inside its pre-wait), and, for Audio and Video, the point of its file.
+struct LoadedStand: Equatable, Sendable {
+    let time: Double
+    let position: Double?
 }

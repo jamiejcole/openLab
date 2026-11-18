@@ -1,0 +1,9 @@
+{
+  "type": "result",
+  "id": 64,
+  "ok": {
+    "data": {
+      "type": "sequence_span"
+    }
+  }
+}

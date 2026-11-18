@@ -920,6 +920,8 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
                 .collect(),
             start: [1.0, 0.0, 10.0, 0.1, -1.0, f64::NAN][p.b as usize % 6],
             increment: [1.0, 5.0, 0.1, 0.0, f64::INFINITY, 0.5][p.d as usize % 6],
+            prefix: String::new(),
+            suffix: String::new(),
         },
         10 => {
             if p.d % 4 == 3

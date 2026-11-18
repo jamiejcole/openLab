@@ -76,6 +76,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
     let findBar = FindBarView()
+    let loadBar = LoadTimeBarView()
+    /// Load to Time (`WorkspaceWindowController+LoadTime`): the bar's state.
+    var loadTime = LoadTimeState()
     /// Find (ED-09): the typed search, what it found and the bar's state (`WorkspaceWindowController+Find`).
     var find = FindState()
     let cueList: CueListViewController
@@ -172,6 +175,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.identifier = NSUserInterfaceItemIdentifier(AX.mainWindow)
         window.isReleasedWhenClosed = false  // closing must never destroy the window
         window.minSize = NSSize(width: 800, height: Self.minWindowHeight)
+        window.collectionBehavior.insert(.fullScreenPrimary)
         super.init(window: window)
         window.delegate = self
         // The log window belongs to this workspace: it goes when the workspace's window does.
@@ -247,6 +251,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         inspector.onJumpToTarget = { [weak self] id in self?.jumpToTarget(id) }
         inspector.onEditPatch = { [weak self] id in self?.editPatch(id) }
         cueList.onChooseFile = chooseFile
+        cueList.onKindDrop = { [weak self] kind, parent, index in
+            Task { await self?.editor.add(kind, after: self?.cueList.selectedIDs(), at: (parent, index)) }
+        }
         cueToolbar.onAdd = { [weak self] kind in
             let cues = self?.cueList.selectedIDs()
             Task { await self?.editor.add(kind, after: cues) }
@@ -275,6 +282,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         wireFind()
+        wireLoadTime()
         masthead.onEditingEnded = { [weak self] in self?.syncMasthead() }
         masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
@@ -490,20 +498,26 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         alert.beginSheetModal(for: window)
     }
 
-    /// Asks for the first number and increment, then renumbers the selected cues (ED-08).
+    /// Asks for the first number, the increment and an optional prefix and suffix, then renumbers the
+    /// selected cues (ED-08).
     func promptRenumber() {
         let cues = cueList.selectedIDs()
         guard !isShowMode, let window, !cues.isEmpty else { return NSSound.beep() }
         let settings = store.model?.settings
         let start = NSTextField(string: Self.plain(settings?["auto_number_start"]?.doubleValue ?? 1))
         let step = NSTextField(string: Self.plain(settings?["auto_number_increment"]?.doubleValue ?? 1))
-        let form = NSGridView(views: [
-            [NSTextField(labelWithString: loc("edit.renumber.start")), start],
-            [NSTextField(labelWithString: loc("edit.renumber.increment")), step],
-        ])
-        form.frame = NSRect(x: 0, y: 0, width: 220, height: 56)
-        start.setAccessibilityIdentifier("renumber-start")
-        step.setAccessibilityIdentifier("renumber-increment")
+        let prefix = NSTextField(string: "")
+        let suffix = NSTextField(string: "")
+        let rows: [(String, NSTextField, String)] = [
+            ("edit.renumber.start", start, "renumber-start"), ("edit.renumber.increment", step, "renumber-increment"),
+            ("edit.renumber.prefix", prefix, "renumber-prefix"), ("edit.renumber.suffix", suffix, "renumber-suffix"),
+        ]
+        let form = NSGridView(views: rows.map { [NSTextField(labelWithString: loc($0.0)), $0.1] })
+        form.frame = NSRect(x: 0, y: 0, width: 260, height: 100)
+        for row in rows {
+            row.1.setAccessibilityIdentifier(row.2)
+            row.1.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        }
         let alert = NSAlert()
         alert.messageText = loc("edit.renumber.title")
         alert.accessoryView = form
@@ -514,37 +528,56 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             guard let a = Double(start.stringValue), let b = Double(step.stringValue) else {
                 return self.showNotice(loc("edit.error.renumberValues"))
             }
-            Task { await self.editor.renumberSelection(of: cues, start: a, increment: b) }
-        }
-    }
-
-    /// One text field in a sheet; `done` gets the text when the first button is chosen.
-    private func askText(title: String, label: String, ok: String, field: String, done: @escaping (String) -> Void) {
-        guard let window else { return }
-        let input = NSTextField(string: field)
-        input.placeholderString = label
-        input.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
-        input.setAccessibilityLabel(label)
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = label
-        alert.accessoryView = input
-        alert.addButton(withTitle: ok)
-        alert.addButton(withTitle: loc("edit.cancel"))
-        alert.beginSheetModal(for: window) { response in
-            if response == .alertFirstButtonReturn { done(input.stringValue) }
+            Task {
+                await self.editor.renumberSelection(
+                    of: cues, start: a, increment: b, prefix: prefix.stringValue, suffix: suffix.stringValue)
+            }
         }
     }
 
     /// View > Select Cue... / Move Playhead to Cue...: asks for a cue number and then selects that
-    /// cue as a click would (the playhead follows), or only moves the playhead.
+    /// cue as a click would (the playhead follows), or only moves the playhead. A button fills in the
+    /// playhead's cue.
     func promptCue(movePlayhead: Bool) {
+        guard let window else { return }
         let key = movePlayhead ? "menu.view.movePlayheadToCue" : "menu.view.selectCue"
-        askText(title: loc(key + ".title"), label: loc("cue.prompt.number"), ok: loc(key + ".ok"), field: "") {
-            [weak self] text in
-            guard let self, let problem = self.applyCueNumber(text, movePlayhead: movePlayhead) else { return }
+        let input = NSTextField(string: "")
+        input.placeholderString = loc("cue.prompt.number")
+        input.setAccessibilityLabel(loc("cue.prompt.number"))
+        input.setAccessibilityIdentifier(AX.cuePromptField)
+        let fill = NSButton(title: loc("cue.prompt.playhead"), target: nil, action: nil)
+        fill.bezelStyle = .rounded
+        fill.setAccessibilityIdentifier(AX.cuePromptPlayhead)
+        fill.isEnabled = playheadCueNumber != nil
+        let filler = CueNumberFiller { [weak self, weak input] in
+            guard let number = self?.playheadCueNumber else { return NSSound.beep() }
+            input?.stringValue = number
+            input?.currentEditor()?.selectAll(nil)
+        }
+        fill.target = filler
+        fill.action = #selector(CueNumberFiller.fill)
+        let form = NSStackView(views: [input, fill])
+        form.spacing = 8
+        form.frame = NSRect(x: 0, y: 0, width: 300, height: 28)
+        input.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        let alert = NSAlert()
+        alert.messageText = loc(key + ".title")
+        alert.informativeText = loc("cue.prompt.number")
+        alert.accessoryView = form
+        alert.addButton(withTitle: loc(key + ".ok"))
+        alert.addButton(withTitle: loc("edit.cancel"))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            _ = filler  // the button's target lives as long as the sheet
+            guard response == .alertFirstButtonReturn, let self,
+                let problem = self.applyCueNumber(input.stringValue, movePlayhead: movePlayhead)
+            else { return }
             self.showNotice(problem)
         }
+    }
+
+    /// The number of the playhead's cue in the shown list; nil with none or an unnumbered one.
+    var playheadCueNumber: String? {
+        standingByCue.flatMap { store.model?.cue($0)?.number }
     }
 
     /// The dialog's answer for Select Cue / Move Playhead to Cue. Nil: done; else the notice to show.
@@ -560,28 +593,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         guard let list = store.model?.cueLists.first(where: { Self.contains(id, in: $0.cues) }) else { return }
         if cueList.listID != list.id { cueList.showList(list.id) }
         cueList.selectAsUser([id])
-    }
-
-    /// Tools > Load to Time...: loads the last selected cue to a typed time, the engine's `load`
-    /// command (the Transport menu's Load Selected uses 0).
-    func promptLoadToTime() {
-        guard !isShowMode, let id = cueList.selectedIDs().last else { return NSSound.beep() }
-        askText(
-            title: loc("menu.tools.loadToTime.title"), label: loc("cue.prompt.time"),
-            ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00"
-        ) {
-            [weak self] text in
-            guard let self, let problem = self.applyLoadTime(text, to: id) else { return }
-            self.showNotice(problem)
-        }
-    }
-
-    /// The dialog's answer for Load to Time. Nil: the load was sent; else the notice to show. The
-    /// engine's `load` takes 0 or more seconds, so a negative time is refused like any bad time.
-    func applyLoadTime(_ text: String, to id: ModelID) -> String? {
-        guard let seconds = CueTime.parse(text) else { return loc("cue.prompt.badTime") }
-        loadToTime(id, seconds)
-        return nil
     }
 
     func loadToTime(_ id: ModelID, _ seconds: Double) {
@@ -607,6 +618,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let id = cueList.listID.flatMap { store.playheads[$0] }
         let cue = id.flatMap { store.model?.cue($0) }
         masthead.show(standby: cue, name: cue.flatMap { store.model?.listName($0) })
+        syncLoadBar()
     }
 
     /// The cue list has applied a change: the syncs that read its shown list and tree run now.
@@ -639,6 +651,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private var footerWarned: Set<ModelID> = []
+
+    /// View > Switch Sidebar Between Lists and Active Cues: shows the sidebar on the other of its two tabs.
+    func toggleSidebarTab() {
+        sidebar.showTab(sidebar.tabs.selectedSegment == 0 ? 1 : 0)
+        setVisible(.sidebar, true)
+    }
 
     /// The footer's warnings button: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
     func showWarnings() {
@@ -749,7 +767,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         switch area {
         case .toolbar:
             // While Find holds the row, the toggle only decides what comes back when it closes.
-            if find.isOpen { find.toolbarWasHidden = !visible } else { cueToolbar.isHidden = !visible }
+            if find.isOpen {
+                find.toolbarWasHidden = !visible
+            } else if loadTime.isOpen {
+                loadTime.toolbarWasHidden = !visible
+            } else {
+                cueToolbar.isHidden = !visible
+            }
         case .masthead: masthead.isHidden = !visible
         case .inspector:
             if !visible { inspector.endGestures() }
@@ -781,7 +805,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     func isVisible(_ area: LayoutArea) -> Bool {
         switch area {
-        case .toolbar: return find.isOpen ? !find.toolbarWasHidden : !cueToolbar.isHidden
+        case .toolbar:
+            if find.isOpen { return !find.toolbarWasHidden }
+            return loadTime.isOpen ? !loadTime.toolbarWasHidden : !cueToolbar.isHidden
         case .masthead: return !masthead.isHidden
         case .inspector: return !inspector.view.isHidden
         case .sidebar: return sidebar.view.superview != nil
@@ -813,18 +839,20 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         sidebarWidthConstraint = sidebarWidth
 
         findBar.isHidden = true
-        let stack = NSStackView(views: [masthead, cueToolbar, findBar, horizontalSplit, footer])
+        loadBar.isHidden = true
+        let stack = NSStackView(views: [masthead, cueToolbar, findBar, loadBar, horizontalSplit, footer])
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
-        for v in [masthead, cueToolbar, findBar, horizontalSplit, footer] {
+        for v in [masthead, cueToolbar, findBar, loadBar, horizontalSplit, footer] {
             v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         // These views have no intrinsic height; without explicit heights the stack stretches them.
         cueToolbar.heightAnchor.constraint(equalToConstant: 36).isActive = true
         findBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        loadBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
         footer.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        for v in [masthead, cueToolbar, findBar, footer] {
+        for v in [masthead, cueToolbar, findBar, loadBar, footer] {
             v.setContentHuggingPriority(.required, for: .vertical)
             v.setContentCompressionResistancePriority(.required, for: .vertical)
         }
@@ -846,4 +874,11 @@ extension WorkspaceWindowController {
         panel.allowedContentTypes = extensions.sorted().compactMap { UTType(filenameExtension: $0) }
         return panel.runModal() == .OK ? panel.url : nil
     }
+}
+
+/// The Select Cue sheet's button target.
+@MainActor final class CueNumberFiller: NSObject {
+    private let action: () -> Void
+    init(_ action: @escaping () -> Void) { self.action = action }
+    @objc func fill() { action() }
 }

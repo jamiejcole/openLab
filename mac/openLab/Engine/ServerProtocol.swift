@@ -609,6 +609,8 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// VID-01: `video` is false where this machine has no video output, nil before the stage host started.
     case displays([StageDisplay], video: Bool?)
     case stageMappings([StageMappingEntry])
+    /// Seconds a cue's sequence lasts; nil when its end is not known.
+    case sequenceSpan(Double?)
     #if DEBUG
         /// Test support: the test card's frame number the stage shows, and the RGBA colour at each point.
         case stageProbe(frame: UInt16?, colours: [[UInt8]])
@@ -654,6 +656,7 @@ enum ResultData: Sendable, Equatable, Decodable {
                 try c.decode([StageDisplay].self, forKey: "displays"),
                 video: try c.decodeIfPresent(Bool.self, forKey: "video"))
         case "stage_mappings": self = .stageMappings(try c.decode([StageMappingEntry].self, forKey: "stages"))
+        case "sequence_span": self = .sequenceSpan(try c.decodeIfPresent(Double.self, forKey: "span"))
         #if DEBUG
             case "stage_probe":
                 self = .stageProbe(

@@ -210,11 +210,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
     @MainActor @objc func movePlayheadNext(_ sender: Any?) { appController.movePlayheadAdjacent(by: 1) }
     @MainActor @objc func movePlayheadPrevious(_ sender: Any?) { appController.movePlayheadAdjacent(by: -1) }
+    @MainActor @objc func movePlayheadNextSequence(_ sender: Any?) {
+        appController.frontController?.cueList.movePlayheadBySequence(1)
+    }
+    @MainActor @objc func movePlayheadPreviousSequence(_ sender: Any?) {
+        appController.frontController?.cueList.movePlayheadBySequence(-1)
+    }
+    @MainActor @objc func toggleSidebarTab(_ sender: Any?) { appController.frontController?.toggleSidebarTab() }
+    @MainActor @objc func toggleWorkspaceFullScreen(_ sender: Any?) {
+        appController.frontController?.window?.toggleFullScreen(nil)
+    }
+    @MainActor @objc func showWorkspaceInFinder(_ sender: Any?) { appController.showFrontWorkspaceInFinder() }
+    @MainActor @objc func pasteLevels(_ sender: Any?) { appController.frontController?.pasteLevels() }
     @MainActor @objc func selectNextInspectorTab(_ sender: Any?) { appController.selectAdjacentInspectorTab(by: 1) }
     @MainActor @objc func selectPreviousInspectorTab(_ sender: Any?) {
         appController.selectAdjacentInspectorTab(by: -1)
     }
-    @MainActor @objc func loadToTime(_ sender: Any?) { appController.frontController?.promptLoadToTime() }
+    @MainActor @objc func loadToTime(_ sender: Any?) { appController.frontController?.toggleLoadToTime() }
     @MainActor @objc func revealTargetFile(_ sender: Any?) {
         appController.frontController?.cueList.revealSelectedTarget()
     }
@@ -286,15 +298,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             // Show Mode has taken the toolbar and inspector away (SM-01): their items wait.
             return !(front.isShowMode && WorkspaceWindowController.hiddenInShowMode.contains(area))
         case #selector(selectCue(_:))?, #selector(movePlayheadToCue(_:))?, #selector(movePlayheadNext(_:))?,
-            #selector(movePlayheadPrevious(_:))?:
+            #selector(movePlayheadPrevious(_:))?, #selector(movePlayheadNextSequence(_:))?,
+            #selector(movePlayheadPreviousSequence(_:))?:
             return appController.frontController != nil && !appController.isTextEditing()
+        case #selector(toggleSidebarTab(_:))?: return appController.frontController != nil
+        case #selector(toggleWorkspaceFullScreen(_:))?:
+            guard let window = appController.frontController?.window else { return false }
+            item.title = loc(
+                window.styleMask.contains(.fullScreen) ? "menu.view.exitFullScreen" : "menu.view.enterFullScreen")
+            return true
+        case #selector(showWorkspaceInFinder(_:))?: return appController.canShowFrontWorkspaceInFinder
+        case #selector(pasteLevels(_:))?:
+            return textEditor == nil && (appController.frontController?.canPasteLevels ?? false)
         case #selector(selectNextInspectorTab(_:))?, #selector(selectPreviousInspectorTab(_:))?:
             // Cmd-Left / Right move the insertion point of a text field being edited.
             guard let front = appController.frontController else { return false }
             return front.isVisible(.inspector) && !appController.isTextEditing()
         case #selector(loadToTime(_:))?:
-            // An edit-time tool: off in Show Mode, as in QLab.
-            return appController.frontController.map { !$0.isShowMode && !$0.cueList.selectedIDs().isEmpty } ?? false
+            // An operator's tool: on in Show Mode too (QLab manual p. 149); it cycles the bar.
+            return appController.frontController != nil
         case #selector(showWarnings(_:))?: return appController.frontController != nil  // views only: Show Mode too
         case #selector(jumpToTargets(_:))?:
             // Not while a text field is edited: the jump would take its focus.

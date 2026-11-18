@@ -454,7 +454,7 @@ final class MainWindowTests: XCTestCase {
         try await standBy(rig, TestSnapshots.fade)
         XCTAssertEqual(wc.masthead.cueID, TestSnapshots.fade)
         XCTAssertEqual(
-            wc.masthead.standbyField.stringValue, "Fade and stop Intro",
+            wc.masthead.standbyField.stringValue, "fade and stop Intro",
             "an unnamed Fade is named after the cue it fades")
     }
 

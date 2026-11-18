@@ -209,6 +209,9 @@ enum Request: Hashable, Sendable, Codable {
     /// VID-01: shows the workspace's stage on a display (`listDisplays` id) on this machine; nil
     /// leaves it on none. Kept in the engine's machine settings, not the show file.
     case setStageMapping(stage: ModelID, display: String?)
+    /// How long the sequence that starts at `cue` lasts (its auto-continue and auto-follow chain),
+    /// for the Load to Time slider.
+    case sequenceSpan(cue: ModelID)
     #if DEBUG
         /// Test support only: an engine built with test-support on its virtual device
         /// (docs/protocol.md "Test support"). `advance` moves a stepped engine's device time by
@@ -286,6 +289,7 @@ enum Request: Hashable, Sendable, Codable {
             f.append(("stage", stage))
             opt(&f, "display", display)
             return ("set_stage_mapping", f)
+        case .sequenceSpan(let cue): return ("sequence_span", [("cue", cue)])
         #if DEBUG
             case .advance(let frames): return ("advance", [("frames", frames)])
             case .loseDevice(let device):
@@ -358,6 +362,7 @@ enum Request: Hashable, Sendable, Codable {
             self = .setStageMapping(
                 stage: try c.decode(ModelID.self, forKey: "stage"),
                 display: try c.decodeIfPresent(String.self, forKey: "display"))
+        case "sequence_span": self = .sequenceSpan(cue: try c.decode(ModelID.self, forKey: "cue"))
         #if DEBUG
             case "advance": self = .advance(frames: try c.decode(UInt64.self, forKey: "frames"))
             case "lose_device": self = .loseDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))

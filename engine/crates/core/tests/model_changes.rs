@@ -216,6 +216,8 @@ fn renumbering_sends_the_renumbered_cues_only() {
         ids: vec![cue_id(10), cue_id(11), cue_id(12)],
         start: 100.0,
         increment: 1.0,
+        prefix: String::new(),
+        suffix: String::new(),
     };
     let (upserts, deletes) = step(&mut ws, &mut mirror, &mut history, renumber);
     assert_eq!((upserts.len(), deletes.len()), (3, 0));

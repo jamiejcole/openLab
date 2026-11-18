@@ -135,6 +135,11 @@ pub struct CueEngine {
     /// handled at (a zero-length voice ends on its start sample) could otherwise carry a cycle
     /// into call after call at one `now`, each with a fresh budget.
     spent: (SampleTime, usize),
+    /// Per list, the cue auto-load loaded at its playhead and every cue that load loaded (its
+    /// sequence and a group's children). Unloaded again when the playhead leaves that cue before
+    /// it starts (`release_auto_loads`), so a GO that walks past auto-loading cues leaves no
+    /// streams behind; a cue loaded on purpose (Load to Time, a Load cue) is never in here.
+    auto_loaded: BTreeMap<CueListId, (CueId, Vec<CueId>)>,
     /// The outline every call checks for a missed `model_changed` (see `shape.rs`).
     shape: shape::Shape,
     /// The edit cross-check (see [`CueEngine::set_edit_cross_check`]); `None` when off.
@@ -202,6 +207,7 @@ impl CueEngine {
             model_syncs: 0,
             whole_show_passes: 0,
             spent: (0, 0),
+            auto_loaded: BTreeMap::new(),
             shape: shape::Shape::default(),
             // Debug builds count the edits nobody signalled, so tests find a missed signal; the
             // check only counts, so behaviour is that of a release build (CLAUDE.md).
@@ -362,6 +368,7 @@ impl CueEngine {
         self.advance(&mut cx);
         self.settle_groups(&mut cx);
         self.sync_ducks(&mut cx);
+        self.release_auto_loads(&mut cx);
         // `limit - budget` is what this call and the earlier ones at `now` started (a raised
         // limit raises the budget by as much, see `budget_left`).
         self.spent = (now, cx.limit.saturating_sub(cx.budget));
@@ -461,6 +468,33 @@ impl CueEngine {
     /// `broken`, but its timers are frozen until it is resumed).
     pub fn is_paused(&self, cue: CueId) -> bool {
         matches!(self.slots.get(&cue), Some(Slot::Active(run)) if run.paused_at.is_some())
+    }
+
+    /// Each loaded cue standing inside its action (loaded to a time past its pre-wait), with
+    /// how far into its action it stands, in id order: what its row shows until it starts. A
+    /// cue loaded by a seek stands at a point of its file instead, which the binary knows.
+    pub fn loaded_offsets(&self) -> impl Iterator<Item = (CueId, SampleTime)> + '_ {
+        self.slots.iter().filter_map(|(id, slot)| match slot {
+            Slot::Loaded(l) if l.action_offset > 0 => Some((*id, l.action_offset)),
+            _ => None,
+        })
+    }
+
+    /// How long the sequence that starts at `cue` lasts, seconds: its pre-waits and actions as
+    /// a run would time them through its auto-continue and auto-follow chain (what a negative
+    /// load time counts back from). `None` when unknown or endless, or for an unknown cue.
+    pub fn sequence_span(&self, ws: &Workspace, cue: CueId) -> Option<f64> {
+        let cx = Ctx {
+            ws,
+            now: 0,
+            horizon: 0,
+            budget: 0,
+            limit: 0,
+            limit_verified: false,
+            out: Vec::new(),
+            vacated: Vec::new(),
+        };
+        self.sequence(cue, &cx).end.map(|end| self.seconds(end))
     }
 
     /// The Audio cue's nominal action length as the binary last told it (`Input::CueLengths`).
@@ -594,7 +628,9 @@ impl CueEngine {
             }
             Input::Load { cue, time } => {
                 if self.known(cue, cx) {
-                    self.load_tree(cue, time, cx);
+                    let time = self.load_time(cue, time, cx);
+                    let loaded = self.load_tree(cue, time, cx);
+                    self.forget_auto_loaded(&loaded);
                 }
             }
             Input::Seek { cue, position } => self.seek(cue, position, cx),

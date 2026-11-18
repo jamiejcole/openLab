@@ -186,7 +186,8 @@ pub enum TransportAction {
     Resume {
         cue: CueId,
     },
-    /// Loads the cue so it starts `at` seconds into its timeline (0: a plain load).
+    /// Loads the cue so it starts `at` seconds into its timeline (0: a plain load); a negative
+    /// `at` counts back from its end.
     Load {
         cue: CueId,
         at: f64,
@@ -264,7 +265,11 @@ impl TransportAction {
     /// What serde cannot check: numbers in range, and a batch's shape.
     fn validate(&self) -> Result<(), ProtocolError> {
         match self {
-            Self::Load { at, .. } => non_negative("transport.load.at", *at),
+            // A negative time counts back from the cue's end (the Load to Time tool).
+            Self::Load { at, .. } if !at.is_finite() => Err(ProtocolError::NonFinite {
+                field: "transport.load.at",
+            }),
+            Self::Load { .. } => Ok(()),
             Self::Seek { position, .. } => non_negative("transport.seek.position", *position),
             Self::Stop {
                 fade_out: Some(fade),
@@ -419,6 +424,13 @@ pub enum Request {
         stage: StageId,
         #[serde(default)]
         display: Option<String>,
+    },
+    /// How long the sequence that starts at `cue` lasts: its pre-waits and actions through its
+    /// auto-continue and auto-follow chain, as a run would time them (what the `load` transport
+    /// action's negative time counts back from), for the Load to Time bar's slider. Answers
+    /// `sequence_span`. Workspace-bound.
+    SequenceSpan {
+        cue: CueId,
     },
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
