@@ -1490,6 +1490,97 @@ fn a_save_as_taken_up_from_the_writer_ends_as_one_worked_out_on_the_control_thre
     assert_eq!(ends[0], ends[1]);
 }
 
+/// Adds an Audio cue `n` on `file` at the end of the first doc's list (the engine stores the
+/// path relative to the show folder when it lies inside it).
+fn add_audio(s: &mut OfflineShow, n: u128, file: &Path) {
+    let id_ = s.request_id();
+    let list = s.control().workspace().cue_lists[0].id;
+    let index = s.control().workspace().cue_lists[0].cues.len();
+    ok_result(&s.send(ClientMessage::Command {
+        id: id_,
+        coalesce: None,
+        command: Box::new(Command::AddCue {
+            at: openlab_core::Position {
+                list,
+                parent: None,
+                index,
+            },
+            cue: audio(n, file, 0),
+            auto_number: false,
+        }),
+    }));
+}
+
+/// A Save As into the show's parent folder, then one back into the show's own folder asked
+/// before the first is answered (that one moves nothing when asked, so nothing is prepared for
+/// it): the second answer re-spells the references the first left for the folder the show ends
+/// in, so they name the same file there, as the copy on disk does.
+#[test]
+fn a_save_as_back_into_the_folder_asked_before_a_move_is_answered_respells_the_references() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("A");
+    fs::create_dir_all(a.join("sfx")).unwrap();
+    let sound = a.join("sfx").join("hit.wav");
+    fs::copy(wav(&dc(800, 0.5)), &sound).unwrap();
+    let mut ws = workspace(vec![audio(1, &sound, 0)]);
+    if let CueKind::Audio { media, .. } = &mut ws.cue_lists[0].cues[0].kind {
+        *media = Some(MediaRef::new("sfx/hit.wav"));
+    }
+    let a_show = a.join("show.openlab");
+    write_show(&a_show, &ws);
+    let mut r = rig_with(ws, Some(a_show), None);
+    r.s.settle_media();
+    let (one, two) = (root.path().join("one.openlab"), a.join("two.openlab"));
+    let mut first = start_save_as(&mut r.s, &one);
+    let mut second = start_save_as(&mut r.s, &two);
+    r.s.settle_docs();
+    for replies in [&mut first, &mut second] {
+        let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+        ok_result(&answers);
+    }
+    r.s.settle_media();
+    assert_eq!(r.s.control().show_path(), Some(two.as_path()));
+    let live = r.s.control().workspace();
+    assert_eq!(media_of(live, 1), "sfx/hit.wav");
+    assert!(r.s.control().engine().problems(id(1)).is_empty());
+    let saved = load_show(&fs::read_to_string(&two).unwrap())
+        .unwrap()
+        .workspace;
+    assert_eq!(media_of(&saved, 1), "sfx/hit.wav");
+}
+
+/// A Save As into another folder whose copy needs no re-spelling (every reference absolute and
+/// outside the new folder), with a cue added while it is written on a file in the show's folder
+/// (stored relative to it): that cue's reference is re-spelled for the new folder and the cue
+/// finds its file.
+#[test]
+fn a_cue_added_during_a_save_as_that_needed_no_respelling_follows_the_move() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    fs::create_dir_all(a.path().join("sfx")).unwrap();
+    let sound = a.path().join("sfx").join("hit.wav");
+    fs::copy(wav(&dc(800, 0.5)), &sound).unwrap();
+    let elsewhere = wav(&dc(800, 0.5));
+    let ws = workspace(vec![audio(1, &elsewhere, 0)]);
+    let a_show = a.path().join("show.openlab");
+    write_show(&a_show, &ws);
+    let mut r = rig_with(ws, Some(a_show), None);
+    r.s.settle_media();
+    let mut replies = start_save_as(&mut r.s, &b.path().join("copy.openlab"));
+    // Handled before the save is answered (`send` waits for the writer only afterwards).
+    add_audio(&mut r.s, 2, &sound);
+    r.s.settle_docs();
+    let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+    ok_result(&answers);
+    r.s.settle_media();
+    let live = r.s.control().workspace();
+    assert_eq!(Path::new(&media_of(live, 2)), sound);
+    assert_eq!(Path::new(&media_of(live, 1)), elsewhere);
+    for n in [1, 2] {
+        assert!(r.s.control().engine().problems(id(n)).is_empty(), "cue {n}");
+    }
+}
+
 /// A cue added while a Save As into another folder is written is not in the copy the writer
 /// thread prepared: the doc does not take that copy up (it would lose the cue) but works the
 /// move out again, so the new cue's reference, stored relative to the old folder, is re-spelled

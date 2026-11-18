@@ -1718,7 +1718,7 @@ impl DocCx<'_> {
         clean_before: bool,
     ) {
         let Some(moved) = moved else {
-            self.rebase_here(old_dir, false, false, clean_before);
+            self.rebase_here(old_dir, false, clean_before);
             return;
         };
         if let Some(failure) = &moved.failure {
@@ -1730,9 +1730,9 @@ impl DocCx<'_> {
         if unchanged {
             self.take_up_move(*moved, old_dir, clean_before);
         } else {
-            let (rebase_refs, respelled) = (moved.workspace.is_some(), moved.respelled);
+            let respelled = moved.respelled;
             self.eng.docs.discard(moved);
-            self.rebase_here(old_dir, rebase_refs, respelled, clean_before);
+            self.rebase_here(old_dir, respelled, clean_before);
         }
     }
 
@@ -1760,18 +1760,14 @@ impl DocCx<'_> {
         self.after_move(changed, respelled || old_dir.is_some(), clean_before);
     }
 
-    /// [`Self::moved_folder`] worked out on the control thread from the doc as it is now:
-    /// `rebase_refs`, the copy written was re-spelled (`respelled`: a relative reference was).
-    fn rebase_here(
-        &mut self,
-        old_dir: Option<&Path>,
-        rebase_refs: bool,
-        respelled: bool,
-        clean_before: bool,
-    ) {
+    /// [`Self::moved_folder`] worked out on the control thread from the doc as it is now
+    /// (`respelled`: the copy written had a relative reference re-spelled). The live references
+    /// are re-spelled from `old_dir` whatever the copy needed: an edit made while it was written,
+    /// or a save of the doc as an earlier one left it, may hold references the copy did not.
+    fn rebase_here(&mut self, old_dir: Option<&Path>, respelled: bool, clean_before: bool) {
         let mut changed = false;
         let mut respelled = respelled;
-        if rebase_refs && let Some(new_dir) = self.show_dir() {
+        if let Some(new_dir) = self.show_dir() {
             let (relinks, now_respelled) = rebase(self.doc.model.ws(), old_dir, &new_dir);
             respelled |= now_respelled;
             if !relinks.is_empty() {
