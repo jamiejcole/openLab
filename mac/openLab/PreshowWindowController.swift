@@ -22,6 +22,8 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
     private(set) var showHidden = false
     /// A cue entry was chosen: the cue and the inspector tab that holds what to fix.
     var onInspect: ((ModelID, String?) -> Void)?
+    /// The system beep, for an entry whose cue was deleted since the check; a test counts it.
+    var beep: () -> Void = { NSSound.beep() }
     private(set) var rows: [PreshowRow] = []
     private(set) var report: PreshowReport?
     /// A check is out. Answers to an older one (Check Again pressed twice) are dropped.
@@ -166,12 +168,14 @@ final class PreshowWindowController: NSWindowController, NSTableViewDataSource, 
 
     // MARK: Choosing an entry
 
-    /// Selects the row's cue in the workspace window. False (with a beep) when the row has no cue
-    /// or the cue was deleted since the check.
+    /// Selects the row's cue in the workspace window. False when nothing was selected: silently
+    /// for a row with no cue (a device or system entry), with a beep when its cue was deleted
+    /// since the check (the entry goes at the next check).
     @discardableResult
     func choose(row: Int) -> Bool {
-        guard rows.indices.contains(row), let cue = rows[row].cue, store.model?.cue(cue) != nil else {
-            if rows.indices.contains(row), !rows[row].isHeading { NSSound.beep() }
+        guard rows.indices.contains(row), let cue = rows[row].cue else { return false }
+        guard store.model?.cue(cue) != nil else {
+            beep()
             return false
         }
         onInspect?(cue, rows[row].inspectorTab)
