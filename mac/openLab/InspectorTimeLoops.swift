@@ -80,8 +80,8 @@ extension InspectorViewController {
     /// engine sends where in the file the cue is).
     func updateTimeLoopsProgress() {
         guard let cue, Self.timeLoopsKinds.contains(cue.kindType) else { return }
-        // Playing or paused: where it is; loaded: where it stands.
-        timeLoops.showProgress(position: store.progress[cue.id]?.position, loadedAt: store.loadedAt[cue.id])
+        // Playing, paused or previewing: where it is; loaded: where it stands.
+        timeLoops.showProgress(position: store.shownProgress(cue.id)?.position, loadedAt: store.loadedAt[cue.id])
     }
 
     /// A click in the timeline: the cue (Audio or Video) plays on (or is loaded, or its pre-wait ends) from

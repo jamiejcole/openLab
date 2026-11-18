@@ -1895,12 +1895,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return target.listName(lookup: cueLookup)
     }
 
-    /// The Duration column's text: the cue's duration; while it runs, the time gone, or the time
-    /// left when the column shows that. A cue looping a slice with no end counts inside the slice
+    /// The Duration column's text: the cue's duration; while it runs or previews, the time gone, or
+    /// the time left when the column shows that. A cue looping a slice with no end counts inside the slice
     /// and starts again each pass. Instantaneous cues (and Audio cues whose file is unknown) have none.
     private func durationText(_ node: CueNode) -> String {
         let remaining = timeShown["duration"] == .remaining
-        if let p = store.progress[node.id] {
+        if let p = store.shownProgress(node.id) {
             if let left = p.remaining { return CueTime.running(remaining ? left : p.elapsed) }
             if let pass = loopPass(node, p) { return CueTime.running(remaining ? pass.length - pass.gone : pass.gone) }
             return CueTime.running(p.elapsed)
@@ -1922,10 +1922,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
-    /// How far a running or paused cue is, drawn in its Duration cell: green running, yellow paused
-    /// (the Active Cues bar's colours).
+    /// How far a running, paused or previewing cue is, drawn in its Duration cell: green running,
+    /// yellow paused (the Active Cues bar's colours).
     private func durationProgress(_ node: CueNode) -> (fraction: Double, colour: NSColor)? {
-        guard let p = store.progress[node.id] else { return nil }
+        guard let p = store.shownProgress(node.id) else { return nil }
         let paused = displayState(node.id).state == .paused
         let colour: NSColor = paused ? MarkColour.caution : .systemGreen
         guard let left = p.remaining else {

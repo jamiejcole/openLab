@@ -219,10 +219,24 @@ impl Voices {
     /// without a slice table). A seek waiting for its stream (or for the resume) already stands
     /// at its point: the play line moves when the operator clicks, not when the sound does.
     pub fn progress(&self, t: SampleTime) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
+        self.progress_of(t, false)
+    }
+
+    /// The same for each preview playing or paused: a previewed cue counts as a play does (a
+    /// preview starts the cue through its normal outputs) and draws its play line.
+    pub fn preview_progress(&self, t: SampleTime) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
+        self.progress_of(t, true)
+    }
+
+    fn progress_of(
+        &self,
+        t: SampleTime,
+        preview: bool,
+    ) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
         let mut v: Vec<(CueId, u64, Option<u64>, Option<u64>)> = self
             .recs
             .values()
-            .filter(|r| !r.preview && !r.retired)
+            .filter(|r| r.preview == preview && !r.retired)
             .filter_map(|r| {
                 // A move to another device waiting for its swap: the sound is still the old
                 // voice's, and its time runs on.
@@ -257,23 +271,6 @@ impl Voices {
             })
             .collect();
         v.sort_by_key(|(c, _, _, _)| *c);
-        v
-    }
-
-    /// Where each playing preview stands in its media file, master-rate frames, by cue: the play
-    /// line of a cue auditioned from its Time & Loops tab. A paused preview keeps its place.
-    pub fn preview_at(&self, t: SampleTime) -> Vec<(CueId, u64)> {
-        let mut v: Vec<(CueId, u64)> = self
-            .recs
-            .values()
-            .filter(|r| r.preview && !r.retired)
-            .filter_map(|r| {
-                r.position(t)
-                    .and_then(|pos| r.file_frame(pos))
-                    .map(|f| (r.cue, f))
-            })
-            .collect();
-        v.sort_by_key(|(c, _)| *c);
         v
     }
 

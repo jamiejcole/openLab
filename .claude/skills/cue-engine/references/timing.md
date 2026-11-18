@@ -40,7 +40,7 @@ Reported state derives in order: broken > paused > stopping > fading > pre-waiti
 `timers(at)` lists every counting timer at rendered sample `at` for the `progress` message (wire shape: `docs/protocol.md`). Pure, allocation-free.
 - Pre-wait: `remaining` to action start. Action of a voiceless cue: elapsed = load offset + samples since start; `remaining` `None` while unknown (group with a busy child); a broken run shows none. Post-wait: counted from action start, also a halted playlist's wait; shown while the action runs, so one cue can have two timers.
 - A paused run's timers stand on the pause sample. A timer starting ahead of `at` shows its whole length, elapsed 0. A due, un-ticked deadline shows remaining 0. Idle, loaded and settled-broken cues have none.
-- A previewed Audio cue gets a position-only item (`VoiceTable::preview_at`, in `reports.rs` beside the loaded cues'); the message set that stood is remembered (`last_loaded`) so a stopped preview's item is withdrawn once.
+- A previewed Audio cue gets an item as a playing one's (`Voices::preview_progress`, in `reports.rs` beside the loaded cues'), which replaces its loaded item while it previews; the set that stood is remembered (`last_loaded`) so a stopped preview's item is withdrawn once and a loaded point comes back.
 
 ## Timing and continue modes (CUE-02, CUE-03)
 Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.

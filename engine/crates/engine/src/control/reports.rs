@@ -201,32 +201,37 @@ impl DocCx<'_> {
             if items.len() > voiced || pictured {
                 items.sort_by_key(|i| i.cue);
             }
+            // A previewed cue (no show voice of its own sounding) counts as a play does; while
+            // it previews, its item is the preview's and not the point a Load left it at.
+            let previews: Vec<ProgressItem> = self
+                .doc
+                .voices
+                .preview_progress(rendered)
+                .into_iter()
+                .filter(|(cue, ..)| !items.iter().any(|i| i.cue == *cue))
+                .map(|(cue, pos, left, at)| ProgressItem {
+                    cue,
+                    elapsed: self.seconds(pos),
+                    remaining: left.map(|l| self.seconds(l)),
+                    position: at.map(|f| self.seconds(f)),
+                })
+                .collect();
             // Loaded cues stand at a point of their file (a Load cue's time, a click in the
             // timeline): their items carry only that `position`. They ride on the message sent for
             // anything else, and make one of their own only when the set changed, so a standing
             // loaded cue costs no traffic.
-            let loaded = self.loaded_positions();
-            // A previewed cue (no show voice of its own sounding) shows its play line the same way.
-            let previews: Vec<(openlab_core::CueId, f64)> = self
-                .doc
-                .voices
-                .preview_at(rendered)
+            let loaded: Vec<(openlab_core::CueId, f64)> = self
+                .loaded_positions()
                 .into_iter()
-                .filter(|(cue, _)| !items.iter().any(|i| i.cue == *cue))
-                .map(|(cue, frame)| (cue, self.seconds(frame)))
+                .filter(|(cue, _)| !previews.iter().any(|p| p.cue == *cue))
                 .collect();
             // What stands at a point (loaded cues, then previews): one more message when it changes,
-            // so a stopped preview's line is withdrawn.
+            // so a stopped preview's item is withdrawn and the loaded point it covered comes back.
             let mut standing = loaded.clone();
-            standing.extend(previews.iter().copied());
+            standing.extend(previews.iter().map(|p| (p.cue, p.elapsed)));
             let loaded_changed = standing != self.doc.last_loaded;
             if !items.is_empty() || !waits.is_empty() || loaded_changed || !previews.is_empty() {
-                items.extend(previews.iter().map(|&(cue, position)| ProgressItem {
-                    cue,
-                    elapsed: 0.0,
-                    remaining: None,
-                    position: Some(position),
-                }));
+                items.extend(previews);
                 items.extend(loaded.iter().map(|&(cue, position)| ProgressItem {
                     cue,
                     elapsed: 0.0,

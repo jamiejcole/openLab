@@ -192,7 +192,7 @@ final class TimeLoopsTests: XCTestCase {
         await assertEventually("the engine previews the cue") { self.rig.store.previewing.contains(Self.intro) }
         for seconds in [3.0, 7.0] {
             try await rig.advance(seconds)
-            await assertEventually("the preview reports its place") { self.rig.store.progress[Self.intro] != nil }
+            await assertEventually("the preview reports its place") { self.rig.store.shownProgress(Self.intro) != nil }
             let at = try XCTUnwrap(wave.playhead, "the line is drawn while previewing")
             XCTAssertEqual(at, seconds == 3 ? 3 : 10, accuracy: 1.0, "the line is at the preview's place")
         }
@@ -200,6 +200,57 @@ final class TimeLoopsTests: XCTestCase {
         await assertEventually("reset ends the preview") { !self.rig.store.previewing.contains(Self.intro) }
         try await rig.advance(1)
         await assertEventually("the line is withdrawn") { self.wave.playhead == nil }
+    }
+
+    /// A preview from the tab moves the play line, and the cue list's Duration cell counts with a
+    /// green bar as a play's does, the same after the cue has run and stopped; a loaded cue's line
+    /// follows its preview and goes back to its loaded point when the preview stops.
+    func testAPreviewFromTheTabMovesThePlayLineAndCountsTheDurationAfterARunAndWhenLoaded() async throws {
+        vc.onTransport = { action in Task { _ = await self.rig.store.transport(action) } }
+        let list = try await CueListHarness(rig: rig)
+        func duration() -> String? { list.cell("duration", Self.intro)?.label.stringValue }
+        func bar() -> (fraction: Double, colour: NSColor)? { list.cell("duration", Self.intro)?.progress.progress }
+        await showIntro()
+        _ = await rig.store.transport(.start(cue: Self.intro))
+        await assertEventually("Intro plays") { self.rig.store.cueStates[Self.intro]?.state == .running }
+        try await rig.advance(1)
+        _ = await rig.store.transport(.hardStop(cue: Self.intro))
+        await assertEventually("Intro stops") { self.rig.store.cueStates[Self.intro]?.state == .idle }
+        try await rig.advance(1)
+        let resting = try XCTUnwrap(duration())
+        XCTAssertEqual(resting, CueTime.running(62.5), "the cell reads the duration")
+
+        panel.previewButton.performClick(nil)
+        await assertEventually("the engine previews the cue") { self.rig.store.previewing.contains(Self.intro) }
+        try await rig.advance(3.5)
+        await assertEventually("the line is drawn while previewing") { self.wave.playhead != nil }
+        XCTAssertEqual(try XCTUnwrap(wave.playhead), 3.5, accuracy: 1.0, "the line is at the preview's place")
+        let counted = try XCTUnwrap(duration().flatMap(CueTime.parse), "the cell counts")
+        XCTAssertEqual(counted, 3.5, accuracy: 1.0, "the time the preview has played")
+        let fill = try XCTUnwrap(bar(), "a bar while previewing")
+        XCTAssertEqual(fill.fraction, 3.5 / 62.5, accuracy: 0.02)
+        XCTAssertEqual(fill.colour, .systemGreen)
+        panel.resetButton.performClick(nil)
+        await assertEventually("reset ends the preview") { !self.rig.store.previewing.contains(Self.intro) }
+        try await rig.advance(1)
+        await assertEventually("the line is withdrawn") { self.wave.playhead == nil }
+        XCTAssertEqual(duration(), resting, "the duration again")
+        XCTAssertNil(bar(), "and no bar")
+
+        _ = await rig.store.transport(.load(cue: Self.intro, at: 20))
+        await assertEventually("the loaded point's line") { (self.wave.playhead ?? 0) > 19 }
+        panel.previewButton.performClick(nil)
+        await assertEventually("the engine previews the cue") { self.rig.store.previewing.contains(Self.intro) }
+        try await rig.advance(2)
+        await assertEventually("the line follows the preview from the cue's start") { (self.wave.playhead ?? 99) < 5 }
+        try await rig.advance(2)
+        XCTAssertEqual(try XCTUnwrap(wave.playhead), 4, accuracy: 1.0, "still the preview's place")
+        XCTAssertEqual(try XCTUnwrap(duration().flatMap(CueTime.parse)), 4, accuracy: 1.0, "the cell counts it")
+        panel.resetButton.performClick(nil)
+        await assertEventually("reset ends the preview") { !self.rig.store.previewing.contains(Self.intro) }
+        try await rig.advance(1)
+        await assertEventually("the line is back at the loaded point") { abs((self.wave.playhead ?? 0) - 20) < 0.1 }
+        XCTAssertNil(bar(), "a loaded cue has no bar")
     }
 
     /// The ruler's first label is drawn whole beside the start marker, and no label runs past the view's edge,

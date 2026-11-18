@@ -390,26 +390,42 @@ fn a_devamp_stop_keeps_the_position_inside_the_loop() {
     assert!(pos.iter().all(|(_, p)| frames_of(*p) < 800.0), "{pos:?}");
 }
 
-/// A previewed cue reports where its voice is in the file (position only: the cue is not
-/// running), so the Time & Loops tab draws its play line; once the preview stops one more message
-/// goes out without it.
+/// A previewed cue counts as a play does (elapsed, remaining and where its voice is in the file),
+/// so the cue list's Duration cell and the Time & Loops tab's play line follow it; once the preview
+/// stops one more message goes out without it.
 #[test]
-fn a_previewed_cue_reports_its_file_position_and_the_report_stops_with_it() {
+fn a_previewed_cue_reports_its_progress_and_the_report_stops_with_it() {
     let path = wav(&ramp(1600));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));
     s.take_outbound();
     s.transport(TransportAction::Preview { cue: id(1) });
     s.run(800);
     let msgs = s.take_outbound();
-    let pos = item_positions(&msgs, 1);
-    assert!(pos.len() >= 3, "{pos:?}");
+    let items: Vec<ProgressItem> = reports(&msgs)
+        .into_iter()
+        .flat_map(|(items, _)| items)
+        .filter(|i| i.cue == id(1))
+        .collect();
+    assert!(items.len() >= 3, "{items:?}");
     assert!(
-        pos.iter().all(|&(elapsed, _)| elapsed == 0.0),
-        "position only"
+        items.windows(2).all(|w| w[1].elapsed > w[0].elapsed),
+        "counts: {items:?}"
     );
-    let last = pos.last().map(|&(_, p)| frames_of(p)).unwrap_or(0.0);
+    let total = frames_of(1600.0 / f64::from(RATE));
+    for i in &items {
+        let left = i.remaining.map(frames_of).unwrap_or(-1.0);
+        assert!(
+            (frames_of(i.elapsed) + left - total).abs() < 2.0,
+            "ends with the file: {i:?}"
+        );
+        let at = i.position.map(frames_of).unwrap_or(-1.0);
+        assert!(
+            (at - frames_of(i.elapsed)).abs() < 2.0,
+            "the file position: {i:?}"
+        );
+    }
+    let last = items.last().map(|i| frames_of(i.elapsed)).unwrap_or(0.0);
     assert!((500.0..=800.0).contains(&last), "{last}");
-    assert!(pos.windows(2).all(|w| w[1].1 >= w[0].1), "rises: {pos:?}");
     s.transport(TransportAction::StopPreview { cue: Some(id(1)) });
     s.run(u64::from(RATE) / 2);
     let after = s.take_outbound();
@@ -428,4 +444,44 @@ fn a_previewed_cue_reports_its_file_position_and_the_report_stops_with_it() {
     for m in &msgs {
         check_wire(m);
     }
+}
+
+/// A loaded cue previewed has one item in each message, the preview's, not the point it was
+/// loaded at; when the preview stops its loaded point comes back.
+#[test]
+fn a_loaded_cue_previewed_reports_the_preview_then_its_loaded_point_again() {
+    let path = wav(&ramp(4800));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    let loaded_at = 3600.0 / f64::from(RATE);
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: loaded_at,
+    });
+    s.run(400);
+    s.take_outbound();
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(1200);
+    let during = reports(&s.take_outbound());
+    assert!(!during.is_empty());
+    for (items, _) in &during {
+        let mine: Vec<&ProgressItem> = items.iter().filter(|i| i.cue == id(1)).collect();
+        assert_eq!(mine.len(), 1, "one item per message: {items:?}");
+        let at = mine[0].position.map(frames_of).unwrap_or(-1.0);
+        assert!(
+            at < 1300.0,
+            "the preview's place, from the cue's start: {:?}",
+            mine[0]
+        );
+    }
+    s.transport(TransportAction::StopPreview { cue: Some(id(1)) });
+    s.run(u64::from(RATE) / 2);
+    let back = reports(&s.take_outbound());
+    let last = back
+        .last()
+        .and_then(|(items, _)| items.iter().find(|i| i.cue == id(1)).cloned());
+    let at = last.and_then(|i| i.position).unwrap_or(-1.0);
+    assert!(
+        (at - loaded_at).abs() < 1e-3,
+        "the loaded point again: {at}"
+    );
 }
