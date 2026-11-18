@@ -1372,6 +1372,13 @@ fn save_as_in_another_folder_keeps_relative_media_pointing_at_the_same_files() {
 /// Two cues with relative media in folder A, shown as a saved show; Save As into folder B
 /// must re-spell both references.
 fn two_relative_cues() -> (tempfile::TempDir, tempfile::TempDir, Rig, PathBuf) {
+    two_relative_cues_with(None)
+}
+
+/// [`two_relative_cues`], with `hook` called on the writer thread before each save.
+fn two_relative_cues_with(
+    hook: Option<SaveHook>,
+) -> (tempfile::TempDir, tempfile::TempDir, Rig, PathBuf) {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     fs::create_dir_all(a.path().join("sfx")).unwrap();
@@ -1385,7 +1392,7 @@ fn two_relative_cues() -> (tempfile::TempDir, tempfile::TempDir, Rig, PathBuf) {
     }
     let a_show = a.path().join("show.openlab");
     write_show(&a_show, &ws);
-    let mut r = rig_with(ws, Some(a_show), None);
+    let mut r = rig_with(ws, Some(a_show), hook);
     r.s.settle_media();
     r.s.take_outbound();
     let b_show = b.path().join("copy.openlab");
@@ -1411,6 +1418,299 @@ fn error_logs(out: &[ServerMessage]) -> Vec<&str> {
         .collect()
 }
 
+/// Sends a Save As of the first doc to `path` without waiting for the writer, so a test can act
+/// while it is written; [`OfflineShow::settle_docs`] then answers it on `replies`.
+fn start_save_as(s: &mut OfflineShow, path: &Path) -> openlab_engine::control::ReplyRx {
+    let (tx, replies) = reply_channel();
+    let id = s.request_id();
+    s.control_mut().handle(Inbox::Client {
+        message: ClientMessage::Request {
+            id,
+            request: Request::SaveAs {
+                path: path.to_string_lossy().into_owned(),
+            },
+        },
+        reply: tx,
+    });
+    replies
+}
+
+/// A Save As into another folder ends the same whether the doc takes up the copy and index the
+/// writer thread prepared (nothing changed since the save began) or works the move out again on
+/// the control thread (a rename came between): the references name the same file from the new
+/// folder, each file is probed once more, there, and no cue has a problem; a cue playing through
+/// the Save As plays on to its end.
+#[test]
+fn a_save_as_taken_up_from_the_writer_ends_as_one_worked_out_on_the_control_thread() {
+    let mut ends = Vec::new();
+    for rename_between in [false, true] {
+        let (a, _b, mut r, b_show) = two_relative_cues();
+        let doc = r.s.control().doc_ids()[0];
+        let tickets = r.s.control().doc(doc).unwrap().media_tickets();
+        start(&mut r.s, 2);
+        r.s.run(BLOCK * 2);
+        let mut replies = start_save_as(&mut r.s, &b_show);
+        if rename_between {
+            rename(&mut r.s, 1, "renamed during the save");
+        }
+        r.s.settle_docs();
+        let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+        ok_result(&answers);
+        r.s.settle_media();
+        let view = r.s.control().doc(doc).unwrap();
+        assert_eq!(view.moves_taken_up(), u64::from(!rename_between));
+        assert_eq!(view.show_path(), Some(b_show.as_path()));
+        let file = a.path().join("sfx").join("hit.wav");
+        let ws = view.workspace();
+        if rename_between {
+            assert_eq!(ws.find_cue(id(1)).unwrap().name, "renamed during the save");
+        }
+        for n in [1, 2] {
+            assert_eq!(Path::new(&media_of(ws, n)), file, "cue {n}");
+            assert!(view.engine().problems(id(n)).is_empty(), "cue {n}");
+        }
+        assert_eq!(
+            r.s.control().engine().state(id(2)),
+            openlab_core::CueState::Running
+        );
+        let heard = r.s.audio().len();
+        r.s.run(BLOCK * 20);
+        assert!(
+            r.s.audio()[heard..].iter().any(|x| *x != 0.0),
+            "cue 2 plays on"
+        );
+        let probes = r.s.control().doc(doc).unwrap().media_tickets() - tickets;
+        ends.push((probes, ws_without_names(r.s.control().workspace())));
+        assert_eq!(r.s.stalls(), 0);
+    }
+    assert_eq!(
+        ends[0].0, 1,
+        "the one file, probed again from the new folder"
+    );
+    assert_eq!(ends[0], ends[1]);
+}
+
+/// Adds an Audio cue `n` on `file` at the end of the first doc's list (the engine stores the
+/// path relative to the show folder when it lies inside it).
+fn add_audio(s: &mut OfflineShow, n: u128, file: &Path) {
+    let id_ = s.request_id();
+    let list = s.control().workspace().cue_lists[0].id;
+    let index = s.control().workspace().cue_lists[0].cues.len();
+    ok_result(&s.send(ClientMessage::Command {
+        id: id_,
+        coalesce: None,
+        command: Box::new(Command::AddCue {
+            at: openlab_core::Position {
+                list,
+                parent: None,
+                index,
+            },
+            cue: audio(n, file, 0),
+            auto_number: false,
+        }),
+    }));
+}
+
+/// A Save As into the show's parent folder, then one back into the show's own folder asked
+/// before the first is answered (that one moves nothing when asked, so nothing is prepared for
+/// it): the second answer re-spells the references the first left for the folder the show ends
+/// in, so they name the same file there, as the copy on disk does.
+#[test]
+fn a_save_as_back_into_the_folder_asked_before_a_move_is_answered_respells_the_references() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("A");
+    fs::create_dir_all(a.join("sfx")).unwrap();
+    let sound = a.join("sfx").join("hit.wav");
+    fs::copy(wav(&dc(800, 0.5)), &sound).unwrap();
+    let mut ws = workspace(vec![audio(1, &sound, 0)]);
+    if let CueKind::Audio { media, .. } = &mut ws.cue_lists[0].cues[0].kind {
+        *media = Some(MediaRef::new("sfx/hit.wav"));
+    }
+    let a_show = a.join("show.openlab");
+    write_show(&a_show, &ws);
+    let mut r = rig_with(ws, Some(a_show), None);
+    r.s.settle_media();
+    let (one, two) = (root.path().join("one.openlab"), a.join("two.openlab"));
+    let mut first = start_save_as(&mut r.s, &one);
+    let mut second = start_save_as(&mut r.s, &two);
+    r.s.settle_docs();
+    for replies in [&mut first, &mut second] {
+        let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+        ok_result(&answers);
+    }
+    r.s.settle_media();
+    assert_eq!(r.s.control().show_path(), Some(two.as_path()));
+    let live = r.s.control().workspace();
+    assert_eq!(media_of(live, 1), "sfx/hit.wav");
+    assert!(r.s.control().engine().problems(id(1)).is_empty());
+    let saved = load_show(&fs::read_to_string(&two).unwrap())
+        .unwrap()
+        .workspace;
+    assert_eq!(media_of(&saved, 1), "sfx/hit.wav");
+}
+
+/// A Save As into another folder whose copy needs no re-spelling (every reference absolute and
+/// outside the new folder), with a cue added while it is written on a file in the show's folder
+/// (stored relative to it): that cue's reference is re-spelled for the new folder and the cue
+/// finds its file.
+#[test]
+fn a_cue_added_during_a_save_as_that_needed_no_respelling_follows_the_move() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    fs::create_dir_all(a.path().join("sfx")).unwrap();
+    let sound = a.path().join("sfx").join("hit.wav");
+    fs::copy(wav(&dc(800, 0.5)), &sound).unwrap();
+    let elsewhere = wav(&dc(800, 0.5));
+    let ws = workspace(vec![audio(1, &elsewhere, 0)]);
+    let a_show = a.path().join("show.openlab");
+    write_show(&a_show, &ws);
+    let mut r = rig_with(ws, Some(a_show), None);
+    r.s.settle_media();
+    let mut replies = start_save_as(&mut r.s, &b.path().join("copy.openlab"));
+    // Handled before the save is answered (`send` waits for the writer only afterwards).
+    add_audio(&mut r.s, 2, &sound);
+    r.s.settle_docs();
+    let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+    ok_result(&answers);
+    r.s.settle_media();
+    let live = r.s.control().workspace();
+    assert_eq!(Path::new(&media_of(live, 2)), sound);
+    assert_eq!(Path::new(&media_of(live, 1)), elsewhere);
+    for n in [1, 2] {
+        assert!(r.s.control().engine().problems(id(n)).is_empty(), "cue {n}");
+    }
+}
+
+/// A cue added while a Save As into another folder is written is not in the copy the writer
+/// thread prepared: the doc does not take that copy up (it would lose the cue) but works the
+/// move out again, so the new cue's reference, stored relative to the old folder, is re-spelled
+/// with the others to name its file from the new one, and the cue is probed there and plays.
+#[test]
+fn a_cue_added_during_a_save_as_elsewhere_is_kept_and_follows_the_move() {
+    let (a, _b, mut r, b_show) = two_relative_cues();
+    let doc = r.s.control().doc_ids()[0];
+    let file = a.path().join("sfx").join("hit.wav");
+    let mut replies = start_save_as(&mut r.s, &b_show);
+    let id_ = r.s.request_id();
+    let list = r.s.control().workspace().cue_lists[0].id;
+    ok_result(&r.s.send(ClientMessage::Command {
+        id: id_,
+        coalesce: None,
+        command: Box::new(Command::AddCue {
+            at: openlab_core::Position {
+                list,
+                parent: None,
+                index: 2,
+            },
+            cue: audio(3, &file, 0),
+            auto_number: false,
+        }),
+    }));
+    r.s.settle_docs();
+    let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+    ok_result(&answers);
+    r.s.settle_media();
+    let view = r.s.control().doc(doc).unwrap();
+    assert_eq!(view.moves_taken_up(), 0, "worked out again");
+    let ws = view.workspace();
+    for n in [1, 2, 3] {
+        assert_eq!(Path::new(&media_of(ws, n)), file, "cue {n}");
+        assert!(view.engine().problems(id(n)).is_empty(), "cue {n}");
+    }
+    // Still unsaved: the copy on disk lacks the cue added meanwhile.
+    assert!(view.is_unsaved());
+    let heard = r.s.audio().len();
+    start(&mut r.s, 3);
+    r.s.run(BLOCK * 4);
+    assert!(
+        r.s.audio()[heard..].iter().any(|x| *x != 0.0),
+        "cue 3 plays"
+    );
+    assert_eq!(r.s.stalls(), 0);
+}
+
+/// Two Saves As into two other folders asked one after the other, before either is answered:
+/// the first is taken up as the writer thread prepared it; the second was prepared from the doc
+/// in its first folder, so it is worked out again from the doc as the first left it. The
+/// references end naming the same file from the last folder.
+#[test]
+fn two_saves_as_elsewhere_in_flight_at_once_end_in_the_last_folder() {
+    let (a, b, mut r, _) = two_relative_cues();
+    let c = tempfile::tempdir().unwrap();
+    let doc = r.s.control().doc_ids()[0];
+    let (first, last) = (b.path().join("one.openlab"), c.path().join("two.openlab"));
+    let mut one = start_save_as(&mut r.s, &first);
+    let mut two = start_save_as(&mut r.s, &last);
+    r.s.settle_docs();
+    for replies in [&mut one, &mut two] {
+        let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+        ok_result(&answers);
+    }
+    r.s.settle_media();
+    let view = r.s.control().doc(doc).unwrap();
+    assert_eq!(view.show_path(), Some(last.as_path()));
+    assert_eq!(view.moves_taken_up(), 1);
+    let file = a.path().join("sfx").join("hit.wav");
+    for n in [1, 2] {
+        assert_eq!(Path::new(&media_of(view.workspace(), n)), file, "cue {n}");
+        assert!(view.engine().problems(id(n)).is_empty(), "cue {n}");
+    }
+    let saved = load_show(&fs::read_to_string(&last).unwrap())
+        .unwrap()
+        .workspace;
+    assert_eq!(view.workspace(), &saved);
+}
+
+/// A Save As into another folder that cannot be written changes nothing in the doc, though the
+/// writer thread re-spelled its copy and indexed it for that folder: the references, the show
+/// path, the catalog (no file probed again) and the undo history are as they were.
+#[test]
+fn a_failed_save_as_elsewhere_leaves_the_doc_as_it_was() {
+    let (_a, b, mut r, _) = two_relative_cues();
+    rename(&mut r.s, 1, "edited");
+    let doc = r.s.control().doc_ids()[0];
+    let before = r.s.control().workspace().clone();
+    let path = r.s.control().show_path().map(Path::to_path_buf);
+    let tickets = r.s.control().doc(doc).unwrap().media_tickets();
+    let bad = b.path().join("no such folder").join("copy.openlab");
+    let replies = request(
+        &mut r.s,
+        Request::SaveAs {
+            path: bad.to_string_lossy().into_owned(),
+        },
+    );
+    assert_eq!(error_code(&replies), ErrorCode::Io);
+    r.s.settle_media();
+    let view = r.s.control().doc(doc).unwrap();
+    assert_eq!(view.workspace(), &before);
+    assert_eq!(media_of(view.workspace(), 1), "sfx/hit.wav");
+    assert_eq!(view.show_path(), path.as_deref());
+    assert_eq!(view.media_tickets(), tickets);
+    assert!(view.snapshot().document.can_undo);
+    assert!(view.is_unsaved());
+    assert!(view.engine().problems(id(1)).is_empty());
+    assert_eq!(view.moves_taken_up(), 0);
+}
+
+/// `ws` with every cue's name cleared and its media references reduced to their file names, so
+/// two workspaces kept in different temp folders compare by what they hold.
+fn ws_without_names(ws: &Workspace) -> Workspace {
+    let mut ws = ws.clone();
+    for (cue, media) in openlab_core::media_of_cues(&ws.clone()) {
+        let name = Path::new(media.as_str())
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let c = ws.find_cue_mut(cue).unwrap();
+        c.name.clear();
+        if let CueKind::Audio { media, .. } = &mut c.kind {
+            *media = Some(MediaRef::new(name));
+        }
+    }
+    ws
+}
+
 /// A save-as to another folder re-spells relative references in the live workspace: that edit
 /// reaches the cue engine with no signal by hand (the workspace's write guard tells it).
 #[test]
@@ -1429,10 +1729,13 @@ fn a_save_as_that_respells_references_reaches_the_cue_engine_without_a_signal() 
 
 #[test]
 fn a_relink_of_the_save_copy_that_cannot_roll_back_saves_the_workspace_as_it_is() {
-    let (_a, _b, mut r, b_show) = two_relative_cues();
-    // The copy's relink fails at its second cue and cannot be undone; the live relink after the
-    // save is fine.
-    openlab_core::fault::inject(0, 1, true);
+    // The copy's relink, on the writer thread, fails at its second cue and cannot be undone.
+    let hook = SaveHook(Arc::new(|kind: JobKind| {
+        if kind == JobKind::Save {
+            openlab_core::fault::inject(0, 1, true);
+        }
+    }));
+    let (_a, _b, mut r, b_show) = two_relative_cues_with(Some(hook));
     ok_result(&request(
         &mut r.s,
         Request::SaveAs {
@@ -1459,14 +1762,25 @@ fn a_relink_of_the_save_copy_that_cannot_roll_back_saves_the_workspace_as_it_is(
 #[test]
 fn a_relink_after_a_folder_change_that_cannot_roll_back_is_an_unundoable_edit() {
     let (_a, _b, mut r, b_show) = two_relative_cues();
-    // The save copy's relink is fine; the live workspace's fails at its second cue.
-    openlab_core::fault::inject(1, 1, true);
-    ok_result(&request(
-        &mut r.s,
-        Request::SaveAs {
-            path: b_show.to_string_lossy().into_owned(),
+    // The save copy's relink, on the writer thread, is fine. A rename before the save is
+    // answered makes the live workspace's relink run on the control thread, where it fails at
+    // its second cue.
+    let (tx, mut replies) = reply_channel();
+    let id = r.s.request_id();
+    r.s.control_mut().handle(Inbox::Client {
+        message: ClientMessage::Request {
+            id,
+            request: Request::SaveAs {
+                path: b_show.to_string_lossy().into_owned(),
+            },
         },
-    ));
+        reply: tx,
+    });
+    openlab_core::fault::inject(0, 1, true);
+    rename(&mut r.s, 1, "renamed during the save");
+    r.s.settle_docs();
+    let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+    ok_result(&answers);
     let out = r.s.take_outbound();
     assert!(
         error_logs(&out)

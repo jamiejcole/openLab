@@ -20,6 +20,8 @@ use openlab_core::{
 pub(super) struct DocModel {
     ws: Workspace,
     engine: CueEngine,
+    /// How many times the workspace was opened for writing ([`Self::edit`]).
+    edits: u64,
 }
 
 impl DocModel {
@@ -27,7 +29,11 @@ impl DocModel {
     /// of it).
     pub(super) fn new(ws: Workspace, mut engine: CueEngine) -> Self {
         engine.model_changed();
-        Self { ws, engine }
+        Self {
+            ws,
+            engine,
+            edits: 0,
+        }
     }
 
     pub(super) fn ws(&self) -> &Workspace {
@@ -36,6 +42,12 @@ impl DocModel {
 
     pub(super) fn engine(&self) -> &CueEngine {
         &self.engine
+    }
+
+    /// Counts every [`Self::edit`], whether or not it changed anything: the same count at two
+    /// moments means the workspace is as it was (a copy taken at the first still equals it).
+    pub(super) fn edits(&self) -> u64 {
+        self.edits
     }
 
     /// Whether the cue engine still holds `run` of `cue` (a show run that is not broken, or
@@ -57,6 +69,7 @@ impl DocModel {
     /// Write access to the workspace. The engine is told of the edit when the guard goes: of
     /// the whole workspace unless [`WorkspaceEdit::touched`] names what changed.
     pub(super) fn edit(&mut self) -> WorkspaceEdit<'_> {
+        self.edits = self.edits.wrapping_add(1);
         WorkspaceEdit {
             ws: &mut self.ws,
             engine: &mut self.engine,

@@ -482,17 +482,32 @@ impl MediaCatalog {
     /// against `show_dir` from now on, and follows `ws` from scratch ([`Self::sync`]: the cue
     /// index is rebuilt and every file is probed again). It takes the workspace so the catalog
     /// can never be left empty. Tickets keep rising, so answers to probes asked before the reset
-    /// find no entry (or a newer ticket) and are ignored.
-    pub fn reset(&mut self, show_dir: Option<PathBuf>, ws: &Workspace) {
-        self.entries.clear();
-        self.unresolved.clear();
+    /// find no entry (or a newer ticket) and are ignored. What the catalog let go of is returned
+    /// as by [`Self::reset_indexed`].
+    pub fn reset(&mut self, show_dir: Option<PathBuf>, ws: &Workspace) -> Box<dyn Send> {
+        let indexed = index_workspace(ws, show_dir.as_deref());
+        self.reset_indexed(show_dir, indexed)
+    }
+
+    /// [`Self::reset`] from a workspace already read against `show_dir` ([`index_workspace`]):
+    /// when it was [`Indexed::prepare`]d (off the control thread, for a show saved into another
+    /// folder), the fresh entries are taken as built there. What the catalog let go of is
+    /// returned for the caller to drop (off the control thread: thousands of entries, and the
+    /// preloads no cue plays from any more).
+    pub fn reset_indexed(&mut self, show_dir: Option<PathBuf>, indexed: Indexed) -> Box<dyn Send> {
+        let forgotten = (
+            std::mem::take(&mut self.entries),
+            std::mem::take(&mut self.unresolved),
+            std::mem::take(&mut self.uses),
+            std::mem::take(&mut self.index),
+            std::mem::replace(&mut self.key_changes, vec![KeyChange::Reset]),
+        );
         lock(&self.pool.gate).reset_doc(self.pool.doc, show_dir.clone());
-        self.key_changes = vec![KeyChange::Reset];
-        self.uses.clear();
         let all = self.reserved;
         give_back(&mut self.reserved, &self.pool.preloads, all);
         self.show_dir = show_dir;
-        self.sync(ws);
+        let rest = self.sync_indexed(indexed);
+        Box::new((forgotten, rest))
     }
 
     /// Follows the whole workspace (a newly opened one; and the reference [`Self::sync_cues`]
@@ -525,13 +540,12 @@ impl MediaCatalog {
         let resolved = show_dir == self.show_dir;
         self.index = index;
         self.cues_read += visited;
-        // A fresh catalog (a doc opening, with thousands of files) has nothing to compare: each
-        // file goes straight in below, or as prepared when its tickets are still to start.
+        // A fresh catalog (a doc opening, or reset, with thousands of files) has nothing to
+        // compare: each file goes straight in below, or as prepared.
         let fresh = self.entries.is_empty();
         if let Some(prepared) = prepared
             && fresh
             && resolved
-            && self.next_ticket == 0
         {
             self.uses = uses;
             let unsent = self.adopt(prepared);
@@ -591,17 +605,35 @@ impl MediaCatalog {
     }
 
     /// A fresh catalog takes the entries [`Indexed::prepare`] built and sends their probes, in
-    /// workspace order. Returns the keys whose job no pool took (to be dropped by the caller).
+    /// workspace order. Their tickets (numbered from 1 there) follow the catalog's last one, as
+    /// [`Self::request_at`] would have numbered them, so an answer or watch event of a reset
+    /// catalog's earlier job is never taken for a new one's. Returns the keys whose job no pool
+    /// took (to be dropped by the caller).
     fn adopt(&mut self, prepared: Prepared) -> Vec<String> {
         let Prepared {
-            entries,
-            probes,
-            key_changes,
+            mut entries,
+            mut probes,
+            mut key_changes,
             unresolved,
             next_ticket,
         } = prepared;
+        let base = self.next_ticket;
+        if base > 0 {
+            for e in entries.values_mut() {
+                e.ticket = e.ticket.saturating_add(base);
+                e.watch = e.watch.saturating_add(base);
+            }
+            for (_, _, ticket, _) in &mut probes {
+                *ticket = ticket.saturating_add(base);
+            }
+            for change in &mut key_changes {
+                if let KeyChange::Watch { id, .. } = change {
+                    *id = id.saturating_add(base);
+                }
+            }
+        }
         self.entries = entries;
-        self.next_ticket = next_ticket;
+        self.next_ticket = base.saturating_add(next_ticket);
         self.key_changes.extend(key_changes);
         self.unresolved.extend(unresolved);
         let mut unsent = Vec::new();
