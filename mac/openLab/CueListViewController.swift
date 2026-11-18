@@ -428,7 +428,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         ("continue", nil, 26),
     ]
     static let rowHeight: CGFloat = 24
-    static let indentationPerLevel: CGFloat = 10
+    static let indentationPerLevel: CGFloat = 8
     /// The least the Name column shrinks to; a narrower list scrolls sideways.
     static let nameMinWidth: CGFloat = 60
     /// The least width of the Name editor, whatever the cell's.
