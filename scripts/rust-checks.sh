@@ -60,9 +60,11 @@ tests() {
   if [ "$split" = 1 ]; then
     OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast -- --skip "$FAULTS" ||
       status=$?
+    # --workspace again, so the first run's build is reused (one crate alone unifies other features
+    # and rebuilds); only video_cues has tests on that path.
     echo "== the video tests that crash or hang a stage host's decoder:"
-    OPENLAB_TEST_SKIPS="$skips" cargo test "$@" -p openlab-video --test video_cues --locked --no-fail-fast \
-      -- "$FAULTS" || status=$?
+    OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast -- "$FAULTS" ||
+      status=$?
   else
     OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast || status=$?
   fi
