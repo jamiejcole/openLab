@@ -481,7 +481,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         matrix.isEnabled = state.loaded && row?.mapping != nil && editable
         if let cell = typingCell, !matrix.canType(row: cell.row, column: cell.column) { endTyping() }
         fitMatrixWidth()
-        let metered = min(state.levels.count, MeterBank.maxChannels)
+        let metered = state.levels.count
         meter.frame = matrix.meterRect(rows: metered).offsetBy(dx: 0, dy: -PatchRoutingView.headerH)
         meter.fixedRows = metered
         meter.source = .output(patchID)
@@ -502,10 +502,6 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             connected
             ? String(format: loc("patchEditor.beyond"), state.usable, columns) : loc("patchEditor.notConnectedNote")
         if beyond { notes.append(beyondNote) }
-        if state.levels.count > MeterBank.maxChannels {
-            notes.append(loc("patchEditor.metersShown"))
-            notes.append(loc("patchEditor.levelsShown"))
-        }
         routingNote.stringValue = notes.joined(separator: " ")
         var deviceNotes: [String] = []
         if row?.mapping == nil {

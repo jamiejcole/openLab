@@ -5,7 +5,7 @@ import AppKit
 /// The value boxes of the cue levels (AUD-06, AUD-08), laid out as QLab's Levels tab is: the main
 /// level and each cue output's level in the top row (the panel puts a fader above each), their
 /// names under them, then a row per file channel with a crosspoint per cue output. Drawn by hand
-/// and only where visible, so a 64 x 64 matrix is one view, not 4,096 (AUD-03).
+/// and only where visible, so a 64 x 128 matrix is one view, not 8,192 (AUD-03).
 ///
 /// A click selects a level and a double-click types in it. Dragging a level up or down changes it,
 /// as in QLab (manual p. 181); a drag never goes above 0 dB.
@@ -15,10 +15,6 @@ final class LevelMatrixView: NSView {
     var limits = VolumeLimits() {
         didSet { if limits != oldValue { needsDisplay = true } }
     }
-    /// The most cue-output columns shown: a patch can have 128 cue outputs, but the tab shows the
-    /// first 64. Levels and routing to the others are kept on every edit (`LevelSet`), only not
-    /// shown or edited here.
-    static let maxShownOutputs = 64
     static let cellW: CGFloat = 46
     static let cellH: CGFloat = 20
     static let headW: CGFloat = 56
@@ -70,7 +66,7 @@ final class LevelMatrixView: NSView {
 
     func resize(inputs: Int, outputs: Int) {
         self.inputs = max(0, min(inputs, LevelSet.maxInputs))
-        outputCount = max(0, min(outputs, Self.maxShownOutputs))
+        outputCount = max(0, min(outputs, LevelSet.maxCueOutputs))
         setFrameSize(
             NSSize(
                 width: Self.headW + CGFloat(outputCount) * Self.cellW,
@@ -302,6 +298,8 @@ final class LevelMatrixView: NSView {
         if row > 0, col < 0 { col = 0 }
         let next: LevelSet.Slot = row == 0 ? (col < 0 ? .master : .output(col)) : .cross(input: row - 1, output: col)
         selection = next
+        // An arrow can choose a box scrolled out of view: 128 columns are far wider than the tab.
+        scrollToVisible(rect(of: next))
         onSelect?(next)
     }
 

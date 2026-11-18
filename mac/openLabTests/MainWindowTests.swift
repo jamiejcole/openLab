@@ -1203,8 +1203,7 @@ final class InspectorWindowFrameTests: XCTestCase {
                 let what = "\(style == .legacy ? "legacy" : "overlay") scrollers, sidebar open: \(sidebarOpen)"
                 XCTAssertLessThanOrEqual(column.frame.height, clip.bounds.height + 0.5, "the column fits: \(what)")
                 XCTAssertLessThanOrEqual(column.frame.width, clip.bounds.width + 0.5, "no scroller over it: \(what)")
-                let meter = levels.meter.convert(levels.meter.bounds, to: clip)
-                XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(meter), "the meter shows: \(what)")
+                XCTAssertTrue(levels.board.bounds.contains(levels.meter.frame), "the meters lie on the board: \(what)")
                 for control in [levels.defaultButton, levels.silentButton, levels.editPatchButton, levels.muteCheck] {
                     let frame = control.convert(control.bounds, to: clip)
                     XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "\(control.title): \(what)")

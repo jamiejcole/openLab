@@ -554,9 +554,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(commands(rig).count, sent, "nothing out of range is sent")
     }
 
-    /// 128 cue outputs (QLab's most): every row is in the editor and the matrix scrolls; meters and a
-    /// cue's Levels tab show the first 64, and the editor says so.
-    func testA128OutputPatchShowsEveryRowAndSaysWhatIsShownOfIt() async throws {
+    /// 128 cue outputs (QLab's most): every row is in the editor, each with its meter, and the
+    /// matrix scrolls.
+    func testA128OutputPatchShowsEveryRowWithItsMeter() async throws {
         let (rig, sc) = try await open()
         let editor = try await edit(in: sc)
         await sc.model.setOutputCount(patch, 128)
@@ -564,9 +564,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         editor.render()
         XCTAssertEqual(editor.outputFields.count, 128)
         XCTAssertEqual(editor.matrix.rowLabels.count, 128)
-        XCTAssertEqual(editor.meter.fixedRows, 64)
+        XCTAssertEqual(editor.meter.fixedRows, 128, "a meter bar beside every row")
+        XCTAssertEqual(editor.meter.frame.maxY, editor.matrix.meterRect(rows: 128).maxY - PatchRoutingView.headerH)
         XCTAssertGreaterThan(editor.matrix.frame.height, PatchRoutingView.rowH * 128)
-        XCTAssertTrue(editor.routingNote.stringValue.contains(loc("patchEditor.metersShown")))
         // Each level box is inside the matrix, on its own row.
         let last = try XCTUnwrap(editor.outputFields.last)
         XCTAssertTrue(editor.matrixRows.bounds.contains(last.frame))

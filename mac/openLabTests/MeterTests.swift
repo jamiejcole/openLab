@@ -164,7 +164,8 @@ final class MeterTests: XCTestCase {
         XCTAssertEqual(bank.channelCount(.cue(Self.intro)), MeterBank.maxChannels)
         XCTAssertEqual(bank.level(.cue(Self.intro), channel: 0), 0.1, accuracy: 1e-6)
         XCTAssertEqual(bank.level(.cue(Self.intro), channel: 3), 0.5, accuracy: 1e-6)
-        XCTAssertEqual(bank.level(.cue(Self.intro), channel: 99), 0)
+        XCTAssertEqual(bank.level(.cue(Self.intro), channel: 127), 0.1, accuracy: 1e-6, "a patch's last output")
+        XCTAssertEqual(bank.level(.cue(Self.intro), channel: MeterBank.maxChannels), 0)
         XCTAssertEqual(bank.level(.cue(Self.intro), channel: -1), 0)
         for i in 0..<(MeterBank.maxSources + 50) { push([0.1], cue: ModelID("c\(i)")) }
         XCTAssertLessThanOrEqual(bank.sourceCount, MeterBank.maxSources)
