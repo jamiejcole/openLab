@@ -41,9 +41,8 @@ final class ScenarioRunner {
         /// `{"drag": id, "from": [fx, fy], "to": [fx, fy]}`. With `"header": "Name"` on a table, the
         /// fractions are of that column header (and may lie outside 0 to 1, to drag past it). With
         /// `"row": "2", "to_row": "4"` the cue's row is dragged onto another's: AppKit's drag session
-        /// needs real input, so the list's own drop rules are run on the dragged cues and the move sent.
-        /// `to` then gives where in the target row (its top quarter drops above it, its bottom quarter
-        /// below it, between on it) and which column (the Target column sets a target).
+        /// needs real input, so the outline is fed the calls a session makes, with the drag ending at
+        /// `to` (fractions of the target row), and proposes the drop itself. A refused drop is logged.
         case drag(
             id: String, from: CGPoint, to: CGPoint, modifiers: NSEvent.ModifierFlags, part: Part?, onto: String?)
         /// `{"hover": id, "at": [fx, fy]}` (or `"header"`/`"row"` as `drag`, or `"segment": "Wait"`,
@@ -1044,7 +1043,9 @@ final class ScenarioRunner {
             }
         }
         walk(wc.cueList.roots)
-        if let n = all.first(where: { $0.cue.number == what }) ?? all.first(where: { $0.cue.displayName == what }) {
+        if let n = all.first(where: { $0.cue.number == what }) ?? all.first(where: { $0.cue.displayName == what })
+            ?? all.first(where: { wc.cueList.shownName($0.cue) == what })
+        {
             return n
         }
         let names = all.map { "\($0.cue.number ?? "-") \"\($0.cue.displayName)\"" }
@@ -1097,63 +1098,72 @@ final class ScenarioRunner {
         return p
     }
 
-    /// A drag of cue `what`'s row onto cue `onto`'s row, as a drag that ends over `at` of the target
-    /// row: pressing the row selects it unless it is selected, the dragged cues are the selection's
-    /// top-level ones in list order, and the drop is planned and sent as the list does for a real drop.
+    /// A drag of cue `what`'s row onto cue `onto`'s row, ending over `at` of the target row. AppKit's
+    /// drag session needs real input, so the outline is fed the same calls a session makes (entered,
+    /// updated, perform) with a stand-in for the dragging info: the drop AppKit proposes goes through
+    /// the list's validateDrop and acceptDrop. Pressing the row selects it unless it is selected, and
+    /// the dragged cues are the selection's top-level ones. A drop the list refuses is logged, not a
+    /// failure.
     private func dragRow(_ id: String, _ what: String, onto: String, at: CGPoint) async throws {
-        let (table, _) = try aim(id, .row(what))
-        guard let table = table as? NSOutlineView, table === wc.cueList.outlineView else {
+        let (view, _) = try aim(id, .row(what))
+        let list = wc.cueList
+        guard let table = view as? NSOutlineView, table === list.outlineView else {
             throw Failure("\"\(id)\" is not the cue list: only its rows can be dragged")
         }
-        let list = wc.cueList
         let grabbed = try cue(what)
-        let target = try cue(onto)
         let (_, targetRect) = try aim(id, .row(onto))
         guard let rect = targetRect else { throw Failure("cue \(onto) has no row") }
         if !list.selectedIDs().contains(grabbed.id) { list.selectAsUser([grabbed.id]) }
-        let dragged = CueEditor.topLevel(
-            list.selectedIDs().compactMap { sel in
-                var found: CueNode?
-                func walk(_ nodes: [CueNode]) {
-                    for n in nodes {
-                        if n.id == sel { found = n }
-                        walk(n.children)
-                    }
-                }
-                walk(list.roots)
-                return found
-            })
-        let pointInRow = NSPoint(x: rect.minX + at.x * rect.width, y: rect.minY + at.y * rect.height)
-        let column = table.column(at: pointInRow)
-        let onTarget =
-            table.tableColumns.indices.contains(column)
-            && table.tableColumns[column].identifier.rawValue == "target"
-        let siblings = target.parent?.children ?? list.roots
-        let at0 = siblings.firstIndex { $0 === target } ?? siblings.count
-        let item: CueNode?
-        let index: Int
-        if at.y < 0.25 {
-            (item, index) = (target.parent, at0)
-        } else if at.y > 0.75 {
-            (item, index) = (target.parent, at0 + 1)
-        } else {
-            (item, index) = (target, NSOutlineViewDropOnItemIndex)
+        list.dragged = CueEditor.topLevel(list.selectedIDs().compactMap(list.node))
+        defer {
+            list.dragged = []
+            list.showTargetOutline(nil)
         }
-        guard let drop = list.cueDrop(dragged, item: item, index: index, inTargetColumn: onTarget) else {
-            throw Failure("the list refuses a drop of cue \(what) on cue \(onto) (Show Mode, or a group onto itself)")
+        let local = NSPoint(x: rect.minX + at.x * rect.width, y: rect.minY + at.y * rect.height)
+        let info = StandInDraggingInfo(at: table.convert(local, to: nil), window: window)
+        let before = describe(list.roots)
+        _ = table.draggingEntered(info)
+        let operation = table.draggingUpdated(info)
+        guard !operation.isEmpty else {
+            table.draggingExited(info)
+            note("drag \(id) row \(what) onto row \(onto): refused, order \(before)")
+            return
         }
-        list.perform(drop)
+        let accepted = table.performDragOperation(info)
+        table.concludeDragOperation(info)
         await catchUp()
-        func order(_ nodes: [CueNode], _ depth: Int) -> [String] {
+        note(
+            "drag \(id) row \(what) onto row \(onto): \(accepted ? "dropped" : "not accepted"), "
+                + "order \(describe(list.roots)); targets \(describeTargets(list))")
+    }
+
+    /// Each cue that has a target, as `cue -> target` by their numbers (else names).
+    private func describeTargets(_ list: CueListViewController) -> String {
+        func label(_ n: CueNode) -> String { n.cue.number ?? (n.cue.displayName.isEmpty ? "-" : n.cue.displayName) }
+        var pairs: [String] = []
+        func walk(_ nodes: [CueNode]) {
+            for n in nodes {
+                if let raw = n.cue.raw["kind"]?["target"]?.stringValue, let t = list.node(ModelID(raw)) {
+                    pairs.append("\(label(n)) -> \(label(t))")
+                }
+                walk(n.children)
+            }
+        }
+        walk(list.roots)
+        return pairs.isEmpty ? "none" : pairs.joined(separator: ", ")
+    }
+
+    /// The cues in list order, a child's number after a `>` per level.
+    private func describe(_ nodes: [CueNode]) -> String {
+        func walk(_ nodes: [CueNode], _ depth: Int) -> [String] {
             nodes.flatMap { n in
                 [
                     String(repeating: ">", count: depth)
                         + (n.cue.number ?? (n.cue.displayName.isEmpty ? "-" : n.cue.displayName))
-                ]
-                    + order(n.children, depth + 1)
+                ] + walk(n.children, depth + 1)
             }
         }
-        note("drag \(id) row \(what) onto row \(onto) (\(drop)): order \(order(list.roots, 0).joined(separator: ", "))")
+        return walk(nodes, 0).joined(separator: ", ")
     }
 
     /// The view and the rectangle (its coordinates; nil: all of it) a step aims at: the control, or
@@ -1675,6 +1685,37 @@ final class ScenarioRunner {
 /// `make ui-shots`: the scenario named by `OPENLAB_SCENARIO`, its shots into `OPENLAB_SHOTS_OUT`
 /// (both reach the test process through xcodebuild's `TEST_RUNNER_` prefix). Without a scenario it
 /// reports a skip. The tests after it are the runner's own.
+/// The dragging info a real drag session would give the outline, for a drag that ends at one point.
+private final class StandInDraggingInfo: NSObject, NSDraggingInfo {
+    let location: NSPoint
+    weak var targetWindow: NSWindow?
+    let board = NSPasteboard(name: NSPasteboard.Name("dev.openlab.scenario-drag"))
+    init(at point: NSPoint, window: NSWindow) {
+        location = point
+        targetWindow = window
+        board.clearContents()
+    }
+    var draggingDestinationWindow: NSWindow? { targetWindow }
+    var draggingSourceOperationMask: NSDragOperation { .every }
+    var draggingLocation: NSPoint { location }
+    var draggedImageLocation: NSPoint { location }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { board }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    func enumerateDraggingItems(
+        options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+        searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+        using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+    ) {}
+    func resetSpringLoading() {}
+}
+
 @MainActor
 final class ScenarioShotTests: XCTestCase {
     func testScenario() async throws {
@@ -2145,6 +2186,8 @@ final class ScenarioShotTests: XCTestCase {
     }
 
     func testADragFromANamedRowOntoAnotherNamedRowMovesTheCueInTheList() async throws {
+        // Over the last child of the open group Act One, AppKit proposes a drop below it in the group; over the
+        // group's own row (lower part), as the group's first child.
         let log = try await runLog(
             of: """
                 {"show": "Demo", "steps": [
@@ -2152,11 +2195,33 @@ final class ScenarioShotTests: XCTestCase {
                   {"drag": "cue-list", "row": "1", "to_row": "Act One", "to": [0.3, 0.9]}]}
                 """)
         let orders = log.split(separator: "\n").filter { $0.contains("order ") }.map {
-            $0.components(separatedBy: "order ")[1]
+            $0.components(separatedBy: "order ")[1].components(separatedBy: ";")[0]
         }
         XCTAssertEqual(orders.count, 2, log)
         XCTAssertEqual(orders[0], "1, -, 2, >2.2, >2.3, >2.1", "cue 2.1 now follows 2.3 inside the group")
-        XCTAssertEqual(orders[1], "-, 2, >2.2, >2.3, >2.1, 1", "cue 1 now follows the group")
+        XCTAssertEqual(orders[1], "-, 2, >1, >2.2, >2.3, >2.1", "cue 1 became the group's first child")
+    }
+
+    func testADropOnAnotherCuesTargetCellSetsItsTargetAndDoesNotReorder() async throws {
+        let log = try await runLog(
+            of: """
+                {"show": "Demo", "window": {"width": 1200, "height": 800}, "steps": [
+                  {"drag": "cue-list", "row": "2.1", "to_row": "fade and stop Intro", "to": [0.74, 0.5]}]}
+                """)
+        XCTAssertTrue(log.contains("order 1, -, 2, >2.1, >2.2, >2.3;"), "the order is unchanged: \(log)")
+        XCTAssertTrue(log.contains("- -> 2.1"), "the fade cue now targets cue 2.1: \(log)")
+    }
+
+    func testADropIsRefusedInShowModeAndTheRunGoesOn() async throws {
+        let log = try await runLog(
+            of: """
+                {"show": "Demo", "steps": [
+                  {"click": "mode-switch", "at": [0.9, 0.5]}, {"advance": 0.3},
+                  {"drag": "cue-list", "row": "2.1", "to_row": "2.3", "to": [0.3, 0.9]},
+                  {"shot": "after"}]}
+                """)
+        XCTAssertTrue(log.contains("onto row 2.3: refused, order 1, -, 2, >2.1, >2.2, >2.3"), log)
+        XCTAssertTrue(log.contains("shot 01-after.png"), "the run went on: \(log)")
     }
 
     func testADragOntoAnUnknownRowNameStopsTheRunWithTheCueList() async throws {
