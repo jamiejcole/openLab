@@ -397,7 +397,7 @@ fn the_catalog_exempts_the_volume_of_the_show_it_was_made_or_reset_with() {
     assert!(exempt(&cat, "/Volumes/ShowDrive"));
     assert!(!exempt(&cat, "/Volumes/Other"));
     // Another show, on another volume.
-    cat.reset(Some(PathBuf::from("/Volumes/Other")), &template().0);
+    drop(cat.reset(Some(PathBuf::from("/Volumes/Other")), &template().0));
     assert!(exempt(&cat, "/Volumes/Other"));
     assert!(!exempt(&cat, "/Volumes/ShowDrive"));
     cat.reset(None, &template().0);

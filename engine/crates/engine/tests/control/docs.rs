@@ -1372,6 +1372,13 @@ fn save_as_in_another_folder_keeps_relative_media_pointing_at_the_same_files() {
 /// Two cues with relative media in folder A, shown as a saved show; Save As into folder B
 /// must re-spell both references.
 fn two_relative_cues() -> (tempfile::TempDir, tempfile::TempDir, Rig, PathBuf) {
+    two_relative_cues_with(None)
+}
+
+/// [`two_relative_cues`], with `hook` called on the writer thread before each save.
+fn two_relative_cues_with(
+    hook: Option<SaveHook>,
+) -> (tempfile::TempDir, tempfile::TempDir, Rig, PathBuf) {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     fs::create_dir_all(a.path().join("sfx")).unwrap();
@@ -1385,7 +1392,7 @@ fn two_relative_cues() -> (tempfile::TempDir, tempfile::TempDir, Rig, PathBuf) {
     }
     let a_show = a.path().join("show.openlab");
     write_show(&a_show, &ws);
-    let mut r = rig_with(ws, Some(a_show), None);
+    let mut r = rig_with(ws, Some(a_show), hook);
     r.s.settle_media();
     r.s.take_outbound();
     let b_show = b.path().join("copy.openlab");
@@ -1429,10 +1436,13 @@ fn a_save_as_that_respells_references_reaches_the_cue_engine_without_a_signal() 
 
 #[test]
 fn a_relink_of_the_save_copy_that_cannot_roll_back_saves_the_workspace_as_it_is() {
-    let (_a, _b, mut r, b_show) = two_relative_cues();
-    // The copy's relink fails at its second cue and cannot be undone; the live relink after the
-    // save is fine.
-    openlab_core::fault::inject(0, 1, true);
+    // The copy's relink, on the writer thread, fails at its second cue and cannot be undone.
+    let hook = SaveHook(Arc::new(|kind: JobKind| {
+        if kind == JobKind::Save {
+            openlab_core::fault::inject(0, 1, true);
+        }
+    }));
+    let (_a, _b, mut r, b_show) = two_relative_cues_with(Some(hook));
     ok_result(&request(
         &mut r.s,
         Request::SaveAs {
@@ -1459,14 +1469,25 @@ fn a_relink_of_the_save_copy_that_cannot_roll_back_saves_the_workspace_as_it_is(
 #[test]
 fn a_relink_after_a_folder_change_that_cannot_roll_back_is_an_unundoable_edit() {
     let (_a, _b, mut r, b_show) = two_relative_cues();
-    // The save copy's relink is fine; the live workspace's fails at its second cue.
-    openlab_core::fault::inject(1, 1, true);
-    ok_result(&request(
-        &mut r.s,
-        Request::SaveAs {
-            path: b_show.to_string_lossy().into_owned(),
+    // The save copy's relink, on the writer thread, is fine. A rename before the save is
+    // answered makes the live workspace's relink run on the control thread, where it fails at
+    // its second cue.
+    let (tx, mut replies) = reply_channel();
+    let id = r.s.request_id();
+    r.s.control_mut().handle(Inbox::Client {
+        message: ClientMessage::Request {
+            id,
+            request: Request::SaveAs {
+                path: b_show.to_string_lossy().into_owned(),
+            },
         },
-    ));
+        reply: tx,
+    });
+    openlab_core::fault::inject(0, 1, true);
+    rename(&mut r.s, 1, "renamed during the save");
+    r.s.settle_docs();
+    let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+    ok_result(&answers);
     let out = r.s.take_outbound();
     assert!(
         error_logs(&out)

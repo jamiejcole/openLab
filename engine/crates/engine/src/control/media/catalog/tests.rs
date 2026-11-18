@@ -462,6 +462,113 @@ fn a_prepared_index_gives_the_catalog_a_sync_gives() {
     assert_eq!(state(&opened), state(&plain));
 }
 
+/// A show saved into another folder: the reset that takes up the entries prepared off the
+/// control thread for the new folder gives the catalog the reset worked out on the control
+/// thread gives (files, counts, preloads, tickets after the old ones, watch ids, key changes,
+/// probe jobs in workspace order against the new folder), and an answer to a probe asked before
+/// the reset is ignored by both.
+#[test]
+fn a_reset_from_a_prepared_index_gives_the_catalog_a_reset_gives() {
+    let old = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    for dir in [old.path(), new.path()] {
+        write_wav(dir, "a.wav");
+        write_wav(dir, "b.wav");
+    }
+    let absolute = write_wav(old.path(), "abs.wav");
+    let (mut ws, template) = template();
+    let cue = |n: u128, file: &str, preload: bool| {
+        let mut c = template.clone();
+        c.id = CueId(uuid::Uuid::from_u128(n));
+        c.number = None;
+        set_media(&mut c, file, preload);
+        c
+    };
+    ws.cue_lists[0].cues = vec![
+        cue(941, "b.wav", false),
+        cue(942, "a.wav", true),
+        cue(943, &absolute, false),
+        cue(944, "b.wav", true),
+    ];
+    let state = |cat: &MediaCatalog| {
+        let mut probes: Vec<_> = cat
+            .entries
+            .iter()
+            .map(|(k, e)| {
+                let failed = matches!(e.probe, Probe::Failed);
+                (k.clone(), e.asking, failed, e.watch, e.picture)
+            })
+            .collect();
+        probes.sort();
+        (view(cat), probes, cat.next_ticket, cat.show_dir.clone())
+    };
+    let in_old = || {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut cat = MediaCatalog::with_own_pool(
+            tx,
+            Some(old.path().to_path_buf()),
+            10_000,
+            openlab_audio::probe,
+            Duration::from_secs(60),
+            ProbeClock::system(),
+        )
+        .unwrap();
+        cat.sync(&ws);
+        settle(&mut cat, &rx);
+        // One more probe still out when the show moves: its answer must count for nothing.
+        cat.reprobe("a.wav");
+        drop(cat.take_key_changes());
+        (cat, rx)
+    };
+    let (mut plain, plain_rx) = in_old();
+    let (mut moved, moved_rx) = in_old();
+    assert!(plain.next_ticket > 0);
+    let late = |rx: &Receiver<Inbox>| match wait_for(rx, "the probe asked before the reset") {
+        a @ ProbeAnswer::Probed { .. } => a,
+        other => panic!("{other:?}"),
+    };
+    let (plain_late, moved_late) = (late(&plain_rx), late(&moved_rx));
+    drop(plain.reset(Some(new.path().to_path_buf()), &ws));
+    let mut indexed = index_workspace(&ws, Some(new.path()));
+    indexed.prepare();
+    drop(moved.reset_indexed(Some(new.path().to_path_buf()), indexed));
+    assert_eq!(state(&moved), state(&plain));
+    let changes = moved.take_key_changes();
+    assert_eq!(changes, plain.take_key_changes());
+    assert_eq!(changes.first(), Some(&KeyChange::Reset));
+    assert_eq!(moved.take_unresolved(), plain.take_unresolved());
+    assert!(plain.answer(plain_late).is_none());
+    assert!(moved.answer(moved_late).is_none());
+    // The same jobs, against the new folder, for the same tickets.
+    let jobs = |rx: &Receiver<Inbox>| {
+        let mut got: Vec<(String, u64)> = (0..3)
+            .map(|_| match wait_for(rx, "three probes") {
+                ProbeAnswer::Probed { key, ticket, .. } => (key, ticket),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        got.sort();
+        got
+    };
+    let answered = jobs(&moved_rx);
+    assert_eq!(answered, jobs(&plain_rx));
+    let watched: Vec<PathBuf> = changes
+        .iter()
+        .filter_map(|c| match c {
+            KeyChange::Watch { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    let want = |name: &str| media_path(&MediaRef::new(name), Some(new.path())).unwrap();
+    assert_eq!(
+        watched,
+        [want("b.wav"), want("a.wav"), PathBuf::from(&absolute)]
+    );
+    for (_, ticket) in &answered {
+        assert!(*ticket > moved.next_ticket - 3, "{answered:?}");
+    }
+}
+
 #[test]
 fn a_file_marked_missing_fails_at_once_and_ignores_its_probe_in_flight() {
     let dir = tempfile::tempdir().unwrap();

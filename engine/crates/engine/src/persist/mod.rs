@@ -43,7 +43,8 @@ pub use settings::{
     SettingsWriter, load_machine_settings, load_machine_settings_checked, save_machine_settings,
 };
 pub use writer::{
-    DROP_WAIT, JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, MAX_WRITERS, SaveWriter,
+    BeforeWrite, DROP_WAIT, JobKind, MAX_FORCED_TARGETS, MAX_PENDING_TARGETS, MAX_WRITERS,
+    SaveWriter,
 };
 
 /// `<app-support>/openLab`, and where the logs and crash reports go.
