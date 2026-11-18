@@ -166,6 +166,32 @@ final class EngineClientTests: XCTestCase {
         XCTAssertEqual(rig.client.state, .connected)
     }
 
+    /// An engine that reads the goodbye but never ends the connection: the client's wait ends when
+    /// `goodbyeWait` runs out and not before, so a quit is never held to its own, longer limit.
+    func testGoodbyeEndsAtItsWaitWhenTheEngineKeepsTheConnectionOpen() async throws {
+        let (stub, rig) = try await stubRig()
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        stub.keepOpenOnGoodbye = true
+        let returned = Counter()
+        let bye = Task {
+            await rig.client.goodbye(shutdown: true)
+            returned.count += 1
+        }
+        await assertEventually { await rig.requestScheduler.waitingCount == 1 }
+        let asked = await rig.requestScheduler.requested
+        XCTAssertEqual(asked, [ReconnectPolicy().goodbyeWait])
+        // The engine has read the goodbye and still answers on the same connection.
+        try await stub.roundTrip(rig.client)
+        XCTAssertEqual(stub.received.filter { $0 == .goodbye(shutdown: true) }.count, 1)
+        await settle()
+        XCTAssertEqual(returned.count, 0, "goodbye returned before its wait ran out")
+        await rig.requestScheduler.fire()
+        await assertEventually("goodbye did not return when its wait ran out") { returned.count == 1 }
+        if returned.count == 1 { await bye.value }
+        XCTAssertEqual(rig.client.state, .connected, "the caller, not goodbye, closes the connection")
+    }
+
     func testBoundClientOfAClosedWorkspaceStopsReconnecting() async throws {
         let engine = try await TestEngine.shared()
         let rig = Rig(engine: engine, workspace: "99")
@@ -656,6 +682,8 @@ final class StubEngine {
     }
     /// When set, `snapshot` is answered with this error.
     var refuseSnapshot: ErrorCode?
+    /// When set, `goodbye` is read and the connection stays open (an engine that never ends it).
+    var keepOpenOnGoodbye = false
     private(set) var received: [ClientMessage] = []
     private(set) var connectCount = 0
 
@@ -783,7 +811,7 @@ final class StubEngine {
                 result(c, id)
             default: result(c, id)
             }
-        case .goodbye: c.close()
+        case .goodbye: if !keepOpenOnGoodbye { c.close() }
         case .hello: break
         }
     }

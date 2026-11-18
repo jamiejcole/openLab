@@ -20,6 +20,7 @@
 mod displays;
 mod gpu;
 mod media;
+mod monitor;
 mod probe;
 #[cfg(feature = "test-support")]
 mod testmedia;
@@ -45,6 +46,7 @@ use objc2_core_graphics::{
 use objc2_foundation::{NSNumber, NSRect, NSString};
 use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+use openlab_core::StageId;
 use openlab_core::stage_link::{Display, FromStage, LinkLevel, ToStage};
 
 use self::displays::Found;
@@ -125,6 +127,8 @@ struct Windows {
     mtm: MainThreadMarker,
     /// One window per display with stages shown on it, by display id.
     open: HashMap<String, DisplayWindow>,
+    /// The monitor windows open, by stage.
+    monitors: HashMap<StageId, monitor::Monitor>,
 }
 
 struct DisplayWindow {
@@ -283,6 +287,86 @@ impl Platform for Mac {
     fn live(&self) -> bool {
         self.windows.is_some()
     }
+
+    fn present_monitor(&mut self, title: &str, layer: &Layer) -> Result<(), String> {
+        let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
+        let Some(windows) = self.windows.as_mut() else {
+            // Offscreen: drawn only when a probe asks.
+            return Ok(());
+        };
+        if !windows.monitors.contains_key(&layer.stage) {
+            let opened = windows.monitors.len();
+            let m = monitor::build(windows.mtm, title, (layer.width, layer.height), opened, gpu)?;
+            order_front(&m.window);
+            windows.monitors.insert(layer.stage, m);
+        }
+        let m = windows
+            .monitors
+            .get_mut(&layer.stage)
+            .ok_or("monitor lost")?;
+        m.set_title(title);
+        if !m.ready() {
+            return Ok(());
+        }
+        m.fit();
+        // A drawable not there now is a frame skipped, never a monitor closed.
+        let Some(drawable) = m.layer().nextDrawable() else {
+            return Ok(());
+        };
+        let device = gpu.device_owned();
+        let (media, failed) = (&mut self.media, &mut self.failed);
+        let mut drawn = Vec::new();
+        let cb = gpu.draw(&drawable.texture(), std::slice::from_ref(layer), &mut |c| {
+            drawn.push(c.picture);
+            // The frame the displays show at the next refresh.
+            frame_of(&device, media, failed, c, media::FRAME_AHEAD, false)
+        })?;
+        for picture in drawn {
+            if let Some(p) = self.media.get_mut(&picture) {
+                p.drawn_with(&cb);
+            }
+        }
+        m.drawn_with(&cb);
+        let d: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
+        cb.presentDrawable(d);
+        cb.commit();
+        Ok(())
+    }
+
+    fn raise_monitor(&mut self, stage: StageId) {
+        if let Some(m) = self.windows.as_ref().and_then(|w| w.monitors.get(&stage)) {
+            if m.window.isMiniaturized() {
+                m.window.deminiaturize(None);
+            }
+            order_front(&m.window);
+        }
+    }
+
+    fn close_monitor(&mut self, stage: StageId) {
+        if let Some(m) = self
+            .windows
+            .as_mut()
+            .and_then(|w| w.monitors.remove(&stage))
+        {
+            m.window.close();
+        }
+    }
+
+    fn take_closed_monitors(&mut self) -> Vec<StageId> {
+        let Some(windows) = self.windows.as_mut() else {
+            return Vec::new();
+        };
+        let closed: Vec<StageId> = windows
+            .monitors
+            .iter()
+            .filter(|(_, m)| m.closed())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &closed {
+            windows.monitors.remove(id);
+        }
+        closed
+    }
 }
 
 impl Mac {
@@ -437,6 +521,7 @@ fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
         windows: Some(Windows {
             mtm,
             open: HashMap::new(),
+            monitors: HashMap::new(),
         }),
         media: HashMap::new(),
         failed: Vec::new(),
@@ -487,6 +572,26 @@ pub struct WindowReport {
     pub borderless: bool,
     pub frame_is_the_screens: bool,
     pub visible: bool,
+    /// A monitor window built for a 1920 x 1080 stage titled "Stage 1", never ordered front.
+    pub monitor: MonitorReport,
+}
+
+/// Test support: a monitor window as AppKit holds it.
+#[cfg(feature = "test-support")]
+pub struct MonitorReport {
+    pub title: String,
+    pub titled: bool,
+    pub closable: bool,
+    pub resizable: bool,
+    /// Clicking it never activates the stage host.
+    pub non_activating: bool,
+    /// It becomes key only for a view that takes typing (it has none).
+    pub key_only_if_needed: bool,
+    pub hides_on_deactivate: bool,
+    pub floating: bool,
+    pub level: isize,
+    pub content: (f64, f64),
+    pub visible: bool,
 }
 
 /// Test support: builds an output window on the main thread for the main screen's frame and
@@ -526,9 +631,34 @@ pub fn window_report() -> Option<WindowReport> {
             && got.size.width == frame.size.width
             && got.size.height == frame.size.height,
         visible: window.isVisible(),
+        monitor: monitor_report(mtm),
     };
     window.close();
     Some(report)
+}
+
+/// Test support: a monitor window built as the stage host builds one, read back, never
+/// ordered front.
+#[cfg(feature = "test-support")]
+fn monitor_report(mtm: MainThreadMarker) -> MonitorReport {
+    let panel = monitor::panel(mtm, "Stage 1", (1920, 1080));
+    let style = panel.styleMask();
+    let content = panel.contentRectForFrameRect(panel.frame()).size;
+    let report = MonitorReport {
+        title: panel.title().to_string(),
+        titled: style.contains(NSWindowStyleMask::Titled),
+        closable: style.contains(NSWindowStyleMask::Closable),
+        resizable: style.contains(NSWindowStyleMask::Resizable),
+        non_activating: style.contains(NSWindowStyleMask::NonactivatingPanel),
+        key_only_if_needed: panel.becomesKeyOnlyIfNeeded(),
+        hides_on_deactivate: panel.hidesOnDeactivate(),
+        floating: panel.isFloatingPanel(),
+        level: panel.level(),
+        content: (content.width, content.height),
+        visible: panel.isVisible(),
+    };
+    panel.close();
+    report
 }
 
 /// Ends the process at once, from any thread: no exit handlers and no stdio flush, so a hung
@@ -571,6 +701,7 @@ fn windowed() -> ExitCode {
         windows: Some(Windows {
             mtm,
             open: HashMap::new(),
+            monitors: HashMap::new(),
         }),
         media: HashMap::new(),
         failed: Vec::new(),

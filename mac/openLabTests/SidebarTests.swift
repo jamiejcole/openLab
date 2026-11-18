@@ -497,49 +497,6 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(actions, [.panicCue(cue: Self.intro)])
     }
 
-    // MARK: Wall clock
-
-    func testWallClockFormatsTheInjectedTime() throws {
-        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
-        let label = WallClockLabel()
-        label.dateFormatter = WallClockLabel.makeFormatter(locale: Locale(identifier: "en_GB"), timeZone: utc)
-        label.now = { Date(timeIntervalSince1970: 14 * 3600 + 3 * 60 + 9) }
-        label.refresh()
-        XCTAssertEqual(label.stringValue, "14:03:09")
-        label.now = { Date(timeIntervalSince1970: 14 * 3600 + 3 * 60 + 10) }
-        label.refresh()
-        XCTAssertEqual(label.stringValue, "14:03:10")
-        label.dateFormatter = WallClockLabel.makeFormatter(locale: Locale(identifier: "en_US"), timeZone: utc)
-        label.refresh()
-        XCTAssertEqual(label.stringValue.replacingOccurrences(of: "\u{202f}", with: " "), "2:03:10 PM")
-    }
-
-    func testWallClockTimerEndsWhenTheLabelIsGone() throws {
-        var timer: Timer?
-        weak var gone: WallClockLabel?
-        autoreleasepool {
-            let window = NSWindow(
-                contentRect: .init(x: 0, y: 0, width: 200, height: 50), styleMask: [], backing: .buffered, defer: true)
-            window.isReleasedWhenClosed = false
-            let label = WallClockLabel()
-            window.contentView?.addSubview(label)
-            timer = label.timer
-            gone = label
-            window.close()  // leaves the label attached, as closing a workspace window does
-        }
-        XCTAssertNil(gone)
-        let t = try XCTUnwrap(timer)
-        // Either the window's teardown detached the label or the next tick finds it gone.
-        if t.isValid { t.fire() }
-        XCTAssertFalse(t.isValid)
-    }
-
-    func testFooterHasTheClock() async throws {
-        let wc = try await make()
-        XCTAssertEqual(wc.footer.clock.accessibilityIdentifier(), AX.wallClock)
-        XCTAssertFalse(wc.footer.clock.stringValue.isEmpty)
-    }
-
     /// Flow: Intro loops until devamped; on its third pass the cue list's Duration cell and the real Active
     /// Cues row show the same time into the pass, and the row the time left in it.
     func testALoopingAudioCueOnItsThirdPassShowsTheSameTimeInTheCellAndInActiveCues() async throws {

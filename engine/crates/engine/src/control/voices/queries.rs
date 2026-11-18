@@ -219,10 +219,24 @@ impl Voices {
     /// without a slice table). A seek waiting for its stream (or for the resume) already stands
     /// at its point: the play line moves when the operator clicks, not when the sound does.
     pub fn progress(&self, t: SampleTime) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
+        self.progress_of(t, false)
+    }
+
+    /// The same for each preview playing or paused: a previewed cue counts as a play does (a
+    /// preview starts the cue through its normal outputs) and draws its play line.
+    pub fn preview_progress(&self, t: SampleTime) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
+        self.progress_of(t, true)
+    }
+
+    fn progress_of(
+        &self,
+        t: SampleTime,
+        preview: bool,
+    ) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
         let mut v: Vec<(CueId, u64, Option<u64>, Option<u64>)> = self
             .recs
             .values()
-            .filter(|r| !r.preview && !r.retired)
+            .filter(|r| r.preview == preview && !r.retired)
             .filter_map(|r| {
                 // A move to another device waiting for its swap: the sound is still the old
                 // voice's, and its time runs on.

@@ -1277,8 +1277,9 @@ final class EngineCrashFlowTests: XCTestCase {
         // inspector, locked editing, and the same cue standing by as the editable copy shows.
         XCTAssertEqual(locked.footer.modeSwitch.selectedSegment, 1)
         XCTAssertEqual(editable.footer.modeSwitch.selectedSegment, 0)
-        XCTAssertEqual(locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode"))
-        XCTAssertEqual(editable.window?.title, "Saved In Edit Mode")
+        XCTAssertEqual(
+            locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode \u{2014} Main"))
+        XCTAssertEqual(editable.window?.title, "Saved In Edit Mode \u{2014} Main")
         XCTAssertTrue(locked.cueToolbar.isHidden)
         XCTAssertFalse(locked.isVisible(.inspector))
         XCTAssertFalse(editable.cueToolbar.isHidden)
@@ -2242,6 +2243,21 @@ final class EngineCrashFlowTests: XCTestCase {
         await settle()
         XCTAssertTrue(app.allWindows.isEmpty)
         XCTAssertFalse(launcherShown, "no window at all")
+    }
+
+    /// A quit while the engine is still answering the app (here the device lists the Preferences
+    /// window asks for): the app closes its connection only once the engine has ended it, having
+    /// read the `goodbye`. Closed under the answers, the connection was reset, which can throw away
+    /// the goodbye before the engine reads it: the engine took the quit for a crash and played on.
+    func testAQuitClosesTheAppConnectionOnlyAfterTheEngineReadTheGoodbye() async throws {
+        makePrefs()
+        try await startApp()
+        for _ in 0..<20 {
+            Task { _ = await self.app.session.appClient.send { .request(id: $0, .listDevices) } }
+        }
+        await Task.yield()
+        try await quit()
+        XCTAssertEqual(tap.appClosesAfterTheEngine, [true], "the engine ended the connection first")
     }
 
     func testThePreferenceIsReachableFromTheAppMenuAndKept() async throws {

@@ -2,35 +2,6 @@
 
 import AppKit
 
-/// The masthead's colours in Show Mode (SM-03): a black field with white text and a bright GO
-/// button with black text, readable from across a dark booth. openLab's own scheme (the app has no
-/// QLab control for this). Fixed sRGB values so the contrast ratios are testable numbers, not
-/// whatever the system appearance resolves to.
-enum ShowModePalette {
-    struct RGB: Equatable {
-        var r: Double, g: Double, b: Double
-        var color: NSColor { NSColor(srgbRed: r, green: g, blue: b, alpha: 1) }
-    }
-
-    static let background = RGB(r: 0, g: 0, b: 0)
-    static let standbyText = RGB(r: 1, g: 1, b: 1)
-    static let notesText = RGB(r: 0.88, g: 0.88, b: 0.88)
-    static let goFill = RGB(r: 0.2, g: 0.85, b: 0.4)
-    static let goText = RGB(r: 0, g: 0, b: 0)
-
-    /// WCAG 2 relative luminance of an sRGB colour.
-    static func luminance(_ c: RGB) -> Double {
-        func lin(_ v: Double) -> Double { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
-        return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
-    }
-
-    /// WCAG 2 contrast ratio, 1 (none) to 21 (black on white).
-    static func contrast(_ a: RGB, _ b: RGB) -> Double {
-        let (x, y) = (luminance(a), luminance(b))
-        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
-    }
-}
-
 /// Sizes of the masthead's parts (SM-01), from the window's content size. Show Mode grows the GO
 /// button from about 7% x 9% of the window to 12% x 13%, the standby line to twice its size and the
 /// notes to 1.7 times theirs.

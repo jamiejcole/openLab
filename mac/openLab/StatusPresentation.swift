@@ -24,9 +24,9 @@ struct StatusPresentation: Equatable {
             icon: .statusAlarm, details: [loc("status.offline.detail")])
     }
 
-    /// `xrunsIncreased`: dropouts happened since the previous status. Only new ones raise a
-    /// warning; the total is always shown.
-    static func make(_ status: SystemStatus?, xrunsIncreased: Bool = true) -> StatusPresentation {
+    /// `unseenXruns`: dropouts happened that the operator has not seen in the details. Only those
+    /// raise a warning; the total is always in the details.
+    static func make(_ status: SystemStatus?, unseenXruns: Bool = true) -> StatusPresentation {
         guard let s = status else {
             return StatusPresentation(
                 level: .normal, summary: loc("status.waiting"), icon: .statusWaiting, details: [])
@@ -50,7 +50,7 @@ struct StatusPresentation: Equatable {
         }
         if !s.disk.healthy { problems.append((.alarm, loc("status.disk.unhealthy"))) }
         if let load = s.engineLoad, load >= highLoad { problems.append((.warning, loc("status.load.high"))) }
-        if s.xruns > 0, xrunsIncreased {
+        if s.xruns > 0, unseenXruns {
             problems.append((.warning, String(format: loc("status.xruns"), Int(s.xruns))))
         }
 

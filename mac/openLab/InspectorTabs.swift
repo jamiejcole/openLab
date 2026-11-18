@@ -57,6 +57,7 @@ extension InspectorViewController {
         tabView.delegate = nil
         defer {
             tabView.delegate = delegate
+            syncTabBar()
             updateTimeLoopsActive()
         }
         for item in tabView.tabViewItems { tabView.removeTabViewItem(item) }
@@ -66,6 +67,13 @@ extension InspectorViewController {
         if let selected, tabView.tabViewItems.contains(where: { $0 === selected }) {
             tabView.selectTabViewItem(selected)
         }
+    }
+
+    /// Draws the tab bar for the tab view's tabs: every title whole, the chosen one marked.
+    func syncTabBar() {
+        tabBar.show(
+            tabView.tabViewItems.compactMap { i in (i.identifier as? String).map { ($0, i.label) } },
+            selected: tabView.selectedTabViewItem?.identifier as? String)
     }
 
     /// The Devamp cue's Settings tab (QLab's Devamp Settings): start the next cue, stop the target
@@ -172,8 +180,23 @@ extension InspectorViewController {
         clearTargetButton.isEnabled = (isFile ? !media.isEmpty : targetID != nil) && !isLocked
         jumpTargetButton.isHidden = !isCueTarget
         jumpTargetButton.isEnabled = target != nil
-        targetNote.isHidden = isFile
-        if isCueTarget {
+        // A file cue whose file cannot be used says why, beside the file (the full words are its tip).
+        let fileProblem =
+            isFile
+            ? (store.problems[cue.id] ?? []).first { $0.type == "media_missing" || $0.type == "media_unsupported" }
+            : nil
+        targetNote.isHidden = isFile && fileProblem == nil
+        targetNote.toolTip = nil
+        targetNote.textColor = fileProblem == nil ? .secondaryLabelColor : .systemOrange
+        targetNote.setContentHuggingPriority(isFile ? .required : NSLayoutConstraint.Priority(1), for: .horizontal)
+        targetNote.setContentCompressionResistancePriority(
+            isFile ? .defaultHigh : .defaultLow, for: .horizontal)
+        if let fileProblem {
+            targetNote.stringValue = loc(
+                fileProblem.type == "media_missing"
+                    ? "inspector.target.fileMissing" : "inspector.target.fileUnsupported")
+            targetNote.toolTip = ProblemText.problem(fileProblem, label: WarningRows.labeler(model))
+        } else if isCueTarget {
             let lookup: (ModelID) -> Cue? = { model.cue($0) }
             // A target that is gone leaves the field empty and the note says so.
             targetNote.stringValue =

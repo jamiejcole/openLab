@@ -265,6 +265,9 @@ pub struct StageMappingEntry {
     /// `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub panicked: bool,
+    /// The stage's monitor window is open (`set_stage_monitor`). Absent: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub monitor: bool,
 }
 
 /// One patch's mapping on this machine; `mapping` is absent for a patch that has none (never

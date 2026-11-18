@@ -333,6 +333,8 @@ final class MeterView: NSView {
         NSBezierPath.clip(bounds)
         if let columns { return drawColumns(columns, in: dirtyRect) }
         let count = source.flatMap { bank?.channelCount($0) } ?? 0
+        // A source with nothing to show (no channels sent yet) draws nothing, not an empty bar.
+        if fixedRows == nil && count == 0 { return }
         let rows = shownRows
         for row in 0..<rows {
             let r = rowRect(row)
@@ -359,21 +361,21 @@ final class MeterView: NSView {
         return NSRect(x: 0, y: CGFloat(row) * (h + gap), width: bounds.width, height: h)
     }
 
-    /// Only the columns in `dirty`: a tick redraws what is in view, not all 128.
+    /// Only the columns in `dirty`: a tick redraws what is in view, not all 128. As for rows, a
+    /// channel not sent (the cue is not playing) draws nothing, not an empty bar.
     private func drawColumns(_ c: Columns, in dirty: NSRect) {
         guard let source, let bank, c.count > 0, c.step > 0 else { return }
         let first = max(0, Int(((dirty.minX - c.first - c.width) / c.step).rounded(.down)))
-        let last = min(c.count - 1, Int(((dirty.maxX - c.first) / c.step).rounded(.down)))
+        let last = min(
+            c.count - 1, Int(((dirty.maxX - c.first) / c.step).rounded(.down)), bank.channelCount(source) - 1)
         #if DEBUG
             drawnColumns = max(0, last - first + 1)
         #endif
         guard first <= last else { return }
-        let sent = bank.channelCount(source)
         for n in first...last {
             let track = NSRect(x: c.first + CGFloat(n) * c.step, y: 0, width: c.width, height: bounds.height)
             NSColor.quaternaryLabelColor.setFill()
             track.fill()
-            guard n < sent else { continue }
             let level = bank.level(source, channel: n)
             guard level > 0 else { continue }
             let h = track.height * Self.fill(level)

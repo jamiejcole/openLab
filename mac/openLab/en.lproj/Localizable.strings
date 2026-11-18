@@ -158,6 +158,7 @@
 "alert.copyText" = "Copy Text";
 "notes.notice.title" = "Notes not saved";
 "masthead.notes.label" = "Notes for the standing-by cue";
+"masthead.notes.placeholder" = "Notes";
 
 "cue.type.group.timeline" = "Group (timeline)";
 "cue.type.group.playlist" = "Group (playlist)";
@@ -183,6 +184,7 @@
 
 "cuelist.label" = "Cue list";
 "cuelist.col.number" = "Number";
+"cuelist.col.continue" = "Continue mode";
 "cuelist.col.name" = "Name";
 "cuelist.col.target" = "Target";
 "cuelist.col.preWait" = "Pre-Wait";
@@ -293,11 +295,17 @@
 "inspector.tab.loadTime" = "Load Time";
 "inspector.loadTime" = "Load target to time";
 "inspector.groupMode" = "Group mode";
-"inspector.groupMode.timeline" = "Timeline - start all children at once";
-"inspector.groupMode.playlist" = "Playlist - one child at a time";
-"inspector.groupMode.start_first_and_enter" = "Start first child and enter the group";
-"inspector.groupMode.start_first_and_go_to_next" = "Start first child and go to the next cue";
-"inspector.groupMode.start_random" = "Start a random child";
+"inspector.groupMode.intro" = "How starting this group starts the cues inside it.";
+"inspector.groupMode.timeline" = "Timeline";
+"inspector.groupMode.timeline.about" = "Every child cue starts together, each after its own pre-wait, so the group plays as a timeline.";
+"inspector.groupMode.playlist" = "Playlist";
+"inspector.groupMode.playlist.about" = "One child cue plays at a time, in order. Loop and shuffle decide what happens after the last one.";
+"inspector.groupMode.start_first_and_enter" = "Start first and enter";
+"inspector.groupMode.start_first_and_enter.about" = "Starts the first child cue and moves the playhead inside the group, so the next GO runs the second child.";
+"inspector.groupMode.start_first_and_go_to_next" = "Start first";
+"inspector.groupMode.start_first_and_go_to_next.about" = "Starts the first child cue and puts the playhead on the cue after the group.";
+"inspector.groupMode.start_random" = "Start random";
+"inspector.groupMode.start_random.about" = "Starts one child cue picked at random, then puts the playhead on the cue after the group.";
 "inspector.groupLoop" = "Loop playlist";
 "inspector.groupShuffle" = "Shuffle playlist";
 "inspector.hotkey" = "Hotkey";
@@ -356,6 +364,8 @@
 "inspector.duckOthers.dbOver" = "dB over";
 "inspector.duckOthers.db" = "Duck or boost level";
 "inspector.duckOthers.time" = "Duck or boost time";
+"inspector.target.fileMissing" = "File not found";
+"inspector.target.fileUnsupported" = "File cannot be played";
 "inspector.target.missing" = "(missing cue)";
 "inspector.target.notApplicable" = "(takes no target)";
 "inspector.target.choose" = "Choose…";
@@ -394,7 +404,6 @@
 "activeCue.pause" = "Pause";
 "activeCue.resume" = "Resume";
 "activeCue.panic" = "Panic this cue";
-"footer.clock.label" = "Clock";
 "sidebar.newList" = "New List";
 "sidebar.list.rename" = "Rename List…";
 "sidebar.list.delete" = "Delete List";
@@ -406,8 +415,7 @@
 "footer.mode.label" = "Mode";
 "footer.mode.edit" = "Edit";
 "footer.mode.show" = "Show";
-"footer.toggle.toolbar" = "Show or hide the cue toolbar";
-"footer.toggle.masthead" = "Show or hide the GO area";
+"footer.toggle.masthead" = "Show or hide the GO button, standby line and cue toolbar";
 "footer.toggle.inspector" = "Show or hide the inspector";
 "footer.toggle.sidebar" = "Show or hide the sidebar";
 "footer.settings" = "Settings";
@@ -456,7 +464,11 @@
 "settings.video.col.display" = "Display";
 "settings.video.col.black" = "Black";
 "settings.video.col.layer" = "Layer";
+"settings.video.col.monitor" = "";
 "settings.video.col.remove" = "";
+"settings.video.monitor" = "Watch";
+"settings.video.monitor.tip" = "Open a window showing this stage as it plays, on a display or not";
+"settings.video.monitor.ax" = "watch in a window";
 "settings.video.black" = "Black between cues";
 "settings.video.remove" = "Remove";
 "settings.video.newName" = "Stage %d";
@@ -786,6 +798,7 @@
 "status.offline.detail" = "The engine is not connected. Status is unknown until it reconnects.";
 "status.dropouts" = "Dropouts %d";
 
+"window.main.title.list" = "%@ — %@";
 "window.main.title.showMode" = "%@ (Show Mode)";
 "showMode.error.engine" = "The engine could not be told about Show Mode (%@). It is told again when it reconnects; until then the Mac may sleep.";
 "alert.closeShowMode.title" = "Close this workspace?";
@@ -878,6 +891,9 @@
 "inspector.io.stage" = "Stage";
 "inspector.io.stageNone" = "None";
 "inspector.io.stageSize" = "Stage size";
+"inspector.io.monitor" = "Watch";
+"inspector.io.monitor.tip" = "Open a window showing this cue's stage as it plays, on a display or not";
+"inspector.io.monitor.ax" = "Watch the stage in a window";
 "inspector.io.pixels" = "%d × %d";
 "inspector.io.videoFormat" = "%@, %@, %@ fps";
 "inspector.io.stillFormat" = "%@ image, %@";
@@ -993,7 +1009,8 @@
 "levels.cross" = "File channel %d to output %d";
 "levels.mute" = "Mute";
 "levels.active" = "Fade this level";
-"levels.gang" = "Gang";
+"levels.gangs" = "Gangs";
+"levels.clearMutes" = "Clear Mutes";
 "levels.setSilent" = "Set All Silent";
 "levels.fromTarget" = "Set Levels from Target";
 "fade.duration" = "Duration";
@@ -1016,6 +1033,9 @@
 "timeLoops.slicesNote" = "This cue has slices: each slice keeps its own play count.";
 "timeLoops.zoomIn" = "Zoom in";
 "timeLoops.zoomOut" = "Zoom out";
+"timeLoops.reset" = "Stop preview and go back to the start";
+"timeLoops.preview" = "Preview";
+"timeLoops.stopPreview" = "Stop preview";
 "timeLoops.noFile" = "No file";
 "timeLoops.notRead" = "Reading the file…";
 "timeLoops.missing" = "The file is missing or cannot be read";

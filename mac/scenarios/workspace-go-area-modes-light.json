@@ -1,0 +1,12 @@
+{
+  "about": "The GO button, standby line and notes in Edit Mode and Show Mode, dark and light: the same drawing, Show Mode larger.",
+  "show": "Demo",
+  "window": {"width": 1200, "height": 700},
+  "appearance": "light",
+  "steps": [
+    {"shot": "edit-light"},
+    {"click": "mode-switch", "at": [0.75, 0.5]},
+    {"advance": 1},
+    {"shot": "show-light"}
+  ]
+}

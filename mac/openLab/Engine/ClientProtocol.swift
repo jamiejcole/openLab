@@ -209,6 +209,9 @@ enum Request: Hashable, Sendable, Codable {
     /// VID-01: shows the workspace's stage on a display (`listDisplays` id) on this machine; nil
     /// leaves it on none. Kept in the engine's machine settings, not the show file.
     case setStageMapping(stage: ModelID, display: String?)
+    /// Opens (or brings to the front) or closes the workspace's stage's monitor window: a live
+    /// copy of the stage the stage host draws in a window of its own.
+    case setStageMonitor(stage: ModelID, open: Bool)
     /// How long the sequence that starts at `cue` lasts (its auto-continue and auto-follow chain),
     /// for the Load to Time slider.
     case sequenceSpan(cue: ModelID)
@@ -228,6 +231,10 @@ enum Request: Hashable, Sendable, Codable {
         /// Test support only: what a virtual display shows at points (fractions of the display),
         /// all its stages composited.
         case displayProbe(display: String, points: [[Double]])
+        /// Test support only: what the stage's monitor window shows at a content size of
+        /// `width` x `height` pixels, at points (fractions of the window); no colours when the
+        /// stage host has no monitor window open for it.
+        case monitorProbe(stage: ModelID, width: UInt32, height: UInt32, points: [[Double]])
     #endif
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
@@ -289,6 +296,7 @@ enum Request: Hashable, Sendable, Codable {
             f.append(("stage", stage))
             opt(&f, "display", display)
             return ("set_stage_mapping", f)
+        case .setStageMonitor(let stage, let open): return ("set_stage_monitor", [("stage", stage), ("open", open)])
         case .sequenceSpan(let cue): return ("sequence_span", [("cue", cue)])
         #if DEBUG
             case .advance(let frames): return ("advance", [("frames", frames)])
@@ -303,6 +311,11 @@ enum Request: Hashable, Sendable, Codable {
             case .stageProbe(let stage, let points): return ("stage_probe", [("stage", stage), ("points", points)])
             case .displayProbe(let display, let points):
                 return ("display_probe", [("display", display), ("points", points)])
+            case .monitorProbe(let stage, let width, let height, let points):
+                return (
+                    "monitor_probe",
+                    [("stage", stage), ("width", width), ("height", height), ("points", points)]
+                )
         #endif
         }
     }
@@ -362,6 +375,9 @@ enum Request: Hashable, Sendable, Codable {
             self = .setStageMapping(
                 stage: try c.decode(ModelID.self, forKey: "stage"),
                 display: try c.decodeIfPresent(String.self, forKey: "display"))
+        case "set_stage_monitor":
+            self = .setStageMonitor(
+                stage: try c.decode(ModelID.self, forKey: "stage"), open: try c.decode(Bool.self, forKey: "open"))
         case "sequence_span": self = .sequenceSpan(cue: try c.decode(ModelID.self, forKey: "cue"))
         #if DEBUG
             case "advance": self = .advance(frames: try c.decode(UInt64.self, forKey: "frames"))
@@ -380,6 +396,12 @@ enum Request: Hashable, Sendable, Codable {
             case "display_probe":
                 self = .displayProbe(
                     display: try c.decode(String.self, forKey: "display"),
+                    points: try c.decode([[Double]].self, forKey: "points"))
+            case "monitor_probe":
+                self = .monitorProbe(
+                    stage: try c.decode(ModelID.self, forKey: "stage"),
+                    width: try c.decode(UInt32.self, forKey: "width"),
+                    height: try c.decode(UInt32.self, forKey: "height"),
                     points: try c.decode([[Double]].self, forKey: "points"))
         #endif
         case let other:

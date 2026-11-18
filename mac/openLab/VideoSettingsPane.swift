@@ -21,8 +21,9 @@ struct StageRow: Equatable {
 /// The Video page of the workspace settings (VID-01, VID-12; QLab 5 manual pp. 225-227): the
 /// workspace's stages, one row each with its name (typed in place), pixel size (width and height
 /// typed in place), the display it is
-/// shown on on this machine, whether black stays up between cues, its layer, and a remove button;
-/// and a button that adds one. A stage that cannot be seen says why in its row. Every control
+/// shown on on this machine, whether black stays up between cues, its layer, a button that opens its
+/// monitor window (a live copy of the stage, QLab 5 manual p. 157) and a remove button; and a button
+/// that adds one. A stage that cannot be seen says why in its row. Every control
 /// sends its edit to the engine and the page is drawn from what the engine then holds (the model
 /// for the stages, `video_outputs` for displays and states), so a refused edit shows the old state.
 @MainActor
@@ -57,6 +58,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private(set) var heightFields: [NSTextField] = []
     private(set) var displayPopups: [NSPopUpButton] = []
     private(set) var blackBoxes: [NSButton] = []
+    private(set) var monitorButtons: [NSButton] = []
     private(set) var removeButtons: [NSButton] = []
     private(set) var warningLabels: [NSTextField] = []
     private var subs: [AnyCancellable] = []
@@ -87,9 +89,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     // MARK: Building
 
-    /// Name, pixels, display, black, layer, remove: the least widths (the display and name
+    /// Name, pixels, display, black, layer, monitor, remove: the least widths (the display and name
     /// columns take more when there is room).
-    static let columns: [CGFloat] = [90, sizeWidth, leastDisplayWidth, 32, 30, 16]
+    static let columns: [CGFloat] = [90, sizeWidth, leastDisplayWidth, 32, 30, monitorWidth, 16]
+    /// The monitor button's column.
+    static let monitorWidth: CGFloat = 56
     /// A width or height field: five digits.
     static let sideWidth: CGFloat = 40
     /// The pixels column: width, "×", height.
@@ -165,7 +169,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if rows {
             grid = NSGridView(numberOfColumns: columns.count, rows: 0)
         } else {
-            let titles = ["name", "size", "display", "black", "layer", "remove"].map { key -> NSView in
+            let titles = ["name", "size", "display", "black", "layer", "monitor", "remove"].map { key -> NSView in
                 let label = NSTextField(labelWithString: loc("settings.video.col.\(key)"))
                 label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
                 return label
@@ -178,6 +182,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         grid.yPlacement = .center
         grid.column(at: 3).xPlacement = .center
         grid.column(at: 5).xPlacement = .center
+        grid.column(at: 6).xPlacement = .center
         return grid
     }
 
@@ -288,6 +293,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         layerFields = []
         displayPopups = []
         blackBoxes = []
+        monitorButtons = []
         removeButtons = []
         warningLabels = []
         for (i, row) in rows.enumerated() {
@@ -338,6 +344,15 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             layer.identifier = NSUserInterfaceItemIdentifier("layer")
             layer.widthAnchor.constraint(equalToConstant: Self.columns[4]).isActive = true
             layer.setAX("\(Self.id)-layer-\(n)", label: "\(row.name), \(loc("settings.video.col.layer"))")
+            let monitor = NSButton(
+                title: loc("settings.video.monitor"), target: self, action: #selector(monitorClicked(_:)))
+            monitor.controlSize = .small
+            monitor.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            monitor.bezelStyle = .rounded
+            monitor.tag = i
+            monitor.isEnabled = enabled && store.videoOutputs.video != false
+            monitor.toolTip = loc("settings.video.monitor.tip")
+            monitor.setAX("\(Self.id)-monitor-\(n)", label: "\(row.name), \(loc("settings.video.monitor.ax"))")
             let remove = NSButton(title: "", target: self, action: #selector(removeClicked(_:)))
             remove.image = Icon.fieldClear.image(loc("settings.video.remove"), compact: true)
             remove.isBordered = false
@@ -345,11 +360,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             remove.tag = i
             remove.isEnabled = enabled
             remove.setAX("\(Self.id)-remove-\(n)", label: "\(loc("settings.video.remove")) \(row.name)")
-            grid.addRow(with: [name, size, popup, black, layer, remove])
+            grid.addRow(with: [name, size, popup, black, layer, monitor, remove])
             nameFields.append(name)
             layerFields.append(layer)
             displayPopups.append(popup)
             blackBoxes.append(black)
+            monitorButtons.append(monitor)
             removeButtons.append(remove)
             let warning = NSTextField(wrappingLabelWithString: row.warning ?? "")
             warning.textColor = .systemOrange
@@ -358,7 +374,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             warningLabels.append(warning)
             if row.warning != nil {
                 let r = grid.addRow(with: [warning])
-                r.mergeCells(in: NSRange(location: 0, length: 6))
+                r.mergeCells(in: NSRange(location: 0, length: Self.columns.count))
             }
         }
         install(grid)
@@ -567,6 +583,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             await store.send(
                 command: .setStage(row.id, .object(["type": .string("keep_black"), "value": .bool(on)])))
         }
+    }
+
+    /// Opens the stage's monitor window, or brings it to the front when it is open (the stage host
+    /// draws it; nothing on this page changes).
+    @objc private func monitorClicked(_ sender: NSButton) {
+        let typed = endTyping()
+        guard let row = row(sender.tag) else { return }
+        commit(row.id, after: typed) { [store] in await store.setStageMonitor(row.id, open: true) }
     }
 
     @objc private func displayChosen(_ sender: NSPopUpButton) {

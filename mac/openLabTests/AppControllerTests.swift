@@ -391,7 +391,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(app.windows["1"]?.store === app.session.stores["1"])
         XCTAssertTrue(app.windows[second]?.store === app.session.stores[second])
         XCTAssertTrue(app.windows["1"]?.store !== app.windows[second]?.store)
-        XCTAssertEqual(app.windows["1"]?.window?.title, "Demo")
+        XCTAssertEqual(app.windows["1"]?.window?.title, "Demo — Main")
 
         _ = await app.session.close(doc: second, discardChanges: true)
         await assertEventually { app.windows.count == 1 }
@@ -1802,11 +1802,11 @@ final class AppControllerTests: XCTestCase {
         switcher.selectedSegment = 1
         _ = switcher.target?.perform(switcher.action, with: switcher)
         await assertEventually { wc.isShowMode }
-        XCTAssertEqual(wc.window?.title, String(format: loc("window.main.title.showMode"), "Demo"))
+        XCTAssertEqual(wc.window?.title, String(format: loc("window.main.title.showMode"), "Demo — Main"))
         switcher.selectedSegment = 0
         _ = switcher.target?.perform(switcher.action, with: switcher)
         await assertEventually { !wc.isShowMode }
-        XCTAssertEqual(wc.window?.title, "Demo")
+        XCTAssertEqual(wc.window?.title, "Demo — Main")
     }
 
     func testTransportStillWorksInShowMode() async throws {
@@ -1860,7 +1860,12 @@ final class AppControllerTests: XCTestCase {
             let before = wc.isVisible(area)
             app.toggleLayout(area)
             XCTAssertEqual(wc.isVisible(area), !before, "\(area)")
-            XCTAssertEqual(wc.footer.toggles[area]?.state, before ? .off : .on, "footer follows \(area)")
+            if area == .toolbar {
+                // The footer has no button of its own for the cue toolbar (the GO area's hides both).
+                XCTAssertNil(wc.footer.toggles[area])
+            } else {
+                XCTAssertEqual(wc.footer.toggles[area]?.state, before ? .off : .on, "footer follows \(area)")
+            }
             app.toggleLayout(area)
             XCTAssertEqual(wc.isVisible(area), before)
         }
@@ -2255,7 +2260,10 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { recents.count == 2 }
         // The engine answers `open` before it lists the new doc, so the list may still be on its way.
         await assertEventually { app.session.workspaces.contains { $0.path == url.path } }
-        XCTAssertTrue(app.windows.values.contains { $0.window?.title == "Lear" }, "the opened show's window")
+        // The title names the shown cue list too, which it learns from the snapshot after the list.
+        await assertEventually("the opened show's window") {
+            app.windows.values.contains { $0.window?.title.hasPrefix("Lear — ") == true }
+        }
         XCTAssertEqual(recents, [url, url])
     }
 
@@ -3497,16 +3505,14 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(wc.isVisible(.inspector))
         XCTAssertTrue(wc.isVisible(.masthead), "the masthead toggle is independent of Show Mode")
         XCTAssertTrue(wc.cueList.view.superview != nil && !wc.cueList.view.isHidden)
-        XCTAssertFalse(wc.footer.toggles[.toolbar]?.isEnabled ?? true)
+        XCTAssertNil(wc.footer.toggles[.toolbar], "the footer has one button for the GO area and toolbar")
         XCTAssertFalse(wc.footer.toggles[.inspector]?.isEnabled ?? true)
-        XCTAssertEqual(wc.footer.toggles[.toolbar]?.state, .off)
         wc.setVisible(.inspector, true)
         XCTAssertFalse(wc.isVisible(.inspector), "a toggle cannot bring it back in Show Mode")
         wc.setShowMode(false)
         XCTAssertTrue(wc.isVisible(.toolbar))
         XCTAssertFalse(wc.isVisible(.inspector), "the choice made before Show Mode is back")
         XCTAssertEqual(wc.footer.toggles[.inspector]?.state, .off)
-        XCTAssertTrue(wc.footer.toggles[.toolbar]?.isEnabled ?? false)
     }
 
     func testViewMenuGreysTheAreasShowModeHidesAndTheModeItemThatDoesNotApply() async throws {

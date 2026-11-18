@@ -152,7 +152,7 @@ final class MainWindowTests: XCTestCase {
             AX.masthead, AX.goButton, AX.standbyField, AX.standbyNotes, AX.cueToolbar, AX.cueList,
             AX.inspector, AX.sidebar, AX.sidebarTabs, AX.transportReset, AX.transportPause,
             AX.transportResume, AX.transportPanic, AX.footer, AX.modeSwitch, AX.statusLabel,
-            AX.settingsButton, AX.toggleToolbar, AX.toggleMasthead, AX.toggleInspector, AX.toggleSidebar,
+            AX.settingsButton, AX.toggleMasthead, AX.toggleInspector, AX.toggleSidebar,
         ] {
             XCTAssertNotNil(ax(root, id), id)
         }
@@ -224,7 +224,8 @@ final class MainWindowTests: XCTestCase {
 
     func testEachFooterToggleHidesAndReshowsItsArea() throws {
         let wc = try controller()
-        for area in LayoutArea.allCases {
+        // The cue toolbar has no footer button of its own: the masthead's hides it with the GO area.
+        for area in LayoutArea.allCases where area != .toolbar {
             let button = try XCTUnwrap(wc.footer.toggles[area])
             let before = wc.isVisible(area)
             button.performClick(nil)
@@ -298,7 +299,7 @@ final class MainWindowTests: XCTestCase {
             .flagged: "flagged", .flaggedInside: "flagged-inside", .warningMarker: "warning-marker",
             .outputOverridden: "output-overridden", .preview: "preview", .continueAuto: "continue-auto",
             .continueFollow: "continue-follow", .transportReset: "transport-reset", .transportPause: "transport-pause",
-            .transportResume: "transport-resume", .activeCuePanic: "active-cue-panic", .layoutToolbar: "layout-toolbar",
+            .transportResume: "transport-resume", .activeCuePanic: "active-cue-panic",
             .layoutMasthead: "layout-masthead", .layoutInspector: "layout-inspector", .layoutSidebar: "layout-sidebar",
             .settings: "settings", .statusNormal: "status-normal", .statusWaiting: "status-waiting",
             .statusWarning: "status-warning", .statusAlarm: "status-alarm", .playhead: "playhead",
@@ -306,7 +307,7 @@ final class MainWindowTests: XCTestCase {
             .fieldClear: "field-clear", .fieldChoose: "field-choose", .fieldJump: "field-jump",
             .reservedPopOut: "reserved-pop-out",
         ]
-        XCTAssertEqual(approved.count, 34)
+        XCTAssertEqual(approved.count, 33)
         for (icon, name) in approved {
             XCTAssertEqual(icon.drawing, name, "\(icon)")
             XCTAssertNil(icon.symbol, "\(icon) keeps a symbol")
@@ -349,7 +350,7 @@ final class MainWindowTests: XCTestCase {
         wc.window?.layoutIfNeeded()
         let footer = wc.footer
         for (area, name) in [
-            (LayoutArea.toolbar, "layout-toolbar"), (.masthead, "layout-masthead"), (.inspector, "layout-inspector"),
+            (LayoutArea.masthead, "layout-masthead"), (.inspector, "layout-inspector"),
             (.sidebar, "layout-sidebar"),
         ] {
             XCTAssertEqual(IconLookup.drawingName(of: footer.toggles[area]?.image), name, "\(area)")
@@ -1001,30 +1002,6 @@ final class MainWindowTests: XCTestCase {
         try check("the default size", size: window.frame.size)
         try check("the least size", size: window.minSize)
     }
-
-    func testShowModePaletteMeetsContrastTargets() {
-        typealias P = ShowModePalette
-        // WCAG AAA (7:1) for the text a performer reads at a distance, 3:1 for the GO button's edge.
-        XCTAssertGreaterThanOrEqual(P.contrast(P.standbyText, P.background), 7)
-        XCTAssertGreaterThanOrEqual(P.contrast(P.notesText, P.background), 7)
-        XCTAssertGreaterThanOrEqual(P.contrast(P.goText, P.goFill), 7)
-        XCTAssertGreaterThanOrEqual(P.contrast(P.goFill, P.background), 3)
-        XCTAssertEqual(P.contrast(P.RGB(r: 1, g: 1, b: 1), P.RGB(r: 0, g: 0, b: 0)), 21, accuracy: 0.001)
-        XCTAssertEqual(P.contrast(P.background, P.background), 1, accuracy: 0.001)
-    }
-
-    func testMastheadAppliesThePaletteInShowModeOnly() async throws {
-        let (wc, _) = try await demoController()
-        wc.setShowMode(true)
-        let c = try XCTUnwrap(
-            wc.masthead.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
-        XCTAssertEqual(c.redComponent, 0, accuracy: 0.001)
-        let go = try XCTUnwrap(
-            wc.masthead.goButton.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
-        XCTAssertEqual(Double(go.greenComponent), ShowModePalette.goFill.g, accuracy: 0.001)
-        wc.setShowMode(false)
-        XCTAssertNil(wc.masthead.layer?.backgroundColor)
-    }
 }
 
 /// Inspector tabs and the window frame, on the real engine: what the user sees of the window when
@@ -1204,20 +1181,23 @@ final class InspectorWindowFrameTests: XCTestCase {
                 XCTAssertLessThanOrEqual(column.frame.height, clip.bounds.height + 0.5, "the column fits: \(what)")
                 XCTAssertLessThanOrEqual(column.frame.width, clip.bounds.width + 0.5, "no scroller over it: \(what)")
                 XCTAssertTrue(levels.board.bounds.contains(levels.meter.frame), "the meters lie on the board: \(what)")
-                for control in [levels.defaultButton, levels.silentButton, levels.editPatchButton, levels.muteCheck] {
+                for control in [
+                    levels.defaultButton, levels.silentButton, levels.gangsButton, levels.clearMutesButton,
+                    levels.editPatchButton,
+                ] {
                     let frame = control.convert(control.bounds, to: clip)
                     XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "\(control.title): \(what)")
                 }
-                let gang = levels.gangField.convert(levels.gangField.bounds, to: clip)
-                XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(gang), "the gang box: \(what)")
             }
             levels.sideScroll.scrollerStyle = .overlay
         }
     }
 
-    /// A control in the Basics target row 16 pt wider than here (as on another macOS, whose controls and
-    /// fonts measure differently): opening the sidebar at the least window size narrows the file's path,
-    /// not the sidebar, and the window keeps its frame.
+    /// A control in the Basics target row wider than here (as on another macOS, whose controls and fonts
+    /// measure differently), so wide that the path would need less than its preferred 90 pt: at the least
+    /// window size, with the sidebar open, the file's path gives way, not the sidebar or the window. The
+    /// inspector spans the window under the sidebar, so the row has the window's width; the control is
+    /// widened by what the path has beyond 90 pt and 16 pt more.
     func testTheBasicsTargetRowGivesWayWhenItsControlsAreWider() async throws {
         window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
         settleLayout()
@@ -1226,13 +1206,16 @@ final class InspectorWindowFrameTests: XCTestCase {
         try clickTab("basics")
         let path = wc.inspector.targetPath
         XCTAssertFalse(path.isHidden, "an Audio cue's target is its file's path")
-        let choose = wc.inspector.chooseButton
-        let wider = choose.widthAnchor.constraint(equalToConstant: choose.frame.width + 16)
-        wider.isActive = true
-        defer { wider.isActive = false }
-        try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil)
+        if !wc.isVisible(.sidebar) { try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil) }
         settleLayout()
         XCTAssertTrue(wc.isVisible(.sidebar))
+        let spare = path.frame.width - 90
+        XCTAssertGreaterThan(spare, 0, "the path has its preferred width to begin with")
+        let choose = wc.inspector.chooseButton
+        let wider = choose.widthAnchor.constraint(equalToConstant: choose.frame.width + spare + 16)
+        wider.isActive = true
+        defer { wider.isActive = false }
+        settleLayout()
         XCTAssertEqual(window.frame, least, "the window keeps its frame")
         XCTAssertEqual(wc.sidebar.view.frame.width, 280, accuracy: 3, "the sidebar keeps its width")
         XCTAssertLessThan(path.frame.width, 90, "the path gave way")
@@ -1508,7 +1491,7 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertEqual(again.sidebar.view.frame.width, sidebar, accuracy: 1)
         let split = again.horizontalSplit
         XCTAssertEqual(
-            again.verticalSplit.frame.width + split.dividerThickness + again.sidebar.view.frame.width,
+            again.topColumn.frame.width + split.dividerThickness + again.sidebar.view.frame.width,
             split.bounds.width, accuracy: 1, "the cue list keeps the rest of the width")
     }
 
@@ -1530,6 +1513,37 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertEqual(again.sidebar.tabs.selectedSegment, 1)
         XCTAssertFalse(try XCTUnwrap(again.sidebar.activeTable.enclosingScrollView).isHidden, "the active cues show")
         XCTAssertTrue(try XCTUnwrap(again.sidebar.listTable.enclosingScrollView).isHidden)
+    }
+
+    /// View > Cue Toolbar is remembered on its own beside the GO-area toggle, which also hides the
+    /// toolbar: the toolbar hidden alone stays hidden, and the toolbar shown again under a hidden GO
+    /// area stays shown.
+    func testTheCueToolbarChoiceComesBackApartFromTheGoArea() async throws {
+        let url = try showFile("Toolbar")
+        let (doc, wc) = try await open(url)
+        app.keyWindow = { wc.window }
+        app.toggleLayout(.toolbar)
+        XCTAssertTrue(wc.cueToolbar.isHidden)
+        XCTAssertFalse(wc.masthead.isHidden)
+        await close(doc)
+
+        let (doc2, again) = try await open(url)
+        XCTAssertTrue(again.cueToolbar.isHidden, "the toolbar hidden alone stays hidden")
+        XCTAssertFalse(again.masthead.isHidden, "the GO area stays")
+        XCTAssertFalse(again.isVisible(.toolbar))
+
+        // The reverse: the GO area hidden (which hides the toolbar too), then the toolbar shown alone.
+        app.keyWindow = { again.window }
+        try toggle(.masthead, in: again)
+        XCTAssertTrue(again.masthead.isHidden)
+        app.toggleLayout(.toolbar)
+        XCTAssertFalse(again.cueToolbar.isHidden)
+        await close(doc2)
+
+        let (_, third) = try await open(url)
+        XCTAssertTrue(third.masthead.isHidden, "the GO area stays hidden")
+        XCTAssertFalse(third.cueToolbar.isHidden, "the toolbar shown alone stays shown")
+        XCTAssertEqual(third.footer.toggles[.masthead]?.state, .off)
     }
 
     func testShowModeIsNotSavedAsLayout() async throws {
@@ -1914,5 +1928,224 @@ final class ToolTipDelayTests: XCTestCase {
         XCTAssertEqual(defaults.integer(forKey: ToolTipDelay.defaultsKey), 650)
         defaults.set(100, forKey: ToolTipDelay.defaultsKey)
         XCTAssertEqual(defaults.integer(forKey: ToolTipDelay.defaultsKey), 100)
+    }
+}
+
+// MARK: Workspace window layout (QLab 5 comparison, UI map workspace.window / workspace.footer)
+
+extension MainWindowTests {
+    private func laidOut(_ wc: WorkspaceWindowController, width: CGFloat = 1200, height: CGFloat = 800) {
+        wc.window?.setContentSize(NSSize(width: width, height: height))
+        for _ in 0..<3 { wc.window?.layoutIfNeeded() }
+    }
+
+    private func inWindow(_ view: NSView) -> NSRect { view.convert(view.bounds, to: nil) }
+
+    /// Flow: sidebar open → it starts at the top of the window beside the GO area and ends above the
+    /// inspector; the inspector spans the window's width.
+    func testTheSidebarStartsBesideTheGoAreaAndEndsAboveTheInspectorWhichSpansTheWindow() async throws {
+        let (wc, _) = try await demoController()
+        laidOut(wc)
+        wc.setVisible(.sidebar, true)
+        laidOut(wc)
+        let content = try XCTUnwrap(wc.window?.contentView)
+        let side = inWindow(wc.sidebar.view)
+        let go = inWindow(wc.masthead)
+        let inspector = inWindow(wc.inspector.view)
+        XCTAssertEqual(side.maxY, go.maxY, accuracy: 0.5, "the sidebar starts where the GO area starts")
+        XCTAssertGreaterThanOrEqual(side.minX, go.maxX - 0.5, "beside the GO area, not under it")
+        XCTAssertGreaterThanOrEqual(side.minY, inspector.maxY - 0.5, "and ends above the inspector")
+        XCTAssertEqual(inspector.width, inWindow(content).width, accuracy: 0.5, "the inspector spans the window")
+        XCTAssertEqual(inspector.minX, 0, accuracy: 0.5)
+        let toolbar = inWindow(wc.cueToolbar)
+        XCTAssertLessThanOrEqual(toolbar.maxX, side.minX + 0.5, "the toolbar row is beside it too")
+        wc.setVisible(.sidebar, false)
+        laidOut(wc)
+        XCTAssertEqual(inWindow(wc.masthead).width, inWindow(content).width, accuracy: 0.5, "the GO area spans again")
+    }
+
+    /// Flow: the footer's warning mark sits with the right-hand buttons; one button hides the GO area and
+    /// toolbar together; no audio text or clock while all is well.
+    func testTheFooterKeepsTheWarningMarkWithTheRightButtonsAndOneButtonHidesTheGoAreaAndToolbar() async throws {
+        let (wc, rig) = try await demoController()
+        laidOut(wc)
+        let footer = wc.footer
+        footer.showWarnings(count: 2)
+        laidOut(wc)
+        let warn = footer.convert(footer.warningsButton.bounds, from: footer.warningsButton)
+        let inspector = try XCTUnwrap(footer.toggles[.inspector])
+        let sidebar = try XCTUnwrap(footer.toggles[.sidebar])
+        let inspectorFrame = footer.convert(inspector.bounds, from: inspector)
+        let sidebarFrame = footer.convert(sidebar.bounds, from: sidebar)
+        let settings = footer.convert(footer.settingsButton.bounds, from: footer.settingsButton)
+        let count = footer.convert(footer.countLabel.bounds, from: footer.countLabel)
+        XCTAssertLessThanOrEqual(warn.maxX, inspectorFrame.minX, "the warning mark is left of the inspector button")
+        XCTAssertLessThan(inspectorFrame.maxX, sidebarFrame.minX + 1)
+        XCTAssertLessThan(sidebarFrame.maxX, settings.minX + 1)
+        XCTAssertLessThan(inspectorFrame.minX - warn.maxX, 24, "and beside the right-hand buttons")
+        XCTAssertGreaterThan(warn.minX, count.maxX, "not among the centre text")
+        XCTAssertNil(footer.toggles[.toolbar], "no separate toolbar button")
+        // The one button.
+        let masthead = try XCTUnwrap(footer.toggles[.masthead])
+        masthead.performClick(nil)
+        XCTAssertTrue(wc.masthead.isHidden)
+        XCTAssertTrue(wc.cueToolbar.isHidden)
+        masthead.performClick(nil)
+        XCTAssertFalse(wc.masthead.isHidden)
+        XCTAssertFalse(wc.cueToolbar.isHidden)
+        // The openLab-only audio line and wall clock are gone while all is well.
+        await assertEventually("the engine's status arrives") {
+            try? await rig.advance(1)
+            return footer.presentation.summary.hasPrefix(loc("status.ok"))
+        }
+        XCTAssertEqual(footer.statusButton.title, "", "no audio words, only the mark that opens the details")
+        XCTAssertFalse(
+            footer.subviews.flatMap(\.subviews).contains {
+                $0 is NSTextField && $0.accessibilityIdentifier() == "wall-clock"
+            })
+    }
+
+    /// Flow: the window at its least width with the sidebar open → every list column is whole; the first
+    /// column gave up its blank width.
+    func testAtTheLeastWidthWithTheSidebarOpenEveryListColumnIsWhole() async throws {
+        let (wc, _) = try await demoController()
+        laidOut(wc)
+        wc.setVisible(.sidebar, true)
+        let least = try XCTUnwrap(wc.window?.minSize)
+        laidOut(wc, width: least.width, height: 700)
+        let scroll = try XCTUnwrap(wc.cueList.view as? NSScrollView)
+        let outline = wc.cueList.outlineView
+        XCTAssertEqual(
+            wc.window?.frame.width ?? 0, least.width, accuracy: 0.5, "the sidebar and the bars do not widen the window")
+        let widest = outline.tableColumns.map(\.width).reduce(0, +)
+        XCTAssertFalse(
+            scroll.hasHorizontalScroller,
+            "the columns fit: nothing to scroll sideways (outline frame \(outline.frame.width), spacing \(outline.intercellSpacing)) \(outline.tableColumns.map { "\($0.identifier.rawValue)=\($0.width)/\($0.minWidth)" }) in \(scroll.frame.width) inside \(scroll.contentView.bounds.width)"
+        )
+        XCTAssertLessThanOrEqual(widest, scroll.contentView.bounds.width, "every column is inside the list")
+        for column in outline.tableColumns {
+            XCTAssertGreaterThanOrEqual(column.width, column.minWidth, column.identifier.rawValue)
+            XCTAssertGreaterThanOrEqual(
+                column.width, column.headerCell.cellSize.width - 0.5, "\(column.identifier.rawValue)'s header is whole")
+        }
+        for id in ["preWait", "duration", "postWait"] {
+            let column = outline.column(withIdentifier: NSUserInterfaceItemIdentifier(id))
+            for row in 0..<outline.numberOfRows {
+                guard let cell = outline.view(atColumn: column, row: row, makeIfNecessary: true) as? CueCell,
+                    !cell.label.isHidden
+                else { continue }
+                XCTAssertLessThanOrEqual(
+                    cell.label.attributedStringValue.size().width, outline.tableColumns[column].width - 4,
+                    "\(id) row \(row) is whole: \(cell.label.stringValue)")
+            }
+        }
+        // Every cue-type button is inside the toolbar row, none cut off at the sidebar's edge.
+        let bar = wc.cueToolbar
+        for control in bar.segmentedControls {
+            let frame = bar.convert(control.bounds, from: control)
+            XCTAssertLessThanOrEqual(
+                frame.maxX, bar.bounds.maxX + 0.5, "a toolbar group reaches past the row: \(frame)")
+            XCTAssertGreaterThanOrEqual(frame.minX, 0)
+        }
+        XCTAssertGreaterThanOrEqual(
+            bar.segmentedControls.first?.width(forSegment: 0) ?? 0, CueToolbarView.leastSegmentWidth)
+        let slotsEnd = CueCell.statusSlots.map { $0.x + $0.width }.max() ?? 0
+        XCTAssertLessThanOrEqual(CueCell.statusWidth - slotsEnd, 4, "no blank width left in the first column")
+    }
+
+    /// Flow: the GO button and standby line are drawn alike in Edit and Show Mode, which only enlarges
+    /// them; readable in light and dark appearance.
+    func testTheGoButtonAndStandbyLineLookTheSameInShowModeJustLargerAndReadInLightAndDark() async throws {
+        let (wc, _) = try await demoController()
+        laidOut(wc)
+        let m = wc.masthead
+        func fill() -> CGColor? { m.goButton.layer?.backgroundColor }
+        let editFill = fill()
+        let editSize = m.goButton.frame.size
+        let editFont = m.standbyField.font?.pointSize ?? 0
+        let editBorder = m.goButton.layer?.borderColor
+        XCTAssertEqual(m.goButton.layer?.borderWidth, 3, "a green edge")
+        XCTAssertEqual(
+            NSColor(cgColor: try XCTUnwrap(editBorder))?.usingColorSpace(.sRGB)?.greenComponent ?? 0,
+            NSColor.systemGreen.usingColorSpace(.sRGB)?.greenComponent ?? 1, accuracy: 0.2)
+        wc.setShowMode(true)
+        laidOut(wc)
+        XCTAssertEqual(fill(), editFill, "the same face")
+        XCTAssertEqual(m.goButton.layer?.borderColor, editBorder)
+        XCTAssertGreaterThan(m.goButton.frame.width, editSize.width)
+        XCTAssertGreaterThan(m.goButton.frame.height, editSize.height)
+        XCTAssertGreaterThan(m.standbyField.font?.pointSize ?? 0, editFont)
+        // Contrast of the texts on their boxes, in each appearance.
+        func luminance(_ c: NSColor) -> Double {
+            let c = c.usingColorSpace(.sRGB) ?? c
+            func lin(_ v: CGFloat) -> Double {
+                Double(v) <= 0.03928 ? Double(v) / 12.92 : pow((Double(v) + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * lin(c.redComponent) + 0.7152 * lin(c.greenComponent) + 0.0722 * lin(c.blueComponent)
+        }
+        func contrast(_ a: NSColor, _ b: NSColor) -> Double {
+            let (x, y) = (luminance(a), luminance(b))
+            return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+        }
+        XCTAssertGreaterThanOrEqual(contrast(MastheadView.goText, MastheadView.goFill), 4.5)
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            appearance.performAsCurrentDrawingAppearance {
+                XCTAssertGreaterThanOrEqual(contrast(.labelColor, MastheadView.boxFill), 4.5, "\(name)")
+            }
+        }
+    }
+
+    /// Flow: a press in a row's status column moves the playhead there and the selection does not change.
+    func testAPressInTheStatusColumnMovesThePlayheadAndLeavesTheSelection() async throws {
+        let (wc, rig) = try await demoController()
+        laidOut(wc)
+        let intro: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let rain: ModelID = "00000000-0000-0000-0000-000000000022"
+        let list = wc.cueList
+        await assertEventually { rig.store.playheads[TestSnapshots.mainList] == intro }
+        list.selectAsUser([intro])
+        let outline = list.outlineView
+        let node = try XCTUnwrap(list.node(rain))
+        let row = outline.row(forItem: node)
+        XCTAssertGreaterThanOrEqual(row, 0, "Rain is listed")
+        let cell = outline.frameOfCell(atColumn: 0, row: row)
+        let point = outline.convert(NSPoint(x: cell.midX, y: cell.midY), to: nil)
+        let down = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: wc.window?.windowNumber ?? 0, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        outline.mouseDown(with: down)
+        await assertEventually("the playhead moved to Rain") { rig.store.playheads[TestSnapshots.mainList] == rain }
+        try await rig.advance()
+        XCTAssertEqual(list.selectedIDs(), [intro], "the selection did not change")
+        XCTAssertTrue(list.isPlayheadRow(rain))
+        XCTAssertTrue(wc.masthead.standbyField.stringValue.contains("Rain"), "the GO area stands by on Rain")
+        // The user's own click on a row selects it, as ever.
+        list.selectAsUser([rain])
+        XCTAssertEqual(list.selectedIDs(), [rain])
+    }
+
+    /// Flow: the window title names the shown cue list.
+    func testTheWindowTitleNamesTheShownCueList() async throws {
+        let (wc, rig) = try await demoController()
+        XCTAssertEqual(wc.window?.title, "openLab \u{2014} Main", "Edit Mode names the list from the start")
+        wc.workspaceName = "Demo"
+        XCTAssertEqual(wc.window?.title, "Demo \u{2014} Main")
+        let other = ModelID(UUID().uuidString.lowercased())
+        guard case .success = await rig.store.send(command: .addCueList(id: other, name: "Other", index: 1)) else {
+            return XCTFail("add list")
+        }
+        await assertEventually { rig.store.model?.cueLists.contains { $0.id == other } == true }
+        wc.cueList.showList(other)
+        await assertEventually("the title follows the shown list") { wc.window?.title == "Demo \u{2014} Other" }
+        guard case .success = await rig.store.send(command: .renameCueList(id: other, name: "Cart")) else {
+            return XCTFail("rename list")
+        }
+        await assertEventually("and its rename") { wc.window?.title == "Demo \u{2014} Cart" }
+        wc.setShowMode(true)
+        await assertEventually {
+            wc.window?.title == String(format: loc("window.main.title.showMode"), "Demo \u{2014} Cart")
+        }
     }
 }

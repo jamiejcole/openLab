@@ -49,6 +49,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// time into its action, a click in a timeline's point of its file. Only loaded cues are here;
     /// a cue leaving that state leaves.
     private(set) var loadedAt: [ModelID: LoadedStand] = [:]
+    /// The progress of each cue previewing with no run of its own counting, kept apart from
+    /// `progress` so a cue's earlier runs (an idle state) never hide it. Cleared when the preview ends.
+    private(set) var previews: [ModelID: ProgressItem] = [:]
     /// Audio cues' media lengths as the engine probed them (`media_durations`, `media_duration`).
     @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:] {
         didSet { mediaDurationsVersion &+= 1 }
@@ -134,8 +137,17 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         }
     }
 
+    /// A cue's progress as the cue list and inspector show it: its run's, or else its preview's (a
+    /// preview counts as a play does).
+    func shownProgress(_ cue: ModelID) -> ProgressItem? {
+        progress[cue] ?? previews[cue]
+    }
+
     /// A dropped connection leaves nothing known to be previewing (the next snapshot says what is).
     private func clearPreviewing() {
+        let ticking = Set(previews.keys)
+        previews = [:]
+        if !ticking.isEmpty { changes.send(.progress(ticking)) }
         guard !previewing.isEmpty else { return }
         let old = previewing
         previewing = []
@@ -148,11 +160,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func clearRuntime() {
         meters.reset()
         let live = Set(cueStates.filter { $0.value.state.isActive }.keys).union(previewing)
-        let ticking = Set(progress.keys)
+        let ticking = Set(progress.keys).union(previews.keys)
         let waiting = Set(waits.keys)
         cueStates = cueStates.filter { !$0.value.state.isActive }
         previewing = []
         progress = [:]
+        previews = [:]
         waits = [:]
         if !live.isEmpty { changes.send(.runtime(cues: live, playheads: [])) }
         if !ticking.isEmpty { changes.send(.progress(ticking)) }
@@ -364,14 +377,21 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             if engineChanged, d.showMode != showMode, !showModeUnsent { showMode = d.showMode }
         case .progress(let items, let w):
             let old = progress
+            let oldPreviews = previews
             let oldWaits = waits
+            // A previewing cue with no run of its own counting: the item is the preview's (the engine
+            // sends it in place of a loaded cue's point), whatever state an earlier run left.
+            let running = { (cue: ModelID) in self.cueStates[cue].map { Self.keepsProgress($0.state) } ?? false }
+            let previewed = items.filter { previewing.contains($0.cue) && !running($0.cue) }
+            let shown = items.filter { !previewing.contains($0.cue) || running($0.cue) }
+            previews = Dictionary(previewed.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
             // A voice fading out after its cue has ended (a panic) is still reported; the engine sends
             // nothing once all is quiet, so an item taken for an ended cue would never be cleared.
-            let live = items.filter { item in cueStates[item.cue].map { Self.keepsProgress($0.state) } ?? true }
+            let live = shown.filter { item in cueStates[item.cue].map { Self.keepsProgress($0.state) } ?? true }
             progress = Dictionary(live.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
             let oldLoaded = loadedAt
             loadedAt = Dictionary(
-                items.compactMap { item in
+                shown.compactMap { item in
                     guard cueStates[item.cue]?.state == .loaded else { return nil }
                     return (item.cue, LoadedStand(time: item.elapsed, position: item.position))
                 }, uniquingKeysWith: { $1 })
@@ -379,6 +399,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             for wait in w { next[wait.cue, default: [:]][wait.wait] = wait }
             waits = next
             let touched = Set(old.keys).union(progress.keys).union(oldLoaded.keys).union(loadedAt.keys)
+                .union(oldPreviews.keys).union(previews.keys)
             if !touched.isEmpty { changes.send(.progress(touched)) }
             let waited = Set(oldWaits.keys).union(next.keys)
             if !waited.isEmpty { changes.send(.waits(waited)) }
@@ -433,6 +454,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         mediaDurations = Dictionary((s.mediaDurations ?? []).map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
         warnings = s.warnings
         progress = [:]
+        previews = [:]
         waits = [:]
         runtimeWarnings = []
         // A new connection's health is unknown until its first `status`.
@@ -587,6 +609,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .preview(let cue, let active):
                 if active { previewing.insert(cue) } else { previewing.remove(cue) }
                 cues.insert(cue)
+                // The preview's line and count go with it (its fading voice may still be reported).
+                if !active, previews.removeValue(forKey: cue) != nil { progressEnded.insert(cue) }
             case .played(let cue, let on):
                 if on { played.insert(cue) } else { played.remove(cue) }
                 cues.insert(cue)

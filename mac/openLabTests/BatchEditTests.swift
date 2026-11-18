@@ -283,7 +283,7 @@ extension PlayheadFlowTests {
         XCTAssertEqual(inspector.nameField.placeholderString, loc("inspector.mixed"), "intro and the file name")
         XCTAssertEqual(inspector.preWaitField.stringValue, "")
         XCTAssertEqual(inspector.preWaitField.placeholderString, loc("inspector.mixed"))
-        XCTAssertEqual(inspector.postWaitField.stringValue, CueTime.format(0), "the same on both")
+        XCTAssertEqual(inspector.postWaitField.stringValue, CueTime.precise(0), "the same on both")
         XCTAssertEqual(inspector.colourPopup.titleOfSelectedItem, loc("inspector.mixed"))
         XCTAssertEqual(inspector.continuePopup.titleOfSelectedItem, loc("inspector.continue.do_not_continue"))
         XCTAssertEqual(inspector.flaggedCheck.state, .mixed)
@@ -307,7 +307,7 @@ extension PlayheadFlowTests {
         XCTAssertFalse(levels.faders[1].isMixed, "output 1 is the same on both")
         // One cue again: everything is that cue's.
         await selectAll([cues[1]])
-        XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.format(1.5))
+        XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.precise(1.5))
         XCTAssertTrue(inspector.numberField.isEnabled)
         XCTAssertEqual(inspector.numberField.alphaValue, 1)
         XCTAssertEqual(levels.matrix.mixed, [])
@@ -334,7 +334,7 @@ extension PlayheadFlowTests {
         await assertEventually("both wait") {
             [self.cues[0], self.cues[1]].allSatisfy { self.raw($0, "pre_wait")?.doubleValue == 2 }
         }
-        XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.format(2))
+        XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.precise(2))
         await wc.editor.undo()
         await assertEventually("one undo takes both back") {
             [self.cues[0], self.cues[1]].allSatisfy { (self.raw($0, "pre_wait")?.doubleValue ?? 0) == 0 }
@@ -428,7 +428,7 @@ extension PlayheadFlowTests {
         XCTAssertTrue(levels.matrix.hidesGangs)
         inspector.tabView.selectTabViewItem(withIdentifier: "levels")
         levels.select(.output(0))
-        XCTAssertFalse(levels.gangField.isEnabled, "a gang cannot be set while they differ")
+        XCTAssertFalse(levels.gangsButton.isEnabled, "a gang cannot be set while they differ")
         try typeLevel(.output(0), "5")
         await assertEventually("both outputs 1 at -5") {
             self.outputs(self.cues[0]).first == -5 && self.outputs(self.cues[1]).first == -5
@@ -440,7 +440,7 @@ extension PlayheadFlowTests {
         try await setLevels(cues[1]) { $0.gangs = [[0, 1]] }
         await assertEventually("ganged alike") { !levels.matrix.hidesGangs }
         levels.select(.output(0))
-        XCTAssertTrue(levels.gangField.isEnabled)
+        XCTAssertTrue(levels.gangsButton.isEnabled)
     }
 
     /// Notes typed with several cues selected and refused (over the engine's bound) are offered back,

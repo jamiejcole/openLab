@@ -1450,12 +1450,15 @@ fn request_name(r: &Request) -> &'static str {
         Request::ListDisplays => "list_displays",
         Request::ListStageMappings => "list_stage_mappings",
         Request::SetStageMapping { .. } => "set_stage_mapping",
+        Request::SetStageMonitor { .. } => "set_stage_monitor",
         #[cfg(feature = "test-support")]
         Request::StageTestCard { .. } => "stage_test_card",
         #[cfg(feature = "test-support")]
         Request::StageProbe { .. } => "stage_probe",
         #[cfg(feature = "test-support")]
         Request::DisplayProbe { .. } => "display_probe",
+        #[cfg(feature = "test-support")]
+        Request::MonitorProbe { .. } => "monitor_probe",
         #[cfg(feature = "test-support")]
         Request::Advance { .. } => "advance",
         #[cfg(feature = "test-support")]

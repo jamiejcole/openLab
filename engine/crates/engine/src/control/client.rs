@@ -70,6 +70,7 @@ impl Control {
             Inbox::Log { level, message } => self.eng.log(level, message),
             Inbox::Trigger { source, detail } => self.eng.observe_trigger(source, detail),
             Inbox::Stage(event) => self.stage_event(event),
+            Inbox::AppsGone => self.close_monitors(),
             Inbox::Shutdown => return Flow::Shutdown,
         }
         Flow::Continue
@@ -123,6 +124,27 @@ impl Control {
                     request: Request::SetStageMapping { stage, display },
                 } => {
                     self.set_stage_mapping(doc, id, stage, display, to);
+                    Flow::Continue
+                }
+                ClientMessage::Request {
+                    id,
+                    request: Request::SetStageMonitor { stage, open },
+                } => {
+                    self.set_stage_monitor(doc, id, stage, open, to);
+                    Flow::Continue
+                }
+                #[cfg(feature = "test-support")]
+                ClientMessage::Request {
+                    id,
+                    request:
+                        Request::MonitorProbe {
+                            stage,
+                            width,
+                            height,
+                            points,
+                        },
+                } => {
+                    self.monitor_probe(doc, id, stage, (width, height), points, to);
                     Flow::Continue
                 }
                 #[cfg(feature = "test-support")]

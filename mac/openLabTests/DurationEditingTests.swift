@@ -141,9 +141,9 @@ final class DurationEditingTests: XCTestCase {
         XCTAssertEqual(InspectorEdit.command(.loadTime, text: "2,5", cue: load, model: model), .failure(.decimalComma))
         let wait = try XCTUnwrap(model.cue(Self.wait))
         XCTAssertEqual(InspectorEdit.command(.loadTime, text: "1", cue: wait, model: model), .failure(.noLoadTime))
-        XCTAssertEqual(InspectorEdit.display(.loadTime, cue: load, model: model), "00:01.50")
+        XCTAssertEqual(InspectorEdit.display(.loadTime, cue: load, model: model), "00:01.500")
         XCTAssertEqual(InspectorEdit.display(.loadTime, cue: wait, model: model), "")
-        XCTAssertEqual(InspectorEdit.display(.duration, cue: wait, model: model), "00:02.00")
+        XCTAssertEqual(InspectorEdit.display(.duration, cue: wait, model: model), "00:02.000")
         XCTAssertEqual(InspectorEdit.display(.duration, cue: load, model: model), "")
     }
 
@@ -192,13 +192,13 @@ final class InspectorDurationTests: XCTestCase {
     func testWaitDurationIsEditedInTheBasicsTab() async {
         vc.setSelection([DurationEditingTests.wait])
         XCTAssertTrue(vc.durationField.isEnabled)
-        XCTAssertEqual(vc.durationField.stringValue, "00:02.00")
+        XCTAssertEqual(vc.durationField.stringValue, "00:02.000")
         edit(.duration, "90")
-        XCTAssertEqual(vc.durationField.stringValue, "01:30.00", "what will be stored, at once")
+        XCTAssertEqual(vc.durationField.stringValue, "01:30.000", "what will be stored, at once")
         await assertEventually("the engine's echo") {
             self.kind(DurationEditingTests.wait)?["duration"]?.doubleValue == 90
         }
-        XCTAssertEqual(vc.durationField.stringValue, "01:30.00")
+        XCTAssertEqual(vc.durationField.stringValue, "01:30.000")
         XCTAssertEqual(log.sent, 1, "one property sent")
         XCTAssertFalse(tabs().contains("loadTime"))
     }
@@ -212,7 +212,7 @@ final class InspectorDurationTests: XCTestCase {
         var after = kind(CueListHarness.fade)
         after?.set("duration", before?["duration"] ?? .null)
         XCTAssertEqual(after, before, "the rest of the kind is as it was")
-        await assertEventually("the Fade tab follows") { self.vc.fadeSettings.durationField.stringValue == "00:03.00" }
+        await assertEventually("the Fade tab follows") { self.vc.fadeSettings.durationField.stringValue == "00:03.000" }
     }
 
     func testALoopingAudioCueShowsItsOnePassLengthInTheInspector() async throws {
@@ -221,12 +221,14 @@ final class InspectorDurationTests: XCTestCase {
         let media = try XCTUnwrap(rig.store.mediaDurations[intro])
         XCTAssertNil(media.duration, "the Demo's Intro loops until devamped")
         vc.setSelection([intro])
-        await assertEventually("the field") { self.vc.durationField.stringValue == CueTime.format(media.trimmed ?? -1) }
+        await assertEventually("the field") {
+            self.vc.durationField.stringValue == CueTime.precise(media.trimmed ?? -1)
+        }
         XCTAssertFalse(vc.durationField.isEnabled, "read-only: it comes from the file")
         XCTAssertNotEqual(vc.durationField.stringValue, "")
         guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
         await assertEventually("running") { self.rig.store.cueStates[intro]?.state == .running }
-        XCTAssertEqual(vc.durationField.stringValue, CueTime.format(media.trimmed ?? -1), "while running")
+        XCTAssertEqual(vc.durationField.stringValue, CueTime.precise(media.trimmed ?? -1), "while running")
     }
 
     /// The length changes while the cue stays selected: the field follows the engine's new probe answer.
@@ -235,13 +237,13 @@ final class InspectorDurationTests: XCTestCase {
         await assertEventually("the probe") { self.rig.store.mediaDurations[intro]?.trimmed != nil }
         vc.setSelection([intro])
         let before = try XCTUnwrap(rig.store.mediaDurations[intro]?.trimmed)
-        await assertEventually("the field") { self.vc.durationField.stringValue == CueTime.format(before) }
+        await assertEventually("the field") { self.vc.durationField.stringValue == CueTime.precise(before) }
         let end = before / 2
         let trim = Command.setProperty(intro, .kindFields(["end_time": .double(end)]))
         guard case .success = await rig.store.send(command: trim) else { return XCTFail("trim") }
         await assertEventually("the new length") {
             self.rig.store.mediaDurations[intro]?.trimmed == end
-                && self.vc.durationField.stringValue == CueTime.format(end)
+                && self.vc.durationField.stringValue == CueTime.precise(end)
         }
     }
 
@@ -269,7 +271,7 @@ final class InspectorDurationTests: XCTestCase {
             ("1,5", "inspector.invalid.decimalComma"),
         ] {
             edit(.duration, text)
-            XCTAssertEqual(vc.durationField.stringValue, "00:02.00", text)
+            XCTAssertEqual(vc.durationField.stringValue, "00:02.000", text)
             XCTAssertEqual(vc.messageLabel.stringValue, loc(key), text)
         }
         await settle()
@@ -280,14 +282,14 @@ final class InspectorDurationTests: XCTestCase {
     func testLoadTimeTabForLoadCuesOnly() async {
         vc.setSelection([DurationEditingTests.load])
         XCTAssertTrue(tabs().contains("loadTime"))
-        XCTAssertEqual(vc.loadTimeField.stringValue, "00:01.50")
+        XCTAssertEqual(vc.loadTimeField.stringValue, "00:01.500")
         edit(.loadTime, "1:30")
         await assertEventually { self.kind(DurationEditingTests.load)?["load_to_time"]?.doubleValue == 90 }
         // A refused entry names the field's own range, minus included.
         for text in ["-", "--2", "-99999999"] {
             edit(.loadTime, text)
             XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.loadTime"), text)
-            XCTAssertEqual(vc.loadTimeField.stringValue, "01:30.00", text)
+            XCTAssertEqual(vc.loadTimeField.stringValue, "01:30.000", text)
         }
         vc.setSelection([DurationEditingTests.wait])
         XCTAssertFalse(tabs().contains("loadTime"))
@@ -304,7 +306,7 @@ final class InspectorDurationTests: XCTestCase {
         vc.setSelection([load])
         edit(.loadTime, "-2")
         await assertEventually("the engine's echo") { self.kind(load)?["load_to_time"]?.doubleValue == -2 }
-        XCTAssertEqual(vc.loadTimeField.stringValue, "-00:02.00")
+        XCTAssertEqual(vc.loadTimeField.stringValue, "-00:02.000")
         XCTAssertEqual(vc.messageLabel.stringValue, "")
         guard case .success = await rig.store.goFrom(list: TestSnapshots.mainList, cue: load)
         else { return XCTFail("go") }
@@ -345,15 +347,15 @@ final class InspectorDurationTests: XCTestCase {
     /// field shows the duration, and typing a post-wait sets the duration.
     func testAWaitCuesPostWaitFollowsItsDuration() async {
         vc.setSelection([DurationEditingTests.wait])
-        XCTAssertEqual(vc.postWaitField.stringValue, "00:02.00")
+        XCTAssertEqual(vc.postWaitField.stringValue, "00:02.000")
         edit(.postWait, "5")
         await assertEventually("the engine's echo") {
             self.kind(DurationEditingTests.wait)?["duration"]?.doubleValue == 5
         }
-        XCTAssertEqual(vc.durationField.stringValue, "00:05.00")
-        XCTAssertEqual(vc.postWaitField.stringValue, "00:05.00")
+        XCTAssertEqual(vc.durationField.stringValue, "00:05.000")
+        XCTAssertEqual(vc.postWaitField.stringValue, "00:05.000")
         edit(.duration, "1.5")
-        await assertEventually("the post-wait follows") { self.vc.postWaitField.stringValue == "00:01.50" }
+        await assertEventually("the post-wait follows") { self.vc.postWaitField.stringValue == "00:01.500" }
     }
 
     func testRefusedDurationRevertsAndWarns() async throws {
@@ -367,7 +369,7 @@ final class InspectorDurationTests: XCTestCase {
         vc.setSelection(["00000000-0000-0000-0000-0000000000ee"])
         edit(.duration, "7")
         await assertEventually { self.vc.messageLabel.stringValue.contains("does not exist") }
-        XCTAssertEqual(vc.durationField.stringValue, "00:02.00")
+        XCTAssertEqual(vc.durationField.stringValue, "00:02.000")
     }
 
     func testShowModeLocksBothFields() async {

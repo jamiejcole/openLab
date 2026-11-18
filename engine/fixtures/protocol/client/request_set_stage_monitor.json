@@ -1,0 +1,9 @@
+{
+  "type": "request",
+  "id": 70,
+  "request": {
+    "type": "set_stage_monitor",
+    "stage": "00000000-0000-0000-0000-000000000080",
+    "open": true
+  }
+}

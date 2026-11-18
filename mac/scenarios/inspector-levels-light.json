@@ -1,0 +1,11 @@
+{
+  "about": "The Levels tab in a light window: fader knobs with body against the track, off crosspoints as empty boxes, no empty meter bar under the buttons.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
+  "window": {"width": 1400, "height": 900},
+  "appearance": "light",
+  "steps": [
+    {"select": "2"},
+    {"tab": "levels"},
+    {"shot": "levels-light"}
+  ]
+}

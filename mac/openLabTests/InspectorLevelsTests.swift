@@ -116,7 +116,7 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(vc.audioLevels.matrix.outputCount, 2)
         XCTAssertEqual(vc.audioLevels.matrix.inputs, InspectorViewController.defaultInputs)
         XCTAssertEqual(vc.audioLevels.levelField.stringValue, "0.0", "the master is selected")
-        XCTAssertEqual(vc.audioLevels.cellLabel.stringValue, loc("levels.master"))
+        XCTAssertEqual(vc.audioLevels.selection, .master)
     }
 
     // MARK: Matrix rows follow the file (AUD-06)
@@ -726,12 +726,18 @@ final class InspectorLevelsTests: XCTestCase {
     /// inside its horizontal scroll, each with its value box and fader; scrolling stays smooth.
     func testACueOnA128OutputPatchShowsAll128OutputsInsideTheLevelsTabsScroll() async throws {
         // The cue's own levels name two outputs, as a cue made before its patch grew does.
-        try await reopenWithLevels(ofCue: 0, patchOutputs: 128) { _ in }
+        try await reopenWithLevels(ofCue: 0, patchOutputs: 128, tone: 6) { _ in }
         showCue(Self.intro)
         let p = vc.audioLevels
         vc.view.layoutSubtreeIfNeeded()
         XCTAssertEqual(p.matrix.outputCount, 128)
         XCTAssertEqual(p.faders.count, 129, "the main fader and one per output")
+        // Playing, so its meters are drawn (a cue not playing has no meter bars).
+        showMeters(p)
+        guard case .success = await store.transport(.start(cue: Self.intro)) else { return XCTFail("start") }
+        try await play(0.2)
+        store.meters.tick(0)
+        XCTAssertEqual(store.meters.channelCount(.cue(Self.intro)), 128)
         XCTAssertEqual(p.meter.columns?.count, 128, "a meter beside each output's fader")
         let m = p.matrix
         XCTAssertEqual(m.frame.width, LevelMatrixView.headW + 128 * LevelMatrixView.cellW)
@@ -791,7 +797,6 @@ final class InspectorLevelsTests: XCTestCase {
         }
         XCTAssertTrue(p.levelField.isHidden, "the box closes")
         XCTAssertEqual(p.levelField.stringValue, "-20.0", "the box shows the level")
-        XCTAssertEqual(p.cellLabel.stringValue, String(format: loc("levels.output"), 100))
         XCTAssertEqual(p.faders[100].doubleValue, -20, "output 100's fader is at the level")
         XCTAssertEqual(p.matrix.levels?.db(.output(99)), -20)
         let quieter = try await heard(Self.intro, channel: 99)
@@ -916,9 +921,21 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertGreaterThan(litPixels(after, vc.view.convert(bar, from: p.meter), in: vc.view), 20)
     }
 
-    /// Mute ticked on output 100, which the cue's levels do not list yet (its patch grew after the
-    /// cue was made): the box stays ticked because the mute is kept, so a level typed there later
-    /// is not heard until it is unmuted; undo takes each step back (#758).
+    /// The Mute item of `slot`'s right-click menu is ticked.
+    private func muteTicked(_ p: LevelsPanel, _ slot: LevelSet.Slot) throws -> Bool {
+        let box = p.matrix.rect(of: slot)
+        let at = p.matrix.convert(NSPoint(x: box.midX, y: box.midY), to: nil)
+        let event = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .rightMouseDown, location: at, modifierFlags: [], timestamp: 0,
+                windowNumber: p.matrix.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1,
+                pressure: 1))
+        return try XCTUnwrap(p.matrix.menu(for: event)?.items.first).state == .on
+    }
+
+    /// Mute chosen on output 100, which the cue's levels do not list yet (its patch grew after the
+    /// cue was made): the menu shows it ticked because the mute is kept, so a level typed there
+    /// later is not heard until it is unmuted; undo takes each step back (#758).
     func testMuteOnAnOutputTheCuesLevelsDoNotListIsKeptAndSilencesIt() async throws {
         try await reopenWithLevels(
             ofCue: 0, patchOutputs: 128, patchCrosspoints: [Self.output100ToDevice1], tone: 6
@@ -929,28 +946,26 @@ final class InspectorLevelsTests: XCTestCase {
         func output100() -> JSONValue? {
             self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.dropFirst(99).first
         }
-        p.select(.output(99))
-        XCTAssertTrue(p.muteCheck.isEnabled)
-        p.muteCheck.state = .on
-        fire(p.muteCheck)
+        XCTAssertTrue(p.muteFromMenu(.output(99)), "output 100 has a Mute")
         await assertEventually("the mute is kept") { output100()?["mute"] == .bool(true) }
         XCTAssertEqual(output100()?["db"], .double(-120), "still silent")
-        XCTAssertEqual(p.muteCheck.state, .on)
+        XCTAssertTrue(try muteTicked(p, .output(99)))
+        XCTAssertEqual(p.matrix.levels?.isMuted(.output(99)), true, "the box is drawn muted")
         guard case .success = await store.transport(.start(cue: Self.intro)) else { return XCTFail("start") }
         typeInBox(p, .output(99), "0")
         await assertEventually { output100()?["db"] == .double(0) }
         XCTAssertEqual(output100()?["mute"], .bool(true), "typing a level keeps the mute")
-        XCTAssertEqual(p.muteCheck.state, .on)
+        XCTAssertTrue(try muteTicked(p, .output(99)))
         let muted = try await heard(Self.intro, channel: 99)
         XCTAssertEqual(muted.device, 0, accuracy: 0.0001, "a muted output is not heard")
-        p.muteCheck.state = .off
-        fire(p.muteCheck)
+        XCTAssertTrue(p.muteFromMenu(.output(99)))
         await assertEventually { output100()?["mute"] == .bool(false) }
+        XCTAssertFalse(try muteTicked(p, .output(99)))
         let open = try await heard(Self.intro, channel: 99)
         XCTAssertGreaterThan(open.device, 0.01, "unmuted, it is heard")
         for _ in 0..<3 { _ = await store.undo() }
         await assertEventually("undo restores the levels") { self.modelKind(Self.intro)?["levels"] == before }
-        XCTAssertEqual(p.muteCheck.state, .off)
+        XCTAssertFalse(try muteTicked(p, .output(99)))
     }
 
     /// Strongly coloured pixels of `rep` (a render of `view`) inside `rect`, in `view`'s coordinates.
@@ -1033,27 +1048,23 @@ final class InspectorLevelsTests: XCTestCase {
             self.modelKind(Self.intro)?["levels"]?["crosspoints"]?.arrayValue?.count == 1
         }
         XCTAssertEqual(p.levelField.stringValue, "-12.0")
-        XCTAssertEqual(p.cellLabel.stringValue, String(format: loc("levels.cross"), 2, 1))
+        XCTAssertEqual(p.selection, .cross(input: 1, output: 0))
     }
 
     func testMuteKeepsTheLevel() async throws {
         vc.setSelection([Self.intro])
         let p = vc.audioLevels
-        p.select(.master)
-        XCTAssertFalse(p.muteCheck.isEnabled, "the cue master has no mute")
+        window.layoutIfNeeded()
+        XCTAssertFalse(p.muteFromMenu(.master), "the cue master has no mute")
         p.select(.cross(input: 0, output: 0))
-        XCTAssertFalse(p.muteCheck.isEnabled, "a route that is not listed is silent already")
+        XCTAssertFalse(p.muteFromMenu(.cross(input: 0, output: 0)), "a route that is not listed is silent already")
         type(p, "0")
         await assertEventually { self.sent.count == 1 }
-        XCTAssertTrue(p.muteCheck.isEnabled)
-        p.muteCheck.state = .on
-        fire(p.muteCheck)
+        XCTAssertTrue(p.muteFromMenu(.cross(input: 0, output: 0)))
         await assertEventually { self.sent.count == 2 }
         XCTAssertEqual(lastKind?["levels"]?["crosspoints"]?.arrayValue?.first?["mute"], .bool(true))
         XCTAssertEqual(lastKind?["levels"]?["crosspoints"]?.arrayValue?.first?["db"], .double(0))
-        p.select(.output(0))
-        p.muteCheck.state = .on
-        fire(p.muteCheck)
+        XCTAssertTrue(p.muteFromMenu(.output(0)))
         await assertEventually { self.sent.count == 3 }
         XCTAssertEqual(lastKind?["levels"]?["outputs"]?.arrayValue?.first?["mute"], .bool(true))
     }
@@ -1341,9 +1352,7 @@ final class InspectorLevelsTests: XCTestCase {
         vc.setSelection([Self.intro])
         let p = vc.audioLevels
         for o in 0..<2 {
-            p.select(.output(o))
-            p.gangField.stringValue = o == 0 ? "A" : "a"
-            endEditing(p.gangField, p)
+            p.assignGang(o == 0 ? "A" : "a", to: .output(o))
             await assertEventually { self.sent.count == o + 1 }
         }
         XCTAssertEqual(lastKind?["levels"]?["gangs"], .array([.array([.double(0), .double(1)])]))
@@ -1385,9 +1394,11 @@ final class InspectorLevelsTests: XCTestCase {
         vc.setSelection([Self.intro])
         vc.isLocked = true
         let p = vc.audioLevels
-        for c in [p.levelField, p.fader, p.muteCheck, p.gangField, p.silentButton] as [NSControl] {
+        for c in [p.levelField, p.fader, p.gangsButton, p.clearMutesButton, p.silentButton] as [NSControl] {
             XCTAssertFalse(c.isEnabled)
         }
+        window.layoutIfNeeded()
+        XCTAssertFalse(p.muteFromMenu(.output(0)), "no mute menu in Show Mode")
         type(p, "-6")
         drag(p, to: [-3])
         p.matrix.onDrag?(.master, -3, true)
@@ -1404,7 +1415,7 @@ final class InspectorLevelsTests: XCTestCase {
     func testFadeTabShowsTheFadeSettings() {
         vc.setSelection([Self.fade])
         let f = vc.fadeSettings
-        XCTAssertEqual(f.durationField.stringValue, "00:05.00")
+        XCTAssertEqual(f.durationField.stringValue, "00:05.000")
         XCTAssertEqual(f.curvePopup.indexOfSelectedItem, FadeSettingsPanel.curves.firstIndex(of: "equal_power"))
         XCTAssertEqual(f.stopCheck.state, .on)
         XCTAssertEqual(vc.fadeLevels.matrix.outputCount, 2, "the target Intro has two cue outputs")
@@ -1420,7 +1431,7 @@ final class InspectorLevelsTests: XCTestCase {
         // The duration has its own property: the rest of the kind is not resent.
         XCTAssertEqual(sent.last?.command["property"]?["type"], .string("duration"))
         XCTAssertEqual(sent.last?.command["property"]?["value"], .double(2.5))
-        XCTAssertEqual(f.durationField.stringValue, "00:02.50")
+        XCTAssertEqual(f.durationField.stringValue, "00:02.500")
 
         for (i, curve) in FadeSettingsPanel.curves.enumerated() {
             f.curvePopup.selectItem(at: i)
@@ -1493,7 +1504,7 @@ final class InspectorLevelsTests: XCTestCase {
         endEditing(f.durationField, f)
         await settle()
         XCTAssertTrue(sent.isEmpty)
-        XCTAssertEqual(f.durationField.stringValue, "00:05.00")
+        XCTAssertEqual(f.durationField.stringValue, "00:05.000")
         XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.time"))
     }
 
@@ -1551,16 +1562,155 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertFalse(vc.fadeLevels.activeCheck.isEnabled)
     }
 
-    /// The fader stops at 0 dB; a typed level above it is kept and shows pinned.
-    func testFaderTopIsZeroDbAndATypedLevelAboveItIsKept() async throws {
+    /// Levels tab, faders: they run from the workspace's minimum to its maximum with 0 dB part-way up, and
+    /// a level above 0 dB shows at its own place.
+    func testLevelsFadersReachTheWorkspaceMaximumWithZeroDbPartWay() async throws {
         vc.setSelection([Self.intro])
         let p = vc.audioLevels
-        XCTAssertEqual(p.fader.maxValue, 0)
+        XCTAssertEqual(p.fader.maxValue, store.volumeLimits.max)
+        XCTAssertGreaterThan(p.fader.maxValue, 0, "above 0 dB")
+        XCTAssertEqual(p.fader.doubleValue, 0, "0 dB is part-way, not at the top")
+        XCTAssertLessThan(p.fader.doubleValue, p.fader.maxValue)
         type(p, "+6")
         await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(6) }
         XCTAssertEqual(p.levelField.stringValue, "6.0")
-        XCTAssertEqual(p.fader.doubleValue, 0, "pinned at the top")
+        XCTAssertEqual(p.fader.doubleValue, 6, "at its own place")
         XCTAssertEqual(p.levels?.master, 6, "showing the fader did not change the level")
+        drag(p, to: [store.volumeLimits.max])
+        await assertEventually {
+            self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(self.store.volumeLimits.max)
+        }
+    }
+
+    /// Levels tab: a button clears every mute, a button opens the cue's patch editor, an off crosspoint is
+    /// drawn blank, and there is no block for a separately selected level.
+    func testLevelsTabClearsMutesOpensThePatchEditorDrawsOffCrosspointsBlankAndHasNoSelectedLevelBlock()
+        async throws
+    {
+        showCue(Self.intro)
+        window.layoutIfNeeded()
+        let p = vc.audioLevels
+        // No block for the chosen level: no name of it, no mute box, no gang box in the tab.
+        var texts: [String] = []
+        var boxes: [String] = []
+        func walk(_ v: NSView) {
+            if let t = v as? NSTextField, !t.isHidden { texts.append(t.stringValue) }
+            if let b = v as? NSButton, !b.isHidden { boxes.append(b.title) }
+            v.subviews.forEach(walk)
+        }
+        walk(p.view)
+        XCTAssertFalse(texts.contains(loc("levels.master")), "no name of the chosen level: \(texts)")
+        XCTAssertFalse(boxes.contains(loc("levels.mute")), "no mute box: \(boxes)")
+        XCTAssertEqual(
+            boxes.filter { !$0.isEmpty }.sorted(),
+            [
+                loc("levels.clearMutes"), loc("levels.editPatch"), loc("levels.gangs"), loc("levels.setDefault"),
+                loc("levels.setSilent"),
+            ]
+            .sorted(), "the column is buttons only")
+        // Clear Mutes: off with nothing muted; on after two mutes; one click un-mutes both.
+        XCTAssertFalse(p.clearMutesButton.isEnabled)
+        XCTAssertTrue(p.muteFromMenu(.output(0)))
+        XCTAssertTrue(p.muteFromMenu(.output(1)))
+        await assertEventually("both muted") {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.allSatisfy { $0["mute"] == .bool(true) }
+                == true
+        }
+        XCTAssertTrue(p.clearMutesButton.isEnabled)
+        p.clearMutesButton.performClick(nil)
+        await assertEventually("no mute is left") {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.allSatisfy { $0["mute"] == .bool(false) }
+                == true
+        }
+        XCTAssertEqual(
+            modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.map { $0["db"] }, [.double(0), .double(0)],
+            "the levels are kept")
+        await assertEventually { !p.clearMutesButton.isEnabled }
+        // Edit Patch opens the cue's patch.
+        XCTAssertTrue(p.editPatchButton.isEnabled)
+        var opened: [ModelID] = []
+        vc.onEditPatch = { opened.append($0) }
+        p.editPatchButton.performClick(nil)
+        XCTAssertEqual(opened.count, 1, "the patch editor is asked for the cue's patch")
+        // An off crosspoint is an empty box; a routed one shows its level.
+        p.select(.cross(input: 0, output: 0))
+        type(p, "-6")
+        await assertEventually("the route is made") {
+            self.modelKind(Self.intro)?["levels"]?["crosspoints"]?.arrayValue?.contains { $0["db"] == .double(-6) }
+                == true
+        }
+        await assertEventually { p.levels?.db(.cross(input: 0, output: 0)) == -6 }
+        let off = p.matrix.rect(of: .cross(input: 0, output: 1))
+        let on = p.matrix.rect(of: .cross(input: 0, output: 0))
+        let rep = try drawn(p.matrix)
+        XCTAssertEqual(inkedPixels(rep, off.insetBy(dx: 4, dy: 4)), 0, "an off crosspoint is blank")
+        XCTAssertGreaterThan(inkedPixels(rep, on.insetBy(dx: 4, dy: 4)), 0, "a routed one shows its level")
+    }
+
+    /// In a light window an off crosspoint is a light empty box and a fader knob has body against its
+    /// track; with no channel sent, the meter draws no bar at all.
+    func testLevelsTabReadsInALightWindowAndDrawsNoEmptyMeterBar() async throws {
+        showCue(Self.intro)
+        window.layoutIfNeeded()
+        let p = vc.audioLevels
+        func sum(_ c: NSColor) -> CGFloat { c.redComponent + c.greenComponent + c.blueComponent }
+        let off = p.matrix.rect(of: .cross(input: 0, output: 1)).insetBy(dx: 4, dy: 4)
+        func boxFill(_ name: NSAppearance.Name) throws -> CGFloat {
+            p.matrix.appearance = NSAppearance(named: name)
+            var rep: NSBitmapImageRep?
+            p.matrix.effectiveAppearance.performAsCurrentDrawingAppearance { rep = try? self.drawn(p.matrix) }
+            let r = try XCTUnwrap(rep)
+            let c = try XCTUnwrap(
+                r.colorAt(x: Int(off.minX), y: r.pixelsHigh - 1 - Int(off.minY))?.usingColorSpace(.sRGB))
+            return sum(c)
+        }
+        // The window's own background shows through the translucent box: compare against the dark box.
+        XCTAssertGreaterThan(try boxFill(.aqua), try boxFill(.darkAqua) + 0.9, "light box is light, dark box dark")
+        XCTAssertGreaterThan(try boxFill(.aqua), 1.5, "a light well in a light window")
+        // The knob: not near-white on a light window.
+        let fader = try XCTUnwrap(p.faders.first)
+        fader.appearance = NSAppearance(named: .aqua)
+        let rep = try renderView(fader, background: .white)
+        let knob = fader.cell.map { ($0 as? NSSliderCell)?.knobRect(flipped: fader.isFlipped) } ?? nil
+        let k = try XCTUnwrap(knob)
+        let c = try XCTUnwrap(
+            rep.colorAt(x: Int(k.midX * 2), y: Int((fader.bounds.height - k.midY) * 2))?.usingColorSpace(.sRGB))
+        XCTAssertLessThan(sum(c), 2.4, "the knob has body against a white window: \(c)")
+        // No channels sent: nothing drawn.
+        let meter = MeterView()
+        meter.frame = NSRect(x: 0, y: 0, width: 100, height: 22)
+        let mrep = try renderView(meter)
+        XCTAssertEqual(mrep.colorAt(x: 10, y: 10)?.alphaComponent ?? 1, 0, accuracy: 0.001, "no empty bar")
+    }
+
+    private func drawn(_ m: LevelMatrixView) throws -> NSBitmapImageRep {
+        let rep = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: Int(m.bounds.width), pixelsHigh: Int(m.bounds.height),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                bytesPerRow: 0, bitsPerPixel: 0))
+        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        m.draw(m.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+
+    /// Pixels in `rect` (view coordinates) that differ from the box's own fill: the digits.
+    private func inkedPixels(_ rep: NSBitmapImageRep, _ rect: NSRect) -> Int {
+        func sum(_ c: NSColor) -> CGFloat { c.redComponent + c.greenComponent + c.blueComponent }
+        guard let fill = rep.colorAt(x: Int(rect.minX), y: rep.pixelsHigh - 1 - Int(rect.minY))?.usingColorSpace(.sRGB)
+        else { return 0 }
+        var n = 0
+        // The bitmap is not flipped and the view is: pixel rows run from the view's bottom.
+        for vy in Int(rect.minY)..<Int(rect.maxY) {
+            let y = rep.pixelsHigh - 1 - vy
+            for x in Int(rect.minX)..<Int(rect.maxX) {
+                if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), abs(sum(c) - sum(fill)) > 0.3 { n += 1 }
+            }
+        }
+        return n
     }
 
     // MARK: A full 64-output patch
