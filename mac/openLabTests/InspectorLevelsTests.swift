@@ -36,6 +36,12 @@ final class InspectorLevelsTests: XCTestCase {
     ]
 
     override func setUp() async throws {
+        // A host that is the active app (after another suite) reports a window not yet ordered
+        // front as covered when a meter joins it, and its on-screen windows as covered: the
+        // meters these tests show are made with the check that believes the window.
+        let shipped = MeterView.defaultWindowIsCovered
+        MeterView.defaultWindowIsCovered = { _, _ in false }
+        addTeardownBlock { @MainActor in MeterView.defaultWindowIsCovered = shipped }
         if Self.engineFree.contains(where: { name.contains($0) }) {
             store = try Rig.offline(TestSnapshots.show()).store
         } else {
@@ -670,7 +676,6 @@ final class InspectorLevelsTests: XCTestCase {
     /// The window on screen with its meters running (a meter registers only while shown).
     private func showMeters(_ p: LevelsPanel) {
         window.orderFront(nil)
-        p.meter.windowIsCovered = { _, _ in false }
         p.meter.updateLive()
         XCTAssertGreaterThan(store.meters.visibleCount, 0, "the Levels tab's meter is on screen")
     }
