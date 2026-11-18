@@ -132,6 +132,7 @@ impl Stage {
             | CommandKind::Ramp { voice, .. }
             | CommandKind::RampSet { voice, .. }
             | CommandKind::Devamp { voice, .. }
+            | CommandKind::EndAt { voice, .. }
             | CommandKind::MoveVoice { voice, .. }
             | CommandKind::PauseVoice { voice } => on(*voice, *voice, false),
             CommandKind::ResumeVoice { voice, new_id } => on(*voice, *new_id, false),

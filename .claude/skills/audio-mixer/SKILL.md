@@ -110,6 +110,8 @@ The mixer renders voices into the device buffer on the audio thread. The control
 **End** is `Event::VoiceFinished { at, reason }`, `at` = first sample after the voice's last:
 - `EndOfStream`: producer dropped and every whole frame consumed.
 - `OutPoint`: `play_frames` played, the slice table's last play ended, or a devamp stop.
+  - **`EndAt { voice, entry, frames }`** (its cue's end time moved while it plays): entry `entry` becomes the table's last, `frames` long. A voice already past that point (or `frames` 0) ends on its next frame, so a paused one ends on the sample it resumes on.
+    - Only an entry played once changes length and only the last one grows; anything else is ignored. A grown entry needs its disk stream told the same (`StreamHandle::set_end`, skill `audio-streaming`), or the voice underruns at the old end. Truncating the table keeps its memory (nothing freed on the audio thread). A fade-out the change reaches restarts from the gain the voice has (as after a devamp), ending at 0.0 on the new last frame.
 - `Stopped`: `StopVoice` with `fade.frames == 0` cuts on sample `at`. With a fade the stop gain ramps to 0, finishing at `at + fade.frames`, the first sample where it is exactly 0. Nothing after that is read or counted as underrun.
 
 **Underrun** (source short and not ended): missing frames are silence, counted in `underrun_frames`; one `Event::Underrun { at }` per episode, at the first missing frame. Missing frames are not skipped: the voice resumes where it left off, so fades stay aligned with the audio. The first block read in full after an episode sends `Event::UnderrunEnded { at, frames }`: from `at` the voice plays on `frames` later than planned (a Video cue's picture follows it).

@@ -114,6 +114,12 @@ Leaving a loop early (devamp) is the one place the ring cannot be ahead: it is F
 - So a table's entries need not be contiguous in the file nor its indices consecutive: neighbouring entries of a skipped slice keep their own frames and `index`. The stream seeks whenever the next entry does not start where the decoder stands (as for a loop or a start offset), so the last frame of the slice before a skipped one is followed in the ring by the first frame of the next slice that plays: sample-exact, no gap.
 - Lengths, offsets, the fade-out and loop exits all follow the table, so they count only what plays.
 
+**A new end while it plays** (`StreamHandle::set_end(entry, frames)`, sent with the voice's `CommandKind::EndAt`): entry `entry` becomes the table's last, `frames` long, taken on the worker's next step (it is woken), the same way the voice takes it.
+- Shorter: nothing past it is written; frames already in the ring past it are never read, as the voice stops there.
+- Longer (the last entry, played once, inside the file): written on from what the ring holds of the entry, so a shortening followed by a lengthening neither repeats nor misses a frame (`last_written`).
+- A shortening that drops later entries the ring may hold seals the stream: its last entry never grows again (the engine never asks it to). A looping entry never changes length.
+- Until the worker has taken it the stream does not count as finished (`is_finished`, `wait_fed`, `wait_written`), so the offline driver never renders ahead of a lengthening.
+
 **Minimum loop length.** Every play of a loop is one `LoopReached` event and one boundary for the voice, so a loop of a few frames would flood the 1024-entry event queue and keep the mixer at its boundaries.
 - The engine builds tables with `plan_at_rate(range, marks, plays, start, device_rate)`: `plan` plus `check_loop_lengths`. Every entry that plays a slice again (more than one play, or the rest of a slice split by a start offset) must be
   at least `min_loop_frames(device_rate)` = `MIN_LOOP_MS` (50 ms) in whole frames, rounded down, less one frame of slack for slice times rounded to frames (2399 at 48 kHz). Otherwise `PlanError::LoopTooShort { slice, frames, min }`.

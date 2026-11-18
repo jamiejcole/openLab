@@ -108,6 +108,8 @@ impl Voices {
         let info = &ready.probed.info;
         let master = env.rate.get();
         let mut planned_at = master;
+        // A table handed in was planned elsewhere: its record knows from what.
+        let from_cue = !matches!(from, StartAt::Table(..));
         let planned = match from {
             StartAt::Offset(offset) => {
                 cue_slices(&spec, info, env.rate, offset).map(|s| (s, offset))
@@ -148,6 +150,7 @@ impl Voices {
                     stream,
                     total,
                     scale: Scale::new(master, rate),
+                    planned: from_cue.then(|| Box::new(Planned::of(&spec, ready.probed.info))),
                 },
                 shown,
             }),

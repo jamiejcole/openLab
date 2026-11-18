@@ -485,7 +485,8 @@ impl Outputs {
                 | CommandKind::Ramp { voice, .. }
                 | CommandKind::RampSet { voice, .. }
                 | CommandKind::MoveVoice { voice, .. }
-                | CommandKind::Devamp { voice, .. } => self.output_of(*voice),
+                | CommandKind::Devamp { voice, .. }
+                | CommandKind::EndAt { voice, .. } => self.output_of(*voice),
                 CommandKind::SetPatchRouting { patch, .. } | CommandKind::SnapPatch { patch } => {
                     slot_output(*patch).unwrap_or(0)
                 }
@@ -650,6 +651,8 @@ fn at_rate(kind: &mut CommandKind, from: u32, to: u32) {
         | CommandKind::MoveVoice { .. }
         | CommandKind::SetMaster { .. }
         | CommandKind::Devamp { .. }
+        // Its frames are the voice's own table's, at the device's rate already.
+        | CommandKind::EndAt { .. }
         | CommandKind::PauseVoice { .. }
         | CommandKind::ResumeVoice { .. } => {}
     }
@@ -663,6 +666,7 @@ fn command_voice(kind: &CommandKind) -> Option<VoiceId> {
         | CommandKind::RampSet { voice, .. }
         | CommandKind::MoveVoice { voice, .. }
         | CommandKind::Devamp { voice, .. }
+        | CommandKind::EndAt { voice, .. }
         | CommandKind::PauseVoice { voice } => Some(*voice),
         CommandKind::ResumeVoice { new_id, .. } => Some(*new_id),
         CommandKind::SetPatchRouting { .. }

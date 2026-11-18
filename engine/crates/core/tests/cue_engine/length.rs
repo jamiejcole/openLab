@@ -125,6 +125,48 @@ fn a_length_sent_while_paused_counts_from_the_resume() {
     assert_eq!(r.engine.next_deadline(), Some(1000));
 }
 
+/// An end time edited while the cue plays: the binary tells the length again, shorter or
+/// longer (never shorter than where the voice is). The end moves there and the continue comes
+/// once, on the new end, not again at the old one.
+#[test]
+fn a_length_told_again_while_it_plays_moves_the_end_and_its_continue() {
+    for (told, end) in [(300, 300), (800, 800), (100, 100)] {
+        let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 0);
+        r.at(0, Input::Go { list: list_id(1) });
+        r.length(0, 1, 500);
+        // Told on the sample it ends: carried out in the same call.
+        let mut started = starts(&r.length(100, 1, told));
+        if end > 100 {
+            assert_eq!(r.engine.next_deadline(), Some(end), "told {told}");
+        }
+        for t in (150..=1000).step_by(50) {
+            started.extend(starts(&r.at(t, Input::Tick)));
+        }
+        assert_eq!(started, vec![(cue_id(2), end)], "told {told}");
+    }
+}
+
+/// Told while paused, the new length holds on the resume: ahead of the pause point it plays
+/// on to it, behind it the action ends on the resume.
+#[test]
+fn a_length_told_again_while_paused_holds_on_the_resume() {
+    for (told, end) in [(300, 800), (150, 700)] {
+        let mut r = Rig::with_lookahead(vec![sound(1, AF), sound(2, DNC)], 0);
+        r.at(0, Input::Go { list: list_id(1) });
+        r.length(0, 1, 500);
+        r.at(200, Input::Pause { cue: cue_id(1) });
+        r.length(300, 1, told);
+        assert_eq!(r.engine.next_deadline(), None, "told {told}");
+        let a = r.at(700, Input::Resume { cue: cue_id(1) });
+        let mut started = starts(&a);
+        assert_eq!(r.engine.next_deadline().unwrap_or(700), end, "told {told}");
+        for t in (750..=1500).step_by(50) {
+            started.extend(starts(&r.at(t, Input::Tick)));
+        }
+        assert_eq!(started, vec![(cue_id(2), end)], "told {told}");
+    }
+}
+
 /// A resume committed with the planned end inside the lookahead window completes the run
 /// in that same call; the voice still plays to that sample, and its own reports for the fresh id
 /// come after the run is over and are stale.

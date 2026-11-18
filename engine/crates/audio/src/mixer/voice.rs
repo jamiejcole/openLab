@@ -391,8 +391,18 @@ impl Voice {
             Plays::Times(n) => Some(u64::from(n.saturating_sub(1))),
             Plays::Infinite => None,
         };
+        self.retail();
+    }
+
+    /// Sums the frames after the current play for the fade-out tail: the current entry's plays
+    /// left and every later entry. O(`MAX_SLICES`), once per entry or table change.
+    fn retail(&mut self) {
+        let Some(s) = self.slice(self.entry) else {
+            self.tail = Some(0);
+            return;
+        };
         let mut tail = self.plays_left.map(|n| n.saturating_mul(s.frames));
-        let mut i = k + 1;
+        let mut i = self.entry + 1;
         while let (Some(t), Some(next)) = (tail, self.slice(i)) {
             tail = match next.plays {
                 Plays::Times(n) => Some(t.saturating_add(next.frames.saturating_mul(u64::from(n)))),
@@ -401,6 +411,65 @@ impl Voice {
             i += 1;
         }
         self.tail = tail;
+    }
+
+    /// Its cue's end moved while it plays ([`CommandKind::EndAt`]): entry `k` becomes the
+    /// table's last, `frames` long, and the voice ends where it reaches that (on its next frame
+    /// if it is there already, so a paused voice ends when it resumes); `frames` 0 ends it on
+    /// its next frame. Only an entry played once changes length, and only the last one grows
+    /// (its disk stream writes the frames it gains). A fade-out the change cuts into or moves
+    /// fades on from the gain the voice is at, as after a devamp, so the gain never jumps.
+    pub(super) fn end_at(&mut self, k: usize, frames: u64) {
+        let Some(slices) = self.start.as_ref().map(|s| &s.slices) else {
+            return;
+        };
+        let len = slices.len();
+        let Some(cur) = slices.get(k).copied() else {
+            return;
+        };
+        let resized = frames != cur.frames;
+        if (resized && cur.plays != Plays::Times(1)) || (frames > cur.frames && k + 1 != len) {
+            return;
+        }
+        let before = self.remaining();
+        let played_in = cur.frames.saturating_sub(self.left);
+        let past = frames == 0 || self.entry > k || (self.entry == k && played_in >= frames);
+        let keep = if past { self.entry } else { k };
+        if let Some(s) = self.start.as_mut() {
+            // Truncating keeps the table's memory: nothing is freed on the audio thread.
+            s.slices.truncate(keep.saturating_add(1));
+            if !past && let Some(e) = s.slices.get_mut(k) {
+                e.frames = frames;
+            }
+        }
+        if past {
+            // Nothing more of it plays: the current play is its last, and it is over.
+            self.left = 0;
+            self.plays_left = Some(0);
+            self.devamp = None;
+        } else if self.entry == k {
+            self.left = frames - played_in;
+        }
+        self.retail();
+        let after = self.remaining();
+        let fout = self.fade_out.frames;
+        let fading = |r: Option<u64>| r.is_some_and(|r| r < fout);
+        if fout > 0
+            && after != before
+            && let Some(a) = after
+            && (fading(before) || fading(after) || self.refade.is_some())
+        {
+            let from = fade_out_gain(
+                &mut self.env_out,
+                self.fade_out,
+                before.map(|r| r.saturating_add(1)),
+                self.refade,
+            );
+            self.refade = Some(Refade {
+                from,
+                len: a.saturating_add(1),
+            });
+        }
     }
 
     /// Frames left after the next frame to be played.

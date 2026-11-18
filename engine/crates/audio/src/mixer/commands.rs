@@ -282,6 +282,15 @@ impl Mixer {
                     None => outbox.emit(Event::DevampIgnored { voice, at: t }),
                 }
             }
+            CommandKind::EndAt {
+                voice,
+                entry,
+                frames,
+            } => {
+                if let Some(v) = self.voice_mut(voice) {
+                    v.end_at(entry, frames);
+                }
+            }
             CommandKind::PauseVoice { voice } => {
                 if let Some(v) = self.voice_mut(voice) {
                     v.pause(t, usize::try_from(dezip).unwrap_or(usize::MAX));

@@ -573,6 +573,24 @@ impl CueEngine {
         }
     }
 
+    /// Whether `run` of `cue` still has its action's sound ahead or under way: loaded, or not
+    /// broken and before or in its action with a voice (paused included), or the cue's preview.
+    /// A run whose action this engine has ended (on its known length, perhaps dated a lookahead
+    /// ahead) has none: what its voice still plays is the tail of an ended action.
+    pub fn runs_action(&self, cue: CueId, run: RunId) -> bool {
+        let shown = match self.slots.get(&cue) {
+            Some(Slot::Loaded(loaded)) => loaded.run == run,
+            Some(Slot::Active(r)) => {
+                r.run == run
+                    && !r.is_broken()
+                    && r.phase != Phase::Done
+                    && !(matches!(r.phase, Phase::Action { .. }) && r.voice == Voice::None)
+            }
+            Some(Slot::Broken(_) | Slot::Lost(_)) | None => false,
+        };
+        shown || self.preview_run(cue) == Some(run)
+    }
+
     /// The list's playhead: the standing-by cue's id, `None` past the end or for an empty list.
     pub fn playhead(&self, list: CueListId) -> Option<CueId> {
         self.playheads.get(&list)?.cue
