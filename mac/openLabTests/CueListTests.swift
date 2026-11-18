@@ -5797,34 +5797,45 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "after a stop")
     }
 
-    /// Flow (#761): a looping pre-show group running past an hour in a list squeezed to its least width shows
-    /// its whole running time; the columns widen once when the shown time reaches an hour, not on every tick
-    /// before it, and narrow again after a stop.
-    func testAGroupLoopingPastAnHourShowsItsWholeTimeAtTheLeastWidth() async throws {
-        // The engine's device clock runs through the hour (a little over a minute of wall time).
-        executionTimeAllowance = 180
-        let rig = try await timingRig(loopingGroup: true)
+    /// The cue list at 520 pt wide, where the time columns are squeezed to their least.
+    private func leastList(_ rig: Rig) async throws -> (h: H, window: NSWindow, duration: () throws -> NSTableColumn) {
         let h = try await harness(rig)
         let window = try XCTUnwrap(self.window)
         window.setContentSize(NSSize(width: 520, height: 400))
         window.layoutIfNeeded()
-        func duration() throws -> NSTableColumn {
-            try XCTUnwrap(h.spy.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration")))
-        }
+        return (
+            h, window,
+            { try XCTUnwrap(h.spy.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration"))) }
+        )
+    }
+
+    /// Flow (#761): a looping pre-show group running past an hour in a list squeezed to its least width shows
+    /// its whole running time; the columns widen once when the shown time reaches an hour, not on the ticks
+    /// before it nor after, and narrow again after a stop.
+    func testAGroupLoopingPastAnHourShowsItsWholeTimeAtTheLeastWidth() async throws {
+        let rig = try await timingRig(loopingGroup: true)
+        let (h, window, duration) = try await leastList(rig)
         let narrow = try duration().width
-        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
-        try await rig.advance(2000)
-        await assertEventually { (rig.store.progress[self.loopGroup]?.elapsed ?? 0) >= 1999 }
-        XCTAssertNil(rig.store.progress[loopGroup]?.remaining, "a looping group has no end")
-        var widths = Set<CGFloat>()
-        for _ in 0..<4 {
-            try await rig.advance(100)
-            window.layoutIfNeeded()
-            widths.insert(try duration().width)
+        // Load to a time just under the hour (the running time counts from there), then GO.
+        guard case .success = await rig.store.transport(.load(cue: loopGroup, at: 3590)) else {
+            return XCTFail("load")
         }
-        XCTAssertEqual(widths, [narrow], "ticks below the hour leave the column alone")
-        try await rig.advance(1400)
-        await assertEventually { (rig.store.progress[self.loopGroup]?.elapsed ?? 0) >= 3790 }
+        await assertEventually { rig.store.cueStates[self.loopGroup]?.state == .loaded }
+        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await rig.advance(0.5)
+        await assertEventually { (rig.store.progress[self.loopGroup]?.elapsed ?? 0) >= 3590 }
+        XCTAssertNil(rig.store.progress[loopGroup]?.remaining, "a looping group has no end")
+        window.layoutIfNeeded()
+        try await rig.advance(5)
+        await assertEventually { (rig.store.progress[self.loopGroup]?.elapsed ?? 0) >= 3595 }
+        window.layoutIfNeeded()
+        // The tick is handed to the list again by hand: a layout the app already ran on its own would
+        // otherwise hide a tick that asks for one.
+        h.vc.handle(.progress([loopGroup]))
+        XCTAssertFalse(h.vc.view.needsLayout, "a tick below the hour lays nothing out")
+        XCTAssertEqual(try duration().width, narrow, "and leaves the column alone")
+        try await rig.advance(10)
+        await assertEventually { (rig.store.progress[self.loopGroup]?.elapsed ?? 0) >= 3600 }
         window.layoutIfNeeded()
         let cell = try XCTUnwrap(h.cell("duration", loopGroup))
         let shown = cell.label.stringValue
@@ -5833,9 +5844,12 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             cell.label.attributedStringValue.size().width, wide - 4, "\(shown) is drawn whole at \(wide) pt")
         XCTAssertGreaterThan(wide, narrow, "the column widened for it")
-        try await rig.advance(30)
+        try await rig.advance(5)
+        await assertEventually { (rig.store.progress[self.loopGroup]?.elapsed ?? 0) >= 3605 }
         window.layoutIfNeeded()
-        XCTAssertEqual(try duration().width, wide, "and not again on later ticks")
+        h.vc.handle(.progress([loopGroup]))
+        XCTAssertFalse(h.vc.view.needsLayout, "later ticks lay nothing out")
+        XCTAssertEqual(try duration().width, wide, "and the column stays wide")
         guard case .success = await rig.store.transport(.stop(cue: loopGroup, fadeOut: nil)) else {
             return XCTFail("stop")
         }
@@ -5843,6 +5857,25 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { self.rig(rig, isStopped: self.loopGroup) }
         window.layoutIfNeeded()
         XCTAssertEqual(try duration().width, narrow, "narrow again once nothing shown needs the hour")
+    }
+
+    /// A looping group loaded to a time past an hour reads that time whole at the least width.
+    func testALoopingGroupLoadedPastAnHourShowsItsWholeTimeAtTheLeastWidth() async throws {
+        let rig = try await timingRig(loopingGroup: true)
+        let (h, window, duration) = try await leastList(rig)
+        let narrow = try duration().width
+        guard case .success = await rig.store.transport(.load(cue: loopGroup, at: 3900)) else {
+            return XCTFail("load")
+        }
+        await assertEventually("the loaded time is shown") {
+            h.cell("duration", self.loopGroup)?.label.stringValue == "1:05:00.00"
+        }
+        window.layoutIfNeeded()
+        let cell = try XCTUnwrap(h.cell("duration", loopGroup))
+        let wide = try duration().width
+        XCTAssertLessThanOrEqual(
+            cell.label.attributedStringValue.size().width, wide - 4, "1:05:00.00 is drawn whole at \(wide) pt")
+        XCTAssertGreaterThan(wide, narrow, "the column widened for it")
     }
 
     private func rig(_ rig: Rig, isStopped id: ModelID) -> Bool { rig.store.progress[id] == nil }
