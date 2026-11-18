@@ -879,8 +879,10 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually {
             self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[98]["db"] == .double(-120)
         }
-        try await play(3)
-        store.meters.tick(1)
+        try await play(0.2)
+        store.meters.reset()  // what was shown before the edit is forgotten: only new peaks count
+        try await play(0.3)
+        store.meters.tick(0)
         XCTAssertEqual(store.meters.level(.cue(Self.intro), channel: 98), 0, "a silenced output shows nothing")
         let dark = NSRect(x: c.first + 98 * c.step, y: 0, width: c.width, height: p.meter.bounds.height)
         let after = try renderView(vc.view)
