@@ -27,7 +27,9 @@ extension WorkspaceWindowController {
         // The preferred sizes are part of the layout whether or not their area is shown now.
         if let h = layout.inspectorHeight { inspectorHeightConstraint?.constant = max(h, Self.minInspectorHeight) }
         if let w = layout.sidebarWidth { sidebarWidthConstraint?.constant = max(w, 200) }
-        for area in LayoutArea.allCases {
+        // The GO-area toggle also sets the cue toolbar, so it goes first: the toolbar's own saved choice
+        // (View > Cue Toolbar) is applied after it and is not overwritten.
+        for area in [LayoutArea.masthead] + LayoutArea.allCases.filter({ $0 != .masthead }) {
             if let on = layout.shown[area] { setVisible(area, on) }
         }
         // An area shown by default has no entry to show it again: its split is applied now.

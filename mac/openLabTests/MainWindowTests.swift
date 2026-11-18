@@ -1510,6 +1510,37 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(again.sidebar.listTable.enclosingScrollView).isHidden)
     }
 
+    /// View > Cue Toolbar is remembered on its own beside the GO-area toggle, which also hides the
+    /// toolbar: the toolbar hidden alone stays hidden, and the toolbar shown again under a hidden GO
+    /// area stays shown.
+    func testTheCueToolbarChoiceComesBackApartFromTheGoArea() async throws {
+        let url = try showFile("Toolbar")
+        let (doc, wc) = try await open(url)
+        app.keyWindow = { wc.window }
+        app.toggleLayout(.toolbar)
+        XCTAssertTrue(wc.cueToolbar.isHidden)
+        XCTAssertFalse(wc.masthead.isHidden)
+        await close(doc)
+
+        let (doc2, again) = try await open(url)
+        XCTAssertTrue(again.cueToolbar.isHidden, "the toolbar hidden alone stays hidden")
+        XCTAssertFalse(again.masthead.isHidden, "the GO area stays")
+        XCTAssertFalse(again.isVisible(.toolbar))
+
+        // The reverse: the GO area hidden (which hides the toolbar too), then the toolbar shown alone.
+        app.keyWindow = { again.window }
+        try toggle(.masthead, in: again)
+        XCTAssertTrue(again.masthead.isHidden)
+        app.toggleLayout(.toolbar)
+        XCTAssertFalse(again.cueToolbar.isHidden)
+        await close(doc2)
+
+        let (_, third) = try await open(url)
+        XCTAssertTrue(third.masthead.isHidden, "the GO area stays hidden")
+        XCTAssertFalse(third.cueToolbar.isHidden, "the toolbar shown alone stays shown")
+        XCTAssertEqual(third.footer.toggles[.masthead]?.state, .off)
+    }
+
     func testShowModeIsNotSavedAsLayout() async throws {
         let url = try showFile("Mode")
         let (doc, wc) = try await open(url)
