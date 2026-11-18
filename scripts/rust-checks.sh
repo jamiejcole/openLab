@@ -69,7 +69,8 @@ tests() {
     OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast || status=$?
   fi
   echo "== machine, as the tests found it:"
-  grep '^decoder ' "$skips" | sed 's/^/   /' || echo "   (nothing reported)"
+  # Each test process of a split run reports the decoders it found: list each once.
+  grep '^decoder ' "$skips" | sort -u | sed 's/^/   /' || echo "   (nothing reported)"
   echo "== SKIPPED $(grep -c '^skip ' "$skips" || true) test(s):"
   grep '^skip ' "$skips" | sed 's/^skip /   /' || true
   return "$status"
