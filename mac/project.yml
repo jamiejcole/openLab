@@ -95,6 +95,8 @@ targets:
       - openLabUITests
       # The test media writers, shared with the unit tests.
       - path: openLabTests/TestMedia.swift
+      # The protocol version the app speaks, for the tests' own engine requests.
+      - path: openLab/Engine/ProtocolVersion.swift
       - path: TestShows
         type: folder
         buildPhase: resources
@@ -103,5 +105,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLabUITests
+        INFOPLIST_KEY_NSPrincipalClass: OpenLabUITestObserver
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         TEST_TARGET_NAME: openLab

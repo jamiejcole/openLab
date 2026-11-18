@@ -417,7 +417,6 @@ extension VideoCueTests {
         try assertGeometryFits("least size")
     }
 
-    /// A Video cue on no stage: the thumbnail draws no stage and cannot be dragged.
     /// The thumbnail is an accessibility element with its name, so VoiceOver and the UI tests reach it.
     func testTheThumbnailIsAnAccessibilityElement() {
         let thumbnail = GeometryControls().thumbnail
@@ -426,6 +425,7 @@ extension VideoCueTests {
         XCTAssertEqual(thumbnail.accessibilityLabel(), loc("inspector.geometry.thumbnail"))
     }
 
+    /// A Video cue on no stage: the thumbnail draws no stage and cannot be dragged.
     func testACueOnNoStageShowsNoStageInTheThumbnail() async throws {
         try await showGeometry(of: 6)
         XCTAssertTrue(g.thumbnail.hasStage)

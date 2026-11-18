@@ -107,13 +107,14 @@ final class PatchEditorUITests: XCTestCase {
     /// Picks `title` in `popup`'s menu.
     private func choose(_ title: String, in popup: XCUIElement, app: XCUIApplication, line: UInt = #line) {
         let item = app.menuItems[title]
-        popup.click()
-        // A pop-up opened while another process holds focus can fail to show its menu: once more.
-        if !item.waitForExistence(timeout: 3) {
-            app.typeKey(.escape, modifierFlags: [])
+        // A pop-up opened while another process holds focus can fail to show its menu: it is clicked
+        // again (never Esc, which panics the show). A menu that opened late is shut by that click and
+        // opened by the next.
+        for _ in 0..<3 {
             popup.click()
+            if item.waitForExistence(timeout: 3) { break }
         }
-        XCTAssertTrue(item.waitForExistence(timeout: 5), "\(title) is offered", line: line)
+        XCTAssertTrue(item.exists, "\(title) is offered", line: line)
         item.click()
         XCTAssertTrue(waitFor("value == '\(title)'", popup), "\(title) is shown", line: line)
     }

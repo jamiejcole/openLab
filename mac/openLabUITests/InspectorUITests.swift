@@ -287,6 +287,18 @@ final class VideoUITests: XCTestCase {
         return ((probe?["data"] as? [String: Any])?["frame"] as? NSNumber)?.intValue
     }
 
+    /// `frameShown` read again, a fifth of a second apart, until `done` holds or ten seconds pass;
+    /// the last reading.
+    private func frameShown(on display: String, until done: (Int?) -> Bool) async -> Int? {
+        let deadline = Date().addingTimeInterval(10)
+        var shown = await frameShown(on: display)
+        while !done(shown), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            shown = await frameShown(on: display)
+        }
+        return shown
+    }
+
     /// A new workspace on two virtual displays has a stage on each; a Video cue made with Cmd-3,
     /// given a movie with the file chooser (T) and the second stage in its I/O tab, plays there on
     /// GO and is gone from it once stopped (QLab 5 manual, Video cues).
@@ -329,17 +341,14 @@ final class VideoUITests: XCTestCase {
         row.click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
         XCTAssertTrue(cueStates("Running", in: app).firstMatch.waitForExistence(timeout: 10), "GO plays it")
-        var shown: Int?
-        var deadline = Date().addingTimeInterval(10)
-        while shown == nil, Date() < deadline { shown = await frameShown(on: "V2") }
+        var shown = await frameShown(on: "V2", until: { $0 != nil })
         XCTAssertNotNil(shown, "the movie's frames are on the second display")
         let first = await frameShown(on: "V1")
         XCTAssertNil(first, "and not on the first")
 
         app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
         XCTAssertTrue(waitFor("count == 0", cueStates("Running", in: app)), "stopped")
-        deadline = Date().addingTimeInterval(10)
-        while shown != nil, Date() < deadline { shown = await frameShown(on: "V2") }
+        shown = await frameShown(on: "V2", until: { $0 == nil })
         XCTAssertNil(shown, "the picture is gone from the display")
     }
 }

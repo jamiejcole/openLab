@@ -121,7 +121,9 @@ extension XCTestCase {
             return (try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]) ?? [:]
         }
         do {
-            try await send(["type": "hello", "protocol_version": 4, "token": token, "client_name": "openLab UI tests"])
+            try await send([
+                "type": "hello", "protocol_version": protocolVersion, "token": token, "client_name": "openLab UI tests",
+            ])
             while try await next()["type"] as? String != "welcome" {}
             try await send(["type": "request", "id": 1, "request": request])
             while true {
