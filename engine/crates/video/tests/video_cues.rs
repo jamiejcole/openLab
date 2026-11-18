@@ -2249,7 +2249,17 @@ fn a_stage_host_relaunched_while_a_movie_holds_its_last_frame_shows_that_frame()
 const HAND_LIMITS: [&str; 3] = ["--media-limits", "400,400", "--media-clock-by-hand"];
 
 /// A copy of a good movie under a name that makes the test-support decoder hang or crash.
+/// A crash or hang switch may only be used by a test in [`stage_host_faults`], which the CI
+/// release run takes after the rest of the suite by that module's path.
 fn faulty(dir: &Path, good: &Path, fault: &str) -> PathBuf {
+    let crash_or_hang = ["openlab-test-crash-", "openlab-test-hang-"]
+        .iter()
+        .any(|switch| fault.starts_with(switch));
+    let test = std::thread::current().name().unwrap_or_default().to_owned();
+    assert!(
+        !crash_or_hang || test.starts_with("stage_host_faults::"),
+        "{test} uses {fault}: move it into mod stage_host_faults"
+    );
     let path = dir.join(format!("{fault}.mov"));
     std::fs::copy(good, &path).unwrap();
     path
@@ -2258,106 +2268,6 @@ fn faulty(dir: &Path, good: &Path, fault: &str) -> PathBuf {
 /// Waits (bounded, ticking) until cue `n` is broken.
 fn wait_broken(s: &mut OfflineShow, n: u128) -> bool {
     s.wait_for(|c| c.engine().state(id(n)) == CueState::Broken)
-}
-
-/// A picture whose file's open hangs (a stalled volume) holds up nothing else: the stage host
-/// keeps answering (it is not killed and relaunched), its keep-black stage stays black, another
-/// picture plays on it, and only the hung cue breaks, with the reason.
-#[test]
-fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (250, 25));
-    let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
-    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
-    let mut s = video_show_args(ws, &HAND_LIMITS);
-    let pid = s.control().stage_host_pid().unwrap();
-    // The hung open's start never stops waiting: the clock moves on meanwhile, as live.
-    s.wait_for_pictures(false);
-    s.take_outbound();
-    start(&mut s, 2);
-    s.run(BLOCK);
-    let (frame, colours) = probe_at(&mut s, &[[0.5, 0.5]]);
-    assert_eq!(frame, None, "nothing drawn for the hung picture");
-    assert_eq!(
-        colours,
-        vec![[0, 0, 0, 255]],
-        "the keep-black stage is black"
-    );
-    let at = start(&mut s, 1);
-    // The other picture opens before the clock moves on: it starts on its sample.
-    assert!(s.wait_for(|c| c.pictures_waiting() == 1));
-    run_to(&mut s, at + samples(0.5));
-    let now = on_stage(&mut s, "the other picture plays");
-    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
-    assert_eq!(
-        state(&s, 2),
-        CueState::Running,
-        "not failed before its limit"
-    );
-    // Past the open's limit.
-    s.control().advance_stage_media_clock(500);
-    assert!(wait_broken(&mut s, 2), "the hung cue breaks");
-    assert_eq!(
-        s.control().engine().broken_reason(id(2)),
-        Some(openlab_core::BrokenReason::DecodeFailed)
-    );
-    let texts = notice_texts(&mut s);
-    assert!(
-        texts.iter().any(|(c, t)| c == "video_decode_failed"
-            && t.contains("to open (reading the movie's tracks)")),
-        "{texts:?}"
-    );
-    expect_state(&s, 1, CueState::Running, "the other cue plays on");
-    assert_eq!(
-        s.control().stage_host_pid(),
-        Some(pid),
-        "never killed as hung"
-    );
-}
-
-/// A picture whose frame decode hangs fails alone after the frame limit; the stage host keeps
-/// running and answering.
-#[test]
-fn a_picture_whose_decode_hangs_fails_alone() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (250, 25));
-    let hung = faulty(dir.path(), &good, "openlab-test-hang-decode");
-    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
-    let mut s = video_show_args(ws, &HAND_LIMITS);
-    let pid = s.control().stage_host_pid().unwrap();
-    // Both opened ahead (standing by), so both start on their GO's sample in that order.
-    assert!(
-        s.wait_for(|c| c.pictures_primed() == (2, 2)),
-        "{}",
-        seen(&s)
-    );
-    // The hung one first, so the good one is drawn over it.
-    start(&mut s, 2);
-    let at = start(&mut s, 1);
-    // Both open (the hung one hangs only at the frames after its open).
-    assert!(s.wait_for(|c| c.pictures_opened() == 2));
-    s.take_outbound();
-    run_to(&mut s, at + samples(0.5));
-    // Drawing asks the hung decoder for a frame.
-    let now = on_stage(&mut s, "the good picture is drawn");
-    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
-    assert_eq!(
-        state(&s, 2),
-        CueState::Running,
-        "not failed before its limit"
-    );
-    // Past the frame limit with no frame read.
-    s.control().advance_stage_media_clock(500);
-    assert!(wait_broken(&mut s, 2), "the hung cue breaks");
-    let texts = notice_texts(&mut s);
-    assert!(
-        texts
-            .iter()
-            .any(|(c, t)| c == "video_decode_failed" && t.contains("to decode")),
-        "{texts:?}"
-    );
-    expect_state(&s, 1, CueState::Running, "");
-    assert_eq!(s.control().stage_host_pid(), Some(pid));
 }
 
 /// Draws stage 1 (a probe) and, if that stopped the stage host, waits for the next one; the
@@ -2410,62 +2320,6 @@ fn stays_up(s: &mut OfflineShow, seconds: f64) {
         pid,
         "the stage host crashed again"
     );
-}
-
-/// A file that crashes the stage host as it opens (its first frame decoded) while a good movie
-/// plays is isolated: the two are held back and tried one at a time, so only the bad file's cue
-/// breaks, and the good movie comes back in step and plays on.
-#[test]
-fn a_picture_that_crashes_the_stage_host_as_it_opens_breaks_only_its_cue() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (500, 25));
-    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
-    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
-    let mut s = video_show_of(ws);
-    // Standing by, the bad file is opened ahead after cue 1's: it crashes the stage host twice,
-    // alone, and is not opened ahead again.
-    assert!(
-        s.wait_for(|c| stage_host_stops(c) == 2
-            && c.stage_host_pid().is_some()
-            && c.pictures_primed() == (1, 1)),
-        "{}",
-        seen(&s)
-    );
-    s.settle_stages();
-    let mut pids = vec![s.control().stage_host_pid().unwrap()];
-    let at = start(&mut s, 1);
-    run_to(&mut s, at + samples(0.2));
-    on_stage(&mut s, "cue 1 shown");
-    start(&mut s, 2);
-    assert!(play_until_broken(&mut s, 2, &mut pids), "{pids:?}");
-    stays_up(&mut s, 6.0);
-    let played = (s.now() - at) as f64 / f64::from(RATE);
-    let now = on_stage(&mut s, "the good picture is back");
-    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
-    expect_state(&s, 1, CueState::Running, "");
-}
-
-/// A movie that crashes the stage host decoding a frame after its open, while a good movie
-/// plays: both are suspects, so after a second crash they are tried one at a time, and only
-/// the crashing one's cue breaks.
-#[test]
-fn of_two_movies_playing_only_the_one_crashing_the_stage_host_breaks() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (500, 25));
-    let bomb = faulty(dir.path(), &good, "openlab-test-crash-decode");
-    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
-    let mut s = video_show_of(ws);
-    let mut pids = vec![s.control().stage_host_pid().unwrap()];
-    // The bomb first, so the good movie is drawn on top and its frame read.
-    start(&mut s, 2);
-    let at = start(&mut s, 1);
-    s.wait_for(|c| c.pictures_opened() == 2);
-    assert!(play_until_broken(&mut s, 2, &mut pids), "{pids:?}");
-    stays_up(&mut s, 6.0);
-    let played = (s.now() - at) as f64 / f64::from(RATE);
-    let now = on_stage(&mut s, "the good picture is back");
-    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
-    expect_state(&s, 1, CueState::Running, "");
 }
 
 /// A stage host killed from outside, or by the supervisor for not answering, has not crashed:
@@ -2532,67 +2386,6 @@ fn pictures_come_back_after_kills_and_after_the_pause_at_the_restart_limit() {
     assert!(s.wait_for(|c| c.stage_host_pid().is_some()));
     back(&mut s, "after the pause");
     assert_eq!(s.control().pictures_live(), 2);
-}
-
-/// A movie that crashes the stage host decoding a frame after its open, playing alone, is
-/// sent again once; at a second crash it is the only picture that was decoding both times, so
-/// its cue breaks; video output carries on: the next stage host stays up and the next GO
-/// plays.
-#[test]
-fn a_picture_that_crashes_the_stage_host_twice_is_not_sent_a_third_time() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (250, 25));
-    let bomb = faulty(dir.path(), &good, "openlab-test-crash-decode");
-    let mut s = video_show(vec![video_cue(1, Some(&bomb)), video_cue(2, Some(&good))]);
-    let mut pids = vec![s.control().stage_host_pid().unwrap()];
-    start(&mut s, 1);
-    s.run(BLOCK);
-    for _ in 0..4 {
-        if state(&s, 1) == CueState::Broken {
-            break;
-        }
-        // Open on this stage host (its first frame decoded), so only a frame after it crashes.
-        s.wait_for(|c| c.pictures_opened() == 1);
-        probe_through_crashes(&mut s, &mut pids);
-        s.run(BLOCK);
-    }
-    expect_state(&s, 1, CueState::Broken, "{pids:?}");
-    assert_eq!(
-        pids.len(),
-        3,
-        "two crashes, then a stage host that stays: {pids:?}"
-    );
-    s.take_outbound();
-    let at = start(&mut s, 2);
-    // Its file open on the stage host before it is drawn (not the probe's own wait for it).
-    assert!(
-        s.wait_for(|c| c.pictures_opened() == 1),
-        "the next cue's file never opened"
-    );
-    run_to(&mut s, at + samples(0.5));
-    let shown_now = shown(&mut s);
-    if shown_now.is_none() {
-        // Say what the engine saw, so a failure on a CI runner can be read from its log.
-        let logs: Vec<String> = s
-            .take_outbound()
-            .iter()
-            .filter_map(|m| match m {
-                ServerMessage::Log { message, .. } => Some(message.clone()),
-                ServerMessage::LogEntry { entry, .. } => Some(entry.message.clone()),
-                _ => None,
-            })
-            .collect();
-        panic!(
-            "the next cue shows nothing: stage hosts {pids:?}, pictures up {}, opened {}, \
-             cue 2 {:?}, log {logs:?}",
-            s.control().pictures_live(),
-            s.control().pictures_opened(),
-            state(&s, 2)
-        );
-    }
-    let now = shown_now.expect("the next cue plays");
-    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
-    assert_eq!(s.control().stage_host_pid(), pids.last().copied());
 }
 
 /// A still with more pixels than a picture may have (its file swapped after the probe passed)
@@ -4399,51 +4192,6 @@ fn the_same_cue_loaded_first_go_shows_its_first_frame_at_once_with_its_sound() {
     assert_eq!(s.stalls(), 0);
 }
 
-/// Flow: an unloaded cue whose file cannot be opened in time → GO → the cue breaks with its
-/// notice, as a start that failed (nothing was seen or heard); the other cue plays on.
-#[test]
-fn an_unloaded_cue_whose_file_cannot_be_opened_in_time_go_breaks_it_and_other_cues_play_on() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = sound_movie!(dir.path(), "good.mov", (250, 25), "pcm:2:48000");
-    let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
-    let ws = workspace(vec![sounding_cue(1, &hung), sounding_cue(2, &good)]);
-    let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 0);
-    let other = start(&mut s, 2);
-    s.run(BLOCK);
-    // The hung open never answers: the clock moves on while it waits, as live.
-    s.wait_for_pictures(false);
-    s.take_outbound();
-    let at = go(&mut s);
-    run_to(&mut s, at + samples(0.5));
-    expect_state(
-        &s,
-        1,
-        CueState::Running,
-        "not failed before the open's limit",
-    );
-    in_step(&mut s, RATE, 25.0, "the other cue while it waits");
-    // Past the open's limit.
-    s.control().advance_stage_media_clock(500);
-    assert!(wait_broken(&mut s, 1), "the cue breaks\n{}", seen(&s));
-    assert_eq!(
-        s.control().engine().broken_reason(id(1)),
-        Some(openlab_core::BrokenReason::DecodeFailed)
-    );
-    let texts = notice_texts(&mut s);
-    assert!(
-        texts
-            .iter()
-            .any(|(c, t)| c == "video_decode_failed" && t.contains("to open")),
-        "{texts:?}"
-    );
-    assert_eq!(s.control().pictures_live(), 1, "its picture is gone");
-    let later = s.now() + samples(0.5);
-    run_to(&mut s, later);
-    expect_state(&s, 2, CueState::Running, "the other cue plays on");
-    in_step(&mut s, RATE, 25.0, "the other cue after the break");
-    heard_throughout(&s, other, other + samples(0.1), s.rendered());
-}
-
 /// A start waiting for its slow open can be paused (nothing shown or heard, even once the file
 /// is open), moved by a seek while paused (it opens again there), and resumed: picture and
 /// sound then start together from the point it was moved to.
@@ -4510,211 +4258,11 @@ fn a_panic_while_a_start_waits_for_its_open_shows_nothing() {
     assert_eq!(s.control().pictures_live(), 0);
 }
 
-/// A start whose open the stage host never answers (a hung volume, the stage host's own open
-/// limit not reached) breaks its cue after the engine's wait limit, with a notice, as a start
-/// that failed: it never runs on unseen and unheard for ever.
-#[test]
-fn a_start_whose_open_is_never_answered_breaks_after_the_wait_limit() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (50, 25));
-    let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
-    let ws = workspace(vec![video_cue(1, Some(&hung))]);
-    // The stage host's own open limit runs on a media clock nothing moves: it never fires.
-    let mut s = video_show_config(ws, &["--media-clock-by-hand"], |_| {}, |c| c.prime_cues = 0);
-    s.wait_for_pictures(false);
-    s.take_outbound();
-    let at = go(&mut s);
-    run_to(&mut s, at + samples(14.9));
-    expect_state(&s, 1, CueState::Running, "waits up to the limit");
-    run_to(&mut s, at + samples(15.1));
-    expect_state(&s, 1, CueState::Broken, "broken at the limit");
-    assert_eq!(
-        s.control().engine().broken_reason(id(1)),
-        Some(openlab_core::BrokenReason::DecodeFailed)
-    );
-    let texts = notice_texts(&mut s);
-    assert!(
-        texts
-            .iter()
-            .any(|(c, t)| c == "video_decode_failed" && t.contains("longer than 15 s to open")),
-        "{texts:?}"
-    );
-    assert_eq!(s.control().pictures_live(), 0);
-}
-
 /// Times the stage host stopped, from the show log.
 fn stage_host_stops(c: &openlab_engine::control::Control) -> usize {
     (c.show_log().tail(200).iter())
         .filter(|e| e.message.starts_with("video output stopped"))
         .count()
-}
-
-/// A file that crashes the stage host as it is opened ahead for the cue standing by is not
-/// opened ahead again once it has crashed it twice alone, not at every playhead move; the
-/// other cue standing by is still opened ahead.
-#[test]
-fn a_file_that_crashes_the_stage_host_opened_ahead_is_not_opened_ahead_again() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (50, 25));
-    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
-    let ws = workspace(vec![video_cue(1, Some(&bomb)), video_cue(2, Some(&good))]);
-    let mut s = video_show_of(ws);
-    assert!(s.wait_for(|c| stage_host_stops(c) == 2), "{}", seen(&s));
-    assert!(
-        s.wait_for(|c| c.stage_host_pid().is_some() && c.pictures_primed() == (1, 1)),
-        "the other cue is opened ahead again\n{}",
-        seen(&s)
-    );
-    for cue in [Some(id(2)), Some(id(1))] {
-        s.transport(TransportAction::SetPlayhead {
-            list: list_id(),
-            cue,
-        });
-        s.run(samples(0.5));
-    }
-    s.settle_stages();
-    assert_eq!(stage_host_stops(s.control()), 2, "{}", seen(&s));
-    assert_eq!(s.control().pictures_primed(), (1, 1));
-}
-
-/// A file that crashes the stage host as it is opened ahead, while another cue plays: the crash
-/// is the file's, so the playing cue is never suspected; the file's own GO then breaks only its
-/// cue (two crashes of its own), and the playing cue plays on.
-#[test]
-fn a_crash_opening_ahead_is_not_held_against_the_cue_playing() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (500, 25));
-    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
-    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
-    // Only the cue standing by is opened ahead: cue 2 once the GO moves the playhead onto it.
-    let mut s = video_show_config(ws, &[], |_| {}, |c| c.prime_cues = 1);
-    let mut pids = vec![s.control().stage_host_pid().unwrap()];
-    let at = go(&mut s);
-    assert!(s.wait_for(|c| stage_host_stops(c) == 1), "{}", seen(&s));
-    s.settle_stages();
-    go(&mut s);
-    assert!(
-        play_until_broken(&mut s, 2, &mut pids),
-        "{pids:?}\n{}",
-        seen(&s)
-    );
-    expect_state(&s, 1, CueState::Running, "the playing cue is never blamed");
-    stays_up(&mut s, 6.0);
-    let played = (s.now() - at) as f64 / f64::from(RATE);
-    let now = on_stage(&mut s, "the good picture is back");
-    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
-}
-
-/// The losing order of a crash while a picture opens ahead: the playing cue, suspected with the
-/// file at two crashes, is being tried alone when a GO opens that file and crashes the stage
-/// host again. Something else was opening, so the cue on trial is not blamed: the bad file's
-/// cue breaks and the playing cue plays on.
-#[test]
-fn a_crash_while_a_cue_is_tried_alone_and_another_opens_is_not_blamed_on_the_cue_tried() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (500, 25));
-    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
-    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
-    let mut s = video_show_config(ws, &[], |_| {}, |c| c.prime_cues = 1);
-    let at = go(&mut s);
-    // Opened ahead once the playhead is on it, the bad file crashes the stage host twice
-    // beside the playing cue: both are suspects, and the playing cue is tried alone.
-    assert!(
-        s.wait_for(|c| stage_host_stops(c) == 2 && c.picture_trials() == 1),
-        "{}",
-        seen(&s)
-    );
-    go(&mut s);
-    let mut pids = vec![];
-    assert!(play_until_broken(&mut s, 2, &mut pids), "{}", seen(&s));
-    expect_state(
-        &s,
-        1,
-        CueState::Running,
-        "the cue tried alone is not blamed",
-    );
-    stays_up(&mut s, 6.0);
-    let played = (s.now() - at) as f64 / f64::from(RATE);
-    let now = on_stage(&mut s, "the good picture is back");
-    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
-}
-
-/// A cue whose file crashes the stage host as it opens, started while four other cues are
-/// opened ahead: each relaunched stage host is sent one of those again, opening when the bad
-/// file crashes it once more. The bad cue still breaks within three crashes, without the video
-/// output being paused at its restart limit, and every cue opened ahead is opened ahead again.
-/// That holds whichever file's probe answers first: a bad file probed first is opened ahead
-/// and crashes the stage host before the GO, and its GO takes those crashes over.
-#[test]
-fn a_cue_crashing_the_stage_host_as_it_opens_breaks_within_three_crashes_beside_cues_opened_ahead()
-{
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (500, 25));
-    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
-    let cues: Vec<Cue> = (1..=8u128)
-        .map(|n| video_cue(n, Some(&good)))
-        .chain([video_cue(9, Some(&bomb))])
-        .collect();
-    let mut s = video_show_of(workspace(cues));
-    assert!(
-        s.wait_for(|c| c.pictures_primed() == (4, 4)),
-        "{}",
-        seen(&s)
-    );
-    let mut pids = vec![s.control().stage_host_pid().unwrap()];
-    start(&mut s, 9);
-    assert!(
-        play_until_broken(&mut s, 9, &mut pids),
-        "{pids:?}\n{}",
-        seen(&s)
-    );
-    let stops = stage_host_stops(s.control());
-    assert!(stops <= 3, "{stops} crashes\n{}", seen(&s));
-    let paused = (s.control().show_log().tail(200).iter())
-        .any(|e| e.message.contains("stages are not shown"));
-    assert!(!paused, "{}", seen(&s));
-    assert!(
-        s.wait_for(|c| c.pictures_primed() == (4, 4)),
-        "every cue is opened ahead again\n{}",
-        seen(&s)
-    );
-}
-
-/// A cue whose file crashed the stage host twice as it was opened ahead (it is first of the
-/// cues standing by, so it is opened ahead before the others): its GO takes the two crashes
-/// over, so the GO's own crash breaks it. Three crashes in all, the video output never paused
-/// at its restart limit, and the other cues are opened ahead again.
-#[test]
-fn a_cue_whose_file_crashed_twice_opened_ahead_breaks_at_its_gos_first_crash() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (500, 25));
-    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
-    let cues: Vec<Cue> = [video_cue(1, Some(&bomb))]
-        .into_iter()
-        .chain((2..=9u128).map(|n| video_cue(n, Some(&good))))
-        .collect();
-    let mut s = video_show_of(workspace(cues));
-    assert!(
-        s.wait_for(|c| stage_host_stops(c) == 2 && c.pictures_primed() == (4, 4)),
-        "{}",
-        seen(&s)
-    );
-    let mut pids = vec![s.control().stage_host_pid().unwrap()];
-    start(&mut s, 1);
-    assert!(
-        play_until_broken(&mut s, 1, &mut pids),
-        "{pids:?}\n{}",
-        seen(&s)
-    );
-    assert_eq!(stage_host_stops(s.control()), 3, "{}", seen(&s));
-    let paused = (s.control().show_log().tail(200).iter())
-        .any(|e| e.message.contains("stages are not shown"));
-    assert!(!paused, "{}", seen(&s));
-    assert!(
-        s.wait_for(|c| c.pictures_primed() == (4, 4)),
-        "every other cue is opened ahead again\n{}",
-        seen(&s)
-    );
 }
 
 /// A Video cue standing by in a second open workspace, made while the first workspace's cue
@@ -4757,47 +4305,6 @@ fn a_second_workspaces_cue_standing_by_is_opened_ahead_after_the_first_ones() {
         "the second workspace's cue is opened ahead too\n{}",
         seen(&s)
     );
-}
-
-/// A file opened ahead on a volume that does not answer (its open hangs): letting it go (the
-/// playhead moves on and back) asks for no further opens while it has not answered, so a dead
-/// volume holds one decoder of the stage host, not one per playhead move. Once the stage host's
-/// open limit answers it, the file is not opened ahead again and the next cue is.
-#[test]
-fn a_hung_open_ahead_is_not_asked_again_while_it_has_not_answered() {
-    let dir = tempfile::tempdir().unwrap();
-    let good = movie!(dir.path(), "good.mov", (50, 25));
-    let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
-    let ws = workspace(vec![video_cue(1, Some(&hung)), video_cue(2, Some(&good))]);
-    let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 1);
-    assert!(s.wait_for(|c| c.picture_opens_ahead() == 1), "{}", seen(&s));
-    for _ in 0..5 {
-        for cue in [id(2), id(1)] {
-            s.transport(TransportAction::SetPlayhead {
-                list: list_id(),
-                cue: Some(cue),
-            });
-            s.run(samples(0.1));
-        }
-    }
-    assert_eq!(
-        s.control().picture_opens_ahead(),
-        1,
-        "no open asked while one hangs"
-    );
-    assert_eq!(s.control().pictures_primed(), (1, 0));
-    // The stage host's open limit answers the hung open; the cue standing by is opened next.
-    s.transport(TransportAction::SetPlayhead {
-        list: list_id(),
-        cue: Some(id(2)),
-    });
-    s.control().advance_stage_media_clock(500);
-    assert!(
-        s.wait_for(|c| c.pictures_primed() == (1, 1)),
-        "the next cue is opened ahead once the hung open answers\n{}",
-        seen(&s)
-    );
-    assert_eq!(s.control().picture_opens_ahead(), 2);
 }
 
 /// The volume a file is on is held back as stalled (two other files' probes are stuck on it):
@@ -8156,4 +7663,517 @@ fn a_seek_while_stopping_is_ignored_and_one_in_a_pre_wait_starts_picture_and_sou
     expect_state(&s, 2, CueState::Idle, "the rest played");
     s.run(samples(0.2));
     assert!(silent(&s, moved + samples(1.02), s.rendered()));
+}
+
+/// The tests that crash or hang a stage host's decoder with a test fault switch (a file named
+/// `openlab-test-crash-*` or `openlab-test-hang-*`). On the hosted arm64 CI virtual machine, in
+/// a release run, the system's movie decoding stayed slow for every process after these tests
+/// (each later movie probe and open waited about 30 s; issue #751), so the release run takes
+/// them after the rest of the suite, by this module's path (`scripts/rust-checks.sh`).
+/// [`faulty`] fails a test outside this module that asks for one of those switches.
+mod stage_host_faults {
+    use super::*;
+
+    /// A picture whose file's open hangs (a stalled volume) holds up nothing else: the stage host
+    /// keeps answering (it is not killed and relaunched), its keep-black stage stays black, another
+    /// picture plays on it, and only the hung cue breaks, with the reason.
+    #[test]
+    fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (250, 25));
+        let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
+        let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
+        let mut s = video_show_args(ws, &HAND_LIMITS);
+        let pid = s.control().stage_host_pid().unwrap();
+        // The hung open's start never stops waiting: the clock moves on meanwhile, as live.
+        s.wait_for_pictures(false);
+        s.take_outbound();
+        start(&mut s, 2);
+        s.run(BLOCK);
+        let (frame, colours) = probe_at(&mut s, &[[0.5, 0.5]]);
+        assert_eq!(frame, None, "nothing drawn for the hung picture");
+        assert_eq!(
+            colours,
+            vec![[0, 0, 0, 255]],
+            "the keep-black stage is black"
+        );
+        let at = start(&mut s, 1);
+        // The other picture opens before the clock moves on: it starts on its sample.
+        assert!(s.wait_for(|c| c.pictures_waiting() == 1));
+        run_to(&mut s, at + samples(0.5));
+        let now = on_stage(&mut s, "the other picture plays");
+        assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+        assert_eq!(
+            state(&s, 2),
+            CueState::Running,
+            "not failed before its limit"
+        );
+        // Past the open's limit.
+        s.control().advance_stage_media_clock(500);
+        assert!(wait_broken(&mut s, 2), "the hung cue breaks");
+        assert_eq!(
+            s.control().engine().broken_reason(id(2)),
+            Some(openlab_core::BrokenReason::DecodeFailed)
+        );
+        let texts = notice_texts(&mut s);
+        assert!(
+            texts.iter().any(|(c, t)| c == "video_decode_failed"
+                && t.contains("to open (reading the movie's tracks)")),
+            "{texts:?}"
+        );
+        expect_state(&s, 1, CueState::Running, "the other cue plays on");
+        assert_eq!(
+            s.control().stage_host_pid(),
+            Some(pid),
+            "never killed as hung"
+        );
+    }
+
+    /// A picture whose frame decode hangs fails alone after the frame limit; the stage host keeps
+    /// running and answering.
+    #[test]
+    fn a_picture_whose_decode_hangs_fails_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (250, 25));
+        let hung = faulty(dir.path(), &good, "openlab-test-hang-decode");
+        let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
+        let mut s = video_show_args(ws, &HAND_LIMITS);
+        let pid = s.control().stage_host_pid().unwrap();
+        // Both opened ahead (standing by), so both start on their GO's sample in that order.
+        assert!(
+            s.wait_for(|c| c.pictures_primed() == (2, 2)),
+            "{}",
+            seen(&s)
+        );
+        // The hung one first, so the good one is drawn over it.
+        start(&mut s, 2);
+        let at = start(&mut s, 1);
+        // Both open (the hung one hangs only at the frames after its open).
+        assert!(s.wait_for(|c| c.pictures_opened() == 2));
+        s.take_outbound();
+        run_to(&mut s, at + samples(0.5));
+        // Drawing asks the hung decoder for a frame.
+        let now = on_stage(&mut s, "the good picture is drawn");
+        assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+        assert_eq!(
+            state(&s, 2),
+            CueState::Running,
+            "not failed before its limit"
+        );
+        // Past the frame limit with no frame read.
+        s.control().advance_stage_media_clock(500);
+        assert!(wait_broken(&mut s, 2), "the hung cue breaks");
+        let texts = notice_texts(&mut s);
+        assert!(
+            texts
+                .iter()
+                .any(|(c, t)| c == "video_decode_failed" && t.contains("to decode")),
+            "{texts:?}"
+        );
+        expect_state(&s, 1, CueState::Running, "");
+        assert_eq!(s.control().stage_host_pid(), Some(pid));
+    }
+
+    /// A file that crashes the stage host as it opens (its first frame decoded) while a good movie
+    /// plays is isolated: the two are held back and tried one at a time, so only the bad file's cue
+    /// breaks, and the good movie comes back in step and plays on.
+    #[test]
+    fn a_picture_that_crashes_the_stage_host_as_it_opens_breaks_only_its_cue() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (500, 25));
+        let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+        let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
+        let mut s = video_show_of(ws);
+        // Standing by, the bad file is opened ahead after cue 1's: it crashes the stage host twice,
+        // alone, and is not opened ahead again.
+        assert!(
+            s.wait_for(|c| stage_host_stops(c) == 2
+                && c.stage_host_pid().is_some()
+                && c.pictures_primed() == (1, 1)),
+            "{}",
+            seen(&s)
+        );
+        s.settle_stages();
+        let mut pids = vec![s.control().stage_host_pid().unwrap()];
+        let at = start(&mut s, 1);
+        run_to(&mut s, at + samples(0.2));
+        on_stage(&mut s, "cue 1 shown");
+        start(&mut s, 2);
+        assert!(play_until_broken(&mut s, 2, &mut pids), "{pids:?}");
+        stays_up(&mut s, 6.0);
+        let played = (s.now() - at) as f64 / f64::from(RATE);
+        let now = on_stage(&mut s, "the good picture is back");
+        assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+        expect_state(&s, 1, CueState::Running, "");
+    }
+
+    /// A movie that crashes the stage host decoding a frame after its open, while a good movie
+    /// plays: both are suspects, so after a second crash they are tried one at a time, and only
+    /// the crashing one's cue breaks.
+    #[test]
+    fn of_two_movies_playing_only_the_one_crashing_the_stage_host_breaks() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (500, 25));
+        let bomb = faulty(dir.path(), &good, "openlab-test-crash-decode");
+        let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
+        let mut s = video_show_of(ws);
+        let mut pids = vec![s.control().stage_host_pid().unwrap()];
+        // The bomb first, so the good movie is drawn on top and its frame read.
+        start(&mut s, 2);
+        let at = start(&mut s, 1);
+        s.wait_for(|c| c.pictures_opened() == 2);
+        assert!(play_until_broken(&mut s, 2, &mut pids), "{pids:?}");
+        stays_up(&mut s, 6.0);
+        let played = (s.now() - at) as f64 / f64::from(RATE);
+        let now = on_stage(&mut s, "the good picture is back");
+        assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+        expect_state(&s, 1, CueState::Running, "");
+    }
+
+    /// A movie that crashes the stage host decoding a frame after its open, playing alone, is
+    /// sent again once; at a second crash it is the only picture that was decoding both times, so
+    /// its cue breaks; video output carries on: the next stage host stays up and the next GO
+    /// plays.
+    #[test]
+    fn a_picture_that_crashes_the_stage_host_twice_is_not_sent_a_third_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (250, 25));
+        let bomb = faulty(dir.path(), &good, "openlab-test-crash-decode");
+        let mut s = video_show(vec![video_cue(1, Some(&bomb)), video_cue(2, Some(&good))]);
+        let mut pids = vec![s.control().stage_host_pid().unwrap()];
+        start(&mut s, 1);
+        s.run(BLOCK);
+        for _ in 0..4 {
+            if state(&s, 1) == CueState::Broken {
+                break;
+            }
+            // Open on this stage host (its first frame decoded), so only a frame after it crashes.
+            s.wait_for(|c| c.pictures_opened() == 1);
+            probe_through_crashes(&mut s, &mut pids);
+            s.run(BLOCK);
+        }
+        expect_state(&s, 1, CueState::Broken, "{pids:?}");
+        assert_eq!(
+            pids.len(),
+            3,
+            "two crashes, then a stage host that stays: {pids:?}"
+        );
+        s.take_outbound();
+        let at = start(&mut s, 2);
+        // Its file open on the stage host before it is drawn (not the probe's own wait for it).
+        assert!(
+            s.wait_for(|c| c.pictures_opened() == 1),
+            "the next cue's file never opened"
+        );
+        run_to(&mut s, at + samples(0.5));
+        let shown_now = shown(&mut s);
+        if shown_now.is_none() {
+            // Say what the engine saw, so a failure on a CI runner can be read from its log.
+            let logs: Vec<String> = s
+                .take_outbound()
+                .iter()
+                .filter_map(|m| match m {
+                    ServerMessage::Log { message, .. } => Some(message.clone()),
+                    ServerMessage::LogEntry { entry, .. } => Some(entry.message.clone()),
+                    _ => None,
+                })
+                .collect();
+            panic!(
+                "the next cue shows nothing: stage hosts {pids:?}, pictures up {}, opened {}, \
+                 cue 2 {:?}, log {logs:?}",
+                s.control().pictures_live(),
+                s.control().pictures_opened(),
+                state(&s, 2)
+            );
+        }
+        let now = shown_now.expect("the next cue plays");
+        assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+        assert_eq!(s.control().stage_host_pid(), pids.last().copied());
+    }
+
+    /// Flow: an unloaded cue whose file cannot be opened in time → GO → the cue breaks with its
+    /// notice, as a start that failed (nothing was seen or heard); the other cue plays on.
+    #[test]
+    fn an_unloaded_cue_whose_file_cannot_be_opened_in_time_go_breaks_it_and_other_cues_play_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = sound_movie!(dir.path(), "good.mov", (250, 25), "pcm:2:48000");
+        let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
+        let ws = workspace(vec![sounding_cue(1, &hung), sounding_cue(2, &good)]);
+        let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 0);
+        let other = start(&mut s, 2);
+        s.run(BLOCK);
+        // The hung open never answers: the clock moves on while it waits, as live.
+        s.wait_for_pictures(false);
+        s.take_outbound();
+        let at = go(&mut s);
+        run_to(&mut s, at + samples(0.5));
+        expect_state(
+            &s,
+            1,
+            CueState::Running,
+            "not failed before the open's limit",
+        );
+        in_step(&mut s, RATE, 25.0, "the other cue while it waits");
+        // Past the open's limit.
+        s.control().advance_stage_media_clock(500);
+        assert!(wait_broken(&mut s, 1), "the cue breaks\n{}", seen(&s));
+        assert_eq!(
+            s.control().engine().broken_reason(id(1)),
+            Some(openlab_core::BrokenReason::DecodeFailed)
+        );
+        let texts = notice_texts(&mut s);
+        assert!(
+            texts
+                .iter()
+                .any(|(c, t)| c == "video_decode_failed" && t.contains("to open")),
+            "{texts:?}"
+        );
+        assert_eq!(s.control().pictures_live(), 1, "its picture is gone");
+        let later = s.now() + samples(0.5);
+        run_to(&mut s, later);
+        expect_state(&s, 2, CueState::Running, "the other cue plays on");
+        in_step(&mut s, RATE, 25.0, "the other cue after the break");
+        heard_throughout(&s, other, other + samples(0.1), s.rendered());
+    }
+
+    /// A start whose open the stage host never answers (a hung volume, the stage host's own open
+    /// limit not reached) breaks its cue after the engine's wait limit, with a notice, as a start
+    /// that failed: it never runs on unseen and unheard for ever.
+    #[test]
+    fn a_start_whose_open_is_never_answered_breaks_after_the_wait_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (50, 25));
+        let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
+        let ws = workspace(vec![video_cue(1, Some(&hung))]);
+        // The stage host's own open limit runs on a media clock nothing moves: it never fires.
+        let mut s = video_show_config(ws, &["--media-clock-by-hand"], |_| {}, |c| c.prime_cues = 0);
+        s.wait_for_pictures(false);
+        s.take_outbound();
+        let at = go(&mut s);
+        run_to(&mut s, at + samples(14.9));
+        expect_state(&s, 1, CueState::Running, "waits up to the limit");
+        run_to(&mut s, at + samples(15.1));
+        expect_state(&s, 1, CueState::Broken, "broken at the limit");
+        assert_eq!(
+            s.control().engine().broken_reason(id(1)),
+            Some(openlab_core::BrokenReason::DecodeFailed)
+        );
+        let texts = notice_texts(&mut s);
+        assert!(
+            texts
+                .iter()
+                .any(|(c, t)| c == "video_decode_failed" && t.contains("longer than 15 s to open")),
+            "{texts:?}"
+        );
+        assert_eq!(s.control().pictures_live(), 0);
+    }
+
+    /// A file that crashes the stage host as it is opened ahead for the cue standing by is not
+    /// opened ahead again once it has crashed it twice alone, not at every playhead move; the
+    /// other cue standing by is still opened ahead.
+    #[test]
+    fn a_file_that_crashes_the_stage_host_opened_ahead_is_not_opened_ahead_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (50, 25));
+        let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+        let ws = workspace(vec![video_cue(1, Some(&bomb)), video_cue(2, Some(&good))]);
+        let mut s = video_show_of(ws);
+        assert!(s.wait_for(|c| stage_host_stops(c) == 2), "{}", seen(&s));
+        assert!(
+            s.wait_for(|c| c.stage_host_pid().is_some() && c.pictures_primed() == (1, 1)),
+            "the other cue is opened ahead again\n{}",
+            seen(&s)
+        );
+        for cue in [Some(id(2)), Some(id(1))] {
+            s.transport(TransportAction::SetPlayhead {
+                list: list_id(),
+                cue,
+            });
+            s.run(samples(0.5));
+        }
+        s.settle_stages();
+        assert_eq!(stage_host_stops(s.control()), 2, "{}", seen(&s));
+        assert_eq!(s.control().pictures_primed(), (1, 1));
+    }
+
+    /// A file that crashes the stage host as it is opened ahead, while another cue plays: the crash
+    /// is the file's, so the playing cue is never suspected; the file's own GO then breaks only its
+    /// cue (two crashes of its own), and the playing cue plays on.
+    #[test]
+    fn a_crash_opening_ahead_is_not_held_against_the_cue_playing() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (500, 25));
+        let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+        let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
+        // Only the cue standing by is opened ahead: cue 2 once the GO moves the playhead onto it.
+        let mut s = video_show_config(ws, &[], |_| {}, |c| c.prime_cues = 1);
+        let mut pids = vec![s.control().stage_host_pid().unwrap()];
+        let at = go(&mut s);
+        assert!(s.wait_for(|c| stage_host_stops(c) == 1), "{}", seen(&s));
+        s.settle_stages();
+        go(&mut s);
+        assert!(
+            play_until_broken(&mut s, 2, &mut pids),
+            "{pids:?}\n{}",
+            seen(&s)
+        );
+        expect_state(&s, 1, CueState::Running, "the playing cue is never blamed");
+        stays_up(&mut s, 6.0);
+        let played = (s.now() - at) as f64 / f64::from(RATE);
+        let now = on_stage(&mut s, "the good picture is back");
+        assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+    }
+
+    /// The losing order of a crash while a picture opens ahead: the playing cue, suspected with the
+    /// file at two crashes, is being tried alone when a GO opens that file and crashes the stage
+    /// host again. Something else was opening, so the cue on trial is not blamed: the bad file's
+    /// cue breaks and the playing cue plays on.
+    #[test]
+    fn a_crash_while_a_cue_is_tried_alone_and_another_opens_is_not_blamed_on_the_cue_tried() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (500, 25));
+        let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+        let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
+        let mut s = video_show_config(ws, &[], |_| {}, |c| c.prime_cues = 1);
+        let at = go(&mut s);
+        // Opened ahead once the playhead is on it, the bad file crashes the stage host twice
+        // beside the playing cue: both are suspects, and the playing cue is tried alone.
+        assert!(
+            s.wait_for(|c| stage_host_stops(c) == 2 && c.picture_trials() == 1),
+            "{}",
+            seen(&s)
+        );
+        go(&mut s);
+        let mut pids = vec![];
+        assert!(play_until_broken(&mut s, 2, &mut pids), "{}", seen(&s));
+        expect_state(
+            &s,
+            1,
+            CueState::Running,
+            "the cue tried alone is not blamed",
+        );
+        stays_up(&mut s, 6.0);
+        let played = (s.now() - at) as f64 / f64::from(RATE);
+        let now = on_stage(&mut s, "the good picture is back");
+        assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+    }
+
+    /// A cue whose file crashes the stage host as it opens, started while four other cues are
+    /// opened ahead: each relaunched stage host is sent one of those again, opening when the bad
+    /// file crashes it once more. The bad cue still breaks within three crashes, without the video
+    /// output being paused at its restart limit, and every cue opened ahead is opened ahead again.
+    /// That holds whichever file's probe answers first: a bad file probed first is opened ahead
+    /// and crashes the stage host before the GO, and its GO takes those crashes over.
+    #[test]
+    fn a_cue_crashing_the_stage_host_as_it_opens_breaks_within_three_crashes_beside_cues_opened_ahead()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (500, 25));
+        let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+        let cues: Vec<Cue> = (1..=8u128)
+            .map(|n| video_cue(n, Some(&good)))
+            .chain([video_cue(9, Some(&bomb))])
+            .collect();
+        let mut s = video_show_of(workspace(cues));
+        assert!(
+            s.wait_for(|c| c.pictures_primed() == (4, 4)),
+            "{}",
+            seen(&s)
+        );
+        let mut pids = vec![s.control().stage_host_pid().unwrap()];
+        start(&mut s, 9);
+        assert!(
+            play_until_broken(&mut s, 9, &mut pids),
+            "{pids:?}\n{}",
+            seen(&s)
+        );
+        let stops = stage_host_stops(s.control());
+        assert!(stops <= 3, "{stops} crashes\n{}", seen(&s));
+        let paused = (s.control().show_log().tail(200).iter())
+            .any(|e| e.message.contains("stages are not shown"));
+        assert!(!paused, "{}", seen(&s));
+        assert!(
+            s.wait_for(|c| c.pictures_primed() == (4, 4)),
+            "every cue is opened ahead again\n{}",
+            seen(&s)
+        );
+    }
+
+    /// A cue whose file crashed the stage host twice as it was opened ahead (it is first of the
+    /// cues standing by, so it is opened ahead before the others): its GO takes the two crashes
+    /// over, so the GO's own crash breaks it. Three crashes in all, the video output never paused
+    /// at its restart limit, and the other cues are opened ahead again.
+    #[test]
+    fn a_cue_whose_file_crashed_twice_opened_ahead_breaks_at_its_gos_first_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (500, 25));
+        let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+        let cues: Vec<Cue> = [video_cue(1, Some(&bomb))]
+            .into_iter()
+            .chain((2..=9u128).map(|n| video_cue(n, Some(&good))))
+            .collect();
+        let mut s = video_show_of(workspace(cues));
+        assert!(
+            s.wait_for(|c| stage_host_stops(c) == 2 && c.pictures_primed() == (4, 4)),
+            "{}",
+            seen(&s)
+        );
+        let mut pids = vec![s.control().stage_host_pid().unwrap()];
+        start(&mut s, 1);
+        assert!(
+            play_until_broken(&mut s, 1, &mut pids),
+            "{pids:?}\n{}",
+            seen(&s)
+        );
+        assert_eq!(stage_host_stops(s.control()), 3, "{}", seen(&s));
+        let paused = (s.control().show_log().tail(200).iter())
+            .any(|e| e.message.contains("stages are not shown"));
+        assert!(!paused, "{}", seen(&s));
+        assert!(
+            s.wait_for(|c| c.pictures_primed() == (4, 4)),
+            "every other cue is opened ahead again\n{}",
+            seen(&s)
+        );
+    }
+
+    /// A file opened ahead on a volume that does not answer (its open hangs): letting it go (the
+    /// playhead moves on and back) asks for no further opens while it has not answered, so a dead
+    /// volume holds one decoder of the stage host, not one per playhead move. Once the stage host's
+    /// open limit answers it, the file is not opened ahead again and the next cue is.
+    #[test]
+    fn a_hung_open_ahead_is_not_asked_again_while_it_has_not_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = movie!(dir.path(), "good.mov", (50, 25));
+        let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
+        let ws = workspace(vec![video_cue(1, Some(&hung)), video_cue(2, Some(&good))]);
+        let mut s = video_show_config(ws, &HAND_LIMITS, |_| {}, |c| c.prime_cues = 1);
+        assert!(s.wait_for(|c| c.picture_opens_ahead() == 1), "{}", seen(&s));
+        for _ in 0..5 {
+            for cue in [id(2), id(1)] {
+                s.transport(TransportAction::SetPlayhead {
+                    list: list_id(),
+                    cue: Some(cue),
+                });
+                s.run(samples(0.1));
+            }
+        }
+        assert_eq!(
+            s.control().picture_opens_ahead(),
+            1,
+            "no open asked while one hangs"
+        );
+        assert_eq!(s.control().pictures_primed(), (1, 0));
+        // The stage host's open limit answers the hung open; the cue standing by is opened next.
+        s.transport(TransportAction::SetPlayhead {
+            list: list_id(),
+            cue: Some(id(2)),
+        });
+        s.control().advance_stage_media_clock(500);
+        assert!(
+            s.wait_for(|c| c.pictures_primed() == (1, 1)),
+            "the next cue is opened ahead once the hung open answers\n{}",
+            seen(&s)
+        );
+        assert_eq!(s.control().picture_opens_ahead(), 2);
+    }
 }

@@ -121,9 +121,8 @@ jobs:
         include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"macOS arm64","os":"macos-26"},{"name":"Windows x64","os":"windows-2025"}]' || '[{"name":"macOS arm64","os":"macos-26"},{"name":"macOS Intel","os":"macos-26-intel"},{"name":"Windows x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
     # Backstop: a hung test fails the job instead of holding the runner for hours (arm64 also
-    # builds and runs the release suite; longer outside a pull request, where that suite includes the video
-    # crate's tests, #751).
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 45 || 60 }}
+    # builds and runs the release suite).
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: engine
@@ -155,14 +154,12 @@ jobs:
       # debug_assert!s) and optimise differently, so the suite also runs as shipped. In this job
       # rather than a separate one: it reuses the job's checkout, toolchain and cache, and runs on
       # every PR; arm64 is the fastest runner.
-      # On a pull request the video crate's tests run in debug only (step above): in release on the hosted
-      # arm64 VM they take 12-19+ minutes (its video decoding slows as a run goes on; 35 s on a Mac), until
-      # #751 is fixed. Main pushes, nightly and on-demand runs still run them in release, with a longer
-      # limit (owner decision 2026-11-18).
+      # The video tests that crash or hang a stage host's decoder run last, on their own (see
+      # scripts/rust-checks.sh).
       - name: Tests (release)
         if: matrix.os == 'macos-26'
-        timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 40 }}
-        run: ../scripts/rust-checks.sh ${{ github.event_name == 'pull_request' && 'test-release-no-video' || 'test-release' }}
+        timeout-minutes: 25
+        run: ../scripts/rust-checks.sh test-release
       # NFR-23/QA-06: the mixer must render 64 stereo voices with fades at >= 10x real time.
       # Release-only (a debug build is far slower), gated on the slowest runner.
       - name: CPU budget gate

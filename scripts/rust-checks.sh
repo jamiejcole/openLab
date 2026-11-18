@@ -14,9 +14,10 @@
 #   test             the workspace tests, every failure listed, then every test skipped (a test that
 #                    cannot run on this machine records why in $OPENLAB_TEST_SKIPS; without that
 #                    variable it fails instead) and what the machine reported, passing or not
-#   test-release     the same, optimised (debug-only checks off)
-#   test-release-no-video  test-release without the openlab-video crate: what a pull request runs, since the
-#                    hosted arm64 VM's video decoding makes the release video tests take 17+ minutes
+#   test-release     the same, optimised (debug-only checks off), in two runs: everything but the video
+#                    tests that crash or hang a stage host's decoder (video_cues' stage_host_faults
+#                    module), then those alone. On the hosted arm64 VM, in release, every movie probe and
+#                    open after them waited about 30 s, which pushed the suite past its time limit (#751)
 #   fuzz-lint        fmt and clippy for engine/fuzz, which is outside the workspace
 set -euo pipefail
 
@@ -44,14 +45,32 @@ shipped_features() {
 
 # Runs the workspace tests with skips recorded, then prints them (and the decoders the video tests
 # found) as one block, also when the tests pass, and exits with the tests' status.
+# With `split` first, the video tests that crash or hang a stage host's decoder run after the rest, picked
+# by their module's path (video_cues.rs refuses those switches in a test outside that module).
+FAULTS='stage_host_faults::'
 tests() {
-  local skips status=0
+  local skips status=0 split=0
+  if [ "${1:-}" = split ]; then
+    split=1
+    shift
+  fi
   mkdir -p target/tmp
   skips="$PWD/target/tmp/openlab-test-skips.txt"
   : > "$skips"
-  OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast || status=$?
+  if [ "$split" = 1 ]; then
+    OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast -- --skip "$FAULTS" ||
+      status=$?
+    # --workspace again, so the first run's build is reused (one crate alone unifies other features
+    # and rebuilds); only video_cues has tests on that path.
+    echo "== the video tests that crash or hang a stage host's decoder:"
+    OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast -- "$FAULTS" ||
+      status=$?
+  else
+    OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast || status=$?
+  fi
   echo "== machine, as the tests found it:"
-  grep '^decoder ' "$skips" | sed 's/^/   /' || echo "   (nothing reported)"
+  # Each test process of a split run reports the decoders it found: list each once.
+  grep '^decoder ' "$skips" | sort -u | sed 's/^/   /' || echo "   (nothing reported)"
   echo "== SKIPPED $(grep -c '^skip ' "$skips" || true) test(s):"
   grep '^skip ' "$skips" | sed 's/^skip /   /' || true
   return "$status"
@@ -75,10 +94,9 @@ case "${1:-}" in
     cargo fmt --check
     cargo clippy --locked -- -D warnings
     ;;
-  test-release) tests --release ;;
-  test-release-no-video) tests --release --exclude openlab-video ;;
+  test-release) tests split --release ;;
   *)
-    echo "usage: scripts/rust-checks.sh fmt|clippy|clippy-windows|fuzz-lint|test|test-release|test-release-no-video" >&2
+    echo "usage: scripts/rust-checks.sh fmt|clippy|clippy-windows|fuzz-lint|test|test-release" >&2
     exit 2
     ;;
 esac
