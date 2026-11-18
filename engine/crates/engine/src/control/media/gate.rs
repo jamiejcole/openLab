@@ -25,6 +25,27 @@ pub(super) fn system_drive(env: impl Fn(&str) -> Option<String>) -> String {
 /// Different files with a stuck probe that make a volume stalled on the probes' word alone.
 pub(super) const CORROBORATION: usize = 2;
 
+/// One doc's claims: the highest ticket taken per file, for probes and for preloads.
+#[derive(Debug, Default)]
+pub(super) struct Claims {
+    probes: HashMap<String, u64>,
+    preloads: HashMap<String, u64>,
+}
+
+impl Claims {
+    fn of(&self, probe: bool) -> &HashMap<String, u64> {
+        if probe { &self.probes } else { &self.preloads }
+    }
+
+    fn of_mut(&mut self, probe: bool) -> &mut HashMap<String, u64> {
+        if probe {
+            &mut self.probes
+        } else {
+            &mut self.preloads
+        }
+    }
+}
+
 /// A volume with jobs in flight or a stall to remember.
 #[derive(Debug, Default)]
 pub(super) struct Volume {
@@ -62,10 +83,11 @@ pub(super) struct Taken {
 /// What the workers and the control thread share about the volumes (never held across I/O).
 #[derive(Debug, Default)]
 pub(super) struct Gate {
-    /// The highest ticket a worker took per (doc, probe or not, file): a copy of a job already
-    /// taken (the high-priority copy [`MediaCatalog::prioritize`] sends) is dropped, not run
-    /// again. Tickets are each doc's own.
-    pub(super) claimed: HashMap<(DocId, bool, String), u64>,
+    /// The highest ticket a worker took per doc and (probe or not, file): a copy of a job
+    /// already taken (the high-priority copy [`MediaCatalog::prioritize`] sends) is dropped, not
+    /// run again. Tickets are each doc's own. Kept per doc so a closing doc's thousands of claims
+    /// come off in one step, to be dropped off the control thread.
+    pub(super) claimed: HashMap<DocId, Claims>,
     pub(super) volumes: HashMap<String, Volume>,
     /// Jobs for stalled volumes (and whether they came from the high-priority queue).
     pub(super) deferred: Vec<(Job, bool)>,
@@ -156,8 +178,10 @@ impl Gate {
         if self.left.contains(&job.doc()) {
             return None;
         }
-        let claim = (job.doc(), job.is_probe(), key.to_owned());
-        if self.claimed.get(&claim).is_some_and(|t| *t >= ticket) {
+        if self
+            .claim(job.doc(), job.is_probe(), key)
+            .is_some_and(|t| t >= ticket)
+        {
             return None;
         }
         let bucket = self.bucket(job.path());
@@ -169,7 +193,11 @@ impl Gate {
             self.next_trial += 1;
             self.next_trial
         });
-        self.claimed.insert(claim, ticket);
+        self.claimed
+            .entry(job.doc())
+            .or_default()
+            .of_mut(job.is_probe())
+            .insert(key.to_owned(), ticket);
         let v = self.volumes.entry(bucket.clone()).or_default();
         v.in_flight += 1;
         v.trial = trial.or(v.trial);
@@ -341,18 +369,37 @@ impl Gate {
         }
     }
 
-    /// Drops a doc's claims and waiting jobs.
-    fn forget(&mut self, doc: DocId) {
-        self.claimed.retain(|(d, _, _), _| *d != doc);
-        self.deferred.retain(|(j, _)| j.doc() != doc);
+    /// The highest ticket a worker took of doc `doc`'s jobs for `key` (a probe, or not).
+    pub(super) fn claim(&self, doc: DocId, probe: bool, key: &str) -> Option<u64> {
+        self.claimed
+            .get(&doc)
+            .and_then(|c| c.of(probe).get(key).copied())
     }
 
-    /// A doc closed: it sends no more jobs, and its show folder is no longer exempt.
-    pub(super) fn leave(&mut self, doc: DocId) {
-        self.forget(doc);
+    /// Records a claim as a worker taking the job would.
+    #[cfg(test)]
+    pub(super) fn claim_for_test(&mut self, doc: DocId, probe: bool, key: String, ticket: u64) {
+        self.claimed
+            .entry(doc)
+            .or_default()
+            .of_mut(probe)
+            .insert(key, ticket);
+    }
+
+    /// Drops a doc's waiting jobs and takes its claims off, for the caller to drop.
+    fn forget(&mut self, doc: DocId) -> Option<Claims> {
+        self.deferred.retain(|(j, _)| j.doc() != doc);
+        self.claimed.remove(&doc)
+    }
+
+    /// A doc closed: it sends no more jobs, and its show folder is no longer exempt. Its claims
+    /// are returned for the caller to drop (a 2,000-file doc's are thousands of strings).
+    pub(super) fn leave(&mut self, doc: DocId) -> Option<Claims> {
+        let claims = self.forget(doc);
         self.left.insert(doc);
         self.members.remove(&doc);
         self.show_dirs.remove(&doc);
+        claims
     }
 }
 
@@ -644,9 +691,14 @@ pub(super) mod tests {
         assert!(gate.stalled(DEAD), "doc 1 still needs to know");
         assert_eq!(gate.deferred.len(), 1);
         assert_eq!(gate.deferred[0].0.doc(), DocId(1));
-        assert!(gate.claimed.keys().all(|(d, _, _)| *d == DocId(1)));
-        // Doc 1 closes; doc 0, alone, resets: nothing carries over.
-        gate.leave(DocId(1));
+        assert!(gate.claimed.keys().all(|d| *d == DocId(1)));
+        // Doc 1 closes; doc 0, alone, resets: nothing carries over. Its claims come off in one
+        // step, handed back to be dropped elsewhere.
+        assert_eq!(gate.claim(DocId(1), true, "/ok/f.wav"), Some(2));
+        let claims = gate.leave(DocId(1)).expect("doc 1's claims");
+        assert_eq!(claims.of(true).get("/ok/f.wav"), Some(&2));
+        assert!(gate.claimed.is_empty());
+        assert_eq!(gate.claim(DocId(1), true, "/ok/f.wav"), None);
         assert!(gate.deferred.is_empty());
         gate.reset_doc(DocId(0), Some(PathBuf::from("/Volumes/Show/x")));
         assert!(!gate.stalled(DEAD));

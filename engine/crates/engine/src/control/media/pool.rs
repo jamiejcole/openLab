@@ -169,9 +169,11 @@ impl ProbePool {
     }
 
     /// A doc closed: its waiting jobs go, its folder is no longer exempt. Its jobs already
-    /// taken run to their end; their answers find no doc.
-    pub fn leave(&self, doc: DocId) {
-        lock(&self.gate).leave(doc);
+    /// taken run to their end; their answers find no doc. What came off the gate is returned
+    /// for the caller to drop off the control thread.
+    pub fn leave(&self, doc: DocId) -> Box<dyn Send> {
+        let claims = lock(&self.gate).leave(doc);
+        Box::new(claims)
     }
 
     fn spawn(&mut self) -> std::io::Result<()> {

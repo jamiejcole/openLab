@@ -205,7 +205,8 @@ fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
     // on the time; the control thread hands the engine the real time from its next call on.
     let actions = model.handle(Input::Tick, 0);
     let show_dir = path.as_deref().and_then(folder_of);
-    let indexed = index_workspace(model.ws(), show_dir.as_deref());
+    let mut indexed = index_workspace(model.ws(), show_dir.as_deref());
+    indexed.prepare();
     let mut checks = PlanChecks::default();
     checks.check_all(model.ws(), &NoProbes, config.sample_rate());
     DocParts {
@@ -2487,7 +2488,8 @@ impl Control {
             show_dir,
             self.eng.config.preload_budget,
         );
-        media.sync_indexed(indexed);
+        let leftover = media.sync_indexed(indexed);
+        self.eng.docs.discard(leftover);
         // The checks walked the workspace already, and no file has answered since: what the
         // catalog noted for them is in them.
         let _ = media.take_plan_changes();
@@ -2605,8 +2607,8 @@ impl Control {
         self.mark_warnings_dirty();
         self.eng.voice_ids.retain(|_, owner| owner != doc);
         self.eng.observe.reset(doc);
-        let unwatched = self.eng.watch.leave(doc);
-        self.eng.pool.leave(doc);
+        self.eng.watch.leave(doc);
+        let claims = self.eng.pool.leave(doc);
         self.eng.waveform_reader.forget(doc);
         self.eng.mapping_warned.retain(|(d, _, _, _)| *d != doc);
         // A device only its patches played on closes.
@@ -2617,7 +2619,10 @@ impl Control {
             .orphans
             .extend(std::mem::take(&mut closed.file.saves));
         self.eng.docs.discard(Box::new(closed));
-        self.eng.docs.discard(unwatched);
+        if let Some(unwatched) = self.eng.watch.take_gone() {
+            self.eng.docs.discard(unwatched);
+        }
+        self.eng.docs.discard(claims);
         self.eng.outputs.pump();
         Ok(())
     }

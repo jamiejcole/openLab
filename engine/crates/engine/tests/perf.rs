@@ -832,10 +832,29 @@ fn two_doc_edits(one_doc_path: &std::path::Path, second: &std::path::Path) -> Op
     (!failed.is_empty()).then(|| failed.join("; "))
 }
 
+/// The longest of the control wakes from now until the media watch's file count holds for a
+/// wake: a doc opening or closing beside another has its files taken up or let go of a few
+/// hundred a wake, so each of those wakes counts, not only the first.
+fn longest_wake(s: &mut OfflineShow) -> Duration {
+    let mut longest = Duration::ZERO;
+    let mut files = s.control().watched_files();
+    for _ in 0..20 {
+        let t = Instant::now();
+        s.control_mut().tick();
+        longest = longest.max(t.elapsed());
+        let now = s.control().watched_files();
+        if now == files {
+            return longest;
+        }
+        files = now;
+    }
+    panic!("the media watch still takes up or lets go of files after 20 wakes");
+}
+
 /// Opening and closing a 2,000-cue doc while another plays: the control thread's part of each
-/// (the install of the parts the document worker built; the close) and the wake after it fit
-/// in one audio block ([`ARCH_BLOCK`], or the show's block if shorter) over [`HEADROOM`], and
-/// the playing doc's cue plays on without a late start.
+/// (the install of the parts the document worker built; the close) and each wake after it
+/// while the media watch follows fit in one audio block ([`ARCH_BLOCK`], or the show's block if
+/// shorter) over [`HEADROOM`], and the playing doc's cue plays on without a late start.
 fn install_and_remove(second: &std::path::Path) -> Option<String> {
     use openlab_engine::control::DocSource;
     let block = Duration::from_secs_f64(secs(BLOCK));
@@ -859,9 +878,9 @@ fn install_and_remove(second: &std::path::Path) -> Option<String> {
     assert!(playing(&s));
     let names = [
         "install",
-        "wake after install",
+        "wakes after install",
         "remove",
-        "wake after remove",
+        "wakes after remove",
     ];
     let mut took = [Duration::MAX; 4];
     // Each step is timed once per run, so a shared runner's noise needs more runs than the
@@ -887,18 +906,14 @@ fn install_and_remove(second: &std::path::Path) -> Option<String> {
         let t = Instant::now();
         s.deliver(answer);
         took[0] = took[0].min(t.elapsed());
-        let t = Instant::now();
-        s.control_mut().tick();
-        took[1] = took[1].min(t.elapsed());
+        took[1] = took[1].min(longest_wake(&mut s));
         let (_, doc) = s.control_mut().take_opened().pop().expect("opened");
         s.settle_media();
         s.run(BLOCK * 4);
         let t = Instant::now();
         s.control_mut().close_doc(doc, false).unwrap();
         took[2] = took[2].min(t.elapsed());
-        let t = Instant::now();
-        s.control_mut().tick();
-        took[3] = took[3].min(t.elapsed());
+        took[3] = took[3].min(longest_wake(&mut s));
         s.settle_docs();
         s.run(BLOCK * 4);
         assert!(playing(&s), "the first doc's cue plays on");

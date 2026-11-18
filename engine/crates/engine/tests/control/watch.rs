@@ -346,6 +346,14 @@ fn an_unchanged_pass_over_two_thousand_files_costs_control_nothing() {
     let mut c = manual(&ws, &fs);
     c.probe = fake_probe;
     let mut s = show_with(ws, c);
+    // The watch takes up a doc's files a few hundred a wake.
+    for _ in 0..10 {
+        if s.control().watched_files() == 2000 {
+            break;
+        }
+        s.tick();
+    }
+    assert_eq!(s.control().watched_files(), 2000);
     assert!(!s.watch_pass());
     s.take_outbound();
     let (read, builds, stats) = (
