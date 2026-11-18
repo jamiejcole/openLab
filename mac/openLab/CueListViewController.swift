@@ -570,14 +570,18 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// The widths the operator (or the spec) gave the time columns, kept apart from what fits shows.
     private var preferredTimeWidths: [String: CGFloat] = [:]
+    /// Time columns the operator dragged: they keep that width (the list scrolls sideways instead), as
+    /// QLab keeps a resized column.
+    private var draggedTimeColumns: Set<String> = []
     private var fitting = false
     /// What the Name column is kept at while the time columns can still give width: room for the
     /// indent of a nested cue and the first letters of its name.
     static let nameComfortWidth: CGFloat = 160
 
-    /// Gives the time columns up to their slack (down to their least, a whole time) so the Name column
-    /// keeps `nameComfortWidth` where it can; with room they go back to the widths they were given.
-    /// Returns the width of every column but Name.
+    /// Gives the time columns the operator has not dragged up to their slack (down to their least, a
+    /// header and the widest time the list shows) so the Name column keeps `nameComfortWidth` where it
+    /// can; with room they go back to the widths they were given. Returns the width of every column but
+    /// Name.
     private func fitTimeColumns(room: CGFloat, extra: CGFloat, name: NSTableColumn) -> CGFloat {
         let columns = outlineView.tableColumns
         let timed = columns.filter { Self.timeColumns.contains($0.identifier.rawValue) }
@@ -587,28 +591,63 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         func preferred(_ c: NSTableColumn) -> CGFloat {
             max(preferredTimeWidths[c.identifier.rawValue] ?? c.width, c.minWidth)
         }
-        let fixed = columns.filter { $0 !== name && !timed.contains($0) }.reduce(0) { $0 + $1.width }
-        let wanted = timed.reduce(0) { $0 + preferred($1) }
-        let slack = timed.reduce(0) { $0 + (preferred($1) - Self.timeLeast(of: $1)) }
+        let giving = timed.filter { !draggedTimeColumns.contains($0.identifier.rawValue) }
+        let fixed = columns.filter { $0 !== name && !giving.contains($0) }.reduce(0) { $0 + $1.width }
+        let wanted = giving.reduce(0) { $0 + preferred($1) }
+        let timeWidth = widestTimeWidth()
+        func least(_ c: NSTableColumn) -> CGFloat { max(c.minWidth, (timeWidth + 5).rounded(.up)) }
+        let slack = giving.reduce(0) { $0 + max(0, preferred($1) - least($1)) }
         let deficit = max(0, Self.nameComfortWidth - (room - fixed - wanted - extra))
         let take = slack > 0 ? min(1, deficit / slack) : 0
         fitting = true
         defer { fitting = false }
         var total = fixed
-        for c in timed {
-            let least = Self.timeLeast(of: c)
-            let width = (preferred(c) - (preferred(c) - least) * take).rounded(.up)
+        for c in giving {
+            let slackHere = max(0, preferred(c) - least(c))
+            let width = (preferred(c) - slackHere * take).rounded(.up)
             if abs(c.width - width) >= 1 { c.width = width }
             total += c.width
         }
         return total
     }
 
-    /// The narrowest a time column goes: its header and a whole time in it.
-    static func timeLeast(of column: NSTableColumn) -> CGFloat {
+    /// Whether a time in the list reaches an hour (its cell then reads `h:mm:ss.cc`). Kept up to date as
+    /// cues change, so a layout does not scan the list; a change lays the columns out again.
+    private var listHasHours = false
+
+    private func longestTime(_ node: CueNode) -> Double {
+        max(node.cue.raw["pre_wait"]?.doubleValue ?? 0, node.cue.postWait, restingDuration(node) ?? 0)
+    }
+
+    private func updateHoursShown(touched: Set<ModelID>? = nil) {
+        let hourLong = 3599.995
+        let now: Bool
+        if let touched, touched.contains(where: { nodes[$0].map { longestTime($0) >= hourLong } ?? false }) {
+            now = true
+        } else if touched != nil, !listHasHours {
+            now = false
+        } else {
+            now = nodes.values.contains { longestTime($0) >= hourLong }
+        }
+        guard now != listHasHours else { return }
+        listHasHours = now
+        view.needsLayout = true
+    }
+
+    /// The width of the widest time a time column can show: `h:mm:ss.cc` where a time in the list
+    /// reaches an hour, else `mm:ss.cc`, in the widest digit the font has (its digits are not all alike).
+    func widestTimeWidth() -> CGFloat {
         let font = WholeGlyphLabel(labelWithString: "").font ?? .systemFont(ofSize: NSFont.systemFontSize)
-        let time = ("00:00.00" as NSString).size(withAttributes: [.font: font]).width
-        return max(column.minWidth, (time + 5).rounded(.up))
+        func width(_ text: String) -> CGFloat { (text as NSString).size(withAttributes: [.font: font]).width }
+        let digit = "0123456789".max { width(String($0)) < width(String($1)) }.map(String.init) ?? "0"
+        let hours = listHasHours
+        let pattern = hours ? "d:dd:dd.dd" : "dd:dd.dd"
+        return width(pattern.replacingOccurrences(of: "d", with: digit))
+    }
+
+    /// The narrowest a time column goes: its header and the widest time the list shows.
+    func timeLeast(of column: NSTableColumn) -> CGFloat {
+        max(column.minWidth, (widestTimeWidth() + 5).rounded(.up))
     }
 
     private var measuredExtra: CGFloat?
@@ -1113,6 +1152,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         defer { rebuilding = false }
         let selected = selectedIDs()
         let known = Set(nodes.keys)
+        defer { updateHoursShown() }
         let expanded = Set(nodes.values.filter { $0.isGroup && outlineView.isItemExpanded($0) }.map(\.id))
         nodes = [:]
         targeters = [:]
@@ -1210,6 +1250,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if !pointing.isEmpty { refresh(pointing, columns: ["target", "name"]) }
         let flagRows = flagGroups.filter { nodes[$0] != nil }
         if !flagRows.isEmpty { refresh(flagRows, columns: ["status"]) }
+        updateHoursShown(touched: deletes.isEmpty ? batchTouched : nil)
         placeCellEditor()
     }
 
@@ -1324,6 +1365,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             configureRow(node, row: row)
         }
         for id in ids { if let node = nodes[id] { add(node) } }
+        if columns == nil || !Set(columns ?? []).isDisjoint(with: Self.timeColumns) {
+            updateHoursShown(touched: ids)
+        }
         guard !rows.isEmpty else { return }
         let all = outlineView.tableColumns
         let wanted = columns.map { ids in IndexSet(all.indices.filter { ids.contains(all[$0].identifier.rawValue) }) }
@@ -1801,6 +1845,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let resized = notification.userInfo?["NSTableColumn"] as? NSTableColumn
         if let id = resized?.identifier.rawValue, !fitting, Self.timeColumns.contains(id), let resized {
             preferredTimeWidths[id] = resized.width
+            draggedTimeColumns.insert(id)
         }
         if resized?.identifier.rawValue != "name" { fitNameColumn() }
         replaceEditorAfterLayoutChange()

@@ -6397,7 +6397,7 @@ final class CueListColumnLayoutTests: XCTestCase {
         let names = outline.tableColumns.first { $0.identifier.rawValue == "name" }
         for id in CueListViewController.timeColumns {
             let c = try XCTUnwrap(outline.tableColumns.first { $0.identifier.rawValue == id })
-            XCTAssertEqual(c.width, CueListViewController.timeLeast(of: c), accuracy: 1, "\(id) gave up what it could")
+            XCTAssertEqual(c.width, wc.cueList.timeLeast(of: c), accuracy: 1, "\(id) gave up what it could")
             XCTAssertLessThan(c.width, CueListViewController.columns.first { $0.id == id }?.width ?? 0)
         }
         XCTAssertGreaterThan(names?.width ?? 0, 90, "the Name column is the widest after the first")
@@ -6413,6 +6413,59 @@ final class CueListColumnLayoutTests: XCTestCase {
             let c = try XCTUnwrap(outline.tableColumns.first { $0.identifier.rawValue == id })
             XCTAssertEqual(c.width, spec[id] ?? 0, accuracy: 1, "\(id) is back at its width")
         }
+    }
+
+    /// A time of nearly two hours (`h:mm:ss.cc`, the widest a time gets) is drawn whole in the time
+    /// columns at the least width; they widen for it, and narrow again when it goes.
+    func testAnHourLongTimeIsDrawnWholeAtTheLeastWidth() async throws {
+        let wc = try await open(NSSize(width: 800, height: 800), show: "Nested")
+        let window = try XCTUnwrap(wc.window)
+        wc.setVisible(.sidebar, true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let shortWidth = try XCTUnwrap(outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration")))
+            .width
+        let added = await wc.editor.add(.wait, after: [])
+        let wait = try XCTUnwrap(added)
+        await assertEventually { wc.cueList.node(wait) != nil }
+        let set = await wc.editor.setDuration(of: wait, text: "1:58:44")
+        XCTAssertTrue(set)
+        await assertEventually("the long time is shown") {
+            let row = self.outline.row(forItem: wc.cueList.node(wait))
+            let cell = self.outline.view(atColumn: 5, row: row, makeIfNecessary: true) as? CueCell
+            return cell?.label.stringValue == "1:58:44.00"
+        }
+        window.contentView?.layoutSubtreeIfNeeded()
+        let waitRow = outline.row(forItem: wc.cueList.node(wait))
+        for id in ["duration", "postWait"] {
+            let index = outline.column(withIdentifier: NSUserInterfaceItemIdentifier(id))
+            let cell = try XCTUnwrap(outline.view(atColumn: index, row: waitRow, makeIfNecessary: true) as? CueCell)
+            XCTAssertEqual(cell.label.stringValue, "1:58:44.00")
+            XCTAssertLessThanOrEqual(
+                cell.label.attributedStringValue.size().width, outline.tableColumns[index].width - 4,
+                "\(id) draws 1:58:44.00 whole at the least width (\(outline.tableColumns[index].width) pt)")
+        }
+        let long = try XCTUnwrap(outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration"))).width
+        XCTAssertGreaterThan(long, shortWidth, "the column widened for the long time")
+        let short = await wc.editor.setDuration(of: wait, text: "7")
+        XCTAssertTrue(short)
+        await assertEventually("narrow again") {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return self.outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration"))?.width
+                == shortWidth
+        }
+    }
+
+    /// A time column the operator dragged keeps its width at the least window width: the list scrolls
+    /// sideways instead of taking the width back.
+    func testADraggedTimeColumnKeepsItsWidthAtTheLeastWidth() async throws {
+        let wc = try await open(NSSize(width: 800, height: 800), show: "Nested")
+        let window = try XCTUnwrap(wc.window)
+        wc.setVisible(.sidebar, true)
+        outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration"))?.width = 200
+        window.contentView?.layoutSubtreeIfNeeded()
+        let duration = try XCTUnwrap(outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration")))
+        XCTAssertEqual(duration.width, 200, accuracy: 0.5, "the dragged column keeps its width")
+        XCTAssertTrue(try XCTUnwrap(outline.enclosingScrollView).hasHorizontalScroller, "the list scrolls sideways")
     }
 
     /// How many pixels `view` paints (its background is clear, so only text counts).
@@ -6623,9 +6676,8 @@ final class CueListColumnLayoutTests: XCTestCase {
             scroll.scrollerStyle = style
             window.setContentSize(window.minSize)
             wc.setVisible(.sidebar, true)
-            // The Target column dragged wide (the time columns would give way): with the sidebar open
-            // the columns no longer fit.
-            outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("target"))?.width = 300
+            // A time column dragged wider: with the sidebar open the columns no longer fit.
+            outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration"))?.width = 200
             window.contentView?.layoutSubtreeIfNeeded()
             XCTAssertEqual(scroll.scrollerStyle, style, bars)
             func titlesOverColumns(_ what: String) {
