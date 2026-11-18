@@ -1280,6 +1280,208 @@ fn the_mark_names_a_child_a_looping_playlist_plays_fresh_after_going_round() {
 }
 
 #[test]
+fn a_looping_playlists_mark_follows_every_round_its_move_on_takes() {
+    // [10: 10 s wait, a Stop second trigger; 11: Start cue with a missing target; 12: 1 s wait].
+    // As 12 ends the playlist goes round: it stops 10's run of its own and passes 11, whose run
+    // keeps only its timing and ends at once; that end moves it on round again, past 12 (now
+    // skipped), to 10 afresh.
+    let mut first = wait(10, 10.0);
+    first.second_trigger = SecondTrigger::Stop;
+    let broken = cue(
+        11,
+        CueKind::Start {
+            target: Some(id(99)),
+        },
+    );
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(true, false),
+        vec![first, broken, wait(12, 1.0)],
+    )]);
+    rig.go(0);
+    rig.tick(10000);
+    assert_eq!(rig.state(12), CueState::Running);
+    rig.start(10500, 10);
+    let own = rig.run(10);
+    let last = &mut children_mut(&mut rig.ws.cue_lists[0].cues[0])[2];
+    last.armed = false;
+    last.skip_if_disarmed = true;
+    rig.tick(10600);
+    assert_eq!(
+        rig.state(12),
+        CueState::Running,
+        "disarming leaves it playing"
+    );
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let end = rig.tick(11000);
+    assert_eq!(running_at(&end, 10), Some(11000), "{end:?}");
+    assert_ne!(rig.run(10), own, "a new run of 10");
+}
+
+#[test]
+fn a_disarmed_playlist_marks_no_child_and_its_start_plays_none() {
+    let mut rig = three_waits(false);
+    rig.find_mut(1).armed = false;
+    assert_eq!(marks(&rig.tick(10)), vec![(id(1), None)]);
+    let go = rig.start(100, 1);
+    assert!(starts(&go).iter().all(|(c, _)| *c == id(1)), "{go:?}");
+    rig.find_mut(1).armed = true;
+    assert_eq!(marks(&rig.tick(300)), vec![(id(1), Some(id(10)))]);
+}
+
+#[test]
+fn a_voice_committed_ahead_of_now_flips_the_mark_as_now_reaches_it() {
+    // A 0.1 s panic and a 0.5 s lookahead. Fade 2's action at 1400 commits a ramp on sound
+    // 10's voice from 1000 on: until a panic could begin fading it there (from 1300), a panic
+    // stops 10 at once, so the playlist would play 11. Nothing changes state as that moment
+    // passes.
+    let mut first = sound(10);
+    first.second_trigger = SecondTrigger::Panic;
+    let mut rig = Rig::with_lookahead(
+        vec![
+            grp(1, playlist(false, false), vec![first, wait(11, 5.0)]),
+            timed(cue(2, crate::common::fade(10)), 0.4, 0.0, DNC),
+        ],
+        500,
+    );
+    rig.ws.settings.panic_duration = 0.1;
+    rig.start(100, 10);
+    rig.tick(900);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    rig.start(1000, 2);
+    assert_eq!(
+        rig.engine.next_in_playlist(id(1)),
+        Some(id(11)),
+        "a panic now stops 10 at once"
+    );
+    let on = rig.tick(1350);
+    assert!(
+        on.iter().all(|a| !matches!(a, Action::StateChanged { .. })),
+        "{on:?}"
+    );
+    assert_eq!(
+        marks(&on),
+        vec![(id(1), Some(id(10)))],
+        "a panic now fades 10 out"
+    );
+    let go = rig.start(1360, 1);
+    let faded = go
+        .iter()
+        .any(|a| matches!(a, Action::StopVoice { cue, fade: Some(_), .. } if *cue == id(10)));
+    assert!(faded, "fading out in the panic: {go:?}");
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+}
+
+#[test]
+fn a_length_arriving_after_a_load_to_time_moves_the_mark() {
+    // Sound 10 is not probed yet: the playlist's span is unknown, so a load to 3 s clamps
+    // nothing and the mark names 10.
+    let mut rig = Rig::new(vec![grp(1, playlist(false, false), vec![sound(10)])]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 3.0,
+        },
+    );
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let lengths = |frames| Input::CueLengths {
+        lengths: vec![(id(10), Some(frames))],
+    };
+    let probed = rig.at(100, lengths(1000));
+    assert_eq!(
+        marks(&probed),
+        vec![(id(1), None)],
+        "loaded past its 1 s span"
+    );
+    // An end-trim edit that lengthens it past the load point: the binary sends the new length.
+    let trimmed = rig.at(200, lengths(5000));
+    assert_eq!(marks(&trimmed), vec![(id(1), Some(id(10)))]);
+    let shortened = rig.at(300, lengths(1000));
+    assert_eq!(marks(&shortened), vec![(id(1), None)]);
+    let go = rig.start(400, 1);
+    assert!(
+        voice_starts(&go).is_empty(),
+        "the start plays nothing: {go:?}"
+    );
+    assert_ne!(rig.state(10), CueState::Running);
+}
+
+/// Playlist 1 (no loop) [Timeline 5 [sound 10, 5 s]] and `more` after it, loaded to 3 s: its
+/// span is 10's length, so the mark names 5.
+fn nested_sound_loaded_to_3_s(more: Vec<Cue>) -> Rig {
+    let mut cues = vec![grp(
+        1,
+        playlist(false, false),
+        vec![grp(5, TIMELINE, vec![sound(10)])],
+    )];
+    cues.extend(more);
+    let mut rig = Rig::new(cues);
+    rig.at(
+        0,
+        Input::CueLengths {
+            lengths: vec![(id(10), Some(5000))],
+        },
+    );
+    rig.at(
+        10,
+        Input::Load {
+            cue: id(1),
+            time: 3.0,
+        },
+    );
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(5)));
+    rig
+}
+
+/// Checks that a start of 1 at `now` plays none of its children.
+fn start_plays_no_child(rig: &mut Rig, now: SampleTime) {
+    let go = rig.start(now, 1);
+    for n in [5, 10] {
+        assert!(
+            changes(&go, n).iter().all(|(s, _)| !s.is_active()),
+            "{n}: {go:?}"
+        );
+    }
+}
+
+#[test]
+fn a_grandchilds_media_going_missing_clears_a_loaded_playlists_mark() {
+    let mut rig = nested_sound_loaded_to_3_s(vec![]);
+    let missing = rig.at(
+        100,
+        Input::MediaStatus {
+            media: MediaRef::new("media/a.wav"),
+            status: MediaStatus::Missing,
+        },
+    );
+    assert_eq!(rig.state(10), CueState::Broken);
+    assert_eq!(marks(&missing), vec![(id(1), None)], "nothing left to play");
+    start_plays_no_child(&mut rig, 200);
+}
+
+#[test]
+fn a_disarm_cue_on_a_grandchild_clears_a_loaded_playlists_mark() {
+    let disarm = cue(
+        2,
+        CueKind::Disarm {
+            target: Some(id(10)),
+        },
+    );
+    let mut rig = nested_sound_loaded_to_3_s(vec![disarm]);
+    let disarmed = rig.start(100, 2);
+    assert_eq!(
+        marks(&disarmed),
+        vec![(id(1), None)],
+        "nothing left to play"
+    );
+    // The binary writes the change into the model, as `SetArmed` asks.
+    rig.find_mut(10).armed = false;
+    assert!(marks(&rig.tick(150)).is_empty());
+    start_plays_no_child(&mut rig, 200);
+}
+
+#[test]
 fn a_shuffled_playlist_marks_the_child_its_pass_plays_next_and_none_before_it_is_drawn() {
     let kids = (10..15).map(|n| wait(n, 1.0)).collect();
     let mut rig = Rig::seeded(vec![grp(1, playlist(false, true), kids)], 7);
