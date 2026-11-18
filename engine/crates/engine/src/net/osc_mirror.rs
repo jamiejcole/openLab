@@ -572,6 +572,10 @@ impl OscShow for MirrorShow<'_> {
         self.0.access()
     }
 
+    fn enabled(&self) -> bool {
+        self.0.workspace.settings.osc_enabled
+    }
+
     /// The list whose playhead moved last, else the first (the main list).
     fn active_list(&self) -> Option<CueListId> {
         self.0

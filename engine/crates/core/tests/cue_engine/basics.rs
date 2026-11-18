@@ -571,6 +571,17 @@ fn go_protection_is_reported_from_the_accepted_go_until_its_time_passes() {
     assert_eq!(protection(&accepted), [true]);
 }
 
+/// A clock that goes back (a device reopened) ends protection dated on the old clock at once, so
+/// the GO button's border cannot stay up.
+#[test]
+fn protection_ends_when_the_clock_goes_back() {
+    let mut rig = double_go_rig();
+    assert_eq!(protection(&rig.go(1000)), [true]);
+    let back = rig.tick(10);
+    assert_eq!(protection(&back), [false]);
+    assert!(rig.engine.next_wake().is_none());
+}
+
 #[test]
 fn a_zero_interval_reports_no_protection() {
     let mut rig = Rig::new(vec![memo(1), memo(2)]);

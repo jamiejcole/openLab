@@ -139,7 +139,6 @@ enum AX {
     static let preferencesBackupField = "preferences-backup-field"
     static let preferencesGeneralMessage = "preferences-general-message"
     static let launcherVersion = "launcher-version"
-    static let launcherHelp = "launcher-help"
     static let settingsCategories = "settings-categories"
     static let settingsPageBar = "settings-page-bar"
     static let settingsPanicField = "settings-panic-field"

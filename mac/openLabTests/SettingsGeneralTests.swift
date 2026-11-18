@@ -108,7 +108,7 @@ final class SettingsGeneralTests: XCTestCase {
         await editor.paste()
         await assertEventually("the paste landed") { self.numbers(rig).count == before.count + 1 }
         let pasted = try XCTUnwrap(Set(numbers(rig).keys).subtracting(before).first)
-        XCTAssertNotEqual(try XCTUnwrap(numbers(rig)[pasted]), "2.5", "a paste is not auto-numbered")
+        XCTAssertNil(try XCTUnwrap(numbers(rig)[pasted]), "a paste is not auto-numbered")
         // The step is typed on the page and the engine keeps it.
         sc.autoNumberField.stringValue = "5"
         commit(sc, sc.autoNumberField)

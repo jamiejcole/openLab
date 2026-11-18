@@ -1256,9 +1256,9 @@ async fn the_osc_switch_off_denies_every_message_and_ends_sessions() {
         }
     })
     .await;
-    // The right passcode no longer helps, and a GO over UDP is refused too.
+    // The right passcode no longer helps: /connect is refused too, and a GO over UDP as well.
     t.send(&msg("/connect", vec![text("sesame")])).await;
-    t.recv().await.unwrap();
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "denied");
     t.send(&msg("/go", vec![])).await;
     assert_eq!(body(&t.recv().await.unwrap())["status"], "denied");
     f.udp_send(&msg("/go", vec![])).await;

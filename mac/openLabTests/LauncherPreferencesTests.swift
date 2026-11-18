@@ -19,23 +19,13 @@ final class LauncherPreferencesTests: XCTestCase {
         return nil
     }
 
-    /// Checklist: Launcher window → the version and a help link.
-    func testTheLauncherShowsTheVersionAndAHelpLinkThatOpensItsPage() throws {
-        let help = try XCTUnwrap(URL(string: "https://example.org/openlab-help"))
-        let launcher = LauncherWindowController(helpURL: help)
+    /// Checklist: Launcher window → the version (the help link is deferred until the project has a
+    /// page to point at).
+    func testTheLauncherShowsTheVersion() throws {
+        let launcher = LauncherWindowController()
         let version = try XCTUnwrap(label(AX.launcherVersion, in: launcher.window?.contentView) as? NSTextField)
         XCTAssertEqual(version.stringValue, String(format: loc("launcher.version"), LauncherWindowController.version))
         XCTAssertFalse(LauncherWindowController.version.isEmpty)
-        let button = try XCTUnwrap(label(AX.launcherHelp, in: launcher.window?.contentView) as? NSButton)
-        XCTAssertEqual(button.title, loc("launcher.help"))
-        var opened: [URL] = []
-        launcher.openURL = { opened.append($0) }
-        button.performClick(nil)
-        XCTAssertEqual(opened, [help])
-        // A build with no help page shows no link.
-        let bare = LauncherWindowController(helpURL: nil)
-        XCTAssertNil(label(AX.launcherHelp, in: bare.window?.contentView))
-        XCTAssertNotNil(label(AX.launcherVersion, in: bare.window?.contentView))
     }
 
     private func preferences(_ engine: TestEngine) async throws -> PreferencesWindowController {

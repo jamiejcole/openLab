@@ -36,6 +36,11 @@ pub trait OscShow {
     }
     /// The passcode table: what a peer may do without `/connect` and with each passcode.
     fn access(&self) -> &OscAccess;
+    /// Whether OSC may reach this workspace at all (Workspace Settings, OSC): off, every message
+    /// to it, `/connect` included, is `denied`.
+    fn enabled(&self) -> bool {
+        true
+    }
     /// The cue list `/go` and `/playhead` act on: the one whose playhead was last moved (QLab:
     /// the list on display).
     fn active_list(&self) -> Option<CueListId>;

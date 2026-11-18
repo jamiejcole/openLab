@@ -698,6 +698,21 @@ mod tests {
     }
 
     #[test]
+    fn an_osc_port_that_is_not_a_port_number_is_dropped_with_a_warning() {
+        for bad in ["0", "70000", "\"x\"", "-1", "1.5"] {
+            let loaded = load_settings(&format!(
+                r#"{{"settings_version": 1, "backup_keep": 4, "osc_port": {bad}}}"#
+            ));
+            assert_eq!(loaded.settings.osc_port, None, "{bad}");
+            assert_eq!(loaded.warnings.len(), 1, "{bad}: {:?}", loaded.warnings);
+            assert_eq!(loaded.settings.backup_keep, 4, "{bad}");
+        }
+        let loaded = load_settings(r#"{"settings_version": 1, "osc_port": 53100}"#);
+        assert_eq!(loaded.settings.osc_port, Some(53100));
+        assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
     fn an_invalid_output_device_name_is_dropped_with_a_warning() {
         let loaded = load_settings(r#"{"settings_version": 1, "output_device": ""}"#);
         assert_eq!(loaded.settings.output_device, None);

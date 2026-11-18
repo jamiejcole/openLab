@@ -350,7 +350,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return appController.canSaveFront
         case #selector(recoverAutosaves(_:))?: return engineSession.connectionState == .connected
         case #selector(showLog(_:))?: return appController.frontController != nil
-        case #selector(showWorkspaceSettings(_:))?: return appController.frontController != nil
+        case #selector(showWorkspaceSettings(_:))?, #selector(showWorkspaceSettingsPage(_:))?:
+            return appController.frontController != nil
         case #selector(showPreshowCheck(_:))?: return appController.frontController?.canRunPreshowCheck ?? false
         default: break
         }
