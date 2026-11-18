@@ -463,6 +463,9 @@
 "settings.video.displayAbsent" = "%@ (not connected)";
 "settings.video.badLayer" = "A layer is a whole number from 0 to 1000.";
 "settings.video.badName" = "A stage needs a name.";
+"settings.video.badSize" = "A stage is a whole number of pixels from 1 to 16384 wide and high.";
+"settings.video.width" = "Width in pixels";
+"settings.video.height" = "Height in pixels";
 "settings.video.gone" = "That stage is no longer in the workspace.";
 "settings.video.warn.noDisplay" = "No display on this computer: choose one to show this stage.";
 "settings.video.warn.missing" = "Its display is not connected: the stage is not shown until it is.";

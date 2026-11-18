@@ -271,6 +271,26 @@ struct StageMappingEntry: Hashable, Sendable, Decodable {
     let mapping: StageMapping?
     /// Nil while the stage host has not said.
     let state: StageState?
+    /// A keep-black stage whose black a panic took down: hidden between cues until a cue plays
+    /// on it again (absent: false).
+    var panicked: Bool = false
+
+    init(stage: ModelID, mapping: StageMapping?, state: StageState?, panicked: Bool = false) {
+        self.stage = stage
+        self.mapping = mapping
+        self.state = state
+        self.panicked = panicked
+    }
+
+    private enum CodingKeys: String, CodingKey { case stage, mapping, state, panicked }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        stage = try c.decode(ModelID.self, forKey: .stage)
+        mapping = try c.decodeIfPresent(StageMapping.self, forKey: .mapping)
+        state = try c.decodeIfPresent(StageState.self, forKey: .state)
+        panicked = try c.decodeIfPresent(Bool.self, forKey: .panicked) ?? false
+    }
 }
 
 struct DeviceEntry: Hashable, Sendable, Decodable {

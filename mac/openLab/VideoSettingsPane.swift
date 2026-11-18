@@ -19,7 +19,8 @@ struct StageRow: Equatable {
 }
 
 /// The Video page of the workspace settings (VID-01, VID-12; QLab 5 manual pp. 225-227): the
-/// workspace's stages, one row each with its name (typed in place), pixel size, the display it is
+/// workspace's stages, one row each with its name (typed in place), pixel size (width and height
+/// typed in place), the display it is
 /// shown on on this machine, whether black stays up between cues, its layer, and a remove button;
 /// and a button that adds one. A stage that cannot be seen says why in its row. Every control
 /// sends its edit to the engine and the page is drawn from what the engine then holds (the model
@@ -52,6 +53,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private(set) var displays: [StageDisplay] = []
     private(set) var nameFields: [NSTextField] = []
     private(set) var layerFields: [NSTextField] = []
+    private(set) var widthFields: [NSTextField] = []
+    private(set) var heightFields: [NSTextField] = []
     private(set) var displayPopups: [NSPopUpButton] = []
     private(set) var blackBoxes: [NSButton] = []
     private(set) var removeButtons: [NSButton] = []
@@ -86,7 +89,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// Name, pixels, display, black, layer, remove: the least widths (the display and name
     /// columns take more when there is room).
-    static let columns: [CGFloat] = [90, 70, leastDisplayWidth, 32, 30, 16]
+    static let columns: [CGFloat] = [90, sizeWidth, leastDisplayWidth, 32, 30, 16]
+    /// A width or height field: five digits.
+    static let sideWidth: CGFloat = 40
+    /// The pixels column: width, "×", height.
+    static let sizeWidth: CGFloat = 2 * sideWidth + 14
     static let leastDisplayWidth: CGFloat = 120
     static let mostDisplayWidth: CGFloat = 260
     static let mostNameWidth: CGFloat = 260
@@ -241,8 +248,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.render() } }
     }
 
-    /// Whether a name or layer is being typed in.
-    var typing: Bool { (nameFields + layerFields).contains { $0.currentEditor() != nil } }
+    /// Every field typed in: names, sizes and layers.
+    private var textFields: [NSTextField] { nameFields + widthFields + heightFields + layerFields }
+
+    /// Whether a name, size or layer is being typed in.
+    var typing: Bool { textFields.contains { $0.currentEditor() != nil } }
 
     /// Ends the typing in a name or layer field, which commits it (before what the operator
     /// clicked next). True when typing ended: that edit's reason, if refused, must stand.
@@ -266,13 +276,15 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if !forced, shown == rows, displays == list { return }
         let resume = typedIn()
         // The old fields leave the window with the table: their end of editing is not an edit.
-        for field in nameFields + layerFields { field.delegate = nil }
+        for field in textFields { field.delegate = nil }
         shown = rows
         displays = list
         popupWidths = []
         nameWidths = []
         let grid = Self.makeGrid(rows: true)
         nameFields = []
+        widthFields = []
+        heightFields = []
         layerFields = []
         displayPopups = []
         blackBoxes = []
@@ -295,9 +307,19 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             nameWidth.isActive = true
             nameWidths.append(nameWidth)
             name.setAX("\(Self.id)-name-\(n)", label: "\(row.name), \(loc("settings.video.col.name"))")
-            let size = NSTextField(labelWithString: "\(row.width) × \(row.height)")
-            size.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            let width = sideField(row.width, kind: .width, tag: i, enabled: enabled)
+            width.setAX("\(Self.id)-width-\(n)", label: "\(row.name), \(loc("settings.video.width"))")
+            let height = sideField(row.height, kind: .height, tag: i, enabled: enabled)
+            height.setAX("\(Self.id)-height-\(n)", label: "\(row.name), \(loc("settings.video.height"))")
+            let by = NSTextField(labelWithString: "×")
+            by.font = .systemFont(ofSize: 11)
+            by.textColor = .secondaryLabelColor
+            let size = NSStackView(views: [width, by, height])
+            size.orientation = .horizontal
+            size.spacing = 2
             size.setAX("\(Self.id)-size-\(n)")
+            widthFields.append(width)
+            heightFields.append(height)
             let popup = displayPopup(row, tag: i, enabled: enabled)
             popup.setAX("\(Self.id)-display-\(n)", label: "\(row.name), \(loc("settings.video.col.display"))")
             let black = NSButton(checkboxWithTitle: "", target: self, action: #selector(blackClicked(_:)))
@@ -345,29 +367,62 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if let resume { self.resume(resume) }
     }
 
-    enum TypedField { case name, layer }
+    /// A width or height field of the size column.
+    private func sideField(_ value: Int, kind: TypedField, tag: Int, enabled: Bool) -> NSTextField {
+        let field = NSTextField(string: String(value))
+        field.controlSize = .small
+        field.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        field.isEditable = enabled
+        field.alignment = .right
+        field.delegate = self
+        field.tag = tag
+        field.identifier = NSUserInterfaceItemIdentifier(kind.rawValue)
+        field.widthAnchor.constraint(equalToConstant: Self.sideWidth).isActive = true
+        return field
+    }
+
+    /// The fields typed in place, by their identifier.
+    enum TypedField: String { case name, width, height, layer }
+
+    private func fields(_ kind: TypedField) -> [NSTextField] {
+        switch kind {
+        case .name: return nameFields
+        case .width: return widthFields
+        case .height: return heightFields
+        case .layer: return layerFields
+        }
+    }
+
+    /// What the workspace holds for `kind` of `row`, as its field shows it.
+    private static func text(_ kind: TypedField, _ row: StageRow) -> String {
+        switch kind {
+        case .name: return row.name
+        case .width: return String(row.width)
+        case .height: return String(row.height)
+        case .layer: return String(row.layer)
+        }
+    }
 
     /// The field being typed in: its kind, its stage, the text so far and the selection.
     private struct Typed {
-        var layer: Bool
+        var kind: TypedField
         var stage: ModelID
         var text: String
         var selection: NSRange
     }
 
     private func typedIn() -> Typed? {
-        guard let field = (nameFields + layerFields).first(where: { $0.currentEditor() != nil }),
-            let editor = field.currentEditor(), let row = row(field.tag)
+        guard let field = textFields.first(where: { $0.currentEditor() != nil }),
+            let editor = field.currentEditor(), let row = row(field.tag),
+            let kind = field.identifier.flatMap({ TypedField(rawValue: $0.rawValue) })
         else { return nil }
-        return Typed(
-            layer: field.identifier?.rawValue == "layer", stage: row.id, text: editor.string,
-            selection: editor.selectedRange)
+        return Typed(kind: kind, stage: row.id, text: editor.string, selection: editor.selectedRange)
     }
 
     /// Puts the caret back in the redrawn field of the stage that was being typed in.
     private func resume(_ typed: Typed) {
         guard let i = shown?.firstIndex(where: { $0.id == typed.stage }) else { return }
-        let field = (typed.layer ? layerFields : nameFields)[i]
+        let field = fields(typed.kind)[i]
         guard view.window?.makeFirstResponder(field) == true, let editor = field.currentEditor() else { return }
         editor.string = typed.text
         let length = (typed.text as NSString).length
@@ -425,7 +480,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// Runs `edit` for `stage` after the edits before it, shows its refusal (or clears the last
     /// one, unless a newer edit has said something since), and redraws from the engine.
-    /// A refused edit of a typed `field` (`.layer` or `.name`) puts its value back. `after` is
+    /// A refused edit of a typed `field` puts its value back. `after` is
     /// true for a click that ended typing: the typed edit's reason (shown now, or on its way from
     /// the engine) is not cleared or outrun by the click's edit.
     private func commit(
@@ -441,20 +496,20 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             guard let self else { return }
             await refresh()
             if case .failure(let e) = result {
-                if let stage, let field { putBack(stage, layer: field == .layer) }
+                if let stage, let field { putBack(stage, field) }
                 if mine == attempt { messageLabel.stringValue = reason(e, stage) }
             }
             render(forced: true)
         }
     }
 
-    /// Puts the stage's name or layer as the workspace has it back in its field (the one drawn
+    /// Puts the stage's value of `kind` as the workspace has it back in its field (the one drawn
     /// now), also while it is typed in.
-    private func putBack(_ stage: ModelID, layer: Bool) {
+    private func putBack(_ stage: ModelID, _ kind: TypedField) {
         guard let i = shown?.firstIndex(where: { $0.id == stage }), let row = rows().first(where: { $0.id == stage })
         else { return }
-        let field = (layer ? layerFields : nameFields)[i]
-        let value = layer ? String(row.layer) : row.name
+        let field = fields(kind)[i]
+        let value = Self.text(kind, row)
         field.stringValue = value
         field.currentEditor()?.string = value
     }
@@ -507,7 +562,25 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField, let row = row(field.tag) else { return }
         let text = field.stringValue
-        if field.identifier?.rawValue == "layer" {
+        let kind = field.identifier.flatMap { TypedField(rawValue: $0.rawValue) }
+        if kind == .width || kind == .height {
+            // A stage is 1 to 16384 pixels a side (QLab 5 manual p. 226).
+            guard let side = Int(text.trimmingCharacters(in: .whitespaces)), (1...16384).contains(side) else {
+                tell(loc("settings.video.badSize"))
+                field.stringValue = kind == .width ? String(row.width) : String(row.height)
+                return
+            }
+            let (width, height) = kind == .width ? (side, row.height) : (row.width, side)
+            guard (width, height) != (row.width, row.height) else { return }
+            commit(row.id, field: kind) { [store] in
+                await store.send(
+                    command: .setStage(
+                        row.id,
+                        .object([
+                            "type": .string("size"), "width": .int(Int64(width)), "height": .int(Int64(height)),
+                        ])))
+            }
+        } else if kind == .layer {
             guard let layer = Int(text.trimmingCharacters(in: .whitespaces)), (0...1000).contains(layer) else {
                 tell(loc("settings.video.badLayer"))
                 field.stringValue = String(row.layer)
