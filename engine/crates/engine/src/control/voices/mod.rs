@@ -430,6 +430,9 @@ pub struct Voices {
     primes: HashMap<CueId, Prime>,
     /// Starts that used a primed stream (a cold start prepares one on the spot).
     prime_hits: u64,
+    /// A load was skipped for want of streams (`load_may_stream`) and noticed; cleared once a
+    /// load gets its stream again, so a long sequence makes one notice, not one per cue.
+    load_skip_noticed: bool,
     /// Ids that left since the last voice-meter read, and their cue: the read reports them once
     /// more.
     gone: Vec<(VoiceId, CueId)>,

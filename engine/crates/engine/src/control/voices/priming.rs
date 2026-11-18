@@ -28,6 +28,10 @@ impl Voices {
                 self.try_start(id, env, fx);
                 continue;
             }
+            // A load waiting for its probe makes no stream past the load limit either.
+            if !super::actions::load_may_stream(env) {
+                continue;
+            }
             match self.prepare(cue, from, env, fx) {
                 Ok(made) => {
                     if let Some(r) = self.recs.get_mut(&id)

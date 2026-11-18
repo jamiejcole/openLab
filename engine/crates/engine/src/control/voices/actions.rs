@@ -137,11 +137,25 @@ impl Voices {
 
     /// Prepares the stream of the loaded (not started) record `id`. A load past the end gets
     /// none: it starts and ends at once (`try_start` reports it). One that cannot be made fails
-    /// the run.
+    /// the run. With too many streams open already (`load_may_stream`) the load makes none: the
+    /// cue stays loaded and its start streams cold.
     fn prepare_loaded(&mut self, id: VoiceId, env: &mut Env<'_>, fx: &mut Effects) {
         let Some(r) = self.recs.get(&id) else { return };
         let (cue, run) = (r.cue, r.run);
         let from = r.plan_of();
+        if !load_may_stream(env) {
+            if !std::mem::replace(&mut self.load_skip_noticed, true) {
+                fx.notices.push((
+                    "load_skipped",
+                    "too many streams are open to load cues ahead; they start from the disk \
+                     when they play"
+                        .to_owned(),
+                    Some(cue),
+                ));
+            }
+            return;
+        }
+        self.load_skip_noticed = false;
         if r.file.is_some() {
             self.close_seek_gate(cue, env);
         }
@@ -1176,4 +1190,11 @@ impl Voices {
             self.aliases.remove(&o);
         }
     }
+}
+
+/// Whether a load may open a stream now. A loaded stream, like a prime, is only a head start:
+/// loads never take the streams that keep the streamer's open-stream limit half free for starts
+/// (a start that finds none fails `stream_failed`), whatever primes and playing voices hold.
+pub(super) fn load_may_stream(env: &Env<'_>) -> bool {
+    env.streamer.open_streams() < env.streamer.config().max_streams / 2
 }

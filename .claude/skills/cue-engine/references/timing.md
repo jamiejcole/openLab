@@ -50,6 +50,7 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 
 ### Auto-load
 - When a GO moves the playhead onto a cue (`go_on`, also a GO on a skipped cue that moves it on; `auto_load_at_playhead`), that cue is loaded as `Load { time: 0 }` (`load_tree`: a group loads the children its action starts first; its sequence loads with it, at their tops, Q576) if it has `auto_load` (QLab 5, manual p. 128). Not when the playhead is set by hand or by navigation, nor when a cue is started without a GO (measured in QLab 5.6.5, Q296).
+- What auto-load loaded (`auto_loaded`, per list) is unloaded when the playhead leaves that cue before it starts (`release_auto_loads`, end of each call and before the next auto-load; Q577); once it started, stopped or was reset the load is forgotten (its run starts the rest). A cue loaded on purpose (Load to Time, a Load cue) leaves the record (`forget_auto_loaded`) and stays.
 - Only an idle cue, armed, without static problems: one loaded (to any time), active or broken at run time is left alone, and a disarmed or broken one is not loaded (it would play nothing). No warning either way. A load is no start: no chain budget.
 
 ### Load to time

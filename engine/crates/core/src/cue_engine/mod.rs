@@ -135,6 +135,11 @@ pub struct CueEngine {
     /// handled at (a zero-length voice ends on its start sample) could otherwise carry a cycle
     /// into call after call at one `now`, each with a fresh budget.
     spent: (SampleTime, usize),
+    /// Per list, the cue auto-load loaded at its playhead and every cue that load loaded (its
+    /// sequence and a group's children). Unloaded again when the playhead leaves that cue before
+    /// it starts (`release_auto_loads`), so a GO that walks past auto-loading cues leaves no
+    /// streams behind; a cue loaded on purpose (Load to Time, a Load cue) is never in here.
+    auto_loaded: BTreeMap<CueListId, (CueId, Vec<CueId>)>,
     /// The outline every call checks for a missed `model_changed` (see `shape.rs`).
     shape: shape::Shape,
     /// The edit cross-check (see [`CueEngine::set_edit_cross_check`]); `None` when off.
@@ -202,6 +207,7 @@ impl CueEngine {
             model_syncs: 0,
             whole_show_passes: 0,
             spent: (0, 0),
+            auto_loaded: BTreeMap::new(),
             shape: shape::Shape::default(),
             // Debug builds count the edits nobody signalled, so tests find a missed signal; the
             // check only counts, so behaviour is that of a release build (CLAUDE.md).
@@ -362,6 +368,7 @@ impl CueEngine {
         self.advance(&mut cx);
         self.settle_groups(&mut cx);
         self.sync_ducks(&mut cx);
+        self.release_auto_loads(&mut cx);
         // `limit - budget` is what this call and the earlier ones at `now` started (a raised
         // limit raises the budget by as much, see `budget_left`).
         self.spent = (now, cx.limit.saturating_sub(cx.budget));
@@ -622,7 +629,8 @@ impl CueEngine {
             Input::Load { cue, time } => {
                 if self.known(cue, cx) {
                     let time = self.load_time(cue, time, cx);
-                    self.load_tree(cue, time, cx);
+                    let loaded = self.load_tree(cue, time, cx);
+                    self.forget_auto_loaded(&loaded);
                 }
             }
             Input::Seek { cue, position } => self.seek(cue, position, cx),

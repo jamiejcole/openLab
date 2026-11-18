@@ -1058,7 +1058,9 @@ impl CueEngine {
     /// unshuffled playlist: the first), with their own sequences, at the time left after the
     /// group's pre-wait. Iterative over nested groups; each cue is loaded at most once, so a
     /// duplicate id cannot make it loop.
-    pub(super) fn load_tree(&mut self, cue: CueId, time: f64, cx: &mut Ctx) {
+    /// Returns the cues it loaded (one kept as it stood is not among them).
+    pub(super) fn load_tree(&mut self, cue: CueId, time: f64, cx: &mut Ctx) -> Vec<CueId> {
+        let mut loaded = Vec::new();
         let mut work = vec![(cue, time)];
         let mut done = HashSet::new();
         while let Some((first, time)) = work.pop() {
@@ -1091,6 +1093,7 @@ impl CueEngine {
                 if !matches!(self.slots.get(&id), Some(Slot::Loaded(_))) {
                     break;
                 }
+                loaded.push(id);
                 let Some(CueKind::Group { mode, children }) = cx.ws.find_cue(id).map(|m| &m.kind)
                 else {
                     continue;
@@ -1110,6 +1113,7 @@ impl CueEngine {
             // Children first, in list order: the stack pops the last pushed first.
             work.extend(later.into_iter().rev());
         }
+        loaded
     }
 
     /// Whether `cue` is loaded at its very top: its whole pre-wait and its action ahead of it.

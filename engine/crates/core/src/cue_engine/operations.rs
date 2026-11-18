@@ -171,6 +171,8 @@ impl CueEngine {
     /// nothing, so loading it would only show a loaded mark that means nothing. It loads as Load
     /// to time 0 does: a group's first children and the cue's sequence, each at its top.
     pub(super) fn auto_load_at_playhead(&mut self, list: CueListId, cx: &mut Ctx) {
+        // What an earlier auto-load in this list left loaded goes first if the playhead left it.
+        self.release_auto_loads(cx);
         let ws = cx.ws;
         let Some(next) = self.playhead(list).and_then(|id| ws.find_cue(id)) else {
             return;
@@ -182,7 +184,50 @@ impl CueEngine {
         {
             return;
         }
-        self.load_tree(next.id, 0.0, cx);
+        let loaded = self.load_tree(next.id, 0.0, cx);
+        self.forget_auto_loaded(&loaded);
+        if !loaded.is_empty() {
+            self.auto_loaded.insert(list, (next.id, loaded));
+        }
+    }
+
+    /// Cues just loaded on purpose stay loaded: an earlier auto-load no longer answers for them.
+    pub(super) fn forget_auto_loaded(&mut self, loaded: &[CueId]) {
+        if self.auto_loaded.is_empty() || loaded.is_empty() {
+            return;
+        }
+        for (_, cues) in self.auto_loaded.values_mut() {
+            cues.retain(|c| !loaded.contains(c));
+        }
+    }
+
+    /// Auto-load is a head start for the GO that is coming (QLab 5, manual pp. 128, 681): when a
+    /// list's playhead has left the cue auto-load loaded, before that cue started, the cues that
+    /// load loaded and that still stand loaded are unloaded, so their streams go back. Once the
+    /// cue has started (or been stopped or reset) the load is its run's, and is forgotten.
+    pub(super) fn release_auto_loads(&mut self, cx: &mut Ctx) {
+        if self.auto_loaded.is_empty() {
+            return;
+        }
+        let left: Vec<CueListId> = self
+            .auto_loaded
+            .iter()
+            .filter(|(list, (first, _))| self.playhead(**list) != Some(*first))
+            .map(|(list, _)| *list)
+            .collect();
+        for list in left {
+            let Some((first, cues)) = self.auto_loaded.remove(&list) else {
+                continue;
+            };
+            if !matches!(self.slots.get(&first), Some(Slot::Loaded(_))) {
+                continue;
+            }
+            for id in cues {
+                if matches!(self.slots.get(&id), Some(Slot::Loaded(_))) {
+                    self.reset_one(id, cx);
+                }
+            }
+        }
     }
 
     /// Forgets that `cue` was started: its row shows its first colour again.

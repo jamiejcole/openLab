@@ -774,6 +774,94 @@ fn a_load_at_the_top_keeps_a_later_cues_preload() {
     );
 }
 
+/// A long auto-follow chain behind an auto-load cue: one auto-load loads the whole sequence,
+/// and moving the playhead off that cue before it starts unloads every one of them, so a few
+/// landings in rehearsal cannot pile up streams (QLab 5 does not document it; Q577).
+#[test]
+fn moving_the_playhead_off_an_auto_loaded_cue_unloads_what_auto_load_loaded() {
+    let mut cues = vec![sound(1), auto_loading(timed(sound(2), 0.0, 0.0, AF))];
+    cues.extend((3..43u128).map(|n| timed(sound(n), 0.0, 0.0, AF)));
+    cues.push(sound(43));
+    let mut rig = Rig::new(cues);
+    let lengths = (2..=43u128).map(|n| (id(n), Some(1000))).collect();
+    rig.at(0, Input::CueLengths { lengths });
+    let go = rig.go(10);
+    assert_eq!(voice_loads(&go).len(), 42, "the whole sequence");
+    assert_eq!(rig.playhead(), Some(id(2)));
+    let moved = rig.set_playhead(20, 1);
+    let unloads = moved
+        .iter()
+        .filter(|a| matches!(a, Action::UnloadVoice { .. }))
+        .count();
+    assert_eq!(unloads, 42, "{moved:?}");
+    assert!((2..=43u128).all(|n| rig.state(n) == CueState::Idle));
+    // Stepping the playhead off it does the same.
+    rig.set_playhead(30, 1);
+    rig.go(40);
+    assert_eq!(rig.state(43), CueState::Loaded);
+    rig.at(50, Input::PlayheadNext { list: list() });
+    assert!((2..=43u128).all(|n| rig.state(n) == CueState::Idle));
+}
+
+/// A GO on the auto-loaded cue starts it: the rest of its sequence stays loaded for the run to
+/// start, and nothing is unloaded when the playhead moves on.
+#[test]
+fn a_go_on_an_auto_loaded_cue_keeps_its_sequence_loaded_for_the_run() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        auto_loading(timed(sound(2), 0.0, 0.0, AF)),
+        sound(3),
+        sound(4),
+    ]);
+    let lengths = [(id(2), Some(4000)), (id(3), Some(4000))]
+        .into_iter()
+        .collect();
+    rig.at(0, Input::CueLengths { lengths });
+    rig.go(10);
+    let go = rig.go(20);
+    assert!(
+        !go.iter().any(|a| matches!(a, Action::UnloadVoice { .. })),
+        "{go:?}"
+    );
+    assert_eq!(rig.state(3), CueState::Loaded, "waiting for cue 2's follow");
+}
+
+/// A cue loaded on purpose (Load to Time, a Load cue) stays loaded when the playhead leaves an
+/// auto-loaded cue whose sequence holds it, whether it was loaded before the auto-load or after.
+#[test]
+fn a_cue_loaded_on_purpose_stays_when_the_playhead_leaves_an_auto_loaded_cue() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        auto_loading(timed(sound(2), 0.0, 0.0, AF)),
+        timed(sound(3), 0.0, 0.0, AF),
+        sound(4),
+    ]);
+    let lengths = [(id(2), Some(4000)), (id(3), Some(4000))]
+        .into_iter()
+        .collect();
+    rig.at(0, Input::CueLengths { lengths });
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(3),
+            time: 0.0,
+        },
+    );
+    rig.go(10);
+    // Cue 4 was auto-loaded with the sequence, then loaded on purpose.
+    rig.at(
+        15,
+        Input::Load {
+            cue: id(4),
+            time: 1.0,
+        },
+    );
+    rig.set_playhead(20, 1);
+    assert_eq!(rig.state(2), CueState::Idle, "auto-loaded: let go");
+    assert_eq!(rig.state(3), CueState::Loaded, "preloaded before");
+    assert_eq!(rig.state(4), CueState::Loaded, "loaded after");
+}
+
 /// A disarmed later cue plays nothing, so it is not loaded (as auto-load leaves a disarmed cue
 /// alone); the time carries on past it.
 #[test]
