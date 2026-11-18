@@ -166,6 +166,13 @@ final class LevelMatrixView: NSView {
         }
     }
 
+    /// A value box: dark in a dark window, a plain light well in a light one, so an off crosspoint
+    /// reads as an empty box in both.
+    private static let valueBoxFill = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0, alpha: 0.45) : NSColor(white: 1, alpha: 0.9)
+    }
+
     private func cell(_ slot: LevelSet.Slot, _ levels: LevelSet) {
         let r = rect(of: slot).insetBy(dx: 1, dy: 1)
         let db = levels.db(slot)
@@ -178,7 +185,7 @@ final class LevelMatrixView: NSView {
             NSColor.systemYellow.withAlphaComponent(0.55).setFill()
         } else {
             // A value box is dark whatever it holds, as QLab's are; the number says how loud.
-            NSColor(white: 0, alpha: 0.45).setFill()
+            Self.valueBoxFill.setFill()
         }
         path.fill()
         NSColor.separatorColor.setStroke()

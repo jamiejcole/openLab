@@ -1,0 +1,18 @@
+{
+  "about": "A cue previewed from the Time & Loops tab draws its play line moving, and the line goes when the preview stops.",
+  "show": "Demo",
+  "media": {"media/a.wav": 60},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"click": "time-loops-preview"},
+    {"advance": 3},
+    {"shot": "preview-3s"},
+    {"advance": 7},
+    {"shot": "preview-10s"},
+    {"click": "time-loops-preview"},
+    {"advance": 1},
+    {"shot": "after-stop"}
+  ]
+}

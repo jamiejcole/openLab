@@ -389,3 +389,43 @@ fn a_devamp_stop_keeps_the_position_inside_the_loop() {
     assert!(!pos.is_empty());
     assert!(pos.iter().all(|(_, p)| frames_of(*p) < 800.0), "{pos:?}");
 }
+
+/// A previewed cue reports where its voice is in the file (position only: the cue is not
+/// running), so the Time & Loops tab draws its play line; once the preview stops one more message
+/// goes out without it.
+#[test]
+fn a_previewed_cue_reports_its_file_position_and_the_report_stops_with_it() {
+    let path = wav(&ramp(1600));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.take_outbound();
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(800);
+    let msgs = s.take_outbound();
+    let pos = item_positions(&msgs, 1);
+    assert!(pos.len() >= 3, "{pos:?}");
+    assert!(
+        pos.iter().all(|&(elapsed, _)| elapsed == 0.0),
+        "position only"
+    );
+    let last = pos.last().map(|&(_, p)| frames_of(p)).unwrap_or(0.0);
+    assert!((500.0..=800.0).contains(&last), "{last}");
+    assert!(pos.windows(2).all(|w| w[1].1 >= w[0].1), "rises: {pos:?}");
+    s.transport(TransportAction::StopPreview { cue: Some(id(1)) });
+    s.run(u64::from(RATE) / 2);
+    let after = s.take_outbound();
+    let withdrawn = reports(&after)
+        .iter()
+        .rev()
+        .find(|(items, _)| items.iter().all(|i| i.cue != id(1)))
+        .is_some();
+    assert!(withdrawn, "a message without the cue follows the stop");
+    s.take_outbound();
+    s.run(u64::from(RATE) / 2);
+    assert!(
+        reports(&s.take_outbound()).is_empty(),
+        "nothing more once it is gone"
+    );
+    for m in &msgs {
+        check_wire(m);
+    }
+}

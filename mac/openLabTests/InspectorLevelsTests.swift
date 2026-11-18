@@ -1295,6 +1295,42 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertGreaterThan(inkedPixels(rep, on.insetBy(dx: 4, dy: 4)), 0, "a routed one shows its level")
     }
 
+    /// In a light window an off crosspoint is a light empty box and a fader knob has body against its
+    /// track; with no channel sent, the meter draws no bar at all.
+    func testLevelsTabReadsInALightWindowAndDrawsNoEmptyMeterBar() async throws {
+        showCue(Self.intro)
+        window.layoutIfNeeded()
+        let p = vc.audioLevels
+        func sum(_ c: NSColor) -> CGFloat { c.redComponent + c.greenComponent + c.blueComponent }
+        let off = p.matrix.rect(of: .cross(input: 0, output: 1)).insetBy(dx: 4, dy: 4)
+        func boxFill(_ name: NSAppearance.Name) throws -> CGFloat {
+            p.matrix.appearance = NSAppearance(named: name)
+            var rep: NSBitmapImageRep?
+            p.matrix.effectiveAppearance.performAsCurrentDrawingAppearance { rep = try? self.drawn(p.matrix) }
+            let r = try XCTUnwrap(rep)
+            let c = try XCTUnwrap(
+                r.colorAt(x: Int(off.minX), y: r.pixelsHigh - 1 - Int(off.minY))?.usingColorSpace(.sRGB))
+            return sum(c)
+        }
+        // The window's own background shows through the translucent box: compare against the dark box.
+        XCTAssertGreaterThan(try boxFill(.aqua), try boxFill(.darkAqua) + 0.9, "light box is light, dark box dark")
+        XCTAssertGreaterThan(try boxFill(.aqua), 1.5, "a light well in a light window")
+        // The knob: not near-white on a light window.
+        let fader = try XCTUnwrap(p.faders.first)
+        fader.appearance = NSAppearance(named: .aqua)
+        let rep = try renderView(fader, background: .white)
+        let knob = fader.cell.map { ($0 as? NSSliderCell)?.knobRect(flipped: fader.isFlipped) } ?? nil
+        let k = try XCTUnwrap(knob)
+        let c = try XCTUnwrap(
+            rep.colorAt(x: Int(k.midX * 2), y: Int((fader.bounds.height - k.midY) * 2))?.usingColorSpace(.sRGB))
+        XCTAssertLessThan(sum(c), 2.4, "the knob has body against a white window: \(c)")
+        // No channels sent: nothing drawn.
+        let meter = MeterView()
+        meter.frame = NSRect(x: 0, y: 0, width: 100, height: 22)
+        let mrep = try renderView(meter)
+        XCTAssertEqual(mrep.colorAt(x: 10, y: 10)?.alphaComponent ?? 1, 0, accuracy: 0.001, "no empty bar")
+    }
+
     private func drawn(_ m: LevelMatrixView) throws -> NSBitmapImageRep {
         let rep = try XCTUnwrap(
             NSBitmapImageRep(

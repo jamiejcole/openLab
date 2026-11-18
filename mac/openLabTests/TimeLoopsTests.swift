@@ -183,6 +183,25 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertFalse(panel.resetButton.isEnabled)
     }
 
+    /// A preview from the tab's button moves the play line as a play does, and the line goes when
+    /// the preview stops.
+    func testAPreviewFromTheTabMovesThePlayLineAndStopsWithIt() async throws {
+        vc.onTransport = { action in Task { _ = await self.rig.store.transport(action) } }
+        await showIntro()
+        panel.previewButton.performClick(nil)
+        await assertEventually("the engine previews the cue") { self.rig.store.previewing.contains(Self.intro) }
+        for seconds in [3.0, 7.0] {
+            try await rig.advance(seconds)
+            await assertEventually("the preview reports its place") { self.rig.store.progress[Self.intro] != nil }
+            let at = try XCTUnwrap(wave.playhead, "the line is drawn while previewing")
+            XCTAssertEqual(at, seconds == 3 ? 3 : 10, accuracy: 1.0, "the line is at the preview's place")
+        }
+        panel.resetButton.performClick(nil)
+        await assertEventually("reset ends the preview") { !self.rig.store.previewing.contains(Self.intro) }
+        try await rig.advance(1)
+        await assertEventually("the line is withdrawn") { self.wave.playhead == nil }
+    }
+
     /// The ruler's first label is drawn whole beside the start marker, and no label runs past the view's edge,
     /// idle, while the cue plays, zoomed in and scrolled.
     func testTheRulersFirstLabelIsWholeBesideTheStartMarkerIdlePlayingZoomedAndScrolled() async throws {

@@ -34,7 +34,18 @@ final class LevelFaderCell: NSSliderCell {
     var isMixed = false
 
     override func drawKnob(_ knobRect: NSRect) {
-        if !isMixed { super.drawKnob(knobRect) }
+        guard !isMixed else { return }
+        // The system's knob is near-white: on a light window it needs an outline and a darker body to read.
+        if controlView?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .aqua {
+            let knob = NSBezierPath(roundedRect: knobRect.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4)
+            NSColor(white: 0.62, alpha: 1).setFill()
+            knob.fill()
+            NSColor(white: 0.25, alpha: 1).setStroke()
+            knob.lineWidth = 1
+            knob.stroke()
+        } else {
+            super.drawKnob(knobRect)
+        }
     }
 }
 

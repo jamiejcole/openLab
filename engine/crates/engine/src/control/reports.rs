@@ -206,8 +206,27 @@ impl DocCx<'_> {
             // anything else, and make one of their own only when the set changed, so a standing
             // loaded cue costs no traffic.
             let loaded = self.loaded_positions();
-            let loaded_changed = loaded != self.doc.last_loaded;
-            if !items.is_empty() || !waits.is_empty() || loaded_changed {
+            // A previewed cue (no show voice of its own sounding) shows its play line the same way.
+            let previews: Vec<(openlab_core::CueId, f64)> = self
+                .doc
+                .voices
+                .preview_at(rendered)
+                .into_iter()
+                .filter(|(cue, _)| !items.iter().any(|i| i.cue == *cue))
+                .map(|(cue, frame)| (cue, self.seconds(frame)))
+                .collect();
+            // What stands at a point (loaded cues, then previews): one more message when it changes,
+            // so a stopped preview's line is withdrawn.
+            let mut standing = loaded.clone();
+            standing.extend(previews.iter().copied());
+            let loaded_changed = standing != self.doc.last_loaded;
+            if !items.is_empty() || !waits.is_empty() || loaded_changed || !previews.is_empty() {
+                items.extend(previews.iter().map(|&(cue, position)| ProgressItem {
+                    cue,
+                    elapsed: 0.0,
+                    remaining: None,
+                    position: Some(position),
+                }));
                 items.extend(loaded.iter().map(|&(cue, position)| ProgressItem {
                     cue,
                     elapsed: 0.0,
@@ -221,7 +240,7 @@ impl DocCx<'_> {
                 // A message dropped for a slow client is made again next pass while the loaded
                 // set it carried is still unsent (a playing cue's progress comes again anyway).
                 if self.eng.out.send_lossy(Some(self.doc.id), m) {
-                    self.doc.last_loaded = loaded;
+                    self.doc.last_loaded = standing;
                 }
             }
         }

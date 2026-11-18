@@ -260,6 +260,23 @@ impl Voices {
         v
     }
 
+    /// Where each playing preview stands in its media file, master-rate frames, by cue: the play
+    /// line of a cue auditioned from its Time & Loops tab. A paused preview keeps its place.
+    pub fn preview_at(&self, t: SampleTime) -> Vec<(CueId, u64)> {
+        let mut v: Vec<(CueId, u64)> = self
+            .recs
+            .values()
+            .filter(|r| r.preview && !r.retired)
+            .filter_map(|r| {
+                r.position(t)
+                    .and_then(|pos| r.file_frame(pos))
+                    .map(|f| (r.cue, f))
+            })
+            .collect();
+        v.sort_by_key(|(c, _)| *c);
+        v
+    }
+
     /// The show voices loaded and not started, each with the frame of its media file (master rate)
     /// it will start at: a loaded cue's position line (a Load cue's time, or a click in the
     /// timeline). A voice whose stream is not ready yet has none.
