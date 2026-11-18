@@ -1168,6 +1168,11 @@ impl MediaCatalog {
         std::mem::take(&mut self.unresolved)
     }
 
+    /// Watch changes not handed to the media watch yet (a cost measure).
+    pub fn key_changes_pending(&self) -> usize {
+        self.key_changes.len()
+    }
+
     /// Files to start or stop watching since this was last called, in order.
     pub fn take_key_changes(&mut self) -> Vec<KeyChange> {
         std::mem::take(&mut self.key_changes)

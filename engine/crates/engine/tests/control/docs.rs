@@ -1666,6 +1666,39 @@ fn the_snapshot_after_a_save_as_elsewhere_is_the_docs_workspace() {
     }
 }
 
+/// The wake that answers a Save As into another folder takes up the copy and the new catalog but
+/// leaves handing its new files to the media watch share to the next wake, so the answer's wake
+/// stays short; the share has them after that one, and a file that goes from the new folder is
+/// heard.
+#[test]
+fn a_save_as_elsewhere_hands_its_new_files_to_the_watch_the_wake_after_the_answer() {
+    let (a, _b, mut r, b_show) = two_relative_cues();
+    let doc = r.s.control().doc_ids()[0];
+    let mut replies = start_save_as(&mut r.s, &b_show);
+    let mut answered = None;
+    for n in 0..200 {
+        r.s.tick();
+        if r.s.control().doc(doc).unwrap().moves_taken_up() == 1 {
+            answered = Some(n);
+            break;
+        }
+        r.s.wait_step();
+    }
+    assert!(answered.is_some(), "the save was never taken up");
+    let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+    ok_result(&answers);
+    assert!(
+        r.s.control().doc(doc).unwrap().key_changes_pending() > 0,
+        "left for the next wake"
+    );
+    r.s.tick();
+    assert_eq!(r.s.control().doc(doc).unwrap().key_changes_pending(), 0);
+    r.s.settle_media();
+    let file = a.path().join("sfx").join("hit.wav");
+    assert!(file.exists());
+    assert_eq!(r.s.control().watched_files(), 1);
+}
+
 /// Two Saves As into two other folders asked one after the other, before either is answered:
 /// the first is taken up as the writer thread prepared it; the second was prepared from the doc
 /// in its first folder, so it is worked out again from the doc as the first left it. The

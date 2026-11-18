@@ -485,6 +485,11 @@ impl<'a> DocView<'a> {
         self.doc.file.moves_taken_up
     }
 
+    /// Watch changes of the doc's catalog the media watch share has not been handed yet.
+    pub fn key_changes_pending(&self) -> usize {
+        self.doc.media.key_changes_pending()
+    }
+
     /// Media jobs (probes, preloads) the doc has asked for so far.
     #[cfg(any(test, feature = "test-support"))]
     pub fn media_tickets(&self) -> u64 {
