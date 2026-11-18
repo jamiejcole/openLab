@@ -17,7 +17,10 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - Edit > Undo and Redo act on the workspace whose window or settings window is key (`AppController.undoController`), so a settings change (the OSC passcode table, NET-02) is undone from the settings window; every other window-scoped key still needs the workspace window itself.
 - Closing a workspace while cues play asks first. Closing the last one shows a launcher window.
 - No `NSDocument` subclass. UI is built in code: no storyboards or XIBs, main menu included.
-- Main window layout follows QLab 5 (UI-07): toolbar and GO area on top, cue list (`NSOutlineView`, view-based, cell reuse for 2,000+ cues) centre, sidebar, tabbed inspector below. Dark appearance by default.
+- Main window (UI-07): `topColumn` (GO area, cue toolbar, Find and Load bars, cue list) and the sidebar sit in `horizontalSplit`, which with the inspector forms `verticalSplit`: the sidebar starts at the window's top and ends above the inspector, which spans the width. Dark appearance by default.
+- The footer has one GO-area toggle (hides masthead and cue toolbar, `setVisible(.masthead)`; View > Cue Toolbar stays its own), the warnings mark beside the inspector, sidebar and settings buttons, the cue count centred, and no clock. `statusButton` shows only an alarm or warning, never while all is well.
+- Edit and Show Mode draw the masthead alike (grey-violet GO with a green edge, boxed standby line and notes, `MastheadView.goFill`/`boxFill`); Show Mode only enlarges (`MastheadMetrics`). The window title is "workspace \u2014 shown list".
+- A plain press in a row's status column (`CueOutlineView.onStatusPress`) moves the playhead and leaves the selection; `unlinkedHead` stops the follow until the user selects or the playhead moves on. A Group's Name cell is boxed by mode (`GroupOutline`).
 
 ## Meters (AUD-19, NFR-26)
 - `WorkspaceStore.meters` (`MeterBank`) max-folds each `meters` push into preallocated per-source slots and publishes nothing.

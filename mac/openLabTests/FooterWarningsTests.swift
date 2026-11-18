@@ -56,7 +56,7 @@ final class FooterWarningsTests: XCTestCase {
         let others: [NSView] =
             [
                 footer.modeSwitch, footer.overrideBadge, footer.statusButton,
-                footer.noticeLabel, footer.countLabel, footer.clock, footer.settingsButton,
+                footer.noticeLabel, footer.countLabel, footer.settingsButton,
             ] + Array(footer.toggles.values)
         for other in others where !other.isHiddenOrHasHiddenAncestor {
             let r = footer.convert(other.bounds, from: other)
@@ -196,6 +196,7 @@ final class FooterWarningsTests: XCTestCase {
             return wc.footer.statusButton.title == lostSecond
         }
         XCTAssertEqual(wc.footer.presentation.icon, .statusAlarm)
+        XCTAssertFalse(wc.footer.statusButton.isHidden, "a lost device's alarm is always in view")
         // The status details the operator opens from the footer list it.
         wc.footer.showStatusDetails()
         addTeardownBlock { @MainActor in wc.footer.popover?.close() }
@@ -217,6 +218,7 @@ final class FooterWarningsTests: XCTestCase {
             return wc.footer.statusButton.title.hasPrefix(loc("status.ok"))
         }
         XCTAssertEqual(wc.footer.presentation.icon, .statusNormal)
+        XCTAssertTrue(wc.footer.statusButton.isHidden, "with all well the footer says nothing about the audio")
     }
 
     /// Only the first device, unplugged → as before: the alarm names the audio device, not a second one.
@@ -229,5 +231,6 @@ final class FooterWarningsTests: XCTestCase {
             try? await rig.advance(1)
             return wc.footer.statusButton.title == loc("status.alarm") + " " + loc("status.device.lost")
         }
+        XCTAssertFalse(wc.footer.statusButton.isHidden, "the primary device's alarm is always in view")
     }
 }

@@ -1,0 +1,12 @@
+{
+  "about": "A click in a row's status column (the first column of the Rain row) moves the playhead there; the highlighted row stays where it was.",
+  "show": "Demo",
+  "window": {"width": 1000, "height": 600},
+  "steps": [
+    {"select": "1"},
+    {"shot": "before"},
+    {"click": "cue-list", "at": [0.03, 0.4]},
+    {"advance": 0.5},
+    {"shot": "after-status-click"}
+  ]
+}

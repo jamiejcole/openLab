@@ -1,0 +1,12 @@
+{
+  "about": "The window at its least width (800 pt) with the sidebar open, light appearance: every list column is whole, the first column is narrow, the time headers have chevrons and the continue header a mark.",
+  "show": "Demo",
+  "window": {"width": 800, "height": 700},
+  "appearance": "light",
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"shot": "least-sidebar-open"},
+    {"resize": [800, 700]},
+    {"shot": "least-again"}
+  ]
+}

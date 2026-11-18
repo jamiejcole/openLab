@@ -158,6 +158,7 @@
 "alert.copyText" = "Copy Text";
 "notes.notice.title" = "Notes not saved";
 "masthead.notes.label" = "Notes for the standing-by cue";
+"masthead.notes.placeholder" = "Notes";
 
 "cue.type.group.timeline" = "Group (timeline)";
 "cue.type.group.playlist" = "Group (playlist)";
@@ -183,6 +184,7 @@
 
 "cuelist.label" = "Cue list";
 "cuelist.col.number" = "Number";
+"cuelist.col.continue" = "Continue mode";
 "cuelist.col.name" = "Name";
 "cuelist.col.target" = "Target";
 "cuelist.col.preWait" = "Pre-Wait";
@@ -394,7 +396,6 @@
 "activeCue.pause" = "Pause";
 "activeCue.resume" = "Resume";
 "activeCue.panic" = "Panic this cue";
-"footer.clock.label" = "Clock";
 "sidebar.newList" = "New List";
 "sidebar.list.rename" = "Rename List…";
 "sidebar.list.delete" = "Delete List";
@@ -406,8 +407,7 @@
 "footer.mode.label" = "Mode";
 "footer.mode.edit" = "Edit";
 "footer.mode.show" = "Show";
-"footer.toggle.toolbar" = "Show or hide the cue toolbar";
-"footer.toggle.masthead" = "Show or hide the GO area";
+"footer.toggle.masthead" = "Show or hide the GO button, standby line and cue toolbar";
 "footer.toggle.inspector" = "Show or hide the inspector";
 "footer.toggle.sidebar" = "Show or hide the sidebar";
 "footer.settings" = "Settings";
@@ -788,6 +788,7 @@
 "status.offline.detail" = "The engine is not connected. Status is unknown until it reconnects.";
 "status.dropouts" = "Dropouts %d";
 
+"window.main.title.list" = "%@ — %@";
 "window.main.title.showMode" = "%@ (Show Mode)";
 "showMode.error.engine" = "The engine could not be told about Show Mode (%@). It is told again when it reconnects; until then the Mac may sleep.";
 "alert.closeShowMode.title" = "Close this workspace?";

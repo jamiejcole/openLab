@@ -107,7 +107,7 @@ final class LoadTimeBarView: NSView, NSTextFieldDelegate {
         let stack = NSStackView(views: [label, field, slider, doneButton])
         stack.spacing = 8
         field.widthAnchor.constraint(equalToConstant: 100).isActive = true
-        slider.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+        slider.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
         slider.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)

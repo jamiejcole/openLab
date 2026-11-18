@@ -6,62 +6,6 @@ enum LayoutArea: CaseIterable {
     case toolbar, masthead, inspector, sidebar
 }
 
-/// The time of day in the footer (PB-12). QLab's window has no clock; a show caller wants one in
-/// view, so it sits in the footer where it never covers a cue. `now` is injectable: tests set a
-/// fixed date and call `refresh()`; the one-second timer runs only while the label is in a window.
-final class WallClockLabel: NSTextField {
-    var now: () -> Date = { Date() }
-    private(set) var timer: Timer?
-
-    /// The user's own time style (12 or 24 hour) with seconds.
-    static func makeFormatter(locale: Locale = .current, timeZone: TimeZone = .current) -> DateFormatter {
-        let f = DateFormatter()
-        f.locale = locale
-        f.timeZone = timeZone
-        f.dateStyle = .none
-        f.timeStyle = .medium
-        return f
-    }
-
-    var dateFormatter = WallClockLabel.makeFormatter()
-
-    init() {
-        super.init(frame: .zero)
-        isEditable = false
-        isBordered = false
-        drawsBackground = false
-        font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        textColor = .secondaryLabelColor
-        setAX(AX.wallClock, label: loc("footer.clock.label"))
-        refresh()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
-    func refresh() { stringValue = dateFormatter.string(from: now()) }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        timer?.invalidate()
-        timer = nil
-        guard window != nil else { return }
-        refresh()
-        let t = Timer(timeInterval: 1, repeats: true) { [weak self] t in
-            // Closing a window doesn't detach its views, so viewDidMoveToWindow(nil) may never
-            // come: the timer ends itself once the label or its window is gone.
-            let alive = MainActor.assumeIsolated { () -> Bool in
-                guard let self, let window = self.window else { return false }
-                if window.isVisible { self.refresh() }
-                return true
-            }
-            if !alive { t.invalidate() }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
-    }
-}
-
 /// Bottom bar: Edit/Show switch (Show Mode), area toggles, status text, settings.
 final class FooterBar: NSView {
     var onToggle: ((LayoutArea, Bool) -> Void)?
@@ -92,12 +36,10 @@ final class FooterBar: NSView {
     let countLabel = NSTextField(labelWithString: "")
     private var lastXruns: UInt64?
     private(set) var popover: NSPopover?
-    let clock = WallClockLabel()
     let settingsButton = NSButton()
     private(set) var toggles: [LayoutArea: NSButton] = [:]
 
     private static let specs: [(area: LayoutArea, id: String, icon: Icon, key: String)] = [
-        (.toolbar, AX.toggleToolbar, .layoutToolbar, "footer.toggle.toolbar"),
         (.masthead, AX.toggleMasthead, .layoutMasthead, "footer.toggle.masthead"),
         (.inspector, AX.toggleInspector, .layoutInspector, "footer.toggle.inspector"),
         (.sidebar, AX.toggleSidebar, .layoutSidebar, "footer.toggle.sidebar"),
@@ -171,10 +113,12 @@ final class FooterBar: NSView {
         settingsButton.action = #selector(settingsClicked)
         settingsButton.bezelStyle = .texturedRounded
 
-        let left = NSStackView(
-            views: [modeSwitch, overrideBadge] + [.toolbar, .masthead].compactMap { toggles[$0] })
-        let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
-        let centre = NSStackView(views: [countLabel, warningsButton, statusButton, noticeLabel])
+        // QLab's footer: the mode switch and the one GO area toggle on the left; the count in the middle;
+        // the warnings mark with the inspector, sidebar and settings buttons on the right.
+        let left = NSStackView(views: [modeSwitch, overrideBadge] + [.masthead].compactMap { toggles[$0] })
+        let right = NSStackView(
+            views: [warningsButton] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
+        let centre = NSStackView(views: [countLabel, statusButton, noticeLabel])
         let bar = NSStackView(views: [left, centre, right])
         bar.distribution = .equalCentering
         bar.translatesAutoresizingMaskIntoConstraints = false
@@ -252,6 +196,9 @@ final class FooterBar: NSView {
         presentation = p
         // Stale status (no connection) is not shown as an override either.
         overrideBadge.isHidden = !(connected && status?.networkOutputDisabled == true)
+        // Only trouble is drawn: while all is well the footer says nothing about the audio. An alarm
+        // (a lost or failed device, an offline engine) stays in view whatever else the footer holds.
+        statusButton.isHidden = p.level == .normal
         statusButton.title = p.summary
         let image = p.icon.image(p.summary, compact: true)
         // All well: only the mark is green; the words keep the plain text colour.
@@ -278,7 +225,9 @@ final class FooterBar: NSView {
         let p = NSPopover()
         p.behavior = .transient
         p.contentViewController = controller
-        p.show(relativeTo: statusButton.bounds, of: statusButton, preferredEdge: .maxY)
+        // Anchored on what the operator pressed: the badge, else the status line (hidden while all is well).
+        let anchor: NSView = !overrideBadge.isHidden ? overrideBadge : statusButton.isHidden ? countLabel : statusButton
+        p.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
         popover = p
     }
 

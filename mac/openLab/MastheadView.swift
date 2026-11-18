@@ -6,7 +6,7 @@ import AppKit
 /// notes are editable in Edit Mode and read-only in Show Mode.
 final class MastheadView: NSView, NSTextViewDelegate {
     let goButton = NSButton(title: loc("masthead.go"), target: nil, action: nil)
-    let standbyField = NSTextField(labelWithString: loc("masthead.standby.none"))
+    let standbyField = StandbyField()
     let notesView = NotesTextView()
     /// The cue the masthead shows; nil when nothing stands by.
     private(set) var cueID: ModelID?
@@ -14,7 +14,7 @@ final class MastheadView: NSView, NSTextViewDelegate {
     var isLocked = false { didSet { applyEditable() } }
     /// The typed notes for the shown cue; the window sends them the way the inspector does.
     var onCommitNotes: ((ModelID, String) -> Void)?
-    /// Show Mode: bigger GO, standby and notes and the high-contrast colours (SM-01, SM-03).
+    /// Show Mode: bigger GO, standby and notes (SM-01), the same colours.
     private(set) var isShowMode = false
     private(set) var metrics = MastheadMetrics.make(showMode: false, window: NSSize(width: 1200, height: 800))
     private var heightConstraint: NSLayoutConstraint!
@@ -31,9 +31,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
         goButton.setAX(AX.goButton, label: loc("masthead.go.label"))
         goButton.isBordered = false
         goButton.wantsLayer = true
-        goButton.layer?.cornerRadius = 8
-        goButton.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.5).cgColor
+        goButton.layer?.cornerRadius = 4
+        goButton.layer?.borderWidth = 3
 
+        standbyField.stringValue = loc("masthead.standby.none")
         standbyField.setAX(AX.standbyField)
         standbyField.lineBreakMode = .byTruncatingTail
         standbyField.maximumNumberOfLines = 1
@@ -53,7 +54,12 @@ final class MastheadView: NSView, NSTextViewDelegate {
         notesScroll.documentView = notesView
         notesScroll.hasVerticalScroller = true
         notesScroll.drawsBackground = false
-        notesScroll.borderType = .bezelBorder
+        notesScroll.borderType = .noBorder
+        notesScroll.wantsLayer = true
+        notesScroll.layer?.cornerRadius = 3
+        notesScroll.layer?.borderWidth = 1
+        notesView.placeholder = loc("masthead.notes.placeholder")
+        notesView.textContainerInset = NSSize(width: 4, height: 3)
 
         let right = NSStackView(views: [standbyField, notesScroll])
         right.orientation = .vertical
@@ -93,19 +99,45 @@ final class MastheadView: NSView, NSTextViewDelegate {
         goWidth.constant = m.goSize.width
         goHeight.constant = m.goSize.height
         notesHeight.constant = m.notesHeight
-        let p = ShowModePalette.self
-        let goText = showMode ? p.goText.color : NSColor.white
+        // Edit Mode and Show Mode look the same (QLab's do); Show Mode only makes them larger.
         goButton.attributedTitle = NSAttributedString(
             string: loc("masthead.go"),
-            attributes: [.font: NSFont.systemFont(ofSize: m.goFontSize, weight: .bold), .foregroundColor: goText])
-        goButton.layer?.backgroundColor =
-            (showMode ? p.goFill.color : NSColor.systemGreen.withAlphaComponent(0.5)).cgColor
-        standbyField.font = .systemFont(ofSize: m.standbyFontSize, weight: showMode ? .semibold : .regular)
-        standbyField.textColor = showMode ? p.standbyText.color : .secondaryLabelColor
+            attributes: [
+                .font: NSFont.systemFont(ofSize: m.goFontSize, weight: .regular), .foregroundColor: Self.goText,
+            ])
+        standbyField.font = .systemFont(ofSize: m.standbyFontSize)
+        standbyField.textColor = .labelColor
         notesView.font = .systemFont(ofSize: m.notesFontSize)
-        notesView.textColor = showMode ? p.notesText.color : .secondaryLabelColor
-        layer?.backgroundColor = showMode ? p.background.color.cgColor : nil
+        notesView.textColor = .labelColor
+        applyColours()
         needsLayout = true
+    }
+
+    /// The GO button's text: white on its grey-violet fill in both appearances.
+    static let goText = NSColor.white
+    /// QLab's GO button: a grey-violet face with a green edge. Dark enough under white text to read in the
+    /// light appearance too.
+    static let goFill = NSColor(srgbRed: 0.43, green: 0.43, blue: 0.56, alpha: 1)
+    /// The standby line's and notes' boxes: a step off the window's background in either appearance.
+    static let boxFill = NSColor(name: nil) { a in
+        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.30, alpha: 1) : NSColor(white: 0.90, alpha: 1)
+    }
+
+    /// Layer colours are fixed when set: they are resolved again whenever the appearance changes.
+    private func applyColours() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            goButton.layer?.backgroundColor = Self.goFill.cgColor
+            goButton.layer?.borderColor = NSColor.systemGreen.cgColor
+            standbyField.layer?.backgroundColor = Self.boxFill.cgColor
+            notesScroll.layer?.backgroundColor = Self.boxFill.cgColor
+            notesScroll.layer?.borderColor = NSColor.separatorColor.cgColor
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyColours()
     }
 
     private func applyEditable() {
@@ -188,4 +220,34 @@ final class MastheadView: NSView, NSTextViewDelegate {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+}
+
+/// The standby line: the cue's number and name in a filled box with room inside it.
+final class StandbyField: NSTextField {
+    private static let inset = NSSize(width: 6, height: 3)
+
+    init() {
+        super.init(frame: .zero)
+        cell = StandbyCell(textCell: "")
+        isEditable = false
+        isSelectable = false
+        isBordered = false
+        drawsBackground = false
+        wantsLayer = true
+        layer?.cornerRadius = 3
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override var intrinsicContentSize: NSSize {
+        let size = super.intrinsicContentSize
+        return NSSize(width: size.width, height: size.height + 2 * Self.inset.height)
+    }
+
+    private final class StandbyCell: NSTextFieldCell {
+        override func drawingRect(forBounds rect: NSRect) -> NSRect {
+            super.drawingRect(forBounds: rect.insetBy(dx: StandbyField.inset.width, dy: StandbyField.inset.height))
+        }
+    }
 }

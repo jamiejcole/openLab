@@ -132,7 +132,9 @@ extension WorkspaceWindowController {
             pendingInspectorHeight = nil
             window?.contentView?.layoutSubtreeIfNeeded()
             let room = verticalSplit.bounds.height - verticalSplit.dividerThickness
-            let most = room - Self.minCueListHeight
+            // The GO area, toolbar and bars are above the list in the same pane.
+            let chrome = max(0, topColumn.frame.height - cueList.view.frame.height)
+            let most = room - chrome - Self.minCueListHeight
             guard most >= Self.minInspectorHeight else { return }  // no room for a usable inspector
             // The preferred size stays what was saved even where this window cannot show it yet.
             inspectorHeightConstraint?.constant = max(target, Self.minInspectorHeight)

@@ -133,6 +133,21 @@ final class TargetDropOutline: NSView {
 /// The list's outline view: it tells the list when a drag leaves it.
 final class CueOutlineView: NSOutlineView {
     var onDragExit: (() -> Void)?
+    /// A plain press in the first (status) column on a row: the row's index. True: handled, so the
+    /// press selects nothing (QLab moves only the playhead there).
+    var onStatusPress: ((Int) -> Bool)?
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = row(at: point)
+        if event.clickCount == 1, row >= 0, column(at: point) == 0,
+            event.modifierFlags.intersection([.command, .shift, .control, .option]).isEmpty,
+            onStatusPress?(row) == true
+        {
+            return
+        }
+        super.mouseDown(with: event)
+    }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         super.draggingExited(sender)
@@ -156,6 +171,22 @@ final class CueOutlineView: NSOutlineView {
             context.duration = 0
             context.allowsImplicitAnimation = false
             body()
+        }
+    }
+}
+
+/// The box a Group's Name cell is drawn with, by the group's mode.
+struct GroupOutline: Equatable {
+    var colour: NSColor
+    var rounded: Bool
+
+    static func of(mode: String?) -> GroupOutline {
+        switch mode {
+        case "playlist": return GroupOutline(colour: .systemOrange, rounded: false)
+        case "start_random": return GroupOutline(colour: .systemPurple, rounded: false)
+        case "start_first_and_enter", "start_first_and_go_to_next":
+            return GroupOutline(colour: .systemBlue, rounded: true)
+        default: return GroupOutline(colour: .systemGreen, rounded: false)
         }
     }
 }
@@ -209,6 +240,22 @@ final class WholeGlyphLabel: NSTextField {
 /// a fixed slot (`statusSlots`): playhead (0), state (1), the cue's type icon (4), preview or flag (2, 3).
 /// Duration column: `progress` behind the label.
 final class CueCell: NSTableCellView {
+    /// A Group's Name cell is boxed in its mode's colour (QLab: Timeline green, Playlist orange, Start Random
+    /// purple, the Start First modes blue with rounded corners).
+    var groupOutline: GroupOutline? { didSet { if groupOutline != oldValue { needsDisplay = true } } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let outline = groupOutline else { return }
+        NSBezierPath.clip(bounds)
+        let path = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 1.5), xRadius: outline.rounded ? 4 : 0,
+            yRadius: outline.rounded ? 4 : 0)
+        path.lineWidth = 1
+        outline.colour.setStroke()
+        path.stroke()
+    }
+
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView(), NSImageView()]
     /// The first column's slots, left to right, as (image, x from the cell's left edge, width). Each mark
     /// has its own place whether or not the others are shown, so every row's marks line up down the list:
@@ -216,10 +263,10 @@ final class CueCell: NSTableCellView {
     /// icon beside it (as in QLab), then one slot the preview or override mark and the flag share: QLab shows
     /// a flag in the status area, not a place of its own.
     static let statusSlots: [(image: Int, x: CGFloat, width: CGFloat)] = [
-        (0, 0, 12), (1, 14, 16), (4, 32, 16), (2, 50, 16), (3, 50, 16),
+        (0, 0, 10), (1, 10, 16), (4, 28, 16), (2, 46, 16), (3, 46, 16),
     ]
     /// The first column's width: the last slot and a margin. The column cannot be resized.
-    static let statusWidth: CGFloat = 70
+    static let statusWidth: CGFloat = 64
     /// The colours of the tinted images, kept so a highlighted row can draw them in its text colour.
     private var tints: [Int: (icon: Icon, image: NSImage, tint: NSColor, label: String)] = [:]
     let label = WholeGlyphLabel(labelWithString: "")
@@ -378,10 +425,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// QLab order. The first and last columns carry no title. The first holds the playhead, the state and
     /// the cue's type icon; it has no type column of its own.
     static let columns: [(id: String, titleKey: String?, width: CGFloat)] = [
-        ("status", nil, CueCell.statusWidth), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
-        ("target", "cuelist.col.target", 60), ("preWait", "cuelist.col.preWait", 80),
-        ("duration", "cuelist.col.duration", 120), ("postWait", "cuelist.col.postWait", 80),
-        ("continue", nil, 36),
+        ("status", nil, CueCell.statusWidth), ("number", "cuelist.col.number", 46), ("name", "cuelist.col.name", 280),
+        ("target", "cuelist.col.target", 42), ("preWait", "cuelist.col.preWait", 72),
+        ("duration", "cuelist.col.duration", 84), ("postWait", "cuelist.col.postWait", 72),
+        ("continue", nil, 26),
     ]
     static let rowHeight: CGFloat = 24
     /// The least the Name column shrinks to; a narrower list scrolls sideways.
@@ -439,6 +486,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         sub = store.changes.sink { [weak self] change in
             MainActor.assumeIsolated { self?.handle(change) }
         }
+        (outlineView as? CueOutlineView)?.onStatusPress = { [weak self] row in self?.statusPressed(row) ?? false }
         // Published before it changes: use the delivered value.
         overrideSub = store.$status.map { $0?.networkOutputDisabled ?? false }.removeDuplicates().sink {
             [weak self] disabled in
@@ -543,6 +591,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 column.headerCell = TimeHeaderCell(textCell: column.title)
                 updateTimeHeader(column)
             }
+            if spec.id == "continue" { column.headerCell = ContinueHeaderCell(textCell: "") }
             // No column is narrower than its header's text, so a header never truncates.
             let least = max(24, column.headerCell.cellSize.width.rounded(.up))
             switch spec.id {
@@ -573,6 +622,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.usesAlternatingRowBackgroundColors = true
         // Rows reach both edges of the list, so the playhead's pointer sits at the window's edge.
         if #available(macOS 11.0, *) { outlineView.style = .fullWidth }
+        // The system's own 17-point gap between columns is blank width the least window cannot spare: the
+        // columns sit close, as QLab's do. Set after the style, which sets the gap.
+        outlineView.intercellSpacing = NSSize(width: 3, height: outlineView.intercellSpacing.height)
         outlineView.allowsMultipleSelection = true
         // Letters are cue hotkeys and edit keys here; none may jump the selection, and with it the playhead.
         outlineView.allowsTypeSelect = false
@@ -735,7 +787,23 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// after the update and not before it, whatever order the store's subscribers run in.
     var onModelApplied: (() -> Void)?
 
+    /// The playhead was put on a cue by a press in its status column, and the selection was left where it
+    /// is: the playhead's echo and later moves to this cue are not followed, until the selection is
+    /// changed by the user or the playhead moves on.
+    private var unlinkedHead: ModelID?
+
+    /// A press in a row's status column (QLab 5): the playhead goes there, the selection stays.
+    private func statusPressed(_ row: Int) -> Bool {
+        guard let node = outlineView.item(atRow: row) as? CueNode else { return false }
+        // Typing in the inspector or a cell ends here, as a click on a row would end it.
+        _ = view.window?.makeFirstResponder(outlineView)
+        unlinkedHead = node.id
+        sendPlayhead(node.id)
+        return true
+    }
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        if !restoringSelection, !batching, !followingPlayhead { unlinkedHead = nil }
         // Programmatic restores (select, rebuild, batches) are not the user's choice.
         if !restoringSelection && !batching { onSelectionChange?(selectedIDs()) }
         let selected = selectedIDs()
@@ -877,6 +945,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// the selection goes to the list's playhead, as for any other move, and the inspector is told
     /// even if that moves nothing, as a rebuild's own restore of the selection does not tell it.
     private func followAfterLoad() {
+        unlinkedHead = nil
         if playheadSends > 0 { headMovedWhileSending = true } else { followPlayhead() }
         onSelectionChange?(selectedIDs())
     }
@@ -887,6 +956,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let head = store.playheads[list]
         guard head != seenHead else { return }
         seenHead = head
+        if head != unlinkedHead { unlinkedHead = nil }
         if playheadSends > 0 {
             headMovedWhileSending = true
         } else {
@@ -941,6 +1011,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         followHeld = false
         let selected = selectedIDs()
         let head = store.playheads[list]
+        if let head, head == unlinkedHead { return }
         if let head {
             guard !selected.contains(head), let node = nodes[head] else { return }
             followingPlayhead = true
@@ -1790,6 +1861,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cell.chooseButton.isHidden = true
         cell.onChoose = nil
         cell.progress.progress = nil
+        cell.groupOutline = nil
         func text(_ s: String) {
             cell.label.isHidden = false
             cell.label.stringValue = s
@@ -1841,6 +1913,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case "name":
             // An unnamed cue with no default name shows an empty cell (QLab 5, manual p. 93).
             text(shownName(cue))
+            if cue.kindType == "group" {
+                cell.groupOutline = .of(mode: cue.raw["kind"]?["mode"]?["type"]?.stringValue)
+            }
         case "target":
             if cue.takesFile {
                 fillFileTargetButton(cell, cue)
