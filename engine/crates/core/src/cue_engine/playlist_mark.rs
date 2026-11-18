@@ -30,8 +30,8 @@ impl CueEngine {
     /// current child as the group stands (wrapping when it loops, the current one as a new
     /// run). None once it is stopping, devamped or halted, past its last child, or for a
     /// shuffled playlist whose order is not drawn yet (not running, or between passes); none
-    /// too for a disarmed one or one with static problems that is not running (its start plays
-    /// no child) and for any other cue.
+    /// too, before its action, for a disarmed one, one with static problems or one loaded to a
+    /// time at or past its span (its start plays no child), and for any other cue.
     /// `Action::PlaylistNextChanged` reports each change.
     pub fn next_in_playlist(&self, group: CueId) -> Option<CueId> {
         self.playlist_marks.get(&group).copied()
@@ -124,7 +124,7 @@ impl CueEngine {
             let next = tree
                 .locate(ws, id)
                 .filter(|c| is_playlist(c))
-                .and_then(|group| self.compute_next(ws, group, cx.now));
+                .and_then(|group| self.compute_next(group, cx));
             if self.playlist_marks.get(&id).copied() != next {
                 changed.push((id, next));
             }
@@ -139,7 +139,8 @@ impl CueEngine {
     }
 
     /// [`Self::next_in_playlist`] worked out from the group's run and children now.
-    fn compute_next(&self, ws: &Workspace, group: &Cue, now: SampleTime) -> Option<CueId> {
+    fn compute_next(&self, group: &Cue, cx: &Ctx) -> Option<CueId> {
+        let (ws, now) = (cx.ws, cx.now);
         let CueKind::Group {
             mode: GroupMode::Playlist { loop_, shuffle },
             children,
@@ -181,9 +182,13 @@ impl CueEngine {
         // A disarmed group, or one with static problems, keeps only its timing: its start plays
         // no child.
         let plays_children = !*shuffle && self.is_armed(group) && !self.has_problems(group.id);
+        // Loaded to a time at or past its span, its start plays no child either.
+        let spent = |offset| self.playlist_spent(children, *loop_, offset, cx);
         let first = || plays_children.then(|| walk(0, None, true)).flatten();
-        let Some(Slot::Active(run)) = self.slots.get(&group.id) else {
-            return first();
+        let run = match self.slots.get(&group.id) {
+            Some(Slot::Loaded(l)) if spent(l.action_offset) => return None,
+            Some(Slot::Active(run)) => run,
+            _ => return first(),
         };
         let Some(g) = &run.group else {
             return first();
@@ -192,6 +197,7 @@ impl CueEngine {
             return None;
         }
         match run.phase {
+            Phase::PreWait { .. } if spent(run.action_offset) => return None,
             Phase::PreWait { .. } => return first(),
             Phase::Done => return None,
             Phase::Action { .. } => {}

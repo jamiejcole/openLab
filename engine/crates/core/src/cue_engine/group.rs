@@ -188,14 +188,7 @@ impl CueEngine {
                 }
             }
             GroupMode::Playlist { loop_, .. } => {
-                let span = (!*loop_)
-                    .then(|| {
-                        children.iter().try_fold(0, |acc: SampleTime, c| {
-                            Some(acc.saturating_add(self.nominal_span(c, 1, cx)?))
-                        })
-                    })
-                    .flatten();
-                if !spent(span) {
+                if !self.playlist_spent(children, *loop_, offset, cx) {
                     self.playlist_next(group, at, cx);
                 }
             }
@@ -214,6 +207,27 @@ impl CueEngine {
         if !self.any_busy_child(group) {
             self.resolve_group(group, Exit::Completed, at, cx);
         }
+    }
+
+    /// Whether a playlist loaded to `offset` samples into its action is at or past its nominal
+    /// span, so its start plays no child. A span that is unknown (unprobed audio) or endless
+    /// (a looping playlist) is never spent.
+    pub(super) fn playlist_spent(
+        &self,
+        children: &[Cue],
+        loop_: bool,
+        offset: SampleTime,
+        cx: &Ctx,
+    ) -> bool {
+        if offset == 0 || loop_ {
+            return false;
+        }
+        children
+            .iter()
+            .try_fold(0, |acc: SampleTime, c| {
+                Some(acc.saturating_add(self.nominal_span(c, 1, cx)?))
+            })
+            .is_some_and(|span| offset >= span)
     }
 
     /// One child, round-robin as in QLab 5: every playable child (armed, without static

@@ -1932,12 +1932,13 @@ impl Run {
             let marked = self.engine.next_in_playlist(group);
             let mut copy = self.engine.clone();
             let actions = copy.handle(&self.ws, Input::Start { cue: group }, self.now);
-            // Only while the group runs: a child started after it ended (by a cue its continue
-            // started) is not one the playlist played.
+            // Only while the group runs: a child started (or faded) after it ended, by a cue its
+            // continue started, is not one the playlist played.
             let running = actions
                 .iter()
                 .position(|a| {
-                    matches!(a, Action::StateChanged { cue, state: CueState::Idle, .. } if *cue == group)
+                    matches!(a, Action::StateChanged { cue, state, .. }
+                        if *cue == group && !state.is_active())
                 })
                 .unwrap_or(actions.len());
             let started = actions.iter().take(running).find_map(|a| match a {
@@ -3637,6 +3638,162 @@ fn a_looping_playlists_mark_names_a_child_its_start_stops_and_then_plays_afresh(
     }
 }
 
+/// Playlist 4 is loaded 0.6 s into its action, at or past its span (two disarmed children that
+/// take nothing and a Memo); a start plays no child, so it marks none.
+#[test]
+fn a_playlist_loaded_past_its_span_marks_no_child() {
+    let case = Case {
+        specs: vec![
+            Spec {
+                kind: 5,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 0,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 0,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 0,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 23,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 0,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 4,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: true,
+                dup: false,
+                level: 0,
+                group_mode: 4,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 10,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 7,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 2,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 13,
+                pre: 0,
+                post: 1,
+                mode: 0,
+                armed: true,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 0,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 0,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 0,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 0,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+        ],
+        steps: vec![
+            Step {
+                dt: 0,
+                op: 6,
+                a: 96,
+                b: 30,
+            },
+            Step {
+                dt: 0,
+                op: 2,
+                a: 62,
+                b: 0,
+            },
+        ],
+        lookahead: 0,
+        min_go: 0,
+        panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
+}
+
 /// Play next on a playlist that does not loop, playing its last child, completes the playlist:
 /// it never goes round to its first child again. The playlist has no pre-wait, so going round
 /// shows nothing of its own (no start, no voice): only its child starting again does. At the top
@@ -4194,6 +4351,172 @@ fn a_disarmed_playlist_marks_no_child() {
             a: 0,
             b: 0,
         }],
+        lookahead: 0,
+        min_go: 0,
+        panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
+}
+
+/// A disarmed playlist (id 2) with broken children ends shown broken; its continue starts a
+/// Fade cue that fades the playlist's child 0x7f4, which is not the playlist playing it.
+#[test]
+fn a_disarmed_playlist_ending_broken_marks_no_child() {
+    let case = Case {
+        specs: vec![
+            Spec {
+                kind: 27,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 0,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 22,
+                pre: 0,
+                post: 0,
+                mode: 1,
+                armed: false,
+                dup: false,
+                level: 0,
+                group_mode: 4,
+                target: 13,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 5,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 5,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 10,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 179,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 27,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 28,
+                pre: 0,
+                post: 1,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 0,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+        ],
+        steps: vec![
+            Step {
+                dt: 0,
+                op: 1,
+                a: 0,
+                b: 0,
+            },
+            Step {
+                dt: 0,
+                op: 11,
+                a: 44,
+                b: 0,
+            },
+            Step {
+                dt: 0,
+                op: 10,
+                a: 192,
+                b: 1,
+            },
+            Step {
+                dt: 0,
+                op: 30,
+                a: 56,
+                b: 0,
+            },
+            Step {
+                dt: 0,
+                op: 15,
+                a: 18,
+                b: 0,
+            },
+            Step {
+                dt: 0,
+                op: 1,
+                a: 0,
+                b: 0,
+            },
+        ],
         lookahead: 0,
         min_go: 0,
         panic: 0,
