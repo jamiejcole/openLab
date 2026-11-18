@@ -337,6 +337,29 @@ pub trait Platform {
     fn live(&self) -> bool {
         false
     }
+    /// Draws `layer` (one stage) fitted to its monitor window titled `title`, black bars
+    /// where the shapes differ, opening the window (at the stage's shape) if it is not open.
+    /// Called after every display has been drawn; a monitor never holds the displays up, so
+    /// one that cannot take a frame now skips it.
+    fn present_monitor(&mut self, _title: &str, _layer: &Layer) -> Result<(), String> {
+        Ok(())
+    }
+    /// Brings the stage's monitor window to the front, if it is open.
+    fn raise_monitor(&mut self, _stage: StageId) {}
+    /// Takes the stage's monitor window down, if it has one.
+    fn close_monitor(&mut self, _stage: StageId) {}
+    /// The stages whose monitor window the operator closed since the last call.
+    fn take_closed_monitors(&mut self) -> Vec<StageId> {
+        Vec::new()
+    }
+}
+
+/// One stage's monitor window as the engine asked for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Monitor {
+    title: String,
+    /// The operator closed it: it stays closed until the engine raises it again or drops it.
+    closed: bool,
 }
 
 /// How far past the last clock message the stage host moves the clock on by itself: three of
@@ -384,6 +407,8 @@ pub struct Host<P: Platform> {
     clock: Option<Clock>,
     /// Displays with a window up.
     presented: BTreeSet<String>,
+    /// Monitor windows the engine asked for, by stage.
+    monitors: BTreeMap<StageId, Monitor>,
 }
 
 impl<P: Platform> Host<P> {
@@ -398,6 +423,7 @@ impl<P: Platform> Host<P> {
             plays: 0,
             clock: None,
             presented: BTreeSet::new(),
+            monitors: BTreeMap::new(),
         }
     }
 
@@ -607,9 +633,50 @@ impl<P: Platform> Host<P> {
     }
 
     /// Between messages: reports what became of pictures' files (an open that ended, a decode
-    /// that failed or fell behind).
+    /// that failed or fell behind) and the monitor windows the operator closed.
     pub fn poll(&mut self, out: &mut Vec<FromStage>) {
         self.report_failures(out);
+        for stage in self.platform.take_closed_monitors() {
+            self.monitor_closed(stage, out);
+        }
+    }
+
+    /// The stage's monitor window is gone (the operator closed it, or it could not be drawn):
+    /// the engine is told, and it stays closed until the engine raises it again.
+    fn monitor_closed(&mut self, stage: StageId, out: &mut Vec<FromStage>) {
+        if let Some(m) = self.monitors.get_mut(&stage)
+            && !m.closed
+        {
+            m.closed = true;
+            self.platform.close_monitor(stage);
+            out.push(FromStage::MonitorClosed { stage });
+        }
+    }
+
+    /// Follows a new stage set's monitors: one no longer asked for goes, a new one opens, a
+    /// title follows its stage's name. One the operator closed stays closed.
+    fn follow_monitors(&mut self, stages: &[StageOutput]) {
+        let wanted: BTreeMap<StageId, &str> = stages
+            .iter()
+            .filter_map(|s| Some((s.id, s.monitor.as_deref()?)))
+            .collect();
+        let gone: Vec<StageId> = self
+            .monitors
+            .keys()
+            .filter(|id| !wanted.contains_key(id))
+            .copied()
+            .collect();
+        for stage in gone {
+            self.monitors.remove(&stage);
+            self.platform.close_monitor(stage);
+        }
+        for (stage, title) in wanted {
+            let m = self.monitors.entry(stage).or_insert_with(|| Monitor {
+                title: String::new(),
+                closed: false,
+            });
+            title.clone_into(&mut m.title);
+        }
     }
 
     /// One message from [`serve`], or (`None`) a poll between messages, which also draws
@@ -696,6 +763,7 @@ impl<P: Platform> Host<P> {
                         reason: "its stage was removed".into(),
                     });
                 }
+                self.follow_monitors(&stages);
                 self.stages = stages;
                 // Every stage's state is reported after a new set, changed or not, so the
                 // engine knows each stage it sent has been dealt with.
@@ -707,7 +775,32 @@ impl<P: Platform> Host<P> {
                 for display in std::mem::take(&mut self.presented) {
                     self.platform.close(&display);
                 }
+                for stage in std::mem::take(&mut self.monitors).into_keys() {
+                    self.platform.close_monitor(stage);
+                }
                 return Flow::Quit;
+            }
+            ToStage::RaiseMonitor { stage } => {
+                if let Some(m) = self.monitors.get_mut(&stage) {
+                    // Closed by the operator: drawn (so opened) again by the next apply.
+                    m.closed = false;
+                    self.platform.raise_monitor(stage);
+                    self.apply(out);
+                }
+            }
+            #[cfg(feature = "test-support")]
+            ToStage::CloseMonitorWindow { stage } => self.monitor_closed(stage, out),
+            #[cfg(feature = "test-support")]
+            ToStage::ProbeMonitor {
+                stage,
+                width,
+                height,
+                points,
+            } => {
+                self.redraw(out);
+                let probed = self.probe_monitor(stage, (width, height), &points, out);
+                self.report_failures(out);
+                out.push(probed);
             }
             #[cfg(feature = "test-support")]
             ToStage::TestCard { stage, frame } => {
@@ -777,9 +870,16 @@ impl<P: Platform> Host<P> {
         self.prune(now);
         let mut states: Vec<(StageId, StageState)> = Vec::new();
         let mut on: BTreeMap<String, Vec<(u32, Layer)>> = BTreeMap::new();
+        // A monitor shows what its stage draws, shown on a display or not.
+        let mut watched: Vec<(String, Layer)> = Vec::new();
         for stage in &self.stages {
             let picture = self.picture(stage.id);
             let cues = self.cues_on(stage.id, now);
+            if let Some(m) = self.monitors.get(&stage.id).filter(|m| !m.closed)
+                && self.platform.video()
+            {
+                watched.push((m.title.clone(), layer_of(stage, picture, cues.clone())));
+            }
             let state = match &stage.display {
                 _ if !self.platform.video() => StageState::Failed {
                     reason: "this computer's openLab has no video output".into(),
@@ -842,6 +942,16 @@ impl<P: Platform> Host<P> {
             self.presented.remove(&id);
             self.platform.close(&id);
         }
+        // After every display: a monitor never holds an output up.
+        for (title, layer) in watched {
+            if let Err(why) = self.platform.present_monitor(&title, &layer) {
+                out.push(FromStage::Log {
+                    level: LinkLevel::Warn,
+                    message: short(format!("the monitor of a stage could not be drawn: {why}")),
+                });
+                self.monitor_closed(layer.stage, out);
+            }
+        }
         self.report_failures(out);
         self.states
             .retain(|id, _| states.iter().any(|(s, _)| s == id));
@@ -865,7 +975,23 @@ impl<P: Platform> Host<P> {
         layers: &[Layer],
         points: &[[f32; 2]],
     ) -> Result<Read, String> {
-        let mut all: Vec<[f32; 2]> = crate::card::barcode_points().to_vec();
+        self.read_in(size, layers, points, [0.0, 0.0, 1.0, 1.0])
+    }
+
+    /// [`Self::read`] with the test card's barcode read inside `card` (left, top, right,
+    /// bottom: fractions of the target), where a stage fitted to a target of another shape is.
+    #[cfg(feature = "test-support")]
+    fn read_in(
+        &mut self,
+        size: (u32, u32),
+        layers: &[Layer],
+        points: &[[f32; 2]],
+        [left, top, right, bottom]: [f32; 4],
+    ) -> Result<Read, String> {
+        let mut all: Vec<[f32; 2]> = crate::card::barcode_points()
+            .iter()
+            .map(|[x, y]| [left + x * (right - left), top + y * (bottom - top)])
+            .collect();
         all.extend_from_slice(points);
         let colours = self.platform.probe(size, layers, &all)?;
         let (code, asked) = colours.split_at(colours.len().min(crate::card::CELLS));
@@ -900,6 +1026,45 @@ impl<P: Platform> Host<P> {
         };
         let (frame, colours) = probe_answer(read, cues, now, out);
         FromStage::Probed {
+            stage: id,
+            frame,
+            colours,
+        }
+    }
+
+    /// What the stage's monitor window shows at a content size of `size`: the stage fitted,
+    /// black bars elsewhere. No colours when it has no monitor window open.
+    #[cfg(feature = "test-support")]
+    fn probe_monitor(
+        &mut self,
+        id: StageId,
+        size: (u32, u32),
+        points: &[[f32; 2]],
+        out: &mut Vec<FromStage>,
+    ) -> FromStage {
+        let open = self.platform.video() && self.monitors.get(&id).is_some_and(|m| !m.closed);
+        let now = self.now();
+        let layer = self
+            .stages
+            .iter()
+            .find(|s| s.id == id)
+            .filter(|_| open)
+            .map(|s| layer_of(s, self.picture(id), self.cues_on(id, now)));
+        let Some(layer) = layer else {
+            return FromStage::MonitorProbed {
+                stage: id,
+                frame: None,
+                colours: Vec::new(),
+            };
+        };
+        let cues = (
+            layer.cues.len(),
+            self.pics.values().filter(|p| p.stage == id).count(),
+        );
+        let card = fitted((layer.width, layer.height), size);
+        let read = self.read_in(size, std::slice::from_ref(&layer), points, card);
+        let (frame, colours) = probe_answer(read, cues, now, out);
+        FromStage::MonitorProbed {
             stage: id,
             frame,
             colours,
@@ -949,6 +1114,16 @@ impl<P: Platform> Host<P> {
             colours,
         }
     }
+}
+
+/// Where a stage of `stage` pixels sits when fitted to a target of `target` pixels, its shape
+/// kept and centred: left, top, right, bottom, as fractions of the target.
+pub fn fitted((sw, sh): (u32, u32), (tw, th): (u32, u32)) -> [f32; 4] {
+    let s = f64::from(sw.max(1)) / f64::from(sh.max(1));
+    let t = f64::from(tw.max(1)) / f64::from(th.max(1));
+    let (w, h) = if s > t { (1.0, t / s) } else { (s / t, 1.0) };
+    let (x, y) = ((1.0 - w) / 2.0, (1.0 - h) / 2.0);
+    [x as f32, y as f32, (x + w) as f32, (y + h) as f32]
 }
 
 /// Test support: what a probe drew: the test card's frame read from its barcode cells, if
@@ -1140,6 +1315,13 @@ pub(crate) mod tests {
         fail: bool,
         live: bool,
         events: Vec<PictureEvent>,
+        /// Each monitor window up: its title and the stage drawn in it last, with its cues.
+        monitors: HashMap<StageId, (String, Layer)>,
+        /// Monitor windows the operator closed, not yet taken.
+        user_closed: Vec<StageId>,
+        /// Monitor windows brought to the front.
+        raised: Vec<StageId>,
+        fail_monitors: bool,
     }
 
     impl Platform for Fake {
@@ -1191,6 +1373,27 @@ pub(crate) mod tests {
         }
         fn take_picture_events(&mut self) -> Vec<PictureEvent> {
             std::mem::take(&mut self.events)
+        }
+        fn present_monitor(&mut self, title: &str, layer: &Layer) -> Result<(), String> {
+            if self.fail_monitors {
+                return Err("no drawable".into());
+            }
+            self.monitors
+                .insert(layer.stage, (title.to_owned(), layer.clone()));
+            Ok(())
+        }
+        fn raise_monitor(&mut self, stage: StageId) {
+            self.raised.push(stage);
+        }
+        fn close_monitor(&mut self, stage: StageId) {
+            self.monitors.remove(&stage);
+        }
+        fn take_closed_monitors(&mut self) -> Vec<StageId> {
+            let closed = std::mem::take(&mut self.user_closed);
+            for stage in &closed {
+                self.monitors.remove(stage);
+            }
+            closed
         }
     }
 
@@ -1882,6 +2085,7 @@ pub(crate) mod tests {
             display: display.map(Into::into),
             keep_black,
             stack: u32::from(n),
+            monitor: None,
         }
     }
 
@@ -1892,6 +2096,10 @@ pub(crate) mod tests {
             fail: false,
             live: false,
             events: Vec::new(),
+            monitors: HashMap::new(),
+            user_closed: Vec::new(),
+            raised: Vec::new(),
+            fail_monitors: false,
         })
     }
 
@@ -2167,5 +2375,148 @@ pub(crate) mod tests {
         );
         assert_eq!(h.handle(ToStage::Quit, &mut out), Flow::Quit);
         assert!(h.platform.shown.is_empty());
+    }
+
+    /// A host that has said hello, so it knows its displays.
+    fn greeted(displays: &[&str]) -> Host<Fake> {
+        let mut h = host(displays);
+        send(
+            &mut h,
+            ToStage::Hello {
+                version: LINK_VERSION,
+            },
+        );
+        h
+    }
+
+    fn watched(n: u8, display: Option<&str>) -> StageOutput {
+        StageOutput {
+            monitor: Some(format!("Stage {n}")),
+            ..stage(n, display, false)
+        }
+    }
+
+    fn monitor_closed(out: &[FromStage]) -> Vec<StageId> {
+        out.iter()
+            .filter_map(|m| match m {
+                FromStage::MonitorClosed { stage } => Some(*stage),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #648 flows: a monitor shows its stage whether the stage is shown on a display, hidden
+    /// between cues or has no display at all, with what its cues draw; it goes when the engine
+    /// stops asking for it, and with a quit.
+    #[test]
+    fn a_monitor_draws_its_stage_shown_or_not_and_goes_with_its_stage_set() {
+        let mut h = greeted(&["D1"]);
+        let mut out = Vec::new();
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![
+                    watched(1, Some("D1")),
+                    watched(2, None),
+                    stage(3, None, true),
+                ],
+            },
+        );
+        assert_eq!(h.platform.monitors.len(), 2);
+        assert_eq!(h.platform.monitors[&id(1)].0, "Stage 1");
+        assert_eq!(h.platform.monitors[&id(2)].1.stage, id(2));
+        assert_eq!(h.states.get(&id(2)), Some(&StageState::NoDisplay));
+        assert_eq!(h.states.get(&id(1)), Some(&StageState::Hidden));
+        // A cue on the stage with no display: the monitor draws it all the same.
+        load(&mut h, 7, 2);
+        play(&mut h, 7, 0);
+        clock(&mut h, 4800);
+        let drawn = &h.platform.monitors[&id(2)].1.cues;
+        assert_eq!(drawn.iter().map(|c| c.picture).collect::<Vec<_>>(), [7]);
+        // Renamed: the title follows; dropped from the set: the window goes.
+        let mut renamed = watched(1, Some("D1"));
+        renamed.monitor = Some("Front".into());
+        h.handle(
+            ToStage::Stages {
+                stages: vec![renamed, stage(2, None, false)],
+            },
+            &mut out,
+        );
+        assert_eq!(h.platform.monitors[&id(1)].0, "Front");
+        assert!(!h.platform.monitors.contains_key(&id(2)));
+        assert!(
+            monitor_closed(&out).is_empty(),
+            "the engine's own close is not echoed"
+        );
+        assert_eq!(h.handle(ToStage::Quit, &mut out), Flow::Quit);
+        assert!(h.platform.monitors.is_empty());
+    }
+
+    /// The operator closes a monitor window: the engine is told once; a stage set sent before
+    /// the engine heard of it does not open it again; a raise does.
+    #[test]
+    fn a_monitor_the_operator_closes_stays_closed_until_raised() {
+        let mut h = greeted(&["D1"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![watched(1, Some("D1"))],
+            },
+        );
+        h.platform.user_closed.push(id(1));
+        let mut out = Vec::new();
+        h.step(None, &mut out);
+        assert_eq!(monitor_closed(&out), [id(1)]);
+        let out = send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![watched(1, Some("D1"))],
+            },
+        );
+        assert!(monitor_closed(&out).is_empty());
+        assert!(h.platform.monitors.is_empty(), "stays closed");
+        let mut out = Vec::new();
+        h.step(None, &mut out);
+        assert!(monitor_closed(&out).is_empty(), "said once");
+        send(&mut h, ToStage::RaiseMonitor { stage: id(1) });
+        assert!(h.platform.monitors.contains_key(&id(1)), "opened again");
+        assert_eq!(h.platform.raised, [id(1)]);
+        // A raise for a stage with no monitor asked for does nothing.
+        send(&mut h, ToStage::RaiseMonitor { stage: id(9) });
+        assert!(!h.platform.monitors.contains_key(&id(9)));
+    }
+
+    /// A monitor that cannot be drawn closes with one warning, and the stages' output is
+    /// untouched.
+    #[test]
+    fn a_monitor_that_cannot_be_drawn_closes_with_a_warning_and_the_stage_stays_up() {
+        let mut h = greeted(&["D1"]);
+        h.platform.fail_monitors = true;
+        let out = send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![StageOutput {
+                    keep_black: true,
+                    ..watched(1, Some("D1"))
+                }],
+            },
+        );
+        assert_eq!(monitor_closed(&out), [id(1)]);
+        assert!(
+            logs(&out)
+                .iter()
+                .any(|(l, m)| *l == LinkLevel::Warn && m.contains("monitor"))
+        );
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Shown {
+                    display: "D1".into()
+                }
+            )]
+        );
+        let out = send(&mut h, ToStage::Ping { seq: 1 });
+        assert!(monitor_closed(&out).is_empty());
     }
 }

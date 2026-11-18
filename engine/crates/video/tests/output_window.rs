@@ -8,8 +8,9 @@
 
 //! The shipped output window as AppKit holds it (macOS): built exactly as the stage host builds
 //! one for a stage, for the main screen's frame, then fitted to the display with the menu bar
-//! and to another; and one presented through the stage host's own present on the menu bar's
-//! display. None is ordered front, so nothing appears on any display. Its own `main`
+//! and to another; one presented through the stage host's own present on the menu bar's
+//! display; and a stage's monitor window. None is ordered front, so nothing appears on any
+//! display. Its own `main`
 //! (harness = false), because AppKit windows are made on the main thread.
 
 #[cfg(target_os = "macos")]
@@ -75,6 +76,29 @@ fn main() {
     assert!(r.borderless);
     assert!(r.frame_is_the_screens, "covers the display's whole frame");
     assert!(!r.visible, "built, never shown");
+    // #648: a stage's monitor window, as its monitor button opens it: titled with the stage's
+    // name, closable and resizable, at the stage's shape, at normal level among the other
+    // windows, never activating the stage host or taking the operator's keys, and not hidden
+    // while the app (not the stage host) is active.
+    let m = &r.monitor;
+    assert_eq!(m.title, "Stage 1");
+    assert!(
+        m.titled && m.closable && m.resizable,
+        "a window the operator moves, sizes and closes"
+    );
+    assert!(
+        m.non_activating,
+        "clicking it never activates the stage host"
+    );
+    assert!(
+        m.key_only_if_needed,
+        "the operator's keys stay with the app"
+    );
+    assert!(!m.hides_on_deactivate, "stays up while the app is active");
+    assert!(!m.floating);
+    assert_eq!(m.level, r.normal_level);
+    assert_eq!(m.content, (640.0, 360.0), "opens at the stage's shape");
+    assert!(!m.visible, "built, never shown");
     println!("output_window: ok");
 }
 

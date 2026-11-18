@@ -19,10 +19,11 @@ use crate::video_geometry::{PictureParam, PictureRamp, VideoGeometry};
 use crate::video_timing::{PictureFades, PlanPass, picture_run_ok};
 
 /// The link version both ends speak; a stage host answering another version is not used.
-pub const LINK_VERSION: u32 = 4;
+pub const LINK_VERSION: u32 = 5;
 /// Longest line either end accepts, newline excluded: enough for a `stages` set of
-/// [`MAX_LINK_STAGES`] stages whose display ids are all [`MAX_TEXT_BYTES`] long.
-pub const MAX_LINE_BYTES: usize = 512 * 1024;
+/// [`MAX_LINK_STAGES`] stages whose display ids and monitor titles are all [`MAX_TEXT_BYTES`]
+/// long.
+pub const MAX_LINE_BYTES: usize = 1024 * 1024;
 /// Most displays one `displays` message lists.
 pub const MAX_DISPLAYS: usize = 32;
 /// Longest display id, display name or log message, in bytes.
@@ -50,6 +51,9 @@ pub enum ToStage {
     Ping { seq: u64 },
     /// Close every window and exit.
     Quit,
+    /// The stage's monitor window (it has one in the `stages` set) comes to the front, opened
+    /// again if the operator closed it since.
+    RaiseMonitor { stage: StageId },
     /// The engine's sample clock: `sample` is now, at `rate` samples a second. Every picture's
     /// position follows it; the stage host moves it on by its own clock between messages.
     Clock { sample: u64, rate: u32 },
@@ -132,6 +136,19 @@ pub enum ToStage {
         display: String,
         points: Vec<[f32; 2]>,
     },
+    /// Test support: read what the stage's monitor window would show at a content size of
+    /// `width` x `height` pixels (the stage fitted, black bars elsewhere) at `points` (fractions
+    /// of the window from the top left), answered by `monitor_probed`.
+    #[cfg(feature = "test-support")]
+    ProbeMonitor {
+        stage: StageId,
+        width: u32,
+        height: u32,
+        points: Vec<[f32; 2]>,
+    },
+    /// Test support: the operator closes the stage's monitor window (its close button).
+    #[cfg(feature = "test-support")]
+    CloseMonitorWindow { stage: StageId },
     /// Test support: stop reading and answering, as a hung stage host would.
     #[cfg(feature = "test-support")]
     Hang,
@@ -161,6 +178,10 @@ pub struct StageOutput {
     /// rank is drawn on top (the engine ranks them by layer, then name).
     #[serde(default)]
     pub stack: u32,
+    /// The title of the stage's monitor window (a live copy of the stage, drawn whether or not
+    /// the stage is shown on a display) while the operator has it open; `None`: no monitor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<String>,
 }
 
 /// A message from the stage host to the engine.
@@ -201,6 +222,11 @@ pub enum FromStage {
         picture: u64,
         reason: String,
     },
+    /// The operator closed the stage's monitor window: it stays closed until the engine asks
+    /// for it again.
+    MonitorClosed {
+        stage: StageId,
+    },
     /// Test support: the answer to `probe`: the frame number read from the barcode, if the
     /// stage shows one, and the colour (RGBA, 0-255) at each point asked for.
     #[cfg(feature = "test-support")]
@@ -214,6 +240,15 @@ pub enum FromStage {
     #[cfg(feature = "test-support")]
     DisplayProbed {
         display: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame: Option<u16>,
+        colours: Vec<[u8; 4]>,
+    },
+    /// Test support: the answer to `probe_monitor`, as `probed` is to `probe`; no colours when
+    /// the stage has no monitor window open.
+    #[cfg(feature = "test-support")]
+    MonitorProbed {
+        stage: StageId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         frame: Option<u16>,
         colours: Vec<[u8; 4]>,
@@ -319,6 +354,25 @@ fn text_ok(text: &str) -> bool {
     !text.is_empty() && text.len() <= MAX_TEXT_BYTES && !text.chars().any(char::is_control)
 }
 
+/// `text` (a stage's name, say) as the link takes a title: control characters as spaces, cut
+/// to [`MAX_TEXT_BYTES`] on a character boundary, `fallback` when nothing is left. A title the
+/// link refuses would cost the whole stage set its line.
+pub fn link_text(text: &str, fallback: &str) -> String {
+    let mut out = String::with_capacity(text.len().min(MAX_TEXT_BYTES));
+    for c in text.chars().map(|c| if c.is_control() { ' ' } else { c }) {
+        if out.len() + c.len_utf8() > MAX_TEXT_BYTES {
+            break;
+        }
+        out.push(c);
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        fallback.chars().take(MAX_TEXT_BYTES / 4).collect()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 /// Log text may be empty; it is otherwise held to the same limits as names.
 fn message_ok(text: &str) -> bool {
     text.len() <= MAX_TEXT_BYTES && !text.chars().any(|c| c.is_control() && c != '\n')
@@ -406,8 +460,23 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
                 if stage.display.as_deref().is_some_and(|d| !text_ok(d)) {
                     return Err(LinkError::Invalid("bad display id"));
                 }
+                if stage.monitor.as_deref().is_some_and(|t| !text_ok(t)) {
+                    return Err(LinkError::Invalid("bad monitor title"));
+                }
             }
             Ok(())
+        }
+        #[cfg(feature = "test-support")]
+        ToStage::ProbeMonitor {
+            width,
+            height,
+            points,
+            ..
+        } => {
+            if !side_ok(*width) || !side_ok(*height) {
+                return Err(LinkError::Invalid("monitor size out of range"));
+            }
+            check_points(points)
         }
         #[cfg(feature = "test-support")]
         ToStage::SetDisplays { displays } => check_displays(displays),
@@ -457,6 +526,10 @@ fn check_from_stage(message: &FromStage) -> Result<(), LinkError> {
             display, colours, ..
         } if colours.len() > MAX_PROBE_POINTS || !text_ok(display) => {
             Err(LinkError::Invalid("bad display probe"))
+        }
+        #[cfg(feature = "test-support")]
+        FromStage::MonitorProbed { colours, .. } if colours.len() > MAX_PROBE_POINTS => {
+            Err(LinkError::Invalid("too many probe colours"))
         }
         _ => Ok(()),
     }
@@ -534,10 +607,12 @@ mod tests {
                     display: Some("D1".into()),
                     keep_black: true,
                     stack: 3,
+                    monitor: Some("Stage 1".into()),
                 }],
             },
             ToStage::Ping { seq: 7 },
             ToStage::Quit,
+            ToStage::RaiseMonitor { stage: stage(1) },
             ToStage::Load {
                 picture: 4,
                 stage: stage(1),
@@ -604,6 +679,7 @@ mod tests {
             },
             FromStage::Pong { seq: 7 },
             FromStage::PictureOpened { picture: 3 },
+            FromStage::MonitorClosed { stage: stage(1) },
             FromStage::PictureFailed {
                 picture: 3,
                 reason: "the file is damaged".into(),
@@ -631,6 +707,7 @@ mod tests {
                 display: Some("d".repeat(MAX_TEXT_BYTES)),
                 keep_black: true,
                 stack: u32::MAX,
+                monitor: Some("m".repeat(MAX_TEXT_BYTES)),
             })
             .collect();
         let message = ToStage::Stages { stages };
@@ -867,6 +944,7 @@ mod tests {
                 display: None,
                 keep_black: true,
                 stack: 0,
+                monitor: None,
             }],
         };
         let line = encode(&big).unwrap();
@@ -874,8 +952,44 @@ mod tests {
             decode_to_stage(line.as_bytes()),
             Err(LinkError::Invalid("stage size out of range"))
         );
+        for title in ["", "a\u{7}b", &"t".repeat(MAX_TEXT_BYTES + 1)] {
+            let titled = ToStage::Stages {
+                stages: vec![StageOutput {
+                    id: stage(1),
+                    width: 1920,
+                    height: 1080,
+                    display: None,
+                    keep_black: false,
+                    stack: 0,
+                    monitor: Some(title.to_owned()),
+                }],
+            };
+            let line = encode(&titled).unwrap();
+            assert_eq!(
+                decode_to_stage(line.as_bytes()),
+                Err(LinkError::Invalid("bad monitor title")),
+                "{title:?}"
+            );
+        }
         let log = r#"{"type":"log","level":"warn","message":"a\u0000b"}"#;
         assert!(decode_from_stage(log.as_bytes()).is_err());
+    }
+
+    /// Any stage name becomes a title the link takes: control characters go, a long name is cut
+    /// on a character boundary, an empty one takes the fallback.
+    #[test]
+    fn any_name_becomes_a_title_the_link_takes() {
+        let ok = |t: &str| text_ok(t);
+        assert_eq!(link_text("Stage 1", "Stage"), "Stage 1");
+        assert_eq!(link_text("a\tb\nc", "Stage"), "a b c");
+        assert_eq!(link_text("  \u{7} ", "Stage"), "Stage");
+        let long = "é".repeat(MAX_TEXT_BYTES);
+        let cut = link_text(&long, "Stage");
+        assert!(ok(&cut) && cut.len() == MAX_TEXT_BYTES, "{}", cut.len());
+        assert!(ok(&link_text(
+            &format!("{}x", "y".repeat(MAX_TEXT_BYTES)),
+            "S"
+        )));
     }
 
     #[cfg(feature = "test-support")]
@@ -895,10 +1009,31 @@ mod tests {
         let line = encode(&FromStage::Probed {
             stage: stage(1),
             frame: None,
+            colours: colours.clone(),
+        })
+        .unwrap();
+        assert!(decode_from_stage(line.as_bytes()).is_err());
+        let line = encode(&FromStage::MonitorProbed {
+            stage: stage(1),
+            frame: None,
             colours,
         })
         .unwrap();
         assert!(decode_from_stage(line.as_bytes()).is_err());
+        let monitor = |w: u32, points: Vec<[f32; 2]>| ToStage::ProbeMonitor {
+            stage: stage(1),
+            width: w,
+            height: 300,
+            points,
+        };
+        let good = monitor(400, vec![[0.5, 0.5]]);
+        assert_eq!(
+            decode_to_stage(encode(&good).unwrap().as_bytes()).unwrap(),
+            good
+        );
+        for bad in [monitor(0, vec![[0.5, 0.5]]), monitor(400, vec![[2.0, 0.5]])] {
+            assert!(decode_to_stage(encode(&bad).unwrap().as_bytes()).is_err());
+        }
     }
 
     /// Test support: a media clock step reads back; one over a day is refused.

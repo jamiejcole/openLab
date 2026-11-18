@@ -517,6 +517,10 @@ async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>) {
     };
     let _ = conn.session().await;
     conn.shared.hub.unregister(conn.hub_id);
+    if conn.doc.is_none() && conn.shared.hub.app_connections() == 0 {
+        // The app is gone (quit or crashed): its monitor windows go with it.
+        let _ = conn.shared.inbox.send(Inbox::AppsGone);
+    }
     if conn.doc.is_none() && !conn.said_goodbye && !*conn.shared.shutdown.borrow() {
         app_lost(&conn.shared);
     }
