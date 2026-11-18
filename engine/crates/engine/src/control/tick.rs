@@ -28,11 +28,18 @@ impl Control {
         self.route_mixer_events();
         self.watch_tick();
         self.begin_meter_round();
+        let moved_before = self.moves_taken_up();
         self.each_doc(|cx| cx.tick());
         self.clear_left_autosaves();
         self.end_meter_round();
         self.balance_primes();
-        self.follow_key_changes();
+        // A Save As into another folder taken up this wake gave its catalog thousands of new
+        // keys: the watch share takes them at the start of the next wake, so the wake that
+        // answers the save does not also pay for them (the share has the doc's old keys until
+        // then, and no batch of the watch is read before they are replaced).
+        if self.moves_taken_up() == moved_before {
+            self.follow_key_changes();
+        }
         self.probe_watchdog();
         self.waveform_watchdog();
         self.hand_out_freed_slots();
@@ -142,6 +149,11 @@ impl Control {
         if changed {
             self.mark_warnings_dirty();
         }
+    }
+
+    /// Saves into another folder whose prepared copy every doc has taken up, in all.
+    fn moves_taken_up(&self) -> u64 {
+        self.docs.iter().map(|d| d.file.moves_taken_up).sum()
     }
 
     /// Hands every catalog's new key changes to the shared watch.

@@ -459,7 +459,9 @@ struct MoveStart {
 struct Moved {
     /// The copy as written, its media references re-spelled for the new folder (`None`: none
     /// was, or the re-spelling was refused and the copy was written as it was).
-    workspace: Option<Workspace>,
+    /// With a second copy of it, for the snapshot every client is sent once it is taken up
+    /// (cloning 2,000 cues takes the control thread a third of a millisecond).
+    workspace: Option<(Workspace, Workspace)>,
     /// Some re-spelled reference was relative (older history entries then name wrong paths).
     respelled: bool,
     /// The re-spelling failed part way (logged once the save is answered).
@@ -546,8 +548,9 @@ pub(super) struct DocFile {
     pub(super) notices: Vec<WireWarning>,
     /// The broadcast `snapshot` did not fit the outbound channel: send a fresh one when it does.
     pub(super) resend_snapshot: bool,
-    /// Saves into another folder whose prepared copy and index were taken up (a cost measure:
-    /// the others were worked out again on the control thread).
+    /// Saves into another folder whose prepared copy and index were taken up (the others were
+    /// worked out again on the control thread). The wake that takes one up leaves every doc's
+    /// key changes to the next wake ([`Control::tick`]).
     pub(super) moves_taken_up: u64,
 }
 
@@ -1338,7 +1341,7 @@ fn prepare_move(copy: &mut Workspace, old_dir: Option<&Path>, new_dir: &Path) ->
     let mut indexed = index_workspace(copy, Some(new_dir));
     indexed.prepare();
     Moved {
-        workspace: rebased.then(|| copy.clone()),
+        workspace: rebased.then(|| (copy.clone(), copy.clone())),
         respelled: rebased && respelled,
         failure,
         indexed,
@@ -1516,8 +1519,21 @@ impl DocCx<'_> {
     /// Sends this doc's snapshot to its clients again (its model changed in a way no
     /// `model_changed` describes, or the first broadcast did not fit).
     pub(super) fn resend_snapshot(&mut self) {
+        self.resend_snapshot_with(None);
+    }
+
+    /// [`Self::resend_snapshot`] with a copy of the workspace made elsewhere, which is used only
+    /// if the model has not been edited since `at` (its edit count when the copy was made).
+    fn resend_snapshot_with(&mut self, prebuilt: Option<(u64, Workspace)>) {
         self.doc.last_loaded.clear();
-        let snapshot = Box::new(self.doc.snapshot());
+        let (workspace, spare) = match prebuilt {
+            Some((at, ws)) if at == self.doc.model.edits() => (Some(ws), None),
+            other => (None, other.map(|(_, ws)| ws)),
+        };
+        if let Some(ws) = spare {
+            self.eng.docs.discard(Box::new(ws));
+        }
+        let snapshot = Box::new(self.doc.snapshot_with(workspace));
         self.doc.file.resend_snapshot = !self
             .eng
             .out
@@ -1746,7 +1762,8 @@ impl DocCx<'_> {
         } = moved;
         self.doc.file.moves_taken_up += 1;
         let changed = workspace.is_some();
-        if let Some(mut ws) = workspace {
+        let mut prebuilt = None;
+        if let Some((mut ws, mut snapshot_ws)) = workspace {
             // The copy is the workspace with the relinks applied, but for the Show Mode flag,
             // which a save writes from the doc's own.
             let mut edit = self.doc.model.edit();
@@ -1754,10 +1771,18 @@ impl DocCx<'_> {
             let old = std::mem::replace(&mut *edit, ws);
             drop(edit);
             self.eng.docs.discard(Box::new(old));
+            // The snapshot's copy is the same workspace, show mode included.
+            snapshot_ws.show_mode = self.doc.model.ws().show_mode;
+            prebuilt = Some((self.doc.model.edits(), snapshot_ws));
         }
         let gone = self.doc.media.reset_indexed(self.show_dir(), indexed);
         self.eng.docs.discard(gone);
-        self.after_move(changed, respelled || old_dir.is_some(), clean_before);
+        self.after_move(
+            changed,
+            respelled || old_dir.is_some(),
+            clean_before,
+            prebuilt,
+        );
     }
 
     /// [`Self::moved_folder`] worked out on the control thread from the doc as it is now
@@ -1787,13 +1812,19 @@ impl DocCx<'_> {
         }
         let gone = self.doc.media.reset(self.show_dir(), self.doc.model.ws());
         self.eng.docs.discard(gone);
-        self.after_move(changed, respelled || old_dir.is_some(), clean_before);
+        self.after_move(changed, respelled || old_dir.is_some(), clean_before, None);
     }
 
     /// The rest of [`Self::moved_folder`] once the workspace and its catalog have moved:
     /// `changed`, references were re-spelled; `clear_history`, older history entries may then
     /// name wrong files.
-    fn after_move(&mut self, changed: bool, clear_history: bool, clean_before: bool) {
+    fn after_move(
+        &mut self,
+        changed: bool,
+        clear_history: bool,
+        clean_before: bool,
+        prebuilt: Option<(u64, Workspace)>,
+    ) {
         self.doc.waveforms.reset();
         self.eng.waveform_reader.forget(self.doc.id);
         if changed {
@@ -1816,7 +1847,7 @@ impl DocCx<'_> {
             self.feed(input, now);
         }
         if changed {
-            self.resend_snapshot();
+            self.resend_snapshot_with(prebuilt);
         }
     }
 
@@ -3004,6 +3035,30 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::tests::memo_show;
+
+    /// A workspace copy made for the snapshot before the model was edited is not sent: the
+    /// snapshot holds the model as it is now.
+    #[test]
+    fn a_stale_prebuilt_snapshot_workspace_is_not_sent() {
+        let mut s = memo_show();
+        let mut stale = s.control().workspace().clone();
+        stale.name = "made before an edit".into();
+        s.take_outbound();
+        let c = s.control_mut();
+        let at = c.docs[0].model.edits() + 1;
+        c.first_cx().resend_snapshot_with(Some((at, stale)));
+        let sent = s.take_outbound();
+        let snap = sent
+            .iter()
+            .find_map(|m| match m {
+                ServerMessage::Snapshot { snapshot } => Some(snapshot),
+                _ => None,
+            })
+            .expect("a snapshot");
+        assert_eq!(snap.workspace, *s.control().workspace());
+        assert_ne!(snap.workspace.name, "made before an edit");
+    }
 
     /// A relink result lists whole cues until their paths reach the byte cap, and says it
     /// stopped: a folder of many same-named files cannot make a reply bigger than a frame.

@@ -100,6 +100,13 @@ impl Control {
         self.eng.watch.watch_mut().manual_pass()
     }
 
+    /// [`Self::watch_pass`] without first handing the catalogs' key changes to the watch (a test
+    /// of a batch the watch thread made before they were handed over).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn watch_pass_unfollowed(&mut self) -> Option<WatchBatch> {
+        self.eng.watch.watch_mut().manual_pass()
+    }
+
     /// Watch batches of the current generation taken so far (a cost measure).
     pub fn watch_batches(&self) -> u64 {
         self.eng.watch.watch().batches()
@@ -483,6 +490,11 @@ impl<'a> DocView<'a> {
     /// took up as they were.
     pub fn moves_taken_up(&self) -> u64 {
         self.doc.file.moves_taken_up
+    }
+
+    /// Watch changes of the doc's catalog the media watch share has not been handed yet.
+    pub fn key_changes_pending(&self) -> usize {
+        self.doc.media.key_changes_pending()
     }
 
     /// Media jobs (probes, preloads) the doc has asked for so far.

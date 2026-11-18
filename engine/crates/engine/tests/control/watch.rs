@@ -987,3 +987,102 @@ fn a_shared_file_gone_during_a_save_as_elsewhere_is_heard_by_both_docs() {
     );
     assert_eq!(s.stalls(), 0);
 }
+
+/// A file two docs share goes in the wake after a Save As elsewhere was answered, before the
+/// moved doc's new keys have reached the watch share (they are handed over at the start of the
+/// next wake, before any batch is read): the batch the watch made then reaches the moved doc
+/// under its new key, so its cue is broken as the other doc's is.
+#[test]
+fn a_shared_file_gone_before_the_new_keys_of_a_moved_doc_are_handed_over_is_heard_by_both() {
+    use openlab_core::{CueKind, MediaRef, save_show};
+    use openlab_engine::control::{DocSource, SaveHook, reply_channel};
+    use openlab_engine::persist::JobKind;
+    let env = common::env();
+    let show_dir = env.show_dir();
+    let shared = show_dir.join("shared.wav");
+    std::fs::copy(wav(&dc(400, 0.5)), &shared).unwrap();
+    let fs = FakeFs::new();
+    fs.put(&shared, 1);
+    let a = workspace(vec![audio(1, &shared, 0)]);
+    // B is saved beside the file and names it relative to its folder.
+    let mut b = workspace(vec![audio(2, &shared, 0)]);
+    b.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(8));
+    if let CueKind::Audio { media, .. } = &mut b.cue_lists[0].cues[0].kind {
+        *media = Some(MediaRef::new("shared.wav"));
+    }
+    let b_show = show_dir.join("b.openlab");
+    std::fs::write(&b_show, save_show(&b).unwrap()).unwrap();
+    // The writer holds B's save until the test lets it go.
+    let (go, held) = std::sync::mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Save {
+            let _ = held.lock().unwrap().recv();
+        }
+    }));
+    let mut c = manual(&a, &fs);
+    c.app_dirs = Some(env.dirs.clone());
+    c.save_hook = Some(hook);
+    let mut s = show_with(a, c);
+    // Dropped before the show, so a failing test lets the held writer go at once.
+    let go = go;
+    let b_doc = s
+        .open_doc(DocSource::Open {
+            path: b_show,
+            recovery: None,
+        })
+        .unwrap();
+    follow(&mut s);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert!(problems_in(&s, b_doc, 2).is_empty());
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (tx, _replies) = reply_channel();
+    let rid = s.request_id();
+    s.control_mut().handle_doc(
+        b_doc,
+        ClientMessage::Request {
+            id: rid,
+            request: Request::SaveAs {
+                path: elsewhere
+                    .path()
+                    .join("b.openlab")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        },
+        &tx,
+    );
+    go.send(()).unwrap();
+    // Wake by wake until the answer is taken up: B's new keys wait for the next wake.
+    for _ in 0..500 {
+        s.tick();
+        if s.control().doc(b_doc).unwrap().moves_taken_up() == 1 {
+            break;
+        }
+        s.wait_step();
+    }
+    assert_eq!(s.control().doc(b_doc).unwrap().moves_taken_up(), 1);
+    assert!(s.control().doc(b_doc).unwrap().key_changes_pending() > 0);
+    let aside = show_dir.join("aside.wav");
+    std::fs::rename(&shared, &aside).unwrap();
+    fs.remove(&shared);
+    let batch = s
+        .control_mut()
+        .watch_pass_unfollowed()
+        .expect("the watch hears it is gone");
+    s.deliver(Inbox::Watch(
+        openlab_engine::control::watch::WatchAnswer::Batch(batch),
+    ));
+    s.tick();
+    s.settle_media();
+    s.tick();
+    let gone = |p: &[CueProblem]| matches!(p, [CueProblem::MediaMissing { .. }]);
+    assert!(gone(s.control().engine().problems(id(1))));
+    assert!(
+        gone(&problems_in(&s, b_doc, 2)),
+        "{:?}",
+        problems_in(&s, b_doc, 2)
+    );
+    assert_eq!(s.stalls(), 0);
+}

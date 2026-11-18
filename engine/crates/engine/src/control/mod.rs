@@ -1248,6 +1248,12 @@ impl Doc {
 
     /// Everything a client needs to draw the show (docs/protocol.md, Snapshot).
     fn snapshot(&self) -> Snapshot {
+        self.snapshot_with(None)
+    }
+
+    /// [`Self::snapshot`] with `workspace` as the snapshot's copy of the workspace when given
+    /// (the caller made it from the model as it is now, off this thread).
+    fn snapshot_with(&self, workspace: Option<Workspace>) -> Snapshot {
         let cue_states = self
             .model
             .engine()
@@ -1280,7 +1286,7 @@ impl Doc {
             revision: self.revision,
             runtime_seq: self.runtime_seq,
             document: self.document_state(),
-            workspace: self.model.ws().clone(),
+            workspace: workspace.unwrap_or_else(|| self.model.ws().clone()),
             cue_states,
             problems,
             group_warnings,
