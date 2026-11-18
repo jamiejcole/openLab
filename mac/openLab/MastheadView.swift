@@ -31,6 +31,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// How long the flash stays up.
     var flashDuration: TimeInterval = 0.4
     private var flashEnd: DispatchWorkItem?
+    /// Runs the clearing of the flash after a delay (a test fires it by hand instead).
+    var scheduleFlashEnd: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -150,7 +154,7 @@ final class MastheadView: NSView, NSTextViewDelegate {
         flashEnd?.cancel()
         let end = DispatchWorkItem { [weak self] in self?.goFlash.alphaValue = 0 }
         flashEnd = end
-        DispatchQueue.main.asyncAfter(deadline: .now() + flashDuration, execute: end)
+        scheduleFlashEnd(flashDuration, end)
     }
 
     private func applyEditable() {
