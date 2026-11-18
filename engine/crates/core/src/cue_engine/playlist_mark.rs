@@ -9,7 +9,7 @@ use crate::cue::{Cue, CueKind, GroupMode, SecondTrigger};
 use crate::model::{CueId, Workspace};
 
 use super::operations::StartPath;
-use super::run::{Phase, Run, Slot};
+use super::run::{Phase, Run, Slot, Voice};
 use super::time::SampleTime;
 use super::{Action, Ctx, CueEngine};
 
@@ -22,13 +22,16 @@ pub(super) enum MarksEdit {
 impl CueEngine {
     /// The child the Playlist group `group` plays next. Not running: the first child that a
     /// start plays, as `start` decides ([`Self::start_path`]): a run of its own is kept as the
-    /// one playing (a broken one too) unless its second trigger ends it (a stop, or a panic that
-    /// stops it at once rather than fading it out); a cue broken at run time with no run, one left paused by a lost device
-    /// still away, a skipped one and a new run of one with static problems are passed over.
-    /// Playing: the one after its current child as the group stands (wrapping when it loops).
-    /// None once it is stopping, devamped or halted, past its last child, or for a shuffled
-    /// playlist whose order is not drawn yet (not running, or between passes); none too for
-    /// any other cue.
+    /// one playing (a broken one too) unless its second trigger ends it (a stop, or a panic
+    /// that stops it at once rather than fading it out); a cue broken at run time with no run,
+    /// one left paused by a lost device still away, a skipped one and a new run of one with
+    /// static problems are passed over. A looping one whose pass plays none but started a run
+    /// goes round, to the children whose runs it ended as new runs. Playing: the one after its
+    /// current child as the group stands (wrapping when it loops, the current one as a new
+    /// run). None once it is stopping, devamped or halted, past its last child, or for a
+    /// shuffled playlist whose order is not drawn yet (not running, or between passes); none
+    /// too for a disarmed one or one with static problems that is not running (its start plays
+    /// no child) and for any other cue.
     /// `Action::PlaylistNextChanged` reports each change.
     pub fn next_in_playlist(&self, group: CueId) -> Option<CueId> {
         self.playlist_marks.get(&group).copied()
@@ -99,6 +102,12 @@ impl CueEngine {
                     look.insert(*id);
                     look.extend(tree.parent(*id));
                 }
+                // Whether a panic fades a voice out or stops it at once depends on `now` while
+                // the voice's start or a command for it is still ahead: the playlists around it
+                // look again on every call until then.
+                Slot::Active(r) if r.committed > cx.now || voice_starts_after(r, cx.now) => {
+                    look.extend(tree.ancestors(*id));
+                }
                 _ => {}
             }
         }
@@ -138,25 +147,41 @@ impl CueEngine {
         else {
             return None;
         };
-        // Whether a start of the child plays it, by what `start` does with its runtime: one
-        // left as it is is taken as the child playing if it is a run (a broken one, or one
-        // fading out in a panic); a trigger that ends the run leaves the playlist to go on; a
-        // new run of a cue with static problems only keeps its timing (C-G3).
-        let fresh = |c: &Cue| !self.is_skipped(c) && !self.has_problems(c.id);
-        let plays = |c: &&Cue| match self.start_path(c) {
-            StartPath::Refused | StartPath::Skipped => {
-                matches!(self.slots.get(&c.id), Some(Slot::Active(_)))
+        // Children the playlist meets, as `playlist_next` meets them: in order from `from`, and
+        // round again when it loops. A pass that plays none goes round only if a child started
+        // in it (its run ends and the playlist moves on again); a start of the playlist opens
+        // with a pass, so it goes round only that way. The children whose run a start ends are
+        // idle when it comes round to them again, as is the child playing now (it has ended
+        // by the time the playlist moves on).
+        let walk = |from: usize, idle: Option<CueId>, opens_with_pass: bool| {
+            let mut ended: Vec<CueId> = idle.into_iter().collect();
+            let mut started = false;
+            for c in children.iter().skip(from) {
+                match self.child_meets(c, false, now, ws) {
+                    Meet::Plays => return Some(c.id),
+                    Meet::Passed {
+                        started: s,
+                        ended: e,
+                    } => {
+                        started |= s;
+                        if e {
+                            ended.push(c.id);
+                        }
+                    }
+                }
             }
-            StartPath::Trigger(SecondTrigger::HardStopAndRestart) => fresh(c),
-            StartPath::Trigger(option) => !self.trigger_stops(c, option, now, ws),
-            StartPath::Resume => true,
-            StartPath::Fresh => fresh(c),
+            if !*loop_ || (opens_with_pass && !started) {
+                return None;
+            }
+            children
+                .iter()
+                .find(|c| self.child_meets(c, ended.contains(&c.id), now, ws) == Meet::Plays)
+                .map(|c| c.id)
         };
-        let first = || {
-            (!*shuffle)
-                .then(|| children.iter().find(plays).map(|c| c.id))
-                .flatten()
-        };
+        // A disarmed group, or one with static problems, keeps only its timing: its start plays
+        // no child.
+        let plays_children = !*shuffle && self.is_armed(group) && !self.has_problems(group.id);
+        let first = || plays_children.then(|| walk(0, None, true)).flatten();
         let Some(Slot::Active(run)) = self.slots.get(&group.id) else {
             return first();
         };
@@ -187,7 +212,7 @@ impl CueEngine {
                 .iter()
                 .skip(from)
                 .filter_map(|id| by_id.get(id).copied())
-                .find(plays)
+                .find(|c| self.child_meets(c, false, now, ws) == Meet::Plays)
                 .map(|c| c.id);
         }
         // As the group stands now: after the current child, or the one that took its place.
@@ -195,16 +220,62 @@ impl CueEngine {
             .current
             .and_then(|(c, _)| children.iter().position(|k| k.id == c))
             .map_or(p.index, |i| i.saturating_add(1));
-        let after = children.iter().skip(from).find(plays);
-        let wrapped = || {
-            if *loop_ {
-                children.iter().find(plays)
+        walk(from, p.current.map(|(c, _)| c), false)
+    }
+
+    /// What a start of the playlist's child `c` does, by what `start` does with its runtime
+    /// (`idle`: as if it had none). One left as it is is taken as the child playing if it is a
+    /// run (a broken one, or one fading out in a panic); a trigger that ends the run passes it
+    /// and leaves it idle; a new run of a cue with static problems only keeps its timing (C-G3),
+    /// so it is passed though it started.
+    fn child_meets(&self, c: &Cue, idle: bool, now: SampleTime, ws: &Workspace) -> Meet {
+        let fresh = || {
+            if !self.is_skipped(c) && !self.has_problems(c.id) {
+                Meet::Plays
             } else {
-                None
+                Meet::Passed {
+                    started: !self.is_skipped(c),
+                    ended: false,
+                }
             }
         };
-        after.or_else(wrapped).map(|c| c.id)
+        if idle {
+            return fresh();
+        }
+        match self.start_path(c) {
+            StartPath::Refused | StartPath::Skipped
+                if matches!(self.slots.get(&c.id), Some(Slot::Active(_))) =>
+            {
+                Meet::Plays
+            }
+            StartPath::Refused | StartPath::Skipped => Meet::Passed {
+                started: false,
+                ended: false,
+            },
+            StartPath::Trigger(SecondTrigger::HardStopAndRestart) | StartPath::Fresh => fresh(),
+            StartPath::Trigger(option) if self.trigger_stops(c, option, now, ws) => Meet::Passed {
+                started: false,
+                ended: true,
+            },
+            StartPath::Trigger(_) | StartPath::Resume => Meet::Plays,
+        }
     }
+}
+
+/// What a playlist does with a child it meets ([`CueEngine::child_meets`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Meet {
+    Plays,
+    /// Passed over: `started` a run of it (one that ends at once, or keeps only its timing),
+    /// `ended` the run it had.
+    Passed {
+        started: bool,
+        ended: bool,
+    },
+}
+
+fn voice_starts_after(run: &Run, now: SampleTime) -> bool {
+    matches!(run.voice, Voice::Started { at, .. } if at > now)
 }
 
 fn is_playlist(cue: &Cue) -> bool {

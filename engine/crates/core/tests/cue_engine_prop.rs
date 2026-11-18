@@ -1932,7 +1932,15 @@ impl Run {
             let marked = self.engine.next_in_playlist(group);
             let mut copy = self.engine.clone();
             let actions = copy.handle(&self.ws, Input::Start { cue: group }, self.now);
-            let started = actions.iter().find_map(|a| match a {
+            // Only while the group runs: a child started after it ended (by a cue its continue
+            // started) is not one the playlist played.
+            let running = actions
+                .iter()
+                .position(|a| {
+                    matches!(a, Action::StateChanged { cue, state: CueState::Idle, .. } if *cue == group)
+                })
+                .unwrap_or(actions.len());
+            let started = actions.iter().take(running).find_map(|a| match a {
                 Action::StateChanged { cue, state, .. }
                     if children.iter().any(|(k, _)| k == cue)
                         && !matches!(
@@ -3576,6 +3584,59 @@ fn a_playlists_mark_passes_over_a_child_in_its_pre_wait_that_its_panic_stops_at_
     }
 }
 
+/// A looping playlist holds a Start cue (id 2) started on its own, in its pre-wait, with a stop as
+/// its second trigger, and a disarmed Start cue (id 3) whose target is missing. A start of the
+/// playlist stops 2, passes 3 (it starts, with static problems, and ends at once), goes round
+/// and plays 2 afresh: the mark names 2.
+#[test]
+fn a_looping_playlists_mark_names_a_child_its_start_stops_and_then_plays_afresh() {
+    let spec = |target: u8| Spec {
+        kind: 5,
+        pre: 0,
+        post: 0,
+        mode: 0,
+        armed: true,
+        dup: false,
+        level: 1,
+        group_mode: 0,
+        target,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    let case = Case {
+        specs: vec![
+            Spec {
+                kind: 4,
+                level: 0,
+                group_mode: 5,
+                ..spec(0)
+            },
+            Spec {
+                pre: 1,
+                second: 9,
+                ..spec(10)
+            },
+            Spec {
+                armed: false,
+                ..spec(109)
+            },
+        ],
+        steps: vec![Step {
+            dt: 0,
+            op: 2,
+            a: 2,
+            b: 0,
+        }],
+        lookahead: 0,
+        min_go: 0,
+        panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
+}
+
 /// Play next on a playlist that does not loop, playing its last child, completes the playlist:
 /// it never goes round to its first child again. The playlist has no pre-wait, so going round
 /// shows nothing of its own (no start, no voice): only its child starting again does. At the top
@@ -3998,6 +4059,141 @@ fn a_group_waits_on_a_run_moved_deeper_into_its_own_tree() {
             step(30, 104, 46),
             step(1, 0, 0),
         ],
+        lookahead: 0,
+        min_go: 0,
+        panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
+}
+
+/// A disarmed playlist (id 1, auto-continue) keeps only its timing: its start plays none of its
+/// children, so it marks none. Its continue starts a Start cue (id 8) that starts the playlist's
+/// child 6 after the playlist has ended, which is not the playlist playing it.
+#[test]
+fn a_disarmed_playlist_marks_no_child() {
+    let case = Case {
+        specs: vec![
+            Spec {
+                kind: 22,
+                pre: 0,
+                post: 0,
+                mode: 1,
+                armed: false,
+                dup: false,
+                level: 0,
+                group_mode: 4,
+                target: 25,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 27,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 4,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 4,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 22,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 0,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 0,
+                pre: 1,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 1,
+                group_mode: 0,
+                target: 1,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 5,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: false,
+                dup: false,
+                level: 0,
+                group_mode: 0,
+                target: 3,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+            Spec {
+                kind: 5,
+                pre: 0,
+                post: 0,
+                mode: 0,
+                armed: true,
+                dup: false,
+                level: 0,
+                group_mode: 0,
+                target: 145,
+                flag: false,
+                second: 0,
+                release: false,
+            },
+        ],
+        steps: vec![Step {
+            dt: 0,
+            op: 1,
+            a: 0,
+            b: 0,
+        }],
         lookahead: 0,
         min_go: 0,
         panic: 0,
