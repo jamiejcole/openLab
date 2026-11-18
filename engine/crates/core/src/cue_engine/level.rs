@@ -10,7 +10,7 @@ use crate::cue::{
     CueKind, CueLevels, FadeCurve, FadeLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS,
     SILENCE_DB,
 };
-use crate::model::CueId;
+use crate::model::{CueId, Workspace};
 use crate::video_geometry::PictureParam;
 
 use super::time::SampleTime;
@@ -296,14 +296,31 @@ impl Level {
     }
 }
 
-/// The gain the model gives an audio cue's parameter (what its voice starts with). A muted
+/// The cue outputs an audio cue has: one per output of its patch (QLab 5 manual p. 204), each its
+/// levels do not list being silent, or as many as its levels list where that is more or its patch
+/// is gone. At most [`MAX_CUE_OUTPUTS`].
+pub(super) fn cue_outputs(ws: &Workspace, kind: &CueKind) -> usize {
+    let listed = kind.levels().map_or(0, |l| l.outputs.len());
+    let patch = kind
+        .sound_patch()
+        .and_then(|id| ws.patches.iter().find(|p| p.id == id))
+        .map_or(0, |p| p.outputs.len());
+    let most = usize::try_from(MAX_CUE_OUTPUTS).unwrap_or(usize::MAX);
+    listed.max(patch).min(most)
+}
+
+/// The gain the model gives an audio cue's parameter (what its voice starts with), the cue having
+/// `outputs` cue outputs ([`cue_outputs`]): an output its levels do not list is silent. A muted
 /// output or crosspoint has none: a fade never changes mutes, so it leaves it alone.
-pub(super) fn model_gain(levels: &CueLevels, param: LevelParam) -> Option<f32> {
+pub(super) fn model_gain(levels: &CueLevels, param: LevelParam, outputs: usize) -> Option<f32> {
     match param {
         LevelParam::Master => Some(db_to_gain(levels.master_db)),
         LevelParam::Output(o) => {
-            let out = levels.outputs.get(usize::try_from(o).ok()?)?;
-            (!out.mute).then(|| db_to_gain(out.db))
+            let o = usize::try_from(o).ok()?;
+            match levels.outputs.get(o) {
+                Some(out) => (!out.mute).then(|| db_to_gain(out.db)),
+                None => (o < outputs).then_some(0.0),
+            }
         }
         LevelParam::Crosspoint { input, output } => {
             match levels
@@ -321,22 +338,23 @@ pub(super) fn model_gain(levels: &CueLevels, param: LevelParam) -> Option<f32> {
     }
 }
 
-/// What a Fade cue's levels ask of one audio cue: `(parameter, target gain)` for every set value
-/// that names a parameter the cue has and that is not muted. Outputs (and crosspoint outputs)
-/// beyond the cue's outputs, and crosspoint inputs of [`MAX_CHANNELS`] or more, are ignored;
-/// crosspoint inputs beyond the file's channels are ignored by the mixer.
+/// What a Fade cue's levels ask of one audio cue with `outputs` cue outputs ([`cue_outputs`]):
+/// `(parameter, target gain)` for every set value that names a parameter the cue has and that is
+/// not muted. Outputs (and crosspoint outputs) beyond the cue's outputs, and crosspoint inputs of
+/// [`MAX_CHANNELS`] or more, are ignored; crosspoint inputs beyond the file's channels are ignored
+/// by the mixer.
 pub(super) fn fade_targets(
     fade: &FadeLevels,
     target: &CueKind,
+    outputs: usize,
     limits: Option<LevelLimits>,
 ) -> Vec<(LevelParam, f32)> {
     let Some(levels) = target.levels() else {
         return Vec::new();
     };
-    let outputs = levels.outputs.len();
     let mut out = Vec::new();
     let mut add = |param: LevelParam, db: f64| {
-        if model_gain(levels, param).is_some() {
+        if model_gain(levels, param, outputs).is_some() {
             // An absolute level ends within the workspace limits whatever the Fade holds; a change
             // in dB (`None`) is limited where it is applied.
             out.push((param, db_to_gain(limits.map_or(db, |l| l.apply(db)))));

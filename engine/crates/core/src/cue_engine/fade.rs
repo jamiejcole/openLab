@@ -90,7 +90,9 @@ impl CueEngine {
             let Some(base) = c.kind.levels() else {
                 continue;
             };
-            let wanted = level::fade_targets(levels, &c.kind, (!relative).then_some(limits));
+            let outputs = level::cue_outputs(ws, &c.kind);
+            let wanted =
+                level::fade_targets(levels, &c.kind, outputs, (!relative).then_some(limits));
             // A picture's values: only of a Video cue the Fade names itself (a group's Fade moves
             // levels only).
             let pictured: Vec<(PictureParam, f64, f64)> = match &c.kind {
@@ -134,7 +136,7 @@ impl CueEngine {
                     .levels
                     .get(&param)
                     .map(|l| l.value(start))
-                    .or_else(|| level::model_gain(base, param))
+                    .or_else(|| level::model_gain(base, param, outputs))
                     .unwrap_or(0.0);
                 // Relative: the level moves by the fade's dB from where it is now (so a silent
                 // level stays silent and is left alone), within the workspace limits.
