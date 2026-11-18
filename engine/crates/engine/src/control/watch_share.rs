@@ -13,7 +13,10 @@
 //! A doc opening or closing beside another changes thousands of keys at once. The share takes
 //! at most [`CHANGES_PER_WAKE`] of them in one control wake and the rest in the wakes after, in
 //! order, so neither costs most of an audio block; the watch thread learns of the files a few
-//! wakes later, which only delays its first pass over them.
+//! wakes later, which only delays its first pass over them. A doc that takes up a file another
+//! doc already watches, after the file had an event its change was queued before, is handed
+//! the file's last event ([`WatchShare::take_missed`]): its probe may have seen the file as it
+//! was before, and the watch does not repeat an event.
 
 use std::collections::hash_map::{self, Entry};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -41,6 +44,14 @@ struct Watched {
     id: u64,
     /// Every doc key that names this file, with that doc's watch id for it.
     subs: BTreeMap<Sub, u64>,
+    /// The file's last event, numbered by the share's count of events then.
+    last_event: Option<(u64, WatchEvent)>,
+}
+
+/// Changes a doc's catalog handed over at once, with the share's event count then.
+struct Batch {
+    since: u64,
+    changes: VecDeque<KeyChange>,
 }
 
 /// What came off the share's maps, only there to be dropped: the caller hands it to the
@@ -65,13 +76,18 @@ pub struct WatchShare {
     /// Each open doc's keys.
     keys: HashMap<DocId, DocKeys>,
     /// Each open doc's changes not handled yet, in order.
-    queued: BTreeMap<DocId, VecDeque<KeyChange>>,
+    queued: BTreeMap<DocId, VecDeque<Batch>>,
     /// Closed docs' keys not let go of yet (a closed doc's events find no doc meanwhile).
     leaving: VecDeque<(DocId, hash_map::IntoIter<String, String>)>,
     /// What this wake may still handle.
     budget: usize,
     gone: Gone,
     next_id: u64,
+    /// Events accepted so far.
+    events: u64,
+    /// Events of files doc keys were taken up for after the event, which their doc did not hear,
+    /// as that doc sees them.
+    missed: Vec<(DocId, WatchEvent)>,
 }
 
 impl WatchShare {
@@ -85,6 +101,8 @@ impl WatchShare {
             budget: CHANGES_PER_WAKE,
             gone: Gone::default(),
             next_id: 0,
+            events: 0,
+            missed: Vec::new(),
         }
     }
 
@@ -114,12 +132,11 @@ impl WatchShare {
             .count();
         self.files.reserve(watches);
         self.keys.entry(doc).or_default().reserve(watches);
-        match self.queued.entry(doc) {
-            std::collections::btree_map::Entry::Vacant(e) => {
-                e.insert(VecDeque::from(changes));
-            }
-            std::collections::btree_map::Entry::Occupied(mut e) => e.get_mut().extend(changes),
-        }
+        let batch = Batch {
+            since: self.events,
+            changes: VecDeque::from(changes),
+        };
+        self.queued.entry(doc).or_default().push_back(batch);
         self.pump();
     }
 
@@ -139,6 +156,13 @@ impl WatchShare {
         self.watch.apply(out);
     }
 
+    /// The last event of each file a doc key was taken up for since the last call, when the
+    /// event came after the doc's catalog asked for it: the doc did not hear it. As the doc
+    /// sees it (its key and watch id).
+    pub fn take_missed(&mut self) -> Vec<(DocId, WatchEvent)> {
+        std::mem::take(&mut self.missed)
+    }
+
     /// What came off the maps since the last call, for the caller to drop off the control
     /// thread (`None`: nothing).
     pub fn take_gone(&mut self) -> Option<Box<dyn Send>> {
@@ -148,7 +172,11 @@ impl WatchShare {
     /// Changes and closed docs' keys still waiting for a wake.
     #[cfg(test)]
     pub fn waiting(&self) -> usize {
-        self.queued.values().map(VecDeque::len).sum::<usize>()
+        self.queued
+            .values()
+            .flatten()
+            .map(|b| b.changes.len())
+            .sum::<usize>()
             + self.leaving.iter().map(|(_, k)| k.len()).sum::<usize>()
     }
 
@@ -184,23 +212,30 @@ impl WatchShare {
                 break;
             };
             let doc = *queued.key();
-            let Some(change) = queued.get_mut().pop_front() else {
+            let batches = queued.get_mut();
+            let Some(batch) = batches.front_mut() else {
                 queued.remove();
                 continue;
             };
+            let since = batch.since;
+            let Some(change) = batch.changes.pop_front() else {
+                batches.pop_front();
+                continue;
+            };
             self.budget -= 1;
-            self.change(doc, change, &mut out);
+            self.change(doc, change, since, &mut out);
         }
         self.queued.retain(|_, q| !q.is_empty());
         self.watch.apply(out);
     }
 
-    fn change(&mut self, doc: DocId, change: KeyChange, out: &mut Vec<KeyChange>) {
+    /// One of doc `doc`'s changes, handed over when the share had counted `since` events.
+    fn change(&mut self, doc: DocId, change: KeyChange, since: u64, out: &mut Vec<KeyChange>) {
         match change {
             KeyChange::Reset => self.reset_doc(doc, out),
             KeyChange::Watch { key, path, id } => {
                 self.unsubscribe(doc, &key, out);
-                self.subscribe(doc, key, path, id, out);
+                self.subscribe(doc, key, path, id, since, out);
             }
             KeyChange::Unwatch { key } => self.unsubscribe(doc, &key, out),
             KeyChange::ProbeFailed { key, id, missing } => {
@@ -263,6 +298,7 @@ impl WatchShare {
         doc_key: String,
         path: PathBuf,
         id: u64,
+        since: u64,
         out: &mut Vec<KeyChange>,
     ) {
         let mut key = path.to_string_lossy().into_owned();
@@ -284,9 +320,17 @@ impl WatchShare {
                     path,
                     id: self.next_id,
                     subs: BTreeMap::new(),
+                    last_event: None,
                 })
             }
         };
+        // The file had an event after the doc's catalog asked for it (and probed it): the doc
+        // did not hear it, and the watch will not repeat it.
+        if let Some((n, event)) = &file.last_event
+            && *n > since
+        {
+            self.missed.push((doc, retarget(event, &doc_key, id)));
+        }
         file.subs.insert((doc, doc_key.clone()), id);
         self.keys.entry(doc).or_default().insert(doc_key, key);
     }
@@ -311,12 +355,18 @@ impl WatchShare {
         };
         let mut out = Vec::new();
         for event in events {
-            let Some(file) = self.files.get(event.key()).filter(|f| f.id == event.id()) else {
+            let Some(file) = self
+                .files
+                .get_mut(event.key())
+                .filter(|f| f.id == event.id())
+            else {
                 continue;
             };
+            self.events += 1;
             for ((doc, key), id) in &file.subs {
                 out.push((*doc, retarget(&event, key, *id)));
             }
+            file.last_event = Some((self.events, event));
         }
         out
     }

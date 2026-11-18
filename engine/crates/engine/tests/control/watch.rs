@@ -631,3 +631,131 @@ fn a_file_that_appears_after_its_probe_failed_unbreaks_its_cue() {
         assert!(!s.watch_pass());
     }
 }
+
+// ----- a doc taking up a file another doc watches -----
+
+static PROBED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// [`fake_probe`] that notes each path it probes in [`PROBED`].
+fn noting_probe(path: &Path) -> Result<Probed, MediaError> {
+    PROBED.lock().unwrap().push(path.to_path_buf());
+    fake_probe(path)
+}
+
+fn probes_of(path: &Path) -> usize {
+    PROBED.lock().unwrap().iter().filter(|p| *p == path).count()
+}
+
+/// Doc A open on `shared` (cue 1), then doc B opened beside it on 2,000 files of its own and
+/// `shared` last (cue 9000), its probes answered: the media watch takes up B's files a few
+/// hundred a wake, so `shared` is not yet B's.
+fn shared_beside_a_big_doc(
+    fs: &FakeFs,
+    shared: &Path,
+) -> (OfflineShow, openlab_core::protocol::DocId) {
+    fs.put(shared, 1);
+    let a = workspace(vec![audio(1, shared, 0)]);
+    let mut c = manual(&a, fs);
+    c.probe = noting_probe;
+    let mut s = show_with(a, c);
+    assert!(!s.watch_pass());
+    let dir = shared.parent().unwrap();
+    let mut cues: Vec<_> = (0..2000)
+        .map(|n| {
+            let p = dir.join(format!("own-{n:04}.wav"));
+            fs.put(&p, 1);
+            audio(10_000 + n, &p, 0)
+        })
+        .collect();
+    cues.push(audio(9000, shared, 0));
+    let mut b = workspace(cues);
+    b.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(7));
+    let doc = s
+        .open_doc(openlab_engine::control::DocSource::Workspace(Box::new(b)))
+        .unwrap();
+    s.settle_media();
+    assert!(
+        s.control().watched_files() < 2001,
+        "the share has not taken up all of B's files yet"
+    );
+    (s, doc)
+}
+
+/// Passes and wakes until the watch has every file and has seen the change.
+fn follow(s: &mut OfflineShow) {
+    for _ in 0..20 {
+        s.watch_pass();
+        s.tick();
+    }
+    s.settle_media();
+    s.tick();
+}
+
+fn problems_in(s: &OfflineShow, doc: openlab_core::protocol::DocId, n: u128) -> Vec<CueProblem> {
+    s.control()
+        .doc(doc)
+        .unwrap()
+        .engine()
+        .problems(id(n))
+        .to_vec()
+}
+
+#[test]
+fn a_doc_that_takes_up_a_watched_file_late_hears_it_went_missing() {
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-gone/shared.wav");
+    let (mut s, b) = shared_beside_a_big_doc(&fs, &shared);
+    // The file goes before B's change for it was handled: only A hears it at once.
+    fs.remove(&shared);
+    follow(&mut s);
+    assert_eq!(s.control().watched_files(), 2001);
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::MediaMissing { .. }]
+    ));
+    assert!(
+        matches!(
+            problems_in(&s, b, 9000)[..],
+            [CueProblem::MediaMissing { .. }]
+        ),
+        "B hears the shared file is gone: {:?}",
+        problems_in(&s, b, 9000)
+    );
+}
+
+#[test]
+fn a_doc_that_takes_up_a_watched_file_late_probes_it_again_once_replaced() {
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-replaced/shared.wav");
+    let (mut s, _) = shared_beside_a_big_doc(&fs, &shared);
+    assert_eq!(probes_of(&shared), 2, "one probe per doc");
+    // Another file takes its place before B's change for it was handled.
+    fs.put(&shared, 2);
+    follow(&mut s);
+    assert_eq!(probes_of(&shared), 4, "each doc probes the new file");
+}
+
+#[test]
+fn a_doc_closing_while_another_takes_up_their_shared_file_leaves_it_heard() {
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-closing/shared.wav");
+    let (mut s, b) = shared_beside_a_big_doc(&fs, &shared);
+    let a = s.control().doc_ids()[0];
+    // A closes while B's files are still being taken up, and the file goes.
+    s.close_doc(a, false).unwrap();
+    fs.remove(&shared);
+    follow(&mut s);
+    assert_eq!(
+        s.control().watched_files(),
+        2001,
+        "B's own and the shared file"
+    );
+    assert!(
+        matches!(
+            problems_in(&s, b, 9000)[..],
+            [CueProblem::MediaMissing { .. }]
+        ),
+        "{:?}",
+        problems_in(&s, b, 9000)
+    );
+}

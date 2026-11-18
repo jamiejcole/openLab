@@ -57,6 +57,7 @@ Design: path first, no file-watching API, no OS bookmarks (opaque per-OS blobs i
 - One doc letting go of a file (edit, reset, close) leaves the watch running for the others. An event goes to every doc key that names its file, under that doc's key and id; an event of an earlier watch id of the file is dropped.
 - A doc's reset is the watch's own `Reset` when no other doc watches anything; otherwise only that doc's files are let go.
 - Paced: one control wake handles at most `CHANGES_PER_WAKE` (256) key changes and closed-doc keys together, the rest in the wakes after, in order (`pump` at the start of `watch_tick`, `end_wake` at the end of `Control::tick`). A doc opening beside another has its 2,000 files watched over eight wakes.
+  A doc key taken up for a file another doc already watches, after the file had an event its change was handed over before, gets that file's last event (`take_missed`, handled in `watch_tick` like a batch's): the doc's probe may predate it and the watch does not repeat an event. A file nobody watched yet needs none: its first stat reports it gone.
   A close (`leave`) only queues the doc's keys (unless no other doc watches anything: then the watch's `Reset`) and drops its changes not handled yet; the wakes after let go of them, and a closed doc's events meanwhile find no doc. Keys are kept per doc, so a close takes them off in one step. What comes off the maps goes to the document worker to be dropped (`take_gone`).
 - The watch's notices and logs are the engine's: every doc lists the stalled-volume notices.
 
