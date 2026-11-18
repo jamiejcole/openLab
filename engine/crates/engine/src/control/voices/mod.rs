@@ -56,9 +56,10 @@ pub struct Effects {
     pub reprobe: Vec<String>,
     /// Lines for the show log at `warn`.
     pub warnings: Vec<String>,
-    /// Voices the disk starved that play on from a sample, later than planned by that many
-    /// frames (run, sample, frames): a Video cue's picture follows its sound.
-    pub late: Vec<(RunId, SampleTime, u64)>,
+    /// Voices that play on from a sample later than planned by that many frames (run, sample,
+    /// frames; negative: earlier), the disk having starved them or their device's clock having
+    /// drifted from the master's: a Video cue's picture follows its sound.
+    pub late: Vec<(RunId, SampleTime, i64)>,
     /// What a Video cue's picture tells of its run's length, end and devamp: handed on at once
     /// (`None`) or once that sample has passed. Kept apart from what the voices report, so
     /// those reports of a Video cue's voice can be dropped wherever they were made: the
@@ -458,6 +459,13 @@ enum PrepError {
 impl Voices {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The voice of run `run` while it plays.
+    pub fn playing(&self, run: RunId) -> Option<VoiceId> {
+        let id = *self.by_run.get(&run)?;
+        let r = self.recs.get(&id)?;
+        matches!(r.phase, Phase::Playing).then_some(id)
     }
 
     /// Voice records alive (loaded, waiting, playing or kept for a resume).

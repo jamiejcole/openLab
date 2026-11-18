@@ -361,6 +361,7 @@ impl DocCx<'_> {
         self.expire_held_pictures(now, hold, &mut fx);
         self.start_waiting_pictures(now, &mut fx);
         self.start_seeks(now, &mut fx);
+        self.follow_sound_clocks(now, &mut fx);
         self.follow(fx, now);
         // A move to another device given up on a slow disk is tried again when due.
         if self.doc.voices.take_due_moves(now) {

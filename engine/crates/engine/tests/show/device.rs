@@ -69,16 +69,26 @@ struct Live {
     rate: u32,
     /// Time it has rendered since it opened, in frames at [`RATE`].
     elapsed: u64,
+    /// How far its clock runs off the others', in parts per million (`Fake::set_drift`), and
+    /// the time and frames it had rendered when that was set.
+    drift: (i64, u64, u64),
+    /// Frames it has rendered at its own rate.
+    done: u64,
 }
 
 impl Live {
     /// Frames at its own rate in a callback of `frames` at [`RATE`], so over many callbacks it
-    /// renders as much time as a device at [`RATE`] does, to within a frame.
+    /// renders as much time as a device at [`RATE`] does, to within a frame (with a drift, that
+    /// much more or less).
     fn frames_in(&mut self, frames: usize) -> usize {
-        let at = |t: u64| t * u64::from(self.rate) / u64::from(RATE);
-        let before = at(self.elapsed);
+        let (ppm, since, base) = self.drift;
         self.elapsed += frames as u64;
-        usize::try_from(at(self.elapsed) - before).unwrap()
+        let per_million = i128::from(1_000_000 + ppm);
+        let span = i128::from(self.elapsed - since) * i128::from(self.rate) * per_million;
+        let at = base + u64::try_from(span / (i128::from(RATE) * 1_000_000)).unwrap();
+        let n = at - self.done;
+        self.done = at;
+        usize::try_from(n).unwrap()
     }
 }
 
@@ -234,6 +244,15 @@ impl Fake {
     /// Streams opened from now on report `frames` per callback, whatever they really make.
     pub fn report_block(&self, frames: Option<u32>) {
         self.state.lock().unwrap().reported_block = Some(frames);
+    }
+
+    /// Device `id`'s clock runs `ppm` parts per million fast (slow when negative) against the
+    /// others' from now on: each callback it renders that much more (less) than its rate says.
+    pub fn set_drift(&self, id: &str, ppm: i64) {
+        let mut s = self.state.lock().unwrap();
+        for l in s.live.iter_mut().filter(|l| l.id == id) {
+            l.drift = (ppm, l.elapsed, l.done);
+        }
     }
 
     /// Streams opened from now on report this sample rate.
@@ -394,6 +413,8 @@ impl DeviceLayer for FakeLayer {
             rendering,
             rate,
             elapsed: 0,
+            drift: (0, 0, 0),
+            done: 0,
         });
         let block = s
             .device_blocks
@@ -849,6 +870,31 @@ impl DeviceShow {
         };
         self.settle_media();
         doc
+    }
+
+    /// Sends `message`, then handles answers and ticks (no callback, so sample time stands)
+    /// until `done` holds: for a request another thread answers, such as a stage probe.
+    pub fn send_until(
+        &mut self,
+        message: ClientMessage,
+        done: impl Fn(&Control) -> bool,
+    ) -> Vec<ServerMessage> {
+        let (tx, mut rx) = reply_channel();
+        self.pump_inbox();
+        let _ = self.control.handle(Inbox::Client { message, reply: tx });
+        let deadline = std::time::Instant::now() + PICTURE_OPEN_WAIT;
+        loop {
+            self.pump_inbox();
+            self.control.tick();
+            if done(&self.control) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no answer came");
+            if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
+                let _ = self.control.handle(msg);
+            }
+        }
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     /// A message for doc `doc`; the replies.

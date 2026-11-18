@@ -6225,29 +6225,21 @@ fn a_movie_with_several_audio_tracks_plays_the_one_chosen() {
     assert!(!missing(&s));
 }
 
-/// Flow 7's measure over a movie `length` seconds long whose frames carry their number and
+/// Flow 7's measure, over a movie for each case `(frames a second, the track's rate, the
+/// device's rate, its block, the movie's length in seconds)` whose frames carry their number and
 /// whose track says where it is: the frame on the stage and the sound in the rendered output
-/// are less than one frame period apart at every look (the start, every `every` seconds, the
-/// last second), at 24, 25, 30 and 60 frames a second and with a 48 kHz track on a 44.1 kHz
-/// device; the cue ends once, the last frame and the sound's last sample together, and its
-/// length told is the movie's.
-fn in_step_throughout(length: u16, every: u16) {
+/// are less than one frame period apart at every look (the start, every minute, or every sixth
+/// of a shorter movie, and the last second); the cue ends once, the last frame and the sound's
+/// last sample together, and its length told is the movie's.
+fn in_step_throughout(cases: &[(u16, u32, u32, u64, u16)]) {
     let dir = tempfile::tempdir().unwrap();
-    // (frames a second, the track's rate, the device's rate and block)
-    let cases: [(u16, u32, u32, u64); 5] = [
-        (24, 8_000, RATE, BLOCK),
-        (25, 8_000, RATE, BLOCK),
-        (30, 8_000, RATE, BLOCK),
-        (60, 8_000, RATE, BLOCK),
-        (25, 48_000, 44_100, 512),
-    ];
-    let seconds = f64::from(length);
-    for (fps, track, rate, block) in cases {
-        let what = format!("{fps} fps, {track} Hz on {rate} Hz");
+    for &(fps, track, rate, block, length) in cases {
+        let what = format!("{fps} fps, {track} Hz on {rate} Hz, {length} s");
         let sound = format!("pcm:2:{track}");
         let movie = sound_movie!(dir.path(), "long.mov", (fps * length, fps), &sound);
         let ws = workspace(vec![sounding_cue(1, &movie)]);
         let mut s = video_show_rate(ws, rate, block, &[], |_| {}, |_| {});
+        let seconds = f64::from(length);
         assert_eq!(
             told_lengths(&s, 1),
             (Some(seconds), Some(seconds)),
@@ -6255,10 +6247,11 @@ fn in_step_throughout(length: u16, every: u16) {
         );
         let at = go(&mut s);
         let sample = |seconds: f64| at + (seconds * f64::from(rate)).round() as u64;
+        let every = usize::from((length / 6).clamp(1, 60));
         let mut looks = vec![0.5];
         looks.extend(
-            (every..length)
-                .step_by(usize::from(every))
+            (u16::try_from(every).unwrap()..length)
+                .step_by(every)
                 .map(|t| f64::from(t) + 0.5),
         );
         looks.push(seconds - 0.5);
@@ -6288,22 +6281,23 @@ fn in_step_throughout(length: u16, every: u16) {
     }
 }
 
-/// Flow 7 over thirty seconds of movie, looked at every five; the ten-minute run is
-/// [`picture_and_sound_stay_within_one_frame_of_each_other_for_ten_minutes`].
+/// Flow 7 as written: ten minutes of movie at 24, 25, 30 and 60 frames a second, looked at
+/// each minute and in its last second, and with a track at another rate than the device's.
+/// That one is ten minutes of a track at 160/147 of its device's rate, the ratio of 48 kHz to
+/// 44.1 kHz at a fifth of the samples: the conversion (the resampler's chunks are sized by the
+/// ratio alone, and the plan is rescaled by it) is the same, and a debug build converts 48 kHz
+/// at about six times real time, too slow for ten minutes here. The 48 kHz track on a 44.1 kHz
+/// device itself plays thirty seconds.
 #[test]
 fn picture_and_sound_stay_within_one_frame_of_each_other() {
-    in_step_throughout(30, 5);
-}
-
-/// Flow 7 as written: ten minutes of movie, looked at each minute. Minutes of rendering, so
-/// not part of `cargo test`; CI runs it with the release performance gates (not on pull
-/// requests):
-///
-/// `cargo test --release -p openlab-video --test video_cues -- --ignored ten_minutes`
-#[test]
-#[ignore = "ten minutes of movie at five rates: run in release with -- --ignored"]
-fn picture_and_sound_stay_within_one_frame_of_each_other_for_ten_minutes() {
-    in_step_throughout(600, 60);
+    in_step_throughout(&[
+        (24, 8_000, RATE, BLOCK, 600),
+        (25, 8_000, RATE, BLOCK, 600),
+        (30, 8_000, RATE, BLOCK, 600),
+        (60, 8_000, RATE, BLOCK, 600),
+        (25, 9_600, 8_820, 512, 600),
+        (25, 48_000, 44_100, 512, 30),
+    ]);
 }
 
 /// A show of `ws` on stand-in audio devices (the first is the primary) with the real stage
@@ -6600,6 +6594,151 @@ fn a_video_cues_sound_follows_its_patch_to_another_device() {
     assert_eq!(state(&s), CueState::Idle);
     assert_eq!(s.control().pictures_live(), 0);
     assert_eq!(s.control().live_voices(), 0);
+}
+
+/// The frame stage 1 shows in a show on stand-in devices (its barcode), or `None`.
+fn device_shown(s: &mut show::device::DeviceShow) -> Option<u16> {
+    let id = s.request_id();
+    let request = Request::StageProbe {
+        stage: stage_id(),
+        points: vec![[0.5, 0.5]],
+    };
+    let replies = s.send_until(ClientMessage::Request { id, request }, |c| {
+        c.stages_settled()
+    });
+    let outcome = replies.into_iter().find_map(|m| match m {
+        ServerMessage::Result { id: got, outcome } if got == id => Some(outcome),
+        _ => None,
+    });
+    match outcome {
+        Some(Outcome::Ok(body)) => match body.data {
+            Some(ResultData::StageProbe { frame, .. }) => frame,
+            other => panic!("{other:?}"),
+        },
+        other => panic!("no answer to the probe: {other:?}"),
+    }
+}
+
+/// Picture and sound are within one frame of each other now, the sound heard on the stand-in
+/// device `id` (output `name`): the frame on the stage is the one whose time that sound has
+/// reached on the sample the stage shows (a block ahead of the last one heard), as [`in_step`]
+/// reads it for the offline driver.
+fn device_in_step(s: &mut show::device::DeviceShow, name: &str, id: &str, fps: f64, what: &str) {
+    let heard = s.control().output_mixer(name).unwrap().samples_rendered() - 1;
+    let j = usize::try_from(heard).unwrap();
+    let at = |channel| *s.device_channel(id, channel).get(j).unwrap();
+    let (rise, second) = (at(0), at(1));
+    let second = (f64::from(second) * 2048.0).round() - 1.0;
+    assert!(second >= 0.0, "{what}: no sound");
+    let ahead = (s.now() - s.control().rendered() + 1) as f64 / f64::from(RATE);
+    let sound = second + f64::from(rise) * 2.0 + ahead;
+    let frame = device_shown(s).unwrap_or_else(|| panic!("{what}: no picture"));
+    let apart = sound - f64::from(frame) / fps;
+    assert!(
+        (-0.001..1.0 / fps + 0.001).contains(&apart),
+        "{what}: frame {frame} with the sound at {sound} s ({apart} s apart)"
+    );
+}
+
+/// Flow 7 for a cue whose patch is on a second device that is not the clock device, that
+/// device's clock running 100 ppm fast against the master's (#729): ten minutes of movie, and
+/// at the start, each minute and the last second the frame on the stage is the one whose time
+/// the sound heard on that device has reached (less than a frame period apart). By the end the
+/// device has played 60 ms more than the master clock has counted, more than a frame at 25 fps:
+/// the picture follows its sound, not the master clock. The cue ends once, picture and sound.
+#[test]
+fn picture_and_sound_stay_within_one_frame_on_a_second_device_100_ppm_off() {
+    const LENGTH: u16 = 600;
+    const FPS: u16 = 25;
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "long.mov", (FPS * LENGTH, FPS), "pcm:2:8000");
+    let patch_b = PatchId(Uuid::from_u128(902));
+    let mut cue = sounding_cue(1, &movie);
+    if let CueKind::Video { sound, .. } = &mut cue.kind {
+        sound.patch = Some(patch_b);
+    }
+    let mut ws: Workspace = workspace(vec![cue]);
+    let mut second = ws.patches[0].clone();
+    second.id = patch_b;
+    ws.patches.push(second);
+    let two = [("fake:1", "Fake 1", RATE), ("fake:2", "Fake 2", RATE)];
+    let mut s = device_video_show(ws, &two, &[(patch_id(), "Fake 1"), (patch_b, "Fake 2")]);
+    s.wait_output("Fake 2");
+    s.fake.set_drift("fake:2", 100);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    let local = |s: &show::device::DeviceShow| {
+        let mixer = s.control().output_mixer("Fake 2").unwrap();
+        mixer.samples_rendered()
+    };
+    let (master0, local0) = (s.control().rendered(), local(&s));
+    let at = s.now();
+    s.transport(TransportAction::Start { cue: id(1) });
+    let sample = |seconds: f64| at + (seconds * f64::from(RATE)).round() as u64;
+    let seconds = f64::from(LENGTH);
+    let mut looks = vec![0.5];
+    looks.extend((60..LENGTH).step_by(60).map(|t| f64::from(t) + 0.5));
+    looks.push(seconds - 0.5);
+    for t in looks {
+        while s.control().rendered() < sample(t) {
+            s.step();
+        }
+        device_in_step(
+            &mut s,
+            "Fake 2",
+            "fake:2",
+            f64::from(FPS),
+            &format!("{t} s"),
+        );
+    }
+    // The device did run fast: 100 ppm of ten minutes is 60 ms.
+    let ran = (local(&s) - local0) as f64 - (s.control().rendered() - master0) as f64;
+    let ran = ran / f64::from(RATE);
+    assert!((0.055..0.065).contains(&ran), "{ran} s ahead");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    while s.control().rendered() < sample(seconds) + 4 * BLOCK {
+        s.step();
+    }
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().pictures_live(), 0);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+/// A second device that was away (its counter stood while the master clock ran on) is no
+/// drift: a Video cue started on it once it is back is in step from its first second, its
+/// picture never moved by the time the device was away.
+#[test]
+fn a_video_cue_on_a_second_device_back_from_a_loss_starts_in_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:8000");
+    let patch_b = PatchId(Uuid::from_u128(902));
+    let mut cue = sounding_cue(1, &movie);
+    if let CueKind::Video { sound, .. } = &mut cue.kind {
+        sound.patch = Some(patch_b);
+    }
+    let mut ws: Workspace = workspace(vec![cue]);
+    let mut second = ws.patches[0].clone();
+    second.id = patch_b;
+    ws.patches.push(second);
+    let two = [("fake:1", "Fake 1", RATE), ("fake:2", "Fake 2", RATE)];
+    let mut s = device_video_show(ws, &two, &[(patch_id(), "Fake 1"), (patch_b, "Fake 2")]);
+    s.wait_output("Fake 2");
+    s.run(samples(1.0));
+    s.fake.unplug("fake:2", true);
+    s.settle_devices();
+    s.run(samples(1.0));
+    s.fake.plug(show::device::listed("fake:2", "Fake 2", 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.wait_output("Fake 2");
+    s.run(samples(0.5));
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    s.transport(TransportAction::Start { cue: id(1) });
+    let at = s.control().rendered();
+    for t in [0.5, 1.5, 2.5, 3.5] {
+        while s.control().rendered() < at + samples(t) {
+            s.step();
+        }
+        device_in_step(&mut s, "Fake 2", "fake:2", 25.0, &format!("{t} s"));
+    }
 }
 
 /// The waveform of a Video cue with sound is that of the audio track it plays, over the

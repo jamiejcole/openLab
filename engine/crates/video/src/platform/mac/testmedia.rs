@@ -625,6 +625,13 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
         // second of a sound track): the writer interleaves its tracks and decides itself which
         // may run ahead.
         let total = |s: &Sound| u64::from(frames) * u64::from(s.rate) / fps as u64;
+        // The card below its barcode is the same in every frame: made once, in the writer's
+        // byte order (ProRes 4444 carries alpha: the right half below the barcode at half
+        // alpha, the colour itself, as a straight-alpha file holds it).
+        let mut card_bgra = card_rgba(0, kind == "prores4444");
+        for p in card_bgra.as_chunks_mut::<4>().0 {
+            p.swap(0, 2);
+        }
         let mut frame = 0u16;
         let mut idle = 0u32;
         while frame < frames
@@ -641,14 +648,8 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
                         input.appendSampleBuffer(&sample)
                     }
                     _ => {
-                        // ProRes 4444 carries alpha: the card's right half below the barcode
-                        // at half alpha (straight: the colour itself, as a straight-alpha file
-                        // holds it).
-                        let mut px = card_rgba(frame, kind == "prores4444");
-                        for p in px.as_chunks_mut::<4>().0 {
-                            p.swap(0, 2);
-                        }
-                        let buffer = pixel_buffer(&px)?;
+                        card::barcode(&mut card_bgra, frame);
+                        let buffer = pixel_buffer(&card_bgra)?;
                         adaptor.appendPixelBuffer_withPresentationTime(
                             &buffer,
                             CMTime::new(i64::from(frame), fps),
