@@ -4735,6 +4735,7 @@ final class CueListDrawingTests: XCTestCase {
     private let ten: ModelID = "00000000-0000-0000-0000-00000000000a"
     private let five: ModelID = "00000000-0000-0000-0000-0000000000f2"
     private let memo: ModelID = "00000000-0000-0000-0000-0000000000f3"
+    private let loopGroup: ModelID = "00000000-0000-0000-0000-0000000000f4"
     private var window: NSWindow?
 
     override func tearDown() async throws {
@@ -4743,8 +4744,8 @@ final class CueListDrawingTests: XCTestCase {
     }
 
     /// Audio cue 1 (10 s), Audio cue 2 (5 s), Memo cue 3: the Demo show with its cues replaced.
-    private func timingRig(loopsForever: Bool = false) async throws -> Rig {
-        let (five, memo) = (self.five, self.memo)
+    private func timingRig(loopsForever: Bool = false, loopingGroup: Bool = false) async throws -> Rig {
+        let (five, memo, loopGroup) = (self.five, self.memo, self.loopGroup)
         return try await Rig.open(
             "Demo",
             edit: { folder in
@@ -4771,7 +4772,28 @@ final class CueListDrawingTests: XCTestCase {
                     note.set("number", .string("3"))
                     note.set("name", .string("Note"))
                     note.set("kind", .object(["type": .string("memo")]))
-                    list.set("cues", .array([one, two, note]))
+                    if loopingGroup {
+                        // A pre-show loop: a looping playlist group has no end to count down to.
+                        var group = note
+                        group.set("id", .string(loopGroup.raw))
+                        group.set("number", .string("4"))
+                        group.set("name", .string("Pre-show"))
+                        // A Wait child keeps the group busy without mixing audio for an hour of device time.
+                        var child = one
+                        child.set("kind", .object(["type": .string("wait"), "duration": .double(10)]))
+                        group.set(
+                            "kind",
+                            .object([
+                                "type": .string("group"),
+                                "mode": .object([
+                                    "type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(false),
+                                ]),
+                                "children": .array([child]),
+                            ]))
+                        list.set("cues", .array([group, two, note]))
+                    } else {
+                        list.set("cues", .array([one, two, note]))
+                    }
                     var lists = ws["cue_lists"]?.arrayValue ?? []
                     lists[0] = list
                     ws.set("cue_lists", .array(lists))
@@ -5774,6 +5796,56 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { rig.store.cueStates[self.ten]?.state != .running }
         XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "after a stop")
     }
+
+    /// Flow (#761): a looping pre-show group running past an hour in a list squeezed to its least width shows
+    /// its whole running time; the columns widen once when the shown time reaches an hour, not on every tick
+    /// before it, and narrow again after a stop.
+    func testAGroupLoopingPastAnHourShowsItsWholeTimeAtTheLeastWidth() async throws {
+        // The engine's device clock runs through the hour (a little over a minute of wall time).
+        executionTimeAllowance = 180
+        let rig = try await timingRig(loopingGroup: true)
+        let h = try await harness(rig)
+        let window = try XCTUnwrap(self.window)
+        window.setContentSize(NSSize(width: 520, height: 400))
+        window.layoutIfNeeded()
+        func duration() throws -> NSTableColumn {
+            try XCTUnwrap(h.spy.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration")))
+        }
+        let narrow = try duration().width
+        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await rig.advance(2000)
+        await assertEventually { (rig.store.progress[self.loopGroup]?.elapsed ?? 0) >= 1999 }
+        XCTAssertNil(rig.store.progress[loopGroup]?.remaining, "a looping group has no end")
+        var widths = Set<CGFloat>()
+        for _ in 0..<4 {
+            try await rig.advance(100)
+            window.layoutIfNeeded()
+            widths.insert(try duration().width)
+        }
+        XCTAssertEqual(widths, [narrow], "ticks below the hour leave the column alone")
+        try await rig.advance(1400)
+        await assertEventually { (rig.store.progress[self.loopGroup]?.elapsed ?? 0) >= 3790 }
+        window.layoutIfNeeded()
+        let cell = try XCTUnwrap(h.cell("duration", loopGroup))
+        let shown = cell.label.stringValue
+        XCTAssertTrue(shown.hasPrefix("1:"), "the running time is past an hour: \(shown)")
+        let wide = try duration().width
+        XCTAssertLessThanOrEqual(
+            cell.label.attributedStringValue.size().width, wide - 4, "\(shown) is drawn whole at \(wide) pt")
+        XCTAssertGreaterThan(wide, narrow, "the column widened for it")
+        try await rig.advance(30)
+        window.layoutIfNeeded()
+        XCTAssertEqual(try duration().width, wide, "and not again on later ticks")
+        guard case .success = await rig.store.transport(.stop(cue: loopGroup, fadeOut: nil)) else {
+            return XCTFail("stop")
+        }
+        try await rig.advance(1)
+        await assertEventually { self.rig(rig, isStopped: self.loopGroup) }
+        window.layoutIfNeeded()
+        XCTAssertEqual(try duration().width, narrow, "narrow again once nothing shown needs the hour")
+    }
+
+    private func rig(_ rig: Rig, isStopped id: ModelID) -> Bool { rig.store.progress[id] == nil }
 
     func testRunningCueCountsAndShowsProgressInTheDurationCell() async throws {
         let rig = try await timingRig()
