@@ -1627,7 +1627,8 @@ final class CueTargetFlowTests: XCTestCase {
         await wc.editor.undo()
         await assertEventually { self.targetCell(Self.fade) == "?" }
         assertNoTargetShown()
-        XCTAssertEqual(nameCell(Self.fade), CueKindStyle.kindLabel("fade"))
+        // With no target and no name the Fade has no default name: its Name cell is empty.
+        XCTAssertEqual(nameCell(Self.fade), "")
         await wc.editor.redo()
         await assertEventually { self.targetCell(Self.fade) == "1" }
         XCTAssertEqual(inspector.targetNote.stringValue, "intro")

@@ -310,6 +310,9 @@ final class InspectorDurationTests: XCTestCase {
         else { return XCTFail("go") }
         await assertEventually("the target is loaded") { self.rig.store.cueStates[wait]?.state == .loaded }
         guard case .success = await rig.store.transport(.start(cue: wait)) else { return XCTFail("start") }
+        // The load's own progress message (the loaded cue's time) went out on this sample: the
+        // running cue's first comes a report period of device time later.
+        try? await rig.advance(0.1)
         // Loaded 8 s in: the row counts from 8 s with 2 s left, not from the top.
         await assertEventually("the row's progress") { self.rig.store.progress[wait] != nil }
         let shown = rig.store.progress[wait]
