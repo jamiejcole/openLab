@@ -548,8 +548,9 @@ pub(super) struct DocFile {
     pub(super) notices: Vec<WireWarning>,
     /// The broadcast `snapshot` did not fit the outbound channel: send a fresh one when it does.
     pub(super) resend_snapshot: bool,
-    /// Saves into another folder whose prepared copy and index were taken up (a cost measure:
-    /// the others were worked out again on the control thread).
+    /// Saves into another folder whose prepared copy and index were taken up (the others were
+    /// worked out again on the control thread). The wake that takes one up leaves every doc's
+    /// key changes to the next wake ([`Control::tick`]).
     pub(super) moves_taken_up: u64,
 }
 

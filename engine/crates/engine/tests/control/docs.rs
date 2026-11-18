@@ -1668,8 +1668,8 @@ fn the_snapshot_after_a_save_as_elsewhere_is_the_docs_workspace() {
 
 /// The wake that answers a Save As into another folder takes up the copy and the new catalog but
 /// leaves handing its new files to the media watch share to the next wake, so the answer's wake
-/// stays short; the share has them after that one, and a file that goes from the new folder is
-/// heard.
+/// stays short; the share has them after that one (the file is watched once). That a file gone
+/// in between is still heard is `a_shared_file_gone_before_the_new_keys_of_a_moved_doc_are_handed_over_is_heard_by_both`.
 #[test]
 fn a_save_as_elsewhere_hands_its_new_files_to_the_watch_the_wake_after_the_answer() {
     let (a, _b, mut r, b_show) = two_relative_cues();

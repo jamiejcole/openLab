@@ -100,6 +100,12 @@ impl Control {
         self.eng.watch.watch_mut().manual_pass()
     }
 
+    /// [`Self::watch_pass`] without first handing the catalogs' key changes to the watch (a test
+    /// of a batch the watch thread made before they were handed over).
+    pub fn watch_pass_unfollowed(&mut self) -> Option<WatchBatch> {
+        self.eng.watch.watch_mut().manual_pass()
+    }
+
     /// Watch batches of the current generation taken so far (a cost measure).
     pub fn watch_batches(&self) -> u64 {
         self.eng.watch.watch().batches()
