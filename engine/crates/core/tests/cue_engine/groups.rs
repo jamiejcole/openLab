@@ -1070,7 +1070,11 @@ fn the_mark_passes_over_a_child_whose_panic_trigger_stops_it_with_no_panic_time(
 fn start_stops_child_10_and_plays_11(rig: &mut Rig, now: SampleTime) {
     assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
     let go = rig.start(now, 1);
-    assert_eq!(rig.state(10), CueState::Idle, "the panic stopped it at once");
+    assert_eq!(
+        rig.state(10),
+        CueState::Idle,
+        "the panic stopped it at once"
+    );
     assert_eq!(
         running_at(&go, 11),
         Some(now),

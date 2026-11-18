@@ -319,7 +319,12 @@ impl CueEngine {
 /// stop fade that ends sooner). Anything else stops at once: a pre-wait, a paused
 /// or broken run, a cue with no voice playing (a Wait, a Fade, a Memo), a group with no child
 /// fading out, a voice that would only start on or after `end`.
-pub(super) fn panic_keeps(run: &Run, busy_children: bool, now: SampleTime, end: SampleTime) -> bool {
+pub(super) fn panic_keeps(
+    run: &Run,
+    busy_children: bool,
+    now: SampleTime,
+    end: SampleTime,
+) -> bool {
     if run.is_broken() || run.paused_at.is_some() || !matches!(run.phase, Phase::Action { .. }) {
         return false;
     }

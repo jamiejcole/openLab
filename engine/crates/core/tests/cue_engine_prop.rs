@@ -3550,10 +3550,7 @@ fn a_playlists_mark_passes_over_a_child_in_its_pre_wait_that_its_panic_stops_at_
                 second: 8,
                 ..spec(2)
             },
-            Spec {
-                post: 2,
-                ..spec(1)
-            },
+            Spec { post: 2, ..spec(1) },
         ],
         // Start the sound, then let a little time pass inside its pre-wait.
         steps: vec![
