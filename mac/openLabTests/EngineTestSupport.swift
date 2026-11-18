@@ -774,6 +774,8 @@ final class WireTap: EngineTransport {
     /// Results are unreadable when they reach the app (a held one when it is released).
     var garbleResults = false
     var holdFlush = false
+    /// For each app connection the app closed: whether the engine had already ended it.
+    fileprivate(set) var appClosesAfterTheEngine: [Bool] = []
     /// Flushes held by `holdFlush`, ended by `releaseResults` (one never ended would keep its
     /// caller, and all it holds, for the rest of the run).
     fileprivate var heldFlushes: [CheckedContinuation<Void, Never>] = []
@@ -974,6 +976,7 @@ final class TapConnection: EngineConnection {
     }
 
     func close() {
+        if doc == nil { tap.appClosesAfterTheEngine.append(failure != nil) }
         inner.close()
         fail(URLError(.networkConnectionLost))
     }

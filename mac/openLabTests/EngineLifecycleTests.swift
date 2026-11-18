@@ -2245,6 +2245,21 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertFalse(launcherShown, "no window at all")
     }
 
+    /// A quit while the engine is still answering the app (here the device lists the Preferences
+    /// window asks for): the app closes its connection only once the engine has ended it, having
+    /// read the `goodbye`. Closed under the answers, the connection was reset, which can throw away
+    /// the goodbye before the engine reads it: the engine took the quit for a crash and played on.
+    func testAQuitClosesTheAppConnectionOnlyAfterTheEngineReadTheGoodbye() async throws {
+        makePrefs()
+        try await startApp()
+        for _ in 0..<20 {
+            Task { _ = await self.app.session.appClient.send { .request(id: $0, .listDevices) } }
+        }
+        await Task.yield()
+        try await quit()
+        XCTAssertEqual(tap.appClosesAfterTheEngine, [true], "the engine ended the connection first")
+    }
+
     func testThePreferenceIsReachableFromTheAppMenuAndKept() async throws {
         makePrefs()
         let appMenu = try XCTUnwrap(MainMenu.make().bar.items.first?.submenu)

@@ -30,7 +30,7 @@ The engine holds several open workspaces ("docs"; limit in REQUIREMENTS §21). A
    - `panic` (Esc) panics every doc; twice within the fade is a hard stop. On the app connection `transport { action: panic }` is this app-scope panic.
    - `hotkey`: see section 3.
    - Pause All, GO and other transport actions act on the bound doc only (the front window's: the UI's notion; the engine has no front doc).
-5. **Closing a doc**: see "Opening and closing workspaces". `goodbye { shutdown }` ends the session; `shutdown: true` also asks the engine to quit.
+5. **Closing a doc**: see "Opening and closing workspaces". `goodbye { shutdown }` ends the session; `shutdown: true` also asks the engine to quit. The engine closes the connection once it has read the goodbye; the client waits for that close (bounded) before closing its own side. A socket closed while engine messages are still arriving is reset, and the reset can discard the goodbye before the engine reads it: the engine then treats the end as a crash and plays on.
 
 A client that sees a gap in `revision` or `seq` (section 4) sends `request: snapshot` and replaces its state.
 

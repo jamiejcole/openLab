@@ -55,6 +55,7 @@ This holds at launch and for a replacement after a crash. Nothing plays on it, s
 ## Quit
 
 1. The prompts. 2. `close { doc, discard_changes: true }` for each workspace answered Don't Save, only once no later prompt cancelled the quit (the shutdown would otherwise write a recovery file for it); a failed or stalled close is logged and the quit goes on. 3. `goodbye { shutdown: true }`. The engine leaving after it is no alarm.
+- `EngineClient.goodbye` waits (at most `goodbyeWait`, 2 s) for the engine to close the connection before the app closes it: a connection the app closes under arriving answers is reset, and the reset can discard the unread goodbye (the engine then played on as after a crash).
 - An engine this run started that no connection has reached yet (a quit while it comes up, or Quit Anyway while a new one starts after a crash) gets SIGTERM and no "not responding" prompt: left alone it would run on with the audio device open, since only a dropped app connection makes it relaunch the app.
 - No engine is started once the quit is decided. An engine this run talked to, or one it did not start, is never signalled.
 
