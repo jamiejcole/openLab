@@ -26,8 +26,10 @@ final class EngineAlarmUITests: XCTestCase {
 
         // Not modal: the workspace windows still take keys while it is up (a key that acts on
         // the key window's workspace adds a cue there); it goes when dismissed.
-        let second = app.windows.matching(NSPredicate(format: "identifier == 'main-window' AND title == 'Second'"))
-            .firstMatch
+        // The title names the workspace, then the list it shows.
+        let second = app.windows.matching(
+            NSPredicate(format: "identifier == 'main-window' AND title BEGINSWITH 'Second \u{2014} '")
+        ).firstMatch
         let rows = second.outlines.matching(identifier: "cue-list").outlineRows
         XCTAssertEqual(rows.count, 0, "the reopened second show is empty")
         second.click()

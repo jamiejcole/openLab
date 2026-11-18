@@ -2,7 +2,7 @@
 
 import XCTest
 
-/// SM-06: Window > Pre-Show Check runs the engine's check on the demo show (whose "Radio" cue is
+/// SM-06: Window > Workspace Status opens on its Warnings page, which runs the engine's check on the demo show (whose "Radio" cue is
 /// broken by a missing file) and lists it; clicking the entry selects Radio in the cue list while
 /// the workspace window keeps the keys (GO still works).
 @MainActor
@@ -11,7 +11,7 @@ final class PreshowUITests: XCTestCase {
         let app = launchDemo()
 
         app.menuBars.menuBarItems["Window"].click()
-        app.menuBars.menuItems["Pre-Show Check"].click()
+        app.menuBars.menuItems["Workspace Status"].click()
 
         let report = app.descendants(matching: .any).matching(identifier: "preshow-table").firstMatch
         XCTAssertTrue(report.waitForExistence(timeout: 10), "the report opens")
@@ -36,23 +36,24 @@ final class PreshowUITests: XCTestCase {
     /// report makes the demo window key, so Space fires GO there and not in the other workspace.
     func testChoosingAnEntryMakesItsWorkspaceKey() {
         let app = launchApp()
-        let demo = app.windows.matching(NSPredicate(format: "identifier == 'main-window' AND title == 'Demo'"))
-            .firstMatch
+        // A workspace window's title (and its Window menu item) names the workspace, then its list.
+        let demoTitle = NSPredicate(format: "title BEGINSWITH 'Demo \u{2014} '")
+        let secondTitle = NSPredicate(format: "title BEGINSWITH 'Second \u{2014} '")
+        let demo = app.windows.matching(identifier: "main-window").matching(demoTitle).firstMatch
         XCTAssertTrue(demo.waitForExistence(timeout: 10))
-        XCTAssertTrue(
-            app.windows.matching(NSPredicate(format: "title == 'Second'")).firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.windows.matching(secondTitle).firstMatch.waitForExistence(timeout: 10))
 
         app.menuBars.menuBarItems["Window"].click()
-        app.menuBars.menuItems["Demo"].click()
+        app.menuBars.menuItems.matching(demoTitle).firstMatch.click()
         app.menuBars.menuBarItems["Window"].click()
-        app.menuBars.menuItems["Pre-Show Check"].click()
+        app.menuBars.menuItems["Workspace Status"].click()
         let report = app.descendants(matching: .any).matching(identifier: "preshow-table").firstMatch
         XCTAssertTrue(report.waitForExistence(timeout: 10))
         let radio = report.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2.3  Radio'")).firstMatch
         XCTAssertTrue(radio.waitForExistence(timeout: 10))
 
         app.menuBars.menuBarItems["Window"].click()
-        app.menuBars.menuItems["Second"].click()  // the other workspace takes the keys
+        app.menuBars.menuItems.matching(secondTitle).firstMatch.click()  // the other workspace takes the keys
         radio.click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
         XCTAssertTrue(
