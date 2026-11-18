@@ -252,10 +252,10 @@ final class VideoUITests: XCTestCase {
         shrinkWindowToLeast(app)
         let window = app.windows.firstMatch
         let divider = app.splitters.allElementsBoundByIndex.first { $0.frame.width > $0.frame.height }
-        let top = try XCTUnwrap(divider, "the divider above the inspector").coordinate(
-            withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let bar = try XCTUnwrap(divider, "the divider above the inspector")
+        let top = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         // Down to the window's foot, not past it: the window of a small screen ends near the screen's edge.
-        let down = window.frame.maxY - 6 - (divider?.frame.midY ?? 0)
+        let down = window.frame.maxY - 6 - bar.frame.midY
         top.press(forDuration: 0.2, thenDragTo: top.withOffset(CGVector(dx: 0, dy: down)))
         let scroll = app.scrollViews["inspector-geometry-scroll"]
         // A small field's frame as XCUITest reads it is a point or two taller than its bezel.

@@ -108,12 +108,7 @@ final class CueListLayoutUITests: XCTestCase {
         let triangle = cueRow("Act One", in: app).disclosureTriangles.firstMatch
         triangle.click()
         XCTAssertTrue(waitFor("exists == false", door), "the triangle closes it")
-        let window = app.windows.firstMatch
-        window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
-            .press(
-                forDuration: 0.2,
-                thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1))
-                    .withOffset(CGVector(dx: 300, dy: 100)))
+        growWindow(app)
         triangle.click()
         XCTAssertTrue(door.waitForExistence(timeout: 5), "and opens it in the larger window")
         assertUnderTitles("Door slam", cells: ["Number": "2.1", "Name": "Door slam"], in: app)
