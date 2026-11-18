@@ -195,6 +195,9 @@ final class FooterBar: NSView, NSPopoverDelegate {
         if !connected {
             // A new engine counts from zero: its first status is the new baseline.
             seenXruns = nil
+            // The details still open list the old engine's total; closing them must not raise the
+            // new engine's baseline to it.
+            xrunsInDetails = nil
             lastStatus = nil
             p = StatusPresentation.offline()
         } else {
