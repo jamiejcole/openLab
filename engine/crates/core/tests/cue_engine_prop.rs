@@ -3382,6 +3382,52 @@ fn a_resumed_voice_whose_known_end_is_in_the_window_is_not_a_leak() {
     }
 }
 
+/// The cue list's mark on a playlist is the child a start of the playlist plays. Here a child
+/// started on its own fails in its pre-wait (its broken run frozen, so a start would resume it,
+/// and it is marked); a device loss then ends that run, which stays broken with no state change,
+/// so the mark moves on to the child after it.
+#[test]
+fn a_playlists_mark_moves_on_when_a_childs_broken_run_settles_with_no_state_change() {
+    let spec = |kind: u8| Spec {
+        kind,
+        pre: 0,
+        post: 0,
+        mode: 0,
+        armed: true,
+        dup: false,
+        level: 0,
+        group_mode: 4,
+        target: 0,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    let case = Case {
+        specs: vec![
+            spec(22),
+            Spec {
+                pre: 2,
+                armed: false,
+                level: 1,
+                group_mode: 0,
+                ..spec(27)
+            },
+        ],
+        steps: vec![Step {
+            dt: 0,
+            op: 31,
+            a: 0,
+            b: 135,
+        }],
+        lookahead: 0,
+        min_go: 0,
+        panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
+}
+
 /// Play next on a playlist that does not loop, playing its last child, completes the playlist:
 /// it never goes round to its first child again. The playlist has no pre-wait, so going round
 /// shows nothing of its own (no start, no voice): only its child starting again does. At the top

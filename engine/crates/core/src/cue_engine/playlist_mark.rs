@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::cue::{Cue, CueKind, GroupMode};
+use crate::cue::{Cue, CueKind, GroupMode, SecondTrigger};
 use crate::model::CueId;
 
 use super::run::{Phase, Run, Slot};
@@ -82,9 +82,14 @@ impl CueEngine {
                 Slot::Active(Run { group: Some(_), .. }) => {
                     look.insert(*id);
                 }
-                // Whether it can play again follows its device, which changes with no state
-                // change: its group (or it, a group) looks again on every call while it is so.
-                Slot::Lost(_) => {
+                // Whether a start plays it can change with no state change (its device comes
+                // back; a broken run settles into a break, or its frozen timers end): its group
+                // (or it, a group) looks again on every call while it is lost or broken.
+                Slot::Lost(_) | Slot::Broken(_) => {
+                    look.insert(*id);
+                    look.extend(tree.parent(*id));
+                }
+                Slot::Active(r) if r.is_broken() => {
                     look.insert(*id);
                     look.extend(tree.parent(*id));
                 }
@@ -127,17 +132,28 @@ impl CueEngine {
         else {
             return None;
         };
-        // Whether a start of the child would play it rather than pass over it at once.
-        // A child its lost device left paused plays again (cleared by the start) once the device
-        // is back.
+        // Whether a start of the child would play it rather than pass over it at once, as
+        // `start` decides: a child with static problems is passed over (C-G3); a lost one is
+        // cleared once its device is back; a run fading out in a panic gives way to a new one; a
+        // paused run resumes (a broken one too: its frozen timers run on); a broken run that is
+        // not paused is refused; any other run takes its second trigger, and a stop leaves the
+        // playlist to go on to the next child.
         let plays = |c: &&Cue| {
-            !self.is_skipped(c)
-                && !self.has_problems(c.id)
-                && match self.slots.get(&c.id) {
-                    Some(Slot::Broken(_)) => false,
-                    Some(Slot::Lost(_)) => self.lost_may_clear(c.id),
-                    _ => true,
-                }
+            if self.has_problems(c.id) {
+                return false;
+            }
+            match self.slots.get(&c.id) {
+                Some(Slot::Broken(_)) => false,
+                Some(Slot::Lost(_)) => self.lost_may_clear(c.id) && !self.is_skipped(c),
+                Some(Slot::Active(r)) if r.panicked => !self.is_skipped(c),
+                Some(Slot::Active(r)) if r.paused_at.is_some() => true,
+                Some(Slot::Active(r)) if r.is_broken() => false,
+                Some(Slot::Active(_)) => !matches!(
+                    c.second_trigger.effective(&c.kind),
+                    SecondTrigger::Stop | SecondTrigger::HardStop
+                ),
+                Some(Slot::Loaded(_)) | None => !self.is_skipped(c),
+            }
         };
         let first = || {
             (!*shuffle)

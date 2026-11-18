@@ -919,6 +919,35 @@ fn the_mark_passes_over_a_skipped_child_and_one_broken_at_run_time() {
 }
 
 #[test]
+fn a_child_running_on_its_own_stays_marked_unless_its_second_trigger_stops_it() {
+    // A start of the playlist gives that child its second trigger: one that stops it leaves the
+    // playlist to play the next child, any other keeps it as the one playing.
+    for (option, next) in [(SecondTrigger::Stop, 11), (SecondTrigger::Nothing, 10)] {
+        let mut sound = timed(cue(10, audio()), 1.0, 0.0, DNC);
+        sound.second_trigger = option;
+        let mut rig = Rig::new(vec![grp(
+            1,
+            playlist(false, false),
+            vec![sound, wait(11, 1.0)],
+        )]);
+        rig.start(0, 10);
+        assert_eq!(rig.state(10), CueState::PreWaiting);
+        assert_eq!(
+            rig.engine.next_in_playlist(id(1)),
+            Some(id(next)),
+            "{option:?}"
+        );
+        let go = rig.start(10, 1);
+        let wait_started = changes(&go, 11).iter().any(|(s, _)| *s != CueState::Idle);
+        assert_eq!(
+            wait_started,
+            next == 11,
+            "{option:?}: the start plays the marked child"
+        );
+    }
+}
+
+#[test]
 fn the_mark_passes_over_a_child_with_static_problems_as_the_start_does() {
     let mut broken = cue(10, audio());
     if let CueKind::Audio { patch, .. } = &mut broken.kind {
