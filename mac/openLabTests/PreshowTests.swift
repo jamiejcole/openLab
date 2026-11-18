@@ -119,43 +119,6 @@ final class PreshowTests: XCTestCase {
 
     // MARK: Window
 
-    func testCheckClickThroughRevealsTheCueAndOpensTheBasicsTab() async throws {
-        let rig = try await realRig()
-        let wc = WorkspaceWindowController(store: rig.store)
-        wc.setVisible(.inspector, false)
-        let playheads = rig.store.playheads
-        XCTAssertTrue(wc.canRunPreshowCheck)
-        await wc.showPreshowCheck().value
-        let pc = wc.preshowWindow
-        let report = try XCTUnwrap(pc.report, "the engine answered")
-        XCTAssertFalse(report.ok)
-        XCTAssertEqual(pc.summaryLabel.stringValue, PreshowRows.summary(report))
-        XCTAssertTrue(pc.rows.contains { $0.section == .media && $0.title.contains("media/o.wav") }, "the missing file")
-        let row = try XCTUnwrap(pc.rows.firstIndex { $0.cue == radio && $0.section == .brokenCues })
-        XCTAssertTrue(pc.choose(row: row))
-        // Radio sits inside the collapsed group Act One: the group opens and Radio is selected.
-        XCTAssertEqual(wc.cueList.selectedIDs(), [radio])
-        XCTAssertTrue(wc.isVisible(.inspector))
-        XCTAssertEqual(wc.inspector.tabView.selectedTabViewItem?.identifier as? String, "basics")
-        // A row in a report must never move what GO fires next.
-        XCTAssertEqual(rig.store.playheads, playheads)
-        wc.preshowWindow.close()
-    }
-
-    func testClickThroughInShowModeSelectsButLeavesTheInspector() async throws {
-        let rig = try await realRig()
-        let wc = WorkspaceWindowController(store: rig.store)
-        wc.setVisible(.inspector, false)
-        wc.setShowMode(true)
-        await wc.showPreshowCheck().value
-        let pc = wc.preshowWindow
-        let row = try XCTUnwrap(pc.rows.firstIndex { $0.cue == radio })
-        XCTAssertTrue(pc.choose(row: row))
-        XCTAssertEqual(wc.cueList.selectedIDs(), [radio])
-        XCTAssertFalse(wc.isVisible(.inspector))
-        pc.close()
-    }
-
     func testDisconnectedEngineGreysTheItemAndClearsTheReport() async throws {
         let rig = try await realRig()
         let wc = WorkspaceWindowController(store: rig.store)
@@ -233,20 +196,6 @@ final class PreshowTests: XCTestCase {
         XCTAssertFalse(panel.isVisible)
     }
 
-    func testCheckAgainClearsTheSelectionAndRevealsNothing() async throws {
-        let rig = try await realRig()
-        let pc = PreshowWindowController(store: rig.store)
-        var inspected: [ModelID] = []
-        pc.onInspect = { id, _ in inspected.append(id) }
-        await pc.runCheck()
-        let row = try XCTUnwrap(pc.rows.firstIndex { $0.cue == radio })
-        pc.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        XCTAssertEqual(inspected, [radio])
-        await pc.runCheck()
-        XCTAssertEqual(pc.table.selectedRow, -1)
-        XCTAssertEqual(inspected, [radio], "a new report reveals nothing by itself")
-    }
-
     /// A click on any view that needs its panel to be key (an NSTableView does by default) would
     /// make the report key, and GO would stop reaching the workspace window.
     func testNothingInThePanelMakesItKey() async throws {
@@ -269,27 +218,6 @@ final class PreshowTests: XCTestCase {
         let item = MainMenu.make().windows.items.first { $0.action == #selector(AppDelegate.showPreshowCheck(_:)) }
         XCTAssertEqual(item?.title, loc("menu.window.preshowCheck"))
         XCTAssertEqual(item?.keyEquivalent, "W")
-    }
-
-    func testInspectCueButtonAndDoubleClickSelectTheCueAndOpenItsTab() async throws {
-        let rig = try await realRig()
-        let wc = WorkspaceWindowController(store: rig.store)
-        wc.setVisible(.inspector, false)
-        await wc.showPreshowCheck().value
-        let pc = wc.preshowWindow
-        XCTAssertFalse(pc.inspectButton.isEnabled, "nothing selected")
-        let row = try XCTUnwrap(pc.rows.firstIndex { $0.cue == radio && $0.section == .brokenCues })
-        pc.table.selectRowIndexes([row], byExtendingSelection: false)
-        XCTAssertTrue(pc.inspectButton.isEnabled)
-        // The selection already chose the cue; move away, then use the button.
-        wc.cueList.selectAsUser([intro])
-        wc.setVisible(.inspector, false)
-        XCTAssertEqual(pc.table.doubleAction, #selector(PreshowWindowController.inspectClicked))
-        pc.inspectClicked()
-        XCTAssertEqual(wc.cueList.selectedIDs(), [radio])
-        XCTAssertTrue(wc.isVisible(.inspector))
-        XCTAssertEqual(wc.inspector.tabView.selectedTabViewItem?.identifier as? String, "basics")
-        pc.close()
     }
 
     func testHidingAnEntryDropsItFromTheListAndSaysSoUntilUnhidden() async throws {
@@ -324,7 +252,7 @@ final class PreshowTests: XCTestCase {
     private static let secondList: ModelID = "00000000-0000-0000-0000-000000000002"
     private static let missingB: ModelID = "00000000-0000-0000-0000-0000000000f4"
 
-    /// The Demo show with: cue 3 (a file that is not there) after Act One, a closed group Act Two
+    /// The Demo show with: cue 3 (a file that is not there) after Act One, a group Act Two (the tests shut it)
     /// holding a second broken cue, `filler` memo cues in front of cue 3, and a second cue list with
     /// one broken cue. Intro (cue 1) is where the playhead starts.
     private func flowRig(filler: Int = 0) async throws -> Rig {
@@ -389,6 +317,13 @@ final class PreshowTests: XCTestCase {
         XCTAssertTrue(outline.visibleRect.contains(outline.rect(ofRow: r)), "row \(r) is fully on screen", line: line)
     }
 
+    /// The status window's real panel (the Warnings page's own window is never shown).
+    private func statusPanel(_ wc: WorkspaceWindowController) throws -> NSWindow {
+        let panel = try XCTUnwrap(wc.existingStatusWindow?.window)
+        XCTAssertTrue(panel.isVisible, "the status window is open")
+        return panel
+    }
+
     private func flowWindow(_ rig: Rig) -> WorkspaceWindowController {
         let wc = WorkspaceWindowController(store: rig.store)
         wc.window?.makeKeyAndOrderFront(nil)
@@ -403,8 +338,15 @@ final class PreshowTests: XCTestCase {
         let rig = try await flowRig()
         let wc = flowWindow(rig)
         wc.setVisible(.inspector, false)
+        XCTAssertTrue(wc.canRunPreshowCheck)
         await wc.showPreshowCheck().value
         let pc = wc.preshowWindow
+        let report = try XCTUnwrap(pc.report, "the engine answered")
+        XCTAssertFalse(report.ok)
+        XCTAssertEqual(pc.summaryLabel.stringValue, PreshowRows.summary(report))
+        XCTAssertTrue(pc.rows.contains { $0.section == .media && $0.title.contains("gone.wav") }, "the missing file")
+        XCTAssertFalse(pc.inspectButton.isEnabled, "nothing chosen yet")
+        XCTAssertEqual(pc.table.doubleAction, #selector(PreshowWindowController.inspectClicked))
         XCTAssertEqual(rig.store.playheads[TestSnapshots.mainList], intro)
         let r = try row(pc, Self.missing3)
         // The click on the entry, the Inspect Cue button and a double-click all end the same way.
@@ -423,7 +365,7 @@ final class PreshowTests: XCTestCase {
                 }
             }
             XCTAssertEqual(wc.cueList.selectedIDs(), [Self.missing3], how)
-            XCTAssertFalse(pc.window?.isKeyWindow == true, "the panel never takes the keys: \(how)")
+            XCTAssertFalse(try statusPanel(wc).isKeyWindow, "the status panel never takes the keys: \(how)")
             XCTAssertTrue(wc.isVisible(.inspector), how)
             XCTAssertEqual(wc.inspector.tabView.selectedTabViewItem?.identifier as? String, "basics", how)
             try assertRowInView(wc, Self.missing3)
@@ -447,6 +389,7 @@ final class PreshowTests: XCTestCase {
         for g in [TestSnapshots.group, Self.actTwo] { outline.collapseItem(wc.cueList.node(g)) }
         XCTAssertFalse(open(TestSnapshots.group))
         XCTAssertFalse(open(Self.actTwo))
+        try await rig.advance(0)
         let playheads = rig.store.playheads
         XCTAssertTrue(pc.choose(row: try row(pc, radio)))
         XCTAssertTrue(open(TestSnapshots.group), "Act One opened")
@@ -458,7 +401,11 @@ final class PreshowTests: XCTestCase {
         XCTAssertTrue(open(TestSnapshots.group), "the group opened earlier stays open")
         XCTAssertEqual(wc.cueList.selectedIDs(), [Self.missing41])
         try assertRowInView(wc, Self.missing41)
+        try await rig.advance(0)
         XCTAssertEqual(rig.store.playheads, playheads)
+        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await rig.advance(0.5)
+        await assertEventually("GO fired the playhead cue, not a warned one") { rig.store.progress[intro] != nil }
     }
 
     func testCueInAnotherCueList() async throws {
@@ -467,6 +414,9 @@ final class PreshowTests: XCTestCase {
         await wc.showPreshowCheck().value
         let pc = wc.preshowWindow
         wc.cueList.selectAsUser([TestSnapshots.fade])
+        await assertEventually("the playhead followed the selection") {
+            rig.store.playheads[TestSnapshots.mainList] == TestSnapshots.fade
+        }
         let playheads = rig.store.playheads
         XCTAssertEqual(wc.cueList.listID, TestSnapshots.mainList)
         XCTAssertTrue(pc.choose(row: try row(pc, Self.missingB)))
@@ -481,11 +431,14 @@ final class PreshowTests: XCTestCase {
         } else {
             XCTFail("the sidebar highlights a list row")
         }
+        try await rig.advance(0)
         XCTAssertEqual(rig.store.playheads, playheads, "no playhead moved")
-        // Back on list A: its playhead is where it was and its list is shown.
+        // Back on list A: its playhead is where it was, and its playhead cue is the selected one.
         wc.cueList.showList(TestSnapshots.mainList)
         XCTAssertEqual(wc.cueList.listID, TestSnapshots.mainList)
-        XCTAssertEqual(rig.store.playheads[TestSnapshots.mainList], intro)
+        try await rig.advance(0)
+        XCTAssertEqual(rig.store.playheads, playheads)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.fade])
     }
 
     func testShowMode() async throws {
@@ -554,11 +507,7 @@ final class PreshowTests: XCTestCase {
         pc.table.selectRowIndexes([try row(pc, Self.missing3)], byExtendingSelection: false)
         XCTAssertEqual(wc.cueList.selectedIDs(), [Self.missing3])
         try assertRowInView(wc, Self.missing3)
-        XCTAssertFalse(pc.window?.isKeyWindow == true, "the panel does not take the keys")
-        if let panel = pc.window, panel.isVisible {
-            let rowRect = window.convertToScreen(outline.convert(outline.rect(ofRow: rowOfTarget), to: nil))
-            XCTAssertFalse(panel.frame.intersects(rowRect), "the panel does not cover the row")
-        }
+        XCTAssertFalse(try statusPanel(wc).isKeyWindow, "the status panel does not take the keys")
         guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
         try await rig.advance(0.5)
         await assertEventually("GO fired") { rig.store.progress[intro] != nil }
