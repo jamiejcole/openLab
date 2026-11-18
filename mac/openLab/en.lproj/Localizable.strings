@@ -993,6 +993,7 @@
 
 /* Audio cue timing and loops tab, waveform (AUD-11, AUD-12, AUD-14) */
 "inspector.tab.timeLoops" = "Timing & Loops";
+"timeLoops.waveform" = "Waveform";
 "timeLoops.start" = "Start";
 "timeLoops.end" = "End";
 "timeLoops.play" = "Play";
