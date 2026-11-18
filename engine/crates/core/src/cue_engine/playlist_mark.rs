@@ -19,7 +19,8 @@ pub(super) enum MarksEdit {
 
 impl CueEngine {
     /// The child the Playlist group `group` plays next: the first child that a start does not
-    /// pass over (skipped, broken at run time) while it is not running, the one after its current
+    /// pass over (skipped, broken at run time, left paused by a lost device still away) while
+    /// it is not running, the one after its current
     /// child as the group stands while it plays (wrapping when it loops), none once it is
     /// stopping, devamped or halted, past its last child, or for a shuffled playlist whose order
     /// is not drawn yet (not running, or between passes). `None` too for any other cue.
@@ -78,8 +79,17 @@ impl CueEngine {
             }
         }
         for (id, slot) in &self.slots {
-            if matches!(slot, Slot::Active(Run { group: Some(_), .. })) {
-                look.insert(*id);
+            match slot {
+                Slot::Active(Run { group: Some(_), .. }) => {
+                    look.insert(*id);
+                }
+                // Whether it can play again follows its device, which changes with no state
+                // change: its group (or it, a group) looks again on every call while it is so.
+                Slot::Lost(_) => {
+                    look.insert(*id);
+                    look.extend(tree.parent(*id));
+                }
+                _ => {}
             }
         }
         for action in &cx.out {
@@ -119,9 +129,15 @@ impl CueEngine {
             return None;
         };
         // Whether a start of the child would play it rather than pass over it at once.
+        // A child its lost device left paused plays again (cleared by the start) once the device
+        // is back.
         let plays = |c: &&Cue| {
             !self.is_skipped(c)
-                && !matches!(self.slots.get(&c.id), Some(Slot::Broken(_) | Slot::Lost(_)))
+                && match self.slots.get(&c.id) {
+                    Some(Slot::Broken(_)) => false,
+                    Some(Slot::Lost(_)) => self.lost_may_clear(c.id),
+                    _ => true,
+                }
         };
         let first = || {
             (!*shuffle)

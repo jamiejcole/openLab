@@ -1893,6 +1893,61 @@ impl Run {
                 }
             }
         }
+        self.check_playlist_marks()
+    }
+
+    /// Oracle for the cue list's mark: for every Playlist group not running, the child the
+    /// engine marks as next is the one a start of the group plays (tried on a copy of the
+    /// engine at this `now`). A shuffled one marks none until its order is drawn.
+    fn check_playlist_marks(&self) -> Check {
+        // Duplicate ids make "the group's child" ambiguous.
+        if self.dup {
+            return Ok(());
+        }
+        let mut playlists = Vec::new();
+        each(&self.ws.cue_lists[0].cues, &mut |c| {
+            if let CueKind::Group {
+                mode: GroupMode::Playlist { shuffle: false, .. },
+                children,
+            } = &c.kind
+            {
+                playlists.push((c.id, children.iter().map(|k| k.id).collect::<Vec<_>>()));
+            }
+        });
+        for (group, children) in playlists {
+            // Not running: idle, loaded, broken, or left paused by a lost device (a start clears
+            // that once the device is back and plays the group from its beginning).
+            if !matches!(
+                self.engine.state(group),
+                CueState::Idle | CueState::Broken | CueState::Loaded
+            ) && !self.engine.is_lost(group)
+            {
+                continue;
+            }
+            let marked = self.engine.next_in_playlist(group);
+            let mut copy = self.engine.clone();
+            let actions = copy.handle(&self.ws, Input::Start { cue: group }, self.now);
+            let started = actions.iter().find_map(|a| match a {
+                Action::StateChanged { cue, state, .. }
+                    if children.contains(cue)
+                        && !matches!(
+                            state,
+                            CueState::Idle | CueState::Broken | CueState::Loaded
+                        ) =>
+                {
+                    Some(*cue)
+                }
+                _ => None,
+            });
+            if let Some(started) = started {
+                prop_assert_eq!(
+                    Some(started),
+                    marked,
+                    "playlist {}: the marked child is the one its start plays",
+                    group
+                );
+            }
+        }
         Ok(())
     }
 
