@@ -864,3 +864,124 @@ fn two_docs_opened_back_to_back_on_the_same_files_both_hear_them_go() {
         assert_eq!(missing, 2000, "doc {doc}: cues with their file missing");
     }
 }
+
+/// A file two docs share goes while one of them is being saved into another folder (after the
+/// Save As is asked, before it is answered): both docs hear it is gone, the saved one under its
+/// reference re-spelled for the new folder too, and both hear it come back.
+#[test]
+fn a_shared_file_gone_during_a_save_as_elsewhere_is_heard_by_both_docs() {
+    use openlab_core::{CueKind, MediaRef, save_show};
+    use openlab_engine::control::{DocSource, SaveHook, reply_channel};
+    use openlab_engine::persist::JobKind;
+    let env = common::env();
+    let show_dir = env.show_dir();
+    let shared = show_dir.join("shared.wav");
+    std::fs::copy(wav(&dc(400, 0.5)), &shared).unwrap();
+    let fs = FakeFs::new();
+    fs.put(&shared, 1);
+    let a = workspace(vec![audio(1, &shared, 0)]);
+    // B is saved beside the file and names it relative to its folder.
+    let mut b = workspace(vec![audio(2, &shared, 0)]);
+    b.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(8));
+    if let CueKind::Audio { media, .. } = &mut b.cue_lists[0].cues[0].kind {
+        *media = Some(MediaRef::new("shared.wav"));
+    }
+    let b_show = show_dir.join("b.openlab");
+    std::fs::write(&b_show, save_show(&b).unwrap()).unwrap();
+    // The writer holds B's save until the test lets it go.
+    let (go, held) = std::sync::mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Save {
+            let _ = held.lock().unwrap().recv_timeout(WAIT);
+        }
+    }));
+    let mut c = manual(&a, &fs);
+    c.app_dirs = Some(env.dirs.clone());
+    c.save_hook = Some(hook);
+    let mut s = show_with(a, c);
+    let b_doc = s
+        .open_doc(DocSource::Open {
+            path: b_show,
+            recovery: None,
+        })
+        .unwrap();
+    follow(&mut s);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert!(problems_in(&s, b_doc, 2).is_empty());
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (tx, mut replies) = reply_channel();
+    let rid = s.request_id();
+    s.control_mut().handle_doc(
+        b_doc,
+        ClientMessage::Request {
+            id: rid,
+            request: Request::SaveAs {
+                path: elsewhere
+                    .path()
+                    .join("b.openlab")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        },
+        &tx,
+    );
+    // The file goes while B is being written.
+    let aside = show_dir.join("aside.wav");
+    std::fs::rename(&shared, &aside).unwrap();
+    fs.remove(&shared);
+    assert!(s.watch_pass(), "the watch hears it is gone");
+    go.send(()).unwrap();
+    s.settle_docs();
+    let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+    assert!(
+        answers.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{answers:?}"
+    );
+    follow(&mut s);
+    let view = s.control().doc(b_doc).unwrap();
+    assert_eq!(view.moves_taken_up(), 1);
+    let CueKind::Audio { media, .. } = &view.workspace().cue_lists[0].cues[0].kind else {
+        panic!("not an audio cue");
+    };
+    assert_eq!(
+        media.as_ref().map(|m| Path::new(m.as_str())),
+        Some(shared.as_path())
+    );
+    let gone = |p: &[CueProblem]| matches!(p, [CueProblem::MediaMissing { .. }]);
+    assert!(gone(s.control().engine().problems(id(1))));
+    assert!(
+        gone(&problems_in(&s, b_doc, 2)),
+        "{:?}",
+        problems_in(&s, b_doc, 2)
+    );
+
+    // Put back: both hear it.
+    std::fs::rename(&aside, &shared).unwrap();
+    fs.put(&shared, 1);
+    follow(&mut s);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert!(
+        problems_in(&s, b_doc, 2).is_empty(),
+        "{:?}",
+        problems_in(&s, b_doc, 2)
+    );
+    // Gone again, now only the watch can tell B: B hears it under its new reference.
+    std::fs::rename(&shared, &aside).unwrap();
+    fs.remove(&shared);
+    follow(&mut s);
+    assert!(gone(s.control().engine().problems(id(1))));
+    assert!(
+        gone(&problems_in(&s, b_doc, 2)),
+        "{:?}",
+        problems_in(&s, b_doc, 2)
+    );
+    assert_eq!(s.stalls(), 0);
+}

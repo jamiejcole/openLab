@@ -479,6 +479,18 @@ impl<'a> DocView<'a> {
         self.doc.media.pending()
     }
 
+    /// Saves into another folder whose copy and index, prepared on the writer thread, the doc
+    /// took up as they were.
+    pub fn moves_taken_up(&self) -> u64 {
+        self.doc.file.moves_taken_up
+    }
+
+    /// Media jobs (probes, preloads) the doc has asked for so far.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn media_tickets(&self) -> u64 {
+        self.doc.media.tickets_issued()
+    }
+
     /// The workspace-level notices in force.
     pub fn warnings(&self) -> &'a [WireWarning] {
         &self.doc.warnings

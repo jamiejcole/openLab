@@ -546,11 +546,15 @@ pub(super) struct DocFile {
     pub(super) notices: Vec<WireWarning>,
     /// The broadcast `snapshot` did not fit the outbound channel: send a fresh one when it does.
     pub(super) resend_snapshot: bool,
+    /// Saves into another folder whose prepared copy and index were taken up (a cost measure:
+    /// the others were worked out again on the control thread).
+    pub(super) moves_taken_up: u64,
 }
 
 impl DocFile {
     pub(super) fn new() -> Self {
         Self {
+            moves_taken_up: 0,
             saves: Vec::new(),
             autosave: None,
             autosave_path: None,
@@ -1740,6 +1744,7 @@ impl DocCx<'_> {
             indexed,
             ..
         } = moved;
+        self.doc.file.moves_taken_up += 1;
         let changed = workspace.is_some();
         if let Some(mut ws) = workspace {
             // The copy is the workspace with the relinks applied, but for the Show Mode flag,
