@@ -72,6 +72,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var appNotices: [String] = []
     /// Warnings that arrived as runtime changes, newest last.
     @Published private(set) var runtimeWarnings: [WireWarning] = []
+    /// Double-GO protection is in force: the GO button shows its border (the engine says when it
+    /// begins and ends, on its own clock).
+    @Published private(set) var goProtected = false
+    /// How many GOs double-GO protection has ignored: the GO area flashes on each.
+    @Published private(set) var goBlockedCount = 0
     static let unlistedWarnings: Set<String> = ["trigger_ignored", "target_not_running"]
 
     /// The states in which a cue's progress is shown: an ended cue reads its duration again.
@@ -314,6 +319,17 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         await client.send { .request(id: $0, .listDevices) }
     }
 
+    /// The port OSC listens on and whether it is open (an app-scope request).
+    func oscState() async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .oscState) }
+    }
+
+    /// Listens for OSC on `port` from now on; refused, with the old port still listening, when it
+    /// cannot be opened.
+    func setOscPort(_ port: UInt16) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setOscPort(port: port)) }
+    }
+
     /// Chooses the output device for the engine's next start (nil: the system default).
     func setOutputDevice(_ name: String?) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .setOutputDevice(device: name)) }
@@ -460,6 +476,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         previews = [:]
         waits = [:]
         runtimeWarnings = []
+        goProtected = false
         // A new connection's health is unknown until its first `status`.
         status = nil
         reconcileShowMode(engine: s.document.showMode)
@@ -623,7 +640,15 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 playlistNext[group] = next
                 if let next { cues.insert(next) }
                 cues.insert(group)
+            case .goProtection(let active):
+                goProtected = active
             case .warning(let w):
+                // A GO inside the protection time is the protection working, not a fault: the GO
+                // button flashes instead of a warning being listed.
+                if w.type == "go_ignored", w.json["reason"]?.stringValue == "double_go" {
+                    goBlockedCount += 1
+                    continue
+                }
                 // Nothing went wrong in these: the operator pressed a key twice, or a fade ran with
                 // nothing to fade. QLab shows nothing for them, so they are not listed or counted.
                 if Self.unlistedWarnings.contains(w.type) { continue }

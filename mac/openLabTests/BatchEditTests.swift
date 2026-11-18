@@ -117,6 +117,17 @@ final class PastePropertiesRuleTests: XCTestCase {
         let result = wide.taking(.level(.output(5)), from: shown, limits: VolumeLimits())
         XCTAssertEqual(result.outputs.map(\.db), [0, 0, 0, 0, 0, -6, 0, 0])
         XCTAssertEqual(narrow.taking(.level(.output(5)), from: shown, limits: VolumeLimits()), narrow)
+        // A cue whose patch has the output takes it though its levels do not name it yet.
+        let onWidePatch = narrow.taking(.level(.output(5)), from: shown, limits: VolumeLimits(), outputs: 8)
+        XCTAssertEqual(onWidePatch.outputs.map(\.db), [0, 0, -120, -120, -120, -6])
+        XCTAssertEqual(narrow.taking(.level(.output(5)), from: shown, limits: VolumeLimits(), outputs: 5), narrow)
+        // A mute there is kept the same way (#758); unmuting an output not listed changes nothing.
+        var mutedShown = shown
+        mutedShown.setMute(.output(5), true)
+        let muted = narrow.taking(.mute(.output(5)), from: mutedShown, limits: VolumeLimits(), outputs: 8)
+        XCTAssertEqual(muted.outputs.map(\.mute), [false, false, false, false, false, true])
+        XCTAssertEqual(muted.outputs[5].db, -120, "muting keeps the level")
+        XCTAssertEqual(narrow.taking(.mute(.output(5)), from: narrow, limits: VolumeLimits(), outputs: 8), narrow)
     }
 
     /// A ganged output moved on several cues moves each cue's own gang: a cue without that gang has
@@ -372,6 +383,32 @@ extension PlayheadFlowTests {
         XCTAssertEqual(outputs(cues[0]), [0, 0], "cue 1 has no output 6")
         await wc.editor.undo()
         await assertEventually("one undo") { self.outputs(self.cues[1]) == Array(repeating: 0, count: 8) }
+    }
+
+    /// Several cues on a 128-output patch selected → the Levels tab shows its 128 columns, as for one
+    /// of them, though their own levels name 2; a level typed on output 100 is set on each.
+    func testSeveralCuesOnA128OutputPatchSelectedTheLevelsTabShows128Columns() async throws {
+        try await pasteWorkspace()
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        // The count the patch editor sends.
+        await send(.setPatchOutputCount(patch, 128))
+        await assertEventually("the patch has 128 outputs") {
+            self.store.model?.patches.first?.raw["outputs"]?.arrayValue?.count == 128
+        }
+        XCTAssertEqual(outputs(cues[0]).count, 2, "the cue's own levels name 2 outputs")
+        await selectAll([cues[0], cues[1]])
+        inspector.tabView.selectTabViewItem(withIdentifier: "levels")
+        let p = inspector.audioLevels
+        XCTAssertEqual(p.matrix.outputCount, 128)
+        XCTAssertEqual(p.faders.count, 129, "the main fader and one per output")
+        XCTAssertEqual(p.matrix.columnLabel(127), "128")
+        try typeLevel(.output(99), "20")
+        await assertEventually("output 100 of each cue is at -20") {
+            self.cues.prefix(2).allSatisfy { self.outputs($0).count == 100 && self.outputs($0)[99] == -20 }
+        }
+        XCTAssertEqual(p.levelField.stringValue, "-20.0", "the box shows the level")
+        await wc.editor.undo()
+        await assertEventually("one undo") { self.cues.prefix(2).allSatisfy { self.outputs($0).count == 2 } }
     }
 
     /// Cues ganged differently: no gang is drawn or can be set, and a ganged output moved moves each

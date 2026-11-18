@@ -220,14 +220,17 @@ impl Tap {
 }
 
 /// The fan-out task: runs until the control side hangs up (or the runtime stops).
-pub async fn distribute(hub: Arc<Hub>, mut outbound: OutboundRx, tap: Option<Tap>) {
+pub async fn distribute(hub: Arc<Hub>, mut outbound: OutboundRx, tap: TapSlot) {
     while let Some(out) = outbound.recv().await {
-        if let Some(tap) = &tap {
+        if let Some(tap) = crate::lock(&tap).as_ref() {
             tap.offer(&out);
         }
         hub.deliver(&out);
     }
 }
+
+/// The OSC server's tap, which a change of its port replaces while the fan-out runs.
+pub type TapSlot = Arc<std::sync::Mutex<Option<Tap>>>;
 
 #[cfg(test)]
 mod tests {

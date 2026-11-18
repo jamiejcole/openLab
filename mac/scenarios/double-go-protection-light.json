@@ -1,0 +1,38 @@
+{
+  "about": "Double-GO protection (#637): after a GO the GO button shows a red border; a second GO inside the time flashes the area behind it red; after the time the border goes.",
+  "show": "Demo",
+  "steps": [
+    {
+      "focus": "settings"
+    },
+    {
+      "type": "settings-go-interval-field",
+      "text": "2"
+    },
+    {
+      "focus": "workspace"
+    },
+    {
+      "click": "go-button"
+    },
+    {
+      "advance": 0.1
+    },
+    {
+      "shot": "border"
+    },
+    {
+      "click": "go-button"
+    },
+    {
+      "shot": "flash"
+    },
+    {
+      "advance": 2.5
+    },
+    {
+      "shot": "after"
+    }
+  ],
+  "appearance": "light"
+}

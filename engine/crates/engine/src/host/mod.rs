@@ -533,12 +533,14 @@ fn run_with(
         Relaunch::new(action)
     });
     let (stopping, stopping_rx) = Stopping::new();
-    // On the virtual device the OSC listeners stay off: test engines run side by side, and
-    // whichever got port 53000 first would log differently from the others.
+    // On the virtual device the OSC listeners stay off unless the machine settings name a port (a
+    // test of the OSC page does): test engines run side by side, and whichever got port 53000
+    // first would log differently from the others. Then it listens on the loopback only.
     #[cfg(feature = "test-support")]
-    let osc = config.virtual_device.is_none().then(OscConfig::default);
+    let osc = (config.virtual_device.is_none() || config.machine.osc_port.is_some())
+        .then(|| osc_config(&config));
     #[cfg(not(feature = "test-support"))]
-    let osc = Some(OscConfig::default());
+    let osc = Some(osc_config(&config));
     let net_config = ServerConfig {
         osc,
         relaunch,
@@ -546,6 +548,7 @@ fn run_with(
         ..ServerConfig::default()
     };
     let server = WsServer::start(inbox_tx.clone(), outbound, net_config)?;
+    config.osc = server.osc_server();
     let control = Control::empty(
         ctl,
         Backend::Device(Box::new(device)),
@@ -717,6 +720,19 @@ fn open_outcome(path: &str, outcome: &Outcome) -> String {
 /// A line on stderr, for whoever runs the engine by hand.
 fn say(text: &str) {
     let _ = writeln!(std::io::stderr().lock(), "openlab-engine: {text}");
+}
+
+/// OSC listens on the port this machine chose on the OSC settings page, else 53000.
+fn osc_config(config: &ControlConfig) -> OscConfig {
+    let mut osc = OscConfig::default();
+    if let Some(port) = config.machine.osc_port {
+        osc.port = port;
+    }
+    #[cfg(feature = "test-support")]
+    if config.virtual_device.is_some() {
+        osc.bind = std::net::Ipv4Addr::LOCALHOST.into();
+    }
+    osc
 }
 
 #[cfg(test)]

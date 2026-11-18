@@ -33,10 +33,19 @@ final class LauncherWindowController: NSWindowController {
         recentStack.alignment = .leading
         recentStack.spacing = 4
 
+        // What this is: its version.
+        let version = NSTextField(labelWithString: String(format: loc("launcher.version"), Self.version))
+        version.font = .systemFont(ofSize: 11)
+        version.textColor = .secondaryLabelColor
+        version.setAX(AX.launcherVersion)
+        let about: [NSView] = [version]
+        let aboutRow = NSStackView(views: about)
+        aboutRow.orientation = .horizontal
+        aboutRow.spacing = 8
         noticeLabel.textColor = .systemRed
         noticeLabel.isHidden = true
         noticeLabel.setAX(AX.launcherNotice)
-        let column = NSStackView(views: [noticeLabel, new, open, heading, recentStack])
+        let column = NSStackView(views: [noticeLabel, new, open, heading, recentStack, aboutRow])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 12
@@ -70,6 +79,11 @@ final class LauncherWindowController: NSWindowController {
             b.setAX(AX.launcherRecentPrefix + String(i))
             recentStack.addArrangedSubview(b)
         }
+    }
+
+    /// The app's version as the bundle says it (`dev` for a bundle that says none, as a test's).
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     }
 
     @objc private func newClicked() { onNew?() }

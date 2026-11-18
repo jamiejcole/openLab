@@ -148,7 +148,8 @@ extension InspectorViewController {
         let set = LevelSet(kind: kind)
         let target = kind["target"]?.stringValue.flatMap { model.cue(ModelID($0)) }
         let extent =
-            target.map { Self.levelExtent(of: $0, durations: store.mediaDurations) } ?? (inputs: 0, outputs: 0)
+            target.map { Self.levelExtent(of: $0, durations: store.mediaDurations, model: model) }
+            ?? (inputs: 0, outputs: 0)
         fadeLevels.canSetFromTarget = target.flatMap { Self.levels(of: $0, durations: store.mediaDurations) } != nil
         if let set {
             let rows = max(set.inputExtent, extent.inputs, extent.inputs == 0 ? Self.defaultInputs : 0)
@@ -174,14 +175,16 @@ extension InspectorViewController {
     }
 
     /// The file channels and cue outputs a cue with sound has (an Audio cue, a Video cue whose movie
-    /// has sound), or the most any such cue inside a Group has.
-    static func levelExtent(of cue: Cue, durations: [ModelID: CueMediaDuration]) -> (inputs: Int, outputs: Int) {
+    /// has sound; its outputs as its Levels tab shows them), or the most any such cue inside a Group has.
+    static func levelExtent(
+        of cue: Cue, durations: [ModelID: CueMediaDuration], model: WorkspaceModel
+    ) -> (inputs: Int, outputs: Int) {
         var inputs = 0
         var outputs = 0
         func visit(_ c: Cue) {
             if c.sounds(durations[c.id]), let s = LevelSet(kind: c.raw["kind"] ?? .null) {
                 inputs = max(inputs, inputRows(of: c, durations: durations))
-                outputs = max(outputs, s.outputs.count)
+                outputs = max(outputs, shownOutputs(of: c, s, model: model))
             }
             c.children.forEach(visit)
         }

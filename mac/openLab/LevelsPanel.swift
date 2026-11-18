@@ -98,7 +98,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     /// Un-mutes every cue output and crosspoint.
     let clearMutesButton = NSButton(title: loc("levels.clearMutes"), target: nil, action: nil)
     private(set) var gangMode = false
-    /// Peaks of the cue's output channels (an Audio cue's Levels tab only).
+    /// Peaks of the cue's outputs, a bar beside each cue output's fader (an Audio cue's Levels tab
+    /// only; QLab 5 manual p. 204).
     let meter = MeterView()
     let defaultButton = NSButton(title: loc("levels.setDefault"), target: nil, action: nil)
     let silentButton = NSButton(title: loc("levels.setSilent"), target: nil, action: nil)
@@ -109,6 +110,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     static let sideWidth: CGFloat = 170
     /// The least height a fader has; a shorter tab scrolls.
     static let minFaderHeight: CGFloat = 70
+    static let faderWidth: CGFloat = 22
+    /// A cue output's meter bar beside its fader, and how far its ends sit inside the fader's.
+    static let meterWidth: CGFloat = 4
+    static let meterInset: CGFloat = 4
 
     /// A whole new level set, and the gesture it belongs to (nil for a one-off edit such as a typed value).
     var onEdit: ((LevelSet, Int?) -> Void)?
@@ -210,6 +215,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
         board.addSubview(matrix)
         board.addSubview(levelField)
+        // Under the faders, which are added after it.
+        if !isFade { board.addSubview(meter) }
         syncFaders(outputs: 0)
         scroll.documentView = board
         scroll.hasVerticalScroller = true
@@ -220,13 +227,14 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
         scroll.onLayout = { [weak self] in self?.layoutBoard() }
 
-        // An Audio cue's column is buttons and the meter only, as QLab's is: a level's mute is in the
-        // box's menu, its gang is typed in gang mode. A Fade keeps the chosen level's block.
+        // An Audio cue's column is buttons only, as QLab's is: its meters are beside the faders, a
+        // level's mute is in the box's menu, its gang is typed in gang mode. A Fade keeps the chosen
+        // level's block.
         let buttons: [NSButton] =
             isFade
             ? [fromTargetButton, silentButton]
             : [defaultButton, silentButton, gangsButton, clearMutesButton, editPatchButton]
-        let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : [meter]
+        let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : []
         cellLabel.font = .systemFont(ofSize: 11)
         cellLabel.textColor = .secondaryLabelColor
         cellLabel.lineBreakMode = .byTruncatingTail
@@ -242,7 +250,6 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         }
         side.setCustomSpacing(isFade ? 16 : 8, after: buttons[buttons.count - 1])
         for v in chosen { side.addArrangedSubview(v) }
-        if !isFade { meter.widthAnchor.constraint(equalTo: side.widthAnchor).isActive = true }
         side.widthAnchor.constraint(equalToConstant: Self.sideWidth).isActive = true
         side.setHuggingPriority(.defaultHigh, for: .vertical)
         view.orientation = .horizontal
@@ -336,9 +343,18 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         if matrix.frame.origin != NSPoint(x: 0, y: boxesTop) { matrix.setFrameOrigin(NSPoint(x: 0, y: boxesTop)) }
         for (n, f) in faders.enumerated() {
             let box = matrix.rect(of: Self.slot(ofFader: n))
-            let frame = NSRect(x: box.midX - 11, y: top, width: 22, height: boxesTop - gap - top)
+            let frame = NSRect(
+                x: box.midX - Self.faderWidth / 2, y: top, width: Self.faderWidth, height: boxesTop - gap - top)
             if f.frame != frame { f.frame = frame }
         }
+        // A meter bar just right of each cue output's fader, as tall as the fader's track.
+        let meterFrame = NSRect(
+            x: 0, y: top + Self.meterInset, width: size.width,
+            height: max(0, boxesTop - gap - top - 2 * Self.meterInset))
+        if meter.frame != meterFrame { meter.frame = meterFrame }
+        meter.columns = MeterView.Columns(
+            first: matrix.rect(of: .output(0)).midX + Self.faderWidth / 2, step: LevelMatrixView.cellW,
+            width: Self.meterWidth, count: matrix.outputCount)
         if !levelField.isHidden { levelField.frame = fieldFrame(selection) }
     }
 
@@ -458,6 +474,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             f.isEnabled = free
             f.isHidden = gangMode
         }
+        // Gang mode hides the levels, and with them the meters beside the faders.
+        if meter.isHidden != gangMode { meter.isHidden = gangMode }
         activeCheck.state = active ? .on : .off
         levelField.isEnabled = free
         activeCheck.isEnabled = free

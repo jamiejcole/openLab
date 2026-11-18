@@ -91,7 +91,7 @@ enum MainMenu {
                 recentItem,
                 item("menu.file.recover", #selector(AppDelegate.recoverAutosaves(_:))),
                 .separator(),
-                item("menu.file.workspaceSettings", #selector(AppDelegate.showWorkspaceSettings(_:)), ","),
+                workspaceSettingsItem(),
                 item("menu.file.showInFinder", #selector(AppDelegate.showWorkspaceInFinder(_:))),
                 .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
@@ -101,6 +101,32 @@ enum MainMenu {
             ]
         )
         return (file, recent)
+    }
+
+    /// File > Workspace Settings: the settings window (Command-comma), then each category with its
+    /// pages, which open the window on that page.
+    private static func workspaceSettingsItem() -> NSMenuItem {
+        let submenu = NSMenu(title: localized("menu.file.workspaceSettings"))
+        submenu.addItem(
+            item("menu.file.workspaceSettings.window", #selector(AppDelegate.showWorkspaceSettings(_:)), ","))
+        submenu.addItem(.separator())
+        func page(_ page: SettingsPage) -> NSMenuItem {
+            let entry = NSMenuItem(
+                title: localized(page.titleKey), action: #selector(AppDelegate.showWorkspaceSettingsPage(_:)),
+                keyEquivalent: "")
+            entry.representedObject = page.rawValue
+            return entry
+        }
+        for category in SettingsCategory.allCases {
+            let entry = NSMenuItem(title: localized(category.titleKey), action: nil, keyEquivalent: "")
+            let pages = NSMenu(title: entry.title)
+            for p in category.pages { pages.addItem(page(p)) }
+            entry.submenu = pages
+            submenu.addItem(entry)
+        }
+        let top = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+        top.submenu = submenu
+        return top
     }
 
     /// The items of the Open Recent submenu for `urls`: one per workspace, then Clear Menu.

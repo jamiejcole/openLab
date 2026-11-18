@@ -84,6 +84,10 @@ fn ws_with(outputs: Vec<PatchOutput>) -> Workspace {
             auto_number_start: 1.0,
             auto_number_increment: 1.0,
             new_cues_auto_load: false,
+            auto_number_new_cues: true,
+            lock_playhead: true,
+            go_needs_key_up: false,
+            osc_enabled: true,
         },
         patches: vec![OutputPatch {
             crosspoints: Vec::new(),

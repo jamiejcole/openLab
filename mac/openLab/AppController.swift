@@ -106,6 +106,10 @@ final class AppController {
     var isModalUp: @MainActor () -> Bool = { NSApp.modalWindow != nil }
     private var resignObserver: Any?
     private var keyUpMonitor: Any?
+    /// Key codes of GO presses (Workspace Settings, General: key up before the next GO) whose
+    /// key-up has not come yet; a GO key down again meanwhile fires nothing. Cleared when the app
+    /// is left, since the release may then go to another app.
+    var goKeysDown: Set<UInt16> = []
 
     private var subs: [AnyCancellable] = []
     private var keyMonitor: Any?
@@ -156,7 +160,10 @@ final class AppController {
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in  // No trigger_released is sent: a cue is never stopped without an observed key release.
-            MainActor.assumeIsolated { self?.heldHotkeys = [:] }
+            MainActor.assumeIsolated {
+                self?.heldHotkeys = [:]
+                self?.goKeysDown.removeAll()
+            }
         }
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
         launcher.onOpen = { [weak self] in Task { await self?.openWorkspace() } }
@@ -198,6 +205,11 @@ final class AppController {
         let keys = frontKeys
         if let command = keys.command(for: chord), canPerform(command) {
             let isRepeat = event.isARepeat
+            // With "key up before the next GO" on, the GO key down again without its release in
+            // between (a stuck or doubled key) is taken and fires nothing.
+            if command == .go, frontController?.store.isOn(.goNeedsKeyUp) == true {
+                if isRepeat || !goKeysDown.insert(event.keyCode).inserted { return nil }
+            }
             performNow(command, isRepeat: isRepeat)
             return nil
         }
@@ -291,6 +303,7 @@ final class AppController {
     /// Key up: the hotkey's `up`, so the engine releases the cues it fired that use
     /// second-trigger-on-release.
     func handleKeyUp(_ event: NSEvent) {
+        goKeysDown.remove(event.keyCode)
         guard let hotkey = heldHotkeys.removeValue(forKey: event.keyCode), let key = hotkey["key"]?.stringValue
         else { return }
         Task { await sendHotkey(key: key, modifiers: Self.modifiers(of: hotkey), up: true) }

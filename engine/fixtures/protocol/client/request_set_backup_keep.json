@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 69,
+  "request": {
+    "type": "set_backup_keep",
+    "count": 20
+  }
+}

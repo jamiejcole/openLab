@@ -293,7 +293,8 @@ final class KeyMapPageTests: XCTestCase {
         )
     }
 
-    /// Widened, the Keys tab fills the window as the General tab does, its columns from the left.
+    /// Widened, the Keys tab fills the window right of the category list as the General tab does,
+    /// its columns from the left.
     func testAtALargeSizeTheKeysTabFillsTheWindowLikeTheGeneralTab() throws {
         let window = try XCTUnwrap(sc.window)
         window.setContentSize(NSSize(width: 1000, height: 800))
@@ -303,7 +304,11 @@ final class KeyMapPageTests: XCTestCase {
         sc.tabs.selectTabViewItem(withIdentifier: "keys")
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertEqual(sc.tabs.frame, general, "the tab view keeps its frame")
-        XCTAssertGreaterThanOrEqual(general.width, 1000 - 24, "and fills the window (its frame takes in the bezel)")
+        let list = try XCTUnwrap(sc.categoryTable.enclosingScrollView)
+        let listInWindow = list.convert(list.bounds, to: nil)
+        let pageInWindow = sc.tabs.convert(sc.tabs.bounds, to: nil)
+        XCTAssertEqual(pageInWindow.minX, listInWindow.maxX + 8, accuracy: 0.5, "it starts beside the category list")
+        XCTAssertEqual(pageInWindow.maxX, 1000 - 12, accuracy: 0.5, "and reaches the window's right margin")
         let pane = try XCTUnwrap(sc.tabs.selectedTabViewItem?.view)
         let columns = try XCTUnwrap(pane.subviews.first)
         XCTAssertEqual(columns.frame.minX, 16, accuracy: 0.5, "the columns start at the left edge")

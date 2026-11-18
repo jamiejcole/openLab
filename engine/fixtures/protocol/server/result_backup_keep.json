@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "id": 48,
+  "ok": {
+    "data": {
+      "type": "backup_keep",
+      "count": 20
+    }
+  }
+}

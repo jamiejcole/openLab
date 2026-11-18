@@ -112,7 +112,7 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         // Records the engine made but did not push: an open window reads what is missing.
         gapSub = store.logGaps.sink { [weak self] newest in
             MainActor.assumeIsolated {
-                guard let self, self.window?.isVisible == true else { return }
+                guard let self, self.isOpen() else { return }
                 self.refreshAfterGap(newest: newest)
             }
         }
@@ -137,7 +137,7 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         dropped = 0
         tailFailed = false
         rebuild()
-        if window?.isVisible == true { refreshAfterGap(newest: 0) }
+        if isOpen() { refreshAfterGap(newest: 0) }
     }
 
     /// A burst of gaps (a slow client under a log burst) must not start a re-read each: one is in
@@ -261,6 +261,10 @@ final class LogWindowController: NSWindowController, NSTableViewDataSource, NSTa
         if dropped > 0 { parts.append(String(format: loc("log.dropped"), Int(dropped))) }
         note.stringValue = parts.joined(separator: "  ")
     }
+
+    /// Whether the log is on show: its own window, or the status window it is a page of (which says
+    /// so with this).
+    lazy var isOpen: () -> Bool = { [weak self] in self?.window?.isVisible == true }
 
     private var isViewLoaded: Bool { window?.contentView != nil }
 

@@ -115,6 +115,22 @@ pub enum WorkspaceSetting {
     NewCuesAutoLoad {
         value: bool,
     },
+    /// Whether `AddCue { auto_number }` numbers the new cue.
+    AutoNumberNewCues {
+        value: bool,
+    },
+    /// Whether the app keeps selection and playhead together.
+    LockPlayhead {
+        value: bool,
+    },
+    /// Whether the app wants the GO key released before it sends another GO.
+    GoNeedsKeyUp {
+        value: bool,
+    },
+    /// Whether OSC may reach this workspace.
+    OscEnabled {
+        value: bool,
+    },
 }
 
 /// The wire form of [`WorkspaceSetting::Hotkeys`]: every key present (`null` = no key) and no
@@ -235,6 +251,18 @@ impl WorkspaceSetting {
             Self::NewCuesAutoLoad { .. } => Self::NewCuesAutoLoad {
                 value: s.new_cues_auto_load,
             },
+            Self::AutoNumberNewCues { .. } => Self::AutoNumberNewCues {
+                value: s.auto_number_new_cues,
+            },
+            Self::LockPlayhead { .. } => Self::LockPlayhead {
+                value: s.lock_playhead,
+            },
+            Self::GoNeedsKeyUp { .. } => Self::GoNeedsKeyUp {
+                value: s.go_needs_key_up,
+            },
+            Self::OscEnabled { .. } => Self::OscEnabled {
+                value: s.osc_enabled,
+            },
         }
     }
 
@@ -250,6 +278,10 @@ impl WorkspaceSetting {
             Self::AutoNumberStart { value } => s.auto_number_start = *value,
             Self::AutoNumberIncrement { value } => s.auto_number_increment = *value,
             Self::NewCuesAutoLoad { value } => s.new_cues_auto_load = *value,
+            Self::AutoNumberNewCues { value } => s.auto_number_new_cues = *value,
+            Self::LockPlayhead { value } => s.lock_playhead = *value,
+            Self::GoNeedsKeyUp { value } => s.go_needs_key_up = *value,
+            Self::OscEnabled { value } => s.osc_enabled = *value,
         }
     }
 

@@ -23,6 +23,42 @@ final class AudioPreferencesModel {
 
     init(client: EngineClient) { self.client = client }
 
+    /// How many backups of each workspace this machine keeps (nil: not read yet).
+    private(set) var backupKeep: UInt32?
+    static let backupKeepRange: ClosedRange<UInt32> = 0...1000
+
+    /// Reads the backup count (with `refresh`).
+    func refreshBackups() async {
+        if case .success(let ok) = await client.send({ .request(id: $0, .backupKeep) }),
+            case .backupKeep(let count)? = ok.data
+        {
+            backupKeep = count
+        }
+    }
+
+    /// Keeps `text` backups of each workspace: a whole number; 0 turns backups off. False, with a
+    /// message, when it is not a number in range or the engine refuses.
+    @discardableResult
+    func setBackupKeep(_ text: String) async -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let count = UInt32(trimmed), Self.backupKeepRange.contains(count) else {
+            message = String(
+                format: loc("prefs.general.backups.range"), Int(Self.backupKeepRange.lowerBound),
+                Int(Self.backupKeepRange.upperBound))
+            return false
+        }
+        let result = await client.send({ .request(id: $0, .setBackupKeep(count: count)) })
+        await refreshBackups()
+        switch result {
+        case .success:
+            message = nil
+            return true
+        case .failure(let e):
+            message = e.detailText
+            return false
+        }
+    }
+
     func refresh() async {
         switch await client.send({ .request(id: $0, .listDevices) }) {
         case .success(let ok):

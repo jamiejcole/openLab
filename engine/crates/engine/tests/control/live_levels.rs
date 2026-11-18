@@ -763,6 +763,44 @@ fn a_faded_output_keeps_the_fade_level_when_its_patch_adds_it() {
     );
 }
 
+/// A Fade of a cue whose levels list fewer outputs than its patch has (a cue made before its patch
+/// grew): the patch's other outputs exist, silent, and the Fade brings one up, heard there
+/// (QLab 5 manual p. 204).
+#[test]
+fn a_fade_brings_up_an_output_of_the_patch_the_cues_levels_do_not_list() {
+    let fade = cue(
+        2,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: secs(400),
+            curve: FadeCurve::Linear,
+            levels: FadeLevels {
+                master_db: None,
+                output_db: vec![None, Some(-6.0)],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+            mode: Default::default(),
+            geometry: Default::default(),
+        },
+    );
+    let a = wav(&dc(RATE as usize * 10, LEVEL));
+    let mut s = show(workspace(vec![audio(1, &a, 1), fade]));
+    set_levels(&mut s, 1, |l| l.outputs.truncate(1));
+    start(&mut s, 1);
+    s.run(400);
+    assert!(s.channel(1).iter().all(|&v| v == 0.0), "output 2 is silent");
+    let at = start(&mut s, 2) as usize;
+    s.run(800);
+    let x = s.channel(1);
+    let faded = LEVEL * db_to_gain(-6.0);
+    assert!(
+        x[at + 500..].iter().all(|&v| near(v, faded)),
+        "{}",
+        x[at + 500]
+    );
+}
+
 /// "Fade and stop others", peers, 1 s: the cue playing beside it is heard fading out from its
 /// level along a straight line over that second, and is silent and stopped after it.
 #[test]

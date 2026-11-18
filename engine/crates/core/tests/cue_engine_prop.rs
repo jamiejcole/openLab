@@ -2770,7 +2770,12 @@ impl Run {
             match option {
                 // A release that is not a second trigger is ignored without a word.
                 _ if !applies => {
-                    prop_assert!(actions.is_empty(), "release of {} did {:?}", cue, actions);
+                    // (Double-GO protection running out may be reported by any call.)
+                    let others: Vec<_> = actions
+                        .iter()
+                        .filter(|a| !matches!(a, Action::GoProtection { .. }))
+                        .collect();
+                    prop_assert!(others.is_empty(), "release of {} did {:?}", cue, actions);
                 }
                 SecondTrigger::Nothing => {
                     prop_assert_eq!(
@@ -3052,6 +3057,11 @@ impl Run {
         self.call(Input::StopPreview { cue: None }, Kind::PreviewSide)?;
         // Fades are carried out by the mixer; advance past the longest.
         self.now += 1000;
+        // Double-GO protection that ran out meanwhile is ended by the next call, which the control
+        // loop makes when it is due.
+        if self.engine.go_protection_ends().is_some() {
+            self.call(Input::Tick, Kind::Operator { trigger: false })?;
+        }
         self.deliver()?;
         self.flush_previews()?;
         self.settle()?;

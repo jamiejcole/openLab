@@ -12,6 +12,32 @@ use openlab_core::protocol::{
 };
 
 use super::docs::DocSource;
+
+/// The `backup_keep` answer.
+fn backup_result(id: openlab_core::protocol::RequestId, count: u32) -> ServerMessage {
+    ServerMessage::Result {
+        id,
+        outcome: Outcome::Ok(OkBody {
+            revision: None,
+            data: Some(ResultData::BackupKeep { count }),
+        }),
+    }
+}
+
+/// The `osc` answer.
+fn osc_result(id: openlab_core::protocol::RequestId, state: crate::net::OscState) -> ServerMessage {
+    ServerMessage::Result {
+        id,
+        outcome: Outcome::Ok(OkBody {
+            revision: None,
+            data: Some(ResultData::Osc {
+                port: state.port,
+                open: state.open,
+                error: state.error,
+            }),
+        }),
+    }
+}
 use super::inbox::reply;
 use super::watch::WatchAnswer;
 use super::{Control, DocCx, DocId, Flow, Inbox, ReplyTx, fail, failed, ok, refused};
@@ -280,6 +306,45 @@ impl Control {
                         to,
                         match outcome {
                             Ok(()) => ok(id, None),
+                            Err(error) => failed(id, error),
+                        },
+                    );
+                }
+                Request::BackupKeep => {
+                    reply(to, backup_result(id, self.eng.config.machine.backup_keep))
+                }
+                Request::SetBackupKeep { count } => {
+                    let outcome = self.eng.set_backup_keep(count);
+                    reply(
+                        to,
+                        match outcome {
+                            Ok(count) => backup_result(id, count),
+                            Err(error) => failed(id, error),
+                        },
+                    );
+                }
+                Request::OscState => {
+                    let state = self.eng.osc_state();
+                    reply(
+                        to,
+                        match state {
+                            Some(state) => osc_result(id, state),
+                            None => failed(
+                                id,
+                                openlab_core::protocol::ErrorBody::new(
+                                    ErrorCode::Unsupported,
+                                    "OSC is not running",
+                                ),
+                            ),
+                        },
+                    );
+                }
+                Request::SetOscPort { port } => {
+                    let outcome = self.eng.set_osc_port(port);
+                    reply(
+                        to,
+                        match outcome {
+                            Ok(state) => osc_result(id, state),
                             Err(error) => failed(id, error),
                         },
                     );

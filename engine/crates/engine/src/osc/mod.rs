@@ -797,6 +797,11 @@ impl Osc {
                 (_, false) => Some(Budget::Open),
             },
         };
+        if !show.enabled() {
+            self.stats.denied += 1;
+            self.push_reply(&ask, &Reply::denied(), out);
+            return false;
+        }
         if parsed.address == Address::Connect {
             let given = dispatch::passcode_arg(&message.args);
             let (result, counted) = self.docs.entry(doc).or_default().connect_counting(

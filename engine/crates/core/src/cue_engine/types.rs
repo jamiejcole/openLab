@@ -646,6 +646,10 @@ pub enum Action {
         list: CueListId,
         reason: GoIgnoredReason,
     },
+    /// Double-GO protection began (`active`) or ended: a GO inside it is ignored.
+    GoProtection {
+        active: bool,
+    },
     /// Ramp one gain of the run's voice to `gain` (linear amplitude, as the mixer's `Ramp`) over
     /// `frames` samples from sample `at`, with `curve`. The mixer starts the ramp from the value
     /// the gain has on `at`, so an interrupted ramp continues smoothly. `frames` 0 sets the gain

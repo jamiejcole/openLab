@@ -92,8 +92,9 @@ final class WorkspaceSettingsTests: XCTestCase {
 
     func testTheFileMenuHasWorkspaceSettingsOnCommandComma() {
         let item = MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") }?.items
+            .first { $0.title == loc("menu.file.workspaceSettings") }?.submenu?.items
             .first { $0.action == #selector(AppDelegate.showWorkspaceSettings(_:)) }
-        XCTAssertEqual(item?.title, loc("menu.file.workspaceSettings"))
+        XCTAssertEqual(item?.title, loc("menu.file.workspaceSettings.window"))
         XCTAssertEqual(item?.keyEquivalent, ",")
     }
 
@@ -554,9 +555,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(commands(rig).count, sent, "nothing out of range is sent")
     }
 
-    /// 128 cue outputs (QLab's most): every row is in the editor and the matrix scrolls; meters and a
-    /// cue's Levels tab show the first 64, and the editor says so.
-    func testA128OutputPatchShowsEveryRowAndSaysWhatIsShownOfIt() async throws {
+    /// 128 cue outputs (QLab's most): every row is in the editor, each with its meter, and the
+    /// matrix scrolls.
+    func testA128OutputPatchShowsEveryRowWithItsMeter() async throws {
         let (rig, sc) = try await open()
         let editor = try await edit(in: sc)
         await sc.model.setOutputCount(patch, 128)
@@ -564,9 +565,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         editor.render()
         XCTAssertEqual(editor.outputFields.count, 128)
         XCTAssertEqual(editor.matrix.rowLabels.count, 128)
-        XCTAssertEqual(editor.meter.fixedRows, 64)
+        XCTAssertEqual(editor.meter.fixedRows, 128, "a meter bar beside every row")
+        XCTAssertEqual(editor.meter.frame.maxY, editor.matrix.meterRect(rows: 128).maxY - PatchRoutingView.headerH)
         XCTAssertGreaterThan(editor.matrix.frame.height, PatchRoutingView.rowH * 128)
-        XCTAssertTrue(editor.routingNote.stringValue.contains(loc("patchEditor.metersShown")))
         // Each level box is inside the matrix, on its own row.
         let last = try XCTUnwrap(editor.outputFields.last)
         XCTAssertTrue(editor.matrixRows.bounds.contains(last.frame))
@@ -590,6 +591,65 @@ final class WorkspaceSettingsTests: XCTestCase {
         // The device's two outputs take cue outputs 1 and 2; the rest have none of their own (Q515).
         let mapped = try await mapping(rig)
         XCTAssertEqual(mapped?.channels, [0, 1])
+    }
+
+    /// A cue routed to cue output 100 of a 128-output patch plays: the editor's meter row 100
+    /// lights, drawn beside its row, and a row the cue does not reach stays dark.
+    func testA128OutputPatchsEditorMetersRow100WhileACueRoutedThereplays() async throws {
+        let intro = intro
+        let (rig, _, editor) = try await playing { url in
+            try writeWAV(url.appendingPathComponent("media/a.wav"), seconds: 10)
+            try editShow(url.appendingPathComponent("Demo.openlab")) { ws in
+                guard var patches = ws["patches"]?.arrayValue, let first = patches[0]["outputs"]?.arrayValue?.first,
+                    var lists = ws["cue_lists"]?.arrayValue, var cues = lists[0]["cues"]?.arrayValue,
+                    let i = cues.firstIndex(where: { $0["id"]?.stringValue == intro.raw }),
+                    var kind = cues[i]["kind"], var levels = kind["levels"]
+                else { return XCTFail("the demo show has its patch and intro") }
+                patches[0].set("outputs", .array(Array(repeating: first, count: 128)))
+                ws.set("patches", .array(patches))
+                let unity = JSONValue.object(["db": .double(0), "mute": .bool(false)])
+                levels.set("outputs", .array(Array(repeating: unity, count: 128)))
+                levels.set(
+                    "crosspoints",
+                    .array([
+                        .object(["input": .int(0), "output": .int(99), "db": .double(0), "mute": .bool(false)])
+                    ]))
+                kind.set("levels", levels)
+                cues[i].set("kind", kind)
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+        editor.render()
+        XCTAssertEqual(editor.meter.fixedRows, 128)
+        XCTAssertTrue(editor.meter.isOnScreen, "the editor's meter is live")
+        let row100 = try await rowPeak(rig, row: 99)
+        XCTAssertGreaterThan(row100, 0.01, "row 100 moves")
+        let row1 = try await rowPeak(rig, row: 0)
+        XCTAssertEqual(row1, 0, accuracy: 0.0001, "row 1 carries nothing")
+        // Row 100's bar is drawn lit, level with its row's boxes.
+        let bar = editor.meter.rowRect(99)
+        let box = editor.matrix.cellRect(row: 99, column: 0)
+        let barInMatrix = editor.matrix.convert(bar, from: editor.meter)
+        XCTAssertTrue(
+            barInMatrix.midY > box.minY && barInMatrix.midY < box.maxY, "the bar \(barInMatrix) is on row 100 \(box)")
+        try await rig.advance(0.1)
+        rig.store.meters.tick(0)
+        let rep = try renderView(editor.meter)
+        func lit(_ r: NSRect) -> Int {
+            let scale = CGFloat(rep.pixelsWide) / editor.meter.bounds.width
+            var n = 0
+            for py in Int(r.minY * scale)..<max(Int(r.minY * scale) + 1, Int(r.maxY * scale)) {
+                for px in 0..<rep.pixelsWide {
+                    guard let c = rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB) else { continue }
+                    let hi = max(c.redComponent, c.greenComponent, c.blueComponent)
+                    if hi - min(c.redComponent, c.greenComponent, c.blueComponent) > 0.4 { n += 1 }
+                }
+            }
+            return n
+        }
+        XCTAssertGreaterThan(lit(bar), 0, "row 100's bar is lit")
+        XCTAssertEqual(lit(editor.meter.rowRect(0)), 0, "row 1's bar is dark")
     }
 
     /// Checklist: an Audio cue is selected → the I/O tab's edit button, and a button on the Levels
@@ -1325,7 +1385,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(
             sc.patchEditButtons[0].convert(sc.patchEditButtons[0].bounds, to: nil).minX, editX, accuracy: 0.5,
             "a scroller does not move the rows")
-        window.setContentSize(NSSize(width: 1100, height: 1000))
+        window.setContentSize(NSSize(width: 1300, height: 1000))
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(sc.patchDevicePopups[0].bounds.width, narrow + 300, "the device column widens")
         let title = try XCTUnwrap(
@@ -1395,6 +1455,132 @@ final class WorkspaceSettingsTests: XCTestCase {
                     fa.intersects(b.frame.insetBy(dx: 1, dy: 1)),
                     "\(what): \(a.accessibilityIdentifier()) overlaps \(b.accessibilityIdentifier())")
             }
+        }
+    }
+
+    // MARK: Categories and pages
+
+    /// Checklist: Workspace Settings → a list of categories on the left; picking one shows its pages
+    /// on the right (a bar of its pages when it has more than one).
+    func testSettingsListsCategoriesAndPickingOneShowsItsPages() async throws {
+        let (_, sc) = try await open()
+        let titles = (0..<sc.categoryTable.numberOfRows).compactMap {
+            (sc.categoryTable.view(atColumn: 0, row: $0, makeIfNecessary: true) as? NSTableCellView)?.textField?
+                .stringValue
+        }
+        XCTAssertEqual(titles, SettingsCategory.allCases.map { loc($0.titleKey) })
+        sc.show(page: .general)
+        XCTAssertEqual(sc.categoryTable.selectedRow, 0, "General is selected")
+        XCTAssertTrue(sc.pageBar.isHidden, "one page needs no bar")
+        let network = try XCTUnwrap(SettingsCategory.allCases.firstIndex(of: .network))
+        sc.categoryTable.selectRowIndexes(IndexSet(integer: network), byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .network, "a category shows its first page")
+        XCTAssertFalse(sc.pageBar.isHidden)
+        XCTAssertEqual(
+            (0..<sc.pageBar.segmentCount).compactMap { sc.pageBar.label(forSegment: $0) },
+            [loc(SettingsPage.network.titleKey), loc(SettingsPage.osc.titleKey)])
+        sc.pageBar.selectedSegment = 1
+        _ = sc.pageBar.target?.perform(sc.pageBar.action, with: sc.pageBar)
+        XCTAssertEqual(sc.shownPage, .osc)
+        XCTAssertEqual(sc.categoryTable.selectedRow, network, "the category stays selected")
+        let audio = try XCTUnwrap(SettingsCategory.allCases.firstIndex(of: .audio))
+        sc.categoryTable.selectRowIndexes(IndexSet(integer: audio), byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .audio)
+        XCTAssertTrue(sc.pageBar.isHidden)
+        // Back to the category on show keeps its page.
+        sc.show(page: .osc)
+        let again = IndexSet(integer: network)
+        sc.categoryTable.selectRowIndexes(again, byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .osc)
+    }
+
+    /// The note about the red border sits under the time between GOs, above the key-up box.
+    func testTheRedBorderNoteSitsUnderTheTimeBetweenGos() async throws {
+        let (_, sc) = try await open()
+        sc.show(page: .general)
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        func minY(_ v: NSView) -> CGFloat { v.convert(v.bounds, to: nil).maxY }
+        let note = try XCTUnwrap(
+            sc.tabs.selectedTabViewItem?.view.flatMap { Self.find(loc("settings.general.keyUp.note"), in: $0) })
+        XCTAssertLessThan(minY(sc.goIntervalField), minY(note) + 40, "the note follows the field")
+        XCTAssertGreaterThan(minY(note), minY(sc.keyUpCheck), "and sits above the key-up box")
+    }
+
+    static func find(_ text: String, in view: NSView) -> NSTextField? {
+        if let f = view as? NSTextField, f.stringValue == text { return f }
+        for s in view.subviews { if let f = find(text, in: s) { return f } }
+        return nil
+    }
+
+    /// The selected category reads in light and dark: its row, drawn, holds ink that contrasts with
+    /// the selection behind it, and its label is in the middle of the row.
+    func testTheSelectedCategoryReadsInLightAndDark() async throws {
+        let (_, sc) = try await open()
+        sc.show(page: .network)
+        let table = sc.categoryTable
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            sc.window?.appearance = NSAppearance(named: name)
+            sc.window?.contentView?.layoutSubtreeIfNeeded()
+            let row = table.selectedRow
+            let rect = table.rect(ofRow: row)
+            let rep = try XCTUnwrap(table.bitmapImageRepForCachingDisplay(in: rect))
+            table.cacheDisplay(in: rect, to: rep)
+            var lum: [CGFloat] = []
+            for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
+                for y in 0..<rep.pixelsHigh {
+                    if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) {
+                        lum.append(0.3 * c.redComponent + 0.6 * c.greenComponent + 0.1 * c.blueComponent)
+                    }
+                }
+            }
+            XCTAssertGreaterThan((lum.max() ?? 0) - (lum.min() ?? 0), 0.3, "\(name): the label contrasts")
+            let cell = try XCTUnwrap(table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)
+            let label = try XCTUnwrap(cell.textField)
+            XCTAssertEqual(label.frame.midY, cell.bounds.midY, accuracy: 1.5, "\(name): centred in its row")
+        }
+    }
+
+    /// Checklist: the File menu's settings submenu opens each category directly: every page has an
+    /// item, and opening a page shows it with its category selected.
+    func testTheFileMenusSettingsSubmenuOpensEachCategoryDirectly() async throws {
+        let file = try XCTUnwrap(MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") })
+        let submenu = try XCTUnwrap(file.items.first { $0.title == loc("menu.file.workspaceSettings") }?.submenu)
+        let window = try XCTUnwrap(
+            submenu.items.first { $0.action == #selector(AppDelegate.showWorkspaceSettings(_:)) })
+        XCTAssertEqual(window.keyEquivalent, ",")
+        let categories = submenu.items.filter { $0.submenu != nil }
+        XCTAssertEqual(categories.map(\.title), SettingsCategory.allCases.map { loc($0.titleKey) })
+        let pages = categories.flatMap { $0.submenu?.items ?? [] }
+        XCTAssertEqual(pages.compactMap { $0.representedObject as? String }, SettingsPage.allCases.map(\.rawValue))
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in wc.settingsWindow.close() }
+        for item in pages {
+            let page = try XCTUnwrap((item.representedObject as? String).flatMap(SettingsPage.init))
+            XCTAssertEqual(item.action, #selector(AppDelegate.showWorkspaceSettingsPage(_:)))
+            await wc.showSettings(page: page).value
+            XCTAssertEqual(wc.settingsWindow.shownPage, page)
+            XCTAssertEqual(
+                wc.settingsWindow.categoryTable.selectedRow,
+                SettingsCategory.allCases.firstIndex(of: page.category), "\(page)")
+        }
+    }
+
+    /// Checklist: Settings window at its smallest size → no page is clipped.
+    func testEveryPageAtTheSmallestSizeClipsNothing() async throws {
+        let (_, sc) = try await open()
+        let window = try XCTUnwrap(sc.window)
+        window.setContentSize(window.contentMinSize)
+        for page in SettingsPage.allCases {
+            sc.show(page: page)
+            window.contentView?.layoutSubtreeIfNeeded()
+            assertNothingClippedOrOverlapping(in: sc.tabs.selectedTabViewItem?.view, "the \(page) page")
+            let list = try XCTUnwrap(sc.categoryTable.enclosingScrollView)
+            XCTAssertGreaterThanOrEqual(
+                list.frame.height, sc.categoryTable.rect(ofRow: sc.categoryTable.numberOfRows - 1).maxY,
+                "the category list shows every category")
+            XCTAssertTrue(window.contentView?.bounds.contains(list.convert(list.bounds, to: nil)) == true)
+            if !sc.pageBar.isHidden { assertNothingClippedOrOverlapping(in: sc.pageBar, "the page bar") }
         }
     }
 

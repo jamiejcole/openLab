@@ -119,6 +119,7 @@ Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open anoth
   "settings_version": 1,
   "backup_keep": 20,
   "output_device": "Scarlett 2i2",
+  "osc_port": 53000,
   "buffer_frames": { "Scarlett 18i20": 256 },
   "workspaces": {
     "<workspace-id>": {

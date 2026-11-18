@@ -775,3 +775,150 @@ fn list_patch_mappings_reports_the_stored_mapping_of_each_patch() {
     assert_eq!(set(&mut s, patch_id(), None), Ok(()));
     assert_eq!(listed(&mut s), entry(None));
 }
+
+/// Sends `request` and returns its result.
+fn ask(s: &mut OfflineShow, request: Request) -> Outcome {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request { id, request });
+    replies
+        .into_iter()
+        .find_map(|m| match m {
+            ServerMessage::Result { outcome, .. } => Some(outcome),
+            _ => None,
+        })
+        .expect("no result")
+}
+
+fn osc_data(outcome: &Outcome) -> (u16, bool, Option<String>) {
+    match outcome {
+        Outcome::Ok(ok) => match &ok.data {
+            Some(ResultData::Osc { port, open, error }) => (*port, *open, error.clone()),
+            other => panic!("not an osc answer: {other:?}"),
+        },
+        Outcome::Error(e) => panic!("refused: {e:?}"),
+    }
+}
+
+/// Workspace Settings, OSC: the page reads the port and whether it is open, a new port is opened
+/// and kept for the next start, one in use is refused (`io`) with the old port still serving and
+/// the reason in the state, port 0 is `bad_request`, and settings that cannot be kept refuse it.
+#[test]
+fn the_osc_port_is_read_changed_kept_and_refused_when_in_use() {
+    let env = env();
+    let (inbox, _rx) = crossbeam_channel::unbounded();
+    let server = openlab_engine::net::OscServer::start(
+        openlab_engine::net::OscConfig {
+            bind: std::net::Ipv4Addr::LOCALHOST.into(),
+            port: 0,
+            ..openlab_engine::net::OscConfig::default()
+        },
+        inbox,
+        openlab_engine::net::TapSlot::default(),
+    );
+    let mut c = from_disk(&env, vec![device("Offline", 4)]);
+    c.osc = Some(server.clone());
+    let mut s = start_show(workspace(vec![]), c);
+    let (port, open, error) = osc_data(&ask(&mut s, Request::OscState));
+    assert!(open && error.is_none());
+    assert_ne!(port, 0);
+
+    // A port in use is refused with `io`, the old one still serves, and the state says why.
+    let taken = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let busy = taken.local_addr().unwrap().port();
+    let Outcome::Error(e) = ask(&mut s, Request::SetOscPort { port: busy }) else {
+        panic!("a port in use was accepted");
+    };
+    assert_eq!(e.code, ErrorCode::Io);
+    assert!(e.message.contains("already in use"), "{}", e.message);
+    let (now, open, error) = osc_data(&ask(&mut s, Request::OscState));
+    assert_eq!((now, open), (port, true), "the old port is kept");
+    assert!(error.unwrap().contains("already in use"));
+    assert_eq!(s.control().machine().osc_port, None, "nothing was kept");
+
+    // Port 0 is a bad request.
+    let Outcome::Error(e) = ask(&mut s, Request::SetOscPort { port: 0 }) else {
+        panic!("port 0 was accepted");
+    };
+    assert_eq!(e.code, ErrorCode::BadRequest);
+
+    // A free port is opened and kept for the next start.
+    let free = {
+        let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let (now, open, error) = osc_data(&ask(&mut s, Request::SetOscPort { port: free }));
+    assert_eq!((now, open, error), (free, true, None));
+    assert_eq!(s.control().machine().osc_port, Some(free));
+    drop(s);
+    let (loaded, _) = load_machine_settings_checked(&env.dirs);
+    assert_eq!(loaded.settings.osc_port, Some(free));
+    server.stop();
+}
+
+/// Settings that cannot be kept refuse a new OSC port and leave the old one listening.
+#[test]
+fn an_osc_port_that_cannot_be_saved_is_refused_and_the_old_one_stays() {
+    let env = env();
+    let (inbox, _rx) = crossbeam_channel::unbounded();
+    let server = openlab_engine::net::OscServer::start(
+        openlab_engine::net::OscConfig {
+            bind: std::net::Ipv4Addr::LOCALHOST.into(),
+            port: 0,
+            ..openlab_engine::net::OscConfig::default()
+        },
+        inbox,
+        openlab_engine::net::TapSlot::default(),
+    );
+    let before = server.state();
+    let mut c = from_disk(&env, vec![device("Offline", 4)]);
+    c.machine_writable = false;
+    c.osc = Some(server.clone());
+    let mut s = start_show(workspace(vec![]), c);
+    let Outcome::Error(e) = ask(&mut s, Request::SetOscPort { port: 54321 }) else {
+        panic!("accepted");
+    };
+    assert_eq!(e.code, ErrorCode::Io);
+    assert_eq!(server.state(), before);
+    server.stop();
+}
+
+/// Preferences: the number of backups kept is read, set (0 turns backups off), kept for the next
+/// start and refused above the maximum; settings that cannot be kept refuse it.
+#[test]
+fn the_backup_count_is_read_set_kept_and_refused_above_the_maximum() {
+    let env = env();
+    let mut s = start_show(
+        workspace(vec![]),
+        from_disk(&env, vec![device("Offline", 4)]),
+    );
+    let count = |outcome: Outcome| match outcome {
+        Outcome::Ok(ok) => match ok.data {
+            Some(ResultData::BackupKeep { count }) => count,
+            other => panic!("not a backup answer: {other:?}"),
+        },
+        Outcome::Error(e) => panic!("refused: {e:?}"),
+    };
+    let before = count(ask(&mut s, Request::BackupKeep));
+    assert_eq!(before, s.control().machine().backup_keep);
+    assert_eq!(count(ask(&mut s, Request::SetBackupKeep { count: 3 })), 3);
+    assert_eq!(count(ask(&mut s, Request::SetBackupKeep { count: 0 })), 0);
+    assert_eq!(s.control().machine().backup_keep, 0, "off");
+    let Outcome::Error(e) = ask(&mut s, Request::SetBackupKeep { count: 100_000 }) else {
+        panic!("a huge count was accepted");
+    };
+    assert_eq!(e.code, ErrorCode::BadRequest);
+    assert_eq!(s.control().machine().backup_keep, 0, "nothing changed");
+    assert_eq!(count(ask(&mut s, Request::SetBackupKeep { count: 7 })), 7);
+    drop(s);
+    let (loaded, _) = load_machine_settings_checked(&env.dirs);
+    assert_eq!(loaded.settings.backup_keep, 7);
+
+    let mut c = from_disk(&env, vec![device("Offline", 4)]);
+    c.machine_writable = false;
+    let mut s = start_show(workspace(vec![]), c);
+    let Outcome::Error(e) = ask(&mut s, Request::SetBackupKeep { count: 5 }) else {
+        panic!("accepted");
+    };
+    assert_eq!(e.code, ErrorCode::Io);
+    assert_eq!(s.control().machine().backup_keep, 7);
+}

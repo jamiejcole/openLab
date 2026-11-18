@@ -224,14 +224,18 @@ extension LevelSet {
 
     /// These levels after `edit`, which left the shown levels as `shown`: the one level moved (an
     /// output with this cue's own gang, as a drag on it would), its mute, its gang, or the whole-set
-    /// action. Nothing else is written, and a level this cue does not have is left alone.
-    func taking(_ edit: Edit, from shown: LevelSet, limits: VolumeLimits, drag: Bool = false) -> LevelSet {
+    /// action. Nothing else is written, and a level this cue does not have is left alone. `outputs`:
+    /// the cue outputs its patch has, each this cue's even where its levels do not name it yet.
+    func taking(
+        _ edit: Edit, from shown: LevelSet, limits: VolumeLimits, drag: Bool = false, outputs: Int = 0
+    ) -> LevelSet {
         var s = self
+        let width = max(s.outputs.count, min(outputs, Self.maxCueOutputs))
         func has(_ slot: Slot) -> Bool {
             switch slot {
             case .master: return true
-            case .output(let o): return s.outputs.indices.contains(o)
-            case .cross(_, let o): return s.outputs.indices.contains(o)
+            case .output(let o): return o >= 0 && o < width
+            case .cross(_, let o): return o >= 0 && o < width
             }
         }
         switch edit {

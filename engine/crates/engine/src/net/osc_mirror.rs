@@ -16,7 +16,8 @@ use openlab_core::protocol::{
     Delete, DocumentState, RuntimeChange, Snapshot, Upsert, WireCueState,
 };
 use openlab_core::{
-    Cue, CueId, CueKind, CueList, CueListId, FillStyle, OscAccess, Workspace, WorkspaceId,
+    Cue, CueId, CueKind, CueList, CueListId, FillStyle, OscAccess, OscRights, Workspace,
+    WorkspaceId,
 };
 use serde_json::{Value, json};
 
@@ -125,7 +126,18 @@ impl Mirror {
 
     /// The passcode table.
     pub fn access(&self) -> &OscAccess {
-        &self.workspace.settings.osc_access
+        // OSC access off (Workspace Settings, OSC): every peer is judged by a table that grants
+        // nothing, so every message is `denied`, and sessions made under the real table end when
+        // the copy sees the table change.
+        static NO_ACCESS: OscAccess = OscAccess {
+            no_passcode: OscRights::NONE,
+            passcodes: Vec::new(),
+        };
+        if self.workspace.settings.osc_enabled {
+            &self.workspace.settings.osc_access
+        } else {
+            &NO_ACCESS
+        }
     }
 
     /// Takes the active list over from the copy this one replaces, if it is the same workspace
@@ -560,6 +572,10 @@ impl OscShow for MirrorShow<'_> {
         self.0.access()
     }
 
+    fn enabled(&self) -> bool {
+        self.0.workspace.settings.osc_enabled
+    }
+
     /// The list whose playhead moved last, else the first (the main list).
     fn active_list(&self) -> Option<CueListId> {
         self.0
@@ -784,6 +800,10 @@ mod tests {
                 auto_number_start: 1.0,
                 auto_number_increment: 1.0,
                 new_cues_auto_load: false,
+                auto_number_new_cues: true,
+                lock_playhead: true,
+                go_needs_key_up: false,
+                osc_enabled: true,
             },
             patches: vec![],
             network_patches: vec![],

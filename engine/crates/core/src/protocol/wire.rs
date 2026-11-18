@@ -470,6 +470,10 @@ pub enum RuntimeChange {
         group: CueId,
         cue: Option<CueId>,
     },
+    /// Double-GO protection began (`active` true: a GO now is ignored) or ended.
+    GoProtection {
+        active: bool,
+    },
     Warning {
         warning: WireWarning,
     },
@@ -565,6 +569,7 @@ impl RuntimeChange {
                 group: *group,
                 warning: *warning,
             },
+            Action::GoProtection { active } => Self::GoProtection { active: *active },
             Action::PlayedChanged { cue, played } => Self::Played {
                 cue: *cue,
                 played: *played,

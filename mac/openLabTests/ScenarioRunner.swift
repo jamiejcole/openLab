@@ -392,9 +392,10 @@ final class ScenarioRunner {
             return .findMissingFiles(files, folder: folder)
         case "focus":
             let which = try string("focus")
-            guard ["workspace", "settings", "sheet", "patch-editor", "preferences"].contains(which) else {
+            guard ["workspace", "settings", "sheet", "patch-editor", "preferences", "status"].contains(which) else {
                 throw Failure(
-                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\" or \"sheet\"")
+                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\", \"status\" or \"sheet\""
+                )
             }
             return .focus(which)
         default:
@@ -887,6 +888,15 @@ final class ScenarioRunner {
                 await sc.model.refresh()
                 sc.render()
                 focused = w
+            } else if which == "status" {
+                // The workspace status window, drawn off screen on its Warnings page.
+                let status = wc.statusWindow
+                let w = try XCTUnwrap(status.window)
+                w.appearance = wc.window?.appearance
+                status.tabs.selectTabViewItem(withIdentifier: StatusWindowController.Page.warnings.rawValue)
+                await status.warnings.runCheck()
+                await status.logs.refresh()
+                focused = w
             } else if which == "sheet" {
                 guard let sheet = wc.existingMissingFiles?.choiceSheet?.window ?? wc.pasteSheet?.window else {
                     throw Failure("no sheet is up")
@@ -905,11 +915,14 @@ final class ScenarioRunner {
             note("focus \(which)")
         case .tab(let id):
             let tabs =
-                focused != nil && focused === prefs?.window
-                ? prefs!.tabs
-                : focused === wc.settingsWindow.patchEditor?.window && focused != nil
-                    ? wc.settingsWindow.patchEditor!.tabs
-                    : focused != nil && !(focused is PasteSheetWindow) ? wc.settingsWindow.tabs : wc.inspector.tabView
+                focused != nil && focused === wc.existingStatusWindow?.window
+                ? wc.existingStatusWindow!.tabs
+                : focused != nil && focused === prefs?.window
+                    ? prefs!.tabs
+                    : focused === wc.settingsWindow.patchEditor?.window && focused != nil
+                        ? wc.settingsWindow.patchEditor!.tabs
+                        : focused != nil && !(focused is PasteSheetWindow)
+                            ? wc.settingsWindow.tabs : wc.inspector.tabView
             let ids = tabs.tabViewItems.compactMap { $0.identifier as? String }
             guard ids.contains(id) else {
                 throw Failure("no tab \"\(id)\" for this selection; tabs: \(ids.joined(separator: ", "))")

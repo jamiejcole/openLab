@@ -1,0 +1,15 @@
+{
+  "about": "The workspace status window (#637): the Warnings page with the missing file's cue listed, the Logs page and the Info page (name, id, file).",
+  "show": "Demo",
+  "steps": [
+    {"focus": "status"},
+    {"shot": "warnings"},
+    {"tab": "logs"},
+    {"shot": "logs"},
+    {"tab": "info"},
+    {"shot": "info"},
+    {"resize": [520, 300]},
+    {"tab": "warnings"},
+    {"shot": "warnings-least"}
+  ]
+}
