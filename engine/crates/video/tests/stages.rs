@@ -549,7 +549,7 @@ fn a_stage_host_sending_garbage_is_stopped_and_sound_plays_on() {
 /// log, so it cannot flood the log or the clients.
 #[test]
 fn a_stage_host_logging_in_a_burst_is_rate_limited() {
-    let script = r#"printf '{"type":"hello","version":4,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
+    let script = r#"printf '{"type":"hello","version":5,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
     let mut host = host_config(&["-c", script]);
     host.program = PathBuf::from("/bin/sh");
     let ws = with_stages(vec![], vec![stage(1)]);
@@ -649,6 +649,169 @@ fn test_card(s: &mut OfflineShow, n: u128, frame: u16) {
             ..
         }]
     ));
+}
+
+/// Opens or closes stage `n`'s monitor window, as the app's monitor buttons do.
+fn set_monitor(s: &mut OfflineShow, n: u128, open: bool) -> Outcome {
+    request(
+        s,
+        Request::SetStageMonitor {
+            stage: stage_id(n),
+            open,
+        },
+    )
+}
+
+/// What stage `n`'s monitor window shows at a content size of `size` pixels: the test card's
+/// frame and the colours at `points`; no colours when it has no monitor window open.
+fn monitor_shows(
+    s: &mut OfflineShow,
+    n: u128,
+    (width, height): (u32, u32),
+    points: &[[f32; 2]],
+) -> (Option<u16>, Vec<[u8; 4]>) {
+    match ok_data(request(
+        s,
+        Request::MonitorProbe {
+            stage: stage_id(n),
+            width,
+            height,
+            points: points.to_vec(),
+        },
+    )) {
+        Some(ResultData::StageProbe { frame, colours }) => (frame, colours),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn monitor_listed(s: &mut OfflineShow, n: u128) -> bool {
+    mappings(s)
+        .into_iter()
+        .find(|e| e.stage == stage_id(n))
+        .is_some_and(|e| e.monitor)
+}
+
+/// The test card's quadrant centres (as [`probe`] reads them) on a stage fitted inside
+/// `[left, top, right, bottom]` of a window.
+fn quadrants_in([left, top, right, bottom]: [f32; 4]) -> Vec<[f32; 2]> {
+    [[0.25, 0.3], [0.75, 0.3], [0.25, 0.8], [0.75, 0.8]]
+        .iter()
+        .map(|[x, y]| [left + x * (right - left), top + y * (bottom - top)])
+        .collect()
+}
+
+/// #648 flow: the monitor button beside a stage in settings, or on a Video cue's I/O tab → a
+/// resizable window shows that stage scaled to fit, with black bars where shapes differ. Both
+/// buttons send `set_stage_monitor`; the stage host draws the window. Read back at a window of
+/// the stage's shape, a square one (bars above and below) and, for a tall stage with no
+/// display, a wide one (bars at the sides).
+#[test]
+fn the_monitor_button_opens_a_window_showing_the_stage_scaled_to_fit_with_black_bars() {
+    let mut tall = Stage::new(stage_id(2), "Tall".to_owned(), 1080, 1920);
+    tall.keep_black = false;
+    let mut s = stage_show(
+        with_stages(vec![], vec![stage(1), tall]),
+        virtual_host(),
+        Some("V1"),
+    );
+    test_card(&mut s, 1, 42);
+    test_card(&mut s, 2, 43);
+    // No window before the button.
+    assert!(!monitor_listed(&mut s, 1));
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.5, 0.5]]),
+        (None, vec![])
+    );
+    for n in [1, 2] {
+        assert!(matches!(set_monitor(&mut s, n, true), Outcome::Ok(_)));
+        assert!(monitor_listed(&mut s, n));
+    }
+    // The stage's own shape: the stage fills the window.
+    let full = [0.0, 0.0, 1.0, 1.0];
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &quadrants_in(full)),
+        (Some(42), QUADRANTS.to_vec())
+    );
+    // A square window: the stage across its width, black bars above and below.
+    let square = [0.0, 0.21875, 1.0, 0.78125];
+    let (frame, colours) = monitor_shows(&mut s, 1, (400, 400), &quadrants_in(square));
+    assert_eq!((frame, colours), (Some(42), QUADRANTS.to_vec()));
+    let (_, bars) = monitor_shows(&mut s, 1, (400, 400), &[[0.5, 0.1], [0.5, 0.9]]);
+    assert_eq!(bars, vec![BLACK; 2]);
+    // A tall stage with no display, in a wide window: bars at the sides, the card between.
+    assert_eq!(state(&mut s, 2), Some(StageState::NoDisplay));
+    let wide = [0.341_796_9, 0.0, 0.658_203_1, 1.0];
+    let (frame, colours) = monitor_shows(&mut s, 2, (640, 360), &quadrants_in(wide));
+    assert_eq!((frame, colours), (Some(43), QUADRANTS.to_vec()));
+    let (_, bars) = monitor_shows(&mut s, 2, (640, 360), &[[0.1, 0.5], [0.9, 0.5]]);
+    assert_eq!(bars, vec![BLACK; 2]);
+    // The button again on an open monitor brings it to the front: still open, still drawn.
+    assert!(matches!(set_monitor(&mut s, 1, true), Outcome::Ok(_)));
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.25, 0.3]]).0,
+        Some(42)
+    );
+    // The stage's display shows what it showed: a monitor never changes it.
+    assert_eq!(probe(&mut s, 1), (Some(42), QUADRANTS.to_vec()));
+    // An unknown stage is refused; closing takes the window down.
+    let unknown = request(
+        &mut s,
+        Request::SetStageMonitor {
+            stage: stage_id(9),
+            open: true,
+        },
+    );
+    assert!(matches!(unknown, Outcome::Error(e) if e.code == ErrorCode::NotFound));
+    assert!(matches!(set_monitor(&mut s, 1, false), Outcome::Ok(_)));
+    assert!(!monitor_listed(&mut s, 1));
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.5, 0.5]]),
+        (None, vec![])
+    );
+    assert_eq!(s.stalls(), 0);
+}
+
+/// #648 flow: Show Mode → monitors stay as they are; the app quitting closes them without
+/// stopping the engine's output. The app's last connection ending (a quit or a crash; the
+/// WebSocket server's own test shows it tells the control loop) closes every monitor while the
+/// stage's display shows on.
+#[test]
+fn show_mode_leaves_monitors_as_they_are_and_the_app_quitting_closes_them_but_not_the_output() {
+    let mut s = stage_show(
+        with_stages(vec![], vec![stage(1)]),
+        virtual_host(),
+        Some("V1"),
+    );
+    test_card(&mut s, 1, 42);
+    assert!(matches!(set_monitor(&mut s, 1, true), Outcome::Ok(_)));
+    assert!(matches!(
+        request(&mut s, Request::SetShowMode { on: true }),
+        Outcome::Ok(_)
+    ));
+    assert!(monitor_listed(&mut s, 1), "Show Mode leaves it open");
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.25, 0.3]]).0,
+        Some(42)
+    );
+    s.deliver(openlab_engine::control::Inbox::AppsGone);
+    assert!(s.wait_for(|c| !c.monitor_open(stage_id(1))));
+    s.settle_stages();
+    assert!(!monitor_listed(&mut s, 1));
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.5, 0.5]]),
+        (None, vec![])
+    );
+    assert!(logged(&mut s, "monitor windows are closed"));
+    // The output plays on: the stage still up on its display with its picture.
+    assert_eq!(probe(&mut s, 1), (Some(42), QUADRANTS.to_vec()));
+    assert_eq!(display_frame(&mut s, "V1"), Some(42));
+    assert_eq!(
+        state(&mut s, 1),
+        Some(StageState::Shown {
+            display: "V1".into()
+        })
+    );
+    assert_eq!(s.stalls(), 0);
 }
 
 /// #642 flow 3: New stage adds a stage with a chosen display or none; rename in place; remove;
@@ -815,7 +978,7 @@ fn the_windowed_stage_host_exits_when_its_input_closes() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, r#"{{"type":"hello","version":4}}"#).unwrap();
+    writeln!(stdin, r#"{{"type":"hello","version":5}}"#).unwrap();
     let mut out = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
@@ -950,7 +1113,7 @@ fn child_named(parent: u32, name: &str) -> Option<u32> {
 fn a_stage_host_reporting_in_a_burst_neither_floods_the_log_nor_grows_memory() {
     let known = stage_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":4,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":5,"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
@@ -1154,7 +1317,7 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
 fn a_reporting_burst_is_pushed_at_most_once_per_gap() {
     let known = stage_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":4,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":5,"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
@@ -1228,7 +1391,7 @@ fn routine_clocks_never_get_a_busy_stage_host_stopped() {
     use openlab_engine::stage::{StageEvent, StageHost};
     // Answers hello, then never reads again.
     let script =
-        r#"read line; echo '{"type":"hello","version":4,"pid":1,"video":true}'; exec sleep 600"#;
+        r#"read line; echo '{"type":"hello","version":5,"pid":1,"video":true}'; exec sleep 600"#;
     let mut config = host_config(&["-c", script]);
     config.program = PathBuf::from("/bin/sh");
     config.answer_within = Duration::from_secs(3600);

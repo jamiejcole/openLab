@@ -136,6 +136,10 @@ pub enum StageEvent {
         picture: u64,
         reason: String,
     },
+    /// The operator closed the stage's monitor window (or it could not be drawn).
+    MonitorClosed {
+        stage: StageId,
+    },
     /// Test support: a probe's answer.
     #[cfg(feature = "test-support")]
     Probed {
@@ -151,6 +155,7 @@ pub enum StageEvent {
 pub enum Probed {
     Stage(StageId),
     Display(String),
+    Monitor(StageId),
 }
 
 pub type EventSink = Arc<dyn Fn(StageEvent) + Send + Sync>;
@@ -196,6 +201,14 @@ impl StageHost {
     /// engine sends its pictures again when one starts).
     pub fn picture(&self, message: ToStage) {
         let _ = self.commands.send(Order::Picture(message));
+    }
+
+    /// Brings the stage's monitor window to the front (opened again if the operator closed it);
+    /// with no stage host running it is dropped (the stage set opens the monitors of the next).
+    pub fn raise_monitor(&self, stage: StageId) {
+        let _ = self
+            .commands
+            .send(Order::Picture(ToStage::RaiseMonitor { stage }));
     }
 
     /// Sends the stage host a routine clock, dropped if it is behind (see `Order::Clock`).
@@ -490,6 +503,15 @@ impl Supervisor {
                 return;
             }
             FromStage::StageStatus { stage, state } => StageEvent::Status { stage, state },
+            FromStage::MonitorClosed { stage }
+                if !self
+                    .stages
+                    .as_ref()
+                    .is_some_and(|s| s.iter().any(|o| o.id == stage)) =>
+            {
+                return;
+            }
+            FromStage::MonitorClosed { stage } => StageEvent::MonitorClosed { stage },
             FromStage::PictureOpened { picture } => StageEvent::PictureOpened { picture },
             FromStage::PictureFailed { picture, reason } => {
                 StageEvent::PictureFailed { picture, reason }
@@ -519,6 +541,16 @@ impl Supervisor {
                 colours,
             } => StageEvent::Probed {
                 target: Probed::Display(display),
+                frame,
+                colours,
+            },
+            #[cfg(feature = "test-support")]
+            FromStage::MonitorProbed {
+                stage,
+                frame,
+                colours,
+            } => StageEvent::Probed {
+                target: Probed::Monitor(stage),
                 frame,
                 colours,
             },

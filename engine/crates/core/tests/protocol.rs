@@ -340,6 +340,22 @@ fn all_requests() -> Vec<(&'static str, Request)> {
             },
         ),
         ("sequence_span", Request::SequenceSpan { cue: cue_id(10) }),
+        (
+            "set_stage_monitor",
+            Request::SetStageMonitor {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                open: true,
+            },
+        ),
+        (
+            "monitor_probe",
+            Request::MonitorProbe {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                width: 640,
+                height: 480,
+                points: vec![[0.5, 0.05], [0.5, 0.5]],
+            },
+        ),
     ]
 }
 
@@ -1021,12 +1037,14 @@ fn fixtures() -> Vec<(String, Sample)> {
                         display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
                     }),
                     panicked: false,
+                    monitor: true,
                 },
                 StageMappingEntry {
                     stage: StageId(uuid::Uuid::from_u128(0x81)),
                     mapping: None,
                     state: Some(openlab_core::stage_link::StageState::Hidden),
                     panicked: true,
+                    monitor: false,
                 },
             ],
         }),
@@ -1656,18 +1674,21 @@ fn fixtures() -> Vec<(String, Sample)> {
                                 display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
                             }),
                             panicked: false,
+                            monitor: false,
                         },
                         StageMappingEntry {
                             stage: StageId(uuid::Uuid::from_u128(0x81)),
                             mapping: None,
                             state: Some(openlab_core::stage_link::StageState::NoDisplay),
                             panicked: false,
+                            monitor: false,
                         },
                         StageMappingEntry {
                             stage: StageId(uuid::Uuid::from_u128(0x82)),
                             mapping: None,
                             state: None,
                             panicked: false,
+                            monitor: false,
                         },
                     ],
                 }),
@@ -2174,7 +2195,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 25);
-    assert_eq!(all_requests().len(), 30);
+    assert_eq!(all_requests().len(), 32);
 }
 
 #[test]

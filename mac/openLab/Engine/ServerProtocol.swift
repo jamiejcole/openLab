@@ -272,15 +272,18 @@ struct StageMappingEntry: Hashable, Sendable, Decodable {
     /// A keep-black stage whose black a panic took down: hidden between cues until a cue plays
     /// on it again (absent: false).
     var panicked: Bool = false
+    /// Its monitor window is open (absent: false).
+    var monitor: Bool = false
 
-    init(stage: ModelID, mapping: StageMapping?, state: StageState?, panicked: Bool = false) {
+    init(stage: ModelID, mapping: StageMapping?, state: StageState?, panicked: Bool = false, monitor: Bool = false) {
         self.stage = stage
         self.mapping = mapping
         self.state = state
         self.panicked = panicked
+        self.monitor = monitor
     }
 
-    private enum CodingKeys: String, CodingKey { case stage, mapping, state, panicked }
+    private enum CodingKeys: String, CodingKey { case stage, mapping, state, panicked, monitor }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -288,6 +291,7 @@ struct StageMappingEntry: Hashable, Sendable, Decodable {
         mapping = try c.decodeIfPresent(StageMapping.self, forKey: .mapping)
         state = try c.decodeIfPresent(StageState.self, forKey: .state)
         panicked = try c.decodeIfPresent(Bool.self, forKey: .panicked) ?? false
+        monitor = try c.decodeIfPresent(Bool.self, forKey: .monitor) ?? false
     }
 }
 

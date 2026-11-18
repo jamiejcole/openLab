@@ -145,6 +145,54 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { rig.store.videoOutputs.stages.first?.state?.state == "hidden" }
     }
 
+    /// What `stage`'s monitor window shows at a content size of `width` x `height` pixels, read back
+    /// from the stage host: the test card's frame and the colours at `points` (none: no window).
+    private func monitorShows(
+        _ rig: Rig, _ stage: String, _ width: UInt32, _ height: UInt32, _ points: [[Double]]
+    ) async -> (UInt16?, [[UInt8]])? {
+        guard
+            case .success(let ok) = await rig.store.client.send({
+                .request(
+                    id: $0, .monitorProbe(stage: ModelID(stage), width: width, height: height, points: points))
+            }),
+            case .stageProbe(let frame, let colours)? = ok.data
+        else { return nil }
+        return (frame, colours)
+    }
+
+    /// #648 flow 1 (the settings page's button): the watch button beside a stage → a window shows
+    /// that stage scaled to fit, black bars where the shapes differ. The window is the stage host's
+    /// (drawn offscreen here on virtual displays), read back as the operator would see it: the
+    /// stage's test card in a square window, black above and below it. The page itself is
+    /// unchanged and says nothing.
+    func testTheMonitorButtonBesideAStageInSettingsOpensAWindowShowingTheStageScaledToFitWithBlackBars()
+        async throws
+    {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.monitorButtons.count == 1 }
+        let button = pane.monitorButtons[0]
+        XCTAssertEqual(button.title, loc("settings.video.monitor"))
+        XCTAssertTrue(button.isEnabled)
+        _ = await rig.store.client.send { .request(id: $0, .stageTestCard(stage: ModelID(self.stageA), frame: 77)) }
+        let closed = await monitorShows(rig, stageA, 400, 400, [[0.5, 0.5]])
+        XCTAssertEqual(closed?.1, [], "no window before the click")
+        button.performClick(nil)
+        await settled(sc) { rig.store.videoOutputs.stages.first?.monitor == true }
+        // A square window: the 16:9 stage across its width, its four quadrants inside, bars above
+        // and below.
+        let inside = [[0.25, 0.21875 + 0.3 * 0.5625], [0.75, 0.21875 + 0.8 * 0.5625]]
+        let shown = await monitorShows(rig, stageA, 400, 400, inside + [[0.5, 0.1], [0.5, 0.9]])
+        XCTAssertEqual(shown?.0, 77, "the stage's picture")
+        XCTAssertEqual(shown?.1, [[255, 0, 0, 255], [255, 255, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255]])
+        XCTAssertEqual(pane.messageLabel.stringValue, "")
+        // Clicked again on an open window: brought to the front, still open.
+        button.performClick(nil)
+        await settled(sc) { pane.pending == nil || rig.store.videoOutputs.stages.first?.monitor == true }
+        XCTAssertEqual(rig.store.videoOutputs.stages.first?.monitor, true)
+        XCTAssertEqual(pane.messageLabel.stringValue, "")
+    }
+
     /// Flow 7: a show whose stage has no display on this Mac loads; the stage carries a warning in
     /// its row and in the workspace's Warnings list; choosing a display once clears both.
     func testAStageWithoutADisplayWarnsInItsRowAndTheWarningsUntilOneIsChosen() async throws {
@@ -176,7 +224,8 @@ final class VideoSettingsTests: XCTestCase {
             XCTAssertEqual(pane.holder.subviews, [pane.grid], "\(why): one table")
             XCTAssertEqual(pane.grid.numberOfRows, rows.count + warned, why)
             let controls: [NSView] =
-                pane.nameFields + pane.layerFields + pane.displayPopups + pane.blackBoxes + pane.removeButtons
+                pane.nameFields + pane.layerFields + pane.displayPopups + pane.blackBoxes + pane.monitorButtons
+                + pane.removeButtons
             // Per row its controls and its pixel-size label; the warning lines (the titles are not
             // in the rows' grid).
             XCTAssertEqual(pane.grid.subviews.count, controls.count + rows.count + warned, why)
@@ -382,7 +431,9 @@ final class VideoSettingsTests: XCTestCase {
             XCTAssertLessThanOrEqual(
                 popup.intrinsicContentSize.width, popup.frame.width, popup.titleOfSelectedItem ?? "")
         }
-        for c in 0..<6 { XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)") }
+        for c in 0..<VideoSettingsPane.columns.count {
+            XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)")
+        }
         // At the window's least size too.
         window.setContentSize(window.contentMinSize)
         window.contentView?.layoutSubtreeIfNeeded()
@@ -396,7 +447,9 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(pane.displayWidth, least)
         XCTAssertEqual(pane.displayWidth, VideoSettingsPane.mostDisplayWidth)
         XCTAssertGreaterThan(pane.nameWidth, VideoSettingsPane.columns[0])
-        for c in 0..<6 { XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)") }
+        for c in 0..<VideoSettingsPane.columns.count {
+            XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)")
+        }
     }
 
     /// A long stage name is cut with an ellipsis in its field and in the Warnings list, whose

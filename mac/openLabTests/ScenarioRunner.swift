@@ -84,8 +84,12 @@ final class ScenarioRunner {
         /// `{"shot": "name"}`: `<OUT>/<n>-<name>.png`, the whole window at 2x. With `"display": "V1"`
         /// (or a list) each named virtual display's composite is shot beside it as
         /// `<n>-<name>-display-<id>.png`: what the stage host draws there, every stage stacked, read
-        /// back as a grid of sample colours (`displayGridPoints`) and drawn as blocks.
-        case shot(String, displays: [String])
+        /// back as a grid of sample colours (`displayGridPoints`) and drawn as blocks. With
+        /// `"monitor": "Stage 1"` (a stage's name) that stage's monitor window is shot beside it as
+        /// `<n>-<name>-monitor.png`, read back the same way at `"monitor_size": [w, h]` pixels
+        /// (default: the size the window opens at, the stage's shape); a monitor not open stops the
+        /// run.
+        case shot(String, displays: [String], monitor: MonitorShot?)
         /// `{"inside": id, "of": id}`: the run stops unless the first control lies wholly inside the
         /// second (a tab view: inside its content, below its tabs), as laid out now.
         case inside(id: String, of: String)
@@ -105,6 +109,25 @@ final class ScenarioRunner {
     enum DeviceChange: String {
         case lose, restore
         case makeDefault = "default"
+    }
+
+    /// A `shot`'s monitor window: the stage's name and the window's content size in pixels (nil:
+    /// the size it opens at).
+    struct MonitorShot: Equatable {
+        var stage: String
+        var size: (Int, Int)?
+
+        static func == (a: MonitorShot, b: MonitorShot) -> Bool {
+            a.stage == b.stage && a.size?.0 == b.size?.0 && a.size?.1 == b.size?.1
+        }
+
+        /// The pixels a monitor window opens at: the stage's shape, its longer side 640 (as the
+        /// stage host opens it, at one pixel a point).
+        static func opening(width: Int, height: Int) -> (Int, Int) {
+            let (w, h) = (Double(max(width, 1)), Double(max(height, 1)))
+            let scale = 640 / max(w, h)
+            return (max(90, Int((w * scale).rounded())), max(90, Int((h * scale).rounded())))
+        }
     }
 
     struct Scenario {
@@ -209,7 +232,7 @@ final class ScenarioRunner {
         }
         let ids = (s.displays ?? "").split(separator: ",").map { String($0.split(separator: ":").first ?? "") }
         for (i, step) in s.steps.enumerated() {
-            guard case .shot(_, let wanted) = step, let missing = wanted.first(where: { !ids.contains($0) }) else {
+            guard case .shot(_, let wanted, _) = step, let missing = wanted.first(where: { !ids.contains($0) }) else {
                 continue
             }
             throw Failure(
@@ -241,7 +264,7 @@ final class ScenarioRunner {
         let options: [String: Set<String>] = [
             "click": ["at", "modifiers"], "double_click": ["at", "modifiers"],
             "drag": ["from", "to", "modifiers", "header"], "hover": ["at", "header", "row", "segment"],
-            "shot": ["display"],
+            "shot": ["display", "monitor", "monitor_size"],
             "type": ["text", "enter"], "key": ["modifiers"], "scroll": ["dx", "dy", "precise", "modifiers", "at"],
             "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"], "set_media": ["file"],
             "choose": ["item"], "device": ["output"],
@@ -386,7 +409,19 @@ final class ScenarioRunner {
             case let many as [String] where !many.isEmpty && many.allSatisfy({ !$0.isEmpty }): displays = many
             default: throw Failure("\"display\" must be a display id or a list of them (the scenario's \"displays\")")
             }
-            return .shot(name, displays: displays)
+            var monitor: MonitorShot?
+            switch (o["monitor"], o["monitor_size"]) {
+            case (nil, nil): break
+            case (let stage as String, nil) where !stage.isEmpty: monitor = MonitorShot(stage: stage, size: nil)
+            case (let stage as String, let size as [Int])
+            where !stage.isEmpty && size.count == 2 && size.allSatisfy({ (1...4096).contains($0) }):
+                monitor = MonitorShot(stage: stage, size: (size[0], size[1]))
+            default:
+                throw Failure(
+                    "\"monitor\" must be a stage's name, and \"monitor_size\" with it [width, height] pixels, 1 to 4096"
+                )
+            }
+            return .shot(name, displays: displays, monitor: monitor)
         }
     }
 
@@ -934,7 +969,7 @@ final class ScenarioRunner {
             await tool.chooseFolderAndSearch()
             focused = tool.window
             note("find_missing_files in \(name): \(tool.rows.count) row(s); \(tool.summaryLabel.stringValue)")
-        case .shot(let name, let displays):
+        case .shot(let name, let displays, let monitor):
             // The settings window reads devices and resolutions again on an output's change only
             // while it is visible, and the runner draws it offscreen: it reads them here, as a
             // visible window would have by now.
@@ -956,6 +991,12 @@ final class ScenarioRunner {
             for display in displays {
                 let beside = out.appendingPathComponent(String(format: "%02d-%@-display-%@.png", shots, name, display))
                 try await displayShot(display, to: beside)
+                written.append(beside)
+                note("shot \(beside.lastPathComponent)")
+            }
+            if let monitor {
+                let beside = out.appendingPathComponent(String(format: "%02d-%@-monitor.png", shots, name))
+                try await monitorShot(monitor, to: beside)
                 written.append(beside)
                 note("shot \(beside.lastPathComponent)")
             }
@@ -1346,17 +1387,49 @@ final class ScenarioRunner {
         else {
             throw Failure("the stage host lists no display \"\(id)\"")
         }
-        let (cols, rows) = Self.displayGrid(width: Double(display.width), height: Double(display.height))
+        try await probeShot(width: Int(display.width), height: Int(display.height), to: url) { chunk in
+            guard case .success(let ok) = await engine.request(.displayProbe(display: id, points: chunk)),
+                case .stageProbe(_, let got)? = ok.data, got.count == chunk.count
+            else { throw Failure("the stage host did not answer the probe of display \"\(id)\"") }
+            return got
+        }
+    }
+
+    /// A stage's monitor window as the stage host draws it (the stage fitted, black bars elsewhere),
+    /// read back as a display is.
+    private func monitorShot(_ monitor: MonitorShot, to url: URL) async throws {
+        guard let rig,
+            let stage = rig.store.model?.stages.first(where: { $0.raw["name"]?.stringValue == monitor.stage })
+        else { throw Failure("no stage named \"\(monitor.stage)\"") }
+        let (w, h) =
+            monitor.size
+            ?? MonitorShot.opening(
+                width: Int(stage.raw["width"]?.doubleValue ?? 1), height: Int(stage.raw["height"]?.doubleValue ?? 1))
+        try await probeShot(width: w, height: h, to: url) { chunk in
+            guard
+                case .success(let ok) = await rig.store.client.send({
+                    .request(
+                        id: $0, .monitorProbe(stage: stage.id, width: UInt32(w), height: UInt32(h), points: chunk))
+                }),
+                case .stageProbe(_, let got)? = ok.data
+            else { throw Failure("the stage host did not answer the probe of \"\(monitor.stage)\"'s monitor") }
+            guard got.count == chunk.count else { throw Failure("\"\(monitor.stage)\" has no monitor window open") }
+            return got
+        }
+    }
+
+    /// A picture of `width` x `height` pixels read back at a grid of about a thousand points
+    /// (`probe` answers a chunk of them as RGBA) and drawn as 8-pixel blocks.
+    private func probeShot(
+        width: Int, height: Int, to url: URL, probe: ([[Double]]) async throws -> [[UInt8]]
+    ) async throws {
+        let (cols, rows) = Self.displayGrid(width: Double(width), height: Double(height))
         var colours: [[UInt8]] = []
         let points = (0..<rows).flatMap { r in
             (0..<cols).map { c in [(Double(c) + 0.5) / Double(cols), (Double(r) + 0.5) / Double(rows)] }
         }
         for start in stride(from: 0, to: points.count, by: Self.probePoints) {
-            let chunk = Array(points[start..<min(points.count, start + Self.probePoints)])
-            guard case .success(let ok) = await engine.request(.displayProbe(display: id, points: chunk)),
-                case .stageProbe(_, let got)? = ok.data, got.count == chunk.count
-            else { throw Failure("the stage host did not answer the probe of display \"\(id)\"") }
-            colours += got
+            colours += try await probe(Array(points[start..<min(points.count, start + Self.probePoints)]))
         }
         let block = 8
         guard
@@ -1365,7 +1438,7 @@ final class ScenarioRunner {
                 samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0,
                 bitsPerPixel: 0),
             let context = NSGraphicsContext(bitmapImageRep: rep)
-        else { throw Failure("no bitmap for the display shot") }
+        else { throw Failure("no bitmap for the shot") }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
         for (i, c) in colours.enumerated() where c.count == 4 {
@@ -1475,7 +1548,7 @@ final class ScenarioRunner {
         case .resize(let s): return "resize \(Int(s.width))x\(Int(s.height))"
         case .tab(let t): return "tab \(t)"
         case .focus(let w): return "focus \(w)"
-        case .shot(let s, _): return "shot \(s)"
+        case .shot(let s, _, _): return "shot \(s)"
         case .inside(let id, let of): return "inside \(id) of \(of)"
         case .setMedia(let cue, let file): return "set_media \(cue) \(file)"
         case .choose(let id, let item): return "choose \(id) \(item)"
@@ -1733,8 +1806,25 @@ final class ScenarioShotTests: XCTestCase {
         guard case .drag(_, _, let to, _, let part) = s.steps[6] else { return XCTFail("\(s.steps[6])") }
         XCTAssertEqual(part, .header("Name"))
         XCTAssertEqual(to, CGPoint(x: -3, y: 0.5))
-        guard case .shot(_, let displays) = s.steps[8] else { return XCTFail("\(s.steps[8])") }
+        guard case .shot(_, let displays, nil) = s.steps[8] else { return XCTFail("\(s.steps[8])") }
         XCTAssertEqual(displays, ["V1", "V2"])
+    }
+
+    /// A shot names a stage whose monitor window is shot beside it, at the size it opens at or one
+    /// given.
+    func testAShotTakesAStagesMonitorAtItsOpeningSizeOrOneGiven() throws {
+        let s = try scenario(
+            """
+            {"show": "Video", "steps": [{"shot": "a", "monitor": "Stage 1"},
+              {"shot": "b", "monitor": "Stage 1", "monitor_size": [400, 400]}]}
+            """)
+        guard case .shot(_, _, let first) = s.steps[0], case .shot(_, _, let second) = s.steps[1] else {
+            return XCTFail("\(s.steps)")
+        }
+        XCTAssertEqual(first, ScenarioRunner.MonitorShot(stage: "Stage 1", size: nil))
+        XCTAssertEqual(second, ScenarioRunner.MonitorShot(stage: "Stage 1", size: (400, 400)))
+        XCTAssertTrue(ScenarioRunner.MonitorShot.opening(width: 1920, height: 1080) == (640, 360))
+        XCTAssertTrue(ScenarioRunner.MonitorShot.opening(width: 1080, height: 1920) == (360, 640))
     }
 
     func testPopUpHoverCommandHeaderAndDisplayStepsRefuseBadInput() throws {
@@ -1763,6 +1853,9 @@ final class ScenarioShotTests: XCTestCase {
             displays: #""displays": "V1:1920x1080","#)
         try refused(#"{"shot": "a", "display": "V1"}"#, "(none)")
         try refused(#"{"shot": "a", "display": []}"#, "\"display\" must be a display id or a list of them")
+        for bad in [#""monitor": """#, #""monitor_size": [640, 360]"#, #""monitor": "S", "monitor_size": [0, 9]"#] {
+            try refused(#"{"shot": "a", \#(bad)}"#, "\"monitor\" must be a stage's name")
+        }
     }
 
     /// A `device` step unplugs, plugs in or makes the system output either virtual output, the

@@ -1251,6 +1251,136 @@ fn refusal(outcome: Outcome) -> String {
     }
 }
 
+/// Opens or closes `stage`'s monitor window, as the app's monitor buttons do.
+fn set_monitor(s: &mut OfflineShow, stage: StageId, open: bool) {
+    let outcome = ask(s, Request::SetStageMonitor { stage, open });
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+}
+
+/// What `stage`'s monitor window shows at a content size of 640 x 360 (a 1920 x 1080 stage's
+/// shape): the barcode, and the colours at `points`; no colours when it has none open.
+fn monitor_shows(
+    s: &mut OfflineShow,
+    stage: StageId,
+    points: &[[f32; 2]],
+) -> (Option<u16>, Vec<[u8; 4]>) {
+    let request = Request::MonitorProbe {
+        stage,
+        width: 640,
+        height: 360,
+        points: points.to_vec(),
+    };
+    match ask(s, request) {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::StageProbe { frame, colours }) => (frame, colours),
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("monitor probe refused: {e:?}"),
+    }
+}
+
+/// #648 flow: a cue plays on the stage → the monitor shows the same frames as the display,
+/// from its first frame to its last.
+#[test]
+fn a_cue_playing_on_the_stage_shows_the_same_frames_on_its_monitor_as_on_the_display() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = two_stage_show(workspace(vec![video_cue(1, Some(&movie))]), [true, true]);
+    set_monitor(&mut s, stage_id(), true);
+    let at = go(&mut s);
+    for want in [0u16, 1, 13, 25, 49] {
+        run_to(&mut s, at + samples(f64::from(want) / 25.0) + samples(0.01));
+        let expected = frame_at((s.now() - at) as f64 / f64::from(RATE));
+        let display = display_shows(&mut s, "V1", &[RED_AT]);
+        assert_eq!(display.0, Some(expected), "the display\n{}", seen(&s));
+        assert_eq!(
+            monitor_shows(&mut s, stage_id(), &[RED_AT]),
+            display,
+            "the monitor at frame {expected}\n{}",
+            seen(&s)
+        );
+    }
+    run_to(&mut s, at + samples(2.0) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "");
+    // Both black once it has ended (the stage keeps black).
+    let black = vec![[0, 0, 0, 255]];
+    assert_eq!(
+        display_shows(&mut s, "V1", &[RED_AT]),
+        (None, black.clone())
+    );
+    assert_eq!(monitor_shows(&mut s, stage_id(), &[RED_AT]), (None, black));
+}
+
+/// #648 flow: a stage with no display → its monitor still shows what would be drawn, so a show
+/// can be built on a laptop alone.
+#[test]
+fn a_stage_with_no_display_still_shows_what_would_be_drawn_on_its_monitor() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    assert_eq!(stage_state(&mut s, stage_id()), Some(StageState::NoDisplay));
+    set_monitor(&mut s, stage_id(), true);
+    let at = go(&mut s);
+    for want in [0u16, 12, 30] {
+        run_to(&mut s, at + samples(f64::from(want) / 25.0) + samples(0.01));
+        let expected = frame_at((s.now() - at) as f64 / f64::from(RATE));
+        let monitor = monitor_shows(&mut s, stage_id(), &[RED_AT]);
+        assert_eq!(monitor.0, Some(expected), "\n{}", seen(&s));
+        // What the stage draws, read straight from it.
+        assert_eq!(monitor, probe_at(&mut s, &[RED_AT]));
+    }
+    assert_eq!(
+        stage_state(&mut s, stage_id()),
+        Some(StageState::NoDisplay),
+        "still shown on no display"
+    );
+}
+
+/// #648 flow: the monitor is closed and reopened mid-cue → playback is not interrupted. Closed
+/// by its window's close button and by the app, and opened again each time, while the display
+/// shows every checked frame in step, the cue runs on and ends on time.
+#[test]
+fn closing_and_reopening_the_monitor_mid_cue_does_not_interrupt_playback() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (100, 25));
+    let mut s = two_stage_show(workspace(vec![video_cue(1, Some(&movie))]), [true, true]);
+    set_monitor(&mut s, stage_id(), true);
+    let at = go(&mut s);
+    // The display at `t` seconds in: the frame the clock has reached, the cue running, the stage
+    // up on V1.
+    let plays_on = |s: &mut OfflineShow, t: f64| {
+        run_to(s, at + samples(t));
+        let expected = frame_at((s.now() - at) as f64 / f64::from(RATE));
+        let (frame, _) = display_shows(s, "V1", &[RED_AT]);
+        assert_eq!(frame, Some(expected), "the display at {t} s\n{}", seen(s));
+        expect_state(s, 1, CueState::Running, "");
+        assert_eq!(stage_state(s, stage_id()), shown_on("V1"));
+        expected
+    };
+    let frame = plays_on(&mut s, 0.5);
+    assert_eq!(monitor_shows(&mut s, stage_id(), &[RED_AT]).0, Some(frame));
+    // The operator closes the window.
+    s.control().close_monitor_window(stage_id());
+    assert!(s.wait_for(|c| !c.monitor_open(stage_id())), "{}", seen(&s));
+    plays_on(&mut s, 1.0);
+    assert_eq!(monitor_shows(&mut s, stage_id(), &[RED_AT]), (None, vec![]));
+    // Opened again: the same frame as the display at once.
+    set_monitor(&mut s, stage_id(), true);
+    let frame = plays_on(&mut s, 1.5);
+    assert_eq!(monitor_shows(&mut s, stage_id(), &[RED_AT]).0, Some(frame));
+    // Closed and opened from the app.
+    set_monitor(&mut s, stage_id(), false);
+    plays_on(&mut s, 2.0);
+    assert_eq!(monitor_shows(&mut s, stage_id(), &[RED_AT]), (None, vec![]));
+    set_monitor(&mut s, stage_id(), true);
+    let frame = plays_on(&mut s, 2.5);
+    assert_eq!(monitor_shows(&mut s, stage_id(), &[RED_AT]).0, Some(frame));
+    plays_on(&mut s, 3.9);
+    run_to(&mut s, at + samples(4.0) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ends on time");
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
 /// The middle of the card's red quadrant on a stage it fills, and a point near the left edge
 /// of the stage or display, inside that quadrant too.
 const RED_AT: [f32; 2] = [0.25, 0.3];

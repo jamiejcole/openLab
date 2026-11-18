@@ -456,7 +456,11 @@
 "settings.video.col.display" = "Display";
 "settings.video.col.black" = "Black";
 "settings.video.col.layer" = "Layer";
+"settings.video.col.monitor" = "";
 "settings.video.col.remove" = "";
+"settings.video.monitor" = "Watch";
+"settings.video.monitor.tip" = "Open a window showing this stage as it plays, on a display or not";
+"settings.video.monitor.ax" = "watch in a window";
 "settings.video.black" = "Black between cues";
 "settings.video.remove" = "Remove";
 "settings.video.newName" = "Stage %d";
@@ -880,6 +884,9 @@
 "inspector.io.stage" = "Stage";
 "inspector.io.stageNone" = "None";
 "inspector.io.stageSize" = "Stage size";
+"inspector.io.monitor" = "Watch";
+"inspector.io.monitor.tip" = "Open a window showing this cue's stage as it plays, on a display or not";
+"inspector.io.monitor.ax" = "Watch the stage in a window";
 "inspector.io.pixels" = "%d × %d";
 "inspector.io.videoFormat" = "%@, %@, %@ fps";
 "inspector.io.stillFormat" = "%@ image, %@";

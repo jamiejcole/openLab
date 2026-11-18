@@ -52,4 +52,10 @@ extension WorkspaceStore {
     func setStageMapping(_ stage: ModelID, display: String?) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .setStageMapping(stage: stage, display: display)) }
     }
+
+    /// Opens `stage`'s monitor window (or brings it to the front), or closes it: a live copy of the
+    /// stage the stage host draws in a window of its own.
+    func setStageMonitor(_ stage: ModelID, open: Bool) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setStageMonitor(stage: stage, open: open)) }
+    }
 }

@@ -86,6 +86,8 @@ struct Control {
     logs: Mutex<Vec<String>>,
     /// `Inbox::Trigger` (source, detail) pairs, in arrival order.
     triggers: Mutex<Vec<(String, String)>>,
+    /// `Inbox::AppsGone` messages from the server.
+    apps_gone: AtomicU64,
     /// While set, the client's own snapshot requests are answered (at the revision of the
     /// moment they arrive) only when the test calls [`Control::release_replies`].
     hold_snapshots: AtomicBool,
@@ -149,6 +151,10 @@ fn control_thread(rx: &Receiver<Inbox>, out: &Out, c: &Control) {
             }
             Inbox::Trigger { source, detail } => {
                 c.triggers.lock().unwrap().push((source, detail));
+                continue;
+            }
+            Inbox::AppsGone => {
+                c.apps_gone.fetch_add(1, Ordering::SeqCst);
                 continue;
             }
             _ => break,
@@ -1512,6 +1518,40 @@ async fn an_app_connection_lost_without_goodbye_relaunches_the_app() {
     fix.sync().await;
     assert_eq!(fix.logs_with(LOST), 1);
     assert_eq!(fix.logs_with("relaunching the app"), 1);
+}
+
+/// #648 flow: the app quitting (or crashing) closes its monitor windows. The control loop is
+/// told the app is gone once its last app connection ends, said goodbye or not; a window's
+/// connection ending, or one of two app connections, tells it nothing.
+#[tokio::test]
+async fn the_last_app_connection_ending_tells_the_control_loop_the_app_is_gone() {
+    let fix = fixture();
+    let gone = |fix: &Fix| fix.control.apps_gone.load(Ordering::SeqCst);
+    let first = fix.app_client().await;
+    let second = fix.app_client().await;
+    drop(fix.client().await);
+    drop(first);
+    fix.sync().await;
+    assert_eq!(gone(&fix), 0, "a window and one of two app connections");
+    drop(second);
+    guard("the app gone", async {
+        while gone(&fix) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    fix.sync().await;
+    assert_eq!(gone(&fix), 1, "once, for the last");
+    // A quit says goodbye first: the same.
+    let mut c = fix.app_client().await;
+    send(&mut c, &ClientMessage::Goodbye { shutdown: false }).await;
+    expect_closed(&mut c).await;
+    guard("the app gone again", async {
+        while gone(&fix) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
 }
 
 /// An app connection lost while the app's process still runs (reconnecting slowly, or
