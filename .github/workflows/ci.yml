@@ -206,12 +206,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        timeout-minutes: 10
-        continue-on-error: true
-        with:
-          workspaces: engine
-          save-if: false
+      # No rust-cache: its key carries the job id and only main's `rust` job saves, so nothing would be
+      # restored here. A cold build takes about 5 minutes.
       - run: ../scripts/rust-checks.sh test-release-video
         timeout-minutes: 20
 
