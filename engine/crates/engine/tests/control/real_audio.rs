@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use crate::show::media::{self, Pcm};
 use crate::show::*;
 use openlab_core::protocol::{
-    ClientMessage, Outcome, ServerMessage, WireCueState, WireWarning, decode_client,
+    ClientMessage, Outcome, ServerMessage, TransportAction, WireCueState, WireWarning,
+    decode_client,
 };
 use openlab_core::{
     Command, ContinueMode, Crosspoint, Cue, CueKind, CueLevels, CueProperty, CueState, FadeCurve,
@@ -1254,6 +1255,276 @@ fn changes_while_the_cue_plays() {
         std::slice::from_ref(&(24_000..48_000)),
         "the next start",
     );
+}
+
+/// Cue `n`'s end time becomes `end` (seconds; `None`: the file's end) by the edit the Time &
+/// Loops tab's end handle sends: the kind's `end_time` alone.
+fn set_end(s: &mut OfflineShow, n: u128, end: Option<f64>) {
+    let fields = serde_json::json!({ "end_time": end });
+    command(
+        s,
+        &format!(
+            r#"{{"type":"set_cue_property","id":"{}","property":{{"type":"kind_fields","value":{fields}}}}}"#,
+            uuid(n)
+        ),
+    );
+}
+
+/// Cue 10 plays two seconds of [`index_wav`] on output 0 (trimmed to `end`, its last slice
+/// played as `last`) and auto-follows into cue 11, a tenth of a second of constant 0.5 on
+/// output 1.
+fn end_show(end: Option<f64>, last: PlayCount) -> OfflineShow {
+    let path = index_wav(2 * R48 as usize);
+    let mut c = with_counts(audio(10, &path, 0), &[], last);
+    c.continue_mode = ContinueMode::AutoFollow;
+    if let CueKind::Audio { end_time, .. } = &mut c.kind {
+        *end_time = end;
+    }
+    app_show(&[c, audio(11, &dc_wav(4_800), 1)], R48)
+}
+
+/// Cue 11 was heard once, from sample `from`: its tenth of a second on output 1 and nothing
+/// else there (a second continue would play it again).
+fn followed_once_at(s: &OfflineShow, from: usize, what: &str) {
+    let out = s.channel(1);
+    assert_eq!(
+        first_nonzero(&out),
+        Some(from),
+        "{what}: the next cue's start"
+    );
+    assert_eq!(
+        last_nonzero(&out),
+        Some(from + 4_799),
+        "{what}: played once"
+    );
+}
+
+/// Flow: playing Audio cue, end time dragged to a point still ahead of the playhead → the
+/// sound stops at the new end time, the cue ends there and its auto-follow starts the next cue
+/// on that sample, once (not again at the old end).
+#[test]
+fn playing_audio_cue_end_time_dragged_ahead_of_the_playhead() {
+    let mut s = end_show(None, ONCE);
+    let at = go_app(&mut s);
+    s.run(2 * Q as u64);
+    set_end(&mut s, 10, Some(1.0));
+    assert_eq!(state(&s, 10), CueState::Running);
+    s.run(3 * u64::from(R48));
+    assert_plays(&s, at, std::slice::from_ref(&(0..48_000)), "to the new end");
+    assert_eq!(state(&s, 10), CueState::Idle);
+    followed_once_at(&s, at + 48_000, "ahead");
+    assert_eq!(s.stalls(), 0);
+}
+
+/// An end moved ahead of the playhead to before the slice markers, in one edit with the markers
+/// it leaves outside the trims (the model keeps no marker there): the slices after it are
+/// dropped and the cue ends at the new end in the slice playing now.
+#[test]
+fn an_end_moved_back_past_slice_markers_ends_the_cue_in_the_slice_playing() {
+    let c = three_slices(10, [ONCE, ONCE, ONCE], false);
+    let mut s = app_show(std::slice::from_ref(&c), R48);
+    let at = go_app(&mut s);
+    s.run(Q as u64 / 2);
+    let fields = serde_json::json!({ "end_time": 0.4, "slices": [] });
+    command(
+        &mut s,
+        &format!(
+            r#"{{"type":"set_cue_property","id":"{}","property":{{"type":"kind_fields","value":{fields}}}}}"#,
+            uuid(10)
+        ),
+    );
+    s.run(3 * u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        std::slice::from_ref(&(0..19_200)),
+        "slice 0 to 0.4 s",
+    );
+    assert_eq!(state(&s, 10), CueState::Idle);
+    assert_eq!(s.stalls(), 0);
+}
+
+/// Flow: playing Audio cue, end time moved to a point the playhead has already passed → the
+/// cue's action ends at once: its sound stops on the edit's sample and its auto-follow starts
+/// the next cue there.
+#[test]
+fn playing_audio_cue_end_time_moved_behind_the_playhead() {
+    let mut s = end_show(None, ONCE);
+    let at = go_app(&mut s);
+    s.run(u64::from(R48));
+    let edit = s.now() as usize;
+    set_end(&mut s, 10, Some(0.5));
+    s.run(3 * u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        std::slice::from_ref(&(0..edit - at)),
+        "until the edit",
+    );
+    assert_eq!(state(&s, 10), CueState::Idle);
+    followed_once_at(&s, edit, "behind");
+    assert_eq!(s.stalls(), 0);
+}
+
+/// Flow: playing cue, end time moved later (still within the file) → it plays on to the new
+/// end time, though its stream had read all of the old end already.
+#[test]
+fn playing_cue_end_time_moved_later() {
+    let mut s = end_show(Some(0.5), ONCE);
+    let at = go_app(&mut s);
+    s.run(Q as u64);
+    set_end(&mut s, 10, Some(1.5));
+    s.run(3 * u64::from(R48));
+    assert_plays(&s, at, std::slice::from_ref(&(0..72_000)), "to the new end");
+    followed_once_at(&s, at + 72_000, "later");
+    assert_eq!(s.stalls(), 0);
+}
+
+/// Flow: paused cue, end time moved → the change holds on resume. Moved ahead of where it
+/// paused, it plays on from there to the new end; moved behind it, it ends on the resume and
+/// its auto-follow starts the next cue there.
+#[test]
+fn paused_cue_end_time_moved() {
+    for (end, ahead) in [(1.0, true), (0.25, false)] {
+        let what = format!("end {end}");
+        let mut s = end_show(None, ONCE);
+        let at = go_app(&mut s);
+        s.run(2 * Q as u64);
+        let paused = s.now() as usize;
+        s.transport(TransportAction::Pause { cue: id(10) });
+        s.run(Q as u64);
+        set_end(&mut s, 10, Some(end));
+        assert_eq!(state(&s, 10), CueState::Paused, "{what}");
+        s.run(Q as u64);
+        let resumed = s.now() as usize;
+        s.transport(TransportAction::Resume { cue: id(10) });
+        s.run(3 * u64::from(R48));
+        let played = paused - at;
+        let out = s.channel(0);
+        let ends = if ahead {
+            // Past the resume's declick, the frames after the pause point up to the new end.
+            let left = 48_000 - played;
+            let heard = frames_heard(&out, resumed + 480, left - 480);
+            let want: Vec<usize> = (played + 480..48_000).collect();
+            assert_eq!(heard, want, "{what}");
+            resumed + left
+        } else {
+            resumed
+        };
+        assert!(
+            out[ends..].iter().all(|&v| v == 0.0),
+            "{what}: after the end"
+        );
+        assert_eq!(state(&s, 10), CueState::Idle, "{what}");
+        followed_once_at(&s, ends, &what);
+    }
+}
+
+/// Decision: an end time moved while the last slice loops is heard from the next start. The
+/// loop's passes are written ahead, so the loop under way keeps its length; the cue keeps
+/// looping and the next start loops the new range.
+#[test]
+fn an_end_moved_while_the_last_slice_loops_is_heard_from_the_next_start() {
+    let mut s = end_show(None, PlayCount::Endless);
+    let at = go_app(&mut s);
+    s.run(2 * Q as u64);
+    set_end(&mut s, 10, Some(0.5));
+    s.run(2 * u64::from(R48) + Q as u64);
+    let out = s.channel(0);
+    // The second pass starts from the top of the old two seconds.
+    assert_eq!(
+        frames_heard(&out, at + 96_000 + 100, 100),
+        (100..200).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        frames_heard(&out, at + 60_000, 10),
+        (60_000..60_010).collect::<Vec<_>>()
+    );
+    assert_eq!(state(&s, 10), CueState::Running);
+    s.transport(TransportAction::HardStop { cue: id(10) });
+    s.run(B);
+    let again = crate::show::start(&mut s, 10) as usize;
+    s.run(u64::from(R48));
+    let out = s.channel(0);
+    assert_eq!(
+        frames_heard(&out, again + 24_000 + 100, 10),
+        (100..110).collect::<Vec<_>>(),
+        "the next start loops the new half second"
+    );
+}
+
+/// Flow: a playlist whose current child's end time is dragged ahead of the playhead steps on to
+/// its next child at the new end, as at a normal end.
+#[test]
+fn a_playlist_steps_on_at_its_childs_moved_end() {
+    let path = index_wav(2 * R48 as usize);
+    let kids = vec![audio(21, &path, 0), audio(22, &dc_wav(4_800), 1)];
+    let mut s = app_show(&[group(10, playlist(false, false), kids)], R48);
+    let at = go_app(&mut s);
+    s.run(2 * Q as u64);
+    set_end(&mut s, 21, Some(1.0));
+    s.run(3 * u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        std::slice::from_ref(&(0..48_000)),
+        "the first child",
+    );
+    followed_once_at(&s, at + 48_000, "the playlist");
+    assert_eq!(state(&s, 10), CueState::Idle);
+}
+
+/// A cue loaded to a time (the stream ready at that point) whose end time is then moved: its
+/// start plays from the point to the new end, not to the end it was loaded with.
+#[test]
+fn a_cue_loaded_to_a_time_plays_to_an_end_moved_after_the_load() {
+    let mut s = end_show(None, ONCE);
+    s.transport(TransportAction::Load {
+        cue: id(10),
+        at: 0.5,
+    });
+    s.run(B);
+    assert_eq!(state(&s, 10), CueState::Loaded);
+    set_end(&mut s, 10, Some(1.0));
+    let at = crate::show::start(&mut s, 10) as usize;
+    s.run(2 * u64::from(R48));
+    assert_plays(&s, at, std::slice::from_ref(&(24_000..48_000)), "loaded");
+    followed_once_at(&s, at + 24_000, "loaded");
+}
+
+/// An end time moved while an earlier slice loops (the last slice plays once): a devamp then
+/// leaves the loop into the slices after it and the cue ends at the new end, auto-following
+/// once there.
+#[test]
+fn a_devamp_after_an_end_moved_during_a_loop_plays_on_to_the_new_end() {
+    // 0–0.5 s until devamped, 0.5–1 s once, 1–2 s once, its end moved to 1.5 s.
+    let mut vamp = three_slices(10, [PlayCount::Endless, ONCE, ONCE], false);
+    vamp.continue_mode = ContinueMode::AutoFollow;
+    let devamp = cue(
+        12,
+        CueKind::Devamp {
+            target: Some(id(10)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = app_show(&[vamp, audio(11, &dc_wav(4_800), 1), devamp], R48);
+    let at = crate::show::start(&mut s, 10) as usize;
+    s.run(Q as u64);
+    set_end(&mut s, 10, Some(1.5));
+    s.run(18_000);
+    crate::show::start(&mut s, 12);
+    s.run(3 * u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        &[0..24_000, 0..24_000, 24_000..72_000],
+        "two passes, then on to the new end",
+    );
+    assert_eq!(state(&s, 10), CueState::Idle);
+    followed_once_at(&s, at + 96_000, "after the devamp");
+    assert_eq!(s.stalls(), 0);
 }
 
 /// Flow: the first and the last slice can be skipped. GO starts at the second slice's first

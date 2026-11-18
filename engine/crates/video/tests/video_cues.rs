@@ -3844,8 +3844,10 @@ fn the_shortest_loops_jump_back_at_each_seam() {
     }
 }
 
-/// Trims edited while the cue is paused take effect at its next start, not at the resume: the
-/// run plays on with the plan it started with, as a paused Audio cue's voice does.
+/// A start time edited while the cue is paused takes effect at its next start, not at the
+/// resume: the run plays on with the plan it started with, as a paused Audio cue's voice does
+/// (an end time edited then holds on the resume instead:
+/// `the_same_end_time_edits_on_a_video_cues_sound_and_picture`).
 #[test]
 fn a_resume_plays_on_with_the_plan_the_run_started_with() {
     let dir = tempfile::tempdir().unwrap();
@@ -3859,18 +3861,18 @@ fn a_resume_plays_on_with_the_plan_the_run_started_with() {
     s.transport(TransportAction::Pause { cue: id(1) });
     s.run(BLOCK);
     let paused = s.now();
-    set_geometry(&mut s, 1, serde_json::json!({"end_time": 1.8}));
+    set_geometry(&mut s, 1, serde_json::json!({"start_time": 0.2}));
     s.transport(TransportAction::Resume { cue: id(1) });
     let resumed = s.now();
     let end = at + samples(0.8) + (resumed - paused);
     run_to(&mut s, end - samples(0.02));
-    assert_eq!(shown(&mut s), Some(29), "the old end trim's last frame");
+    assert_eq!(shown(&mut s), Some(29), "the end trim's last frame");
     run_to(&mut s, end + BLOCK);
-    expect_state(&s, 1, CueState::Idle, "ended at the old end trim");
+    expect_state(&s, 1, CueState::Idle, "the old range played out");
     // The next start plays the new range.
     let at = start(&mut s, 1);
-    run_to(&mut s, at + samples(1.3));
-    assert_eq!(shown(&mut s), Some(frame_at(1.7)));
+    run_to(&mut s, at + samples(0.3));
+    assert_eq!(shown(&mut s), Some(frame_at(0.5)));
 }
 
 /// A Devamp cue of cue 1 that lets it play on.
@@ -5270,6 +5272,67 @@ fn each_loop_seam_and_a_devamp_keep_picture_and_sound_together() {
     s.run(samples(0.1));
     assert!(silent(&s, end + 8, s.rendered()));
     assert_eq!(s.stalls(), 0);
+}
+
+/// Flow: the same end time edits on a Video cue's sound and picture (they share Time & Loops).
+/// Dragged ahead of the playhead, the picture and the sound end together at the new end; moved
+/// behind it, both end at once; moved later, both play on to it; moved while paused, the new
+/// end holds on the resume.
+#[test]
+fn the_same_end_time_edits_on_a_video_cues_sound_and_picture() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    // (end before, when the edit comes, end after, paused for)
+    let cases = [
+        ("ahead", None, 0.5, 0.9, 0.0),
+        ("behind", None, 1.2, 0.6, 0.0),
+        ("later", Some(0.6), 0.3, 1.4, 0.0),
+        ("paused", None, 0.5, 0.9, 0.5),
+    ];
+    for (what, before, edit_at, end, paused) in cases {
+        let mut s = video_show(vec![timed_sounding_cue(1, &movie, |t| t.end_time = before)]);
+        let at = go(&mut s);
+        run_to(&mut s, at + samples(edit_at));
+        if paused > 0.0 {
+            s.transport(TransportAction::Pause { cue: id(1) });
+        }
+        let edited = s.now();
+        set_geometry(&mut s, 1, serde_json::json!({ "end_time": end }));
+        // Where the action ends; a pause moves it by the time paused, give or take how the
+        // pause and the resume are dated.
+        let mut ends = (at + samples(end)).max(edited);
+        let mut slack = 2 * BLOCK;
+        if paused > 0.0 {
+            s.run(samples(paused));
+            expect_state(&s, 1, CueState::Paused, what);
+            s.transport(TransportAction::Resume { cue: id(1) });
+            ends += samples(paused);
+            slack = samples(0.02);
+        }
+        if ends > s.now() + samples(0.2) {
+            run_to(&mut s, ends - samples(0.1));
+            expect_state(&s, 1, CueState::Running, what);
+            in_step(&mut s, RATE, 25.0, what);
+        }
+        run_to(&mut s, ends + slack);
+        expect_state(&s, 1, CueState::Idle, what);
+        assert_eq!(shown(&mut s), None, "{what}: the picture is gone");
+        s.run(samples(0.1));
+        // The sound's last sample: on the action's end, and (when it played up to it) the new
+        // end's place in the file.
+        let last = (at..s.rendered())
+            .rev()
+            .find(|&k| sound_at(&s, k).is_some())
+            .unwrap_or_else(|| panic!("{what}: never heard"));
+        assert!(
+            last + slack >= ends && last < ends + slack,
+            "{what}: the sound's last sample {last}, the end {ends}"
+        );
+        if what != "behind" {
+            sound_is(&s, last - 15, end - 0.002, what);
+        }
+        assert_eq!(s.stalls(), 0, "{what}");
+    }
 }
 
 /// A pause while a devamp that stops the cue is pending, kept past the pass's planned end:

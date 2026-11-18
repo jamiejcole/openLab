@@ -227,6 +227,9 @@ pub struct VoiceRec {
     gave_up: u32,
     /// Its table's frames (its device's) against the master clock's.
     scale: Scale,
+    /// The time and loops its table was planned from (`None`: not known, a table handed on
+    /// from elsewhere without them), for an end time edited while it plays.
+    planned: Option<Box<Planned>>,
 }
 
 /// Frames of a voice's device against frames of the master clock. Every conversion between a
@@ -350,6 +353,8 @@ struct Ready {
     total: Option<u64>,
     /// Its device's frames against the master clock's (`local`: the rate it was made for).
     scale: Scale,
+    /// The time and loops its table was planned from, when planned from its cue.
+    planned: Option<Box<Planned>>,
 }
 
 /// A stream made for a voice.
@@ -513,9 +518,12 @@ impl Voices {
 }
 
 mod actions;
+mod end_time;
 mod events;
 mod priming;
 mod queries;
+
+pub(super) use end_time::{Planned, new_end};
 
 impl VoiceRec {
     /// Notes that an accepted devamp leaves its loop on sample `at`. Answered again for the same
@@ -764,6 +772,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         retry_at: None,
         gave_up: 0,
         scale: Scale::new(1, 1),
+        planned: None,
     }
 }
 

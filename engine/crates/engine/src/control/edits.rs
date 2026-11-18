@@ -9,6 +9,7 @@ use openlab_core::{
 };
 
 use super::DocCx;
+use super::voices::{Effects, Env};
 
 impl DocCx<'_> {
     /// A command, undo or redo changed the workspace.
@@ -18,8 +19,42 @@ impl DocCx<'_> {
         for input in inputs {
             self.feed(input, now);
         }
+        self.follow_end_times(now, footprint);
         // Follow the edit at once: a deleted running cue stops now, not at the next deadline.
         self.feed(Input::Tick, now);
+    }
+
+    /// An end time edited while its cue plays is heard at once: the voices and pictures of the
+    /// edited cues end at their new end, and the cue engine is told each run's new length.
+    fn follow_end_times(&mut self, now: SampleTime, footprint: &Footprint) {
+        if footprint.edited.is_empty() {
+            return;
+        }
+        let mut fx = Effects::default();
+        {
+            let floor = self.stop_floor();
+            let mut env = Env {
+                doc: self.doc.id,
+                ws: self.doc.model.ws(),
+                media: &self.doc.media,
+                streamer: &mut self.eng.streamer,
+                patches: &self.eng.patches,
+                ids: &mut self.eng.voice_ids,
+                rate: self.eng.rate,
+                rates: self.eng.outputs.rates(),
+                cue_outputs: self.eng.cue_outputs,
+                now,
+                window: self.eng.block,
+                floor,
+            };
+            for &cue in &footprint.edited {
+                self.doc.voices.follow_end_time(cue, &mut env, &mut fx);
+            }
+        }
+        for &cue in &footprint.edited {
+            self.follow_picture_end(cue, now, &mut fx);
+        }
+        self.follow(fx, now);
     }
 
     /// A refused command that is not "nothing changed": a transaction's rollback failed

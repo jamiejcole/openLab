@@ -200,11 +200,18 @@ impl Voices {
         let mut paused = matches!(to, SeekTo::Plan { paused: true, .. });
         let mut swap_after = 0;
         let mut preview = from.0 >= openlab_core::PREVIEW_RUN_BASE;
+        let mut planned = None;
+        let handed_on = matches!(to, SeekTo::Plan { .. });
         if let Some(&old) = self.by_run.get(&from) {
             let stop_at = self.stop_date(old, at, env.floor);
             let mut drop_old = false;
             if let Some(r) = self.recs.get_mut(&old) {
                 preview = r.preview;
+                // A table handed on (a Video cue's seek) is the old voice's plan going on; one
+                // planned at a point of the file is planned from the cue when it is prepared.
+                if handed_on {
+                    planned = r.planned_now().cloned().map(Box::new);
+                }
                 swap_after = r.swap_after;
                 match &r.phase {
                     Phase::Playing if r.paused_at.is_some() => {
@@ -270,6 +277,7 @@ impl Voices {
                     Curve::Linear,
                 ),
                 media: cue_media(env.ws, cue),
+                planned,
                 ..rec(cue, run, preview)
             },
         );
@@ -339,6 +347,7 @@ impl Voices {
         };
         let swap_after = r.swap_after;
         let gave_up = r.gave_up;
+        let planned = r.planned.clone();
         r.retry_at = None;
         r.retired = true;
         // The run ends where the old voice would have, wherever the sound is then: its length,
@@ -390,6 +399,7 @@ impl Voices {
                 swap_after,
                 release_fade: crossfade,
                 media: cue_media(env.ws, cue),
+                planned,
                 ..rec(cue, run, false)
             },
         );
@@ -720,6 +730,7 @@ impl Voices {
             stream: prepared,
             total,
             scale,
+            planned,
         } = ready;
         // What the mixer voice plays, at the device's rate.
         let table = prepared.slices.clone();
@@ -758,6 +769,9 @@ impl Voices {
                 r.total = total;
                 r.table = table;
                 r.scale = scale;
+                if planned.is_some() {
+                    r.planned = planned;
+                }
                 // A moved voice's delay starts at the difference between the core's count and
                 // its own (`relocate`); a start held up adds the hold.
                 r.delay = r.delay.saturating_add(at - start);

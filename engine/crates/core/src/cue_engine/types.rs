@@ -191,7 +191,8 @@ pub enum Input {
     /// a stop or a failure), so a continue or playlist move comes on the end sample itself, not
     /// when the mixer's report arrives. The voice's `ActionEnded` still counts if it comes
     /// first (an earlier end); after the deadline it is stale. A later `ActionLength` (after a
-    /// devamp) replaces the earlier one.
+    /// devamp, or an end time edited while it plays) replaces the earlier one; the binary never
+    /// sends one shorter than where the voice is then, so the end is never dated in the past.
     ActionLength {
         cue: CueId,
         run: RunId,

@@ -4786,6 +4786,67 @@ fn a_playing_cue_moved_to_another_device_auto_follows_once_at_its_end() {
     assert_eq!(first_dc, last_ramp + 1);
 }
 
+/// An end time moved while the cue plays goes with it to another device: moved before its
+/// patch moves, or while the move waits to swap, the cue plays to the new end there, never
+/// past it on either device, and auto-follows once on the sample after its last.
+#[test]
+fn a_cue_whose_end_time_is_moved_ends_there_after_a_move_to_another_device() {
+    for edit_first in [true, false] {
+        let a = wav(&ramp(6000));
+        let b = wav(&dc(400, 0.5));
+        let mut first = audio(1, &a, 0);
+        first.continue_mode = ContinueMode::AutoFollow;
+        let mut s = two_device_show(vec![first, audio(2, &b, 0)]);
+        start(&mut s, 1);
+        s.run(BLOCK * 10);
+        let set_end = |s: &mut DeviceShow| {
+            let rid = s.request_id();
+            let json = format!(
+                r#"{{"type":"command","id":{},"command":{{"type":"set_cue_property","id":"{}","property":{{"type":"kind_fields","value":{{"end_time":0.25}}}}}}}}"#,
+                rid.0,
+                id(1).0
+            );
+            let replies = s.send(openlab_core::protocol::decode_client(&json).unwrap());
+            assert!(replies.iter().any(|m| matches!(
+                m,
+                ServerMessage::Result {
+                    outcome: Outcome::Ok(_),
+                    ..
+                }
+            )));
+        };
+        if edit_first {
+            set_end(&mut s);
+            map_patch(&mut s, patch_id(), DEV2_NAME);
+        } else {
+            map_patch(&mut s, patch_id(), DEV2_NAME);
+            set_end(&mut s);
+        }
+        let mut msgs = Vec::new();
+        for _ in 0..80 {
+            s.run(BLOCK);
+            msgs.extend(s.take_outbound());
+        }
+        let starts = states(&msgs, id(2))
+            .iter()
+            .filter(|(st, _)| *st == WireCueState::Running)
+            .count();
+        assert_eq!(starts, 1, "edit first {edit_first}");
+        // Frame 1999 (a quarter second at 8 kHz) is the last heard, on the new device.
+        let last = 2000.0 / 1_048_576.0;
+        let two = s.device_channel(DEV2, 0);
+        let last_ramp = two.iter().rposition(|&v| v != 0.0 && v != 0.5).unwrap();
+        assert_eq!(two[last_ramp], last, "edit first {edit_first}");
+        let first_dc = two.iter().position(|&v| v == 0.5).unwrap();
+        assert_eq!(first_dc, last_ramp + 1, "edit first {edit_first}");
+        let one = s.device_channel(DEV, 0);
+        assert!(
+            one.iter().all(|&v| v <= last),
+            "edit first {edit_first}: played past the end on the old device"
+        );
+    }
+}
+
 // A patch on the system output (QLab 5 manual p. 7): it plays on whichever device the Mac's
 // default output is, and follows it when the operator changes it.
 
