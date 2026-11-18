@@ -269,6 +269,19 @@ pub enum CommandKind {
         voice: VoiceId,
         stop: bool,
     },
+    /// The voice's slice table ends with entry `entry`, `frames` long, from this sample on: its
+    /// cue's end time moved while it plays. Later entries are dropped; the voice ends where it
+    /// reaches the new end, on its next frame if it is past it already (a paused voice ends
+    /// when it resumes), and `frames` 0 ends it on its next frame. Only an entry played once
+    /// changes length, and only the last entry grows: its disk stream must be told the same
+    /// (`StreamHandle::set_end`), or the voice waits for frames that never come. Anything else,
+    /// and a voice without a slice table, is ignored. A fade-out the change reaches fades on
+    /// from where its gain is.
+    EndAt {
+        voice: VoiceId,
+        entry: usize,
+        frames: u64,
+    },
     /// Pause a playing voice on this sample (CUE-05). It keeps its source, position and state,
     /// consumes nothing and outputs silence (after a de-zipper-length declick fade-out) until
     /// [`CommandKind::ResumeVoice`]. Ignored for an unknown or already paused voice.

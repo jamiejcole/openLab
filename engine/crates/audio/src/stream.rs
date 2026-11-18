@@ -190,6 +190,8 @@ struct Status {
     cache_bytes: usize,
     /// Frames written to the ring from the loop cache.
     cached_frames: u64,
+    /// A new end for the table (`StreamHandle::set_end`) the worker has not taken yet.
+    end: Option<(usize, u64)>,
 }
 
 #[derive(Debug, Default)]
@@ -197,6 +199,8 @@ struct Shared {
     status: Mutex<Status>,
     changed: Condvar,
     cancelled: AtomicBool,
+    /// `Status::end` is set: the worker looks without taking the lock on every step.
+    end_asked: AtomicBool,
 }
 
 impl Shared {
@@ -224,9 +228,25 @@ impl StreamHandle {
         self.shared.lock().primed
     }
 
-    /// Every frame of the plan is in the ring.
+    /// Every frame of the plan is in the ring (a new end the worker has not taken yet counts as
+    /// more to come).
     pub fn is_finished(&self) -> bool {
-        self.shared.lock().finished
+        let s = self.shared.lock();
+        s.finished && s.end.is_none()
+    }
+
+    /// The plan's table ends with entry `entry`, `frames` long, from now on, as its voice is
+    /// told with `CommandKind::EndAt` (its cue's end time moved while it plays): later entries
+    /// are not written, and a last entry played once that grows is written on from what the
+    /// ring holds of it. `frames` 0 writes nothing more. Taken on the worker's next step.
+    /// Only an entry played once changes length, only the last one grows, and it grows only
+    /// while the stream has written no entry after it and stays inside the file; the caller
+    /// sends the voice only changes the stream can make.
+    pub fn set_end(&self, entry: usize, frames: u64) {
+        self.shared.update(|s| s.end = Some((entry, frames)));
+        self.shared.end_asked.store(true, Ordering::Release);
+        // A worker that has gone already needs no wake-up.
+        let _ = self.wake.send(Msg::Wake);
     }
 
     /// Why the stream failed. Once this is set the stream has let go of its ring, so the voice
@@ -297,7 +317,9 @@ impl StreamHandle {
 
     /// Blocks until at least `frames` are written (or the stream finished).
     pub fn wait_written(&self, frames: u64, timeout: Duration) -> Result<bool, MediaError> {
-        self.wait(timeout, |s| s.written >= frames || s.finished)
+        self.wait(timeout, |s| {
+            s.written >= frames || (s.finished && s.end.is_none())
+        })
     }
 
     /// Blocks until the voice can play its first `frames` voice frames (frames of the plan
@@ -309,7 +331,7 @@ impl StreamHandle {
         let frames = i64::try_from(frames).unwrap_or(i64::MAX);
         self.wait(timeout, |s| {
             i64::try_from(s.written).unwrap_or(i64::MAX) >= frames.saturating_add(s.offset)
-                || s.finished
+                || (s.finished && s.end.is_none())
         })
     }
 
@@ -635,6 +657,8 @@ impl DiskStreamer {
             step_frames: self.config.step_frames.max(1),
             handled_cut: None,
             cut: None,
+            last_written: None,
+            sealed: false,
             scratch: vec![0.0; CHUNK_FRAMES * ch],
             _permit: permit,
         });
@@ -1075,6 +1099,11 @@ struct Task {
     step_frames: u64,
     handled_cut: Option<u64>,
     cut: Option<Cut>,
+    /// Frames of the last entry already in the ring when a new end put the cursor past it:
+    /// where it is written on from if that entry grows again.
+    last_written: Option<u64>,
+    /// A new end dropped entries the ring may already hold: the last entry can no longer grow.
+    sealed: bool,
     scratch: Vec<f32>,
     _permit: Permit,
 }
@@ -1088,6 +1117,9 @@ impl Task {
     }
 
     fn fill(&mut self) -> Result<Progress, MediaError> {
+        if self.shared.end_asked.load(Ordering::Acquire) {
+            self.take_end();
+        }
         if self.pipe.is_none() {
             let pipe = match std::mem::replace(&mut self.opening, Opening::Done) {
                 Opening::Here(media) => {
@@ -1199,6 +1231,83 @@ impl Task {
         self.advance_cursor(s, n as u64);
         self.after_write();
         Ok(Progress::Worked)
+    }
+
+    /// Takes a new end for the table (`StreamHandle::set_end`) as the voice takes it, and moves
+    /// the write cursor to match. Cleared in the same update that says the stream has frames to
+    /// write again, so a driver waiting for it never sees it finished in between.
+    fn take_end(&mut self) {
+        self.shared.end_asked.store(false, Ordering::Release);
+        let Some(end) = self.shared.lock().end else {
+            return;
+        };
+        let more = self.apply_end(end.0, end.1);
+        let asked = &self.shared.end_asked;
+        self.shared.update(|s| {
+            if s.end == Some(end) {
+                s.end = None;
+            } else {
+                // A newer one came meanwhile: the next step takes it.
+                asked.store(true, Ordering::Release);
+            }
+            if more {
+                s.finished = false;
+            }
+        });
+    }
+
+    /// Entry `k` becomes the table's last, `frames` long (0: nothing more is written). Returns
+    /// whether the cursor, which had passed the old end, has frames to write again.
+    fn apply_end(&mut self, k: usize, frames: u64) -> bool {
+        let len = self.slices.len();
+        let Some(cur) = self.slices.get(k).copied() else {
+            return false;
+        };
+        let grows = frames > cur.frames;
+        let inside = cur.start.saturating_add(frames) <= self.info.frames_at(self.device_rate);
+        if (frames != cur.frames && cur.plays != Plays::Times(1))
+            || (grows && (k + 1 != len || self.sealed))
+            || !inside
+        {
+            return false;
+        }
+        if frames == 0 {
+            self.sealed = true;
+            (self.entry, self.play, self.off) = (len, 0, 0);
+            return false;
+        }
+        if k + 1 < len {
+            self.sealed = true;
+        }
+        // What the ring holds of entry `k` once the cursor has passed it.
+        let held = if self.entry > k {
+            self.last_written.unwrap_or(cur.frames)
+        } else {
+            self.off
+        };
+        self.slices.truncate(k + 1);
+        if let Some(e) = self.slices.get_mut(k) {
+            e.frames = frames;
+        }
+        if let Some(w) = self.exit_wip.as_mut()
+            && (w.entry > k || (w.entry == k && w.off >= frames))
+        {
+            (w.entry, w.play, w.off) = (k + 1, 0, 0);
+        }
+        let past = self.entry > k || self.off >= frames;
+        if self.entry < k || !past {
+            return false;
+        }
+        if grows && held < frames {
+            // The last entry grew past what the ring holds of it: written on from there.
+            self.last_written = None;
+            (self.entry, self.play, self.off) = (k, 0, held);
+            return true;
+        }
+        // Past the new end: what the ring holds of the entry is kept, in case it grows again.
+        self.last_written = Some(held);
+        (self.entry, self.play, self.off) = (k + 1, 0, 0);
+        false
     }
 
     /// Records the `n` frames just written from `scratch` into the loop cache: a play of a loop

@@ -1323,3 +1323,102 @@ fn devamp_from_a_full_ring_never_starves_at_the_exit() {
         assert!(ev.contains(&finished(60_000, FinishReason::OutPoint)));
     }
 }
+
+/// Renders up to sample `t` (from where the render is), then moves the voice's end to entry
+/// `entry`, `frames` long, on that sample, telling the voice and its stream as the engine does.
+fn end_at(
+    r: &mut OfflineRenderer,
+    ctl: &mut MixerController,
+    h: &StreamHandle,
+    out: &mut Vec<f32>,
+    t: u64,
+    (entry, frames): (usize, u64),
+) {
+    let done = ctl.samples_rendered();
+    out.extend(render_synced(r, ctl, h, (t - done) as usize, 0));
+    ctl.send(
+        t,
+        CommandKind::EndAt {
+            voice: VoiceId(1),
+            entry,
+            frames,
+        },
+    );
+    h.set_end(entry, frames);
+}
+
+/// An end moved while the stream plays (its cue's end time edited): the voice and the stream
+/// agree on it whatever the ring already holds. Shorter: the sound stops there and nothing past
+/// it is heard, also when the ring was written far beyond it. Behind the voice: it ends on the
+/// next frame. Longer after the stream had written all of the old end: the stream writes on
+/// from there and the voice plays on to the new end. Shorter and then longer again: the stream
+/// goes on from what the ring holds, so no frame plays twice or is missed.
+#[test]
+fn an_end_moved_while_streaming_is_where_voice_and_stream_stop() {
+    let cases: [(&str, u64, Vec<(u64, u64)>, u64); 5] = [
+        ("shorter", 20_000, vec![(5_000, 10_000)], 10_000),
+        ("behind the voice", 20_000, vec![(6_000, 3_000)], 6_000),
+        ("longer", 10_000, vec![(5_000, 25_000)], 25_000),
+        (
+            "shorter then longer",
+            20_000,
+            vec![(2_000, 8_000), (4_000, 25_000)],
+            25_000,
+        ),
+        // A ring of 2400 frames: the stream has written past the first new end, and the second
+        // grows from what it wrote.
+        (
+            "longer than the ring holds",
+            20_000,
+            vec![(500, 1_500), (1_000, 25_000)],
+            25_000,
+        ),
+    ];
+    for (what, first, moves, plays) in cases {
+        let (media, info) = marker_file("end-moved.wav", 30_000);
+        let (mut ctl, mut r) = setup(config(1));
+        let small = what.starts_with("longer than");
+        let mut d = streamer(if small { 50 } else { 2_000 });
+        let slices = plan(0..first, &[], &[], 0).unwrap();
+        let h = start_stream(&mut d, &mut ctl, media, info, slices, 0);
+        let ahead = if small { 2_000 } else { first };
+        assert!(h.wait_written(ahead, FAILSAFE).unwrap(), "{what}");
+        let mut out = Vec::new();
+        for (t, frames) in moves {
+            end_at(&mut r, &mut ctl, &h, &mut out, t, (0, frames));
+        }
+        let done = out.len();
+        out.extend(render_synced(&mut r, &mut ctl, &h, 30_000 - done, 0));
+        let want: Vec<f32> = (0..plays).map(marker).collect();
+        assert_plays(&out, 0, &want);
+        assert_eq!(
+            events(&mut ctl),
+            vec![
+                slice_ended(plays, 0),
+                finished(plays, FinishReason::OutPoint)
+            ],
+            "{what}"
+        );
+        assert_eq!(ctl.underrun_frames(), 0, "{what}");
+    }
+}
+
+/// A moved end the voice and the stream cannot carry out is left alone by both: a looping
+/// entry keeps its length, and an entry with another after it does not grow. The plan plays as
+/// it was.
+#[test]
+fn an_end_the_stream_cannot_follow_changes_nothing() {
+    let (media, info) = marker_file("end-refused.wav", 6_000);
+    let (mut ctl, mut r) = setup(config(1));
+    let mut d = streamer(2_000);
+    let plays = [Plays::Times(1), Plays::Times(2), Plays::Times(1)];
+    let slices = plan(0..3_000, &[1_000, 2_000], &plays, 0).unwrap();
+    let h = start_stream(&mut d, &mut ctl, media, info, slices.clone(), 0);
+    assert!(h.wait_written(4_000, FAILSAFE).unwrap());
+    let mut out = Vec::new();
+    end_at(&mut r, &mut ctl, &h, &mut out, 100, (1, 500));
+    end_at(&mut r, &mut ctl, &h, &mut out, 200, (0, 1_500));
+    let done = out.len();
+    out.extend(render_synced(&mut r, &mut ctl, &h, 6_000 - done, 0));
+    assert_plays(&out, 0, &unrolled(&slices));
+}
