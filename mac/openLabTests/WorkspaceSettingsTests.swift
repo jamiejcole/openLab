@@ -592,6 +592,65 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(mapped?.channels, [0, 1])
     }
 
+    /// A cue routed to cue output 100 of a 128-output patch plays: the editor's meter row 100
+    /// lights, drawn beside its row, and a row the cue does not reach stays dark.
+    func testA128OutputPatchsEditorMetersRow100WhileACueRoutedThereplays() async throws {
+        let intro = intro
+        let (rig, _, editor) = try await playing { url in
+            try writeWAV(url.appendingPathComponent("media/a.wav"), seconds: 10)
+            try editShow(url.appendingPathComponent("Demo.openlab")) { ws in
+                guard var patches = ws["patches"]?.arrayValue, let first = patches[0]["outputs"]?.arrayValue?.first,
+                    var lists = ws["cue_lists"]?.arrayValue, var cues = lists[0]["cues"]?.arrayValue,
+                    let i = cues.firstIndex(where: { $0["id"]?.stringValue == intro.raw }),
+                    var kind = cues[i]["kind"], var levels = kind["levels"]
+                else { return XCTFail("the demo show has its patch and intro") }
+                patches[0].set("outputs", .array(Array(repeating: first, count: 128)))
+                ws.set("patches", .array(patches))
+                let unity = JSONValue.object(["db": .double(0), "mute": .bool(false)])
+                levels.set("outputs", .array(Array(repeating: unity, count: 128)))
+                levels.set(
+                    "crosspoints",
+                    .array([
+                        .object(["input": .int(0), "output": .int(99), "db": .double(0), "mute": .bool(false)])
+                    ]))
+                kind.set("levels", levels)
+                cues[i].set("kind", kind)
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+        editor.render()
+        XCTAssertEqual(editor.meter.fixedRows, 128)
+        XCTAssertTrue(editor.meter.isOnScreen, "the editor's meter is live")
+        let row100 = try await rowPeak(rig, row: 99)
+        XCTAssertGreaterThan(row100, 0.01, "row 100 moves")
+        let row1 = try await rowPeak(rig, row: 0)
+        XCTAssertEqual(row1, 0, accuracy: 0.0001, "row 1 carries nothing")
+        // Row 100's bar is drawn lit, level with its row's boxes.
+        let bar = editor.meter.rowRect(99)
+        let box = editor.matrix.cellRect(row: 99, column: 0)
+        let barInMatrix = editor.matrix.convert(bar, from: editor.meter)
+        XCTAssertTrue(
+            barInMatrix.midY > box.minY && barInMatrix.midY < box.maxY, "the bar \(barInMatrix) is on row 100 \(box)")
+        try await rig.advance(0.1)
+        rig.store.meters.tick(0)
+        let rep = try renderView(editor.meter)
+        func lit(_ r: NSRect) -> Int {
+            let scale = CGFloat(rep.pixelsWide) / editor.meter.bounds.width
+            var n = 0
+            for py in Int(r.minY * scale)..<max(Int(r.minY * scale) + 1, Int(r.maxY * scale)) {
+                for px in 0..<rep.pixelsWide {
+                    guard let c = rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB) else { continue }
+                    let hi = max(c.redComponent, c.greenComponent, c.blueComponent)
+                    if hi - min(c.redComponent, c.greenComponent, c.blueComponent) > 0.4 { n += 1 }
+                }
+            }
+            return n
+        }
+        XCTAssertGreaterThan(lit(bar), 0, "row 100's bar is lit")
+        XCTAssertEqual(lit(editor.meter.rowRect(0)), 0, "row 1's bar is dark")
+    }
+
     /// Checklist: an Audio cue is selected → the I/O tab's edit button, and a button on the Levels
     /// tab, open the editor for that cue's patch.
     func testTheIOAndLevelsTabButtonsOpenTheEditorForTheCuesPatch() async throws {

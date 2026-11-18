@@ -121,6 +121,13 @@ final class PastePropertiesRuleTests: XCTestCase {
         let onWidePatch = narrow.taking(.level(.output(5)), from: shown, limits: VolumeLimits(), outputs: 8)
         XCTAssertEqual(onWidePatch.outputs.map(\.db), [0, 0, -120, -120, -120, -6])
         XCTAssertEqual(narrow.taking(.level(.output(5)), from: shown, limits: VolumeLimits(), outputs: 5), narrow)
+        // A mute there is kept the same way (#758); unmuting an output not listed changes nothing.
+        var mutedShown = shown
+        mutedShown.setMute(.output(5), true)
+        let muted = narrow.taking(.mute(.output(5)), from: mutedShown, limits: VolumeLimits(), outputs: 8)
+        XCTAssertEqual(muted.outputs.map(\.mute), [false, false, false, false, false, true])
+        XCTAssertEqual(muted.outputs[5].db, -120, "muting keeps the level")
+        XCTAssertEqual(narrow.taking(.mute(.output(5)), from: narrow, limits: VolumeLimits(), outputs: 8), narrow)
     }
 
     /// A ganged output moved on several cues moves each cue's own gang: a cue without that gang has

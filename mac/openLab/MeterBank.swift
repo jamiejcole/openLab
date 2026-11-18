@@ -333,20 +333,30 @@ final class MeterView: NSView {
         NSBezierPath.clip(bounds)
         if let columns { return drawColumns(columns, in: dirtyRect) }
         let count = source.flatMap { bank?.channelCount($0) } ?? 0
-        let rows = fixedRows.map { max($0, 1) } ?? max(count, 1)
-        // Every row stays inside the view: with many channels the gaps go first, then the rows
-        // get thinner than a point.
+        let rows = shownRows
+        for row in 0..<rows {
+            let r = rowRect(row)
+            NSColor.quaternaryLabelColor.setFill()
+            r.fill()
+            guard count > 0, let source, let level = bank?.level(source, channel: row), level > 0 else { continue }
+            Self.colour(level).setFill()
+            NSRect(x: r.minX, y: r.minY, width: r.width * Self.fill(level), height: r.height).fill()
+        }
+    }
+
+    /// The rows drawn when the channels are stacked rows (`columns` nil).
+    private var shownRows: Int {
+        fixedRows.map { max($0, 1) } ?? max(source.flatMap { bank?.channelCount($0) } ?? 0, 1)
+    }
+
+    /// Where channel `row`'s bar is drawn when the channels are stacked rows. Every row stays inside
+    /// the view: with many channels the gaps go first, then the rows get thinner than a point.
+    func rowRect(_ row: Int) -> NSRect {
+        let rows = shownRows
         var gap: CGFloat = 1
         if (bounds.height - gap * CGFloat(rows - 1)) / CGFloat(rows) < 1 { gap = 0 }
         let h = (bounds.height - gap * CGFloat(rows - 1)) / CGFloat(rows)
-        for row in 0..<rows {
-            let y = CGFloat(row) * (h + gap)
-            NSColor.quaternaryLabelColor.setFill()
-            NSRect(x: 0, y: y, width: bounds.width, height: h).fill()
-            guard count > 0, let source, let level = bank?.level(source, channel: row), level > 0 else { continue }
-            Self.colour(level).setFill()
-            NSRect(x: 0, y: y, width: bounds.width * Self.fill(level), height: h).fill()
-        }
+        return NSRect(x: 0, y: CGFloat(row) * (h + gap), width: bounds.width, height: h)
     }
 
     /// Only the columns in `dirty`: a tick redraws what is in view, not all 128.

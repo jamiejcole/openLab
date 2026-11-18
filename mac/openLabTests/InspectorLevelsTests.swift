@@ -811,8 +811,23 @@ final class InspectorLevelsTests: XCTestCase {
     /// Checklist: a Fade cue targeting that cue → its Levels tab shows and edits all 128 outputs the
     /// same way.
     func testAFadeTargetingACueOnA128OutputPatchShowsAndEditsAll128Outputs() async throws {
-        try await reopenWithLevels(ofCue: 0, patchOutputs: 128) { _ in }
+        // The target's levels list two outputs (made before its patch grew); its file channel 1
+        // goes to output 100, which the patch also sends to device output 1.
+        try await reopenWithLevels(
+            ofCue: 0, patchOutputs: 128, patchCrosspoints: [Self.output100ToDevice1], tone: 6
+        ) { $0.set("crosspoints", .array([Self.cross(0, 99, 0)])) }
         showCue(Self.fade)
+        // A short Fade that leaves its target playing and moves nothing else (the demo's takes the
+        // main level to silence), so what it does on output 100 is heard.
+        let nothing = JSONValue.object(["master_db": .null, "output_db": .array([]), "crosspoints": .array([])])
+        let setUp: [CueProperty] = [
+            .duration(0.5), .kindFields(["stop_target_when_done": .bool(false), "levels": nothing]),
+        ]
+        for edit in setUp {
+            guard case .success = await store.send(command: .setProperty(Self.fade, edit)) else {
+                return XCTFail("\(edit)")
+            }
+        }
         let p = vc.fadeLevels
         vc.view.layoutSubtreeIfNeeded()
         XCTAssertEqual(p.matrix.outputCount, 128, "as many outputs as the target's patch")
@@ -832,6 +847,16 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(p.levelField.stringValue, "-20.0")
         XCTAssertTrue(p.matrix.levels?.isActive(.output(99)) ?? false, "output 100 now fades")
         XCTAssertEqual(p.faders[100].doubleValue, -20)
+        // Heard: output 100 of the playing target is silent until the Fade brings it up.
+        guard case .success = await store.transport(.start(cue: Self.intro)) else { return XCTFail("start") }
+        let silent = try await heard(Self.intro, channel: 99)
+        XCTAssertEqual(silent.device, 0, accuracy: 0.0001, "output 100 is silent before the Fade")
+        guard case .success = await store.transport(.start(cue: Self.fade)) else { return XCTFail("fade") }
+        try await play(0.1)
+        XCTAssertEqual(store.cueStates[Self.intro]?.state, .fading, "the Fade moves the target")
+        try await play(0.5)
+        let faded = try await heard(Self.intro, channel: 99)
+        XCTAssertGreaterThan(faded.device, 0.001, "the Fade brings output 100 up, and it is heard")
         // The crosspoint of output 128 is typed as well, at the far end of the scroll.
         typeInBox(p, .cross(input: 0, output: 127), "-6")
         await assertEventually {
@@ -889,6 +914,43 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(
             litPixels(after, vc.view.convert(dark, from: p.meter), in: vc.view), 0, "output 99's bar is dark")
         XCTAssertGreaterThan(litPixels(after, vc.view.convert(bar, from: p.meter), in: vc.view), 20)
+    }
+
+    /// Mute ticked on output 100, which the cue's levels do not list yet (its patch grew after the
+    /// cue was made): the box stays ticked because the mute is kept, so a level typed there later
+    /// is not heard until it is unmuted; undo takes each step back (#758).
+    func testMuteOnAnOutputTheCuesLevelsDoNotListIsKeptAndSilencesIt() async throws {
+        try await reopenWithLevels(
+            ofCue: 0, patchOutputs: 128, patchCrosspoints: [Self.output100ToDevice1], tone: 6
+        ) { $0.set("crosspoints", .array([Self.cross(0, 99, 0)])) }
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        let before = try XCTUnwrap(modelKind(Self.intro)?["levels"])
+        func output100() -> JSONValue? {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.dropFirst(99).first
+        }
+        p.select(.output(99))
+        XCTAssertTrue(p.muteCheck.isEnabled)
+        p.muteCheck.state = .on
+        fire(p.muteCheck)
+        await assertEventually("the mute is kept") { output100()?["mute"] == .bool(true) }
+        XCTAssertEqual(output100()?["db"], .double(-120), "still silent")
+        XCTAssertEqual(p.muteCheck.state, .on)
+        guard case .success = await store.transport(.start(cue: Self.intro)) else { return XCTFail("start") }
+        typeInBox(p, .output(99), "0")
+        await assertEventually { output100()?["db"] == .double(0) }
+        XCTAssertEqual(output100()?["mute"], .bool(true), "typing a level keeps the mute")
+        XCTAssertEqual(p.muteCheck.state, .on)
+        let muted = try await heard(Self.intro, channel: 99)
+        XCTAssertEqual(muted.device, 0, accuracy: 0.0001, "a muted output is not heard")
+        p.muteCheck.state = .off
+        fire(p.muteCheck)
+        await assertEventually { output100()?["mute"] == .bool(false) }
+        let open = try await heard(Self.intro, channel: 99)
+        XCTAssertGreaterThan(open.device, 0.01, "unmuted, it is heard")
+        for _ in 0..<3 { _ = await store.undo() }
+        await assertEventually("undo restores the levels") { self.modelKind(Self.intro)?["levels"] == before }
+        XCTAssertEqual(p.muteCheck.state, .off)
     }
 
     /// Strongly coloured pixels of `rep` (a render of `view`) inside `rect`, in `view`'s coordinates.
