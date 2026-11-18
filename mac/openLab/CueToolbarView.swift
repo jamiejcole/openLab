@@ -86,6 +86,30 @@ final class CueToolbarView: NSView {
     static var icons: [Icon] { groups.flatMap { $0.map(\.icon) } }
 
     private(set) var segmentedControls: [CueToolbarButtons] = []
+    private let stack = NSStackView()
+    private var segmentWidth: CGFloat = 34
+
+    /// The buttons shrink (down to `leastSegmentWidth`) when the row is narrower than they need, as it is
+    /// beside the sidebar at the least window width, so every button stays reachable.
+    static let mostSegmentWidth: CGFloat = 34
+    static let leastSegmentWidth: CGFloat = 20
+
+    override func layout() {
+        let segments = segmentedControls.reduce(0) { $0 + $1.segmentCount }
+        if segments > 0 {
+            // What a control adds to its segments (its own bezel) and the gaps between controls.
+            let chrome = CGFloat(segmentedControls.count) * 8 + stack.spacing * CGFloat(segmentedControls.count - 1)
+            let room = bounds.width - 24 - chrome
+            let fit = min(Self.mostSegmentWidth, max(Self.leastSegmentWidth, (room / CGFloat(segments)).rounded(.down)))
+            if fit != segmentWidth {
+                segmentWidth = fit
+                for control in segmentedControls {
+                    for i in 0..<control.segmentCount { control.setWidth(fit, forSegment: i) }
+                }
+            }
+        }
+        super.layout()
+    }
     var onAdd: ((NewCueKind) -> Void)?
 
     /// The kind each button adds, in `groups` order.
@@ -114,7 +138,6 @@ final class CueToolbarView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         setAX(AX.cueToolbar)
-        let stack = NSStackView()
         stack.spacing = 10
         for group in Self.groups {
             let control = CueToolbarButtons()

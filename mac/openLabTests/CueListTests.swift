@@ -5253,6 +5253,75 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(TimeHeaderCell.icon(cell.shown).drawing, "time-toggle-up", "left: counting down")
     }
 
+    /// Flow (workspace layout): the time columns' headers carry a bold chevron right beside the title, and the
+    /// continue column's header has a mark of its own.
+    func testTheTimeHeadersHaveBoldChevronsBesideTheTitleAndTheContinueHeaderHasAMark() async throws {
+        let h = try await demo()
+        h.spy.appearance = NSAppearance(named: .darkAqua)
+        let rep = try headerPixels(h)
+        let scale = CGFloat(rep.pixelsWide) / max(1, rep.size.width)
+        for id in ["preWait", "duration", "postWait"] {
+            let rect = headerRect(h, id)
+            let cell = try XCTUnwrap(try column(h, id).headerCell as? TimeHeaderCell)
+            let titleEnd = rect.minX + 4 + cell.attributedStringValue.size().width
+            let chevron = NSRect(x: titleEnd + 1, y: 0, width: 11, height: rect.height)
+            let pixels = Pixels(rep: rep, region: chevron, scale: scale)
+            XCTAssertGreaterThan(pixels.countDifferingFromBackground(), 10, "\(id): a chevron right after the title")
+            XCTAssertGreaterThan(
+                pixels.count { r, g, b in r > 0.85 && g > 0.85 && b > 0.85 }, 6,
+                "\(id): bold, in the title's own colour")
+        }
+        let mark = Pixels(rep: rep, region: headerRect(h, "continue"), scale: scale)
+        XCTAssertGreaterThan(mark.countDifferingFromBackground(), 10, "the continue column's header has a mark")
+        XCTAssertEqual(try column(h, "continue").headerCell.stringValue, "", "and no title")
+    }
+
+    /// Flow (workspace layout): a Group's Name cell is boxed in its mode's colour; other rows are not. This is
+    /// the drawing the group-outline issue also asks for (the box around the children is that issue's).
+    func testGroupRowsAreOutlinedInTheirModesColourAndOtherRowsAreNot() async throws {
+        let h = try await demo()
+        h.spy.appearance = NSAppearance(named: .darkAqua)
+        func topEdge(_ id: ModelID) throws -> Pixels {
+            let cell = try XCTUnwrap(h.cell("name", id))
+            cell.layoutSubtreeIfNeeded()
+            let rep = try XCTUnwrap(cell.bitmapImageRepForCachingDisplay(in: cell.bounds))
+            cell.cacheDisplay(in: cell.bounds, to: rep)
+            let scale = CGFloat(rep.pixelsWide) / max(1, cell.bounds.width)
+            return Pixels(
+                rep: rep, region: NSRect(x: cell.bounds.midX, y: 0, width: 4, height: cell.bounds.height), scale: scale)
+        }
+        XCTAssertGreaterThan(try topEdge(H.group).count(Self.greenish), 4, "the Timeline group's box is green")
+        XCTAssertEqual(try topEdge(H.intro).count(Self.greenish), 0, "an audio cue's cell is not boxed")
+        XCTAssertEqual(GroupOutline.of(mode: "timeline"), GroupOutline(colour: .systemGreen, rounded: false))
+        XCTAssertEqual(GroupOutline.of(mode: "playlist"), GroupOutline(colour: .systemOrange, rounded: false))
+        XCTAssertEqual(GroupOutline.of(mode: "start_random"), GroupOutline(colour: .systemPurple, rounded: false))
+        XCTAssertEqual(GroupOutline.of(mode: "start_first_and_enter"), GroupOutline(colour: .systemBlue, rounded: true))
+        XCTAssertEqual(
+            GroupOutline.of(mode: "start_first_and_go_to_next"), GroupOutline(colour: .systemBlue, rounded: true))
+    }
+
+    /// Flow (workspace layout): a loaded cue's mark is a solid disc; a zero wait is dimmed and a zero
+    /// duration is not.
+    func testTheLoadedMarkIsASolidDiscAndZeroWaitsAreDimmed() async throws {
+        let image = Icon.stateLoaded.image("Loaded", compact: true)
+        let rect = NSRect(origin: .zero, size: NSSize(width: 16, height: 16))
+        let rep = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16, bitsPerSample: 8, samplesPerPixel: 4,
+                hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: rect)
+        NSGraphicsContext.restoreGraphicsState()
+        for x in [8, 11, 12] {
+            XCTAssertGreaterThan(
+                rep.colorAt(x: x, y: 8)?.alphaComponent ?? 0, 0.5, "pixel \(x) across the disc is drawn")
+        }
+        let h = try await demo()
+        XCTAssertEqual(try XCTUnwrap(h.cell("preWait", H.intro)).label.textColor, .secondaryLabelColor)
+        XCTAssertEqual(try XCTUnwrap(h.cell("duration", H.intro)).label.textColor, .labelColor)
+    }
+
     /// Flow (#696): at the least column width, light and dark, Show Mode: nothing in the first column is
     /// clipped and nothing overlaps the Number column.
     func testAtTheLeastWidthLightDarkAndShowModeTheFirstColumnIsWholeAndClearOfTheNumberColumn() async throws {
@@ -5534,7 +5603,7 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { (h.store.model?.cue(H.intro)?.raw["kind"]?["media"]?.stringValue ?? "").isEmpty }
         XCTAssertEqual(drawnMask(f), drawnMask(try pixels(h, "target", H.intro)), "the same glyph")
         XCTAssertEqual(f.count(Self.drawn), middle(f).count(Self.drawn), "centred, and all the cell holds")
-        XCTAssertEqual(f.region.width, 60, accuracy: 1, "the column's default width")
+        XCTAssertEqual(f.region.width, 42, accuracy: 1, "the column's default width")
         XCTAssertNotEqual(Icon.targetFile.drawing, Icon.fieldChoose.drawing)
         // Cues that take no target: nothing.
         for id in [H.group, memo] {
@@ -6405,6 +6474,16 @@ final class CueListColumnLayoutTests: XCTestCase {
         XCTAssertGreaterThan(inkedPixels(of: editor), 0, "the editor draws the text")
     }
 
+    /// The sidebar shown and dragged wide, so the columns overflow at the least window (they fit beside the
+    /// default sidebar).
+    private func widenedSidebar(_ wc: WorkspaceWindowController, width: CGFloat = 500) {
+        wc.setVisible(.sidebar, true)
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        let across = wc.horizontalSplit.bounds.width - wc.horizontalSplit.dividerThickness
+        wc.horizontalSplit.setPosition(across - width, ofDividerAt: 0)
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+    }
+
     /// With scroll bars that always show (a Mac with a mouse), the list at the least window size keeps its
     /// one row clear: no scroller lies over it while the columns fit. Once they do not (the sidebar shown
     /// at the least width), the sideways scroller is there to reach them.
@@ -6436,7 +6515,7 @@ final class CueListColumnLayoutTests: XCTestCase {
             XCTAssertFalse(scroll.hasHorizontalScroller, "no sideways scroller while the columns fit")
         }
         // The columns no longer fit: the sideways scroller reaches the last one.
-        wc.setVisible(.sidebar, true)
+        widenedSidebar(wc)
         window.contentView?.layoutSubtreeIfNeeded()
         let last = outline.rect(ofColumn: outline.numberOfColumns - 1)
         XCTAssertGreaterThan(last.maxX, scroll.contentView.bounds.maxX, "the columns are wider than the list")
@@ -6473,7 +6552,7 @@ final class CueListColumnLayoutTests: XCTestCase {
         }
         for cue in [H.radio, H.intro] {
             wc.cueList.selectAsUser([cue])
-            wc.setVisible(.sidebar, true)
+            widenedSidebar(wc)
             window.setContentSize(NSSize(width: 1200, height: 800))
             window.contentView?.layoutSubtreeIfNeeded()
             outline.scrollRowToVisible(outline.numberOfRows - 1)
@@ -6484,7 +6563,7 @@ final class CueListColumnLayoutTests: XCTestCase {
             window.contentView?.layoutSubtreeIfNeeded()
             outline.scrollRowToVisible(outline.selectedRow)
             XCTAssertFalse(scroll.hasHorizontalScroller, "the columns fit without the sidebar")
-            wc.setVisible(.sidebar, true)
+            widenedSidebar(wc)
             window.contentView?.layoutSubtreeIfNeeded()
             try check("sidebar shown at the least size, cue \(cue)")
         }
@@ -6498,7 +6577,7 @@ final class CueListColumnLayoutTests: XCTestCase {
         let window = try XCTUnwrap(wc.window)
         let scroll = try XCTUnwrap(outline.enclosingScrollView)
         scroll.scrollerStyle = .overlay
-        wc.setVisible(.sidebar, true)
+        widenedSidebar(wc)
         window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
         window.contentView?.layoutSubtreeIfNeeded()
         wc.cueList.selectAsUser([H.radio])
@@ -6534,6 +6613,8 @@ final class CueListColumnLayoutTests: XCTestCase {
             scroll.scrollerStyle = style
             window.setContentSize(window.minSize)
             wc.setVisible(.sidebar, true)
+            // A time column dragged wider: with the sidebar open the columns no longer fit.
+            outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration"))?.width = 200
             window.contentView?.layoutSubtreeIfNeeded()
             XCTAssertEqual(scroll.scrollerStyle, style, bars)
             func titlesOverColumns(_ what: String) {

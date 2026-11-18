@@ -134,6 +134,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var pickFile: @MainActor (NewCueKind) -> URL? = WorkspaceWindowController.filePanel
     let verticalSplit = NSSplitView()
     let horizontalSplit = NSSplitView()
+    /// The GO area, toolbar, Find and Load bars and the cue list, one above the next.
+    private(set) var topColumn = NSView()
     /// The preferred inspector height and sidebar width (the splits' soft constraints).
     var inspectorHeightConstraint: NSLayoutConstraint?
     var sidebarWidthConstraint: NSLayoutConstraint?
@@ -308,6 +310,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         footer.onSettings = { [weak self] in self?.showSettings() }
         footer.onWarnings = { [weak self] in self?.showWarnings() }
         setVisible(.sidebar, false)
+        refreshTitle()
         startSavingLayout()
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
@@ -606,8 +609,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         didSet { refreshTitle() }
     }
 
+    /// The window's title: the workspace, then the cue list it shows (QLab's "workspace — list").
     private func refreshTitle() {
-        window?.title = isShowMode ? String(format: loc("window.main.title.showMode"), workspaceName) : workspaceName
+        let list = cueList.listID.flatMap { id in store.model?.cueLists.first { $0.id == id }?.name }
+        let named = list.map { String(format: loc("window.main.title.list"), workspaceName, $0) } ?? workspaceName
+        window?.title = isShowMode ? String(format: loc("window.main.title.showMode"), named) : named
         missingFilesController?.retitle(workspaceName)
     }
 
@@ -623,6 +629,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// The cue list has applied a change: the syncs that read its shown list and tree run now.
     private func cueListApplied() {
+        refreshTitle()
         syncSidebarList()
         syncMasthead()
         refreshFind()
@@ -760,6 +767,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         if isShowMode, Self.hiddenInShowMode.contains(area) { return }
         wanted[area] = visible
         show(area, visible)
+        // The footer's one button (and View > Masthead) hides the GO button, standby line and cue
+        // toolbar together; the toolbar keeps its own View menu item. Show Mode keeps the toolbar away.
+        if area == .masthead {
+            wanted[.toolbar] = visible
+            if !isShowMode { show(.toolbar, visible) }
+        }
         saveLayout()
     }
 
@@ -815,10 +828,41 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func buildContent() -> NSView {
-        verticalSplit.isVertical = false
+        findBar.isHidden = true
+        loadBar.isHidden = true
+        // The GO area, toolbar and list share one column; the sidebar stands beside all of it from the
+        // window's top, and the inspector under both spans the window's width (QLab's arrangement).
+        let column = NSStackView(views: [masthead, cueToolbar, findBar, loadBar, cueList.view])
+        column.orientation = .vertical
+        column.spacing = 0
+        column.distribution = .fill
+        for v in [masthead, cueToolbar, findBar, loadBar, cueList.view] {
+            v.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        }
         cueList.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListHeight).isActive = true
+        // These views have no intrinsic height; without explicit heights the stack stretches them.
+        cueToolbar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        findBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        loadBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        for v in [masthead, cueToolbar, findBar, loadBar] {
+            v.setContentHuggingPriority(.required, for: .vertical)
+            v.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
+        cueList.view.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        topColumn = column
+
+        horizontalSplit.isVertical = true
+        column.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListWidth).isActive = true
+        horizontalSplit.dividerStyle = .thin
+        horizontalSplit.addArrangedSubview(column)
+        let sidebarWidth = sidebar.view.widthAnchor.constraint(equalToConstant: 280)
+        sidebarWidth.priority = NSLayoutConstraint.Priority(300)
+        sidebarWidth.isActive = true
+        sidebarWidthConstraint = sidebarWidth
+
+        verticalSplit.isVertical = false
         verticalSplit.dividerStyle = .thin
-        verticalSplit.addArrangedSubview(cueList.view)
+        verticalSplit.addArrangedSubview(horizontalSplit)
         verticalSplit.addArrangedSubview(inspector.view)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 0)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
@@ -829,34 +873,15 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         inspectorHeight.isActive = true
         inspectorHeightConstraint = inspectorHeight
 
-        horizontalSplit.isVertical = true
-        verticalSplit.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListWidth).isActive = true
-        horizontalSplit.dividerStyle = .thin
-        horizontalSplit.addArrangedSubview(verticalSplit)
-        let sidebarWidth = sidebar.view.widthAnchor.constraint(equalToConstant: 280)
-        sidebarWidth.priority = NSLayoutConstraint.Priority(300)
-        sidebarWidth.isActive = true
-        sidebarWidthConstraint = sidebarWidth
-
-        findBar.isHidden = true
-        loadBar.isHidden = true
-        let stack = NSStackView(views: [masthead, cueToolbar, findBar, loadBar, horizontalSplit, footer])
+        let stack = NSStackView(views: [verticalSplit, footer])
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
-        for v in [masthead, cueToolbar, findBar, loadBar, horizontalSplit, footer] {
-            v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-        // These views have no intrinsic height; without explicit heights the stack stretches them.
-        cueToolbar.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        findBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        loadBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        for v in [verticalSplit, footer] { v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         footer.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        for v in [masthead, cueToolbar, findBar, loadBar, footer] {
-            v.setContentHuggingPriority(.required, for: .vertical)
-            v.setContentCompressionResistancePriority(.required, for: .vertical)
-        }
-        horizontalSplit.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        footer.setContentHuggingPriority(.required, for: .vertical)
+        footer.setContentCompressionResistancePriority(.required, for: .vertical)
+        verticalSplit.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         return stack
     }
 }

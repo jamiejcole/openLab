@@ -987,7 +987,7 @@ final class ScenarioRunner {
             let url = out.appendingPathComponent(String(format: "%02d-%@.png", shots, name))
             try shot(to: url)
             written.append(url)
-            note("shot \(url.lastPathComponent) (footer: \(wc.footer.statusButton.title))\(rows)")
+            note("shot \(url.lastPathComponent) (footer: \(wc.footer.presentation.summary))\(rows)")
             for display in displays {
                 let beside = out.appendingPathComponent(String(format: "%02d-%@-display-%@.png", shots, name, display))
                 try await displayShot(display, to: beside)

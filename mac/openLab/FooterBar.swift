@@ -6,64 +6,8 @@ enum LayoutArea: CaseIterable {
     case toolbar, masthead, inspector, sidebar
 }
 
-/// The time of day in the footer (PB-12). QLab's window has no clock; a show caller wants one in
-/// view, so it sits in the footer where it never covers a cue. `now` is injectable: tests set a
-/// fixed date and call `refresh()`; the one-second timer runs only while the label is in a window.
-final class WallClockLabel: NSTextField {
-    var now: () -> Date = { Date() }
-    private(set) var timer: Timer?
-
-    /// The user's own time style (12 or 24 hour) with seconds.
-    static func makeFormatter(locale: Locale = .current, timeZone: TimeZone = .current) -> DateFormatter {
-        let f = DateFormatter()
-        f.locale = locale
-        f.timeZone = timeZone
-        f.dateStyle = .none
-        f.timeStyle = .medium
-        return f
-    }
-
-    var dateFormatter = WallClockLabel.makeFormatter()
-
-    init() {
-        super.init(frame: .zero)
-        isEditable = false
-        isBordered = false
-        drawsBackground = false
-        font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        textColor = .secondaryLabelColor
-        setAX(AX.wallClock, label: loc("footer.clock.label"))
-        refresh()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
-    func refresh() { stringValue = dateFormatter.string(from: now()) }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        timer?.invalidate()
-        timer = nil
-        guard window != nil else { return }
-        refresh()
-        let t = Timer(timeInterval: 1, repeats: true) { [weak self] t in
-            // Closing a window doesn't detach its views, so viewDidMoveToWindow(nil) may never
-            // come: the timer ends itself once the label or its window is gone.
-            let alive = MainActor.assumeIsolated { () -> Bool in
-                guard let self, let window = self.window else { return false }
-                if window.isVisible { self.refresh() }
-                return true
-            }
-            if !alive { t.invalidate() }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
-    }
-}
-
 /// Bottom bar: Edit/Show switch (Show Mode), area toggles, status text, settings.
-final class FooterBar: NSView {
+final class FooterBar: NSView, NSPopoverDelegate {
     var onToggle: ((LayoutArea, Bool) -> Void)?
     /// The gear was used: open the workspace settings.
     var onSettings: (() -> Void)?
@@ -73,7 +17,8 @@ final class FooterBar: NSView {
     let modeSwitch = NSSegmentedControl(
         labels: [loc("footer.mode.edit"), loc("footer.mode.show")],
         trackingMode: .selectOne, target: nil, action: nil)
-    /// The engine's health in one line (DX-03); clicking it opens the details.
+    /// The engine's health (DX-03); clicking it opens the details. While all is well it is a small mark
+    /// without words, so the details (CPU, engine load, dropouts, device format) stay one click away.
     let statusButton = NSButton()
     /// Red "NETWORK OUTPUT OFF" while the engine's output override is on (PB-10). Always in the
     /// footer, Show Mode included; words and a filled red pill, never colour alone. Opens the same
@@ -90,14 +35,18 @@ final class FooterBar: NSView {
     let noticeLabel = NSTextField(labelWithString: "")
     /// "12 cues in 2 lists", from the model (QLab's footer centre).
     let countLabel = NSTextField(labelWithString: "")
-    private var lastXruns: UInt64?
+    /// The dropout total the operator has seen: at the first status, or in the details they last
+    /// closed. Dropouts past it keep the warning up until the details are opened and closed again.
+    private var seenXruns: UInt64?
+    /// The last status shown, to show again once new dropouts are seen.
+    private var lastStatus: SystemStatus?
+    /// The dropout total in the details now open.
+    private var xrunsInDetails: UInt64?
     private(set) var popover: NSPopover?
-    let clock = WallClockLabel()
     let settingsButton = NSButton()
     private(set) var toggles: [LayoutArea: NSButton] = [:]
 
     private static let specs: [(area: LayoutArea, id: String, icon: Icon, key: String)] = [
-        (.toolbar, AX.toggleToolbar, .layoutToolbar, "footer.toggle.toolbar"),
         (.masthead, AX.toggleMasthead, .layoutMasthead, "footer.toggle.masthead"),
         (.inspector, AX.toggleInspector, .layoutInspector, "footer.toggle.inspector"),
         (.sidebar, AX.toggleSidebar, .layoutSidebar, "footer.toggle.sidebar"),
@@ -122,7 +71,7 @@ final class FooterBar: NSView {
         overrideBadge.setAX(AX.overrideBadge, label: loc("footer.override.badge"))
         overrideBadge.toolTip = loc("footer.override.tooltip")
         overrideBadge.target = self
-        overrideBadge.action = #selector(showStatusDetails)
+        overrideBadge.action = #selector(showStatusDetails(_:))
         overrideBadge.isHidden = true
         warningsButton.isBordered = false
         warningsButton.imagePosition = .imageLeading
@@ -139,7 +88,7 @@ final class FooterBar: NSView {
         statusButton.imagePosition = .imageLeading
         statusButton.setAX(AX.statusLabel)
         statusButton.target = self
-        statusButton.action = #selector(showStatusDetails)
+        statusButton.action = #selector(showStatusDetails(_:))
         countLabel.setAX(AX.footerCount)
         countLabel.textColor = .secondaryLabelColor
         countLabel.font = .systemFont(ofSize: 12)
@@ -171,10 +120,12 @@ final class FooterBar: NSView {
         settingsButton.action = #selector(settingsClicked)
         settingsButton.bezelStyle = .texturedRounded
 
-        let left = NSStackView(
-            views: [modeSwitch, overrideBadge] + [.toolbar, .masthead].compactMap { toggles[$0] })
-        let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
-        let centre = NSStackView(views: [countLabel, warningsButton, statusButton, noticeLabel])
+        // QLab's footer: the mode switch and the one GO area toggle on the left; the count in the middle;
+        // the warnings mark with the inspector, sidebar and settings buttons on the right.
+        let left = NSStackView(views: [modeSwitch, overrideBadge] + [.masthead].compactMap { toggles[$0] })
+        let right = NSStackView(
+            views: [warningsButton] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
+        let centre = NSStackView(views: [countLabel, statusButton, noticeLabel])
         let bar = NSStackView(views: [left, centre, right])
         bar.distribution = .equalCentering
         bar.translatesAutoresizingMaskIntoConstraints = false
@@ -242,29 +193,40 @@ final class FooterBar: NSView {
     func show(status: SystemStatus?, connected: Bool) {
         let p: StatusPresentation
         if !connected {
-            lastXruns = nil
+            // A new engine counts from zero: its first status is the new baseline.
+            seenXruns = nil
+            lastStatus = nil
             p = StatusPresentation.offline()
         } else {
-            let increased = status.map { s in lastXruns.map { s.xruns > $0 } ?? false } ?? false
-            lastXruns = status?.xruns
-            p = StatusPresentation.make(status, xrunsIncreased: increased)
+            if let s = status {
+                // A lower total is a count that started again (the engine restarted): nothing new in it yet.
+                seenXruns = min(seenXruns ?? s.xruns, s.xruns)
+            }
+            lastStatus = status
+            let unseen = status.map { s in seenXruns.map { s.xruns > $0 } ?? false } ?? false
+            p = StatusPresentation.make(status, unseenXruns: unseen)
         }
         presentation = p
         // Stale status (no connection) is not shown as an override either.
         overrideBadge.isHidden = !(connected && status?.networkOutputDisabled == true)
-        statusButton.title = p.summary
+        // While all is well the footer says nothing about the audio: the mark alone, with the summary as
+        // its tip. A warning or an alarm (a lost or failed device, an offline engine) is drawn in words.
+        let normal = p.level == .normal
+        statusButton.title = normal ? "" : p.summary
+        statusButton.imagePosition = normal ? .imageOnly : .imageLeading
         let image = p.icon.image(p.summary, compact: true)
-        // All well: only the mark is green; the words keep the plain text colour.
+        // All well: only the mark is green.
         statusButton.image =
             p.icon == .statusNormal
             ? TimeHeaderCell.tinted(image, .systemGreen, size: image.size, description: p.summary) : image
         statusButton.contentTintColor = p.level == .alarm ? .systemRed : p.level == .warning ? MarkColour.caution : nil
-        statusButton.font = .systemFont(ofSize: 12, weight: p.level == .normal ? .regular : .semibold)
+        statusButton.font = .systemFont(ofSize: 12, weight: normal ? .regular : .semibold)
         statusButton.setAccessibilityLabel(p.summary)
-        statusButton.toolTip = loc("status.tooltip")
+        statusButton.toolTip = normal ? p.summary + "\n" + loc("status.tooltip") : loc("status.tooltip")
     }
 
-    @objc func showStatusDetails() {
+    /// Opens the details beside `sender`: the status mark or line, or the override badge.
+    @objc func showStatusDetails(_ sender: NSView? = nil) {
         popover?.close()
         let text = NSTextField(wrappingLabelWithString: presentation.details.joined(separator: "\n"))
         text.setAX(AX.statusDetails)
@@ -278,8 +240,21 @@ final class FooterBar: NSView {
         let p = NSPopover()
         p.behavior = .transient
         p.contentViewController = controller
-        p.show(relativeTo: statusButton.bounds, of: statusButton, preferredEdge: .maxY)
+        p.delegate = self
+        xrunsInDetails = lastStatus?.xruns
+        let anchor = sender ?? statusButton
+        p.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
         popover = p
+    }
+
+    /// The details were read: the dropouts they listed are seen, and their warning goes. Done on close,
+    /// so the line the popover points at does not change under it.
+    func popoverDidClose(_ notification: Notification) {
+        guard let closed = notification.object as? NSPopover, closed === popover else { return }
+        if let seen = xrunsInDetails { seenXruns = max(seenXruns ?? seen, seen) }
+        xrunsInDetails = nil
+        // The same status again: only whether its dropouts are new changes.
+        if let status = lastStatus { show(status: status, connected: true) }
     }
 
     /// Reflects the window's mode in the switch and the indicator (also when set from the menu).

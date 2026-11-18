@@ -1277,8 +1277,9 @@ final class EngineCrashFlowTests: XCTestCase {
         // inspector, locked editing, and the same cue standing by as the editable copy shows.
         XCTAssertEqual(locked.footer.modeSwitch.selectedSegment, 1)
         XCTAssertEqual(editable.footer.modeSwitch.selectedSegment, 0)
-        XCTAssertEqual(locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode"))
-        XCTAssertEqual(editable.window?.title, "Saved In Edit Mode")
+        XCTAssertEqual(
+            locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode \u{2014} Main"))
+        XCTAssertEqual(editable.window?.title, "Saved In Edit Mode \u{2014} Main")
         XCTAssertTrue(locked.cueToolbar.isHidden)
         XCTAssertFalse(locked.isVisible(.inspector))
         XCTAssertFalse(editable.cueToolbar.isHidden)
