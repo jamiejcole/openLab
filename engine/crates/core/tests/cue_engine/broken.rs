@@ -936,6 +936,60 @@ fn problem_work_is_proportional_to_what_changed() {
 }
 
 #[test]
+fn a_mapped_patch_report_recomputes_no_cue_on_it() {
+    // A 2,000-cue doc opening reports its patch mapped for the first time: nothing its cues
+    // show changes, so none is recomputed (it once cost most of the open's control wake).
+    let ws = many(2000);
+    let mut engine = CueEngine::new(EngineConfig::new(RATE, 5, 1).unwrap());
+    engine.handle(&ws, Input::Tick, 0);
+    assert_eq!(engine.problem_checks(), 2000);
+    let status = |resolution| Input::PatchStatus {
+        patch: patch_id(1),
+        resolution,
+    };
+    let other = PatchResolution::Mapped {
+        device: "Other".into(),
+        channels: vec![2, 3],
+    };
+    engine.handle(&ws, status(mapped()), 10);
+    engine.handle(&ws, status(other), 20);
+    assert_eq!(
+        engine.problem_checks(),
+        2000,
+        "mapped, then mapped elsewhere"
+    );
+    let missing = PatchResolution::DeviceMissing {
+        device: "Interface".into(),
+    };
+    engine.handle(&ws, status(missing.clone()), 30);
+    assert_eq!(
+        engine.problem_checks(),
+        4000,
+        "its cues show the missing device"
+    );
+    assert_eq!(engine.broken_cues().len(), 2000);
+    engine.handle(&ws, status(PatchResolution::Unmapped), 40);
+    assert_eq!(engine.problem_checks(), 6000, "another reason shown");
+    engine.handle(&ws, status(mapped()), 50);
+    assert_eq!(engine.problem_checks(), 8000, "mapped again: none broken");
+    assert!(engine.broken_cues().is_empty());
+}
+
+#[test]
+fn a_cue_its_lost_device_broke_comes_back_on_the_first_mapped_report() {
+    // No status was reported before the loss: the first one, mapped, is the device back.
+    let mut rig = Rig::new(vec![sound(1)]);
+    rig.start(0, 1);
+    rig.at(5, Input::Pause { cue: id(1) });
+    lose_device(&mut rig, 10, 1);
+    rig.tick(100);
+    assert_eq!(rig.state(1), CueState::Broken);
+    let back = rig.device(1000, 1, mapped());
+    assert_eq!(changes(&back, 1), vec![(CueState::Idle, 1000)]);
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
 fn a_batch_reports_media_and_patches_together() {
     let mut rig = Rig::new(vec![sound(1), sound_of(2, "media/b.wav", 1)]);
     let missing = PatchResolution::DeviceMissing { device: "X".into() };

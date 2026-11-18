@@ -743,7 +743,11 @@ impl CueEngine {
     }
 
     /// Records what the binary reported about media files and patches, and recomputes the
-    /// problems of the cues on them only.
+    /// problems of the cues on them only. A patch's new resolution that changes nothing its
+    /// cues show (a mapped patch reported mapped, to the same or another device, for the first
+    /// time or again) recomputes none of them, unless a cue its lost device broke can come back:
+    /// a 2,000-cue doc opening beside a playing one would otherwise recompute every cue in one
+    /// wake.
     pub(super) fn availability(
         &mut self,
         media: Vec<(MediaRef, MediaStatus)>,
@@ -751,6 +755,16 @@ impl CueEngine {
         cx: &mut Ctx,
     ) {
         let mut cues = BTreeSet::new();
+        let lost = self.slots.values().any(|s| {
+            matches!(
+                s,
+                Slot::Broken(BrokenReason::DeviceLost)
+                    | Slot::Lost(Lost {
+                        clears_on_return: true,
+                        ..
+                    })
+            )
+        });
         let p = &mut self.problems;
         for (file, status) in media {
             let key = file.as_str();
@@ -763,7 +777,10 @@ impl CueEngine {
             }
         }
         for (patch, resolution) in patches {
-            if p.patches.insert(patch, resolution.clone()) != Some(resolution)
+            let old = p.patches.insert(patch, resolution.clone());
+            let changed = shown(old.as_ref()) != shown(Some(&resolution));
+            let back = lost && shown(Some(&resolution)).is_none() && !is_mapped(old.as_ref());
+            if (changed || back)
                 && let Some(on) = p.model.by_patch.get(&patch)
             {
                 cues.extend(on.iter().copied());
@@ -916,6 +933,15 @@ impl CueEngine {
             self.note_shown(cue, false, cx);
         }
     }
+}
+
+/// What a cue on a patch shows of its resolution: nothing while it is mapped or unreported.
+fn shown(r: Option<&PatchResolution>) -> Option<&PatchResolution> {
+    r.filter(|r| !matches!(r, PatchResolution::Mapped { .. }))
+}
+
+fn is_mapped(r: Option<&PatchResolution>) -> bool {
+    matches!(r, Some(PatchResolution::Mapped { .. }))
 }
 
 /// A cue's problems in their order: target, nothing to fade, media, slices, patch or device,
