@@ -223,7 +223,7 @@ final class SettingsGeneralTests: XCTestCase {
         await assertEventually("the area flashed") { masthead.goFlashes == 1 }
         XCTAssertEqual(masthead.goFlash.alphaValue, 1, "the flash is drawn")
         XCTAssertEqual(pending.count, 1, "its end was scheduled")
-        pending.forEach { $0.perform() }
+        for work in pending { work.perform() }
         XCTAssertEqual(masthead.goFlash.alphaValue, 0, "the flash clears when its time is up")
         try await rig.advance(0.2)
         XCTAssertEqual(head(), fade, "a GO inside the time started nothing and moved nothing")
