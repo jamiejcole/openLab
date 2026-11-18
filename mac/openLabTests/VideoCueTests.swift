@@ -499,6 +499,44 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(status(Self.still), loc("cue.state.running"))
     }
 
+    /// #642 flow: a stage's Remove on the Video page while a cue plays on it is refused: the page
+    /// shows the engine's reason (the stage and the cue), the row stays, and the display still
+    /// shows the picture.
+    func testRemovingAStageOnTheVideoPageWhileACuePlaysOnItIsRefusedWithTheReason() async throws {
+        try await openVideoShow()
+        await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
+        guard case .success = await store.setStageMapping(Self.stage, display: "V1") else {
+            return XCTFail("display")
+        }
+        click(Self.still)
+        try await go()
+        try await play(0.5)
+        func displayFrame() async -> UInt16? {
+            guard case .success(let ok) = await engine.request(.displayProbe(display: "V1", points: [[0.5, 0.5]])),
+                case .stageProbe(let frame, _)? = ok.data
+            else { return nil }
+            return frame
+        }
+        let before = await displayFrame()
+        XCTAssertEqual(before, 0, "the still on V1")
+        let sc = WorkspaceSettingsWindowController(store: store)
+        addTeardownBlock { @MainActor in sc.close() }
+        await sc.present().value
+        let pane = sc.videoPane
+        await soon("the Video page lists the stages") { pane.removeButtons.count == 2 }
+        pane.removeButtons[0].performClick(nil)
+        await pane.pending?.value
+        await soon("the engine's reason is shown") { !pane.messageLabel.stringValue.isEmpty }
+        let message = pane.messageLabel.stringValue
+        XCTAssertTrue(message.contains("\"Stage 1\"") && message.contains("cue \"2\""), message)
+        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1", "Side screen"], "the row stays")
+        XCTAssertEqual(store.model?.stages.count, 2)
+        try await play(0.2)
+        let after = await displayFrame()
+        XCTAssertEqual(after, 0, "the picture stays up")
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"))
+    }
+
     /// Pause holds the frame and the row's time; resume plays on; load and load to time ready the
     /// cue (the row shows it loaded); GO from a time starts the picture there; panic stops it.
     func testStopPauseResumePanicLoadAndLoadToTimeActOnAVideoCueAsOnAnAudioCue() async throws {

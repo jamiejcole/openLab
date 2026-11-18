@@ -1458,6 +1458,20 @@ fn the_app_force_quit_while_a_cue_plays_leaves_the_picture_up_and_the_engine_pla
     let (mut app, _) = connect(port, &token, None);
     let (mut window, _) = connect(port, &token, Some(doc));
     advance(&mut app, 1, 0.0);
+    // The stage host starts beside the engine: wait (a count of round trips, no clock) until
+    // it has put the stage up on V1.
+    let shown = Some(StageState::Shown {
+        display: "V1".into(),
+    });
+    let up = (0..20_000u64).any(|n| {
+        let outcome = call(&mut window, 1_000 + n, |id| ClientMessage::Request {
+            id,
+            request: Request::ListStageMappings,
+        });
+        matches!(outcome, Outcome::Ok(body) if matches!(&body.data,
+            Some(ResultData::StageMappings { stages }) if stages.first().map(|e| &e.state) == Some(&shown)))
+    });
+    assert!(up, "the stage host never put the stage up");
     let go = call(&mut window, 2, |id| ClientMessage::Transport {
         id,
         action: TransportAction::Go { list: list_id() },

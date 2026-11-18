@@ -842,21 +842,25 @@ impl DocCx<'_> {
         }
     }
 
-    /// The refusal naming the first cue using `stage`, if one does.
+    /// The refusal naming the first cue using `stage`, if one does: an active Video cue aimed
+    /// at it, or a cue whose picture is up on it (a cue aimed elsewhere since its load keeps its
+    /// picture on the stage it loaded on).
     fn stage_user(&self, stage: StageId) -> Option<CommandError> {
         let ws = self.doc.model.ws();
         let engine = self.doc.model.engine();
+        let drawn = self.eng.cue_with_picture_on(self.doc.id, stage);
         let cue = ws.cues().find(|cue| {
-            matches!(&cue.kind, CueKind::Video { stage: Some(s), .. } if *s == stage)
-                && matches!(
-                    engine.state(cue.id),
-                    CueState::Loaded
-                        | CueState::PreWaiting
-                        | CueState::Running
-                        | CueState::Paused
-                        | CueState::Fading
-                        | CueState::Stopping
-                )
+            Some(cue.id) == drawn
+                || matches!(&cue.kind, CueKind::Video { stage: Some(s), .. } if *s == stage)
+                    && matches!(
+                        engine.state(cue.id),
+                        CueState::Loaded
+                            | CueState::PreWaiting
+                            | CueState::Running
+                            | CueState::Paused
+                            | CueState::Fading
+                            | CueState::Stopping
+                    )
         })?;
         let name = ws
             .stages

@@ -1373,6 +1373,26 @@ fn removing_a_stage_a_cue_plays_on_is_refused_with_the_reason() {
     );
     assert_eq!(s.control().workspace().stages.len(), 1);
     expect_state(&s, 1, CueState::Running, "cue 1 plays on throughout");
+    // Cue 1 aimed at another stage while it plays: its picture stays on the stage it loaded
+    // on, so that stage is still in use.
+    let aim = openlab_core::Command::SetCueProperty {
+        id: id(1),
+        property: openlab_core::CueProperty::Stage {
+            value: Some(StageId(Uuid::from_u128(0x5_0009))),
+        },
+    };
+    assert!(matches!(edit(&mut s, aim), Outcome::Ok(_)));
+    let why = refusal(edit(&mut s, remove(stage_id())));
+    assert!(
+        why.contains("\"Stage 1\"") && why.contains("cue \"1\""),
+        "{why}"
+    );
+    assert_eq!(
+        stage_shows(&mut s, stage_id(), &[RED_AT]).0,
+        Some(0),
+        "the picture stays up"
+    );
+    expect_state(&s, 1, CueState::Running, "cue 1 plays on");
 }
 
 /// Whether a stage's black was taken down by a panic, as clients are told.

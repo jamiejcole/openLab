@@ -626,6 +626,18 @@ impl Engine {
         });
     }
 
+    /// The cue of one of `doc`'s pictures up (or stopping) on `stage`: the stage its load
+    /// put it on, whatever stage the cue has been aimed at since.
+    pub(super) fn cue_with_picture_on(&self, doc: DocId, stage: StageId) -> Option<CueId> {
+        self.pictures
+            .live
+            .values()
+            .find(|l| {
+                l.doc == doc && matches!(&l.load, ToStage::Load { stage: s, .. } if *s == stage)
+            })
+            .map(|l| l.cue)
+    }
+
     /// Pictures up, every doc's (tests).
     pub(super) fn pictures_live(&self) -> usize {
         self.pictures.live.len()
