@@ -2049,8 +2049,12 @@ impl DocCx<'_> {
     pub(super) fn follow_picture_end(&mut self, cue: CueId, now: SampleTime, fx: &mut Effects) {
         let rate = self.eng.rate;
         let doc = self.doc.id;
+        // A picture whose action the cue engine has ended (dated within the lookahead) is left
+        // to that end.
+        let engine = self.doc.model.engine();
         let ids: Vec<u64> = (self.eng.pictures.live.iter())
             .filter(|(_, l)| l.doc == doc && l.cue == cue && l.ends.is_none() && l.plan.is_some())
+            .filter(|(_, l)| engine.runs_action(cue, l.run))
             .map(|(id, _)| *id)
             .collect();
         if ids.is_empty() {

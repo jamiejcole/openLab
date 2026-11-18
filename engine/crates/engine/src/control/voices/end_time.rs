@@ -177,8 +177,16 @@ impl VoiceRec {
 impl Voices {
     /// `cue`'s content was edited: each of its voices planned with another end time than the
     /// cue has now ends at the new one, if its table can follow ([`new_end`]); the others keep
-    /// their plan until the cue starts again.
-    pub fn follow_end_time(&mut self, cue: CueId, env: &mut Env<'_>, fx: &mut Effects) {
+    /// their plan until the cue starts again. `runs` says whether the cue engine still runs a
+    /// run's action: a voice whose action has ended (its end dated within the lookahead, its
+    /// successor started) plays out its tail as it is, never longer.
+    pub fn follow_end_time(
+        &mut self,
+        cue: CueId,
+        runs: Held<'_>,
+        env: &mut Env<'_>,
+        fx: &mut Effects,
+    ) {
         let mut ids: Vec<VoiceId> = (self.recs.iter())
             .filter(|(_, r)| r.cue == cue)
             .map(|(id, _)| *id)
@@ -194,7 +202,17 @@ impl Voices {
             return;
         };
         for id in ids {
-            self.follow_end(id, end, env, fx);
+            // A voice a seek or a move is taking over stands for the run that takes it over.
+            let run = match self.recs.get(&id) {
+                Some(r) if r.retired => (self.recs.values())
+                    .find(|o| o.replaces == Some(id))
+                    .map(|o| (o.cue, o.run)),
+                Some(r) => Some((r.cue, r.run)),
+                None => None,
+            };
+            if run.is_some_and(|(c, run)| runs(c, run)) {
+                self.follow_end(id, end, env, fx);
+            }
         }
     }
 

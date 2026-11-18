@@ -5282,15 +5282,27 @@ fn each_loop_seam_and_a_devamp_keep_picture_and_sound_together() {
 fn the_same_end_time_edits_on_a_video_cues_sound_and_picture() {
     let dir = tempfile::tempdir().unwrap();
     let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    let silent_movie = movie!(dir.path(), "silent.mov", (50, 25));
     // (end before, when the edit comes, end after, paused for)
     let cases = [
         ("ahead", None, 0.5, 0.9, 0.0),
         ("behind", None, 1.2, 0.6, 0.0),
         ("later", Some(0.6), 0.3, 1.4, 0.0),
         ("paused", None, 0.5, 0.9, 0.5),
+        ("paused, later", Some(1.2), 0.5, 1.4, 0.5),
+        // A Video cue without sound: its picture alone.
+        ("silent, paused, later", Some(1.2), 0.5, 1.8, 0.5),
+        // Moved later within the block before the old end, after the cue engine ended the
+        // action there: the picture and sound keep the old end.
+        ("after its end", Some(0.6), 0.6 - 0.004, 1.4, 0.0),
     ];
     for (what, before, edit_at, end, paused) in cases {
-        let mut s = video_show(vec![timed_sounding_cue(1, &movie, |t| t.end_time = before)]);
+        let silent_cue = what.starts_with("silent");
+        let mut s = video_show(vec![if silent_cue {
+            timed_cue(1, &silent_movie, |t| t.end_time = before)
+        } else {
+            timed_sounding_cue(1, &movie, |t| t.end_time = before)
+        }]);
         let at = go(&mut s);
         run_to(&mut s, at + samples(edit_at));
         if paused > 0.0 {
@@ -5298,6 +5310,11 @@ fn the_same_end_time_edits_on_a_video_cues_sound_and_picture() {
         }
         let edited = s.now();
         set_geometry(&mut s, 1, serde_json::json!({ "end_time": end }));
+        let late = what == "after its end";
+        if late {
+            expect_state(&s, 1, CueState::Idle, "the action had ended");
+        }
+        let end = if late { before.unwrap_or(end) } else { end };
         // Where the action ends; a pause moves it by the time paused, give or take how the
         // pause and the resume are dated.
         let mut ends = (at + samples(end)).max(edited);
@@ -5312,12 +5329,25 @@ fn the_same_end_time_edits_on_a_video_cues_sound_and_picture() {
         if ends > s.now() + samples(0.2) {
             run_to(&mut s, ends - samples(0.1));
             expect_state(&s, 1, CueState::Running, what);
-            in_step(&mut s, RATE, 25.0, what);
+            if silent_cue {
+                let want = frame_at(end - 0.1);
+                let frame = on_stage(&mut s, what);
+                assert!(
+                    frame.abs_diff(want) <= 1,
+                    "{what}: frame {frame} near the end"
+                );
+            } else {
+                in_step(&mut s, RATE, 25.0, what);
+            }
         }
         run_to(&mut s, ends + slack);
         expect_state(&s, 1, CueState::Idle, what);
         assert_eq!(shown(&mut s), None, "{what}: the picture is gone");
         s.run(samples(0.1));
+        if silent_cue {
+            assert_eq!(s.stalls(), 0, "{what}");
+            continue;
+        }
         // The sound's last sample: on the action's end, and (when it played up to it) the new
         // end's place in the file.
         let last = (at..s.rendered())

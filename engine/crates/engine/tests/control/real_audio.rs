@@ -1344,6 +1344,45 @@ fn an_end_moved_back_past_slice_markers_ends_the_cue_in_the_slice_playing() {
     assert_eq!(s.stalls(), 0);
 }
 
+/// An end dragged ahead of the playhead and the drag undone while the cue plays: the end goes
+/// back where it was and the cue plays on to it, its auto-follow once there.
+#[test]
+fn an_end_time_drag_undone_while_the_cue_plays_puts_the_end_back() {
+    let mut s = end_show(None, ONCE);
+    let at = go_app(&mut s);
+    s.run(2 * Q as u64);
+    set_end(&mut s, 10, Some(1.0));
+    s.run(Q as u64);
+    let json = format!(r#"{{"type":"undo","id":{}}}"#, s.request_id().0);
+    app(&mut s, &json);
+    assert_eq!(state(&s, 10), CueState::Running);
+    s.run(3 * u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        std::slice::from_ref(&(0..96_000)),
+        "the old end again",
+    );
+    followed_once_at(&s, at + 96_000, "undone");
+    assert_eq!(s.stalls(), 0);
+}
+
+/// An end moved later within the block before the old end, after the cue engine has ended the
+/// action there (its successor started, the cue shown idle): the voice plays out the old end,
+/// never on into the new one under a cue that shows idle.
+#[test]
+fn an_end_moved_later_after_the_action_ended_leaves_the_old_end() {
+    let mut s = end_show(Some(0.5), ONCE);
+    let at = go_app(&mut s);
+    s.run(93 * B);
+    set_end(&mut s, 10, Some(1.5));
+    assert_eq!(state(&s, 10), CueState::Idle, "the action had ended");
+    s.run(3 * u64::from(R48));
+    assert_plays(&s, at, std::slice::from_ref(&(0..24_000)), "the old end");
+    followed_once_at(&s, at + 24_000, "already followed");
+    assert_eq!(s.stalls(), 0);
+}
+
 /// Flow: playing Audio cue, end time moved to a point the playhead has already passed → the
 /// cue's action ends at once: its sound stops on the edit's sample and its auto-follow starts
 /// the next cue there.
@@ -1385,11 +1424,16 @@ fn playing_cue_end_time_moved_later() {
 /// its auto-follow starts the next cue there.
 #[test]
 fn paused_cue_end_time_moved() {
-    for (end, ahead) in [(1.0, true), (0.25, false)] {
-        let what = format!("end {end}");
-        let mut s = end_show(None, ONCE);
+    // (end before, end after, ahead of the pause point)
+    for (before, end, ahead) in [
+        (None, 1.0, true),
+        (None, 0.1, false),
+        (Some(0.5), 1.5, true),
+    ] {
+        let what = format!("end {before:?} to {end}");
+        let mut s = end_show(before, ONCE);
         let at = go_app(&mut s);
-        s.run(2 * Q as u64);
+        s.run(Q as u64);
         let paused = s.now() as usize;
         s.transport(TransportAction::Pause { cue: id(10) });
         s.run(Q as u64);
@@ -1403,9 +1447,10 @@ fn paused_cue_end_time_moved() {
         let out = s.channel(0);
         let ends = if ahead {
             // Past the resume's declick, the frames after the pause point up to the new end.
-            let left = 48_000 - played;
+            let full = (end * f64::from(R48)) as usize;
+            let left = full - played;
             let heard = frames_heard(&out, resumed + 480, left - 480);
-            let want: Vec<usize> = (played + 480..48_000).collect();
+            let want: Vec<usize> = (played + 480..full).collect();
             assert_eq!(heard, want, "{what}");
             resumed + left
         } else {

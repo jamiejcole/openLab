@@ -33,6 +33,8 @@ impl DocCx<'_> {
         let mut fx = Effects::default();
         {
             let floor = self.stop_floor();
+            let engine = self.doc.model.engine();
+            let runs = |cue, run| engine.runs_action(cue, run);
             let mut env = Env {
                 doc: self.doc.id,
                 ws: self.doc.model.ws(),
@@ -48,7 +50,9 @@ impl DocCx<'_> {
                 floor,
             };
             for &cue in &footprint.edited {
-                self.doc.voices.follow_end_time(cue, &mut env, &mut fx);
+                self.doc
+                    .voices
+                    .follow_end_time(cue, &runs, &mut env, &mut fx);
             }
         }
         for &cue in &footprint.edited {
