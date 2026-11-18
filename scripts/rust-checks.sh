@@ -15,8 +15,10 @@
 #                    cannot run on this machine records why in $OPENLAB_TEST_SKIPS; without that
 #                    variable it fails instead) and what the machine reported, passing or not
 #   test-release     the same, optimised (debug-only checks off)
-#   test-release-no-video  test-release without the openlab-video crate: what a pull request runs, since the
-#                    hosted arm64 VM's video decoding makes the release video tests take 17+ minutes
+#   test-release-no-video  test-release without the openlab-video crate: what CI's `rust` job runs
+#   test-release-video  the openlab-video crate's tests, optimised (builds the engine with test-support first:
+#                    its stage tests start it). CI runs it in a job of its own on a fresh hosted arm64 VM:
+#                    after the rest of the tests on the same VM, every movie open there waits 30 s (#751)
 #   fuzz-lint        fmt and clippy for engine/fuzz, which is outside the workspace
 set -euo pipefail
 
@@ -42,14 +44,14 @@ shipped_features() {
   fi
 }
 
-# Runs the workspace tests with skips recorded, then prints them (and the decoders the video tests
+# Runs the tests the arguments select with skips recorded, then prints them (and the decoders the video tests
 # found) as one block, also when the tests pass, and exits with the tests' status.
 tests() {
   local skips status=0
   mkdir -p target/tmp
   skips="$PWD/target/tmp/openlab-test-skips.txt"
   : > "$skips"
-  OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast || status=$?
+  OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --locked --no-fail-fast || status=$?
   echo "== machine, as the tests found it:"
   grep '^decoder ' "$skips" | sed 's/^/   /' || echo "   (nothing reported)"
   echo "== SKIPPED $(grep -c '^skip ' "$skips" || true) test(s):"
@@ -68,17 +70,21 @@ case "${1:-}" in
     lints --target x86_64-pc-windows-gnu --all-targets
     lints --target x86_64-pc-windows-gnu --lib --bins
     ;;
-  test) tests ;;
+  test) tests --workspace ;;
   fuzz-lint)
     # The fuzz crate is outside the workspace, so the modes above never see it.
     cd fuzz
     cargo fmt --check
     cargo clippy --locked -- -D warnings
     ;;
-  test-release) tests --release ;;
-  test-release-no-video) tests --release --exclude openlab-video ;;
+  test-release) tests --release --workspace ;;
+  test-release-no-video) tests --release --workspace --exclude openlab-video ;;
+  test-release-video)
+    cargo build --release --locked -p openlab-engine --features test-support
+    tests --release -p openlab-video
+    ;;
   *)
-    echo "usage: scripts/rust-checks.sh fmt|clippy|clippy-windows|fuzz-lint|test|test-release|test-release-no-video" >&2
+    echo "usage: scripts/rust-checks.sh fmt|clippy|clippy-windows|fuzz-lint|test|test-release|test-release-no-video|test-release-video" >&2
     exit 2
     ;;
 esac

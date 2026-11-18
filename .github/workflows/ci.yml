@@ -121,9 +121,8 @@ jobs:
         include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"macOS arm64","os":"macos-26"},{"name":"Windows x64","os":"windows-2025"}]' || '[{"name":"macOS arm64","os":"macos-26"},{"name":"macOS Intel","os":"macos-26-intel"},{"name":"Windows x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
     # Backstop: a hung test fails the job instead of holding the runner for hours (arm64 also
-    # builds and runs the release suite; longer outside a pull request, where that suite includes the video
-    # crate's tests, #751).
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 45 || 60 }}
+    # builds and runs the release suite).
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: engine
@@ -155,14 +154,12 @@ jobs:
       # debug_assert!s) and optimise differently, so the suite also runs as shipped. In this job
       # rather than a separate one: it reuses the job's checkout, toolchain and cache, and runs on
       # every PR; arm64 is the fastest runner.
-      # On a pull request the video crate's tests run in debug only (step above): in release on the hosted
-      # arm64 VM they take 12-19+ minutes (its video decoding slows as a run goes on; 35 s on a Mac), until
-      # #751 is fixed. Main pushes, nightly and on-demand runs still run them in release, with a longer
-      # limit (owner decision 2026-11-18).
+      # The video crate's release tests run in the `video-release` job instead: on this VM, after the
+      # tests above, every movie open waits 30 s (#751).
       - name: Tests (release)
         if: matrix.os == 'macos-26'
-        timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 40 }}
-        run: ../scripts/rust-checks.sh ${{ github.event_name == 'pull_request' && 'test-release-no-video' || 'test-release' }}
+        timeout-minutes: 25
+        run: ../scripts/rust-checks.sh test-release-no-video
       # NFR-23/QA-06: the mixer must render 64 stereo voices with fades at >= 10x real time.
       # Release-only (a debug build is far slower), gated on the slowest runner.
       - name: CPU budget gate
@@ -192,6 +189,31 @@ jobs:
         env:
           OPENLAB_SOAK_RT_SECS: "180"
         run: ../scripts/soak-rt-ci.sh
+
+  # The video crate's tests, optimised, on a fresh hosted arm64 VM. On the VM that has just run the rest
+  # of the tests, every movie open waits 30 s and the suite runs past any limit; on a fresh one it takes
+  # about 4 minutes (dispatch run 44418588009, #751). Not on pull requests (they run the video tests in
+  # debug in `rust`), to spare a macOS runner per push (owner decision 2026-11-18).
+  video-release:
+    name: Video (release, macOS arm64)
+    needs: changes
+    if: github.event_name != 'pull_request' && needs.changes.outputs.engine == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 10
+        continue-on-error: true
+        with:
+          workspaces: engine
+          save-if: false
+      - run: ../scripts/rust-checks.sh test-release-video
+        timeout-minutes: 20
 
   cargo-deny:
     needs: changes
@@ -371,7 +393,7 @@ jobs:
   result:
     name: CI Result
     if: always()
-    needs: [changes, checks, rust, cargo-deny, fuzz, sanitizers, mac]
+    needs: [changes, checks, rust, video-release, cargo-deny, fuzz, sanitizers, mac]
     runs-on: ubuntu-24.04
     steps:
       - env:
