@@ -2003,6 +2003,16 @@ extension MainWindowTests {
                     "\(id) row \(row) is whole: \(cell.label.stringValue)")
             }
         }
+        // Every cue-type button is inside the toolbar row, none cut off at the sidebar's edge.
+        let bar = wc.cueToolbar
+        for control in bar.segmentedControls {
+            let frame = bar.convert(control.bounds, from: control)
+            XCTAssertLessThanOrEqual(
+                frame.maxX, bar.bounds.maxX + 0.5, "a toolbar group reaches past the row: \(frame)")
+            XCTAssertGreaterThanOrEqual(frame.minX, 0)
+        }
+        XCTAssertGreaterThanOrEqual(
+            bar.segmentedControls.first?.width(forSegment: 0) ?? 0, CueToolbarView.leastSegmentWidth)
         let slotsEnd = CueCell.statusSlots.map { $0.x + $0.width }.max() ?? 0
         XCTAssertLessThanOrEqual(CueCell.statusWidth - slotsEnd, 4, "no blank width left in the first column")
     }
@@ -2083,6 +2093,7 @@ extension MainWindowTests {
     /// Flow: the window title names the shown cue list.
     func testTheWindowTitleNamesTheShownCueList() async throws {
         let (wc, rig) = try await demoController()
+        XCTAssertEqual(wc.window?.title, "openLab \u{2014} Main", "Edit Mode names the list from the start")
         wc.workspaceName = "Demo"
         XCTAssertEqual(wc.window?.title, "Demo \u{2014} Main")
         let other = ModelID(UUID().uuidString.lowercased())

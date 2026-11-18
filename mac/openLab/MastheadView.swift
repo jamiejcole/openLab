@@ -21,7 +21,7 @@ final class MastheadView: NSView, NSTextViewDelegate {
     private var goWidth: NSLayoutConstraint!
     private var goHeight: NSLayoutConstraint!
     private var notesHeight: NSLayoutConstraint!
-    private let notesScroll = NSScrollView()
+    private let notesScroll = BoxedScrollView()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -55,9 +55,6 @@ final class MastheadView: NSView, NSTextViewDelegate {
         notesScroll.hasVerticalScroller = true
         notesScroll.drawsBackground = false
         notesScroll.borderType = .noBorder
-        notesScroll.wantsLayer = true
-        notesScroll.layer?.cornerRadius = 3
-        notesScroll.layer?.borderWidth = 1
         notesView.placeholder = loc("masthead.notes.placeholder")
         notesView.textContainerInset = NSSize(width: 4, height: 3)
 
@@ -130,9 +127,13 @@ final class MastheadView: NSView, NSTextViewDelegate {
             goButton.layer?.backgroundColor = Self.goFill.cgColor
             goButton.layer?.borderColor = NSColor.systemGreen.cgColor
             standbyField.layer?.backgroundColor = Self.boxFill.cgColor
-            notesScroll.layer?.backgroundColor = Self.boxFill.cgColor
-            notesScroll.layer?.borderColor = NSColor.separatorColor.cgColor
+            notesScroll.needsDisplay = true
         }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyColours()
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -249,5 +250,19 @@ final class StandbyField: NSTextField {
         override func drawingRect(forBounds rect: NSRect) -> NSRect {
             super.drawingRect(forBounds: rect.insetBy(dx: StandbyField.inset.width, dy: StandbyField.inset.height))
         }
+    }
+}
+
+/// The notes box: filled and outlined by its own drawing, so it looks the same in both modes (a layer set on
+/// a scroll view is replaced when AppKit makes its own).
+final class BoxedScrollView: NSScrollView {
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 3, yRadius: 3)
+        MastheadView.boxFill.setFill()
+        path.fill()
+        NSColor.separatorColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        super.draw(dirtyRect)
     }
 }
