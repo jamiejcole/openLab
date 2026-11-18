@@ -1052,9 +1052,9 @@ impl CueEngine {
 
     /// Loads the cue and the rest of its sequence (the cues its auto-continue or auto-follow
     /// chain would start) as QLab 5 carries a load time on through a sequence (manual pp. 149,
-    /// 681): each later cue is loaded at the time left once it would have started; one the time
-    /// does not reach is unloaded if an earlier load left it standing at a time. A group also
-    /// loads the children its action will start first (timeline: all; start-first modes and an
+    /// 680-681): each later cue is loaded at the time left once it would have started, and one
+    /// the time does not reach at its top (left as it is if it already stands there). A group
+    /// also loads the children its action will start first (timeline: all; start-first modes and an
     /// unshuffled playlist: the first), with their own sequences, at the time left after the
     /// group's pre-wait. Iterative over nested groups; each cue is loaded at most once, so a
     /// duplicate id cannot make it loop.
@@ -1069,20 +1069,24 @@ impl CueEngine {
                     break;
                 }
                 if id != first {
-                    // A later cue the run would pass over (static problems) is not loaded, but
-                    // the time carries on past it; one already running or broken at run time
-                    // ends what the load reaches. Quietly: only the cue asked for warns.
-                    if self.has_problems(id) {
+                    // A later cue that would play nothing (disarmed, or static problems) is not
+                    // loaded, but the time carries on past it; one already running or broken at
+                    // run time ends what the load reaches. Quietly: only the cue asked for warns.
+                    if self.has_problems(id)
+                        || cx.ws.find_cue(id).is_some_and(|c| !self.is_armed(c))
+                    {
                         continue;
                     }
                     if matches!(self.slots.get(&id), Some(s) if !matches!(s, Slot::Loaded(_))) {
                         break;
                     }
+                    // One the time does not reach is loaded at its top; one already standing
+                    // there (a preload) is left as it is.
+                    if time <= 0.0 && self.stands_at_top(id) {
+                        continue;
+                    }
                 }
-                if time < 0.0 {
-                    self.unload_unreached(id, cx);
-                    continue;
-                }
+                let time = time.max(0.0);
                 self.load(id, time, cx);
                 if !matches!(self.slots.get(&id), Some(Slot::Loaded(_))) {
                     break;
@@ -1108,15 +1112,10 @@ impl CueEngine {
         }
     }
 
-    /// A cue of the sequence the load time does not reach starts from its top when the run gets
-    /// there: one an earlier load left standing at a time is unloaded, with its loaded
-    /// descendants. Nothing else about it changes.
-    fn unload_unreached(&mut self, cue: CueId, cx: &mut Ctx) {
-        for id in std::iter::once(cue).chain(self.inside(cue, cx)) {
-            if matches!(self.slots.get(&id), Some(Slot::Loaded(_))) {
-                self.reset_one(id, cx);
-            }
-        }
+    /// Whether `cue` is loaded at its very top: its whole pre-wait and its action ahead of it.
+    fn stands_at_top(&self, cue: CueId) -> bool {
+        matches!(self.slots.get(&cue), Some(Slot::Loaded(l))
+            if l.action_offset == 0 && l.pre_wait_left == l.pre_wait_total && l.seek.is_none())
     }
 
     /// The sequence that starts at `cue`: `cue` and the cues its auto-continue and auto-follow

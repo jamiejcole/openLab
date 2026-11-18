@@ -10,8 +10,17 @@ struct LoadTimeState {
     var toolbarWasHidden = false
     /// The standing-by cue the bar was last set up for: another one starts the bar afresh.
     var cue: ModelID?
+    /// What the slider's span was last asked for: the cue, the model's revision and the media
+    /// lengths' version. The span is asked again only when one of them changes.
+    var spanFor: SpanKey?
     /// Counts the span requests, so only the newest answer sets the slider.
     var spanAsked = 0
+
+    struct SpanKey: Equatable {
+        let cue: ModelID?
+        let revision: UInt64
+        let media: UInt64
+    }
 }
 
 /// Load to Time (QLab manual p. 149): Tools > Load to Time cycles the bar through three states, and a
@@ -70,7 +79,9 @@ extension WorkspaceWindowController {
 
     /// The slider spans the standing-by cue's whole sequence, as the engine times it (a group, a
     /// chain of auto-continues and auto-follows); it follows the playhead, and a new standing-by cue
-    /// clears the time shown for the last one. The answer comes later; only the newest counts.
+    /// clears the time shown for the last one. Called on every masthead sync (each progress tick
+    /// while a cue plays), it asks the engine only when the cue, the model or a media length
+    /// changed. The answer comes later; only the newest counts.
     func syncLoadBar() {
         guard loadTime.isOpen else { return }
         let id = standingByCue
@@ -78,6 +89,9 @@ extension WorkspaceWindowController {
             loadTime.cue = id
             loadBar.clear()
         }
+        let key = LoadTimeState.SpanKey(cue: id, revision: store.revision, media: store.mediaDurationsVersion)
+        guard key != loadTime.spanFor else { return }
+        loadTime.spanFor = key
         loadTime.spanAsked += 1
         let asked = loadTime.spanAsked
         guard let id else { return loadBar.setLength(nil) }

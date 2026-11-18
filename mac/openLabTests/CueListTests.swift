@@ -6849,6 +6849,31 @@ extension PlayheadFlowTests {
         XCTAssertEqual(bar.slider.doubleValue, 0)
     }
 
+    /// While a cue plays the masthead syncs on every progress tick; the bar asks the engine for its
+    /// span only when the standing-by cue, the model or a media length changes.
+    func testTheLoadBarAsksForItsSpanOnlyWhenTheCueOrTheModelChanges() async throws {
+        try await threeCues()
+        let first = try await length(cues[0])
+        wc.toggleLoadToTime()
+        await assertEventually {
+            self.wc.loadBar.slider.isEnabled && abs(self.wc.loadBar.slider.maxValue - first) < 0.01
+        }
+        let asked = wc.loadTime.spanAsked
+        // Cue 3 plays: progress ticks, the standing-by cue stays.
+        wc.cueList.setPlayhead(cues[2])
+        await assertEventually { self.wc.standingByCue == self.cues[2] }
+        let onThird = wc.loadTime.spanAsked
+        XCTAssertEqual(onThird, asked + 1, "a new standing-by cue is asked about once")
+        _ = await store.transport(.start(cue: cues[0]))
+        try await play(0.5)
+        await assertEventually("cue 1 plays") { self.store.progress[self.cues[0]] != nil }
+        try await play(0.5)
+        XCTAssertEqual(wc.loadTime.spanAsked, onThird, "progress ticks ask nothing")
+        // An edit asks again.
+        await wc.editor.setContinue(of: cues[2], to: "auto_continue")
+        await assertEventually("the edit asks again") { self.wc.loadTime.spanAsked == onThird + 1 }
+    }
+
     /// The bar follows the playhead: another standing-by cue clears the time and the slider spans that cue.
     func testTheLoadBarStartsAfreshForANewStandingByCue() async throws {
         try await threeCues()

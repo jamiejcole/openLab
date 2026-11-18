@@ -50,7 +50,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// a cue leaving that state leaves.
     private(set) var loadedAt: [ModelID: LoadedStand] = [:]
     /// Audio cues' media lengths as the engine probed them (`media_durations`, `media_duration`).
-    @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:]
+    @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:] {
+        didSet { mediaDurationsVersion &+= 1 }
+    }
+    /// Counts changes to `mediaDurations`, so a view can tell a length changed without comparing them.
+    private(set) var mediaDurationsVersion: UInt64 = 0
     /// Pre-wait and post-wait countdowns in progress (`progress.waits`), by cue.
     @Published private(set) var waits: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
     /// The displays and where each stage is (VID-01), replaced by each `video_outputs` push or

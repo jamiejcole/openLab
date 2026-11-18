@@ -597,6 +597,11 @@ fn a_transport_load_with_a_negative_time_loads_before_the_cues_end() {
     }
 }
 
+fn auto_loading(mut c: Cue) -> Cue {
+    c.auto_load = true;
+    c
+}
+
 fn voice_loads(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
     actions
         .iter()
@@ -650,9 +655,9 @@ fn a_time_typed_loads_the_standing_by_sequence_and_go_starts_from_there() {
 
 /// The time also carries through auto-continues (each next cue starts at its predecessor's
 /// pre-wait plus post-wait; a Wait cue's post-wait is its duration); a cue the time does not
-/// reach is not loaded.
+/// reach is loaded at its top (QLab 5, manual p. 680: the whole sequence is loaded).
 #[test]
-fn a_load_time_carries_through_auto_continues_and_stops_where_it_is_not_reached() {
+fn a_load_time_carries_through_auto_continues_and_loads_an_unreached_cue_at_its_top() {
     let mut rig = Rig::new(vec![
         timed(timer(1, 9, 4.0), 0.5, 1.0, AC),
         timed(wait(2, 3.0), 0.0, 0.0, AC),
@@ -669,7 +674,11 @@ fn a_load_time_carries_through_auto_continues_and_stops_where_it_is_not_reached(
     );
     assert_eq!(rig.state(1), CueState::Loaded);
     assert_eq!(rig.state(2), CueState::Loaded);
-    assert_eq!(rig.state(3), CueState::Idle);
+    assert_eq!(rig.state(3), CueState::Loaded);
+    assert!(
+        rig.engine.loaded_offsets().all(|(c, _)| c != id(3)),
+        "cue 3 at its top"
+    );
     // Cue 1 starts at 100 two seconds into its action; its post-wait is over, so cue 2 starts
     // at once, 1 s into its 3 s: it ends at 2100.
     rig.start(100, 1);
@@ -711,9 +720,9 @@ fn a_group_loaded_to_a_time_carries_it_through_its_childrens_sequence() {
 }
 
 /// Loading the sequence again to an earlier time leaves no later cue standing at the old time:
-/// one the new time does not reach is unloaded, so the run starts it from its top.
+/// one the new time does not reach goes back to its top, so the run starts it from there.
 #[test]
-fn a_sequence_loaded_again_earlier_unloads_the_cues_it_no_longer_reaches() {
+fn a_sequence_loaded_again_earlier_moves_the_cues_it_no_longer_reaches_back_to_their_top() {
     let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), sound(2)]);
     let lengths = [(id(1), Some(4000)), (id(2), Some(4000))]
         .into_iter()
@@ -723,14 +732,68 @@ fn a_sequence_loaded_again_earlier_unloads_the_cues_it_no_longer_reaches() {
     rig.at(0, load(6.0));
     assert_eq!(rig.state(2), CueState::Loaded);
     let again = rig.at(10, load(1.0));
-    assert_eq!(voice_loads(&again), vec![(id(1), 1000)]);
+    assert_eq!(voice_loads(&again), vec![(id(1), 1000), (id(2), 0)]);
     assert!(
         again
             .iter()
             .any(|a| matches!(a, Action::UnloadVoice { cue, .. } if *cue == id(2))),
-        "{again:?}"
+        "the stream at the old time is let go: {again:?}"
     );
-    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.state(2), CueState::Loaded);
+}
+
+/// A load at a cue's top (auto-load, a Load cue at 0) keeps a later cue of its sequence that
+/// already stands loaded at its top (a preload): it is neither unloaded nor loaded again.
+#[test]
+fn a_load_at_the_top_keeps_a_later_cues_preload() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        auto_loading(timed(sound(2), 0.0, 0.0, AF)),
+        sound(3),
+    ]);
+    let lengths = [(id(2), Some(4000)), (id(3), Some(4000))]
+        .into_iter()
+        .collect();
+    rig.at(0, Input::CueLengths { lengths });
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(3),
+            time: 0.0,
+        },
+    );
+    let run = rig.run(3);
+    let go = rig.go(10);
+    assert_eq!(rig.state(2), CueState::Loaded, "auto-loaded");
+    assert_eq!(rig.state(3), CueState::Loaded);
+    assert_eq!(rig.run(3), run, "the preload is kept: {go:?}");
+    assert!(
+        !go.iter()
+            .any(|a| matches!(a, Action::UnloadVoice { cue, .. } if *cue == id(3))),
+        "{go:?}"
+    );
+}
+
+/// A disarmed later cue plays nothing, so it is not loaded (as auto-load leaves a disarmed cue
+/// alone); the time carries on past it.
+#[test]
+fn a_sequence_load_passes_over_a_disarmed_cue() {
+    let mut off = timed(wait(2, 1.0), 0.0, 0.0, AF);
+    off.armed = false;
+    let mut rig = Rig::new(vec![
+        sound(9),
+        auto_loading(timed(wait(1, 1.0), 0.0, 0.0, AF)),
+        off,
+        wait(3, 2.0),
+    ]);
+    rig.go(10);
+    assert_eq!(rig.state(1), CueState::Loaded, "auto-loaded");
+    assert_eq!(
+        rig.state(2),
+        CueState::Idle,
+        "the disarmed cue is not loaded"
+    );
+    assert_eq!(rig.state(3), CueState::Loaded, "the cue after it is");
 }
 
 /// Flow: a negative time counts back from the end of the whole sequence (QLab 5, manual p.
@@ -790,9 +853,13 @@ fn a_sequence_load_passes_over_a_broken_cue_and_stops_at_a_running_or_unknown_on
     );
     assert_eq!(warnings(&load), vec![]);
     assert_eq!(rig.state(2), CueState::Broken);
-    // Cue 3 starts at 1.5 s: loaded 0.5 s in. Cue 4 starts at 2.5 s: not reached.
+    // Cue 3 starts at 1.5 s: loaded 0.5 s in. Cue 4 starts at 2.5 s: not reached, at its top.
     assert_eq!(rig.state(3), CueState::Loaded);
-    assert_eq!(rig.state(4), CueState::Idle);
+    assert_eq!(rig.state(4), CueState::Loaded);
+    assert_eq!(
+        rig.engine.loaded_offsets().collect::<Vec<_>>(),
+        vec![(id(1), 2000), (id(3), 500)]
+    );
     // Cue 4's length is unknown: the sequence ends there, so cue 5 is never loaded.
     let load = rig.at(
         10,

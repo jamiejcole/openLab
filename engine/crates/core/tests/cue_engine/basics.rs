@@ -1722,10 +1722,11 @@ fn every_transition_table_row() {
         } else if before != expect {
             assert_eq!(last, Some(expect), "{row} report");
         }
-        // A cue left idle has nothing pending, and its continue was cancelled.
+        // A cue left idle has nothing pending, and its continue was cancelled (the next cue may
+        // stand loaded at its top, loaded with cue 1's sequence, but it never starts).
         if expect == S::Idle {
             assert!(rig.tick(100_000).is_empty(), "{row} left work behind");
-            assert_eq!(rig.state(2), S::Idle, "{row} continued");
+            assert!(!rig.state(2).is_active(), "{row} continued");
         }
     }
 }
