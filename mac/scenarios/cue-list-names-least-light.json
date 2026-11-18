@@ -1,0 +1,11 @@
+{
+  "about": "The least window with the sidebar open: every cue's name shows its first letters (an ellipsis past that), a child of five nested groups included; the time columns gave up width first.",
+  "show": "Nested",
+  "window": {"width": 800, "height": 800},
+  "appearance": "light",
+  "steps": [
+    {"select": "1.1.1.1.1.1"},
+    {"click": "toggle-sidebar"},
+    {"shot": "sidebar-shown"}
+  ]
+}

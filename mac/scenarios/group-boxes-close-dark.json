@@ -1,0 +1,17 @@
+{
+  "about": "Five nested group boxes close on the last row at a normal width: the bottom edges stay clear of the name.",
+  "show": "Nested",
+  "window": {
+    "width": 1200,
+    "height": 800
+  },
+  "appearance": "dark",
+  "steps": [
+    {
+      "select": "1.1.1.1.1.1"
+    },
+    {
+      "shot": "boxes-close"
+    }
+  ]
+}

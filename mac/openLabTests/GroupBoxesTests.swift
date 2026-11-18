@@ -29,8 +29,8 @@ final class GroupBoxesTests: XCTestCase {
     private static let blue: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in b > 0.8 && r < 0.3 && g < 0.65 }
 
     /// The Groups show in a key window tall enough for every row, its groups open.
-    private func harness(dark: Bool = true) async throws -> H {
-        let rig = try await Rig.open("Groups")
+    private func harness(dark: Bool = true, show: String = "Groups") async throws -> H {
+        let rig = try await Rig.open(show)
         let h = try await H(collapsed: false, rig: rig)
         let w = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled, .resizable],
@@ -42,7 +42,9 @@ final class GroupBoxesTests: XCTestCase {
         w.makeFirstResponder(h.spy)
         window = w
         w.layoutIfNeeded()
-        await assertEventually("the playlists' next children are known") { h.store.playlistNext.count == 2 }
+        if show == "Groups" {
+            await assertEventually("the playlists' next children are known") { h.store.playlistNext.count == 2 }
+        }
         return h
     }
 
@@ -88,7 +90,7 @@ final class GroupBoxesTests: XCTestCase {
         /// The y of a box's top or bottom line (`rank`: boxes around it ending on the row too).
         var topLine: CGFloat { view.isFlipped ? 1.5 : view.bounds.height - 1.5 }
         func bottomLine(rank: Int = 0) -> CGFloat {
-            let up = 1.5 + CGFloat(rank) * GroupBoxes.bottomStep
+            let up = GroupBoxes.bottomOffset(rank: rank)
             return view.isFlipped ? view.bounds.height - up : up
         }
         var mid: CGFloat { view.bounds.midY }
@@ -260,6 +262,37 @@ final class GroupBoxesTests: XCTestCase {
         XCTAssertTrue(s.matches(NSPoint(x: try s.edges(0).left, y: s.mid), Self.green), "the box over the highlight")
         let highlight = s.colour(NSPoint(x: 600, y: s.mid))
         XCTAssertGreaterThan(highlight.2, 0.5, "the highlight reads inside the box")
+    }
+
+    /// Flow: a cue as the last row of five nested groups: the five bottom edges close under its name, and
+    /// no box line crosses the name's text, at any depth.
+    func testFlowFiveNestedBoxesClosingOnOneRowLeaveTheNameClear() async throws {
+        for dark in [true, false] {
+            let h = try await harness(dark: dark, show: "Nested")
+            let number = "1.1.1.1.1.1"
+            let view = try row(h, number)
+            XCTAssertEqual(view.boxes.filter(\.bottom).count, 5, "five boxes end on the row")
+            let d = try drawn(view, dark: dark)
+            let label = try labelFrame(h, number)
+            let ink = label.insetBy(dx: 0, dy: 1)
+            let top = view.isFlipped ? ink.minY : view.bounds.height - ink.maxY
+            let colours = [Self.green, Self.orange, Self.purple, Self.blue]
+            for part in view.boxes where part.bottom {
+                let line = d.bottomLine(rank: part.bottomRank)
+                let y = view.isFlipped ? line : view.bounds.height - line
+                XCTAssertTrue(
+                    y > top + ink.height || y < top,
+                    "the bottom edge of level \(part.level) is outside the name's frame")
+            }
+            // No pixel of a box colour lies in the name's frame across its middle.
+            let x = label.midX
+            for step in stride(from: ink.minY, to: ink.maxY, by: 0.5) {
+                let p = NSPoint(x: x, y: view.isFlipped ? step : view.bounds.height - step)
+                XCTAssertFalse(
+                    colours.contains { d.matches(p, $0) },
+                    "a box line crosses the name at y \(step) (\(dark ? "dark" : "light"))")
+            }
+        }
     }
 
     /// Flow 5: light and dark, the least width with a long name, and a 2,000-row list scrolled through

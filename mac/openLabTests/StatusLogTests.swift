@@ -164,6 +164,31 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(footer.presentation.level, .warning)
     }
 
+    /// #759: the details open across an engine relaunch, then closed after the new engine counted
+    /// dropouts: the warning for those stays.
+    func testDetailsOpenAcrossARelaunchDoNotHideTheNewEnginesDropouts() async throws {
+        let rig = try await Rig.open()
+        let wc = WorkspaceWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in
+            wc.footer.popover?.close()
+            wc.window?.close()
+        }
+        wc.showWindow(nil)
+        let footer = wc.footer
+        try send(rig.store, xruns: 50)
+        footer.statusButton.performClick(nil)
+        XCTAssertEqual(footer.popover?.isShown, true)
+        footer.show(status: nil, connected: false)
+        footer.show(status: try healthy(), connected: true)
+        try send(rig.store, xruns: 3)
+        XCTAssertEqual(footer.presentation.level, .warning, "3 new dropouts warn")
+        footer.popover?.close()
+        await assertEventually("closed") { footer.popover?.isShown != true }
+        try send(rig.store, xruns: 3)
+        XCTAssertEqual(footer.presentation.level, .warning, "unseen dropouts still warn after the close")
+        XCTAssertEqual(footer.statusButton.title, loc("status.warning") + " " + String(format: loc("status.xruns"), 3))
+    }
+
     /// DX-03 with all well: the footer shows no audio words, and its status mark opens the details with
     /// the CPU, engine load, dropout total and the device's format (the real engine's own status).
     func testWithAllWellTheStatusMarkOpensTheDetails() async throws {
