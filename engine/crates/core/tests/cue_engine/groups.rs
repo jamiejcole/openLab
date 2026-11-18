@@ -968,6 +968,104 @@ fn the_mark_passes_over_a_child_with_static_problems_as_the_start_does() {
     );
 }
 
+/// Playlist 1 [audio 10 (pre-wait 2 s, second trigger `option`), wait 11 (5 s), wait 12].
+fn sound_then_waits(option: SecondTrigger) -> Rig {
+    let mut sound = timed(sound(10), 2.0, 0.0, DNC);
+    sound.second_trigger = option;
+    Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![sound, wait(11, 5.0), wait(12, 5.0)],
+    )])
+}
+
+/// Checks that 10 is marked and that a start of group 1 at `now` takes 10's own run as the child
+/// playing: 11 is not started, and the playlist reaches it only when 10's pre-wait ends at `end`
+/// (11's trigger ignored if it is already running).
+fn start_keeps_child_10(rig: &mut Rig, now: SampleTime, end: SampleTime) {
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let go = rig.start(now, 1);
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+    assert!(rig.tick(end - 1).is_empty());
+    let on = rig.tick(end);
+    let reached = starts(&on).contains(&(id(11), end))
+        || warnings(&on)
+            .iter()
+            .any(|w| matches!(w, EngineWarning::TriggerIgnored { cue, .. } if *cue == id(11)));
+    assert!(reached, "the playlist moves on from 10 at its end: {on:?}");
+}
+
+#[test]
+fn the_mark_keeps_a_child_that_broke_in_its_pre_wait_as_the_start_takes_it() {
+    let mut rig = sound_then_waits(SecondTrigger::Nothing);
+    rig.start(0, 10);
+    rig.failed(500, 10);
+    assert_eq!(rig.state(10), CueState::Broken);
+    assert_eq!(rig.state(11), CueState::Running, "the follow-through");
+    start_keeps_child_10(&mut rig, 1000, 2000);
+}
+
+#[test]
+fn the_mark_keeps_a_child_started_broken_whose_problems_cleared_in_its_pre_wait() {
+    let mut rig = sound_then_waits(SecondTrigger::Nothing);
+    let patches = std::mem::take(&mut rig.ws.patches);
+    rig.tick(100);
+    assert!(!rig.problems(10).is_empty());
+    rig.start(200, 10);
+    rig.ws.patches = patches;
+    rig.tick(300);
+    assert_eq!(rig.state(10), CueState::Broken, "started broken");
+    start_keeps_child_10(&mut rig, 1000, 2200);
+}
+
+#[test]
+fn the_mark_keeps_a_running_child_whose_patch_went_missing_as_the_start_takes_it() {
+    let mut rig = sound_then_waits(SecondTrigger::Nothing);
+    rig.start(0, 10);
+    rig.ws.patches.clear();
+    rig.tick(100);
+    assert!(!rig.problems(10).is_empty());
+    assert_eq!(rig.state(10), CueState::PreWaiting);
+    start_keeps_child_10(&mut rig, 1000, 2000);
+}
+
+#[test]
+fn the_mark_keeps_a_paused_child_whose_patch_went_missing_as_the_start_resumes_it() {
+    let mut rig = sound_then_waits(SecondTrigger::Nothing);
+    rig.start(0, 10);
+    rig.pause(500, 10);
+    rig.ws.patches.clear();
+    rig.tick(600);
+    assert!(!rig.problems(10).is_empty());
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let go = rig.start(1000, 1);
+    assert!(
+        rig.state(10).is_active() && !rig.engine.is_paused(id(10)),
+        "{go:?}"
+    );
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+}
+
+#[test]
+fn the_mark_passes_over_a_child_whose_panic_trigger_stops_it_with_no_panic_time() {
+    let mut rig = sound_then_waits(SecondTrigger::Panic);
+    rig.ws.settings.panic_duration = 0.0;
+    rig.tick(10);
+    rig.start(100, 10);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let go = rig.start(1000, 1);
+    assert_eq!(
+        rig.state(10),
+        CueState::Idle,
+        "the panic stopped it at once"
+    );
+    assert_eq!(
+        running_at(&go, 11),
+        Some(1000),
+        "the start plays the marked child"
+    );
+}
+
 #[test]
 fn a_shuffled_playlist_marks_the_child_its_pass_plays_next_and_none_before_it_is_drawn() {
     let kids = (10..15).map(|n| wait(n, 1.0)).collect();

@@ -6,8 +6,9 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::cue::{Cue, CueKind, GroupMode, SecondTrigger};
-use crate::model::CueId;
+use crate::model::{CueId, Workspace};
 
+use super::operations::StartPath;
 use super::run::{Phase, Run, Slot};
 use super::{Action, Ctx, CueEngine};
 
@@ -18,11 +19,15 @@ pub(super) enum MarksEdit {
 }
 
 impl CueEngine {
-    /// The child the Playlist group `group` plays next: the first child that a start does not
-    /// pass over (skipped, with static problems, broken at run time, left paused by a lost device
-    /// still away) while it is not running, the one after its current child as the group stands
-    /// while it plays (wrapping when it loops), none once it is stopping, devamped or halted, past
-    /// its last child, or for a shuffled playlist whose order is not drawn yet (not running, or between passes). `None` too for any other cue.
+    /// The child the Playlist group `group` plays next. Not running: the first child that a
+    /// start plays, as `start` decides ([`Self::start_path`]): a run of its own is kept as the
+    /// one playing (a broken one too) unless its second trigger ends it (a stop, or a panic with
+    /// no panic time); a cue broken at run time with no run, one left paused by a lost device
+    /// still away, a skipped one and a new run of one with static problems are passed over.
+    /// Playing: the one after its current child as the group stands (wrapping when it loops).
+    /// None once it is stopping, devamped or halted, past its last child, or for a shuffled
+    /// playlist whose order is not drawn yet (not running, or between passes); none too for
+    /// any other cue.
     /// `Action::PlaylistNextChanged` reports each change.
     pub fn next_in_playlist(&self, group: CueId) -> Option<CueId> {
         self.playlist_marks.get(&group).copied()
@@ -109,7 +114,7 @@ impl CueEngine {
             let next = tree
                 .locate(ws, id)
                 .filter(|c| is_playlist(c))
-                .and_then(|group| self.compute_next(group));
+                .and_then(|group| self.compute_next(ws, group));
             if self.playlist_marks.get(&id).copied() != next {
                 changed.push((id, next));
             }
@@ -124,7 +129,7 @@ impl CueEngine {
     }
 
     /// [`Self::next_in_playlist`] worked out from the group's run and children now.
-    fn compute_next(&self, group: &Cue) -> Option<CueId> {
+    fn compute_next(&self, ws: &Workspace, group: &Cue) -> Option<CueId> {
         let CueKind::Group {
             mode: GroupMode::Playlist { loop_, shuffle },
             children,
@@ -132,28 +137,19 @@ impl CueEngine {
         else {
             return None;
         };
-        // Whether a start of the child would play it rather than pass over it at once, as
-        // `start` decides: a child with static problems is passed over (C-G3); a lost one is
-        // cleared once its device is back; a run fading out in a panic gives way to a new one; a
-        // paused run resumes (a broken one too: its frozen timers run on); a broken run that is
-        // not paused is refused; any other run takes its second trigger, and a stop leaves the
-        // playlist to go on to the next child.
-        let plays = |c: &&Cue| {
-            if self.has_problems(c.id) {
-                return false;
+        // Whether a start of the child plays it, by what `start` does with its runtime: one
+        // left as it is is taken as the child playing if it is a run (a broken one, or one
+        // fading out in a panic); a trigger that ends the run leaves the playlist to go on; a
+        // new run of a cue with static problems only keeps its timing (C-G3).
+        let fresh = |c: &Cue| !self.is_skipped(c) && !self.has_problems(c.id);
+        let plays = |c: &&Cue| match self.start_path(c) {
+            StartPath::Refused | StartPath::Skipped => {
+                matches!(self.slots.get(&c.id), Some(Slot::Active(_)))
             }
-            match self.slots.get(&c.id) {
-                Some(Slot::Broken(_)) => false,
-                Some(Slot::Lost(_)) => self.lost_may_clear(c.id) && !self.is_skipped(c),
-                Some(Slot::Active(r)) if r.panicked => !self.is_skipped(c),
-                Some(Slot::Active(r)) if r.paused_at.is_some() => true,
-                Some(Slot::Active(r)) if r.is_broken() => false,
-                Some(Slot::Active(_)) => !matches!(
-                    c.second_trigger.effective(&c.kind),
-                    SecondTrigger::Stop | SecondTrigger::HardStop
-                ),
-                Some(Slot::Loaded(_)) | None => !self.is_skipped(c),
-            }
+            StartPath::Trigger(SecondTrigger::HardStopAndRestart) => fresh(c),
+            StartPath::Trigger(option) => !self.trigger_stops(option, ws),
+            StartPath::Resume => true,
+            StartPath::Fresh => fresh(c),
         };
         let first = || {
             (!*shuffle)

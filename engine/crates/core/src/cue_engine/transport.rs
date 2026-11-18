@@ -7,10 +7,10 @@
 use std::collections::HashSet;
 
 use crate::cue::FadeCurve;
-use crate::model::CueId;
+use crate::model::{CueId, Workspace};
 
 use super::run::{Phase, Run, Slot, Voice};
-use super::time::SampleTime;
+use super::time::{SampleTime, seconds_to_samples};
 use super::types::{Action, StopFade};
 use super::{Ctx, CueEngine};
 
@@ -38,12 +38,17 @@ impl CueEngine {
         out
     }
 
+    /// The workspace's panic time in samples (0: a panic stops at once).
+    pub(super) fn panic_frames(&self, ws: &Workspace) -> SampleTime {
+        seconds_to_samples(ws.settings.panic_duration, self.config.sample_rate())
+    }
+
     /// Panic: every playing voice fades out to silence by the same end sample, then stops there;
     /// everything else stops at once, so nothing pending fires. A second Panic before that end,
     /// or a `panic_duration` of 0, stops everything at once. Children go before their groups
     /// (as in Stop), so a group sees which of its children are still fading out.
     pub(super) fn panic(&mut self, cx: &mut Ctx) {
-        let frames = cx.secs(cx.ws.settings.panic_duration, &self.config);
+        let frames = self.panic_frames(cx.ws);
         let second = self.panic.is_some_and(|(_, end)| cx.now < end);
         let hard = frames == 0 || second;
         let end = cx.now.saturating_add(frames);
@@ -234,7 +239,7 @@ impl CueEngine {
     /// `panic_end` are untouched. Its cues count as fading out in a panic, so a further trigger
     /// restarts them.
     pub(super) fn panic_tree(&mut self, cue: CueId, cx: &mut Ctx) {
-        let frames = cx.secs(cx.ws.settings.panic_duration, &self.config);
+        let frames = self.panic_frames(cx.ws);
         if frames == 0 {
             return self.stop_tree(cue, None, cx);
         }

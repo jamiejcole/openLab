@@ -4,7 +4,7 @@
 //! cue's `second_trigger` option, and the "second trigger on release" input.
 
 use crate::cue::{DevampMode, SecondTrigger};
-use crate::model::CueId;
+use crate::model::{CueId, Workspace};
 
 use super::control::DevampOrder;
 use super::run::Slot;
@@ -46,6 +46,16 @@ impl CueEngine {
             }
             SecondTrigger::PlayNext => self.playlist_skip(cue, false, at, cx),
             SecondTrigger::PlayPrevious => self.playlist_skip(cue, true, at, cx),
+        }
+    }
+
+    /// Whether a second trigger with `option` ends the cue's run at once (a stop, or a panic
+    /// with no panic time), so that a start of its playlist goes on to the next child.
+    pub(super) fn trigger_stops(&self, option: SecondTrigger, ws: &Workspace) -> bool {
+        match option {
+            SecondTrigger::Stop | SecondTrigger::HardStop => true,
+            SecondTrigger::Panic => self.panic_frames(ws) == 0,
+            _ => false,
         }
     }
 
