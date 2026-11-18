@@ -1893,6 +1893,73 @@ impl Run {
                 }
             }
         }
+        self.check_playlist_marks()
+    }
+
+    /// Oracle for the cue list's mark: for every Playlist group not running, the child the
+    /// engine marks as next is the one a start of the group plays (tried on a copy of the
+    /// engine at this `now`). A shuffled one marks none until its order is drawn.
+    fn check_playlist_marks(&self) -> Check {
+        // Duplicate ids make "the group's child" ambiguous.
+        if self.dup {
+            return Ok(());
+        }
+        let mut playlists = Vec::new();
+        each(&self.ws.cue_lists[0].cues, &mut |c| {
+            if let CueKind::Group {
+                mode: GroupMode::Playlist { shuffle: false, .. },
+                children,
+            } = &c.kind
+            {
+                let kids: Vec<(CueId, bool)> = children.iter().map(|k| (k.id, k.armed)).collect();
+                playlists.push((c.id, kids));
+            }
+        });
+        for (group, children) in playlists {
+            // Not running: idle, loaded, broken, or left paused by a lost device (a start clears
+            // that once the device is back and plays the group from its beginning).
+            if !matches!(
+                self.engine.state(group),
+                CueState::Idle | CueState::Broken | CueState::Loaded
+            ) && !self.engine.is_lost(group)
+            {
+                continue;
+            }
+            let marked = self.engine.next_in_playlist(group);
+            let mut copy = self.engine.clone();
+            let actions = copy.handle(&self.ws, Input::Start { cue: group }, self.now);
+            let started = actions.iter().find_map(|a| match a {
+                Action::StateChanged { cue, state, .. }
+                    if children.iter().any(|(k, _)| k == cue)
+                        && !matches!(
+                            state,
+                            CueState::Idle | CueState::Broken | CueState::Loaded
+                        ) =>
+                {
+                    Some(*cue)
+                }
+                _ => None,
+            });
+            if let Some(started) = started {
+                // A disarmed child plays only its pre-wait and reports no state of its own when
+                // that is zero: the first state reported may be a later child's, after the marked
+                // one and disarmed children only.
+                let at = |id: CueId| children.iter().position(|(k, _)| *k == id);
+                let passed = marked.and_then(at).zip(at(started)).is_some_and(|(m, s)| {
+                    m <= s
+                        && children
+                            .get(m..s)
+                            .is_some_and(|between| between.iter().all(|(_, armed)| !armed))
+                });
+                prop_assert!(
+                    passed,
+                    "playlist {}: marked {:?}, but its start plays {}",
+                    group,
+                    marked,
+                    started
+                );
+            }
+        }
         Ok(())
     }
 

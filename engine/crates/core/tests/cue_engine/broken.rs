@@ -1832,3 +1832,36 @@ fn a_group_paused_by_the_operator_is_not_marked_when_a_child_resumed_alone_is_lo
     assert!(!rig.engine.is_lost(id(10)));
     assert_ne!(rig.state(10), CueState::Paused);
 }
+
+/// The cue list's mark on a playlist whose children a lost device left paused: once the device
+/// is back, a start clears them and plays the first, so the mark is on the first child again.
+#[test]
+fn a_playlists_mark_after_its_device_returns_is_the_child_its_start_plays() {
+    let mut rig = Rig::new(vec![playlist_of(1, false, vec![sound(2), sound(3)])]);
+    rig.device(0, 1, mapped());
+    rig.at(
+        0,
+        Input::CueLengths {
+            lengths: vec![(id(2), Some(100_000)), (id(3), Some(100_000))],
+        },
+    );
+    rig.start(10, 1);
+    rig.device(20, 1, missing());
+    lose_device(&mut rig, 30, 2);
+    assert!(rig.engine.is_lost(id(2)));
+    rig.device(50, 1, mapped());
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(2)));
+    let go = rig.start(100, 1);
+    let started: Vec<CueId> = go
+        .iter()
+        .filter_map(|a| match a {
+            Action::StartVoice { cue, .. } => Some(*cue),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        started,
+        vec![id(2)],
+        "the marked child is the one the start plays"
+    );
+}

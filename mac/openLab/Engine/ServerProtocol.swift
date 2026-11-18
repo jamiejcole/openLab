@@ -57,6 +57,8 @@ enum RuntimeChange: Sendable, Decodable {
     /// The cue was started since it was last reset (`true`) or a reset undid that: a played cue shows
     /// its second colour.
     case played(cue: ModelID, played: Bool)
+    /// The child a Playlist group plays next (nil: none), marked on the group's box.
+    case playlistNext(group: ModelID, cue: ModelID?)
     /// Double-GO protection began (a GO now is ignored) or ended.
     case goProtection(active: Bool)
     case warning(WireWarning)
@@ -88,6 +90,10 @@ enum RuntimeChange: Sendable, Decodable {
         case "played":
             self = .played(
                 cue: try c.decode(ModelID.self, forKey: "cue"), played: try c.decode(Bool.self, forKey: "played"))
+        case "playlist_next":
+            self = .playlistNext(
+                group: try c.decode(ModelID.self, forKey: "group"),
+                cue: try c.decodeIfPresent(ModelID.self, forKey: "cue"))
         case "go_protection":
             self = .goProtection(active: try c.decode(Bool.self, forKey: "active"))
         case "warning":
@@ -111,6 +117,11 @@ struct CueProblems: Sendable, Decodable {
     let problems: [WireProblem]
 }
 
+struct PlaylistNextEntry: Sendable, Decodable {
+    let group: ModelID
+    let cue: ModelID
+}
+
 struct PlayheadEntry: Sendable, Decodable {
     let list: ModelID
     let cue: ModelID?
@@ -128,6 +139,8 @@ struct Snapshot: Sendable, Decodable {
     var previewing: [ModelID]
     /// Cues started since they were last reset (absent: none).
     var played: [ModelID]?
+    /// Each Playlist group's next child (absent: none).
+    var playlistNext: [PlaylistNextEntry]?
     var warnings: [WireWarning]
     /// Absent (none known): nil.
     var mediaDurations: [CueMediaDuration]?
@@ -136,6 +149,7 @@ struct Snapshot: Sendable, Decodable {
         case runtimeSeq = "runtime_seq"
         case cueStates = "cue_states"
         case groupWarnings = "group_warnings"
+        case playlistNext = "playlist_next"
         case mediaDurations = "media_durations"
     }
 }

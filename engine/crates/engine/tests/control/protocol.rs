@@ -234,6 +234,46 @@ fn a_second_colour_cue_reports_played_after_its_first_start_until_reset_all() {
     assert!(s.control().snapshot().played.is_empty());
 }
 
+/// The cue list marks the child a Playlist group plays next: the snapshot's `playlist_next`
+/// and `playlist_next` runtime changes as the playlist moves on and is reset.
+#[test]
+fn a_playlist_reports_the_child_it_plays_next_as_it_moves_on_and_after_a_reset() {
+    use openlab_core::GroupMode;
+    use openlab_core::protocol::{PlaylistNextEntry, RuntimeChange};
+    let long = wav(&dc(80_000, 0.5));
+    let group = cue(
+        10,
+        CueKind::Group {
+            mode: GroupMode::Playlist {
+                loop_: false,
+                shuffle: false,
+            },
+            children: vec![audio(1, &long, 0), audio(2, &long, 0)],
+        },
+    );
+    let mut s = show(workspace(vec![group]));
+    s.take_outbound();
+    let entry = |cue| PlaylistNextEntry { group: id(10), cue };
+    assert_eq!(s.control().snapshot().playlist_next, vec![entry(id(1))]);
+    let next = |msgs: &[ServerMessage]| -> Vec<Option<openlab_core::CueId>> {
+        changes(msgs)
+            .into_iter()
+            .filter_map(|c| match c {
+                RuntimeChange::PlaylistNext { group, cue } if group == id(10) => Some(cue),
+                _ => None,
+            })
+            .collect()
+    };
+    go(&mut s);
+    s.run(BLOCK * 2);
+    assert_eq!(next(&s.take_outbound()), vec![Some(id(2))]);
+    assert_eq!(s.control().snapshot().playlist_next, vec![entry(id(2))]);
+    s.transport(TransportAction::Reset { cue: id(10) });
+    s.run(BLOCK);
+    assert_eq!(next(&s.take_outbound()), vec![Some(id(1))]);
+    assert_eq!(s.control().snapshot().playlist_next, vec![entry(id(1))]);
+}
+
 #[test]
 fn relink_of_a_missing_folder_is_refused_and_snapshot_answers() {
     let path = wav(&dc(300, 0.5));

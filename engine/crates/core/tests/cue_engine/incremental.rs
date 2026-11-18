@@ -968,3 +968,59 @@ fn an_unsignalled_edit_that_moves_cues_is_caught_up_at_the_next_structural_edit_
     assert!(!ignored(&actions));
     assert!(started(&actions, id(3)));
 }
+
+// ----- the playlists' next children followed from footprints -----
+
+fn marked(actions: &[Action]) -> Vec<(CueId, Option<CueId>)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::PlaylistNextChanged { group, next } => Some((*group, *next)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_playlists_next_child_follows_moves_mode_changes_arming_and_removals() {
+    let list = |loop_| GroupMode::Playlist {
+        loop_,
+        shuffle: false,
+    };
+    // G1 { 2, 3, G4 { 5, 6 } } with G1 and G4 playlists.
+    let mut twin = Twin::new(vec![grp(
+        1,
+        list(false),
+        vec![memo(2), memo(3), grp(4, list(true), vec![memo(5), memo(6)])],
+    )]);
+    assert_eq!(twin.inc.next_in_playlist(id(1)), Some(id(2)));
+    assert_eq!(twin.inc.next_in_playlist(id(4)), Some(id(5)));
+    let moved = twin.edit(Command::MoveCue {
+        id: id(3),
+        index: 0,
+    });
+    assert_eq!(marked(&moved), vec![(id(1), Some(id(3)))]);
+    // Moved out of its group: the group's next child is its other one.
+    let out = twin.edit(Command::ReparentCue {
+        id: id(5),
+        to: at(None, 1),
+    });
+    assert_eq!(marked(&out), vec![(id(4), Some(id(6)))]);
+    let mut skipped = set(3, CueProperty::SkipIfDisarmed { value: true });
+    twin.edit(skipped);
+    skipped = set(3, CueProperty::Armed { value: false });
+    assert_eq!(marked(&twin.edit(skipped)), vec![(id(1), Some(id(2)))]);
+    let timeline = twin.edit(set(
+        1,
+        CueProperty::GroupMode {
+            value: GroupMode::Timeline,
+        },
+    ));
+    assert_eq!(marked(&timeline), vec![(id(1), None)]);
+    // The nested playlist goes with the group around it.
+    let gone = twin.edit(Command::RemoveCue { id: id(1) });
+    assert_eq!(marked(&gone), vec![(id(4), None)]);
+    assert_eq!(twin.inc.playlist_marks().count(), 0);
+    // Undone: both groups are back, G1 as a Timeline group.
+    assert_eq!(marked(&twin.undo()), vec![(id(4), Some(id(6)))]);
+}

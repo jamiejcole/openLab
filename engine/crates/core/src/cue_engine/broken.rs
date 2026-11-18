@@ -244,6 +244,16 @@ impl CueEngine {
         self.problems.unsignalled
     }
 
+    /// The cues touched by edits not yet followed; `None` when everything is to be looked at
+    /// again (a change with no footprint, or the engine is new).
+    pub(super) fn pending_cues(&self) -> Option<Vec<CueId>> {
+        match &self.problems.pending {
+            Pending::Clean => Some(Vec::new()),
+            Pending::All => None,
+            Pending::Cues { touched, .. } => Some(touched.iter().copied().collect()),
+        }
+    }
+
     /// The model's part of the problems is out of date: rebuild it on the next call.
     pub(super) fn mark_problems_dirty(&mut self) {
         self.problems.pending = Pending::All;

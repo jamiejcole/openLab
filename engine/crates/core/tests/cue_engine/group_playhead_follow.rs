@@ -998,6 +998,16 @@ fn a_remaining_group_that_loops_or_chains_by_continues_has_no_known_end() {
 }
 
 #[test]
+fn a_halted_playlist_marks_no_next_child() {
+    let (rig, broke) = halted_rig(sound(12), Some(10.0), false);
+    assert!(broke.iter().any(|a| matches!(
+        a,
+        Action::PlaylistNextChanged { group, next: None } if *group == id(1)
+    )));
+    assert_eq!(rig.engine.next_in_playlist(id(1)), None);
+}
+
+#[test]
 fn a_looping_playlist_that_halts_never_follows() {
     let (mut rig, broke) = halted_rig(sound(12), Some(10.0), true);
     assert!(starts(&broke).is_empty());

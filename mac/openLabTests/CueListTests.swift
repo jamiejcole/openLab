@@ -5276,30 +5276,6 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(try column(h, "continue").headerCell.stringValue, "", "and no title")
     }
 
-    /// Flow (workspace layout): a Group's Name cell is boxed in its mode's colour; other rows are not. This is
-    /// the drawing the group-outline issue also asks for (the box around the children is that issue's).
-    func testGroupRowsAreOutlinedInTheirModesColourAndOtherRowsAreNot() async throws {
-        let h = try await demo()
-        h.spy.appearance = NSAppearance(named: .darkAqua)
-        func topEdge(_ id: ModelID) throws -> Pixels {
-            let cell = try XCTUnwrap(h.cell("name", id))
-            cell.layoutSubtreeIfNeeded()
-            let rep = try XCTUnwrap(cell.bitmapImageRepForCachingDisplay(in: cell.bounds))
-            cell.cacheDisplay(in: cell.bounds, to: rep)
-            let scale = CGFloat(rep.pixelsWide) / max(1, cell.bounds.width)
-            return Pixels(
-                rep: rep, region: NSRect(x: cell.bounds.midX, y: 0, width: 4, height: cell.bounds.height), scale: scale)
-        }
-        XCTAssertGreaterThan(try topEdge(H.group).count(Self.greenish), 4, "the Timeline group's box is green")
-        XCTAssertEqual(try topEdge(H.intro).count(Self.greenish), 0, "an audio cue's cell is not boxed")
-        XCTAssertEqual(GroupOutline.of(mode: "timeline"), GroupOutline(colour: .systemGreen, rounded: false))
-        XCTAssertEqual(GroupOutline.of(mode: "playlist"), GroupOutline(colour: .systemOrange, rounded: false))
-        XCTAssertEqual(GroupOutline.of(mode: "start_random"), GroupOutline(colour: .systemPurple, rounded: false))
-        XCTAssertEqual(GroupOutline.of(mode: "start_first_and_enter"), GroupOutline(colour: .systemBlue, rounded: true))
-        XCTAssertEqual(
-            GroupOutline.of(mode: "start_first_and_go_to_next"), GroupOutline(colour: .systemBlue, rounded: true))
-    }
-
     /// Flow (workspace layout): a loaded cue's mark is a solid disc; a zero wait is dimmed and a zero
     /// duration is not.
     func testTheLoadedMarkIsASolidDiscAndZeroWaitsAreDimmed() async throws {

@@ -104,6 +104,10 @@ fn snapshot() -> Snapshot {
         }],
         previewing: vec![cue_id(10)],
         played: vec![cue_id(10)],
+        playlist_next: vec![PlaylistNextEntry {
+            group: cue_id(12),
+            cue: cue_id(13),
+        }],
         warnings: vec![WireWarning::Notice {
             patch: None,
             code: "media_damaged".into(),
@@ -1184,6 +1188,14 @@ fn fixtures() -> Vec<(String, Sample)> {
                 RuntimeChange::Played {
                     cue: cue_id(10),
                     played: true,
+                },
+                RuntimeChange::PlaylistNext {
+                    group: cue_id(12),
+                    cue: Some(cue_id(13)),
+                },
+                RuntimeChange::PlaylistNext {
+                    group: cue_id(12),
+                    cue: None,
                 },
                 RuntimeChange::GoProtection { active: true },
                 RuntimeChange::Warning {
@@ -2967,6 +2979,16 @@ fn engine_actions_map_to_runtime_changes() {
         Some(RuntimeChange::Played {
             cue: c,
             played: false
+        })
+    );
+    assert_eq!(
+        map(Action::PlaylistNextChanged {
+            group: c,
+            next: None
+        }),
+        Some(RuntimeChange::PlaylistNext {
+            group: c,
+            cue: None
         })
     );
     assert_eq!(

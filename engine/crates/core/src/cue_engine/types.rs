@@ -737,6 +737,13 @@ pub enum Action {
         cue: CueId,
         played: bool,
     },
+    /// The child a Playlist group plays next changed (`CueEngine::next_in_playlist`): the
+    /// cue list marks it on the group's box. `None`: no child is next (also sent once for a
+    /// group that had one and was deleted or left Playlist mode).
+    PlaylistNextChanged {
+        group: CueId,
+        next: Option<CueId>,
+    },
     Warning(EngineWarning),
 }
 

@@ -22,7 +22,8 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - `statusButton` (DX-03) is a small mark without words while all is well (the summary is its tip) and the alarm or warning in words otherwise; pressing it or the override badge opens the details popover beside what was pressed. Dropouts warn until the operator has opened and closed the details (`seenXruns`); a lower total (an engine started again) is the new baseline.
 - A restored layout applies the GO area before the toolbar, so the toolbar's own saved choice wins.
 - Edit and Show Mode draw the masthead alike (grey-violet GO with a green edge, boxed standby line and notes, `MastheadView.goFill`/`boxFill`); Show Mode only enlarges (`MastheadMetrics`). The window title is "workspace — shown list".
-- A plain press in a row's status column (`CueOutlineView.onStatusPress`) moves the playhead and leaves the selection; `unlinkedHead` stops the follow until the user selects or the playhead moves on. A Group's Name cell is boxed by mode (`GroupOutline`).
+- A plain press in a row's status column (`CueOutlineView.onStatusPress`) moves the playhead and leaves the selection; `unlinkedHead` stops the follow until the user selects or the playhead moves on.
+- An open group is boxed by mode (`GroupOutline`) around its Name cell and its children's, a nested group's box inside its parent's, a Playlist's next child (`WorkspaceStore.playlistNext`) marked on the box's left edge. Each row draws the parts crossing it (`GroupBoxes.parts`, `CueRowView.boxes`), refreshed on open, close, edits and `playlist_next`; a Name cell's text ends inside every box (`CueCell.textInset`).
 
 ## Meters (AUD-19, NFR-26)
 - `WorkspaceStore.meters` (`MeterBank`) max-folds each `meters` push into preallocated per-source slots and publishes nothing.

@@ -835,6 +835,7 @@ mod tests {
             }],
             previewing: vec![],
             played: vec![],
+            playlist_next: vec![],
             warnings: vec![],
             media_durations: vec![],
         })
@@ -1226,6 +1227,7 @@ mod tests {
             playheads: vec![],
             previewing: vec![],
             played: vec![],
+            playlist_next: vec![],
             warnings: vec![],
             media_durations: vec![],
         });
@@ -1441,6 +1443,7 @@ mod tests {
             playheads: vec![],
             previewing: vec![],
             played: vec![],
+            playlist_next: vec![],
             warnings: vec![],
             media_durations: vec![media(1, Some(4.25))],
         });
@@ -1497,6 +1500,7 @@ mod tests {
             playheads: vec![],
             previewing: vec![],
             played: vec![],
+            playlist_next: vec![],
             warnings: vec![],
             // A movie of 2 s; a still shown until stopped.
             media_durations: vec![media(1, Some(2.0), Some(2.0)), media(2, None, None)],

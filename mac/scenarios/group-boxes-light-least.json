@@ -1,0 +1,15 @@
+{
+  "about": "The group boxes in a light window at the least width with the sidebar shown: each box inside the narrow Name column, a long name ending in an ellipsis inside its box, and the Playlist's mark moving when it plays.",
+  "show": "Groups",
+  "window": {"width": 800, "height": 800},
+  "appearance": "light",
+  "steps": [
+    {"shot": "light-least"},
+    {"click": "toggle-sidebar"},
+    {"shot": "light-least-sidebar"},
+    {"select": "3"},
+    {"key": "space"},
+    {"advance": 0.5},
+    {"shot": "light-least-playlist-playing"}
+  ]
+}
