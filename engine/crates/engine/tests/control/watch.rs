@@ -893,13 +893,15 @@ fn a_shared_file_gone_during_a_save_as_elsewhere_is_heard_by_both_docs() {
     let held = Mutex::new(held);
     let hook = SaveHook(Arc::new(move |kind: JobKind| {
         if kind == JobKind::Save {
-            let _ = held.lock().unwrap().recv_timeout(WAIT);
+            let _ = held.lock().unwrap().recv();
         }
     }));
     let mut c = manual(&a, &fs);
     c.app_dirs = Some(env.dirs.clone());
     c.save_hook = Some(hook);
     let mut s = show_with(a, c);
+    // Dropped before the show, so a failing test lets the held writer go at once.
+    let go = go;
     let b_doc = s
         .open_doc(DocSource::Open {
             path: b_show,
