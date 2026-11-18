@@ -423,6 +423,10 @@ impl DocCx<'_> {
                         return Flow::Continue;
                     }
                 };
+                if let Some(e) = self.stage_removal_refused(&command) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
+                }
                 let footprint = command.footprint();
                 let mut edit = self.doc.model.edit();
                 let result =
@@ -449,13 +453,18 @@ impl DocCx<'_> {
             ClientMessage::Undo { id } | ClientMessage::Redo { id } => {
                 let undo = matches!(message, ClientMessage::Undo { .. });
                 // The step about to be applied says what it changes.
-                let footprint = if undo {
+                let step = if undo {
                     self.doc.history.peek_undo()
                 } else {
                     self.doc.history.peek_redo()
+                };
+                // A step that removes a stage in use is refused as the command would be; it
+                // stays on the stack for once the cue is done.
+                if let Some(e) = step.and_then(|c| self.stage_removal_refused(c)) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
                 }
-                .map(Command::footprint)
-                .unwrap_or_default();
+                let footprint = step.map(Command::footprint).unwrap_or_default();
                 // A step that removes an active cue (an undo of its add, a redo of its delete)
                 // is performed, as QLab 5 does; the engine stops the cue as it stops a deleted
                 // one when it follows the edit.

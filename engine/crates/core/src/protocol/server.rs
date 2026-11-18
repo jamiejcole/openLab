@@ -254,6 +254,11 @@ pub struct StageMappingEntry {
     pub mapping: Option<crate::settings::StageMapping>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<crate::stage_link::StageState>,
+    /// A stage keeping black whose black a panic took down (QLab 5 manual p. 227): it is hidden
+    /// between cues, as a stage not keeping black is, until a cue plays on it again. Absent:
+    /// `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub panicked: bool,
 }
 
 /// One patch's mapping on this machine; `mapping` is absent for a patch that has none (never

@@ -612,12 +612,15 @@ impl<P: Platform> Host<P> {
         self.report_failures(out);
     }
 
-    /// One message from [`serve`], or (`None`) a poll between messages.
+    /// One message from [`serve`], or (`None`) a poll between messages, which also draws
+    /// playing pictures again as a display's frame loop does: a picture whose stop is over
+    /// goes, and a stage left with nothing to show is hidden or kept black.
     pub fn step(&mut self, message: Option<ToStage>, out: &mut Vec<FromStage>) -> Flow {
         match message {
             Some(message) => self.handle(message, out),
             None => {
                 self.poll(out);
+                self.redraw(out);
                 Flow::Continue
             }
         }
@@ -715,6 +718,9 @@ impl<P: Platform> Host<P> {
             }
             #[cfg(feature = "test-support")]
             ToStage::Probe { stage, points } => {
+                // As a frame drawn now would: pictures whose stop is over go and the stages'
+                // states follow, reported ahead of the answer.
+                self.redraw(out);
                 let probed = self.probe_stage(stage, &points, out);
                 // A picture that failed as the probe drew it is reported first, so the engine
                 // has it (and a test that finds nothing on a stage can say why) once it has the
@@ -724,6 +730,9 @@ impl<P: Platform> Host<P> {
             }
             #[cfg(feature = "test-support")]
             ToStage::ProbeDisplay { display, points } => {
+                // As a frame drawn now would: pictures whose stop is over go and the stages'
+                // states follow, reported ahead of the answer.
+                self.redraw(out);
                 let probed = self.probe_display(display, &points, out);
                 // A picture that failed as the probe drew it is reported first, so the engine
                 // has it (and a test that finds nothing on a stage can say why) once it has the

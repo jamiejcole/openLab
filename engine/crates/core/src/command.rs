@@ -411,6 +411,10 @@ pub enum CommandError {
     PatchInUse { patch: PatchId, cue: CueId },
     #[error("network patch {patch} is used by cue {cue}")]
     NetworkPatchInUse { patch: NetworkPatchId, cue: CueId },
+    /// A stage a cue is playing on (or is loaded, pre-waiting or stopping on) cannot be
+    /// removed: the engine refuses it, naming both as the operator sees them.
+    #[error("stage \"{stage}\" cannot be removed while cue \"{cue}\" uses it")]
+    StageInUse { stage: String, cue: String },
     #[error("cue list {0} still has cues")]
     CueListNotEmpty(CueListId),
     #[error("cue list {0} is the only one")]

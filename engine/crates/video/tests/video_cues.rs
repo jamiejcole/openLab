@@ -20,6 +20,7 @@ use openlab_audio::MediaError;
 use openlab_core::protocol::{
     ClientMessage, Outcome, Request, ResultData, ServerMessage, TransportAction,
 };
+use openlab_core::stage_link::StageState;
 use openlab_core::video_probe::{ProbeReport, StillFormat, VideoCodec};
 use openlab_core::{
     Crosspoint, Cue, CueKind, CueLevels, CueOutput, CueProblem, CueState, MediaRef, PatchId, Stage,
@@ -63,8 +64,13 @@ const SETTLE: Duration = Duration::from_secs(180);
 /// A test's stage host on virtual display V1 (1920 x 1080) with `extra` arguments, never failing
 /// a good file or a slow answer that a slow machine can explain.
 fn test_stage_host(extra: &[&str]) -> StageHostConfig {
+    test_stage_host_on("V1:1920x1080", extra)
+}
+
+/// As [`test_stage_host`], on the virtual displays `displays` (`ID:WxH,...`).
+fn test_stage_host_on(displays: &str, extra: &[&str]) -> StageHostConfig {
     let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
-    host.args = ["--virtual-displays", "V1:1920x1080"]
+    host.args = ["--virtual-displays", displays]
         .iter()
         .chain(&["--good-media-limits", GOOD_MEDIA_LIMITS])
         .chain(extra)
@@ -1083,6 +1089,462 @@ fn panic_fades_the_picture_over_the_panic_time() {
     run_to(&mut s, at + samples(1.1));
     expect_state(&s, 1, CueState::Idle, "");
     assert_eq!(probe_at(&mut s, &red).1, vec![[0, 0, 0, 255]]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stages while cues play on them (#642, #674): two stages, stage 1 shown on V1 (1920 x 1080) and
+// stage 2 on V2 (1280 x 720), as the operator chose on this machine.
+
+fn stage_two() -> StageId {
+    StageId(Uuid::from_u128(0x5_0002))
+}
+
+/// A still on stage 2.
+fn still_on_two(n: u128, file: &Path, duration: Option<f64>) -> Cue {
+    let mut cue = still_cue(n, file, duration);
+    if let CueKind::Video { stage, .. } = &mut cue.kind {
+        *stage = Some(stage_two());
+    }
+    cue
+}
+
+/// An offline show of `ws` whose stages 1 and 2 (1920 x 1080, keeping black as `keep_black`
+/// says) are shown on V1 and V2.
+fn two_stage_show(mut ws: Workspace, keep_black: [bool; 2]) -> OfflineShow {
+    let mut one = Stage::new(stage_id(), "Stage 1", 1920, 1080);
+    one.keep_black = keep_black[0];
+    let mut two = Stage::new(stage_two(), "Stage 2", 1920, 1080);
+    two.keep_black = keep_black[1];
+    ws.stages = vec![one, two];
+    let mut c: ControlConfig = config_at(&ws, RATE, BLOCK);
+    slow_media_ok(&mut c);
+    for (stage, display, (w, h)) in [
+        (stage_id(), "V1", (1920, 1080)),
+        (stage_two(), "V2", (1280, 720)),
+    ] {
+        let mapping = openlab_core::StageMapping {
+            display: display.into(),
+            name: format!("Virtual {display}"),
+            width: w,
+            height: h,
+        };
+        c.machine
+            .set_stage_mapping(ws.id, stage, Some(mapping))
+            .unwrap();
+    }
+    c.stage_host = Some(test_stage_host_on("V1:1920x1080,V2:1280x720", &[]));
+    let mut s = OfflineShow::new(ws, mixer_config_at(RATE, BLOCK), c).unwrap();
+    s.set_settle_timeout(SETTLE);
+    s.settle_stages();
+    s.settle_media();
+    s
+}
+
+/// A request's outcome, the stage host settled first.
+fn ask(s: &mut OfflineShow, request: Request) -> Outcome {
+    let id = s.request_id();
+    s.send_until(ClientMessage::Request { id, request }, |c| {
+        c.stages_settled()
+    })
+    .into_iter()
+    .find_map(|m| match m {
+        ServerMessage::Result { id: got, outcome } if got == id => Some(outcome),
+        _ => None,
+    })
+    .unwrap_or_else(|| panic!("no answer"))
+}
+
+/// What `stage` shows: the barcode, and the colours at `points`.
+fn stage_shows(
+    s: &mut OfflineShow,
+    stage: StageId,
+    points: &[[f32; 2]],
+) -> (Option<u16>, Vec<[u8; 4]>) {
+    let request = Request::StageProbe {
+        stage,
+        points: points.to_vec(),
+    };
+    match ask(s, request) {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::StageProbe { frame, colours }) => (frame, colours),
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("probe refused: {e:?}"),
+    }
+}
+
+/// What display `display` shows (every stage on it, stacked): the barcode, and the colours at
+/// `points`.
+fn display_shows(
+    s: &mut OfflineShow,
+    display: &str,
+    points: &[[f32; 2]],
+) -> (Option<u16>, Vec<[u8; 4]>) {
+    let request = Request::DisplayProbe {
+        display: display.into(),
+        points: points.to_vec(),
+    };
+    match ask(s, request) {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::StageProbe { frame, colours }) => (frame, colours),
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("probe refused: {e:?}"),
+    }
+}
+
+/// Where the stage host says `stage` is now: asked after it has drawn the stage (a probe),
+/// which brings its state up to date as a display's next frame would.
+fn stage_state(s: &mut OfflineShow, stage: StageId) -> Option<StageState> {
+    stage_shows(s, stage, &[[0.5, 0.5]]);
+    s.settle_stages();
+    s.control().stage_state(stage).cloned()
+}
+
+fn shown_on(display: &str) -> Option<StageState> {
+    Some(StageState::Shown {
+        display: display.into(),
+    })
+}
+
+/// A command's outcome.
+fn edit(s: &mut OfflineShow, command: openlab_core::Command) -> Outcome {
+    let id = s.request_id();
+    s.send(ClientMessage::Command {
+        id,
+        command: Box::new(command),
+        coalesce: None,
+    })
+    .into_iter()
+    .find_map(|m| match m {
+        ServerMessage::Result { id: got, outcome } if got == id => Some(outcome),
+        _ => None,
+    })
+    .unwrap_or_else(|| panic!("no answer to the command"))
+}
+
+/// An undo's (`undo`) or a redo's outcome.
+fn step(s: &mut OfflineShow, undo: bool) -> Outcome {
+    let id = s.request_id();
+    let message = if undo {
+        ClientMessage::Undo { id }
+    } else {
+        ClientMessage::Redo { id }
+    };
+    s.send(message)
+        .into_iter()
+        .find_map(|m| match m {
+            ServerMessage::Result { id: got, outcome } if got == id => Some(outcome),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no answer to the undo or redo"))
+}
+
+/// The reason a refused outcome gives.
+fn refusal(outcome: Outcome) -> String {
+    match outcome {
+        Outcome::Error(e) => {
+            assert_eq!(e.code, openlab_core::protocol::ErrorCode::CommandRefused);
+            e.message
+        }
+        Outcome::Ok(_) => panic!("not refused"),
+    }
+}
+
+/// The middle of the card's red quadrant on a stage it fills, and a point near the left edge
+/// of the stage or display, inside that quadrant too.
+const RED_AT: [f32; 2] = [0.25, 0.3];
+const EDGE_AT: [f32; 2] = [0.05, 0.3];
+
+/// #642 flow: a stage's display pop-up is changed while a cue plays on it → the picture moves
+/// to that display at once and the cue plays on.
+#[test]
+fn a_stage_display_changed_while_a_cue_plays_moves_the_picture_there_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = two_stage_show(workspace(vec![still_cue(1, &png, None)]), [true, false]);
+    go(&mut s);
+    s.run(samples(0.2));
+    assert_eq!(display_shows(&mut s, "V1", &[RED_AT]).0, Some(0), "on V1");
+    let outcome = ask(
+        &mut s,
+        Request::SetStageMapping {
+            stage: stage_id(),
+            display: Some("V2".into()),
+        },
+    );
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    s.settle_stages();
+    assert_eq!(stage_state(&mut s, stage_id()), shown_on("V2"));
+    let (frame, colours) = display_shows(&mut s, "V2", &[RED_AT]);
+    assert_eq!((frame, colours), (Some(0), vec![RED]), "now on V2");
+    assert_eq!(
+        display_shows(&mut s, "V1", &[RED_AT]).0,
+        None,
+        "gone from V1"
+    );
+    expect_state(&s, 1, CueState::Running, "the cue plays on");
+    s.run(samples(0.5));
+    assert_eq!(
+        display_shows(&mut s, "V2", &[RED_AT]).0,
+        Some(0),
+        "still up on V2"
+    );
+}
+
+/// #642 flow: remove is refused while a cue uses the stage, with the reason (the stage's
+/// name and the cue), whether asked directly, in a transaction, or by an undo or redo; the
+/// picture stays up. Once the cue has stopped the same removal goes ahead: a stage cues only
+/// aim at may be removed.
+#[test]
+fn removing_a_stage_a_cue_plays_on_is_refused_with_the_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let ws = workspace(vec![still_cue(1, &png, None), still_on_two(2, &png, None)]);
+    let mut s = two_stage_show(ws, [true, true]);
+    let remove = |stage| openlab_core::Command::RemoveStage { id: stage };
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    let why = refusal(edit(&mut s, remove(stage_id())));
+    assert!(
+        why.contains("\"Stage 1\"") && why.contains("cue \"1\""),
+        "{why}"
+    );
+    let why = refusal(edit(
+        &mut s,
+        openlab_core::Command::Transaction {
+            commands: vec![remove(stage_two()), remove(stage_id())],
+        },
+    ));
+    assert!(why.contains("\"Stage 1\""), "{why}");
+    assert_eq!(s.control().workspace().stages.len(), 2, "nothing removed");
+    assert_eq!(
+        stage_shows(&mut s, stage_id(), &[RED_AT]).0,
+        Some(0),
+        "the picture stays up"
+    );
+    // A stage no cue plays on goes; undone, it is back, a cue plays on it, and the redo that
+    // would remove it again is refused and kept for later.
+    let two = s.control().workspace().stages[1].clone();
+    assert!(matches!(edit(&mut s, remove(stage_two())), Outcome::Ok(_)));
+    assert!(matches!(step(&mut s, true), Outcome::Ok(_)));
+    let stop_two = |s: &mut OfflineShow| {
+        s.transport(TransportAction::Stop {
+            cue: id(2),
+            fade_out: None,
+        });
+        s.run(BLOCK);
+    };
+    start(&mut s, 2);
+    s.run(samples(0.2));
+    let why = refusal(step(&mut s, false));
+    assert!(
+        why.contains("\"Stage 2\"") && why.contains("cue \"2\""),
+        "{why}"
+    );
+    assert_eq!(
+        stage_shows(&mut s, stage_two(), &[RED_AT]).0,
+        Some(0),
+        "stage 2 kept"
+    );
+    stop_two(&mut s);
+    // The undo of an add, likewise.
+    assert!(matches!(edit(&mut s, remove(stage_two())), Outcome::Ok(_)));
+    let add = openlab_core::Command::AddStage {
+        index: 1,
+        stage: two,
+    };
+    assert!(matches!(edit(&mut s, add), Outcome::Ok(_)));
+    s.settle_stages();
+    start(&mut s, 2);
+    s.run(samples(0.2));
+    let why = refusal(step(&mut s, true));
+    assert!(why.contains("\"Stage 2\""), "{why}");
+    assert_eq!(
+        stage_shows(&mut s, stage_two(), &[RED_AT]).0,
+        Some(0),
+        "stage 2 kept"
+    );
+    // Once its cue has stopped, the same step goes ahead.
+    stop_two(&mut s);
+    assert!(
+        matches!(step(&mut s, true), Outcome::Ok(_)),
+        "the add undone"
+    );
+    assert_eq!(s.control().workspace().stages.len(), 1);
+    expect_state(&s, 1, CueState::Running, "cue 1 plays on throughout");
+    // Cue 1 aimed at another stage while it plays: its picture stays on the stage it loaded
+    // on, so that stage is still in use.
+    let aim = openlab_core::Command::SetCueProperty {
+        id: id(1),
+        property: openlab_core::CueProperty::Stage {
+            value: Some(StageId(Uuid::from_u128(0x5_0009))),
+        },
+    };
+    assert!(matches!(edit(&mut s, aim), Outcome::Ok(_)));
+    let why = refusal(edit(&mut s, remove(stage_id())));
+    assert!(
+        why.contains("\"Stage 1\"") && why.contains("cue \"1\""),
+        "{why}"
+    );
+    assert_eq!(
+        stage_shows(&mut s, stage_id(), &[RED_AT]).0,
+        Some(0),
+        "the picture stays up"
+    );
+    expect_state(&s, 1, CueState::Running, "cue 1 plays on");
+}
+
+/// Whether a stage's black was taken down by a panic, as clients are told.
+fn panicked(s: &mut OfflineShow, stage: StageId) -> bool {
+    match ask(s, Request::ListStageMappings) {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::StageMappings { stages }) => stages
+                .into_iter()
+                .find(|e| e.stage == stage)
+                .is_some_and(|e| e.panicked),
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("{e:?}"),
+    }
+}
+
+/// #642 flow: no cue playing on a stage that has played → its display shows black, never the
+/// desktop or a frozen frame, with keep-black on; with it off the stage's window is hidden
+/// (QLab 5 manual p. 227).
+#[test]
+fn a_stage_that_has_played_shows_black_between_cues_or_is_hidden_with_keep_black_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let ws = workspace(vec![
+        still_cue(1, &png, Some(0.5)),
+        still_on_two(2, &png, Some(0.5)),
+    ]);
+    let mut s = two_stage_show(ws, [true, false]);
+    assert_eq!(stage_state(&mut s, stage_two()), Some(StageState::Hidden));
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(samples(0.2));
+    assert_eq!(display_shows(&mut s, "V1", &[RED_AT]).0, Some(0));
+    assert_eq!(display_shows(&mut s, "V2", &[RED_AT]).0, Some(0));
+    assert_eq!(stage_state(&mut s, stage_two()), shown_on("V2"));
+    s.run(samples(0.5));
+    expect_state(&s, 1, CueState::Idle, "ended");
+    expect_state(&s, 2, CueState::Idle, "ended");
+    // Keep-black: the window stays up, black, no frame left over.
+    assert_eq!(stage_state(&mut s, stage_id()), shown_on("V1"));
+    assert_eq!(
+        display_shows(&mut s, "V1", &[RED_AT, EDGE_AT]),
+        (None, vec![BLACK; 2])
+    );
+    // Keep-black off: the window is down.
+    assert_eq!(stage_state(&mut s, stage_two()), Some(StageState::Hidden));
+    assert_eq!(display_shows(&mut s, "V2", &[RED_AT]).0, None);
+    // Still so after a while (no frame comes back).
+    s.run(samples(1.0));
+    assert_eq!(display_shows(&mut s, "V1", &[RED_AT]), (None, vec![BLACK]));
+}
+
+/// #642 flow: Panic → every stage goes to black over the panic time, and then its window
+/// closes, a stage keeping black too (QLab 5 manual p. 227: black is kept until the workspace
+/// panics). The next cue on a stage brings its black back for after it.
+#[test]
+fn panic_takes_every_stage_to_black_over_the_panic_time_and_closes_its_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![still_cue(1, &png, None), still_on_two(2, &png, None)]);
+    ws.settings.panic_duration = 1.0;
+    let mut s = two_stage_show(ws, [true, true]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(samples(0.2));
+    for stage in [stage_id(), stage_two()] {
+        assert_eq!(stage_shows(&mut s, stage, &[RED_AT]).1, vec![RED]);
+    }
+    s.transport(TransportAction::Panic);
+    let at = s.now();
+    run_to(&mut s, at + samples(0.5));
+    for stage in [stage_id(), stage_two()] {
+        let half = stage_shows(&mut s, stage, &[RED_AT]).1[0];
+        assert!((100..=160).contains(&half[0]) && half[1] < 10, "{half:?}");
+    }
+    run_to(&mut s, at + samples(1.1));
+    expect_state(&s, 1, CueState::Idle, "panicked");
+    expect_state(&s, 2, CueState::Idle, "panicked");
+    for (stage, display) in [(stage_id(), "V1"), (stage_two(), "V2")] {
+        assert_eq!(
+            stage_state(&mut s, stage),
+            Some(StageState::Hidden),
+            "{display}"
+        );
+        assert_eq!(display_shows(&mut s, display, &[RED_AT]).0, None);
+        assert!(panicked(&mut s, stage), "clients told");
+    }
+    // A cue on stage 1 puts its black back up for after it; stage 2 stays down.
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    assert_eq!(stage_state(&mut s, stage_id()), shown_on("V1"));
+    assert_eq!(display_shows(&mut s, "V1", &[RED_AT]), (None, vec![BLACK]));
+    assert!(!panicked(&mut s, stage_id()));
+    assert_eq!(stage_state(&mut s, stage_two()), Some(StageState::Hidden));
+}
+
+/// #674 flows: a stage's size changed while a cue plays on it → the picture follows at once
+/// (fitted to the new shape, drawn there on its display) without the cue stopping; one undo
+/// step puts it back. A size of 0 or past the limit is refused with the reason and the size
+/// stays.
+#[test]
+fn a_stage_size_changed_while_a_cue_plays_redraws_the_picture_at_that_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = two_stage_show(workspace(vec![still_cue(1, &png, None)]), [true, false]);
+    let size = |width, height| openlab_core::Command::SetStageProperty {
+        id: stage_id(),
+        property: openlab_core::StageProperty::Size { width, height },
+    };
+    let stage_size = |s: &OfflineShow| {
+        let st = &s.control().workspace().stages[0];
+        (st.width, st.height)
+    };
+    go(&mut s);
+    s.run(samples(0.2));
+    // The card fills the 16:9 stage on the 16:9 display: red near the display's left edge.
+    assert_eq!(display_shows(&mut s, "V1", &[EDGE_AT]).1, vec![RED]);
+    // Square: the stage is drawn in the display's middle, black bars either side.
+    assert!(matches!(edit(&mut s, size(1080, 1080)), Outcome::Ok(_)));
+    s.settle_stages();
+    assert_eq!(stage_size(&s), (1080, 1080));
+    let (frame, colours) = display_shows(&mut s, "V1", &[EDGE_AT, [0.3, 0.45]]);
+    assert_eq!(colours[0], BLACK, "a bar where the picture was");
+    assert_eq!(colours[1], RED, "the picture inside the square stage");
+    assert_eq!(
+        frame, None,
+        "the card's barcode is no longer across the display's top"
+    );
+    // On the square stage the card is fitted across it, black above and below.
+    assert_eq!(
+        stage_shows(&mut s, stage_id(), &[[0.25, 0.05], [0.25, 0.4]]).1,
+        vec![BLACK, RED],
+        "drawn on the square stage"
+    );
+    expect_state(&s, 1, CueState::Running, "the cue plays on");
+    // One undo step back.
+    assert!(matches!(step(&mut s, true), Outcome::Ok(_)));
+    s.settle_stages();
+    assert_eq!(stage_size(&s), (1920, 1080));
+    assert_eq!(display_shows(&mut s, "V1", &[EDGE_AT]).1, vec![RED]);
+    // Out of the limits: refused with the reason, the size kept.
+    for (w, h) in [(0, 1080), (1920, 16_385)] {
+        let why = refusal(edit(&mut s, size(w, h)));
+        assert!(why.contains("1 to 16384 pixels"), "{why}");
+        assert_eq!(stage_size(&s), (1920, 1080));
+    }
+    expect_state(&s, 1, CueState::Running, "the cue plays on");
 }
 
 /// The notices the doc's clients were sent since the last call, as (code, text).

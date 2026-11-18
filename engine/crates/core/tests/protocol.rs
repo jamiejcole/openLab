@@ -997,13 +997,22 @@ fn fixtures() -> Vec<(String, Sample)> {
                 height: 1080,
             }],
             video: Some(true),
-            stages: vec![StageMappingEntry {
-                stage: StageId(uuid::Uuid::from_u128(0x80)),
-                mapping: None,
-                state: Some(openlab_core::stage_link::StageState::DisplayMissing {
-                    display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
-                }),
-            }],
+            stages: vec![
+                StageMappingEntry {
+                    stage: StageId(uuid::Uuid::from_u128(0x80)),
+                    mapping: None,
+                    state: Some(openlab_core::stage_link::StageState::DisplayMissing {
+                        display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
+                    }),
+                    panicked: false,
+                },
+                StageMappingEntry {
+                    stage: StageId(uuid::Uuid::from_u128(0x81)),
+                    mapping: None,
+                    state: Some(openlab_core::stage_link::StageState::Hidden),
+                    panicked: true,
+                },
+            ],
         }),
     );
     add(
@@ -1589,16 +1598,19 @@ fn fixtures() -> Vec<(String, Sample)> {
                             state: Some(openlab_core::stage_link::StageState::Shown {
                                 display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
                             }),
+                            panicked: false,
                         },
                         StageMappingEntry {
                             stage: StageId(uuid::Uuid::from_u128(0x81)),
                             mapping: None,
                             state: Some(openlab_core::stage_link::StageState::NoDisplay),
+                            panicked: false,
                         },
                         StageMappingEntry {
                             stage: StageId(uuid::Uuid::from_u128(0x82)),
                             mapping: None,
                             state: None,
+                            panicked: false,
                         },
                     ],
                 }),

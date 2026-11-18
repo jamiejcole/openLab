@@ -992,6 +992,7 @@ dependencies = [
  "serde_json",
  "snap",
  "tempfile",
+ "tokio-tungstenite",
  "uuid",
 ]
 

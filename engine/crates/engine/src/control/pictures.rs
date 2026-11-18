@@ -583,9 +583,19 @@ impl Engine {
 
     /// Pictures whose stop is over at `now` are forgotten.
     pub(super) fn prune_pictures(&mut self, now: SampleTime) {
+        let before = self.pictures.live.len();
         self.pictures
             .live
             .retain(|_, l| l.ends.is_none_or(|end| end >= now));
+        // The clock past their ends, so the stage host drops them now: with no picture left up
+        // no more clocks go, and one held short of an end would keep its last frame drawn.
+        if self.pictures.live.len() < before {
+            self.picture(ToStage::Clock {
+                sample: now,
+                rate: self.rate.get(),
+            });
+            self.pictures.clock_sent = Some(now);
+        }
     }
 
     /// A doc closed: its pictures go.
@@ -614,6 +624,18 @@ impl Engine {
             sample: now,
             rate: self.rate.get(),
         });
+    }
+
+    /// The cue of one of `doc`'s pictures up (or stopping) on `stage`: the stage its load
+    /// put it on, whatever stage the cue has been aimed at since.
+    pub(super) fn cue_with_picture_on(&self, doc: DocId, stage: StageId) -> Option<CueId> {
+        self.pictures
+            .live
+            .values()
+            .find(|l| {
+                l.doc == doc && matches!(&l.load, ToStage::Load { stage: s, .. } if *s == stage)
+            })
+            .map(|l| l.cue)
     }
 
     /// Pictures up, every doc's (tests).
@@ -1805,6 +1827,7 @@ impl DocCx<'_> {
         };
         let late = plan.as_ref().map_or(late, |p| p.late);
         let plan_start = plan.as_ref().map(|p| p.into);
+        let mut first = false;
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
             l.now = Some(message.clone());
             l.motion = Some((Some(at), into));
@@ -1812,7 +1835,12 @@ impl DocCx<'_> {
             l.plan = plan;
             if l.first.is_none() {
                 l.first = Some(message.clone());
+                first = true;
             }
+        }
+        // A picture starting on a stage whose black a panic took down puts it back up.
+        if first {
+            self.eng.unrelease_stage(plays.stage);
         }
         self.eng.picture_clock(true);
         self.eng.picture(message);

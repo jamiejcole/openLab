@@ -67,6 +67,22 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertEqual(BackstopPlan.covers(workspaces: [(nil, o)], displays: displays), [:], "no model yet")
     }
 
+    /// A keep-black stage whose black a panic took down holds nothing until a cue plays on it again
+    /// (QLab 5 manual p. 227).
+    func testAStageAPanicTookDownIsNotHeldBlack() {
+        let m = model([("a", true)])
+        let up = outputs([("a", "V1", "shown")])
+        XCTAssertEqual(BackstopPlan.covers(workspaces: [(m, up)], displays: Self.virtual), ["V1": Self.v1Frame])
+        let down = VideoOutputs(
+            displays: [], video: true,
+            stages: [
+                StageMappingEntry(
+                    stage: "a", mapping: StageMapping(display: "V1", name: "V1", width: 1920, height: 1080),
+                    state: StageState(state: "hidden", display: nil, reason: nil), panicked: true)
+            ])
+        XCTAssertEqual(BackstopPlan.covers(workspaces: [(m, down)], displays: Self.virtual), [:])
+    }
+
     /// Two workspaces whose stages share a display hold one backstop there while either keeps black.
     func testTwoWorkspacesSharingADisplayHoldItBlackWhileEitherKeepsBlack() {
         let o = outputs([("a", "V1", "shown")])
@@ -330,5 +346,20 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertTrue(v1 === window && window.isVisible, "the other workspace still keeps it black")
         await keepBlack(second, b, false)
         await pushed { self.v1 == nil }
+    }
+
+    /// #642 flow: Panic takes every stage to black and closes its window: a keep-black stage's
+    /// backstop goes too, so its display shows what it shows with keep-black off.
+    func testAPanicTakesAKeepBlackStagesBackstopDown() async throws {
+        let (store, stage1, _) = try await start()
+        await keepBlack(store, stage1, true)
+        await pushed("the stage is up black") { self.state(store, stage1) == "shown" && self.v1 != nil }
+        let window = try XCTUnwrap(v1)
+        guard case .success = await store.panic() else { return XCTFail("panic") }
+        await pushed("the panic took the stage and its backstop down") {
+            self.state(store, stage1) == "hidden" && self.v1 == nil
+        }
+        XCTAssertFalse(window.isVisible)
+        XCTAssertEqual(store.videoOutputs.stages.first { $0.stage == stage1 }?.panicked, true)
     }
 }
