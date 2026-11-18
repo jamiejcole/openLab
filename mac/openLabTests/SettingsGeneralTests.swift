@@ -115,6 +115,29 @@ final class SettingsGeneralTests: XCTestCase {
         await assertEventually("the step is 5") { rig.store.model?.settings["auto_number_increment"]?.doubleValue == 5 }
     }
 
+    /// The flash never outlives the protection: with its own timer far off, the end of the protection
+    /// still takes both the border and the red behind the button away.
+    func testTheEndOfProtectionTakesTheBorderAndTheFlashAway() async throws {
+        let (rig, sc) = try await open()
+        let wc = WorkspaceWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in wc.window?.close() }
+        wc.onGo = { Task { _ = await rig.store.go(list: ModelID(H.list)) } }
+        sc.goIntervalField.stringValue = "1"
+        commit(sc, sc.goIntervalField)
+        await assertEventually { sc.model.minGoInterval == 1 }
+        let masthead = wc.masthead
+        masthead.flashDuration = 600
+        masthead.goButton.performClick(nil)
+        await assertEventually("the border shows") { masthead.goProtectionShown }
+        masthead.goButton.performClick(nil)
+        await assertEventually("the area flashed") { masthead.goFlashes == 1 }
+        XCTAssertEqual(masthead.goFlash.alphaValue, 1)
+        try await rig.advance(1.5)
+        await assertEventually("the protection ended") { !masthead.goProtectionShown }
+        XCTAssertEqual(masthead.goButton.layer?.borderWidth, 0)
+        XCTAssertEqual(masthead.goFlash.alphaValue, 0, "the flash went with it")
+    }
+
     // MARK: Autosave
 
     /// Checklist: application preferences → autosave interval: typed on the General page (the

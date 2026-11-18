@@ -133,6 +133,11 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// would be ignored.
     func setGoProtection(_ on: Bool) {
         goProtectionShown = on
+        // The flash belongs to the protection: it is gone when the protection is.
+        if !on {
+            flashEnd?.cancel()
+            goFlash.alphaValue = 0
+        }
         goButton.layer?.borderWidth = on ? 4 : 0
         goButton.layer?.borderColor = NSColor.systemRed.cgColor
     }
