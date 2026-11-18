@@ -722,6 +722,19 @@ fn say(text: &str) {
     let _ = writeln!(std::io::stderr().lock(), "openlab-engine: {text}");
 }
 
+/// OSC listens on the port this machine chose on the OSC settings page, else 53000.
+fn osc_config(config: &ControlConfig) -> OscConfig {
+    let mut osc = OscConfig::default();
+    if let Some(port) = config.machine.osc_port {
+        osc.port = port;
+    }
+    #[cfg(feature = "test-support")]
+    if config.virtual_device.is_some() {
+        osc.bind = std::net::Ipv4Addr::LOCALHOST.into();
+    }
+    osc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,17 +1116,4 @@ mod tests {
     fn a_clean_control_thread_joins_ok() {
         assert!(join_control(thread::spawn(|| {})).is_ok());
     }
-}
-
-/// OSC listens on the port this machine chose on the OSC settings page, else 53000.
-fn osc_config(config: &ControlConfig) -> OscConfig {
-    let mut osc = OscConfig::default();
-    if let Some(port) = config.machine.osc_port {
-        osc.port = port;
-    }
-    #[cfg(feature = "test-support")]
-    if config.virtual_device.is_some() {
-        osc.bind = std::net::Ipv4Addr::LOCALHOST.into();
-    }
-    osc
 }

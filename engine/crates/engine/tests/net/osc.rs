@@ -1303,7 +1303,7 @@ async fn changing_the_osc_port_moves_the_listeners_and_closes_the_old_ones() {
             seen.iter().filter(|m| is_input(m)).count() == 1
         })
         .await;
-    let mut t = TcpStream::connect((Ipv4Addr::LOCALHOST, new))
+    let t = TcpStream::connect((Ipv4Addr::LOCALHOST, new))
         .await
         .unwrap();
     t.set_nodelay(true).unwrap();

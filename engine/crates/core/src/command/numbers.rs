@@ -40,9 +40,10 @@ pub fn next_auto_number(ws: &Workspace, at: &Position) -> Result<String, Command
         });
     }
     let (before, after) = neighbours(ws, at);
+    let above_highest = highest.map_or(start, |h| start.max(h + increment));
     let next = match before {
-        Some(prev) => step_from(prev, after, increment, &used),
-        None => highest.map_or(start, |h| start.max(h + increment)),
+        Some(prev) => step_from(prev, after, increment, &used).unwrap_or(above_highest),
+        None => above_highest,
     };
     let text = format_number(next);
     if used.contains(text.as_str()) {
@@ -61,21 +62,18 @@ fn numeric(number: &str) -> Option<f64> {
         .filter(|value| value.is_finite() && (0.0..=NUMBERING_LIMIT).contains(value))
 }
 
-/// One `increment` above `prev`; half way to `after` when that is used or not below it. When
-/// neither is free the plain step comes back and the caller refuses it as used.
-fn step_from(prev: f64, after: Option<f64>, increment: f64, used: &HashSet<&str>) -> f64 {
+/// One `increment` above `prev`; half way to `after` when that is used or not below it. `None`
+/// when neither is free (the list is not in ascending order here, or the gap is used up): the
+/// caller numbers above the highest instead.
+fn step_from(prev: f64, after: Option<f64>, increment: f64, used: &HashSet<&str>) -> Option<f64> {
     let free = |value: f64| !used.contains(format_number(value).as_str());
     let step = prev + increment;
     if after.is_none_or(|a| step < a) && free(step) {
-        return step;
+        return Some(step);
     }
-    if let Some(a) = after {
-        let middle = (prev + a) / 2.0;
-        if middle > prev && middle < a && free(middle) {
-            return middle;
-        }
-    }
-    step
+    let a = after?;
+    let middle = (prev + a) / 2.0;
+    (middle > prev && middle < a && free(middle)).then_some(middle)
 }
 
 /// The numeric numbers of the nearest numbered cue before and after where a cue made at `at`

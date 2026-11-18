@@ -134,6 +134,8 @@ enum AX {
     static let settingsButton = "settings-button"
     static let settingsWindow = "settings-window"
     static let settingsTabs = "settings-tabs"
+    static let statusWindow = "status-window"
+    static let statusTabs = "status-tabs"
     static let preferencesBackupField = "preferences-backup-field"
     static let preferencesGeneralMessage = "preferences-general-message"
     static let launcherVersion = "launcher-version"

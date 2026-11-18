@@ -515,6 +515,27 @@ fn auto_number_new_cue_between_neighbours_takes_the_gap() {
     assert_clean(&ws);
 }
 
+/// A list whose numbers do not ascend (5 then 1) numbers a new cue between them above the highest
+/// number, as before; the cues added at the same place after it take the gap, and no add is refused.
+#[test]
+fn auto_number_in_a_list_that_does_not_ascend_numbers_above_the_highest() {
+    let mut ws = workspace(vec![
+        numbered(1, "5", CueKind::Memo),
+        numbered(2, "1", CueKind::Memo),
+    ]);
+    let add = |n: u128| Command::AddCue {
+        at: pos(None, 1),
+        cue: memo(n),
+        auto_number: true,
+    };
+    for n in 10..14 {
+        ws.apply(add(n)).unwrap();
+    }
+    let numbers: Vec<_> = (10..14).map(|n| number(&ws, n).unwrap()).collect();
+    assert_eq!(numbers, ["6", "5.5", "5.25", "5.125"]);
+    assert_clean(&ws);
+}
+
 /// With auto-numbering off a cue made with `auto_number` keeps the number it has (none for a
 /// new cue); paste and the clipboard never number.
 #[test]

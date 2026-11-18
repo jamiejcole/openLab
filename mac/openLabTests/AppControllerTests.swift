@@ -429,7 +429,7 @@ final class AppControllerTests: XCTestCase {
         editor.showWindow(nil)
         wc.missingFiles.showWindow(nil)
         await wc.showPreshowCheck().value
-        wc.logWindow.showWindow(nil)
+        await wc.showLog().value
         wc.footer.showStatusDetails()
         XCTAssertEqual(wc.footer.popover?.isShown, true)
         if sheet { wc.showNotice("a refusal") }
@@ -439,7 +439,7 @@ final class AppControllerTests: XCTestCase {
         released.settings = wc.existingSettingsWindow?.window
         released.patchEditor = editor.window
         released.missingFiles = wc.existingMissingFiles?.window
-        released.preshow = wc.preshowWindow.window
+        released.preshow = wc.existingStatusWindow?.window
         released.log = wc.existingLogWindow?.window
         released.sheet = wc.window?.attachedSheet
         released.popover = wc.footer.popover
@@ -574,7 +574,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "", "", ",", "", "", "w", "w", "s", "S"])
+                \.keyEquivalent), ["n", "o", "", "", "", "", "", "", "w", "w", "s", "S"])
     }
 
     // MARK: Front-window routing

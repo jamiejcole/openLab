@@ -81,9 +81,9 @@ final class FooterWarningsTests: XCTestCase {
 
         let before = wc.window?.firstResponder
         wc.footer.warningsButton.performClick(nil)
-        XCTAssertTrue(wc.isVisible(.sidebar))
-        XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 2)
-        XCTAssertFalse(wc.sidebar.warningsTable.isHiddenOrHasHiddenAncestor)
+        let status = try XCTUnwrap(wc.existingStatusWindow, "the click opens the status window")
+        XCTAssertTrue(status.window?.isVisible == true)
+        XCTAssertEqual(status.page, .warnings)
         XCTAssertTrue(wc.window?.firstResponder === before, "the click leaves the keys where they were")
         XCTAssertTrue(wc.footer.warningsButton.refusesFirstResponder)
     }
@@ -101,10 +101,10 @@ final class FooterWarningsTests: XCTestCase {
         await setMedia(door, "media/d.wav", in: rig, rows: 1)
         await assertEventually("one") { wc.footer.warningsButton.title == "1" }
         assertOnScreen(wc)
-        wc.setVisible(.sidebar, false)
+        wc.existingStatusWindow?.close()
         wc.footer.warningsButton.performClick(nil)
-        XCTAssertTrue(wc.isVisible(.sidebar))
-        XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 2)
+        XCTAssertTrue(wc.existingStatusWindow?.window?.isVisible == true)
+        XCTAssertEqual(wc.existingStatusWindow?.page, .warnings)
 
         await setMedia(radio, "media/d.wav", in: rig, rows: 0)
         await assertEventually("gone") { !self.shown(wc) }

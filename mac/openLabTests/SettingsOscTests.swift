@@ -108,11 +108,14 @@ final class SettingsOscTests: XCTestCase {
         return (rig, sc)
     }
 
-    /// Sends `/cue/1/name` over `client` until the engine's answer says `status` (the switch's change
+    /// Sends a query of cue 1 over `client` until the engine's answer says `status` (the switch's change
     /// reaches the OSC side after the model change), up to a bounded number of tries.
     private func waitForStatus(_ status: String, _ client: OscTcpClient, _ rig: Rig) async throws {
+        // Cue 1 exists in the Demo show; the property changes so no probe repeats the one before
+        // it (an identical message within 100 ms is dropped unanswered).
+        let properties = ["name", "notes", "flagged", "armed", "preWait", "postWait"]
         for n in 0..<200 {
-            client.send("/cue/\(n + 10)/name")
+            client.send("/cue/1/\(properties[n % properties.count])")
             if client.reply()?.contains("\"status\":\"\(status)\"") == true { return }
             try await rig.advance(0.01)
         }

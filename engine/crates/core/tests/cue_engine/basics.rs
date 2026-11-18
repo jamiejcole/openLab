@@ -551,10 +551,12 @@ fn protection(actions: &[Action]) -> Vec<bool> {
 fn go_protection_is_reported_from_the_accepted_go_until_its_time_passes() {
     let mut rig = double_go_rig();
     assert_eq!(protection(&rig.go(1000)), [true]);
-    assert!(
-        rig.engine.next_deadline() == Some(1500),
-        "the end is a deadline"
+    assert_eq!(
+        rig.engine.next_wake(),
+        Some(1500),
+        "the control loop wakes for the end"
     );
+    assert_eq!(rig.engine.next_deadline(), None, "no cue owns it");
     let ignored = rig.go(1200);
     assert!(double_go(&ignored));
     assert!(
@@ -573,7 +575,7 @@ fn go_protection_is_reported_from_the_accepted_go_until_its_time_passes() {
 fn a_zero_interval_reports_no_protection() {
     let mut rig = Rig::new(vec![memo(1), memo(2)]);
     assert!(protection(&rig.go(1000)).is_empty());
-    assert!(rig.engine.next_deadline().is_none());
+    assert!(rig.engine.next_wake().is_none());
 }
 
 // ----- playhead navigation (PB-05, CL-06) -----

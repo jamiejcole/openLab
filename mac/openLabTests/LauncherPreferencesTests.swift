@@ -69,7 +69,8 @@ final class LauncherPreferencesTests: XCTestCase {
         let engine = try await TestEngine.start()
         self.engine = engine
         let prefs = try await preferences(engine)
-        let start = try XCTUnwrap(await engineCount(engine))
+        let first = await engineCount(engine)
+        let start = try XCTUnwrap(first)
         XCTAssertEqual(prefs.backupField.stringValue, String(start))
         XCTAssertTrue(prefs.generalMessage.isHidden)
         await commit(prefs, "3")
