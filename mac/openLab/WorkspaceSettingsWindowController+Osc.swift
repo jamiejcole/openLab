@@ -276,7 +276,8 @@ extension WorkspaceSettingsWindowController {
         oscEnabledCheck.isEnabled = on != nil
         let listening = model.oscListening
         oscPortField.isEnabled = listening != nil
-        if !(window?.firstResponder as? NSTextView).map({ $0.delegate === oscPortField }).orFalse {
+        // A field being typed in keeps its text.
+        if !((window?.firstResponder as? NSTextView)?.delegate === oscPortField) {
             oscPortField.stringValue = listening.map { String($0.port) } ?? ""
         }
         switch listening {
@@ -295,9 +296,12 @@ extension WorkspaceSettingsWindowController {
             oscPortStatus.textColor = .systemRed
         }
         let addresses = model.addresses
-        oscAddressesLabel.stringValue =
-            addresses.isEmpty ? loc("settings.osc.noAddresses")
-            : String(format: loc("settings.osc.addresses"), addresses.joined(separator: ", "))
+        if addresses.isEmpty {
+            oscAddressesLabel.stringValue = loc("settings.osc.noAddresses")
+        } else {
+            oscAddressesLabel.stringValue = String(
+                format: loc("settings.osc.addresses"), addresses.joined(separator: ", "))
+        }
     }
 
     @objc private func oscEnabledClicked() {
@@ -318,8 +322,4 @@ extension WorkspaceSettingsWindowController {
             self?.render()
         }
     }
-}
-
-private extension Optional where Wrapped == Bool {
-    var orFalse: Bool { self ?? false }
 }

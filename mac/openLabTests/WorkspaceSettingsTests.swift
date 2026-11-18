@@ -1439,7 +1439,8 @@ final class WorkspaceSettingsTests: XCTestCase {
     func testTheFileMenusSettingsSubmenuOpensEachCategoryDirectly() async throws {
         let file = try XCTUnwrap(MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") })
         let submenu = try XCTUnwrap(file.items.first { $0.title == loc("menu.file.workspaceSettings") }?.submenu)
-        let window = try XCTUnwrap(submenu.items.first { $0.action == #selector(AppDelegate.showWorkspaceSettings(_:)) })
+        let window = try XCTUnwrap(
+            submenu.items.first { $0.action == #selector(AppDelegate.showWorkspaceSettings(_:)) })
         XCTAssertEqual(window.keyEquivalent, ",")
         let categories = submenu.items.filter { $0.submenu != nil }
         XCTAssertEqual(categories.map(\.title), SettingsCategory.allCases.map { loc($0.titleKey) })

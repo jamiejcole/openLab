@@ -107,7 +107,8 @@ enum MainMenu {
     /// pages, which open the window on that page.
     private static func workspaceSettingsItem() -> NSMenuItem {
         let submenu = NSMenu(title: localized("menu.file.workspaceSettings"))
-        submenu.addItem(item("menu.file.workspaceSettings.window", #selector(AppDelegate.showWorkspaceSettings(_:)), ","))
+        submenu.addItem(
+            item("menu.file.workspaceSettings.window", #selector(AppDelegate.showWorkspaceSettings(_:)), ","))
         submenu.addItem(.separator())
         func page(_ page: SettingsPage) -> NSMenuItem {
             let entry = NSMenuItem(
@@ -119,7 +120,7 @@ enum MainMenu {
         for category in SettingsCategory.allCases {
             let entry = NSMenuItem(title: localized(category.titleKey), action: nil, keyEquivalent: "")
             let pages = NSMenu(title: entry.title)
-            category.pages.forEach { pages.addItem(page($0)) }
+            for p in category.pages { pages.addItem(page(p)) }
             entry.submenu = pages
             submenu.addItem(entry)
         }

@@ -12,6 +12,10 @@ final class SettingsGeneralTests: XCTestCase {
     typealias H = CueListHarness
     private let intro = H.intro
     private let fade = H.fade
+    private func commit(_ sc: WorkspaceSettingsWindowController, _ field: NSTextField) {
+        sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+    }
+
     var engine: TestEngine!
 
     override func setUp() async throws { engine = try await TestEngine.start() }
@@ -107,7 +111,7 @@ final class SettingsGeneralTests: XCTestCase {
         XCTAssertNotEqual(try XCTUnwrap(numbers(rig)[pasted]), "2.5", "a paste is not auto-numbered")
         // The step is typed on the page and the engine keeps it.
         sc.autoNumberField.stringValue = "5"
-        sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: sc.autoNumberField))
+        commit(sc, sc.autoNumberField)
         await assertEventually("the step is 5") { rig.store.model?.settings["auto_number_increment"]?.doubleValue == 5 }
     }
 
@@ -121,10 +125,12 @@ final class SettingsGeneralTests: XCTestCase {
         XCTAssertEqual(sc.autosaveField.stringValue, "30")
         func type(_ text: String) {
             sc.autosaveField.stringValue = text
-            sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: sc.autosaveField))
+            commit(sc, sc.autosaveField)
         }
         type("90")
-        await assertEventually("the engine kept 90") { rig.store.model?.settings["autosave_interval"]?.doubleValue == 90 }
+        await assertEventually("the engine kept 90") {
+            rig.store.model?.settings["autosave_interval"]?.doubleValue == 90
+        }
         type("2")
         await assertEventually("the refusal shows") {
             sc.messageLabel.stringValue == String(format: loc("settings.general.outOfRange"), 5.0, 3600.0)
@@ -177,7 +183,7 @@ final class SettingsGeneralTests: XCTestCase {
         wc.onGo = { Task { _ = await rig.store.go(list: ModelID(H.list)) } }
         let head: () -> ModelID? = { rig.store.playheads[ModelID(H.list)] }
         sc.goIntervalField.stringValue = "1"
-        sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: sc.goIntervalField))
+        commit(sc, sc.goIntervalField)
         await assertEventually("the interval is stored") { sc.model.minGoInterval == 1 }
         let masthead = wc.masthead
         XCTAssertFalse(masthead.goProtectionShown)

@@ -84,7 +84,9 @@ final class LauncherPreferencesTests: XCTestCase {
         XCTAssertFalse(prefs.generalMessage.isHidden)
         XCTAssertEqual(
             prefs.generalMessage.stringValue,
-            String(format: loc("prefs.general.backups.range"), 0, Int(AudioPreferencesModel.backupKeepRange.upperBound)))
+            String(
+                format: loc("prefs.general.backups.range"), 0,
+                Int(AudioPreferencesModel.backupKeepRange.upperBound)))
         XCTAssertEqual(prefs.backupField.stringValue, "0", "the engine's number is shown again")
         let kept = await engineCount(engine)
         XCTAssertEqual(kept, 0)

@@ -19,7 +19,9 @@ final class OscTcpClient {
         addr.sin_port = port.bigEndian
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
         let result = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
         }
         guard result == 0 else {
             close(fd)
@@ -69,7 +71,9 @@ func freeOscPort() -> UInt16 {
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
         let bound = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(tcp, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(tcp, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
         }
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
         _ = withUnsafeMutablePointer(to: &addr) {
@@ -89,6 +93,10 @@ final class SettingsOscTests: XCTestCase {
     typealias H = CueListHarness
     var engine: TestEngine!
     var port: UInt16 = 0
+
+    private func commit(_ sc: WorkspaceSettingsWindowController, _ field: NSTextField) {
+        sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+    }
 
     override func setUp() async throws {
         port = freeOscPort()
@@ -174,7 +182,7 @@ final class SettingsOscTests: XCTestCase {
         let (_, sc) = try await open()
         let new = freeOscPort()
         sc.oscPortField.stringValue = String(new)
-        sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: sc.oscPortField))
+        commit(sc, sc.oscPortField)
         await assertEventually("the page says the new port is open") {
             sc.oscPortStatus.stringValue == String(format: loc("settings.osc.open"), Int(new))
         }
@@ -196,7 +204,9 @@ final class SettingsOscTests: XCTestCase {
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
         _ = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(tcp, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(tcp, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
         }
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
         _ = withUnsafeMutablePointer(to: &addr) {
@@ -205,7 +215,7 @@ final class SettingsOscTests: XCTestCase {
         listen(tcp, 1)
         let busy = UInt16(bigEndian: addr.sin_port)
         sc.oscPortField.stringValue = String(busy)
-        sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: sc.oscPortField))
+        commit(sc, sc.oscPortField)
         await assertEventually("the page says it could not be opened") {
             sc.oscPortStatus.stringValue.contains("could not be opened")
         }
@@ -217,7 +227,7 @@ final class SettingsOscTests: XCTestCase {
         XCTAssertNotNil(client.reply(), "and answers")
         // A port that is not a number is refused without asking the engine.
         sc.oscPortField.stringValue = "http"
-        sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: sc.oscPortField))
+        commit(sc, sc.oscPortField)
         await assertEventually { sc.messageLabel.stringValue == loc("settings.osc.badPort") }
         XCTAssertEqual(sc.oscPortField.stringValue, String(port))
     }

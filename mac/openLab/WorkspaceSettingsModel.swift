@@ -238,7 +238,8 @@ final class WorkspaceSettingsModel: ObservableObject {
             devices: devices, patches: patches, loaded: loaded, message: message, panic: panicDuration,
             goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches, keys: keyMap.bound,
             keyRefusal: keyRefusal, oscListening: oscListening, addresses: addresses, newCuesAutoLoad: newCuesAutoLoad,
-            switches: Dictionary(uniqueKeysWithValues: WorkspaceSwitch.allCases.compactMap { item in isOn(item).map { (item, $0) } }),
+            switches: Dictionary(
+                uniqueKeysWithValues: WorkspaceSwitch.allCases.compactMap { item in isOn(item).map { (item, $0) } }),
             autoNumberStep: autoNumberStep, autosaveInterval: autosaveInterval)
     }
 

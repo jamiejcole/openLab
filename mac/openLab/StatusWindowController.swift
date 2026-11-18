@@ -108,7 +108,10 @@ final class StatusWindowController: NSWindowController {
             label.font = .systemFont(ofSize: 13, weight: .semibold)
             return label
         }
-        for (field, id) in [(nameValue, "status-info-name"), (idValue, "status-info-id"), (fileValue, "status-info-file")] {
+        let fields = [
+            (nameValue, "status-info-name"), (idValue, "status-info-id"), (fileValue, "status-info-file"),
+        ]
+        for (field, id) in fields {
             field.setAX(id)
             field.isSelectable = true
             field.lineBreakMode = .byTruncatingMiddle
