@@ -6330,7 +6330,11 @@ fn device_video_show(
         .iter()
         .map(|(id, name, rate)| show::device::listed_at(id, name, 2, *rate))
         .collect();
-    show::device::DeviceShow::new(ws, listed, c)
+    let mut s = show::device::DeviceShow::new(ws, listed, c);
+    // The stage host up and told the stage before anything is probed (a cold binary on a
+    // loaded machine starts it slowly).
+    s.wait_until(|c| c.stage_host_pid().is_some() && c.stages_settled());
+    s
 }
 
 /// Flow 10: with Video cue A (sound on device 1), B (sound on device 2) and a silent C all
@@ -6690,6 +6694,11 @@ fn picture_and_sound_stay_within_one_frame_on_a_second_device_100_ppm_off() {
             &format!("{t} s"),
         );
     }
+    // The disk kept up with the fast device: the sound never fell behind it.
+    for name in ["Fake 1", "Fake 2"] {
+        let missed = s.control().output_mixer(name).unwrap().underrun_frames();
+        assert_eq!(missed, 0, "{name} underran");
+    }
     // The device did run fast: 100 ppm of ten minutes is 60 ms.
     let ran = (local(&s) - local0) as f64 - (s.control().rendered() - master0) as f64;
     let ran = ran / f64::from(RATE);
@@ -6739,6 +6748,70 @@ fn a_video_cue_on_a_second_device_back_from_a_loss_starts_in_step() {
         }
         device_in_step(&mut s, "Fake 2", "fake:2", 25.0, &format!("{t} s"));
     }
+}
+
+/// A Video cue whose picture has followed its fast second device's clock (30 ms ahead of the
+/// master after thirty seconds at 1000 ppm) and whose patch is then moved to the primary gives
+/// all of that back at once: its sound is moved there at the master clock's place, and the
+/// picture is in step with it there from the move on, not 30 ms ahead.
+#[test]
+fn a_picture_gives_back_its_followed_drift_when_its_sound_moves_to_the_primary() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (25 * 40, 25), "pcm:2:8000");
+    let mut ws: Workspace = workspace(vec![sounding_cue(1, &movie)]);
+    ws.patches[0].name = "Main".into();
+    let two = [("fake:1", "Fake 1", RATE), ("fake:2", "Fake 2", RATE)];
+    let mut s = device_video_show(ws, &two, &[(patch_id(), "Fake 2")]);
+    s.wait_output("Fake 2");
+    s.fake.set_drift("fake:2", 1_000);
+    s.transport(TransportAction::Start { cue: id(1) });
+    let at = s.control().rendered();
+    let until = |s: &mut show::device::DeviceShow, t: f64| {
+        while s.control().rendered() < at + samples(t) {
+            s.step();
+        }
+    };
+    until(&mut s, 30.5);
+    device_in_step(
+        &mut s,
+        "Fake 2",
+        "fake:2",
+        25.0,
+        "30.5 s, on the fast device",
+    );
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch: patch_id(),
+            mapping: Some(openlab_core::PatchMapping {
+                device: "Fake 1".into(),
+                channels: vec![0, 1],
+                system: false,
+            }),
+        },
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    for t in [31.5, 33.5, 36.5] {
+        until(&mut s, t);
+        device_in_step(
+            &mut s,
+            "Fake 1",
+            "fake:1",
+            25.0,
+            &format!("{t} s, on the primary"),
+        );
+    }
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
 }
 
 /// The waveform of a Video cue with sound is that of the audio track it plays, over the

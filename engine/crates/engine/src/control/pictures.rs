@@ -182,6 +182,28 @@ impl Live {
 }
 
 impl RunPlan {
+    /// Moves the plan `frames` later from sample `at` (earlier when negative) and returns where
+    /// it stands then, in the table. `at` may come before the sample the plan was last moved on
+    /// (an underrun ended in the block after a step dated a lookahead ahead): it is counted
+    /// back from there, so the picture never runs on by the difference.
+    fn shift(&mut self, at: SampleTime, frames: i64) -> SampleTime {
+        let since = if at >= self.at {
+            i64::try_from(at - self.at).unwrap_or(i64::MAX)
+        } else {
+            i64::try_from(self.at - at).map_or(i64::MIN, |back| -back)
+        };
+        // Where the plan stands at `at`, less what the sound missed.
+        let into = less_late(plus_late(self.into, since), frames);
+        self.at = at;
+        self.into = into;
+        self.late = self.late.saturating_add(frames);
+        // A devamp already carried out leaves its loop that much later.
+        self.devamp = self
+            .devamp
+            .map(|(stop, leaves)| (stop, plus_late(leaves, frames)));
+        into
+    }
+
     /// The run's plan with no devamp pending, `elapsed` samples into the table: a devamp whose
     /// loop the picture has left by then stays cut (taken at the boundary, as an Audio voice
     /// takes its own); one it has not reached is dropped.
@@ -2060,15 +2082,7 @@ impl DocCx<'_> {
             return;
         }
         let fades = plan.fades;
-        // Where the plan stands at `at`, less what the sound missed.
-        let into = less_late(plan.into.saturating_add(at.saturating_sub(plan.at)), frames);
-        plan.at = at;
-        plan.into = into;
-        plan.late = plan.late.saturating_add(frames);
-        // A devamp already carried out leaves its loop that much later.
-        plan.devamp = plan
-            .devamp
-            .map(|(stop, leaves)| (stop, plus_late(leaves, frames)));
+        let into = plan.shift(at, frames);
         let own = seconds(into, rate).min(openlab_core::MAX_TIME);
         let message = ToStage::Play {
             picture: id,
@@ -2098,7 +2112,8 @@ impl DocCx<'_> {
     /// clock counts as that device's clock drifts from the master's, so once the drift its
     /// picture has not followed reaches [`DRIFT_STEP_US`] the picture is put on (or back) by it
     /// from `now`, as for a sound the disk made late. A picture whose sound moved to another
-    /// device since follows that one, giving back what it followed of the first.
+    /// device since follows that one, giving back all it followed of the first in one move. Dated
+    /// `now` (a lookahead ahead): an underrun reported in the block after is counted back from it.
     pub(super) fn follow_sound_clocks(&mut self, now: SampleTime, fx: &mut Effects) {
         let step = (u64::from(self.eng.rate.get()) * DRIFT_STEP_US / 1_000_000).max(1);
         let doc = self.doc.id;
@@ -2303,6 +2318,38 @@ mod tests {
             frames,
             plays,
         }
+    }
+
+    fn plan_at(at: SampleTime, into: SampleTime) -> RunPlan {
+        RunPlan {
+            top: Vec::new(),
+            table: Vec::new(),
+            at,
+            into,
+            late: 0,
+            followed: 0,
+            passes: Vec::new(),
+            fades: PictureFades::NONE,
+            devamp: None,
+        }
+    }
+
+    /// A move of the plan dated before the sample it was last moved on (an underrun ending in
+    /// the block after a drift step dated a lookahead ahead) is counted back from there: the
+    /// plan stands where it was at that sample less what the sound missed, never on by the
+    /// difference. Moving it the other way (a sound early) puts it on.
+    #[test]
+    fn a_shift_dated_before_the_last_one_counts_back_from_it() {
+        // Moved on sample 1 000, 500 into the table (a drift step dated `now`).
+        let mut plan = plan_at(1_000, 500);
+        // The sound missed 10 frames, reported on sample 936 (rendered, a block before).
+        assert_eq!(plan.shift(936, 10), 426);
+        assert_eq!((plan.at, plan.late), (936, 10));
+        // From there on as the clock goes; a sound 4 frames early puts it on by 4.
+        assert_eq!(plan.shift(1_036, -4), 530);
+        assert_eq!((plan.at, plan.late), (1_036, 6));
+        // Never before the table's top.
+        assert_eq!(plan.shift(0, 0), 0);
     }
 
     /// A seek's file time is counted through the plan: into a pass, the first play of a pass that

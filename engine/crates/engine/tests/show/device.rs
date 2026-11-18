@@ -255,6 +255,13 @@ impl Fake {
         }
     }
 
+    /// The most parts per million any open device's clock runs fast (0: none does).
+    fn fastest_drift(&self) -> u64 {
+        let s = self.state.lock().unwrap();
+        let fastest = s.live.iter().map(|l| l.drift.0).max().unwrap_or(0);
+        u64::try_from(fastest).unwrap_or(0)
+    }
+
     /// Streams opened from now on report this sample rate.
     pub fn report_rate(&self, rate: u32) {
         self.state.lock().unwrap().reported_rate = Some(rate);
@@ -775,7 +782,14 @@ impl DeviceShow {
 
     fn settle_streams(&mut self, frames: u64) {
         let end = self.rendered() + frames;
+        // A device whose clock runs fast plays more of its streams than the master clock counts:
+        // as much more is waited for (on every stream, as the test does not say which is whose).
+        let ppm = self.fake.fastest_drift();
         for (handle, needed) in self.control.stream_needs(end) {
+            let needed = match ppm {
+                0 => needed,
+                ppm => needed + needed * ppm / 1_000_000 + frames + 1,
+            };
             // A devamp cut a voice published is seen by its disk worker on its next poll, in
             // real time; a render faster than that must wait for it, as the offline driver does.
             assert!(
@@ -882,19 +896,25 @@ impl DeviceShow {
         let (tx, mut rx) = reply_channel();
         self.pump_inbox();
         let _ = self.control.handle(Inbox::Client { message, reply: tx });
+        self.wait_until(done);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// Handles answers and ticks (no callback, so sample time stands) until `done` holds: for
+    /// what another thread does, such as the stage host starting.
+    pub fn wait_until(&mut self, done: impl Fn(&Control) -> bool) {
         let deadline = std::time::Instant::now() + PICTURE_OPEN_WAIT;
         loop {
             self.pump_inbox();
             self.control.tick();
             if done(&self.control) {
-                break;
+                return;
             }
-            assert!(std::time::Instant::now() < deadline, "no answer came");
+            assert!(std::time::Instant::now() < deadline, "it never happened");
             if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
                 let _ = self.control.handle(msg);
             }
         }
-        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     /// A message for doc `doc`; the replies.
