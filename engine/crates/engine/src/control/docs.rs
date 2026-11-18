@@ -460,6 +460,9 @@ struct Moved {
     /// The copy as written, its media references re-spelled for the new folder (`None`: none
     /// was, or the re-spelling was refused and the copy was written as it was).
     workspace: Option<Workspace>,
+    /// A second copy of `workspace`, for the snapshot every client is sent once it is taken up
+    /// (cloning 2,000 cues takes the control thread a third of a millisecond).
+    snapshot_workspace: Option<Workspace>,
     /// Some re-spelled reference was relative (older history entries then name wrong paths).
     respelled: bool,
     /// The re-spelling failed part way (logged once the save is answered).
@@ -1339,6 +1342,7 @@ fn prepare_move(copy: &mut Workspace, old_dir: Option<&Path>, new_dir: &Path) ->
     indexed.prepare();
     Moved {
         workspace: rebased.then(|| copy.clone()),
+        snapshot_workspace: rebased.then(|| copy.clone()),
         respelled: rebased && respelled,
         failure,
         indexed,
@@ -1516,8 +1520,21 @@ impl DocCx<'_> {
     /// Sends this doc's snapshot to its clients again (its model changed in a way no
     /// `model_changed` describes, or the first broadcast did not fit).
     pub(super) fn resend_snapshot(&mut self) {
+        self.resend_snapshot_with(None);
+    }
+
+    /// [`Self::resend_snapshot`] with a copy of the workspace made elsewhere, which is used only
+    /// if the model has not been edited since `at` (its edit count when the copy was made).
+    fn resend_snapshot_with(&mut self, prebuilt: Option<(u64, Workspace)>) {
         self.doc.last_loaded.clear();
-        let snapshot = Box::new(self.doc.snapshot());
+        let (workspace, spare) = match prebuilt {
+            Some((at, ws)) if at == self.doc.model.edits() => (Some(ws), None),
+            other => (None, other.map(|(_, ws)| ws)),
+        };
+        if let Some(ws) = spare {
+            self.eng.docs.discard(Box::new(ws));
+        }
+        let snapshot = Box::new(self.doc.snapshot_with(workspace));
         self.doc.file.resend_snapshot = !self
             .eng
             .out
@@ -1740,6 +1757,7 @@ impl DocCx<'_> {
     fn take_up_move(&mut self, moved: Moved, old_dir: Option<&Path>, clean_before: bool) {
         let Moved {
             workspace,
+            snapshot_workspace,
             respelled,
             indexed,
             ..
@@ -1755,9 +1773,19 @@ impl DocCx<'_> {
             drop(edit);
             self.eng.docs.discard(Box::new(old));
         }
+        // The snapshot's copy is the same workspace, show mode included.
+        let prebuilt = snapshot_workspace.map(|mut ws| {
+            ws.show_mode = self.doc.model.ws().show_mode;
+            (self.doc.model.edits(), ws)
+        });
         let gone = self.doc.media.reset_indexed(self.show_dir(), indexed);
         self.eng.docs.discard(gone);
-        self.after_move(changed, respelled || old_dir.is_some(), clean_before);
+        self.after_move(
+            changed,
+            respelled || old_dir.is_some(),
+            clean_before,
+            prebuilt,
+        );
     }
 
     /// [`Self::moved_folder`] worked out on the control thread from the doc as it is now
@@ -1787,13 +1815,19 @@ impl DocCx<'_> {
         }
         let gone = self.doc.media.reset(self.show_dir(), self.doc.model.ws());
         self.eng.docs.discard(gone);
-        self.after_move(changed, respelled || old_dir.is_some(), clean_before);
+        self.after_move(changed, respelled || old_dir.is_some(), clean_before, None);
     }
 
     /// The rest of [`Self::moved_folder`] once the workspace and its catalog have moved:
     /// `changed`, references were re-spelled; `clear_history`, older history entries may then
     /// name wrong files.
-    fn after_move(&mut self, changed: bool, clear_history: bool, clean_before: bool) {
+    fn after_move(
+        &mut self,
+        changed: bool,
+        clear_history: bool,
+        clean_before: bool,
+        prebuilt: Option<(u64, Workspace)>,
+    ) {
         self.doc.waveforms.reset();
         self.eng.waveform_reader.forget(self.doc.id);
         if changed {
@@ -1816,7 +1850,9 @@ impl DocCx<'_> {
             self.feed(input, now);
         }
         if changed {
-            self.resend_snapshot();
+            self.resend_snapshot_with(prebuilt);
+        } else if let Some((_, ws)) = prebuilt {
+            self.eng.docs.discard(Box::new(ws));
         }
     }
 

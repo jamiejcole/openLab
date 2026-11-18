@@ -1629,6 +1629,43 @@ fn a_cue_added_during_a_save_as_elsewhere_is_kept_and_follows_the_move() {
     assert_eq!(r.s.stalls(), 0);
 }
 
+/// The snapshot every client is sent after a Save As into another folder holds the workspace as
+/// the doc has it: the media references re-spelled for the new folder, Show Mode as set, and
+/// the edit made while the copy was written when the move was worked out again.
+#[test]
+fn the_snapshot_after_a_save_as_elsewhere_is_the_docs_workspace() {
+    for rename_between in [false, true] {
+        let (a, _b, mut r, b_show) = two_relative_cues();
+        let doc = r.s.control().doc_ids()[0];
+        set_show_mode(&mut r, true);
+        r.s.take_outbound();
+        let mut replies = start_save_as(&mut r.s, &b_show);
+        if rename_between {
+            rename(&mut r.s, 1, "renamed during the save");
+        }
+        r.s.settle_docs();
+        let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+        ok_result(&answers);
+        r.s.settle_media();
+        let sent = r.s.take_outbound();
+        let snap = sent
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                ServerMessage::Snapshot { snapshot } => Some(snapshot),
+                _ => None,
+            })
+            .expect("a snapshot after the move");
+        let view = r.s.control().doc(doc).unwrap();
+        assert_eq!(view.moves_taken_up(), u64::from(!rename_between));
+        assert_eq!(snap.workspace, *view.workspace(), "rename {rename_between}");
+        assert_eq!(snap.document.path.as_deref(), b_show.to_str());
+        assert!(snap.document.show_mode);
+        let file = a.path().join("sfx").join("hit.wav");
+        assert_eq!(Path::new(&media_of(&snap.workspace, 2)), file);
+    }
+}
+
 /// Two Saves As into two other folders asked one after the other, before either is answered:
 /// the first is taken up as the writer thread prepared it; the second was prepared from the doc
 /// in its first folder, so it is worked out again from the doc as the first left it. The
