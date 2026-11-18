@@ -192,9 +192,7 @@ fn settle_does_not_wait_for_a_job_a_worker_dropped_for_its_newer_copy() {
     let (mut cat, rx) = catalog(0);
     // The newer ticket was taken first, as two workers may: the older job is dropped.
     let older = cat.next_ticket + 1;
-    crate::lock(&cat.pool.gate)
-        .claimed
-        .insert((cat.pool.doc, true, key.clone()), older);
+    crate::lock(&cat.pool.gate).claim_for_test(cat.pool.doc, true, key.clone(), older);
     cat.request(key.clone());
     cat.request(key.clone());
     settle(&mut cat, &rx);
@@ -262,7 +260,7 @@ fn the_watch_follows_the_files_the_catalog_knows() {
     assert_eq!(changes.first(), Some(&KeyChange::Reset));
     watched.clear();
     for c in changes.into_iter().skip(1) {
-        let KeyChange::Watch { key, id, path } = c else {
+        let KeyChange::Watch { key, id, path, .. } = c else {
             panic!("{c:?}")
         };
         assert_eq!(path, PathBuf::from(&key));
@@ -311,7 +309,10 @@ fn an_index_resolved_elsewhere_is_resolved_against_the_catalogs_folder() {
             ProbeClock::system(),
         )
         .unwrap();
-        cat.sync_indexed(index_workspace(&ws, Some(against)));
+        // Prepared, as for a doc opening: against another folder it is not taken.
+        let mut indexed = index_workspace(&ws, Some(against));
+        indexed.prepare();
+        drop(cat.sync_indexed(indexed));
         let watched: Vec<PathBuf> = cat
             .take_key_changes()
             .into_iter()
@@ -350,7 +351,7 @@ fn a_doc_opening_counts_each_files_cues_and_a_later_sync_follows_them() {
         cue(924, "/m/b.wav", false),
     ];
     let (mut opened, _opened_rx) = catalog(0);
-    opened.sync_indexed(index_workspace(&ws, None));
+    drop(opened.sync_indexed(index_workspace(&ws, None)));
     let counts = |cat: &MediaCatalog, key: &str| {
         cat.entries
             .get(key)
@@ -374,7 +375,7 @@ fn a_doc_opening_counts_each_files_cues_and_a_later_sync_follows_them() {
         cue(923, "/m/b.wav", false),
         cue(925, "/m/c.wav", false),
     ];
-    opened.sync_indexed(index_workspace(&ws, None));
+    drop(opened.sync_indexed(index_workspace(&ws, None)));
     assert_eq!(counts(&opened, "/m/b.wav"), Some((2, 0, false)));
     assert_eq!(counts(&opened, "/m/a.wav"), None);
     assert_eq!(counts(&opened, "/m/c.wav"), Some((1, 0, false)));
@@ -391,6 +392,74 @@ fn a_doc_opening_counts_each_files_cues_and_a_later_sync_follows_them() {
             .any(|c| matches!(c, KeyChange::Watch { key, .. } if key == "/m/c.wav")),
         "{changes:?}"
     );
+}
+
+/// A doc opening takes the entries prepared off the control thread: the catalog, the probes
+/// sent (in workspace order), the watch's key changes and the references with no place on disk
+/// are what a sync works out on the control thread; a catalog that is not fresh, or reads its
+/// files against another folder, works them out as a sync does.
+#[test]
+fn a_prepared_index_gives_the_catalog_a_sync_gives() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write_wav(dir.path(), "a.wav");
+    let b = write_wav(dir.path(), "b.wav");
+    let (mut ws, template) = template();
+    let cue = |n: u128, file: &str, preload: bool| {
+        let mut c = template.clone();
+        c.id = CueId(uuid::Uuid::from_u128(n));
+        c.number = None;
+        set_media(&mut c, file, preload);
+        c
+    };
+    ws.cue_lists[0].cues = vec![
+        cue(931, &b, false),
+        cue(932, &a, true),
+        cue(933, "relative.wav", false),
+        cue(934, &b, true),
+    ];
+    let state = |cat: &MediaCatalog| {
+        let mut probes: Vec<_> = cat
+            .entries
+            .iter()
+            .map(|(k, e)| {
+                let failed = matches!(e.probe, Probe::Failed);
+                (k.clone(), e.asking, failed, e.watch, e.picture)
+            })
+            .collect();
+        probes.sort();
+        (view(cat), probes, cat.next_ticket)
+    };
+    let (mut plain, plain_rx) = catalog(0);
+    drop(plain.sync_indexed(index_workspace(&ws, None)));
+    let (mut opened, opened_rx) = catalog(0);
+    let mut indexed = index_workspace(&ws, None);
+    indexed.prepare();
+    drop(opened.sync_indexed(indexed));
+    assert_eq!(state(&opened), state(&plain));
+    assert_eq!(opened.take_key_changes(), plain.take_key_changes());
+    assert_eq!(opened.take_unresolved(), plain.take_unresolved());
+    // The same jobs, in the same order: the answers come back for the same tickets.
+    let tickets = |rx: &Receiver<Inbox>| {
+        let mut got: Vec<(String, u64)> = (0..2)
+            .map(|_| match wait_for(rx, "two probes") {
+                ProbeAnswer::Probed { key, ticket, .. } => (key, ticket),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        got.sort();
+        got
+    };
+    let answered = tickets(&opened_rx);
+    assert_eq!(answered, tickets(&plain_rx));
+    assert_eq!(answered, vec![(a.clone(), 2), (b.clone(), 1)]);
+
+    // Not fresh any more: a prepared index is followed as a sync follows it.
+    ws.cue_lists[0].cues.remove(0);
+    let mut indexed = index_workspace(&ws, None);
+    indexed.prepare();
+    drop(opened.sync_indexed(indexed));
+    drop(plain.sync_indexed(index_workspace(&ws, None)));
+    assert_eq!(state(&opened), state(&plain));
 }
 
 #[test]

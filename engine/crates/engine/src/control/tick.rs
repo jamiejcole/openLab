@@ -61,6 +61,11 @@ impl Control {
         self.health();
         let paths = self.docs.iter().map(|d| d.show_path.as_deref());
         self.eng.observe_tick(paths);
+        // What the watch share let go of this wake is freed off the control thread.
+        if let Some(gone) = self.eng.watch.take_gone() {
+            self.eng.docs.discard(gone);
+        }
+        self.eng.watch.end_wake();
         self.eng.outputs.pump();
     }
 
@@ -99,6 +104,8 @@ impl Control {
     /// Each catalog's key changes to the shared watch, then the watch's batches to the docs
     /// that watch their files, its watchdog, log entries and notices.
     fn watch_tick(&mut self) {
+        // What a doc opening or closing left waiting, within this wake's share.
+        self.eng.watch.pump();
         self.follow_key_changes();
         for batch in std::mem::take(&mut self.eng.watch_batches) {
             let events = self.eng.watch.accept(batch);

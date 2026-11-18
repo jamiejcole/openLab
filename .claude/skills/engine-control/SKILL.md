@@ -166,11 +166,12 @@ Numbers are asserted in `engine/crates/engine/tests/perf.rs` (a 2,110-cue show b
 | Idle tick | < 1% of a core at one wake per 5 ms |
 | 4x the cues | < 12x the time (linear is 4x, quadratic 16x) |
 | Media watch with 2,000 files | < 1% of a core |
-| Second 2,000-cue doc open | idle tick <= 3x one doc, edits <= 1.5x + 0.5 ms; install, the wake after, and close each under half an audio block |
+| Second 2,000-cue doc open | idle tick <= 3x one doc, edits <= 1.5x + 0.5 ms; install, close and each wake after either under half an audio block |
 | 64 stereo fading cues, 512-frame blocks | >= 10x real time; two docs <= 1.25x slower than one |
 
 - Bookkeeping follows the edit's footprint, not the show (cue index position maps, problem facts, catalog key set, `PlanChecks` examining only touched cues, `model_changes` reading through the index). Counters pin it (`whole_show_passes`, `examined`, `walks`, `plan_builds`); do not add a per-edit or per-probe-answer pass over every cue. Priming finds cues through the cue index; its one per-pass walk is a flag test for triggers.
-- Install/close stay under half a block by doing work off the control thread (paths resolved and docs dropped on the document worker).
+- Install/close and the wakes after them stay under half a block by doing work off the control thread or spreading it: the document worker resolves paths and builds the catalog's entries and probe jobs (`Indexed::prepare`; install only sends the jobs), closed docs, their watch keys and probe claims are dropped on it.
+  The watch share takes a doc's keys up at once (hashed on the worker) and paces only telling the watch thread of new files and letting go of a closed doc's keys, `CHANGES_PER_WAKE` a wake (skill `media-files`), and a patch reported mapped recomputes no cue (skill `cue-engine`).
 
 ## Pre-show check (engine half)
 `preshow_check` (`control/preshow.rs`) is built on the control thread from state it holds, no I/O: `CueEngine::broken_cues()` (folds in probes, watch, patch availability), patch resolutions, the workspace's cues, and the `warnings` list (refreshed if stale). Media is as fresh as the last probe and watch event; never re-read at request time.

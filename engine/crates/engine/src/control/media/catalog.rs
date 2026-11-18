@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::lock;
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeSet, HashMap, HashSet, hash_map};
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use openlab_audio::{Fit, Media, MediaError, MovieSound, MovieTrack, Preloaded, Probed};
 use openlab_core::video_probe::ProbeReport;
@@ -148,6 +150,63 @@ pub struct Indexed {
     order: Vec<IndexedFile>,
     show_dir: Option<PathBuf>,
     visited: u64,
+    prepared: Option<Prepared>,
+}
+
+/// A fresh catalog's entries, built off the control thread by [`Indexed::prepare`] as
+/// [`MediaCatalog::request_at`] would build them on it (tickets 1, 2, ... in workspace order):
+/// installing a 2,000-file doc then costs the control thread only the probe jobs' sends, not
+/// hashing and copying every key.
+struct Prepared {
+    entries: HashMap<String, Entry>,
+    /// Each file's probe job but its doc, in workspace order: key, path, ticket, picture.
+    probes: Vec<(String, PathBuf, u64, bool)>,
+    key_changes: Vec<KeyChange>,
+    unresolved: Vec<(MediaRef, MediaStatus)>,
+    next_ticket: u64,
+}
+
+impl Indexed {
+    /// Builds the entries a fresh catalog in the folder this was read against takes
+    /// ([`MediaCatalog::sync_indexed`]); for a doc being opened, on the document worker.
+    pub fn prepare(&mut self) {
+        let order = &self.order;
+        let mut prepared = Prepared {
+            entries: HashMap::with_capacity(order.len()),
+            probes: Vec::with_capacity(order.len()),
+            key_changes: Vec::with_capacity(order.len()),
+            unresolved: Vec::new(),
+            next_ticket: 0,
+        };
+        for file in order {
+            prepared.next_ticket += 1;
+            let ticket = prepared.next_ticket;
+            let asked = file.path.is_some();
+            match file.path.clone() {
+                Some(path) => {
+                    prepared.key_changes.push(KeyChange::Watch {
+                        key: file.key.clone(),
+                        hashes: KeyHashes::of(&file.key, &path),
+                        path: path.clone(),
+                        id: ticket,
+                    });
+                    prepared
+                        .probes
+                        .push((file.key.clone(), path, ticket, file.picture));
+                }
+                None => prepared
+                    .unresolved
+                    .push((MediaRef::new(file.key.clone()), MediaStatus::Missing)),
+            }
+            let mut entry = Entry::new(asked, ticket, file.picture);
+            entry.users = file.users;
+            entry.preloaders = file.preloaders;
+            // Not probed yet: `settle_preload` would only note whether a cue wants it.
+            entry.wants_preload = file.preloaders > 0;
+            prepared.entries.insert(file.key.clone(), entry);
+        }
+        self.prepared = Some(prepared);
+    }
 }
 
 /// One file of [`Indexed`], with what the control thread would otherwise work out for each file
@@ -208,6 +267,7 @@ pub fn index_workspace(ws: &Workspace, show_dir: Option<&Path>) -> Indexed {
         order,
         show_dir: show_dir.map(Path::to_path_buf),
         visited,
+        prepared: None,
     }
 }
 
@@ -260,6 +320,32 @@ impl PlanChanges {
     }
 }
 
+/// A keyed hash of `text`, the same on every thread of this process (its key is drawn once): the
+/// watch share's maps are keyed by it, so text hashed where a change is made is not hashed again
+/// on the control thread.
+pub fn text_hash(text: &str) -> u64 {
+    static STATE: OnceLock<RandomState> = OnceLock::new();
+    STATE.get_or_init(RandomState::new).hash_one(text)
+}
+
+/// The hashes ([`text_hash`]) of a watched key and of its file's path as text, worked out where
+/// the key's change is made (for a doc being opened, on the document worker). The media watch
+/// ignores them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyHashes {
+    pub key: u64,
+    pub path: u64,
+}
+
+impl KeyHashes {
+    pub fn of(key: &str, path: &Path) -> Self {
+        let text = path.to_string_lossy();
+        let path = text_hash(&text);
+        let key = if *key == *text { path } else { text_hash(key) };
+        Self { key, path }
+    }
+}
+
 /// A file the media watch is to start or stop watching.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyChange {
@@ -269,6 +355,7 @@ pub enum KeyChange {
         key: String,
         path: PathBuf,
         id: u64,
+        hashes: KeyHashes,
     },
     Unwatch {
         key: String,
@@ -289,6 +376,30 @@ pub(super) struct Use {
     preload: bool,
     /// A Video cue's file.
     picture: bool,
+}
+
+impl Entry {
+    /// A file first used now, its probe job `ticket` sent (`asked`) or not possible.
+    fn new(asked: bool, ticket: u64, picture: bool) -> Self {
+        Self {
+            probe: if asked { Probe::Pending } else { Probe::Failed },
+            ticket,
+            asking: asked,
+            urgent: false,
+            timed_out: false,
+            stuck_jobs: 0,
+            users: 0,
+            preloaders: 0,
+            picture,
+            wants_preload: false,
+            preload_ticket: 0,
+            preloaded: None,
+            reserved: 0,
+            over_budget: false,
+            preload_failed: false,
+            watch: ticket,
+        }
+    }
 }
 
 impl MediaCatalog {
@@ -391,12 +502,13 @@ impl MediaCatalog {
     /// ahead with [`Self::prioritize`].
     pub fn sync(&mut self, ws: &Workspace) {
         let indexed = index_workspace(ws, self.show_dir.as_deref());
-        self.sync_indexed(indexed);
+        drop(self.sync_indexed(indexed));
     }
 
     /// [`Self::sync`] from a workspace already read ([`index_workspace`], off the control
-    /// thread for a doc being opened).
-    pub fn sync_indexed(&mut self, indexed: Indexed) {
+    /// thread for a doc being opened, and [`Indexed::prepare`]d there). What is left of it is
+    /// returned for the caller to drop (off the control thread for a doc being opened).
+    pub fn sync_indexed(&mut self, indexed: Indexed) -> Box<dyn Send> {
         self.plan_changes = PlanChanges {
             all: true,
             ..PlanChanges::default()
@@ -407,14 +519,24 @@ impl MediaCatalog {
             order,
             show_dir,
             visited,
+            prepared,
         } = indexed;
         // Paths resolved against another folder than this catalog's are resolved again.
         let resolved = show_dir == self.show_dir;
         self.index = index;
         self.cues_read += visited;
         // A fresh catalog (a doc opening, with thousands of files) has nothing to compare: each
-        // file goes straight in below.
+        // file goes straight in below, or as prepared when its tickets are still to start.
         let fresh = self.entries.is_empty();
+        if let Some(prepared) = prepared
+            && fresh
+            && resolved
+            && self.next_ticket == 0
+        {
+            self.uses = uses;
+            let unsent = self.adopt(prepared);
+            return Box::new((order, unsent));
+        }
         if !fresh {
             let counts: HashMap<&str, (usize, usize)> = order
                 .iter()
@@ -465,6 +587,46 @@ impl MediaCatalog {
             self.settle_preload(&key);
         }
         self.uses = uses;
+        Box::new(())
+    }
+
+    /// A fresh catalog takes the entries [`Indexed::prepare`] built and sends their probes, in
+    /// workspace order. Returns the keys whose job no pool took (to be dropped by the caller).
+    fn adopt(&mut self, prepared: Prepared) -> Vec<String> {
+        let Prepared {
+            entries,
+            probes,
+            key_changes,
+            unresolved,
+            next_ticket,
+        } = prepared;
+        self.entries = entries;
+        self.next_ticket = next_ticket;
+        self.key_changes.extend(key_changes);
+        self.unresolved.extend(unresolved);
+        let mut unsent = Vec::new();
+        for (key, path, ticket, picture) in probes {
+            let job = Job::Probe {
+                doc: self.pool.doc,
+                key,
+                ticket,
+                path,
+                picture,
+            };
+            // Only a pool that is gone refuses a job.
+            if let Err(crossbeam_channel::SendError(Job::Probe { key, .. })) =
+                self.pool.low.send(job)
+            {
+                unsent.push(key);
+            }
+        }
+        for key in &unsent {
+            if let Some(e) = self.entries.get_mut(key) {
+                e.asking = false;
+                e.probe = Probe::Failed;
+            }
+        }
+        unsent
     }
 
     /// Follows an edit from its footprint: the same result as [`Self::sync`], at the cost of the
@@ -678,9 +840,8 @@ impl MediaCatalog {
             // A worker has this job already (or answered it): a second copy would only be
             // dropped, or probe the file twice.
             if lock(&self.pool.gate)
-                .claimed
-                .get(&(self.pool.doc, true, key.to_owned()))
-                .is_some_and(|t| *t >= e.ticket)
+                .claim(self.pool.doc, true, key)
+                .is_some_and(|t| t >= e.ticket)
             {
                 continue;
             }
@@ -780,28 +941,12 @@ impl MediaCatalog {
                 if let Some(path) = path {
                     self.key_changes.push(KeyChange::Watch {
                         key: e.key().clone(),
+                        hashes: KeyHashes::of(e.key(), &path),
                         path,
                         id: ticket,
                     });
                 }
-                e.insert(Entry {
-                    probe: if asked { Probe::Pending } else { Probe::Failed },
-                    ticket,
-                    asking: asked,
-                    urgent: false,
-                    timed_out: false,
-                    stuck_jobs: 0,
-                    users: 0,
-                    preloaders: 0,
-                    picture,
-                    wants_preload: false,
-                    preload_ticket: 0,
-                    preloaded: None,
-                    reserved: 0,
-                    over_budget: false,
-                    preload_failed: false,
-                    watch: ticket,
-                })
+                e.insert(Entry::new(asked, ticket, picture))
             }
         }
     }

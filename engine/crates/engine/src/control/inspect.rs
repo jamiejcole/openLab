@@ -47,6 +47,12 @@ impl Control {
         self.eng.watch.watched_files()
     }
 
+    /// Key changes and closed docs' keys the media watch share still has to handle in the wakes
+    /// to come.
+    pub fn watch_waiting(&self) -> usize {
+        self.eng.watch.waiting()
+    }
+
     /// Voice ids whose owner is recorded (a leak measure: it follows the voices alive).
     pub fn voice_owners(&self) -> usize {
         self.eng.voice_ids.recorded()
