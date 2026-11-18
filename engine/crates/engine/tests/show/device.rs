@@ -617,7 +617,8 @@ impl DeviceShow {
         }
     }
 
-    fn settle_media(&mut self) {
+    /// Waits until every media probe has answered.
+    pub fn settle_media(&mut self) {
         let mut timeouts = 0;
         while self.control.probes_pending() > 0 {
             match self.inbox.recv_timeout(Duration::from_millis(20)) {
@@ -810,10 +811,26 @@ impl DeviceShow {
 
     /// Opens `ws` as another doc and waits until it is installed and its files probed.
     pub fn open_doc(&mut self, ws: Workspace) -> DocId {
+        self.open_source(DocSource::Workspace(Box::new(ws)))
+    }
+
+    /// Opens a new workspace (`new`), as the app's New does, and waits until it is installed.
+    pub fn new_doc(&mut self) -> DocId {
+        self.open_source(DocSource::New)
+    }
+
+    /// Opens the show file at `path` (`open`) and waits until it is installed and probed.
+    pub fn open_file(&mut self, path: &std::path::Path) -> DocId {
+        self.open_source(DocSource::Open {
+            path: path.to_path_buf(),
+            recovery: None,
+        })
+    }
+
+    fn open_source(&mut self, source: DocSource) -> DocId {
         let (tx, _rx) = reply_channel();
         let id = self.request_id();
-        self.control
-            .open_doc(DocSource::Workspace(Box::new(ws)), id, &tx);
+        self.control.open_doc(source, id, &tx);
         let mut timeouts = 0;
         let doc = loop {
             if let Some((_, doc)) = self.control.take_opened().pop() {
@@ -832,6 +849,14 @@ impl DeviceShow {
         };
         self.settle_media();
         doc
+    }
+
+    /// A message for doc `doc`; the replies.
+    pub fn send_doc(&mut self, doc: DocId, message: ClientMessage) -> Vec<ServerMessage> {
+        let (tx, mut rx) = reply_channel();
+        self.pump_inbox();
+        let _ = self.control.handle_doc(doc, message, &tx);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     /// A transport action for doc `doc`.

@@ -92,6 +92,7 @@ pub use media::{PROBE_WORKERS, ProbeClock};
 pub use netout::{
     Destination, LINK_QUEUE, LookupThreads, NetAnswer, NetTransport, SystemTransport, Transport,
 };
+pub use outputs::MAX_OUTPUTS;
 pub use transport::transport_input;
 pub use wake::{stall_floor, wake_frames};
 

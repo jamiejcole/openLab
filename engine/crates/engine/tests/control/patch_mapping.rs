@@ -775,3 +775,160 @@ fn list_patch_mappings_reports_the_stored_mapping_of_each_patch() {
     assert_eq!(set(&mut s, patch_id(), None), Ok(()));
     assert_eq!(listed(&mut s), entry(None));
 }
+
+/// A config for the stand-in devices whose machine settings come from the file in `env`, as
+/// the host loads them.
+fn device_from_disk(env: &Env) -> ControlConfig {
+    let mut c = ControlConfig::new(RATE, BLOCK);
+    c.seed = 7;
+    c.watch.mode = openlab_engine::control::watch::WatchMode::Manual;
+    c.mixer_patches = 4;
+    c.app_dirs = Some(env.dirs.clone());
+    let (loaded, writable) = load_machine_settings_checked(&env.dirs);
+    c.machine = loaded.settings;
+    c.machine_writable = writable;
+    c
+}
+
+/// The engine started on `devices` with the settings in `env`, and the show file `show` opened
+/// in it (beside an empty workspace of another id).
+fn open_on(
+    env: &Env,
+    devices: Vec<openlab_engine::control::devices::ListedDevice>,
+    show: &std::path::Path,
+) -> (DeviceShow, openlab_engine::control::DocId) {
+    let mut first = workspace(vec![]);
+    first.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(77));
+    let mut s = DeviceShow::new(first, devices, device_from_disk(env));
+    let doc = s.open_file(show);
+    (s, doc)
+}
+
+/// Where each of the doc's two patches plays on this machine.
+fn devices_of(s: &DeviceShow, ws: &Workspace) -> Vec<Option<String>> {
+    ws.patches
+        .iter()
+        .map(|p| {
+            let m = s.control().machine().patch_mapping(ws.id, p.id);
+            m.map(|m| m.device.clone())
+        })
+        .collect()
+}
+
+/// Starts cues 1 and 2 of `doc` and plays a while: the values each device carries.
+fn play_both(
+    s: &mut DeviceShow,
+    doc: openlab_engine::control::DocId,
+    devices: [&str; 2],
+) -> [Vec<f32>; 2] {
+    for n in [1, 2] {
+        assert!(
+            s.control()
+                .doc(doc)
+                .unwrap()
+                .engine()
+                .problems(id(n))
+                .is_empty(),
+            "cue {n} is not broken"
+        );
+        s.transport_doc(doc, TransportAction::Start { cue: id(n) });
+    }
+    s.run(1000);
+    devices.map(|d| {
+        let mut v: Vec<f32> = (s.device_channel(d, 0).into_iter())
+            .filter(|x| *x != 0.0)
+            .collect();
+        v.dedup();
+        v
+    })
+}
+
+/// Sets `patch`'s mapping in `doc`, as the patch editor does.
+fn map_in(s: &mut DeviceShow, doc: openlab_engine::control::DocId, patch: PatchId, device: &str) {
+    let id = s.request_id();
+    let replies = s.send_doc(
+        doc,
+        ClientMessage::Request {
+            id,
+            request: Request::SetPatchMapping {
+                patch,
+                mapping: Some(mapping(device, &[0, 1])),
+            },
+        },
+    );
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+}
+
+/// Checklist (WS-07): a show saved with per-patch devices reopens with the same patch-to-device
+/// mapping, each patch's cue heard on its own device. On another machine the show's patches
+/// have no mapping: they play at once on that machine's device (the default mapping), the
+/// first machine's mapping is kept as it was, and the operator maps a patch to that machine's
+/// other device once, which that machine keeps from then on.
+#[test]
+fn a_show_saved_with_per_patch_devices_reopens_with_the_same_mapping() {
+    let (here, there) = (env(), env());
+    let patch_b = PatchId(uuid::Uuid::from_u128(902));
+    let mut b = audio(2, &wav(&dc(400, 0.5)), 0);
+    if let CueKind::Audio { patch, .. } = &mut b.kind {
+        *patch = patch_b;
+    }
+    let mut ws = workspace(vec![audio(1, &wav(&dc(400, 0.25)), 0), b]);
+    let mut second = ws.patches[0].clone();
+    second.id = patch_b;
+    second.name = "B".into();
+    ws.patches.push(second);
+    let show = here.show_dir().join("Two Devices.openlab");
+    std::fs::write(&show, openlab_core::save_show(&ws).unwrap()).unwrap();
+    let fakes = || vec![listed("fake:1", "Fake 1", 2), listed("fake:2", "Fake 2", 2)];
+    let others = || {
+        vec![
+            listed("other:1", "Other 1", 2),
+            listed("other:2", "Other 2", 2),
+        ]
+    };
+    let one = |d: &str| Some(d.to_owned());
+
+    // This machine: patch B is put on the second device.
+    let (mut s, doc) = open_on(&here, fakes(), &show);
+    assert_eq!(devices_of(&s, &ws), [one("Fake 1"), one("Fake 1")]);
+    map_in(&mut s, doc, patch_b, "Fake 2");
+    drop(s);
+    // Reopened: the same mapping, each cue on its own device.
+    let (mut s, doc) = open_on(&here, fakes(), &show);
+    assert_eq!(devices_of(&s, &ws), [one("Fake 1"), one("Fake 2")]);
+    s.wait_output("Fake 2");
+    let heard = play_both(&mut s, doc, ["fake:1", "fake:2"]);
+    assert_eq!(heard, [vec![0.25], vec![0.5]]);
+    drop(s);
+
+    // Another machine: both patches play on its device until the operator maps B, once.
+    let (mut s, doc) = open_on(&there, others(), &show);
+    assert_eq!(devices_of(&s, &ws), [one("Other 1"), one("Other 1")]);
+    let heard = play_both(&mut s, doc, ["other:1", "other:2"]);
+    assert_eq!(heard, [vec![0.75], vec![]], "both cues on its device");
+    map_in(&mut s, doc, patch_b, "Other 2");
+    drop(s);
+    let (mut s, doc) = open_on(&there, others(), &show);
+    assert_eq!(devices_of(&s, &ws), [one("Other 1"), one("Other 2")]);
+    s.wait_output("Other 2");
+    let heard = play_both(&mut s, doc, ["other:1", "other:2"]);
+    assert_eq!(heard, [vec![0.25], vec![0.5]]);
+    drop(s);
+
+    // The first machine's mapping is as it was.
+    let kept = load_machine_settings_checked(&here.dirs).0.settings;
+    let on = |p: PatchId| kept.patch_mapping(ws.id, p).map(|m| m.device.clone());
+    assert_eq!(
+        [on(patch_id()), on(patch_b)],
+        [one("Fake 1"), one("Fake 2")]
+    );
+}
