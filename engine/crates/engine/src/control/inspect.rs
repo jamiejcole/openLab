@@ -102,6 +102,7 @@ impl Control {
 
     /// [`Self::watch_pass`] without first handing the catalogs' key changes to the watch (a test
     /// of a batch the watch thread made before they were handed over).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn watch_pass_unfollowed(&mut self) -> Option<WatchBatch> {
         self.eng.watch.watch_mut().manual_pass()
     }
