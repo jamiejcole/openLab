@@ -1911,7 +1911,8 @@ impl Run {
                 children,
             } = &c.kind
             {
-                playlists.push((c.id, children.iter().map(|k| k.id).collect::<Vec<_>>()));
+                let kids: Vec<(CueId, bool)> = children.iter().map(|k| (k.id, k.armed)).collect();
+                playlists.push((c.id, kids));
             }
         });
         for (group, children) in playlists {
@@ -1929,7 +1930,7 @@ impl Run {
             let actions = copy.handle(&self.ws, Input::Start { cue: group }, self.now);
             let started = actions.iter().find_map(|a| match a {
                 Action::StateChanged { cue, state, .. }
-                    if children.contains(cue)
+                    if children.iter().any(|(k, _)| k == cue)
                         && !matches!(
                             state,
                             CueState::Idle | CueState::Broken | CueState::Loaded
@@ -1940,11 +1941,27 @@ impl Run {
                 _ => None,
             });
             if let Some(started) = started {
-                prop_assert_eq!(
-                    Some(started),
+                // A disarmed child, or one refused for static problems, plays only its pre-wait and
+                // reports no state of its own when that is zero: the first state reported may be a
+                // later child's, after the marked one and such children only.
+                let at = |id: CueId| children.iter().position(|(k, _)| *k == id);
+                let refused = |id: CueId| {
+                    actions
+                        .iter()
+                        .any(|a| matches!(a, Action::Warning(EngineWarning::CueBroken { cue }) if *cue == id))
+                };
+                let passed = marked.and_then(at).zip(at(started)).is_some_and(|(m, s)| {
+                    m <= s
+                        && children.get(m..s).is_some_and(|between| {
+                            between.iter().all(|(k, armed)| !armed || refused(*k))
+                        })
+                });
+                prop_assert!(
+                    passed,
+                    "playlist {}: marked {:?}, but its start plays {}",
+                    group,
                     marked,
-                    "playlist {}: the marked child is the one its start plays",
-                    group
+                    started
                 );
             }
         }
