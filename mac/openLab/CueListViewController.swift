@@ -431,6 +431,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         ("continue", nil, 26),
     ]
     static let rowHeight: CGFloat = 24
+    static let indentationPerLevel: CGFloat = 10
     /// The least the Name column shrinks to; a narrower list scrolls sideways.
     static let nameMinWidth: CGFloat = 60
     /// The least width of the Name editor, whatever the cell's.
@@ -555,9 +556,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             borderType: scroll.borderType, controlSize: .regular, scrollerStyle: .legacy
         ).width
         let room = inside - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
-        let columns = outlineView.tableColumns
-        let others = columns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
-        let left = (room - others - tableExtra(name, others: others)).rounded(.down)
+        let extra = tableExtra(name, others: outlineView.tableColumns.filter { $0 !== name }.reduce(0) { $0 + $1.width })
+        let left = (room - fitTimeColumns(room: room, extra: extra, name: name) - extra).rounded(.down)
         let width = max(name.minWidth, left)
         if abs(name.width - width) >= 1 { name.width = width }
         // The sideways scroller only while the columns are wider than the list. Where scroll bars always
@@ -565,6 +565,47 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         // vertical scroller is left as it is (its room is always kept above).
         let overflows = left < name.minWidth
         if scroll.hasHorizontalScroller != overflows { scroll.hasHorizontalScroller = overflows }
+    }
+
+    /// The widths the operator (or the spec) gave the time columns, kept apart from what fits shows.
+    private var preferredTimeWidths: [String: CGFloat] = [:]
+    private var fitting = false
+    /// What the Name column is kept at while the time columns can still give width: room for the
+    /// indent of a nested cue and the first letters of its name.
+    static let nameComfortWidth: CGFloat = 160
+
+    /// Gives the time columns up to their slack (down to their least, a whole time) so the Name column
+    /// keeps `nameComfortWidth` where it can; with room they go back to the widths they were given.
+    /// Returns the width of every column but Name.
+    private func fitTimeColumns(room: CGFloat, extra: CGFloat, name: NSTableColumn) -> CGFloat {
+        let columns = outlineView.tableColumns
+        let timed = columns.filter { Self.timeColumns.contains($0.identifier.rawValue) }
+        for c in timed where preferredTimeWidths[c.identifier.rawValue] == nil {
+            preferredTimeWidths[c.identifier.rawValue] = c.width
+        }
+        func preferred(_ c: NSTableColumn) -> CGFloat { max(preferredTimeWidths[c.identifier.rawValue] ?? c.width, c.minWidth) }
+        let fixed = columns.filter { $0 !== name && !timed.contains($0) }.reduce(0) { $0 + $1.width }
+        let wanted = timed.reduce(0) { $0 + preferred($1) }
+        let slack = timed.reduce(0) { $0 + (preferred($1) - Self.timeLeast(of: $1)) }
+        let deficit = max(0, Self.nameComfortWidth - (room - fixed - wanted - extra))
+        let take = slack > 0 ? min(1, deficit / slack) : 0
+        fitting = true
+        defer { fitting = false }
+        var total = fixed
+        for c in timed {
+            let least = Self.timeLeast(of: c)
+            let width = (preferred(c) - (preferred(c) - least) * take).rounded(.up)
+            if abs(c.width - width) >= 1 { c.width = width }
+            total += c.width
+        }
+        return total
+    }
+
+    /// The narrowest a time column goes: its header and a whole time in it.
+    static func timeLeast(of column: NSTableColumn) -> CGFloat {
+        let font = WholeGlyphLabel(labelWithString: "").font ?? .systemFont(ofSize: NSFont.systemFontSize)
+        let time = ("00:00.00" as NSString).size(withAttributes: [.font: font]).width
+        return max(column.minWidth, (time + 5).rounded(.up))
     }
 
     private var measuredExtra: CGFloat?
@@ -625,6 +666,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         // The system's own 17-point gap between columns is blank width the least window cannot spare: the
         // columns sit close, as QLab's do. Set after the style, which sets the gap.
         outlineView.intercellSpacing = NSSize(width: 3, height: outlineView.intercellSpacing.height)
+        // The least Name column (its neighbours at their least, each header whole) still shows a letter of
+        // a cue five groups deep: a nesting level takes only what its disclosure triangle needs.
+        outlineView.indentationPerLevel = Self.indentationPerLevel
         outlineView.allowsMultipleSelection = true
         // Letters are cue hotkeys and edit keys here; none may jump the selection, and with it the playhead.
         outlineView.allowsTypeSelect = false
@@ -1752,6 +1796,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineViewColumnDidResize(_ notification: Notification) {
         // Not while the Name column itself is being measured or set.
         let resized = notification.userInfo?["NSTableColumn"] as? NSTableColumn
+        if let id = resized?.identifier.rawValue, !fitting, Self.timeColumns.contains(id), let resized {
+            preferredTimeWidths[id] = resized.width
+        }
         if resized?.identifier.rawValue != "name" { fitNameColumn() }
         replaceEditorAfterLayoutChange()
     }

@@ -6367,18 +6367,19 @@ final class CueListColumnLayoutTests: XCTestCase {
         }
     }
 
-    /// Flow: a cue nested five groups deep, in the least window with the sidebar shown, leaves its Name cell
-    /// too narrow for a letter: the name is not drawn at all, never cut through a letter; where a letter and
-    /// the ellipsis fit it ends in the ellipsis.
-    func testADeeplyNestedCuesNameIsNeverDrawnCutThroughALetter() async throws {
+    /// Flow (#760): the least window with the sidebar shown, the cues five groups deep among them: every
+    /// row's name draws at least its first letter and an ellipsis, none is cut through a letter, and the
+    /// time columns gave up width (down to a whole time) before the Name column.
+    func testAtTheLeastWidthEveryCuesNameShowsItsFirstLettersAndTheTimeColumnsGiveWayFirst() async throws {
         let wc = try await open(NSSize(width: 800, height: 800), show: "Nested")
         let window = try XCTUnwrap(wc.window)
         wc.setVisible(.sidebar, true)
         window.contentView?.layoutSubtreeIfNeeded()
-        wc.cueList.selectAsUser(["00000000-0000-0000-0000-000000000100"])
+        let deep: ModelID = "00000000-0000-0000-0000-000000000100"
+        wc.cueList.selectAsUser([deep])
         window.contentView?.layoutSubtreeIfNeeded()
         let column = outline.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
-        var checked = 0
+        var deepest = 0
         for row in 0..<outline.numberOfRows {
             guard let cell = outline.view(atColumn: column, row: row, makeIfNecessary: true) as? CueCell else {
                 continue
@@ -6386,23 +6387,32 @@ final class CueListColumnLayoutTests: XCTestCase {
             let label = cell.label
             XCTAssertEqual(label.lineBreakMode, .byTruncatingTail)
             let text = label.attributedStringValue
-            let width = label.frame.width
-            let drawn = WholeGlyphLabel.fits(text, in: width)
-            if row != outline.selectedRow, width < text.size().width, drawn {
-                XCTAssertGreaterThan(inkedPixels(of: label), 0, "row \(row) is truncated and still shows its start")
-            }
-            if row == outline.selectedRow {
-                XCTAssertLessThan(width, 30, "the deepest row's name cell is the narrow case")
-                XCTAssertFalse(drawn, "no letter fits, so nothing is drawn")
-                XCTAssertEqual(inkedPixels(of: label), 0, "the label paints no pixel, so no letter is cut")
-                checked += 1
-            }
+            XCTAssertTrue(
+                WholeGlyphLabel.fits(text, in: label.frame.width),
+                "row \(row) \(text.string) has room for a letter and an ellipsis (\(label.frame.width) pt)")
+            XCTAssertGreaterThan(inkedPixels(of: label), 0, "row \(row) \(text.string) is drawn")
+            if outline.level(forRow: row) > deepest { deepest = outline.level(forRow: row) }
         }
-        XCTAssertEqual(checked, 1)
+        XCTAssertGreaterThanOrEqual(deepest, 5, "the show nests five groups deep")
+        let names = outline.tableColumns.first { $0.identifier.rawValue == "name" }
+        for id in CueListViewController.timeColumns {
+            let c = try XCTUnwrap(outline.tableColumns.first { $0.identifier.rawValue == id })
+            XCTAssertEqual(c.width, CueListViewController.timeLeast(of: c), accuracy: 1, "\(id) gave up what it could")
+            XCTAssertLessThan(c.width, CueListViewController.columns.first { $0.id == id }?.width ?? 0)
+        }
+        XCTAssertGreaterThan(names?.width ?? 0, 90, "the Name column is the widest after the first")
         let memo = try XCTUnwrap(
             outline.view(atColumn: column, row: outline.numberOfRows - 1, makeIfNecessary: true) as? CueCell)
         XCTAssertGreaterThan(inkedPixels(of: memo.label), 0, "a row with room still draws its name")
         XCTAssertTrue(WholeGlyphLabel.fits(NSAttributedString(string: "Group 1"), in: 200), "room: drawn whole")
+        // Wide again: the time columns return to the widths they had.
+        window.setContentSize(NSSize(width: 1400, height: 800))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let spec = Dictionary(uniqueKeysWithValues: CueListViewController.columns.map { ($0.id, $0.width) })
+        for id in CueListViewController.timeColumns {
+            let c = try XCTUnwrap(outline.tableColumns.first { $0.identifier.rawValue == id })
+            XCTAssertEqual(c.width, spec[id] ?? 0, accuracy: 1, "\(id) is back at its width")
+        }
     }
 
     /// How many pixels `view` paints (its background is clear, so only text counts).
@@ -6613,8 +6623,9 @@ final class CueListColumnLayoutTests: XCTestCase {
             scroll.scrollerStyle = style
             window.setContentSize(window.minSize)
             wc.setVisible(.sidebar, true)
-            // A time column dragged wider: with the sidebar open the columns no longer fit.
-            outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("duration"))?.width = 200
+            // The Target column dragged wide (the time columns would give way): with the sidebar open
+            // the columns no longer fit.
+            outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("target"))?.width = 300
             window.contentView?.layoutSubtreeIfNeeded()
             XCTAssertEqual(scroll.scrollerStyle, style, bars)
             func titlesOverColumns(_ what: String) {
