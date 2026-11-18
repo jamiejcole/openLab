@@ -70,7 +70,8 @@ impl Voices {
             }
             Event::UnderrunEnded { voice, at, frames } => {
                 if let Some((_, run)) = self.name(voice) {
-                    fx.late.push((run, at, frames));
+                    fx.late
+                        .push((run, at, i64::try_from(frames).unwrap_or(i64::MAX)));
                 }
             }
             Event::MoveEnded { voice, moves, .. } => {

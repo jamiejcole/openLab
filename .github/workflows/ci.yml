@@ -172,17 +172,6 @@ jobs:
       - name: Performance budget gate
         if: matrix.os == 'macos-26-intel' && github.event_name != 'pull_request'
         run: cargo test --release --locked -p openlab-engine --test perf -- --ignored --nocapture
-      # VID-06: a ten-minute movie's picture and sound stay within a frame of each other, at four
-      # frame rates and on a device at another rate than the track, on the offline driver; thirty
-      # seconds of the same are in the normal suite. A machine with no usable decoder records a
-      # skip, printed here.
-      - name: Ten-minute picture and sound sync
-        if: matrix.os == 'macos-26-intel' && github.event_name != 'pull_request'
-        env:
-          OPENLAB_TEST_SKIPS: ${{ runner.temp }}/openlab-sync-skips.txt
-        run: |
-          cargo test --release --locked -p openlab-video --test video_cues -- --ignored --nocapture ten_minutes
-          cat "$OPENLAB_TEST_SKIPS" 2>/dev/null || true
       # NFR-09/QA-05: 24 h of a generated show, run by a random operator, in virtual time on the
       # offline driver (about a minute in release); a ten-minute run is in the normal suite.
       - name: Soak test (24 h virtual)

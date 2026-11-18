@@ -20,8 +20,8 @@ use openlab_core::{
     Command, CueKind, CueState, DeviceInfo, MachineSettings, PatchMapping, Position, Workspace,
     WorkspaceId,
 };
-use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
+use openlab_engine::control::{ControlConfig, MAX_OUTPUTS};
 use openlab_engine::persist::{load_machine_settings, load_machine_settings_checked};
 
 /// A config with no mapping for anybody, the given devices and settings stored in `env`.
@@ -165,6 +165,35 @@ fn a_new_workspace_plays_without_a_mapping_step() {
     let loaded = load_machine_settings(&env.dirs);
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     assert_eq!(mapping(&snap.workspace, &loaded.settings), Some(m));
+}
+
+/// A new workspace gets a patch for each connected output device only up to the number of
+/// devices the engine plays on at once: more devices get none, and each patch made is mapped
+/// to its own device.
+#[test]
+fn a_new_workspace_has_no_more_patches_than_devices_the_engine_can_open() {
+    let env = env();
+    let devices = (0..MAX_OUTPUTS + 4)
+        .map(|n| device(&format!("Device {n}"), 2))
+        .collect();
+    let mut c = bare(&env, devices);
+    c.mixer_patches = MAX_OUTPUTS + 1;
+    let mut s = show_with(workspace(vec![]), c);
+    let snap = new_workspace(&mut s);
+    let ws = &snap.workspace;
+    assert_eq!(ws.patches.len(), MAX_OUTPUTS);
+    assert_eq!(
+        ws.patches[MAX_OUTPUTS - 1].name,
+        format!("Patch {MAX_OUTPUTS}")
+    );
+    for (n, patch) in ws.patches.iter().enumerate() {
+        let m = s
+            .control()
+            .machine()
+            .patch_mapping(ws.id, patch.id)
+            .unwrap();
+        assert_eq!(m.device, format!("Device {n}"));
+    }
 }
 
 #[test]

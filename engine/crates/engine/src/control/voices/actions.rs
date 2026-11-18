@@ -765,7 +765,8 @@ impl Voices {
                 // moved on (its stream was slow to fill): the sound is the clock, so the
                 // picture is put back by as much and the two go on together.
                 if r.moved && !r.relocated && r.rest.is_some() && at > start {
-                    fx.late.push((run, at, at - start));
+                    let late = i64::try_from(at - start).unwrap_or(i64::MAX);
+                    fx.late.push((run, at, late));
                 }
                 let delay = r.delay;
                 let preview = r.preview;

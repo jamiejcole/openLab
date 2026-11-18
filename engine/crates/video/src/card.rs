@@ -25,13 +25,7 @@ pub fn pixels(frame: u16) -> Vec<u8> {
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
             let colour = if y < BAND {
-                let cell = x / (WIDTH / CELLS);
-                match cell {
-                    0 => WHITE,
-                    c if c == CELLS - 1 => WHITE,
-                    c if (frame >> (16 - c)) & 1 == 1 => WHITE,
-                    _ => BLACK,
-                }
+                BLACK
             } else {
                 let right = x >= WIDTH / 2;
                 let bottom = y >= BAND + (HEIGHT - BAND) / 2;
@@ -45,7 +39,23 @@ pub fn pixels(frame: u16) -> Vec<u8> {
             out.extend_from_slice(&colour);
         }
     }
+    barcode(&mut out, frame);
     out
+}
+
+/// Draws `frame`'s barcode band over a card's pixels (RGBA or BGRA alike: the band is black
+/// and white), leaving the rest as it is: one card's pixels serve every frame of a movie.
+pub fn barcode(px: &mut [u8], frame: u16) {
+    let cell_row: Vec<u8> = (0..CELLS)
+        .flat_map(|cell| {
+            let white = cell == 0 || cell == CELLS - 1 || (frame >> (16 - cell)) & 1 == 1;
+            let colour = if white { WHITE } else { BLACK };
+            std::iter::repeat_n(colour, WIDTH / CELLS).flatten()
+        })
+        .collect();
+    for row in px.as_chunks_mut::<{ WIDTH * 4 }>().0.iter_mut().take(BAND) {
+        row.copy_from_slice(&cell_row);
+    }
 }
 
 /// Where each barcode cell's centre is, as a fraction of the stage.

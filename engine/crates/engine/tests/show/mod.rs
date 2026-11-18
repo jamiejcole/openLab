@@ -350,15 +350,15 @@ fn process_dir() -> &'static Path {
             .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
             .unwrap()
             .keep();
-        prune_old_process_dirs(&dir);
+        prune_old_process_dirs(&dir, "control-");
         dir
     })
 }
 
-/// Removes earlier runs' `control-*` folders (each run keeps its own, and they add up). Only
-/// folders untouched for an hour go: a test process running alongside this one is younger.
+/// Removes earlier runs' folders named `prefix...` (each run keeps its own, and they add up).
+/// Only folders untouched for an hour go: a test process running alongside this one is younger.
 /// Best effort; nothing here fails a test.
-fn prune_old_process_dirs(own: &Path) {
+pub fn prune_old_process_dirs(own: &Path, prefix: &str) {
     let Ok(entries) = std::fs::read_dir(env!("CARGO_TARGET_TMPDIR")) else {
         return;
     };
@@ -368,7 +368,7 @@ fn prune_old_process_dirs(own: &Path) {
         let named = entry
             .file_name()
             .to_str()
-            .is_some_and(|n| n.starts_with("control-"));
+            .is_some_and(|n| n.starts_with(prefix));
         let old = entry
             .metadata()
             .and_then(|m| m.modified())

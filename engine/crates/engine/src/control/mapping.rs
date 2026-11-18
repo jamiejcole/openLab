@@ -407,6 +407,69 @@ impl DocCx<'_> {
 }
 
 impl Engine {
+    /// A new workspace's output patches (QLab 5 manual p. 106): one for each output device
+    /// connected now. Its own first patch is the primary device's (the default mapping puts it
+    /// there when the doc opens); each other listed device with outputs gets a patch like it,
+    /// named "Patch 2", "Patch 3"... in list order, mapped on this machine to that device's first
+    /// outputs. At most [`MAX_OUTPUTS`] in all: the engine plays on no more devices at once. With
+    /// no device playing the workspace keeps its one patch.
+    ///
+    /// [`MAX_OUTPUTS`]: super::outputs::MAX_OUTPUTS
+    pub(super) fn add_device_patches(&mut self, ws: &mut openlab_core::Workspace) {
+        let Some((primary, _)) = self.playable.iter().find(|(_, key)| *key == 0) else {
+            return;
+        };
+        let primary = primary.name.clone();
+        let Some(first) = ws.patches.first().cloned() else {
+            return;
+        };
+        let mut named = vec![primary];
+        let mut notes = Vec::new();
+        for device in self.device_list() {
+            if ws.patches.len() >= super::outputs::MAX_OUTPUTS {
+                break;
+            }
+            if device.output_channels == 0 || named.contains(&device.name) {
+                continue;
+            }
+            named.push(device.name.clone());
+            let have = usize::try_from(device.output_channels).unwrap_or(usize::MAX);
+            let wanted = first.outputs.len().min(have);
+            let mut patch = first.clone();
+            patch.id = PatchId(super::docs::random_id());
+            patch.name = format!("Patch {}", ws.patches.len() + 1);
+            let mapping = PatchMapping {
+                device: device.name.clone(),
+                channels: (0..wanted).filter_map(|c| u32::try_from(c).ok()).collect(),
+                system: false,
+            };
+            // A listed device with outputs is always a valid mapping; were one refused, that
+            // device would get no patch rather than a second one on the primary.
+            if self
+                .config
+                .machine
+                .set_patch_mapping(ws.id, patch.id, mapping)
+                .is_err()
+            {
+                continue;
+            }
+            notes.push(format!(
+                "mapped patch '{}' to {} {}",
+                patch.name,
+                device.name,
+                outputs_text(wanted)
+            ));
+            ws.patches.push(patch);
+        }
+        if notes.is_empty() {
+            return;
+        }
+        self.save_machine();
+        for message in notes {
+            self.log(LogLevel::Info, message);
+        }
+    }
+
     /// `set_output_device`: the device the engine opens at its next start. Validated against the
     /// list, stored like a mapping; the stream in use is not touched (the engine plays on one
     /// device for its whole run).

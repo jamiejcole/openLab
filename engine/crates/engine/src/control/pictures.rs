@@ -61,6 +61,11 @@ use super::{DocCx, DocId, Engine};
 /// picture on by its own clock in between).
 const CLOCK_EVERY_MS: u64 = 10;
 
+/// How far a picture's sound may drift from it, on a device whose clock is not the master's,
+/// before the picture is moved to follow it (microseconds): far under a frame, and over what the
+/// smoothed reading of that device's clock wanders.
+const DRIFT_STEP_US: u64 = 500;
+
 /// The most a start waits for its picture's open (sample time) before its cue breaks: past the
 /// stage host's own open limit (10 s), which breaks it first with its reason, so this only
 /// bounds a wait the stage host never answers.
@@ -131,15 +136,17 @@ struct Live {
 /// started with, cut by each devamp whose loop it has left since: a resume plays on with it,
 /// as a paused Audio voice keeps the plan it was given, whatever was edited since. `table` is
 /// what its last play sent (`top`, or `top` cut by the devamp in `devamp`),
-/// from sample `at`, `into` samples into the table then; `late` is how much later than the
-/// engine dated the run's start the picture began (a start held by its probe), in the action's
-/// time but not the picture's.
+/// from sample `at`, `into` samples into the table then; `late` is how far the picture's own
+/// time runs behind the action's: a start held by its probe, and its sound late (starved by
+/// the disk) or early (on a device whose clock runs fast), which the picture followed (negative:
+/// ahead). `followed` is how much of its sound's device drift that includes.
 struct RunPlan {
     top: Vec<Slice>,
     table: Vec<Slice>,
     at: SampleTime,
     into: SampleTime,
-    late: SampleTime,
+    late: i64,
+    followed: i64,
     passes: Vec<PlanPass>,
     /// The fades its last play was sent with.
     fades: PictureFades,
@@ -175,6 +182,28 @@ impl Live {
 }
 
 impl RunPlan {
+    /// Moves the plan `frames` later from sample `at` (earlier when negative) and returns where
+    /// it stands then, in the table. `at` may come before the sample the plan was last moved on
+    /// (an underrun ended in the block after a step dated a lookahead ahead): it is counted
+    /// back from there, so the picture never runs on by the difference.
+    fn shift(&mut self, at: SampleTime, frames: i64) -> SampleTime {
+        let since = if at >= self.at {
+            i64::try_from(at - self.at).unwrap_or(i64::MAX)
+        } else {
+            i64::try_from(self.at - at).map_or(i64::MIN, |back| -back)
+        };
+        // Where the plan stands at `at`, less what the sound missed.
+        let into = less_late(plus_late(self.into, since), frames);
+        self.at = at;
+        self.into = into;
+        self.late = self.late.saturating_add(frames);
+        // A devamp already carried out leaves its loop that much later.
+        self.devamp = self
+            .devamp
+            .map(|(stop, leaves)| (stop, plus_late(leaves, frames)));
+        into
+    }
+
     /// The run's plan with no devamp pending, `elapsed` samples into the table: a devamp whose
     /// loop the picture has left by then stays cut (taken at the boundary, as an Audio voice
     /// takes its own); one it has not reached is dropped.
@@ -727,6 +756,24 @@ fn decoding(l: &Live) -> bool {
     !l.opened || (!l.still && matches!(l.motion, Some((Some(_), _))))
 }
 
+/// `x` less a lateness of `late` frames (more for a negative one), never below 0.
+fn less_late(x: SampleTime, late: i64) -> SampleTime {
+    if late >= 0 {
+        x.saturating_sub(late.unsigned_abs())
+    } else {
+        x.saturating_add(late.unsigned_abs())
+    }
+}
+
+/// `x` plus a lateness of `late` frames (less for a negative one), never below 0.
+fn plus_late(x: SampleTime, late: i64) -> SampleTime {
+    if late >= 0 {
+        x.saturating_add(late.unsigned_abs())
+    } else {
+        x.saturating_sub(late.unsigned_abs())
+    }
+}
+
 fn seconds(samples: SampleTime, rate: u32) -> f64 {
     samples as f64 / f64::from(rate.max(1))
 }
@@ -1014,8 +1061,8 @@ impl DocCx<'_> {
                         .get(&id)
                         .and_then(|l| l.plan.as_ref())
                         .map_or(0, |p| p.late);
-                    // The picture's own time: the action's less a late start.
-                    let own = seconds(offset.saturating_sub(late), rate);
+                    // The picture's own time: the action's less its lateness.
+                    let own = seconds(less_late(offset, late), rate);
                     let at_file = self.eng.pictures.live.get(&id).map_or(own, |l| {
                         l.plan.as_ref().map_or(own, |p| position_in(&p.passes, own))
                     });
@@ -1149,6 +1196,7 @@ impl DocCx<'_> {
         let paused = matches!(live.motion, Some((None, _)));
         if let Some(p) = live.plan.as_mut() {
             p.late = 0;
+            p.followed = 0;
         }
         let own = seconds(position, rate);
         if paused {
@@ -1776,10 +1824,14 @@ impl DocCx<'_> {
                 };
                 // A resume keeps a devamp already carried out; one still pending is dropped,
                 // for the cue engine to ask again.
-                let (top, late) = match kept {
-                    Some(p) => (p.settled(offset.saturating_sub(p.late)).to_vec(), p.late),
+                let (top, late, followed) = match kept {
+                    Some(p) => (
+                        p.settled(less_late(offset, p.late)).to_vec(),
+                        p.late,
+                        p.followed,
+                    ),
                     None => match movie_table(file, timing, self.eng.rate) {
-                        Ok((top, _)) => (top, late),
+                        Ok((top, _)) => (top, i64::try_from(late).unwrap_or(i64::MAX), 0),
                         Err(why) => return self.picture_refused(cue, run, why, fresh, fx),
                     },
                 };
@@ -1789,7 +1841,7 @@ impl DocCx<'_> {
                 let into = if fresh {
                     offset
                 } else {
-                    offset.saturating_sub(late)
+                    less_late(offset, late)
                 };
                 let sent = passes(&top, rate);
                 let position = position_in(&sent, seconds(into, rate));
@@ -1805,6 +1857,7 @@ impl DocCx<'_> {
                     at,
                     into,
                     late,
+                    followed,
                     passes: sent,
                     fades,
                     devamp: None,
@@ -1825,7 +1878,9 @@ impl DocCx<'_> {
             into: into.min(openlab_core::MAX_TIME),
             fades,
         };
-        let late = plan.as_ref().map_or(late, |p| p.late);
+        let late = plan
+            .as_ref()
+            .map_or(i64::try_from(late).unwrap_or(i64::MAX), |p| p.late);
         let plan_start = plan.as_ref().map(|p| p.into);
         let mut first = false;
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
@@ -1857,7 +1912,7 @@ impl DocCx<'_> {
         // The action's length from its start: a movie's plan, a still's duration; none while
         // it loops for ever or holds its last frame. A late start is counted in.
         if let (Some(length), true) = (length, ends) {
-            let frames = seconds_to_samples(length, self.eng.rate).saturating_add(late);
+            let frames = plus_late(seconds_to_samples(length, self.eng.rate), late);
             fx.picture_says(Input::ActionLength { cue, run, frames });
         }
     }
@@ -1918,7 +1973,7 @@ impl DocCx<'_> {
         plan.passes = passes(&table, rate);
         // The picture's end, in its own time and in the action's (a late start counted in).
         let end = total_frames(&table);
-        let total = end.map(|t| t.saturating_add(plan.late));
+        let total = end.map(|t| plus_late(t, plan.late));
         plan.table = table;
         let Some(ToStage::Play {
             offset,
@@ -1970,8 +2025,9 @@ impl DocCx<'_> {
         }
     }
 
-    /// The run's sound was starved by the disk and plays on from sample `at`, `frames` later
-    /// than planned: its picture is put back by as much from there (the sound is the clock),
+    /// The run's sound plays on from sample `at`, `frames` later than planned (starved by the
+    /// disk, or on a device whose clock runs slow; negative: earlier, on one whose clock runs
+    /// fast): its picture is put back (or on) by as much from there (the sound is the clock),
     /// and the run's end moves with them. A devamp's leave sample moves too, so the pass under
     /// way is played whole (with a stop, the cue is told the later end). A paused picture (the
     /// pause came before this report was read) is held that much earlier and its plan counts
@@ -1981,7 +2037,7 @@ impl DocCx<'_> {
         &mut self,
         run: RunId,
         at: SampleTime,
-        frames: u64,
+        frames: i64,
         feedback: &mut Vec<Input>,
     ) {
         let rate = self.eng.rate.get();
@@ -2002,7 +2058,7 @@ impl DocCx<'_> {
             // Paused: the resume plays from the action's place less `late`.
             plan.late = plan.late.saturating_add(frames);
             let own = seconds(
-                seconds_to_samples(held, self.eng.rate).saturating_sub(frames),
+                less_late(seconds_to_samples(held, self.eng.rate), frames),
                 rate,
             )
             .min(openlab_core::MAX_TIME);
@@ -2026,18 +2082,7 @@ impl DocCx<'_> {
             return;
         }
         let fades = plan.fades;
-        // Where the plan stands at `at`, less what the sound missed.
-        let into = plan
-            .into
-            .saturating_add(at.saturating_sub(plan.at))
-            .saturating_sub(frames);
-        plan.at = at;
-        plan.into = into;
-        plan.late = plan.late.saturating_add(frames);
-        // A devamp already carried out leaves its loop that much later.
-        plan.devamp = plan
-            .devamp
-            .map(|(stop, leaves)| (stop, leaves.saturating_add(frames)));
+        let into = plan.shift(at, frames);
         let own = seconds(into, rate).min(openlab_core::MAX_TIME);
         let message = ToStage::Play {
             picture: id,
@@ -2048,7 +2093,7 @@ impl DocCx<'_> {
             into: own,
             fades,
         };
-        let total = total_frames(&plan.table).map(|t| t.saturating_add(plan.late));
+        let total = total_frames(&plan.table).map(|t| plus_late(t, plan.late));
         let ends = l.length.is_some();
         l.now = Some(message.clone());
         l.motion = Some((Some(at), own));
@@ -2059,6 +2104,35 @@ impl DocCx<'_> {
         }
         if let (Some(frames), true) = (total, ends) {
             feedback.push(Input::ActionLength { cue, run, frames });
+        }
+    }
+
+    /// Each of this doc's playing pictures follows its sound's clock (the sound is the clock): a
+    /// voice on a device other than the primary plays as much more (or less) than the master
+    /// clock counts as that device's clock drifts from the master's, so once the drift its
+    /// picture has not followed reaches [`DRIFT_STEP_US`] the picture is put on (or back) by it
+    /// from `now`, as for a sound the disk made late. A picture whose sound moved to another
+    /// device since follows that one, giving back all it followed of the first in one move. Dated
+    /// `now` (a lookahead ahead): an underrun reported in the block after is counted back from it.
+    pub(super) fn follow_sound_clocks(&mut self, now: SampleTime, fx: &mut Effects) {
+        let step = (u64::from(self.eng.rate.get()) * DRIFT_STEP_US / 1_000_000).max(1);
+        let doc = self.doc.id;
+        for l in self.eng.pictures.live.values_mut() {
+            if l.doc != doc || l.ends.is_some() || !matches!(l.motion, Some((Some(_), _))) {
+                continue;
+            }
+            let (Some(plan), Some(voice)) = (l.plan.as_mut(), self.doc.voices.playing(l.run))
+            else {
+                continue;
+            };
+            // Saturating: no clock drifts this far, and the step stays far below the limit.
+            let drift = self.eng.outputs.drift(voice).round() as i64;
+            let ahead = drift.saturating_sub(plan.followed);
+            if ahead.unsigned_abs() < step {
+                continue;
+            }
+            plan.followed = drift;
+            fx.late.push((l.run, now, ahead.saturating_neg()));
         }
     }
 
@@ -2080,8 +2154,8 @@ impl DocCx<'_> {
         };
         l.run = run;
         let playing = matches!(l.motion, Some((Some(_), _)));
-        let total = (l.plan.as_ref())
-            .and_then(|p| total_frames(&p.table).map(|t| t.saturating_add(p.late)));
+        let total =
+            (l.plan.as_ref()).and_then(|p| total_frames(&p.table).map(|t| plus_late(t, p.late)));
         if let (true, Some(_), Some(frames)) = (playing, l.length, total) {
             let cue = l.cue;
             fx.picture_says(Input::ActionLength { cue, run, frames });
@@ -2244,6 +2318,38 @@ mod tests {
             frames,
             plays,
         }
+    }
+
+    fn plan_at(at: SampleTime, into: SampleTime) -> RunPlan {
+        RunPlan {
+            top: Vec::new(),
+            table: Vec::new(),
+            at,
+            into,
+            late: 0,
+            followed: 0,
+            passes: Vec::new(),
+            fades: PictureFades::NONE,
+            devamp: None,
+        }
+    }
+
+    /// A move of the plan dated before the sample it was last moved on (an underrun ending in
+    /// the block after a drift step dated a lookahead ahead) is counted back from there: the
+    /// plan stands where it was at that sample less what the sound missed, never on by the
+    /// difference. Moving it the other way (a sound early) puts it on.
+    #[test]
+    fn a_shift_dated_before_the_last_one_counts_back_from_it() {
+        // Moved on sample 1 000, 500 into the table (a drift step dated `now`).
+        let mut plan = plan_at(1_000, 500);
+        // The sound missed 10 frames, reported on sample 936 (rendered, a block before).
+        assert_eq!(plan.shift(936, 10), 426);
+        assert_eq!((plan.at, plan.late), (936, 10));
+        // From there on as the clock goes; a sound 4 frames early puts it on by 4.
+        assert_eq!(plan.shift(1_036, -4), 530);
+        assert_eq!((plan.at, plan.late), (1_036, 6));
+        // Never before the table's top.
+        assert_eq!(plan.shift(0, 0), 0);
     }
 
     /// A seek's file time is counted through the plan: into a pass, the first play of a pass that
