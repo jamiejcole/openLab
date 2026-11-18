@@ -196,9 +196,11 @@ final class PlayheadClickUITests: XCTestCase {
         let number = ["One": "1", "Two": "2", "Three": "3"][title] ?? ""
         let standby = app.staticTexts["standby-field"]
         XCTAssertTrue(waitFor("value == '\(number) \u{00B7} \(title)'", standby), "standby on \(title)", line: line)
-        XCTAssertTrue(waitFor("isSelected == true", row(title, in: app)), "\(title) highlighted", line: line)
+        let lit = highlighted ?? [title]
+        let awaited = lit.contains(title) ? title : lit.first ?? title
+        XCTAssertTrue(waitFor("isSelected == true", row(awaited, in: app)), "\(awaited) highlighted", line: line)
         for name in ["One", "Two", "Three"] {
-            let on = (highlighted ?? [title]).contains(name)
+            let on = lit.contains(name)
             XCTAssertEqual(row(name, in: app).isSelected, on, "\(name) highlight", line: line)
             let marker = row(name, in: app).images.matching(identifier: "cue-playhead").firstMatch
             XCTAssertEqual(marker.exists, name == title, "\(name) marker", line: line)
@@ -321,12 +323,17 @@ final class PlayheadClickUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["2"].exists, "the number is unchanged")
     }
 
+    /// A press in the status column moves the playhead there and leaves the highlight where it was;
+    /// the next GO fires that cue.
     func testClickingTheStatusColumn() {
         let app = launchThree()
         // The status column is the row's first 80 points; its images only show state.
         row("Three", in: app).coordinate(withNormalizedOffset: .zero)
             .withOffset(CGVector(dx: 60, dy: 12)).click()
-        assertAllOn("Three", in: app)
+        assertAllOn("Three", highlighted: ["One"], in: app)
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        XCTAssertTrue(cueState("Running", of: "Three", in: app).waitForExistence(timeout: 10), "GO fires Three")
+        XCTAssertFalse(cueState("Running", of: "One", in: app).exists, "and not the highlighted One")
     }
 
     func testMultiSelection() {
