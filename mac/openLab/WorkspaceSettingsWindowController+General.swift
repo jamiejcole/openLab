@@ -29,7 +29,7 @@ extension WorkspaceSettingsWindowController {
         }
         let stack = NSStackView(views: [
             row(loc("settings.general.goInterval"), goIntervalField, loc("settings.seconds")),
-            keyUpCheck, note("settings.general.keyUp.note"),
+            note("settings.general.keyUp.note"), keyUpCheck,
             row(loc("settings.general.panic"), panicField, loc("settings.seconds")),
             row(loc("settings.general.autosave"), autosaveField, loc("settings.seconds")),
             note("settings.general.autosave.note"),

@@ -561,6 +561,7 @@
 "menu.window.status" = "Workspace Status";
 "settings.osc.enabled" = "Allow OSC control of this workspace";
 "settings.osc.port" = "Listening port";
+"settings.osc.offOpen" = "OSC control is off: every message to this workspace is refused. Port %d is still bound.";
 "settings.osc.open" = "Open: listening on port %d (UDP and TCP).";
 "settings.osc.notOpen" = "Not open: port %d could not be opened. %@";
 "settings.osc.stayedOpen" = "The new port could not be opened, so port %d still listens. %@";

@@ -186,6 +186,7 @@ final class SettingsGeneralTests: XCTestCase {
         commit(sc, sc.goIntervalField)
         await assertEventually("the interval is stored") { sc.model.minGoInterval == 1 }
         let masthead = wc.masthead
+        masthead.flashDuration = 0.05
         XCTAssertFalse(masthead.goProtectionShown)
 
         masthead.goButton.performClick(nil)
@@ -196,6 +197,8 @@ final class SettingsGeneralTests: XCTestCase {
 
         masthead.goButton.performClick(nil)
         await assertEventually("the area flashed") { masthead.goFlashes == 1 }
+        XCTAssertEqual(masthead.goFlash.alphaValue, 1, "the flash is drawn")
+        await assertEventually("the flash clears by itself") { masthead.goFlash.alphaValue == 0 }
         try await rig.advance(0.2)
         XCTAssertEqual(head(), fade, "a GO inside the time started nothing and moved nothing")
         XCTAssertTrue(masthead.goProtectionShown, "the ignored GO neither ended nor extended it")

@@ -140,6 +140,11 @@ final class SettingsOscTests: XCTestCase {
             sc.oscAddressesLabel.stringValue, String(format: loc("settings.osc.addresses"), "192.168.1.20, 10.0.0.7"))
         XCTAssertEqual(sc.oscEnabledCheck.state, .on)
         XCTAssertNotNil(OscTcpClient(port: port), "the port is open")
+        // Switched off, the page says control is off (the port is still bound), not "listening".
+        sc.oscEnabledCheck.performClick(nil)
+        await assertEventually("the page says OSC control is off") {
+            sc.oscPortStatus.stringValue == String(format: loc("settings.osc.offOpen"), Int(self.port))
+        }
     }
 
     /// Checklist: with the switch off an incoming GO does nothing (and the app's own engine

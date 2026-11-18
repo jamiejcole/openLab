@@ -28,6 +28,9 @@ final class MastheadView: NSView, NSTextViewDelegate {
     private(set) var goProtectionShown = false
     /// How many times the area flashed (tests: a flash fades by itself).
     private(set) var goFlashes = 0
+    /// How long the flash stays up.
+    var flashDuration: TimeInterval = 0.4
+    private var flashEnd: DispatchWorkItem?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -63,7 +66,7 @@ final class MastheadView: NSView, NSTextViewDelegate {
 
         goFlash.wantsLayer = true
         goFlash.layer?.cornerRadius = 14
-        goFlash.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.6).cgColor
+        goFlash.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.9).cgColor
         goFlash.alphaValue = 0
         goFlash.translatesAutoresizingMaskIntoConstraints = false
         goFlash.setAX("go-flash")
@@ -93,10 +96,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
             row.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
             right.trailingAnchor.constraint(equalTo: row.trailingAnchor),
-            goFlash.leadingAnchor.constraint(equalTo: goButton.leadingAnchor, constant: -6),
-            goFlash.trailingAnchor.constraint(equalTo: goButton.trailingAnchor, constant: 6),
-            goFlash.topAnchor.constraint(equalTo: goButton.topAnchor, constant: -6),
-            goFlash.bottomAnchor.constraint(equalTo: goButton.bottomAnchor, constant: 6),
+            goFlash.leadingAnchor.constraint(equalTo: goButton.leadingAnchor, constant: -8),
+            goFlash.trailingAnchor.constraint(equalTo: goButton.trailingAnchor, constant: 8),
+            goFlash.topAnchor.constraint(equalTo: goButton.topAnchor, constant: -8),
+            goFlash.bottomAnchor.constraint(equalTo: goButton.bottomAnchor, constant: 8),
         ])
         apply(showMode: false, window: NSSize(width: 1200, height: 800))
     }
@@ -138,10 +141,11 @@ final class MastheadView: NSView, NSTextViewDelegate {
     func flashGo() {
         goFlashes += 1
         goFlash.alphaValue = 1
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.5
-            goFlash.animator().alphaValue = 0
-        }
+        // Held, then gone: the drawn state is what a shot or a test reads, so no animation hides it.
+        flashEnd?.cancel()
+        let end = DispatchWorkItem { [weak self] in self?.goFlash.alphaValue = 0 }
+        flashEnd = end
+        DispatchQueue.main.asyncAfter(deadline: .now() + flashDuration, execute: end)
     }
 
     private func applyEditable() {

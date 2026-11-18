@@ -1406,7 +1406,8 @@ final class WorkspaceSettingsTests: XCTestCase {
     func testSettingsListsCategoriesAndPickingOneShowsItsPages() async throws {
         let (_, sc) = try await open()
         let titles = (0..<sc.categoryTable.numberOfRows).compactMap {
-            (sc.categoryTable.view(atColumn: 0, row: $0, makeIfNecessary: true) as? NSTextField)?.stringValue
+            (sc.categoryTable.view(atColumn: 0, row: $0, makeIfNecessary: true) as? NSTableCellView)?.textField?
+                .stringValue
         }
         XCTAssertEqual(titles, SettingsCategory.allCases.map { loc($0.titleKey) })
         sc.show(page: .general)
@@ -1432,6 +1433,52 @@ final class WorkspaceSettingsTests: XCTestCase {
         let again = IndexSet(integer: network)
         sc.categoryTable.selectRowIndexes(again, byExtendingSelection: false)
         XCTAssertEqual(sc.shownPage, .osc)
+    }
+
+    /// The note about the red border sits under the time between GOs, above the key-up box.
+    func testTheRedBorderNoteSitsUnderTheTimeBetweenGos() async throws {
+        let (_, sc) = try await open()
+        sc.show(page: .general)
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        func minY(_ v: NSView) -> CGFloat { v.convert(v.bounds, to: nil).maxY }
+        let note = try XCTUnwrap(
+            sc.tabs.selectedTabViewItem?.view.flatMap { Self.find(loc("settings.general.keyUp.note"), in: $0) })
+        XCTAssertLessThan(minY(sc.goIntervalField), minY(note) + 40, "the note follows the field")
+        XCTAssertGreaterThan(minY(note), minY(sc.keyUpCheck), "and sits above the key-up box")
+    }
+
+    static func find(_ text: String, in view: NSView) -> NSTextField? {
+        if let f = view as? NSTextField, f.stringValue == text { return f }
+        for s in view.subviews { if let f = find(text, in: s) { return f } }
+        return nil
+    }
+
+    /// The selected category reads in light and dark: its row, drawn, holds ink that contrasts with
+    /// the selection behind it, and its label is in the middle of the row.
+    func testTheSelectedCategoryReadsInLightAndDark() async throws {
+        let (_, sc) = try await open()
+        sc.show(page: .network)
+        let table = sc.categoryTable
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            sc.window?.appearance = NSAppearance(named: name)
+            sc.window?.contentView?.layoutSubtreeIfNeeded()
+            let row = table.selectedRow
+            let rect = table.rect(ofRow: row)
+            let rep = try XCTUnwrap(table.bitmapImageRepForCachingDisplay(in: rect))
+            table.cacheDisplay(in: rect, to: rep)
+            var lum: [CGFloat] = []
+            for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
+                for y in 0..<rep.pixelsHigh {
+                    if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) {
+                        lum.append(0.3 * c.redComponent + 0.6 * c.greenComponent + 0.1 * c.blueComponent)
+                    }
+                }
+            }
+            XCTAssertGreaterThan((lum.max() ?? 0) - (lum.min() ?? 0), 0.3, "\(name): the label contrasts")
+            let cell = try XCTUnwrap(table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)
+            let label = try XCTUnwrap(cell.textField)
+            XCTAssertEqual(label.frame.midY, cell.bounds.midY, accuracy: 1.5, "\(name): centred in its row")
+        }
     }
 
     /// Checklist: the File menu's settings submenu opens each category directly: every page has an

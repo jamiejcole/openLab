@@ -14,7 +14,8 @@ extension WorkspaceSettingsWindowController: NSTableViewDataSource, NSTableViewD
         categoryTable.addTableColumn(column)
         categoryTable.headerView = nil
         categoryTable.rowHeight = 24
-        categoryTable.style = .sourceList
+        categoryTable.style = .plain
+        categoryTable.selectionHighlightStyle = .regular
         categoryTable.dataSource = self
         categoryTable.delegate = self
         categoryTable.setAX(AX.settingsCategories, label: loc("settings.title"))
@@ -78,10 +79,21 @@ extension WorkspaceSettingsWindowController: NSTableViewDataSource, NSTableViewD
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let category = SettingsCategory.allCases[row]
+        // A cell view with its `textField`: AppKit draws the label for the selection's colour (light
+        // or dark, key or not) and the label sits in the middle of the row.
+        let cell = NSTableCellView()
         let label = NSTextField(labelWithString: loc(category.titleKey))
         label.setAX("settings-category-\(category.rawValue)", label: loc(category.titleKey))
         label.lineBreakMode = .byTruncatingTail
-        return label
+        label.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(label)
+        cell.textField = label
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {

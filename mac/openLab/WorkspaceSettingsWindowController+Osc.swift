@@ -284,6 +284,9 @@ extension WorkspaceSettingsWindowController {
         case nil:
             oscPortStatus.stringValue = loc("settings.osc.noOsc")
             oscPortStatus.textColor = .secondaryLabelColor
+        case let state? where state.open && state.error == nil && on == false:
+            oscPortStatus.stringValue = String(format: loc("settings.osc.offOpen"), Int(state.port))
+            oscPortStatus.textColor = .systemOrange
         case let state? where state.open && state.error == nil:
             oscPortStatus.stringValue = String(format: loc("settings.osc.open"), Int(state.port))
             oscPortStatus.textColor = .systemGreen
