@@ -52,4 +52,57 @@ final class SidebarUITests: XCTestCase {
         let intro = app.staticTexts["Intro"]
         XCTAssertTrue(waitFor("exists == false", intro), "the new empty list is shown in place of the demo cues")
     }
+
+    /// The Warnings list while the audio device is away: Intro, playing when it went, is listed
+    /// with its long reason wrapped inside the list; the device is one entry; five GOs on a cue that
+    /// cannot play are one entry for that cue. In Show Mode New List is off (QLab 5 manual, Show Mode).
+    func testWarningsCoalesceLongLinesWrapAndShowModeLocksNewList() async throws {
+        let app = launchDemo()
+        app.checkBoxes["toggle-sidebar"].click()
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])  // GO: Intro
+        XCTAssertTrue(cueState("Running", of: "Intro", in: app).waitForExistence(timeout: 10), "Intro plays")
+        await engineRequest(["type": "lose_device"])
+        XCTAssertTrue(cueState("Paused", of: "Intro", in: app).waitForExistence(timeout: 10), "Intro shows paused")
+        for _ in 0..<5 {
+            cueRow("Door slam", in: app).click()
+            app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        }
+        tabButton("Warnings", in: app).click()
+        let warnings = app.descendants(matching: .any).matching(identifier: "sidebar-warnings").firstMatch
+        XCTAssertTrue(warnings.waitForExistence(timeout: 10))
+
+        let device = warnings.staticTexts.matching(
+            NSPredicate(format: "value == %@", "Audio device \u{201C}openLab Virtual Output\u{201D}"))
+        XCTAssertTrue(waitFor("count == 1", device), "the device is one entry")
+        let door = warnings.staticTexts.matching(NSPredicate(format: "value == '2.1  Door slam'"))
+        XCTAssertTrue(waitFor("count == 1", door), "Door slam is one entry")
+        let refused = warnings.staticTexts.matching(NSPredicate(format: "value CONTAINS 'Asked to start 5 times'"))
+        XCTAssertTrue(waitFor("count == 1", refused), "its five refusals counted on it")
+
+        // Intro's entry: its title, and under it why it shows paused (its device is not connected).
+        let title = warnings.staticTexts["1  Intro"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "Intro is listed")
+        let texts = warnings.staticTexts.allElementsBoundByIndex
+        let at = try XCTUnwrap(texts.firstIndex { $0.value as? String == "1  Intro" })
+        let reason = texts[at + 1]
+        XCTAssertTrue(text(reason).contains("not connected"), "with its reason: \(text(reason))")
+        XCTAssertGreaterThan(reason.frame.height, title.frame.height * 2, "the long reason wraps: \(reason.frame)")
+        XCTAssertLessThanOrEqual(reason.frame.maxX, warnings.frame.maxX + 0.5, "inside the list")
+        XCTAssertGreaterThanOrEqual(reason.frame.minY, title.frame.maxY - 0.5, "below its title, not over it")
+
+        // Show Mode: New List is off and adds nothing; Edit Mode gives it back.
+        tabButton("1 Cue List", in: app).click()
+        let newList = app.buttons["new-list-button"]
+        XCTAssertTrue(waitFor("isEnabled == true", newList))
+        app.radioGroups["mode-switch"].radioButtons["Show"].click()
+        XCTAssertTrue(waitFor("isEnabled == false", newList), "New List is off in Show Mode")
+        newList.click()
+        let two = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == '2 Cue Lists' OR title == '2 Cue Lists'")
+        ).firstMatch
+        XCTAssertFalse(two.waitForExistence(timeout: 2), "no list was added")
+        XCTAssertTrue(tabButton("1 Cue List", in: app).exists)
+        app.radioGroups["mode-switch"].radioButtons["Edit"].click()
+        XCTAssertTrue(waitFor("isEnabled == true", newList), "and on again in Edit Mode")
+    }
 }

@@ -168,8 +168,8 @@ impl CueEngine {
     /// playhead onto it, not when the playhead is put there by hand, nor when the cue before it
     /// is started without a GO. Only an idle one, armed and without problems: one already
     /// loaded, running or broken is left as it is, and a disarmed or broken cue would play
-    /// nothing, so loading it would only show a loaded mark that means nothing. A group loads
-    /// as Load does (the children its action starts first).
+    /// nothing, so loading it would only show a loaded mark that means nothing. It loads the cue
+    /// alone (a group: the children its action starts first), not the rest of its sequence.
     pub(super) fn auto_load_at_playhead(&mut self, list: CueListId, cx: &mut Ctx) {
         let ws = cx.ws;
         let Some(next) = self.playhead(list).and_then(|id| ws.find_cue(id)) else {
@@ -182,7 +182,9 @@ impl CueEngine {
         {
             return;
         }
-        self.load_tree(next.id, 0.0, cx);
+        // The cue alone (and a group's first children): auto-load is a head start for the coming GO,
+        // not a load of the sequence (Q576).
+        self.load_tree(next.id, 0.0, false, cx);
     }
 
     /// Forgets that `cue` was started: its row shows its first colour again.

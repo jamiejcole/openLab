@@ -67,6 +67,9 @@ pub enum Inbox {
     Trigger { source: String, detail: String },
     /// The stage host supervisor's report (video output).
     Stage(crate::stage::StageEvent),
+    /// The last app connection (one bound to no workspace) ended, by a quit or a crash: the
+    /// operator's monitor windows go with the app; the stages' output plays on.
+    AppsGone,
     /// Stop the control loop.
     Shutdown,
 }

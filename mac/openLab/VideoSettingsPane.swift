@@ -19,9 +19,11 @@ struct StageRow: Equatable {
 }
 
 /// The Video page of the workspace settings (VID-01, VID-12; QLab 5 manual pp. 225-227): the
-/// workspace's stages, one row each with its name (typed in place), pixel size, the display it is
-/// shown on on this machine, whether black stays up between cues, its layer, and a remove button;
-/// and a button that adds one. A stage that cannot be seen says why in its row. Every control
+/// workspace's stages, one row each with its name (typed in place), pixel size (width and height
+/// typed in place), the display it is
+/// shown on on this machine, whether black stays up between cues, its layer, a button that opens its
+/// monitor window (a live copy of the stage, QLab 5 manual p. 157) and a remove button; and a button
+/// that adds one. A stage that cannot be seen says why in its row. Every control
 /// sends its edit to the engine and the page is drawn from what the engine then holds (the model
 /// for the stages, `video_outputs` for displays and states), so a refused edit shows the old state.
 @MainActor
@@ -52,8 +54,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private(set) var displays: [StageDisplay] = []
     private(set) var nameFields: [NSTextField] = []
     private(set) var layerFields: [NSTextField] = []
+    private(set) var widthFields: [NSTextField] = []
+    private(set) var heightFields: [NSTextField] = []
     private(set) var displayPopups: [NSPopUpButton] = []
     private(set) var blackBoxes: [NSButton] = []
+    private(set) var monitorButtons: [NSButton] = []
     private(set) var removeButtons: [NSButton] = []
     private(set) var warningLabels: [NSTextField] = []
     private var subs: [AnyCancellable] = []
@@ -84,12 +89,17 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     // MARK: Building
 
-    /// Name, pixels, display, black, layer, remove: the least widths (the display and name
+    /// Name, pixels, display, black, layer, monitor, remove: the least widths (the display and name
     /// columns take more when there is room).
-    static let columns: [CGFloat] = [90, 70, leastDisplayWidth, 32, 30, 16]
+    static let columns: [CGFloat] = [90, sizeWidth, leastDisplayWidth, 32, 30, monitorWidth, 16]
+    /// The monitor button's column.
+    static let monitorWidth: CGFloat = 56
+    /// A width or height field: five digits.
+    static let sideWidth: CGFloat = 40
+    /// The pixels column: width, "×", height.
+    static let sizeWidth: CGFloat = 2 * sideWidth + 14
     static let leastDisplayWidth: CGFloat = 120
     static let mostDisplayWidth: CGFloat = 260
-    static let mostNameWidth: CGFloat = 260
     static let columnSpacing: CGFloat = 6
     /// Between the table's edge and its rows.
     static let inset: CGFloat = 6
@@ -159,7 +169,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if rows {
             grid = NSGridView(numberOfColumns: columns.count, rows: 0)
         } else {
-            let titles = ["name", "size", "display", "black", "layer", "remove"].map { key -> NSView in
+            let titles = ["name", "size", "display", "black", "layer", "monitor", "remove"].map { key -> NSView in
                 let label = NSTextField(labelWithString: loc("settings.video.col.\(key)"))
                 label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
                 return label
@@ -172,6 +182,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         grid.yPlacement = .center
         grid.column(at: 3).xPlacement = .center
         grid.column(at: 5).xPlacement = .center
+        grid.column(at: 6).xPlacement = .center
         return grid
     }
 
@@ -185,7 +196,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             (scroll.contentView.bounds.width - 2 * Self.inset - fixed
             - Self.columnSpacing * CGFloat(Self.columns.count - 1)).rounded(.down)
         let display = min(Self.mostDisplayWidth, max(Self.leastDisplayWidth, spare - Self.columns[0]))
-        let name = min(Self.mostNameWidth, max(Self.columns[0], spare - display))
+        // The name takes all the rest, so a wide window shows a long name whole.
+        let name = max(Self.columns[0], spare - display)
         displayWidth = display
         nameWidth = name
         for g in [header, grid] {
@@ -241,8 +253,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.render() } }
     }
 
-    /// Whether a name or layer is being typed in.
-    var typing: Bool { (nameFields + layerFields).contains { $0.currentEditor() != nil } }
+    /// Every field typed in: names, sizes and layers.
+    private var textFields: [NSTextField] { nameFields + widthFields + heightFields + layerFields }
+
+    /// Whether a name, size or layer is being typed in.
+    var typing: Bool { textFields.contains { $0.currentEditor() != nil } }
 
     /// Ends the typing in a name or layer field, which commits it (before what the operator
     /// clicked next). True when typing ended: that edit's reason, if refused, must stand.
@@ -266,16 +281,19 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if !forced, shown == rows, displays == list { return }
         let resume = typedIn()
         // The old fields leave the window with the table: their end of editing is not an edit.
-        for field in nameFields + layerFields { field.delegate = nil }
+        for field in textFields { field.delegate = nil }
         shown = rows
         displays = list
         popupWidths = []
         nameWidths = []
         let grid = Self.makeGrid(rows: true)
         nameFields = []
+        widthFields = []
+        heightFields = []
         layerFields = []
         displayPopups = []
         blackBoxes = []
+        monitorButtons = []
         removeButtons = []
         warningLabels = []
         for (i, row) in rows.enumerated() {
@@ -295,9 +313,19 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             nameWidth.isActive = true
             nameWidths.append(nameWidth)
             name.setAX("\(Self.id)-name-\(n)", label: "\(row.name), \(loc("settings.video.col.name"))")
-            let size = NSTextField(labelWithString: "\(row.width) × \(row.height)")
-            size.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            let width = sideField(row.width, kind: .width, tag: i, enabled: enabled)
+            width.setAX("\(Self.id)-width-\(n)", label: "\(row.name), \(loc("settings.video.width"))")
+            let height = sideField(row.height, kind: .height, tag: i, enabled: enabled)
+            height.setAX("\(Self.id)-height-\(n)", label: "\(row.name), \(loc("settings.video.height"))")
+            let by = NSTextField(labelWithString: "×")
+            by.font = .systemFont(ofSize: 11)
+            by.textColor = .secondaryLabelColor
+            let size = NSStackView(views: [width, by, height])
+            size.orientation = .horizontal
+            size.spacing = 2
             size.setAX("\(Self.id)-size-\(n)")
+            widthFields.append(width)
+            heightFields.append(height)
             let popup = displayPopup(row, tag: i, enabled: enabled)
             popup.setAX("\(Self.id)-display-\(n)", label: "\(row.name), \(loc("settings.video.col.display"))")
             let black = NSButton(checkboxWithTitle: "", target: self, action: #selector(blackClicked(_:)))
@@ -316,6 +344,15 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             layer.identifier = NSUserInterfaceItemIdentifier("layer")
             layer.widthAnchor.constraint(equalToConstant: Self.columns[4]).isActive = true
             layer.setAX("\(Self.id)-layer-\(n)", label: "\(row.name), \(loc("settings.video.col.layer"))")
+            let monitor = NSButton(
+                title: loc("settings.video.monitor"), target: self, action: #selector(monitorClicked(_:)))
+            monitor.controlSize = .small
+            monitor.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            monitor.bezelStyle = .rounded
+            monitor.tag = i
+            monitor.isEnabled = enabled && store.videoOutputs.video != false
+            monitor.toolTip = loc("settings.video.monitor.tip")
+            monitor.setAX("\(Self.id)-monitor-\(n)", label: "\(row.name), \(loc("settings.video.monitor.ax"))")
             let remove = NSButton(title: "", target: self, action: #selector(removeClicked(_:)))
             remove.image = Icon.fieldClear.image(loc("settings.video.remove"), compact: true)
             remove.isBordered = false
@@ -323,11 +360,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             remove.tag = i
             remove.isEnabled = enabled
             remove.setAX("\(Self.id)-remove-\(n)", label: "\(loc("settings.video.remove")) \(row.name)")
-            grid.addRow(with: [name, size, popup, black, layer, remove])
+            grid.addRow(with: [name, size, popup, black, layer, monitor, remove])
             nameFields.append(name)
             layerFields.append(layer)
             displayPopups.append(popup)
             blackBoxes.append(black)
+            monitorButtons.append(monitor)
             removeButtons.append(remove)
             let warning = NSTextField(wrappingLabelWithString: row.warning ?? "")
             warning.textColor = .systemOrange
@@ -336,7 +374,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             warningLabels.append(warning)
             if row.warning != nil {
                 let r = grid.addRow(with: [warning])
-                r.mergeCells(in: NSRange(location: 0, length: 6))
+                r.mergeCells(in: NSRange(location: 0, length: Self.columns.count))
             }
         }
         install(grid)
@@ -345,32 +383,71 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if let resume { self.resume(resume) }
     }
 
-    enum TypedField { case name, layer }
+    /// A width or height field of the size column.
+    private func sideField(_ value: Int, kind: TypedField, tag: Int, enabled: Bool) -> NSTextField {
+        let field = NSTextField(string: String(value))
+        field.controlSize = .small
+        field.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        field.isEditable = enabled
+        field.alignment = .right
+        field.delegate = self
+        field.tag = tag
+        field.identifier = NSUserInterfaceItemIdentifier(kind.rawValue)
+        field.widthAnchor.constraint(equalToConstant: Self.sideWidth).isActive = true
+        return field
+    }
+
+    /// The fields typed in place, by their identifier.
+    enum TypedField: String { case name, width, height, layer }
+
+    private func fields(_ kind: TypedField) -> [NSTextField] {
+        switch kind {
+        case .name: return nameFields
+        case .width: return widthFields
+        case .height: return heightFields
+        case .layer: return layerFields
+        }
+    }
+
+    /// What the workspace holds for `kind` of `row`, as its field shows it.
+    private static func text(_ kind: TypedField, _ row: StageRow) -> String {
+        switch kind {
+        case .name: return row.name
+        case .width: return String(row.width)
+        case .height: return String(row.height)
+        case .layer: return String(row.layer)
+        }
+    }
 
     /// The field being typed in: its kind, its stage, the text so far and the selection.
     private struct Typed {
-        var layer: Bool
+        var kind: TypedField
         var stage: ModelID
-        var text: String
+        var text: String?
         var selection: NSRange
     }
 
+    /// The field holding the caret, and what was typed in it: nil text when it holds what the
+    /// page last drew there (a value already committed, as after Return), so a redraw shows the
+    /// workspace's value (an undo's, another client's), never a stale one a later click would send.
     private func typedIn() -> Typed? {
-        guard let field = (nameFields + layerFields).first(where: { $0.currentEditor() != nil }),
-            let editor = field.currentEditor(), let row = row(field.tag)
+        guard let field = textFields.first(where: { $0.currentEditor() != nil }),
+            let editor = field.currentEditor(), let row = row(field.tag),
+            let kind = field.identifier.flatMap({ TypedField(rawValue: $0.rawValue) })
         else { return nil }
-        return Typed(
-            layer: field.identifier?.rawValue == "layer", stage: row.id, text: editor.string,
-            selection: editor.selectedRange)
+        let typed = editor.string == Self.text(kind, row) ? nil : editor.string
+        return Typed(kind: kind, stage: row.id, text: typed, selection: editor.selectedRange)
     }
 
-    /// Puts the caret back in the redrawn field of the stage that was being typed in.
+    /// Puts the caret back in the redrawn field of the stage that was being typed in, with what
+    /// was typed, or the workspace's value when nothing new was.
     private func resume(_ typed: Typed) {
         guard let i = shown?.firstIndex(where: { $0.id == typed.stage }) else { return }
-        let field = (typed.layer ? layerFields : nameFields)[i]
+        let field = fields(typed.kind)[i]
         guard view.window?.makeFirstResponder(field) == true, let editor = field.currentEditor() else { return }
-        editor.string = typed.text
-        let length = (typed.text as NSString).length
+        let text = typed.text ?? field.stringValue
+        editor.string = text
+        let length = (text as NSString).length
         let start = min(typed.selection.location, length)
         editor.selectedRange = NSRange(location: start, length: min(typed.selection.length, length - start))
     }
@@ -425,7 +502,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// Runs `edit` for `stage` after the edits before it, shows its refusal (or clears the last
     /// one, unless a newer edit has said something since), and redraws from the engine.
-    /// A refused edit of a typed `field` (`.layer` or `.name`) puts its value back. `after` is
+    /// A refused edit of a typed `field` puts its value back. `after` is
     /// true for a click that ended typing: the typed edit's reason (shown now, or on its way from
     /// the engine) is not cleared or outrun by the click's edit.
     private func commit(
@@ -441,20 +518,20 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             guard let self else { return }
             await refresh()
             if case .failure(let e) = result {
-                if let stage, let field { putBack(stage, layer: field == .layer) }
+                if let stage, let field { putBack(stage, field) }
                 if mine == attempt { messageLabel.stringValue = reason(e, stage) }
             }
             render(forced: true)
         }
     }
 
-    /// Puts the stage's name or layer as the workspace has it back in its field (the one drawn
+    /// Puts the stage's value of `kind` as the workspace has it back in its field (the one drawn
     /// now), also while it is typed in.
-    private func putBack(_ stage: ModelID, layer: Bool) {
+    private func putBack(_ stage: ModelID, _ kind: TypedField) {
         guard let i = shown?.firstIndex(where: { $0.id == stage }), let row = rows().first(where: { $0.id == stage })
         else { return }
-        let field = (layer ? layerFields : nameFields)[i]
-        let value = layer ? String(row.layer) : row.name
+        let field = fields(kind)[i]
+        let value = Self.text(kind, row)
         field.stringValue = value
         field.currentEditor()?.string = value
     }
@@ -464,7 +541,19 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if let stage, store.model?.stages.contains(where: { $0.id == stage }) != true {
             return loc("settings.video.gone")
         }
+        if let stage, let cue = Self.cueUsing(e), let name = rows().first(where: { $0.id == stage })?.name {
+            return String(format: loc("settings.video.inUse"), name, cue)
+        }
         return e.detailText
+    }
+
+    /// The cue the engine names when it refuses to remove a stage a cue uses (docs/protocol.md,
+    /// `remove_stage`: `stage "<name>" cannot be removed while cue "<cue>" uses it`).
+    static func cueUsing(_ e: EngineError) -> String? {
+        guard case .engine(_, let text) = e, text.hasSuffix("\" uses it"),
+            let start = text.range(of: "while cue \"", options: .backwards)
+        else { return nil }
+        return String(text[start.upperBound..<text.index(text.endIndex, offsetBy: -"\" uses it".count)])
     }
 
     /// The edits still on their way (tests wait for them).
@@ -496,6 +585,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         }
     }
 
+    /// Opens the stage's monitor window, or brings it to the front when it is open (the stage host
+    /// draws it; nothing on this page changes).
+    @objc private func monitorClicked(_ sender: NSButton) {
+        let typed = endTyping()
+        guard let row = row(sender.tag) else { return }
+        commit(row.id, after: typed) { [store] in await store.setStageMonitor(row.id, open: true) }
+    }
+
     @objc private func displayChosen(_ sender: NSPopUpButton) {
         let display = sender.selectedItem?.representedObject as? String
         let typed = endTyping()
@@ -507,7 +604,25 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField, let row = row(field.tag) else { return }
         let text = field.stringValue
-        if field.identifier?.rawValue == "layer" {
+        let kind = field.identifier.flatMap { TypedField(rawValue: $0.rawValue) }
+        if kind == .width || kind == .height {
+            // A stage is 1 to 16384 pixels a side (QLab 5 manual p. 226).
+            guard let side = Int(text.trimmingCharacters(in: .whitespaces)), (1...16384).contains(side) else {
+                tell(loc("settings.video.badSize"))
+                field.stringValue = kind == .width ? String(row.width) : String(row.height)
+                return
+            }
+            let (width, height) = kind == .width ? (side, row.height) : (row.width, side)
+            guard (width, height) != (row.width, row.height) else { return }
+            commit(row.id, field: kind) { [store] in
+                await store.send(
+                    command: .setStage(
+                        row.id,
+                        .object([
+                            "type": .string("size"), "width": .int(Int64(width)), "height": .int(Int64(height)),
+                        ])))
+            }
+        } else if kind == .layer {
             guard let layer = Int(text.trimmingCharacters(in: .whitespaces)), (0...1000).contains(layer) else {
                 tell(loc("settings.video.badLayer"))
                 field.stringValue = String(row.layer)

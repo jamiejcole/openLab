@@ -40,6 +40,14 @@ struct StatusPresentation: Equatable {
         case .absent: problems.append((.warning, loc("status.device.absent")))
         default: problems.append((.warning, String(format: loc("status.device.other"), s.device.state.raw)))
         }
+        // A secondary device the engine lost or gave up on stops the cues patched to it: name it.
+        for o in s.outputs where !o.primary {
+            switch o.state {
+            case .lost: problems.append((.alarm, String(format: loc("status.output.lost"), o.name)))
+            case .failed: problems.append((.alarm, String(format: loc("status.output.failed"), o.name)))
+            default: break
+            }
+        }
         if !s.disk.healthy { problems.append((.alarm, loc("status.disk.unhealthy"))) }
         if let load = s.engineLoad, load >= highLoad { problems.append((.warning, loc("status.load.high"))) }
         if s.xruns > 0, xrunsIncreased {
@@ -79,6 +87,10 @@ struct StatusPresentation: Equatable {
         if let b = d.blockFrames { format += "  " + String(format: loc("status.detail.block"), Int(b)) }
         if let l = d.latencyMs { format += "  " + String(format: loc("status.detail.latency"), l) }
         out.append(format)
+        for o in s.outputs where !o.primary {
+            out.append(
+                String(format: loc("status.detail.device"), o.name, deviceStateText(o.state.raw)))
+        }
         out.append(
             String(
                 format: loc("status.detail.disk"), Int(s.disk.streams), Int(s.disk.underrunFrames),
@@ -92,10 +104,12 @@ struct StatusPresentation: Equatable {
         return out
     }
 
-    static func deviceStateText(_ state: DeviceState) -> String {
-        let key = "status.state.\(state.raw)"
+    static func deviceStateText(_ state: DeviceState) -> String { deviceStateText(state.raw) }
+
+    static func deviceStateText(_ raw: String) -> String {
+        let key = "status.state.\(raw)"
         let missing = "\u{1}"
         let value = NSLocalizedString(key, value: missing, comment: "")
-        return value == missing ? state.raw : value
+        return value == missing ? raw : value
     }
 }

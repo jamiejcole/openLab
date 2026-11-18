@@ -110,6 +110,10 @@ use patches::Patches;
 use transport::Scope;
 use voice_ids::VoiceIds;
 use voices::Voices;
+
+/// Where a loaded cue stands: the cue, seconds into its action, and the point of its media
+/// file (seconds) for a voice or picture.
+type LoadedPoint = (CueId, f64, Option<f64>);
 use watch::{MediaWatch, WatchBatch};
 use watch_share::WatchShare;
 
@@ -576,8 +580,8 @@ struct Doc {
     resend_document: bool,
     resend_warnings: bool,
     last_progress: Option<SampleTime>,
-    /// The loaded cues' positions the last progress message carried.
-    last_loaded: Vec<(CueId, f64)>,
+    /// The loaded cues' places the last progress message carried.
+    last_loaded: Vec<LoadedPoint>,
     /// Where the voices of cues a lost device left paused stood when it went (`progress`'s
     /// values): their time is shown as a paused voice's, the loop pass and file position
     /// included. Kept while the cue shows the mark.
@@ -1436,6 +1440,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::SetBufferSize { .. } => "set_buffer_size",
         Request::PreshowCheck => "preshow_check",
         Request::ListPatchMappings => "list_patch_mappings",
+        Request::SequenceSpan { .. } => "sequence_span",
         Request::SetShowMode { .. } => "set_show_mode",
         Request::SetPatchMapping { .. } => "set_patch_mapping",
         Request::LogTail { .. } => "log_tail",
@@ -1445,12 +1450,15 @@ fn request_name(r: &Request) -> &'static str {
         Request::ListDisplays => "list_displays",
         Request::ListStageMappings => "list_stage_mappings",
         Request::SetStageMapping { .. } => "set_stage_mapping",
+        Request::SetStageMonitor { .. } => "set_stage_monitor",
         #[cfg(feature = "test-support")]
         Request::StageTestCard { .. } => "stage_test_card",
         #[cfg(feature = "test-support")]
         Request::StageProbe { .. } => "stage_probe",
         #[cfg(feature = "test-support")]
         Request::DisplayProbe { .. } => "display_probe",
+        #[cfg(feature = "test-support")]
+        Request::MonitorProbe { .. } => "monitor_probe",
         #[cfg(feature = "test-support")]
         Request::Advance { .. } => "advance",
         #[cfg(feature = "test-support")]

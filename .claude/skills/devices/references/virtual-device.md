@@ -39,4 +39,4 @@ A build without the feature has no such option: a usage error, exit 2. Test-only
 
 Unit tests in the module: exact frames rendered and every clock following them, a second `advance` refused, shutdown during one, held answers taken in at the next `advance`, loss and return, realtime rendering, refusals without a virtual device, the second device plugged in and the default moved, streams on both rendering in step and each lost alone.
 - `tests/net/session.rs` runs the real binary on its stepped device over its real socket: a three-cue show with GO, progress and panic giving the same messages on two runs; lose and restore over the wire; a patch on the second device heard there and not on the first; realtime refusing `advance`.
-- App side: `TestEngine.deviceIDs` / `deviceNames`; the scenario step `device` takes `output` 1 or 2.
+- App side: `TestEngine.deviceIDs` / `deviceNames`; the scenario step `device` takes `output` 1 or 2; UI tests send the requests with `engineRequest`.

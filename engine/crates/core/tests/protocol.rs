@@ -339,6 +339,23 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 device: "openlab:virtual-2".into(),
             },
         ),
+        ("sequence_span", Request::SequenceSpan { cue: cue_id(10) }),
+        (
+            "set_stage_monitor",
+            Request::SetStageMonitor {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                open: true,
+            },
+        ),
+        (
+            "monitor_probe",
+            Request::MonitorProbe {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                width: 640,
+                height: 480,
+                points: vec![[0.5, 0.05], [0.5, 0.5]],
+            },
+        ),
     ]
 }
 
@@ -448,6 +465,21 @@ fn fixtures() -> Vec<(String, Sample)> {
                 property: CueProperty::Name {
                     value: "Storm".into(),
                 },
+            }),
+            coalesce: None,
+        }),
+    );
+    // Renumber with a prefix and a suffix: cues read "A10b", "A11b".
+    add(
+        "command_renumber",
+        client(ClientMessage::Command {
+            id: rid(4),
+            command: Box::new(Command::Renumber {
+                ids: vec![cue_id(10), cue_id(11)],
+                start: 10.0,
+                increment: 1.0,
+                prefix: "A".into(),
+                suffix: "b".into(),
             }),
             coalesce: None,
         }),
@@ -997,13 +1029,24 @@ fn fixtures() -> Vec<(String, Sample)> {
                 height: 1080,
             }],
             video: Some(true),
-            stages: vec![StageMappingEntry {
-                stage: StageId(uuid::Uuid::from_u128(0x80)),
-                mapping: None,
-                state: Some(openlab_core::stage_link::StageState::DisplayMissing {
-                    display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
-                }),
-            }],
+            stages: vec![
+                StageMappingEntry {
+                    stage: StageId(uuid::Uuid::from_u128(0x80)),
+                    mapping: None,
+                    state: Some(openlab_core::stage_link::StageState::DisplayMissing {
+                        display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
+                    }),
+                    panicked: false,
+                    monitor: true,
+                },
+                StageMappingEntry {
+                    stage: StageId(uuid::Uuid::from_u128(0x81)),
+                    mapping: None,
+                    state: Some(openlab_core::stage_link::StageState::Hidden),
+                    panicked: true,
+                    monitor: false,
+                },
+            ],
         }),
     );
     add(
@@ -1264,6 +1307,27 @@ fn fixtures() -> Vec<(String, Sample)> {
                 ProgressItem {
                     cue: cue_id(11),
                     elapsed: 0.25,
+                    remaining: None,
+                    position: None,
+                },
+            ],
+            waits: vec![],
+        }),
+    );
+    // Loaded to a time: a Wait cue 4 s into its action, an Audio cue 2.5 s in at its file point.
+    add(
+        "progress_loaded",
+        server(ServerMessage::Progress {
+            items: vec![
+                ProgressItem {
+                    cue: cue_id(10),
+                    elapsed: 2.5,
+                    remaining: None,
+                    position: Some(32.5),
+                },
+                ProgressItem {
+                    cue: cue_id(14),
+                    elapsed: 4.0,
                     remaining: None,
                     position: None,
                 },
@@ -1571,6 +1635,26 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "result_sequence_span",
+        server(ServerMessage::Result {
+            id: rid(63),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::SequenceSpan { span: Some(9.5) }),
+            }),
+        }),
+    );
+    add(
+        "result_sequence_span_unknown",
+        server(ServerMessage::Result {
+            id: rid(64),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::SequenceSpan { span: None }),
+            }),
+        }),
+    );
+    add(
         "result_stage_mappings",
         server(ServerMessage::Result {
             id: rid(62),
@@ -1589,16 +1673,22 @@ fn fixtures() -> Vec<(String, Sample)> {
                             state: Some(openlab_core::stage_link::StageState::Shown {
                                 display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
                             }),
+                            panicked: false,
+                            monitor: false,
                         },
                         StageMappingEntry {
                             stage: StageId(uuid::Uuid::from_u128(0x81)),
                             mapping: None,
                             state: Some(openlab_core::stage_link::StageState::NoDisplay),
+                            panicked: false,
+                            monitor: false,
                         },
                         StageMappingEntry {
                             stage: StageId(uuid::Uuid::from_u128(0x82)),
                             mapping: None,
                             state: None,
+                            panicked: false,
+                            monitor: false,
                         },
                     ],
                 }),
@@ -2105,7 +2195,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 25);
-    assert_eq!(all_requests().len(), 29);
+    assert_eq!(all_requests().len(), 32);
 }
 
 #[test]
@@ -2279,7 +2369,6 @@ fn malformed_input_is_an_error_never_a_panic() {
         format!(
             r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":-1e999}}}}"#
         ),
-        format!(r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":-1}}}}"#),
         format!(r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":NaN}}}}"#),
         format!(
             r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":null}}}}"#
@@ -2318,11 +2407,23 @@ fn malformed_input_is_an_error_never_a_panic() {
         // A client frame is never a valid server frame either way round, and must not panic.
         let _ = decode_server(text);
     }
-    assert_eq!(
+    // A load time may be negative (back from the end) but never not-a-number or infinite.
+    assert!(
         decode_client(
             r#"{"type":"transport","id":1,"action":{"type":"load","cue":"00000000-0000-0000-0000-000000000001","at":-1}}"#
-        ),
-        Err(ProtocolError::OutOfRange {
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        encode_client(&transport(
+            1,
+            TransportAction::Load {
+                cue: cue_id(1),
+                at: f64::INFINITY
+            }
+        ))
+        .err(),
+        Some(ProtocolError::NonFinite {
             field: "transport.load.at"
         })
     );
@@ -2453,15 +2554,15 @@ fn a_batch_is_refused_whole_unless_well_formed() {
             "{not_per_cue:?}"
         );
     }
-    assert_eq!(
+    assert!(
         batch(vec![
             start(1),
             TransportAction::Load {
                 cue: cue_id(2),
                 at: -1.0
             }
-        ]),
-        field("transport.load.at")
+        ])
+        .is_ok()
     );
     // The largest batch fits a frame and decodes; every per-cue kind is accepted.
     let most: Vec<_> = (0..MAX_BATCH_ACTIONS as u128).map(start).collect();
@@ -4596,6 +4697,9 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::ListPatchMappings),
         Just(Request::ListDisplays),
         Just(Request::ListStageMappings),
+        any::<u128>().prop_map(|c| Request::SequenceSpan {
+            cue: CueId(uuid::Uuid::from_u128(c))
+        }),
         (any::<u128>(), proptest::option::of("[!-~]{1,40}")).prop_map(|(stage, display)| {
             Request::SetStageMapping {
                 stage: StageId(uuid::Uuid::from_u128(stage)),
@@ -4679,13 +4783,19 @@ fn arb_command() -> impl Strategy<Value = Command> {
         (
             proptest::collection::vec(arb_cue(), 0..4),
             arb_time(),
-            arb_time()
+            arb_time(),
+            arb_text(),
+            arb_text()
         )
-            .prop_map(|(ids, start, increment)| Command::Renumber {
-                ids,
-                start,
-                increment
-            }),
+            .prop_map(
+                |(ids, start, increment, prefix, suffix)| Command::Renumber {
+                    ids,
+                    start,
+                    increment,
+                    prefix,
+                    suffix,
+                }
+            ),
     ]
 }
 

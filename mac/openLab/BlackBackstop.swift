@@ -14,7 +14,8 @@ struct BackstopDisplay: Equatable {
 /// VID-12: which displays the app holds black. A display is held when a stage of an open workspace
 /// keeps black and is shown there on this machine, the display is connected, and it is not the one
 /// with the menu bar. Stage states are not read: the backstop is for the moments the stage host
-/// cannot say anything.
+/// cannot say anything. A stage whose black a panic took down (`panicked`, QLab 5 manual p. 227)
+/// holds nothing until a cue plays on it again.
 enum BackstopPlan {
     /// The frames to hold black, by display id.
     static func covers(
@@ -23,7 +24,8 @@ enum BackstopPlan {
         var wanted = Set<String>()
         for (model, outputs) in workspaces {
             for stage in model?.stages ?? [] where stage.raw["keep_black"] == .bool(true) {
-                if let display = outputs.stages.first(where: { $0.stage == stage.id })?.mapping?.display {
+                let entry = outputs.stages.first { $0.stage == stage.id }
+                if let display = entry?.mapping?.display, entry?.panicked != true {
                     wanted.insert(display)
                 }
             }

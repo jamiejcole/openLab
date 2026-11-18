@@ -190,8 +190,8 @@ final class VideoCueTests: XCTestCase {
     // MARK: Flow 1: adding a Video cue
 
     /// The Video toolbar button, then its Cues menu item (Cmd-3, as QLab 5's): each adds a Video cue
-    /// on the workspace's first stage, drawn with the Video drawing and named "Video"; with no file
-    /// it is broken with that reason, as an Audio cue with no file is.
+    /// on the workspace's first stage, drawn with the Video drawing and an empty name (its default
+    /// name is its file's); with no file it is broken with that reason, as an Audio cue with no file is.
     func testTheVideoToolbarButtonOrItsShortcutAddsAVideoCueBrokenWithNoFile() async throws {
         try await openNewWorkspace()
         let firstStage = try XCTUnwrap(store.model?.stages.first?.id, "a new workspace has a stage per display")
@@ -232,7 +232,7 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(Icon.drawing(shownBy: type.image), .kindVideo, line: line)
         XCTAssertEqual(type.accessibilityLabel(), loc("cue.type.video"), line: line)
         XCTAssertEqual(
-            cell(id, "name"), loc("cue.type.video"), "an unnamed cue with no file reads as its kind", line: line)
+            cell(id, "name"), "", "an unnamed cue with no file has an empty Name cell", line: line)
         XCTAssertEqual(cell(id, "duration"), "", line: line)
         XCTAssertFalse(brokenTip(id)?.contains(loc("problem.no_stage")) ?? true, "it has a stage", line: line)
         // For its file's sound: the workspace's first patch and a new Audio cue's levels on it.
@@ -456,6 +456,86 @@ final class VideoCueTests: XCTestCase {
         await soon("ended after its duration") { self.status(Self.timedStill) == nil }
     }
 
+    /// #674 flow 3: a stage's size is changed on the Video page while a cue plays on it: the
+    /// picture follows at once (fitted to the square stage, black above and below the card) and
+    /// the cue plays on, its row still running.
+    func testTheSizeChangedWhileACuePlaysOnTheStageThePictureFollowsWithoutTheCueStopping() async throws {
+        try await openVideoShow()
+        await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
+        click(Self.still)
+        try await go()
+        try await play(0.5)
+        let red: [UInt8] = [255, 0, 0, 255]
+        let black: [UInt8] = [0, 0, 0, 255]
+        func colours() async -> [[UInt8]] {
+            guard
+                case .success(let ok) = await store.client.send({
+                    .request(id: $0, .stageProbe(stage: Self.stage, points: [[0.25, 0.05], [0.25, 0.4]]))
+                }),
+                case .stageProbe(_, let colours)? = ok.data
+            else { return [] }
+            return colours
+        }
+        let wide = await colours()
+        XCTAssertEqual(wide.last, red, "the card fills the wide stage")
+        let sc = WorkspaceSettingsWindowController(store: store)
+        addTeardownBlock { @MainActor in sc.close() }
+        await sc.present().value
+        let pane = sc.videoPane
+        await soon("the Video page lists the stages") { pane.widthFields.count == 2 }
+        let field = pane.widthFields[0]
+        field.stringValue = "1080"
+        pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        await pane.pending?.value
+        await soon("the row shows the square stage") { pane.shown?.first?.width == 1080 }
+        XCTAssertEqual(pane.widthFields[0].stringValue, "1080")
+        try await play(0.2)
+        let square = await colours()
+        XCTAssertEqual(square, [black, red], "the card fitted across the square stage")
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"), "the cue plays on")
+        let frame = await shownFrame()
+        XCTAssertNil(frame, "the card's barcode row is now in the black above it")
+        try await play(1)
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"))
+    }
+
+    /// #642 flow: a stage's Remove on the Video page while a cue plays on it is refused: the page
+    /// shows the engine's reason (the stage and the cue), the row stays, and the display still
+    /// shows the picture.
+    func testRemovingAStageOnTheVideoPageWhileACuePlaysOnItIsRefusedWithTheReason() async throws {
+        try await openVideoShow()
+        await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
+        guard case .success = await store.setStageMapping(Self.stage, display: "V1") else {
+            return XCTFail("display")
+        }
+        click(Self.still)
+        try await go()
+        try await play(0.5)
+        func displayFrame() async -> UInt16? {
+            guard case .success(let ok) = await engine.request(.displayProbe(display: "V1", points: [[0.5, 0.5]])),
+                case .stageProbe(let frame, _)? = ok.data
+            else { return nil }
+            return frame
+        }
+        let before = await displayFrame()
+        XCTAssertEqual(before, 0, "the still on V1")
+        let sc = WorkspaceSettingsWindowController(store: store)
+        addTeardownBlock { @MainActor in sc.close() }
+        await sc.present().value
+        let pane = sc.videoPane
+        await soon("the Video page lists the stages") { pane.removeButtons.count == 2 }
+        pane.removeButtons[0].performClick(nil)
+        await pane.pending?.value
+        await soon("the engine's reason is shown") { !pane.messageLabel.stringValue.isEmpty }
+        XCTAssertEqual(pane.messageLabel.stringValue, String(format: loc("settings.video.inUse"), "Stage 1", "2"))
+        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1", "Side screen"], "the row stays")
+        XCTAssertEqual(store.model?.stages.count, 2)
+        try await play(0.2)
+        let after = await displayFrame()
+        XCTAssertEqual(after, 0, "the picture stays up")
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"))
+    }
+
     /// Pause holds the frame and the row's time; resume plays on; load and load to time ready the
     /// cue (the row shows it loaded); GO from a time starts the picture there; panic stops it.
     func testStopPauseResumePanicLoadAndLoadToTimeActOnAVideoCueAsOnAnAudioCue() async throws {
@@ -566,6 +646,62 @@ final class VideoCueTests: XCTestCase {
         XCTAssertTrue(v.videoRows.allSatisfy(\.isHidden))
         XCTAssertEqual(v.soundRow?.isHidden, true)
         XCTAssertEqual(v.patchRow?.isHidden, false)
+    }
+
+    /// The frame `stage`'s monitor window shows at 640 x 360 (nil: none, or no window open), read
+    /// back from the stage host.
+    func monitorFrame(_ stage: ModelID = VideoCueTests.stage) async -> UInt16? {
+        guard
+            case .success(let ok) = await store.client.send({
+                .request(id: $0, .monitorProbe(stage: stage, width: 640, height: 360, points: [[0.5, 0.5]]))
+            }),
+            case .stageProbe(let frame, _)? = ok.data
+        else { return nil }
+        return frame
+    }
+
+    /// #648 flows 1, 2 and 5 from a Video cue's I/O tab: the watch button beside its stage opens the
+    /// stage's monitor window; GO plays the movie and the window shows the frame the stage shows;
+    /// Show Mode leaves the window as it is. A cue on no stage has the button off.
+    func testTheMonitorButtonOnAVideoCuesIOTabOpensItsStageAndShowsTheSameFramesAsTheDisplay() async throws {
+        try await openVideoShow()
+        click(Self.movie)
+        let inspector = wc.inspector
+        await soon("the inspector shows the movie") { inspector.cue?.id == Self.movie }
+        let io = try XCTUnwrap(inspector.tabView.tabViewItems.first { $0.identifier as? String == "io" })
+        inspector.tabView.selectTabViewItem(io)
+        let v = inspector.videoIO
+        XCTAssertEqual(v.monitorButton.title, loc("inspector.io.monitor"))
+        XCTAssertTrue(v.monitorButton.isEnabled)
+        XCTAssertTrue(v.monitorButton.superview === v.stagePopup.superview, "beside the stage pop-up")
+        v.monitorButton.performClick(nil)
+        await soon("the monitor is open") {
+            // Pushes are spaced by the engine's clock, which stands still here: read them.
+            await self.store.refreshVideoOutputs()
+            return self.store.videoOutputs.stages.first { $0.stage == Self.stage }?.monitor == true
+        }
+        XCTAssertEqual(inspector.messageLabel.stringValue, "")
+        try await go()
+        try await play(1.0)
+        let onStage = await shownFrame()
+        let watched = await monitorFrame()
+        XCTAssertNotNil(onStage, "the movie plays")
+        XCTAssertEqual(watched, onStage, "the window shows the stage's frame")
+        // Show Mode: the window stays as it is, and keeps up.
+        wc.setShowMode(true)
+        await soon { self.store.showMode }
+        try await play(0.5)
+        await store.refreshVideoOutputs()
+        XCTAssertEqual(store.videoOutputs.stages.first { $0.stage == Self.stage }?.monitor, true)
+        let later = await monitorFrame()
+        let laterOnStage = await shownFrame()
+        XCTAssertEqual(later, laterOnStage)
+        XCTAssertNotEqual(later, watched, "it moves on with the movie")
+        wc.setShowMode(false)
+        // A cue on no stage: nothing to watch.
+        click(Self.noStage)
+        await soon("the inspector shows the cue on no stage") { inspector.cue?.id == Self.noStage }
+        XCTAssertFalse(v.monitorButton.isEnabled)
     }
 
     // MARK: Flow 5: missing file, relink, Show Mode

@@ -273,7 +273,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         countField.setAX(AX.timeLoopsCount)
         playRadio.setAX(AX.timeLoopsPlay)
         loopRadio.setAX(AX.timeLoopsLoop)
-        waveform.setAX(AX.timeLoopsWaveform)
+        // A plain view is not an accessibility element: without these VoiceOver and UI tests do not see it.
+        waveform.setAccessibilityElement(true)
+        waveform.setAccessibilityRole(.image)
+        waveform.setAX(AX.timeLoopsWaveform, label: loc("timeLoops.waveform"))
         zoomOutButton.setAX(AX.timeLoopsZoomOut)
         zoomInButton.setAX(AX.timeLoopsZoomIn)
         resetButton.setAX(AX.timeLoopsReset)

@@ -145,6 +145,54 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { rig.store.videoOutputs.stages.first?.state?.state == "hidden" }
     }
 
+    /// What `stage`'s monitor window shows at a content size of `width` x `height` pixels, read back
+    /// from the stage host: the test card's frame and the colours at `points` (none: no window).
+    private func monitorShows(
+        _ rig: Rig, _ stage: String, _ width: UInt32, _ height: UInt32, _ points: [[Double]]
+    ) async -> (UInt16?, [[UInt8]])? {
+        guard
+            case .success(let ok) = await rig.store.client.send({
+                .request(
+                    id: $0, .monitorProbe(stage: ModelID(stage), width: width, height: height, points: points))
+            }),
+            case .stageProbe(let frame, let colours)? = ok.data
+        else { return nil }
+        return (frame, colours)
+    }
+
+    /// #648 flow 1 (the settings page's button): the watch button beside a stage → a window shows
+    /// that stage scaled to fit, black bars where the shapes differ. The window is the stage host's
+    /// (drawn offscreen here on virtual displays), read back as the operator would see it: the
+    /// stage's test card in a square window, black above and below it. The page itself is
+    /// unchanged and says nothing.
+    func testTheMonitorButtonBesideAStageInSettingsOpensAWindowShowingTheStageScaledToFitWithBlackBars()
+        async throws
+    {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.monitorButtons.count == 1 }
+        let button = pane.monitorButtons[0]
+        XCTAssertEqual(button.title, loc("settings.video.monitor"))
+        XCTAssertTrue(button.isEnabled)
+        _ = await rig.store.client.send { .request(id: $0, .stageTestCard(stage: ModelID(self.stageA), frame: 77)) }
+        let closed = await monitorShows(rig, stageA, 400, 400, [[0.5, 0.5]])
+        XCTAssertEqual(closed?.1, [], "no window before the click")
+        button.performClick(nil)
+        await settled(sc) { rig.store.videoOutputs.stages.first?.monitor == true }
+        // A square window: the 16:9 stage across its width, its four quadrants inside, bars above
+        // and below.
+        let inside = [[0.25, 0.21875 + 0.3 * 0.5625], [0.75, 0.21875 + 0.8 * 0.5625]]
+        let shown = await monitorShows(rig, stageA, 400, 400, inside + [[0.5, 0.1], [0.5, 0.9]])
+        XCTAssertEqual(shown?.0, 77, "the stage's picture")
+        XCTAssertEqual(shown?.1, [[255, 0, 0, 255], [255, 255, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255]])
+        XCTAssertEqual(pane.messageLabel.stringValue, "")
+        // Clicked again on an open window: brought to the front, still open.
+        button.performClick(nil)
+        await settled(sc) { pane.pending == nil || rig.store.videoOutputs.stages.first?.monitor == true }
+        XCTAssertEqual(rig.store.videoOutputs.stages.first?.monitor, true)
+        XCTAssertEqual(pane.messageLabel.stringValue, "")
+    }
+
     /// Flow 7: a show whose stage has no display on this Mac loads; the stage carries a warning in
     /// its row and in the workspace's Warnings list; choosing a display once clears both.
     func testAStageWithoutADisplayWarnsInItsRowAndTheWarningsUntilOneIsChosen() async throws {
@@ -176,7 +224,8 @@ final class VideoSettingsTests: XCTestCase {
             XCTAssertEqual(pane.holder.subviews, [pane.grid], "\(why): one table")
             XCTAssertEqual(pane.grid.numberOfRows, rows.count + warned, why)
             let controls: [NSView] =
-                pane.nameFields + pane.layerFields + pane.displayPopups + pane.blackBoxes + pane.removeButtons
+                pane.nameFields + pane.layerFields + pane.displayPopups + pane.blackBoxes + pane.monitorButtons
+                + pane.removeButtons
             // Per row its controls and its pixel-size label; the warning lines (the titles are not
             // in the rows' grid).
             XCTAssertEqual(pane.grid.subviews.count, controls.count + rows.count + warned, why)
@@ -382,7 +431,9 @@ final class VideoSettingsTests: XCTestCase {
             XCTAssertLessThanOrEqual(
                 popup.intrinsicContentSize.width, popup.frame.width, popup.titleOfSelectedItem ?? "")
         }
-        for c in 0..<6 { XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)") }
+        for c in 0..<VideoSettingsPane.columns.count {
+            XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)")
+        }
         // At the window's least size too.
         window.setContentSize(window.contentMinSize)
         window.contentView?.layoutSubtreeIfNeeded()
@@ -396,7 +447,9 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(pane.displayWidth, least)
         XCTAssertEqual(pane.displayWidth, VideoSettingsPane.mostDisplayWidth)
         XCTAssertGreaterThan(pane.nameWidth, VideoSettingsPane.columns[0])
-        for c in 0..<6 { XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)") }
+        for c in 0..<VideoSettingsPane.columns.count {
+            XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)")
+        }
     }
 
     /// A long stage name is cut with an ellipsis in its field and in the Warnings list, whose
@@ -491,5 +544,125 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(pane.layerFields[1].stringValue, "100")
         let onTopNow = await onTop()
         XCTAssertEqual(onTopNow, 111)
+    }
+
+    // MARK: A stage's pixel size (#674)
+
+    /// Types `text` into `field` and leaves it, as the operator's Tab or Return does.
+    private func type(_ text: String, into field: NSTextField, _ pane: VideoSettingsPane) {
+        field.stringValue = text
+        pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+    }
+
+    /// The colours display `display` shows at `points`.
+    private func displayColours(_ display: String, _ points: [[Double]]) async -> [[UInt8]] {
+        guard case .success(let ok) = await engine.request(.displayProbe(display: display, points: points)),
+            case .stageProbe(_, let colours)? = ok.data
+        else { return [] }
+        return colours
+    }
+
+    /// #674 flow 1: a stage's size is changed on the Video page: its row shows the new size, its
+    /// picture on the display is drawn at that size (a square stage on the wide V1: black bars at
+    /// the sides, the test card between them), and one undo puts it back.
+    func testAStagesSizeChangedOnTheVideoPageShowsInItsRowAndIsDrawnAtThatSizeInOneUndoStep() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.widthFields.count == 1 }
+        XCTAssertEqual(pane.widthFields[0].stringValue, "1920")
+        XCTAssertEqual(pane.heightFields[0].stringValue, "1080")
+        let popup = pane.displayPopups[0]
+        popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
+        _ = popup.sendAction(popup.action, to: popup.target)
+        await settled(sc) { pane.shown?.first?.display == "V1" }
+        guard
+            case .success = await rig.client.send({ .request(id: $0, .stageTestCard(stage: ModelID(stageA), frame: 7)) }
+            )
+        else { return XCTFail("test card") }
+        let red: [UInt8] = [255, 0, 0, 255]
+        let black: [UInt8] = [0, 0, 0, 255]
+        // Near V1's left edge, then a little further in: the card's red quadrant both, the
+        // stage filling the display.
+        let points: [[Double]] = [[0.05, 0.3], [0.3, 0.3]]
+        await assertEventually("the card fills V1") { await self.displayColours("V1", points) == [red, red] }
+        type("1080", into: pane.widthFields[0], pane)
+        await settled(sc) { pane.shown?.first?.width == 1080 }
+        XCTAssertEqual(pane.widthFields[0].stringValue, "1080")
+        XCTAssertEqual(pane.heightFields[0].stringValue, "1080")
+        XCTAssertEqual(rig.store.model?.stages.first?.raw["width"]?.doubleValue, 1080)
+        XCTAssertEqual(pane.messageLabel.stringValue, "")
+        await assertEventually("a square stage in V1's middle") {
+            await self.displayColours("V1", points) == [black, red]
+        }
+        _ = await rig.store.undo()
+        await settled(sc) { pane.shown?.first?.width == 1920 }
+        XCTAssertEqual(pane.widthFields[0].stringValue, "1920")
+        await assertEventually("back across V1") { await self.displayColours("V1", points) == [red, red] }
+    }
+
+    /// #674 flow 2: a size of 0, above the limit, or not a number is refused with the reason shown
+    /// where every other refused value's is, and the old size stays (nothing is sent).
+    func testASizeOfZeroAboveTheLimitOrNotANumberIsRefusedWithTheReasonAndTheOldSizeStays() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.widthFields.count == 1 }
+        for (text, width) in [("0", true), ("16385", false), ("abc", true), ("-5", false), ("", true)] {
+            let field = width ? pane.widthFields[0] : pane.heightFields[0]
+            type(text, into: field, pane)
+            XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badSize"), text)
+            XCTAssertEqual(field.stringValue, width ? "1920" : "1080", "\(text): the old size stays")
+        }
+        await sc.videoPane.pending?.value
+        XCTAssertEqual(rig.store.model?.stages.first?.raw["width"]?.doubleValue, 1920)
+        XCTAssertEqual(rig.store.model?.stages.first?.raw["height"]?.doubleValue, 1080)
+        XCTAssertEqual(rig.store.document?.canUndo, false, "nothing was sent")
+        // The largest size is taken, and a good edit clears the reason.
+        type("16384", into: pane.heightFields[0], pane)
+        await settled(sc) { pane.shown?.first?.height == 16384 }
+        XCTAssertEqual(pane.messageLabel.stringValue, "")
+        XCTAssertEqual(pane.heightFields[0].stringValue, "16384")
+    }
+
+    /// A size typed and committed with Return, then undone from the workspace window: the field
+    /// shows the size the undo put back, and a click on another control of the page sends no size
+    /// (the undone one stays).
+    func testASizeUndoneAfterReturnIsShownAndAClickElsewhereNeverSendsItAgain() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080), (stageB, "Side", 1280, 720)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.heightFields.count == 2 }
+        try startTyping("400", in: pane.heightFields[0], sc)
+        let editor = try XCTUnwrap(pane.heightFields[0].currentEditor() as? NSTextView)
+        editor.insertNewline(nil)
+        await settled(sc) { pane.shown?.first?.height == 400 }
+        _ = await rig.store.undo()
+        await settled(sc) { pane.shown?.first?.height == 1080 }
+        XCTAssertEqual(pane.heightFields[0].stringValue, "1080", "the undone size is shown")
+        XCTAssertNotEqual(pane.heightFields[0].currentEditor()?.string, "400")
+        pane.blackBoxes[1].performClick(nil)
+        await settled(sc) { pane.shown?.last?.keepBlack == true }
+        XCTAssertEqual(rig.store.model?.stages.first?.raw["height"]?.doubleValue, 1080, "no size sent again")
+        XCTAssertEqual(pane.heightFields[0].stringValue, "1080")
+        XCTAssertEqual(pane.messageLabel.stringValue, "")
+    }
+
+    /// In a wide window the name column takes the room the display column leaves, so a long name
+    /// reads whole.
+    func testALongNameShowsWholeInAWideWindow() async throws {
+        let long = "Upstage cyclorama projector for the second act"
+        let (_, sc) = try await open(stages: [(stageA, long, 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.nameFields.count == 1 }
+        let window = try XCTUnwrap(sc.window)
+        sc.tabs.selectTabViewItem(withIdentifier: "video")
+        window.setContentSize(NSSize(width: 1600, height: 1000))
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.contentView?.layoutSubtreeIfNeeded()
+        let field = pane.nameFields[0]
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(field.cell).cellSize(forBounds: NSRect(x: 0, y: 0, width: 10_000, height: 100)).width,
+            field.frame.width, "the whole name fits")
+        XCTAssertEqual(pane.header.column(at: 0).width, pane.grid.column(at: 0).width)
+        let right = pane.grid.convert(pane.grid.bounds, to: pane.scroll.contentView).maxX
+        XCTAssertGreaterThan(right, pane.scroll.contentView.bounds.width - 40, "the table takes the page's width")
     }
 }

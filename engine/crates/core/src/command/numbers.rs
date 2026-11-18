@@ -69,29 +69,68 @@ fn format_number(value: f64) -> String {
     rounded.to_string()
 }
 
+/// Longest prefix or suffix of a renumber, in characters.
+pub const MAX_NUMBER_AFFIX: usize = 64;
+
 pub(super) fn renumber(
     ws: &mut Workspace,
     ids: &[CueId],
     start: f64,
     increment: f64,
+    prefix: &str,
+    suffix: &str,
 ) -> Result<Inverse, CommandError> {
     check_numbering(start, increment)?;
+    if prefix.chars().count() > MAX_NUMBER_AFFIX || suffix.chars().count() > MAX_NUMBER_AFFIX {
+        return Err(CommandError::InvalidNumbering(
+            "prefix or suffix is too long",
+        ));
+    }
     let wanted: HashSet<CueId> = ids.iter().copied().collect();
-    let mut numbers = Vec::new();
+    let mut selected = Vec::new();
+    let mut used: HashSet<&str> = HashSet::new();
     let mut found = HashSet::new();
     for list in &ws.cue_lists {
         visit(&list.cues, &mut |cue| {
-            if wanted.contains(&cue.id) && found.insert(cue.id) {
-                let step = numbers.len() as f64;
-                numbers.push(NumberAssignment {
-                    id: cue.id,
-                    number: Some(format_number(start + step * increment)),
-                });
+            if wanted.contains(&cue.id) {
+                if found.insert(cue.id) {
+                    selected.push(cue.id);
+                }
+            } else if let Some(number) = &cue.number {
+                used.insert(number.as_str());
             }
         });
     }
     if let Some(&missing) = ids.iter().find(|id| !found.contains(id)) {
         return Err(CommandError::CueNotFound(missing));
+    }
+    // Each skip steps over one distinct used number, so this many tries always suffice;
+    // an increment too small to tell two numbers apart runs out and is refused below.
+    let mut tries = used.len() + selected.len() + 1;
+    let mut step = 0.0_f64;
+    let mut numbers = Vec::with_capacity(selected.len());
+    let mut taken = HashSet::new();
+    for id in selected {
+        let number = loop {
+            if tries == 0 {
+                return Err(CommandError::InvalidNumbering(
+                    "no free number at this increment",
+                ));
+            }
+            tries -= 1;
+            let text = format!(
+                "{prefix}{}{suffix}",
+                format_number(start + step * increment)
+            );
+            step += 1.0;
+            if !used.contains(text.as_str()) && taken.insert(text.clone()) {
+                break text;
+            }
+        };
+        numbers.push(NumberAssignment {
+            id,
+            number: Some(number),
+        });
     }
     set_numbers(ws, numbers)
 }

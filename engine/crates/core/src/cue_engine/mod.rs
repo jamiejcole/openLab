@@ -463,6 +463,33 @@ impl CueEngine {
         matches!(self.slots.get(&cue), Some(Slot::Active(run)) if run.paused_at.is_some())
     }
 
+    /// Each loaded cue standing inside its action (loaded to a time past its pre-wait), with
+    /// how far into its action it stands, in id order: what its row shows until it starts. A
+    /// cue loaded by a seek stands at a point of its file instead, which the binary knows.
+    pub fn loaded_offsets(&self) -> impl Iterator<Item = (CueId, SampleTime)> + '_ {
+        self.slots.iter().filter_map(|(id, slot)| match slot {
+            Slot::Loaded(l) if l.action_offset > 0 => Some((*id, l.action_offset)),
+            _ => None,
+        })
+    }
+
+    /// How long the sequence that starts at `cue` lasts, seconds: its pre-waits and actions as
+    /// a run would time them through its auto-continue and auto-follow chain (what a negative
+    /// load time counts back from). `None` when unknown or endless, or for an unknown cue.
+    pub fn sequence_span(&self, ws: &Workspace, cue: CueId) -> Option<f64> {
+        let cx = Ctx {
+            ws,
+            now: 0,
+            horizon: 0,
+            budget: 0,
+            limit: 0,
+            limit_verified: false,
+            out: Vec::new(),
+            vacated: Vec::new(),
+        };
+        self.sequence(cue, &cx).end.map(|end| self.seconds(end))
+    }
+
     /// The Audio cue's nominal action length as the binary last told it (`Input::CueLengths`).
     pub fn nominal_length(&self, cue: CueId) -> Option<SampleTime> {
         self.lengths.get(&cue).copied()
@@ -594,7 +621,8 @@ impl CueEngine {
             }
             Input::Load { cue, time } => {
                 if self.known(cue, cx) {
-                    self.load_tree(cue, time, cx);
+                    let time = self.load_time(cue, time, cx);
+                    self.load_tree(cue, time, true, cx);
                 }
             }
             Input::Seek { cue, position } => self.seek(cue, position, cx),

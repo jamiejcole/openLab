@@ -996,7 +996,8 @@ fn load_to_time_shortens_known_durations_and_post_waits() {
 #[test]
 fn load_past_the_end_sits_loaded_at_the_end() {
     // Pre-wait 1 s + a 3 s wait = a 4 s length; loading to 100 s leaves the cue loaded: it does
-    // not complete, nothing follows, and no deadline is held.
+    // not complete, nothing follows, and no deadline is held. The cue it continues into is
+    // loaded with the rest of the time (96 s), and starts nothing either.
     let mut rig = Rig::new(vec![timed(wait(1, 3.0), 1.0, 5.0, AC), memo(2)]);
     let load = rig.at(
         0,
@@ -1007,16 +1008,23 @@ fn load_past_the_end_sits_loaded_at_the_end() {
     );
     assert_eq!(
         load,
-        vec![Action::StateChanged {
-            cue: id(1),
-            state: CueState::Loaded,
-            at: 0
-        }]
+        vec![
+            Action::StateChanged {
+                cue: id(1),
+                state: CueState::Loaded,
+                at: 0
+            },
+            Action::StateChanged {
+                cue: id(2),
+                state: CueState::Loaded,
+                at: 0
+            }
+        ]
     );
     assert_eq!(rig.engine.next_deadline(), None);
     assert!(rig.tick(50_000).is_empty());
     assert_eq!(rig.state(1), CueState::Loaded);
-    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.state(2), CueState::Loaded);
 }
 
 #[test]
@@ -1714,10 +1722,11 @@ fn every_transition_table_row() {
         } else if before != expect {
             assert_eq!(last, Some(expect), "{row} report");
         }
-        // A cue left idle has nothing pending, and its continue was cancelled.
+        // A cue left idle has nothing pending, and its continue was cancelled (the next cue may
+        // stand loaded at its top, loaded with cue 1's sequence, but it never starts).
         if expect == S::Idle {
             assert!(rig.tick(100_000).is_empty(), "{row} left work behind");
-            assert_eq!(rig.state(2), S::Idle, "{row} continued");
+            assert!(!rig.state(2).is_active(), "{row} continued");
         }
     }
 }

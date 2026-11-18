@@ -446,14 +446,14 @@ extension ClientMessage {
             case .listDevices, .setOutputDevice, .setBufferSize, .listPatchMappings, .preshowCheck, .logTail,
                 .setOutputOverrides,
                 .setShowMode, .setPatchMapping, .listDisplays, .listStageMappings, .setStageMapping,
-                .snapshot:
+                .setStageMonitor, .sequenceSpan, .snapshot:
                 return true
             #if DEBUG
                 // A stepped engine waits for its background work (up to 30 s) before it answers these.
                 case .advance, .loseDevice: return false
                 case .restoreDevice, .setDefaultDevice, .stageTestCard: return true
                 // Answered when the stage host has drawn and read back the stage.
-                case .stageProbe, .displayProbe: return false
+                case .stageProbe, .displayProbe, .monitorProbe: return false
             #endif
             }
         }

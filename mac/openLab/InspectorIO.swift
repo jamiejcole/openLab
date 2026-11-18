@@ -4,7 +4,8 @@ import AppKit
 
 /// The I/O tab's Video cue rows (QLab 5, manual pp. 211-212): the file, the format its probe read,
 /// the format of its sound (a pop-up of the audio tracks when the movie has several), the stage
-/// pop-up (with "none") and the stage's pixel size. Held by the inspector; hidden for an Audio cue.
+/// pop-up (with "none"), a button opening the stage's monitor window and the stage's pixel size.
+/// Held by the inspector; hidden for an Audio cue.
 @MainActor
 final class VideoIOControls {
     let fileLabel = NSTextField(labelWithString: "")
@@ -12,6 +13,8 @@ final class VideoIOControls {
     let formatLabel = NSTextField(labelWithString: "")
     let stagePopup = NSPopUpButton()
     let stageSizeLabel = NSTextField(labelWithString: "")
+    /// Opens the cue's stage's monitor window (QLab 5 manual p. 157); off with no stage.
+    let monitorButton = NSButton(title: loc("inspector.io.monitor"), target: nil, action: nil)
     /// The sound's format: plain text for a movie with one audio track, the pop-up for one with several.
     let soundLabel = NSTextField(labelWithString: "")
     let trackPopup = NSPopUpButton()
@@ -44,6 +47,10 @@ final class VideoIOControls {
         stagePopup.setAX("inspector-io-stage", label: loc("inspector.io.stage"))
         stageSizeLabel.setAX("inspector-io-stage-size", label: loc("inspector.io.stageSize"))
         stageSizeLabel.textColor = .secondaryLabelColor
+        monitorButton.setAX("inspector-io-monitor", label: loc("inspector.io.monitor.ax"))
+        monitorButton.controlSize = .small
+        monitorButton.toolTip = loc("inspector.io.monitor.tip")
+        monitorButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         soundLabel.setAX("inspector-io-sound-format", label: loc("inspector.io.soundFormat"))
         soundLabel.lineBreakMode = .byTruncatingTail
         soundLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -111,6 +118,8 @@ extension InspectorViewController {
         v.stagePopup.target = self
         v.stagePopup.action = #selector(stageChosen)
         v.stagePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+        v.monitorButton.target = self
+        v.monitorButton.action = #selector(monitorClicked)
         v.trackPopup.target = self
         v.trackPopup.action = #selector(audioTrackChosen)
         func label(_ key: String) -> NSTextField {
@@ -133,7 +142,7 @@ extension InspectorViewController {
             [labels[0], line([v.fileLabel, v.chooseButton])],
             [labels[1], v.formatLabel],
             [labels[2], line([v.soundLabel, v.trackPopup, v.trackNote])],
-            [labels[3], line([v.stagePopup, v.stageSizeLabel])],
+            [labels[3], line([v.stagePopup, v.monitorButton, v.stageSizeLabel])],
             [labels[4], line([outputPatchPopup, editPatchButton])],
         ])
         grid.rowSpacing = 8
@@ -242,6 +251,28 @@ extension InspectorViewController {
         if v.stagePopup.indexOfSelectedItem != chosen { v.stagePopup.selectItem(at: chosen) }
         v.stagePopup.isEnabled = !isLocked
         v.stageSizeLabel.stringValue = Self.stageSize(stages.first { $0.id.raw == current })
+        // Watching is no edit: a locked cue's stage can be watched too.
+        v.monitorButton.isEnabled = monitoredStage != nil && store.videoOutputs.video != false
+    }
+
+    /// The stage the I/O tab's monitor button opens: the one every shown Video cue is on, if it is
+    /// in the workspace.
+    var monitoredStage: ModelID? {
+        let stages = Set(editCues.filter { $0.kindType == "video" }.map { $0.raw["kind"]?["stage"]?.stringValue })
+        guard stages.count == 1, let raw = stages.first ?? nil else { return nil }
+        return store.model?.stages.first { $0.id.raw == raw }?.id
+    }
+
+    /// Opens the shown cue's stage's monitor window, or brings it to the front; a refusal says why
+    /// in the inspector.
+    @objc func monitorClicked() {
+        guard let stage = monitoredStage else { return }
+        messageLabel.stringValue = ""
+        Task { [weak self, store] in
+            if case .failure(let e) = await store.setStageMonitor(stage, open: true) {
+                self?.messageLabel.stringValue = e.detailText
+            }
+        }
     }
 
     /// The sound-format row (QLab 5 manual p. 211): one track is plain text; several are a pop-up,

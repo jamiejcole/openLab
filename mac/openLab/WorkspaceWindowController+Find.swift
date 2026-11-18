@@ -47,6 +47,7 @@ extension WorkspaceWindowController {
     /// The bar replaces the cue-type row.
     func openFind() {
         guard !isShowMode, !find.isOpen else { return }
+        closeLoadBar()
         find.isOpen = true
         find.toolbarWasHidden = cueToolbar.isHidden
         cueToolbar.isHidden = true

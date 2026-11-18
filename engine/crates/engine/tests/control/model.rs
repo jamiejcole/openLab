@@ -383,6 +383,8 @@ fn a_random_walk_keeps_the_mirror_identical() {
                     ids: vec![id(pick(next(50))), id(pick(next(50)))],
                     start: next(20) as f64,
                     increment: 1.0,
+                    prefix: String::new(),
+                    suffix: String::new(),
                 },
             ),
             _ => {

@@ -8,8 +8,6 @@ import Foundation
 
 /// `MAX_SERVER_FRAME_BYTES`: the largest frame the engine sends (a whole snapshot).
 let maxServerFrameBytes = 32 * 1024 * 1024
-/// 2: connections bind to one of several open workspaces.
-let protocolVersion: UInt32 = 4
 
 /// A tagged object the UI shows but does not branch on yet (warnings, problems, resolutions).
 /// Kept as data so a new variant is displayed, not fatal.
@@ -271,6 +269,30 @@ struct StageMappingEntry: Hashable, Sendable, Decodable {
     let mapping: StageMapping?
     /// Nil while the stage host has not said.
     let state: StageState?
+    /// A keep-black stage whose black a panic took down: hidden between cues until a cue plays
+    /// on it again (absent: false).
+    var panicked: Bool = false
+    /// Its monitor window is open (absent: false).
+    var monitor: Bool = false
+
+    init(stage: ModelID, mapping: StageMapping?, state: StageState?, panicked: Bool = false, monitor: Bool = false) {
+        self.stage = stage
+        self.mapping = mapping
+        self.state = state
+        self.panicked = panicked
+        self.monitor = monitor
+    }
+
+    private enum CodingKeys: String, CodingKey { case stage, mapping, state, panicked, monitor }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        stage = try c.decode(ModelID.self, forKey: .stage)
+        mapping = try c.decodeIfPresent(StageMapping.self, forKey: .mapping)
+        state = try c.decodeIfPresent(StageState.self, forKey: .state)
+        panicked = try c.decodeIfPresent(Bool.self, forKey: .panicked) ?? false
+        monitor = try c.decodeIfPresent(Bool.self, forKey: .monitor) ?? false
+    }
 }
 
 struct DeviceEntry: Hashable, Sendable, Decodable {
@@ -591,6 +613,8 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// VID-01: `video` is false where this machine has no video output, nil before the stage host started.
     case displays([StageDisplay], video: Bool?)
     case stageMappings([StageMappingEntry])
+    /// Seconds a cue's sequence lasts; nil when its end is not known.
+    case sequenceSpan(Double?)
     #if DEBUG
         /// Test support: the test card's frame number the stage shows, and the RGBA colour at each point.
         case stageProbe(frame: UInt16?, colours: [[UInt8]])
@@ -636,6 +660,7 @@ enum ResultData: Sendable, Equatable, Decodable {
                 try c.decode([StageDisplay].self, forKey: "displays"),
                 video: try c.decodeIfPresent(Bool.self, forKey: "video"))
         case "stage_mappings": self = .stageMappings(try c.decode([StageMappingEntry].self, forKey: "stages"))
+        case "sequence_span": self = .sequenceSpan(try c.decodeIfPresent(Double.self, forKey: "span"))
         #if DEBUG
             case "stage_probe":
                 self = .stageProbe(

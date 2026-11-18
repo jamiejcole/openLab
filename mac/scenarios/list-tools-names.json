@@ -1,0 +1,9 @@
+{
+  "about": "Default names are lower case and a cue with no default name has an empty Name cell.",
+  "show": "Demo",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": ["1", "2", "2.1"]},
+    {"shot": "three-selected"}
+  ]
+}

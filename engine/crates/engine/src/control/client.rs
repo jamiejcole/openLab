@@ -70,6 +70,7 @@ impl Control {
             Inbox::Log { level, message } => self.eng.log(level, message),
             Inbox::Trigger { source, detail } => self.eng.observe_trigger(source, detail),
             Inbox::Stage(event) => self.stage_event(event),
+            Inbox::AppsGone => self.close_monitors(),
             Inbox::Shutdown => return Flow::Shutdown,
         }
         Flow::Continue
@@ -123,6 +124,27 @@ impl Control {
                     request: Request::SetStageMapping { stage, display },
                 } => {
                     self.set_stage_mapping(doc, id, stage, display, to);
+                    Flow::Continue
+                }
+                ClientMessage::Request {
+                    id,
+                    request: Request::SetStageMonitor { stage, open },
+                } => {
+                    self.set_stage_monitor(doc, id, stage, open, to);
+                    Flow::Continue
+                }
+                #[cfg(feature = "test-support")]
+                ClientMessage::Request {
+                    id,
+                    request:
+                        Request::MonitorProbe {
+                            stage,
+                            width,
+                            height,
+                            points,
+                        },
+                } => {
+                    self.monitor_probe(doc, id, stage, (width, height), points, to);
                     Flow::Continue
                 }
                 #[cfg(feature = "test-support")]
@@ -423,6 +445,10 @@ impl DocCx<'_> {
                         return Flow::Continue;
                     }
                 };
+                if let Some(e) = self.stage_removal_refused(&command) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
+                }
                 let footprint = command.footprint();
                 let mut edit = self.doc.model.edit();
                 let result =
@@ -449,13 +475,18 @@ impl DocCx<'_> {
             ClientMessage::Undo { id } | ClientMessage::Redo { id } => {
                 let undo = matches!(message, ClientMessage::Undo { .. });
                 // The step about to be applied says what it changes.
-                let footprint = if undo {
+                let step = if undo {
                     self.doc.history.peek_undo()
                 } else {
                     self.doc.history.peek_redo()
+                };
+                // A step that removes a stage in use is refused as the command would be; it
+                // stays on the stack for once the cue is done.
+                if let Some(e) = step.and_then(|c| self.stage_removal_refused(c)) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
                 }
-                .map(Command::footprint)
-                .unwrap_or_default();
+                let footprint = step.map(Command::footprint).unwrap_or_default();
                 // A step that removes an active cue (an undo of its add, a redo of its delete)
                 // is performed, as QLab 5 does; the engine stops the cue as it stops a deleted
                 // one when it follows the edit.
@@ -526,6 +557,23 @@ impl DocCx<'_> {
                             outcome: Outcome::Ok(OkBody {
                                 revision: None,
                                 data: Some(ResultData::PatchMappings { patches }),
+                            }),
+                        },
+                    );
+                }
+                Request::SequenceSpan { cue } => {
+                    let span = self
+                        .doc
+                        .model
+                        .engine()
+                        .sequence_span(self.doc.model.ws(), cue);
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::SequenceSpan { span }),
                             }),
                         },
                     );

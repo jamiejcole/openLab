@@ -3,6 +3,8 @@
 //! What the control thread broadcasts to clients as the show runs: progress reports, meters,
 //! the warnings list, state sent again after a drop, and the open-workspaces list.
 
+use std::collections::BTreeMap;
+
 use openlab_audio::VoiceId;
 use openlab_core::protocol::{
     CueMeter, OutputMeter, ProgressItem, RuntimeChange, ServerMessage, WaitProgress, WireWait,
@@ -11,7 +13,7 @@ use openlab_core::protocol::{
 use openlab_core::{Input, SampleTime, Timer, db_to_gain};
 
 use super::voices::Effects;
-use super::{Control, DocCx, DocId, Engine, Listed, MeterRound, REPORT_HZ, notice};
+use super::{Control, DocCx, DocId, Engine, Listed, LoadedPoint, MeterRound, REPORT_HZ, notice};
 
 impl Control {
     pub(super) fn mark_warnings_dirty(&mut self) {
@@ -216,27 +218,28 @@ impl DocCx<'_> {
                     position: at.map(|f| self.seconds(f)),
                 })
                 .collect();
-            // Loaded cues stand at a point of their file (a Load cue's time, a click in the
-            // timeline): their items carry only that `position`. They ride on the message sent for
-            // anything else, and make one of their own only when the set changed, so a standing
-            // loaded cue costs no traffic.
-            let loaded: Vec<(openlab_core::CueId, f64)> = self
-                .loaded_positions()
+            // Loaded cues stand at a time (Load to Time, a Load cue) or at a point of their file
+            // (a click in the timeline): their items carry how far into the action they stand
+            // (`elapsed`) and, for Audio and Video, that `position`. They ride on the message sent
+            // for anything else, and make one of their own only when the set changed, so a
+            // standing loaded cue costs no traffic.
+            let loaded: Vec<LoadedPoint> = self
+                .loaded_points()
                 .into_iter()
-                .filter(|(cue, _)| !previews.iter().any(|p| p.cue == *cue))
+                .filter(|(cue, ..)| !previews.iter().any(|p| p.cue == *cue))
                 .collect();
             // What stands at a point (loaded cues, then previews): one more message when it changes,
             // so a stopped preview's item is withdrawn and the loaded point it covered comes back.
             let mut standing = loaded.clone();
-            standing.extend(previews.iter().map(|p| (p.cue, p.elapsed)));
+            standing.extend(previews.iter().map(|p| (p.cue, p.elapsed, p.position)));
             let loaded_changed = standing != self.doc.last_loaded;
             if !items.is_empty() || !waits.is_empty() || loaded_changed || !previews.is_empty() {
                 items.extend(previews);
-                items.extend(loaded.iter().map(|&(cue, position)| ProgressItem {
+                items.extend(loaded.iter().map(|&(cue, elapsed, position)| ProgressItem {
                     cue,
-                    elapsed: 0.0,
+                    elapsed,
                     remaining: None,
-                    position: Some(position),
+                    position,
                 }));
                 items.sort_by_key(|i| i.cue);
                 self.doc.last_progress = Some(rendered);
@@ -256,21 +259,30 @@ impl DocCx<'_> {
         }
     }
 
-    /// Where each loaded cue of this doc stands in its media file, seconds, by cue.
-    fn loaded_positions(&self) -> Vec<(openlab_core::CueId, f64)> {
+    /// Where each loaded cue of this doc stands, by cue: seconds into its action and, for a
+    /// voice or picture, the point of its media file (seconds).
+    fn loaded_points(&self) -> Vec<LoadedPoint> {
         let engine = self.doc.model.engine();
-        let mut out: Vec<(openlab_core::CueId, f64)> = self
+        let mut points: BTreeMap<openlab_core::CueId, (f64, Option<f64>)> = engine
+            .loaded_offsets()
+            .map(|(cue, offset)| (cue, (self.seconds(offset), None)))
+            .collect();
+        let positions = self
             .doc
             .voices
             .loaded_at()
             .into_iter()
             .filter(|(cue, _)| !self.is_video(*cue))
             .map(|(cue, frame)| (cue, self.seconds(frame)))
-            .chain(self.eng.loaded_pictures(self.doc.id))
+            .chain(self.eng.loaded_pictures(self.doc.id));
+        for (cue, position) in positions {
+            points.entry(cue).or_insert((0.0, None)).1 = Some(position);
+        }
+        points
+            .into_iter()
             .filter(|(cue, _)| engine.state(*cue) == openlab_core::CueState::Loaded)
-            .collect();
-        out.sort_by_key(|(c, _)| *c);
-        out
+            .map(|(cue, (elapsed, position))| (cue, elapsed, position))
+            .collect()
     }
 
     fn seconds(&self, frames: u64) -> f64 {

@@ -235,12 +235,12 @@ final class CueListTests: XCTestCase {
         kind.set("target", .string(H.fade.raw))
         second.set("kind", kind)
         try h.change(upserts: [try H.upsertJSON(second, index: 2)])
-        XCTAssertEqual(h.cell("name", fourth)?.label.stringValue, "Fade and stop Fade and stop Intro")
+        XCTAssertEqual(h.cell("name", fourth)?.label.stringValue, "fade and stop fade and stop Intro")
         var intro = try XCTUnwrap(h.store.model?.cue(H.intro)).raw
         intro.set("name", .string("entrance"))
         try h.change(upserts: [try H.upsertJSON(intro, index: 0)])
-        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade and stop entrance")
-        XCTAssertEqual(h.cell("name", fourth)?.label.stringValue, "Fade and stop Fade and stop entrance")
+        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "fade and stop entrance")
+        XCTAssertEqual(h.cell("name", fourth)?.label.stringValue, "fade and stop fade and stop entrance")
     }
 
     func testCellsShowNumberNameTargetAndTimes() async throws {
@@ -249,7 +249,7 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.cell("name", H.intro)?.label.stringValue, "Intro")
         XCTAssertEqual(h.cell("target", H.intro)?.label.stringValue, "")
         // The fade cue has no name and no number: its default name follows the cue it fades, and it points at cue 1.
-        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade and stop Intro")
+        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "fade and stop Intro")
         XCTAssertEqual(h.cell("duration", H.fade)?.label.stringValue, "00:05.00")
         XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "1")
         // Zero waits show as a dimmed 00:00.00, a non-zero one in the normal colour.
@@ -1007,16 +1007,17 @@ final class CueListTests: XCTestCase {
             wc.applyCueNumber("no-such", movePlayhead: true), String(format: loc("cue.prompt.notFound"), "no-such"))
         XCTAssertEqual(
             wc.applyCueNumber("no-such", movePlayhead: false), String(format: loc("cue.prompt.notFound"), "no-such"))
-        // Load to Time: a bad time (also a negative one: the engine's load takes 0 or more) is a notice
-        // and no action.
+        // Load to Time: a bad time is a notice and no action; a negative one counts back from the end.
         var loads: [TransportAction] = []
         wc.onCueAction = { loads.append($0) }
-        for bad in ["", "abc", "-5", "1:75"] {
+        for bad in ["", "abc", "--5", "-1:75", "1:75"] {
             XCTAssertEqual(wc.applyLoadTime(bad, to: target.id), loc("cue.prompt.badTime"), bad)
         }
         XCTAssertEqual(loads, [], "nothing is done for a bad time")
         XCTAssertNil(wc.applyLoadTime("1:02.5", to: target.id))
         XCTAssertEqual(loads, [.load(cue: target.id, at: 62.5)])
+        XCTAssertNil(wc.applyLoadTime("-10", to: target.id))
+        XCTAssertEqual(loads.last, .load(cue: target.id, at: -10))
     }
 
     // MARK: Progress
@@ -1806,7 +1807,7 @@ final class PlayheadFlowTests: XCTestCase {
         else { return XCTFail("setup") }
         await sync()
         await assertEventually("the workspace is shown") {
-            self.cell(self.fade, "name") == "Fade intro" && self.cell(self.cues[0], "name") == "intro"
+            self.cell(self.fade, "name") == "fade intro" && self.cell(self.cues[0], "name") == "intro"
         }
         try await focusList(on: cues[1])
     }
@@ -2404,7 +2405,7 @@ final class PlayheadFlowTests: XCTestCase {
         try type("entrance")
         try pressReturn()
         await assertEventually("the name and the fade that follows it") {
-            self.cell(self.cues[0], "name") == "entrance" && self.cell(self.fade, "name") == "Fade entrance"
+            self.cell(self.cues[0], "name") == "entrance" && self.cell(self.fade, "name") == "fade entrance"
         }
         XCTAssertEqual(store.model?.cue(fade)?.name, "", "the fade still has its default name")
     }
@@ -2417,7 +2418,7 @@ final class PlayheadFlowTests: XCTestCase {
         try pressReturn()
         await assertEventually("the file's name is back, and the fade follows it") {
             self.cell(self.cues[0], "name") == "a.wav" && self.store.model?.cue(self.cues[0])?.name == ""
-                && self.cell(self.fade, "name") == "Fade a.wav"
+                && self.cell(self.fade, "name") == "fade a.wav"
         }
     }
 
@@ -2689,15 +2690,15 @@ final class PlayheadFlowTests: XCTestCase {
     func testAnUnnamedFadeIsNamedAfterItsTargetEverywhere() async throws {
         try await editWorkspace()
         try await focusList(on: fade)
-        XCTAssertEqual(cell(fade, "name"), "Fade intro")
-        XCTAssertEqual(wc.masthead.standbyField.stringValue, "3 \u{00B7} Fade intro")
+        XCTAssertEqual(cell(fade, "name"), "fade intro")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, "3 \u{00B7} fade intro")
         XCTAssertEqual(wc.inspector.nameField.stringValue, "", "nothing is stored")
-        XCTAssertEqual(wc.inspector.nameField.placeholderString, "Fade intro")
+        XCTAssertEqual(wc.inspector.nameField.placeholderString, "fade intro")
         wc.setFindQuery("fade intro")
         XCTAssertEqual(wc.find.matches, [fade])
         try press("q", code: 12)
         XCTAssertEqual(wc.cueList.cellEditor.stringValue, "", "the editor starts empty for an unnamed cue")
-        XCTAssertEqual(wc.cueList.cellEditor.placeholderString, "Fade intro")
+        XCTAssertEqual(wc.cueList.cellEditor.placeholderString, "fade intro")
         try pressReturn()
         await settle()
         XCTAssertEqual(store.model?.cue(fade)?.name, "", "Return on the untouched cell writes nothing back")
@@ -2706,7 +2707,7 @@ final class PlayheadFlowTests: XCTestCase {
             case .success = await store.send(
                 command: .setProperty(fade, .kindFields(["stop_target_when_done": .bool(true)])))
         else { return XCTFail("kind") }
-        await assertEventually { self.cell(self.fade, "name") == "Fade and stop intro" }
+        await assertEventually { self.cell(self.fade, "name") == "fade and stop intro" }
     }
 
     func testAnUnnamedStopCueIsNamedAfterItsTarget() async throws {
@@ -2717,7 +2718,7 @@ final class PlayheadFlowTests: XCTestCase {
             return XCTFail("target")
         }
         await assertEventually("named after cue 2, whose name is its file's") {
-            self.cell(stop, "name") == "Stop b.wav"
+            self.cell(stop, "name") == "stop b.wav"
         }
     }
 
@@ -5566,8 +5567,8 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(h.cell("target", stop)?.label.textColor, .systemYellow)
         // A target with no number: its name.
         _ = await rig.store.send(command: .setProperty(stop, .target(H.fade)))
-        await assertEventually { h.cell("target", stop)?.label.stringValue == "Fade and stop Intro" }
-        try assertShows(stop, "Fade and stop Intro")
+        await assertEventually { h.cell("target", stop)?.label.stringValue == "fade and stop Intro" }
+        try assertShows(stop, "fade and stop Intro")
         XCTAssertEqual(h.cell("target", stop)?.label.textColor, .labelColor)
         // Show Mode changes nothing here.
         h.vc.isEditLocked = true
@@ -6592,5 +6593,590 @@ final class CueListColumnLayoutTests: XCTestCase {
             XCTAssertEqual(scroll.contentView.bounds.minX, 0, "\(bars): the list is back at its left edge")
             XCTAssertEqual(header.superview?.bounds.minX ?? -1, 0, "\(bars): and its header")
         }
+    }
+}
+
+// MARK: List tools: toolbar drag, Renumber, Delete Numbers, Load to Time, menus (#638)
+
+/// What a drag from the cue-type toolbar looks like to the cue list: a pasteboard carrying the item the
+/// button hands out. (A real drag needs a real mouse; the list's own validate and accept methods run
+/// as AppKit calls them.)
+@MainActor
+private final class ToolbarDrag: NSObject, @MainActor NSDraggingInfo {
+    let draggingPasteboard: NSPasteboard
+    init(_ item: NSPasteboardItem) {
+        draggingPasteboard = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        draggingPasteboard.clearContents()
+        draggingPasteboard.writeObjects([item])
+        super.init()
+    }
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    func enumerateDraggingItems(
+        options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+        searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+        using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+    ) {}
+    func resetSpringLoading() {}
+}
+
+extension PlayheadFlowTests {
+    private var listMenuItems: [NSMenuItem] { MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items) }
+
+    private func menuItem(_ action: Selector) throws -> NSMenuItem {
+        try XCTUnwrap(listMenuItems.first { $0.action == action }, "\(action)")
+    }
+
+    private func cellText(_ id: ModelID, _ column: String) -> String? {
+        let ov = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let row = ov.row(forItem: node)
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+        guard row >= 0, col >= 0, let cell = ov.view(atColumn: col, row: row, makeIfNecessary: true) as? CueCell
+        else { return nil }
+        return cell.label.stringValue
+    }
+
+    private var listDelegate: AppDelegate {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        return delegate
+    }
+
+    private func sheetField(_ id: String, in view: NSView) -> NSTextField? {
+        if let f = view as? NSTextField, f.accessibilityIdentifier() == id { return f }
+        return view.subviews.lazy.compactMap { self.sheetField(id, in: $0) }.first
+    }
+
+    private func toolbarItem(_ kind: NewCueKind) throws -> NSPasteboardItem {
+        for (g, group) in CueToolbarView.kinds.enumerated() {
+            if let s = group.firstIndex(where: { $0 == kind }) {
+                return try XCTUnwrap(wc.cueToolbar.dragItem(group: g, segment: s))
+            }
+        }
+        throw XCTSkip("no toolbar button for \(kind)")
+    }
+
+    /// The cue's length from its file.
+    private func length(_ id: ModelID) async throws -> Double {
+        await assertEventually("the file was read") { self.store.mediaDurations[id]?.file != nil }
+        return try XCTUnwrap(store.mediaDurations[id]?.file)
+    }
+
+    // MARK: Toolbar drag
+
+    /// The drop logic behind the toolbar drag (the drag itself, with a real mouse, is the UI test of
+    /// the same flow): each place proposed is taken, the cue is made where it is dropped, and dropped
+    /// in an open group it is the group's child.
+    func testAToolbarKindDroppedOnTheListIsMadeAtThePlaceProposed() async throws {
+        try await threeCues()
+        let outline = wc.cueList.outlineView
+        let drag = ToolbarDrag(try toolbarItem(.memo))
+        for index in [3, 1] {
+            XCTAssertEqual(
+                wc.cueList.outlineView(outline, validateDrop: drag, proposedItem: nil, proposedChildIndex: index),
+                .copy, "\(index)")
+        }
+        XCTAssertTrue(wc.cueList.outlineView(outline, acceptDrop: drag, item: nil, childIndex: 1))
+        await assertEventually("a Memo cue where it was dropped") {
+            self.wc.cueList.roots.count == 4 && self.wc.cueList.roots[1].cue.kindType == "memo"
+        }
+        XCTAssertEqual(
+            wc.cueList.roots.map(\.id).filter { self.cues.contains($0) }, cues, "the others keep their order")
+
+        // Into a group: dropped inside it, the cue is its child.
+        let addedGroup = await wc.editor.add(.group, after: [])
+        let group = try XCTUnwrap(addedGroup)
+        await assertEventually { self.wc.cueList.node(group) != nil }
+        let node = try XCTUnwrap(wc.cueList.node(group))
+        outline.expandItem(node)
+        let into = ToolbarDrag(try toolbarItem(.wait))
+        XCTAssertEqual(
+            wc.cueList.outlineView(outline, validateDrop: into, proposedItem: node, proposedChildIndex: 0), .copy)
+        XCTAssertTrue(wc.cueList.outlineView(outline, acceptDrop: into, item: node, childIndex: 0))
+        await assertEventually("the Wait cue joined the group") {
+            self.wc.cueList.node(group)?.children.map(\.cue.kindType) == ["wait"]
+        }
+    }
+
+    func testAToolbarButtonCannotBeDraggedInShowMode() async throws {
+        try await threeCues()
+        wc.setShowMode(true)
+        await assertEventually { self.wc.isShowMode }
+        XCTAssertNil(wc.cueToolbar.dragItem(group: 5, segment: 10))
+        let drag = ToolbarDrag(NSPasteboardItem())
+        drag.draggingPasteboard.clearContents()
+        let item = NSPasteboardItem()
+        item.setString(NewCueKind.memo.rawValue, forType: CueToolbarView.dragType)
+        let hostile = ToolbarDrag(item)
+        XCTAssertEqual(
+            wc.cueList.outlineView(
+                wc.cueList.outlineView, validateDrop: hostile, proposedItem: nil, proposedChildIndex: 0), [])
+        XCTAssertFalse(wc.cueList.outlineView(wc.cueList.outlineView, acceptDrop: hostile, item: nil, childIndex: 0))
+        XCTAssertEqual(wc.cueList.roots.count, 3)
+    }
+
+    // MARK: Renumber and Delete Numbers
+
+    func testRenumberWithAPrefixAndSuffixSkipsANumberUsedElsewhere() async throws {
+        try await threeCues()
+        let added = await wc.editor.addFiles(try tempFiles(["4.wav"]), parent: nil, index: 3)
+        let extra = try XCTUnwrap(added.first)
+        let renamed = await wc.editor.setCell("number", of: extra, text: "Test-11bak")
+        XCTAssertTrue(renamed)
+        await assertEventually { self.store.model?.cue(extra)?.number == "Test-11bak" }
+        wc.cueList.select(Array(cues))
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        wc.promptRenumber()
+        await assertEventually("the dialog") { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        let view = try XCTUnwrap(sheet.contentView)
+        try XCTUnwrap(sheetField("renumber-start", in: view)).stringValue = "10"
+        try XCTUnwrap(sheetField("renumber-increment", in: view)).stringValue = "1"
+        try XCTUnwrap(sheetField("renumber-prefix", in: view)).stringValue = "Test-"
+        try XCTUnwrap(sheetField("renumber-suffix", in: view)).stringValue = "bak"
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        await assertEventually("renumbered") { self.store.model?.cue(self.cues[2])?.number == "Test-13bak" }
+        XCTAssertEqual(
+            cues.map { self.store.model?.cue($0)?.number }, ["Test-10bak", "Test-12bak", "Test-13bak"],
+            "the number cue 4 already has is stepped over")
+        XCTAssertEqual(cellText(cues[1], "number"), "Test-12bak")
+        XCTAssertEqual(store.model?.cue(extra)?.number, "Test-11bak")
+    }
+
+    func testDeleteNumbersEmptiesTheSelectedCuesNumbersAndLeavesTheirTargetsAlone() async throws {
+        try await threeCues()
+        let addedFade = await wc.editor.add(.fade, after: [cues[0]])
+        let fade = try XCTUnwrap(addedFade)
+        await assertEventually { self.store.model?.cue(fade)?.raw["kind"]?["target"]?.stringValue == self.cues[0].raw }
+        let numbersBefore = [cues[2]].map { self.store.model?.cue($0)?.number }
+        wc.cueList.select([cues[0], fade])
+        listDelegate.deleteNumbers(nil)
+        await assertEventually("the selected numbers are empty") {
+            self.store.model?.cue(self.cues[0])?.number == nil && self.store.model?.cue(fade)?.number == nil
+        }
+        XCTAssertEqual(cellText(cues[0], "number"), "")
+        XCTAssertEqual(
+            store.model?.cue(fade)?.raw["kind"]?["target"]?.stringValue, cues[0].raw, "the fade still targets the cue")
+        XCTAssertEqual([cues[2]].map { self.store.model?.cue($0)?.number }, numbersBefore, "other cues keep theirs")
+        XCTAssertNotNil(store.model?.cue(cues[1])?.number)
+    }
+
+    // MARK: Load to Time
+
+    func testLoadToTimeCyclesTheBarOpenThenTheFieldThenClosedWithTheListFocused() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        XCTAssertTrue(wc.loadBar.isHidden)
+        let delegate = listDelegate
+        delegate.loadToTime(nil)
+        XCTAssertFalse(wc.loadBar.isHidden, "the bar is up")
+        XCTAssertTrue(wc.cueToolbar.isHidden, "in the cue-type row's place")
+        XCTAssertFalse(wc.loadBar.fieldHasFocus, "the cursor is not in the field yet")
+        XCTAssertTrue(wc.loadBar.slider.superview != nil && wc.loadBar.field.superview != nil)
+        delegate.loadToTime(nil)
+        XCTAssertTrue(wc.loadBar.fieldHasFocus, "the cursor moved into the field")
+        delegate.loadToTime(nil)
+        XCTAssertTrue(wc.loadBar.isHidden)
+        XCTAssertFalse(wc.cueToolbar.isHidden, "the cue-type row is back")
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "the list has the focus")
+    }
+
+    func testATimeTypedOrTheSliderDraggedLoadsTheStandingByCueAndItsRowShowsIt() async throws {
+        try await threeCues()
+        let cue = cues[0]
+        let total = try await length(cue)
+        wc.toggleLoadToTime()
+        await assertEventually("the slider spans the cue") {
+            self.wc.loadBar.slider.isEnabled && abs(self.wc.loadBar.slider.maxValue - total) < 0.01
+        }
+        // A time typed.
+        let at = (total / 2 * 100).rounded() / 100
+        wc.loadBar.field.stringValue = CueTime.format(at)
+        XCTAssertTrue(
+            wc.loadBar.control(
+                wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        await assertEventually("loaded there") {
+            self.store.cueStates[cue]?.state == .loaded && abs((self.store.loadedAt[cue]?.time ?? -1) - at) < 0.02
+        }
+        await assertEventually("the row shows it") { self.cellText(cue, "duration") == CueTime.running(at) }
+        XCTAssertNil(store.loadedAt[cues[1]], "only the standing-by cue was loaded")
+        // GO starts from there.
+        try await space()
+        await assertEventually("playing from the loaded time") {
+            (self.store.progress[cue]?.position ?? 0) >= at - 0.01
+        }
+        // Back from the end, with the slider let go elsewhere first.
+        try await engine.advance(seconds: total)
+        await sync()
+        wc.cueList.selectAsUser([cues[1]])
+        let other = try await length(cues[1])
+        wc.loadBar.field.stringValue = "-0.2"
+        XCTAssertTrue(
+            wc.loadBar.control(
+                wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        await assertEventually("loaded 0.2 s before the end") {
+            abs((self.store.loadedAt[self.cues[1]]?.time ?? -1) - (other - 0.2)) < 0.02
+        }
+        // The slider.
+        wc.loadBar.slider.doubleValue = 0.3
+        let slider = wc.loadBar.slider
+        XCTAssertTrue(slider.sendAction(slider.action, to: slider.target))
+        try await play(0.1)
+        await assertEventually("the slider loaded it: \(String(describing: self.store.loadedAt[self.cues[1]]))") {
+            abs((self.store.loadedAt[self.cues[1]]?.time ?? -1) - 0.3) < 0.02
+        }
+        XCTAssertEqual(wc.loadBar.field.stringValue, CueTime.format(0.3), "the field follows the slider")
+    }
+
+    func testLoadToTimeAnswersABadTimeWithANoticeAndSendsNothing() async throws {
+        try await threeCues()
+        wc.toggleLoadToTime()
+        var sent: [TransportAction] = []
+        wc.onCueAction = { sent.append($0) }
+        for bad in ["", "abc", "1:75", "--3"] {
+            wc.loadBar.field.stringValue = bad
+            XCTAssertEqual(wc.applyLoadTime(bad, to: cues[0]), loc("cue.prompt.badTime"), bad)
+            XCTAssertEqual(wc.loadBar.field.stringValue, "", "\(bad): nothing was loaded yet, so the field empties")
+        }
+        XCTAssertEqual(sent, [])
+        // After a time was loaded, text that is not a time goes back to it.
+        wc.loadBar.field.stringValue = "0.5"
+        XCTAssertNil(wc.applyLoadTime("0.5", to: cues[0]))
+        wc.loadBar.field.stringValue = "soon"
+        XCTAssertEqual(wc.applyLoadTime("soon", to: cues[0]), loc("cue.prompt.badTime"))
+        XCTAssertEqual(wc.loadBar.field.stringValue, "0.5")
+        XCTAssertEqual(sent, [.load(cue: cues[0], at: 0.5)])
+    }
+
+    /// Flow: the standing-by cue auto-follows into the next: the slider spans both, a time past the
+    /// first cue's end loads the second that far into it and its row shows it, and a negative time
+    /// counts back from the end of both, the knob with it.
+    func testATimeTypedLoadsTheStandingBySequenceAndEachRowShowsIt() async throws {
+        try await threeCues()
+        let first = try await length(cues[0])
+        let second = try await length(cues[1])
+        await wc.editor.setContinue(of: cues[0], to: "auto_follow")
+        await assertEventually {
+            self.store.model?.cue(self.cues[0])?.raw["continue_mode"]?.stringValue == "auto_follow"
+        }
+        wc.toggleLoadToTime()
+        await assertEventually("the slider spans the sequence: \(self.wc.loadBar.slider.maxValue)") {
+            self.wc.loadBar.slider.isEnabled && abs(self.wc.loadBar.slider.maxValue - (first + second)) < 0.01
+        }
+        let into = 0.3
+        let at = ((first + into) * 100).rounded() / 100
+        wc.loadBar.field.stringValue = CueTime.format(at)
+        XCTAssertTrue(
+            wc.loadBar.control(
+                wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        try await play(0.1)
+        await assertEventually("the second cue is loaded into its time") {
+            self.store.cueStates[self.cues[1]]?.state == .loaded
+                && abs((self.store.loadedAt[self.cues[1]]?.time ?? -1) - (at - first)) < 0.02
+        }
+        await assertEventually("its row shows it") {
+            self.cellText(self.cues[1], "duration") == CueTime.running(self.store.loadedAt[self.cues[1]]?.time ?? -1)
+        }
+        XCTAssertEqual(store.cueStates[cues[0]]?.state, .loaded)
+        XCTAssertEqual(cellText(cues[0], "duration"), CueTime.running(first), "the first stands at its end")
+        XCTAssertNil(store.loadedAt[cues[2]], "the third is not in the sequence")
+        // Back from the end of the whole sequence: 0.2 s before the second cue's end.
+        wc.loadBar.field.stringValue = "-0.2"
+        XCTAssertTrue(
+            wc.loadBar.control(
+                wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        try await play(0.1)
+        await assertEventually(
+            "loaded 0.2 s before the end of the sequence: \(String(describing: self.store.loadedAt[self.cues[1]]))"
+        ) {
+            abs((self.store.loadedAt[self.cues[1]]?.time ?? -1) - (second - 0.2)) < 0.02
+        }
+        XCTAssertEqual(
+            wc.loadBar.slider.doubleValue, wc.loadBar.slider.maxValue - 0.2, accuracy: 0.001, "the knob follows")
+    }
+
+    /// Flow: a Wait, a Fade and a Group loaded to a time each show it in their row's Duration cell.
+    func testAWaitFadeOrGroupLoadedToATimeShowsItInItsRow() async throws {
+        try await threeCues()
+        var made: [ModelID] = []
+        for kind in [NewCueKind.wait, .fade, .group] {
+            let added = await wc.editor.add(kind, after: [])
+            made.append(try XCTUnwrap(added, "\(kind)"))
+        }
+        await assertEventually { made.allSatisfy { self.wc.cueList.node($0) != nil } }
+        for id in made.prefix(2) {
+            let set = await wc.editor.setDuration(of: id, text: "10")
+            XCTAssertTrue(set)
+        }
+        // A Fade with a target and a level to fade, so it is not broken.
+        let fade = made[1]
+        await wc.editor.setProperty(.target(cues[0]), of: [fade])
+        let levels = JSONValue.object(["master_db": .double(-6), "output_db": .array([]), "crosspoints": .array([])])
+        await wc.editor.setProperty(.kindFields(["levels": levels]), of: [fade])
+        await assertEventually("the Fade can play") { self.store.problems[fade] == nil }
+        wc.toggleLoadToTime()
+        for id in made {
+            wc.cueList.setPlayhead(id)
+            await assertEventually("standing by") { self.wc.standingByCue == id }
+            wc.loadBar.field.stringValue = "4"
+            XCTAssertTrue(
+                wc.loadBar.control(
+                    wc.loadBar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
+            try await play(0.1)
+            await assertEventually("\(id) shows its time: \(String(describing: self.cellText(id, "duration")))") {
+                self.store.cueStates[id]?.state == .loaded && self.cellText(id, "duration") == CueTime.running(4)
+            }
+        }
+    }
+
+    /// The knob stands at a negative time counted back from the slider's end, is placed again for a new
+    /// span, and rests at the start while no span is known (the slider is off).
+    func testTheLoadBarsKnobFollowsANegativeTimeAndRestsAtTheStartWithNoSpan() {
+        let bar = LoadTimeBarView(frame: .zero)
+        bar.setLength(10)
+        bar.field.stringValue = "-2"
+        bar.show(loaded: -2)
+        XCTAssertEqual(bar.slider.doubleValue, 8, accuracy: 0.001)
+        bar.setLength(12)
+        XCTAssertEqual(bar.slider.doubleValue, 10, accuracy: 0.001)
+        bar.setLength(nil)
+        XCTAssertFalse(bar.slider.isEnabled)
+        XCTAssertEqual(bar.slider.doubleValue, 0)
+    }
+
+    /// While a cue plays the masthead syncs on every progress tick; the bar asks the engine for its
+    /// span only when the standing-by cue, the model or a media length changes.
+    func testTheLoadBarAsksForItsSpanOnlyWhenTheCueOrTheModelChanges() async throws {
+        try await threeCues()
+        let first = try await length(cues[0])
+        wc.toggleLoadToTime()
+        await assertEventually {
+            self.wc.loadBar.slider.isEnabled && abs(self.wc.loadBar.slider.maxValue - first) < 0.01
+        }
+        let asked = wc.loadTime.spanAsked
+        // Cue 3 plays: progress ticks, the standing-by cue stays.
+        wc.cueList.setPlayhead(cues[2])
+        await assertEventually { self.wc.standingByCue == self.cues[2] }
+        let onThird = wc.loadTime.spanAsked
+        XCTAssertEqual(onThird, asked + 1, "a new standing-by cue is asked about once")
+        _ = await store.transport(.start(cue: cues[0]))
+        try await play(0.5)
+        await assertEventually("cue 1 plays") { self.store.progress[self.cues[0]] != nil }
+        try await play(0.5)
+        XCTAssertEqual(wc.loadTime.spanAsked, onThird, "progress ticks ask nothing")
+        // An edit asks again.
+        await wc.editor.setContinue(of: cues[2], to: "auto_continue")
+        await assertEventually("the edit asks again") { self.wc.loadTime.spanAsked == onThird + 1 }
+    }
+
+    /// The bar follows the playhead: another standing-by cue clears the time and the slider spans that cue.
+    func testTheLoadBarStartsAfreshForANewStandingByCue() async throws {
+        try await threeCues()
+        let first = try await length(cues[0])
+        wc.toggleLoadToTime()
+        await assertEventually {
+            self.wc.loadBar.slider.isEnabled && abs(self.wc.loadBar.slider.maxValue - first) < 0.01
+        }
+        wc.loadBar.field.stringValue = "0.5"
+        XCTAssertNil(wc.applyLoadTime("0.5", to: cues[0]))
+        XCTAssertEqual(wc.loadBar.slider.doubleValue, 0.5, accuracy: 0.001)
+        let added = await wc.editor.add(.wait, after: [])
+        let wait = try XCTUnwrap(added)
+        await assertEventually { self.wc.cueList.node(wait) != nil }
+        let set = await wc.editor.setDuration(of: wait, text: "7")
+        XCTAssertTrue(set)
+        wc.cueList.setPlayhead(wait)
+        await assertEventually("the slider spans the Wait") { abs(self.wc.loadBar.slider.maxValue - 7) < 0.01 }
+        XCTAssertEqual(wc.loadBar.field.stringValue, "", "the last cue's time is gone")
+        XCTAssertEqual(wc.loadBar.slider.doubleValue, 0)
+    }
+
+    func testInShowModeTheListToolsAreOffAndLoadToTimeStillWorks() async throws {
+        try await threeCues()
+        let numbers = cues.map { self.store.model?.cue($0)?.number }
+        wc.setShowMode(true)
+        await assertEventually { self.wc.isShowMode }
+        let delegate = listDelegate
+        XCTAssertFalse(delegate.validateMenuItem(try menuItem(#selector(AppDelegate.renumberCues(_:)))))
+        XCTAssertFalse(delegate.validateMenuItem(try menuItem(#selector(AppDelegate.deleteNumbers(_:)))))
+        wc.promptRenumber()
+        XCTAssertNil(wc.window?.attachedSheet, "Renumber opens nothing")
+        wc.cueList.select([cues[0]])
+        delegate.deleteNumbers(nil)
+        await sync()
+        XCTAssertEqual(cues.map { self.store.model?.cue($0)?.number }, numbers, "Delete Numbers did nothing")
+        XCTAssertNil(wc.cueToolbar.dragItem(group: 0, segment: 0), "the toolbar drag is off")
+        // Load to Time works.
+        XCTAssertTrue(delegate.validateMenuItem(try menuItem(#selector(AppDelegate.loadToTime(_:)))))
+        let cue = try XCTUnwrap(store.playheads[list])
+        let total = try await length(cue)
+        delegate.loadToTime(nil)
+        XCTAssertFalse(wc.loadBar.isHidden, "the bar opens in Show Mode")
+        let at = (total / 2 * 100).rounded() / 100
+        XCTAssertNil(wc.applyLoadTime(CueTime.format(at), to: cue))
+        await assertEventually("loaded in Show Mode") {
+            self.store.cueStates[cue]?.state == .loaded && abs((self.store.loadedAt[cue]?.time ?? -1) - at) < 0.02
+        }
+        delegate.loadToTime(nil)
+        delegate.loadToTime(nil)
+        XCTAssertTrue(wc.loadBar.isHidden)
+        XCTAssertTrue(wc.cueToolbar.isHidden, "the cue-type row stays away in Show Mode")
+    }
+
+    // MARK: Select Cue
+
+    func testTheSelectCueWindowsPlayheadButtonFillsInThePlayheadsCue() async throws {
+        try await threeCues()
+        click(cues[1])
+        try await assertAllOn(cues[1])
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        wc.promptCue(movePlayhead: false)
+        await assertEventually("the sheet") { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        let view = try XCTUnwrap(sheet.contentView)
+        let field = try XCTUnwrap(sheetField(AX.cuePromptField, in: view))
+        func button(_ v: NSView) -> NSButton? {
+            if let b = v as? NSButton, b.accessibilityIdentifier() == AX.cuePromptPlayhead { return b }
+            return v.subviews.lazy.compactMap(button).first
+        }
+        let fill = try XCTUnwrap(button(view))
+        XCTAssertTrue(fill.isEnabled)
+        fill.performClick(nil)
+        XCTAssertEqual(field.stringValue, store.model?.cue(cues[1])?.number)
+        wc.cueList.selectAsUser([cues[0]])
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        await assertEventually("that cue is selected") { self.wc.cueList.selectedIDs() == [self.cues[1]] }
+    }
+
+    // MARK: Menus
+
+    func testTheSidebarTabMenuItemSwitchesBetweenListsAndActiveCues() async throws {
+        try await threeCues()
+        let delegate = listDelegate
+        let item = try menuItem(#selector(AppDelegate.toggleSidebarTab(_:)))
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        XCTAssertFalse(wc.isVisible(.sidebar))
+        delegate.toggleSidebarTab(nil)
+        XCTAssertTrue(wc.isVisible(.sidebar))
+        XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 1)
+        delegate.toggleSidebarTab(nil)
+        XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 0)
+    }
+
+    func testThePlayheadMovesToTheTopOfTheNextAndPreviousSequence() async throws {
+        try await threeCues()
+        await wc.editor.setContinue(of: cues[0], to: "auto_continue")
+        await assertEventually {
+            self.store.model?.cue(self.cues[0])?.raw["continue_mode"]?.stringValue == "auto_continue"
+        }
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        let delegate = listDelegate
+        let next = try menuItem(#selector(AppDelegate.movePlayheadNextSequence(_:)))
+        let previous = try menuItem(#selector(AppDelegate.movePlayheadPreviousSequence(_:)))
+        XCTAssertEqual(next.keyEquivalent, "", "the menu bar takes no unmodified key")
+        XCTAssertEqual(previous.keyEquivalent, "")
+        XCTAssertTrue(delegate.validateMenuItem(next))
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        XCTAssertNil(app.handleKeyDown(try key("=", code: 24)), "= is the next-sequence key")
+        await assertEventually("cues 1 and 2 are one sequence: the next top is cue 3") {
+            self.store.playheads[self.list] == self.cues[2]
+        }
+        XCTAssertNil(app.handleKeyDown(try key("-", code: 27)), "- is the previous-sequence key")
+        await assertEventually("back at the top of the first") { self.store.playheads[self.list] == self.cues[0] }
+        delegate.movePlayheadPreviousSequence(nil)
+        await sync()
+        XCTAssertEqual(store.playheads[list], cues[0], "there is no sequence before the first")
+        // Typing keeps the key.
+        wc.cueList.beginCellEdit(cues[0], column: "name")
+        XCTAssertNotNil(app.handleKeyDown(try key("=", code: 24)))
+        XCTAssertEqual(store.playheads[list], cues[0])
+    }
+
+    func testShowWorkspaceInFinderRevealsTheSavedFileAndIsOffForAnUnsavedOne() async throws {
+        let delegate = listDelegate
+        let item = try menuItem(#selector(AppDelegate.showWorkspaceInFinder(_:)))
+        XCTAssertFalse(delegate.validateMenuItem(item), "an unsaved workspace has no file")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).openlab")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        app.pickSaveURL = { _ in url }
+        let saved = await app.saveWorkspace(store, asNew: true)
+        XCTAssertTrue(saved)
+        await assertEventually("the engine knows the path") { self.store.document?.path != nil }
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        var shown: [URL] = []
+        app.revealInFinder = { shown = $0 }
+        delegate.showWorkspaceInFinder(nil)
+        XCTAssertEqual(
+            shown.map { $0.standardizedFileURL.resolvingSymlinksInPath() },
+            [url.standardizedFileURL.resolvingSymlinksInPath()])
+    }
+
+    func testPasteLevelsCopiesTheLevelsOfTheCopiedCueOntoTheSelectionAndIsOffWithNothingCopied() async throws {
+        try await threeCues()
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        addTeardownBlock { @MainActor in pasteboard.releaseGlobally() }
+        wc.editor.pasteboard = pasteboard
+        let delegate = listDelegate
+        let item = try menuItem(#selector(AppDelegate.pasteLevels(_:)))
+        wc.cueList.select([cues[1]])
+        XCTAssertFalse(delegate.validateMenuItem(item), "nothing is copied")
+        var levels = try XCTUnwrap(store.model?.cue(cues[0])?.raw["kind"]?["levels"])
+        levels.set("master_db", .double(-7))
+        _ = await store.send(command: .setProperty(cues[0], .kindFields(["levels": levels])))
+        wc.cueList.select([cues[0]])
+        delegate.copyCues(nil)
+        await assertEventually { self.wc.editor.clipboardCue != nil }
+        wc.cueList.select([cues[1]])
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        delegate.pasteLevels(nil)
+        await assertEventually("the level went over") {
+            self.store.model?.cue(self.cues[1])?.raw["kind"]?["levels"]?["master_db"]?.doubleValue == -7
+        }
+        XCTAssertNotEqual(store.model?.cue(cues[2])?.raw["kind"]?["levels"]?["master_db"]?.doubleValue, -7)
+    }
+
+    func testEnterFullScreenIsAMenuItemOnTheWorkspaceWindowAndTheItemNamesWhatItDoes() async throws {
+        try await threeCues()
+        let delegate = listDelegate
+        let item = try menuItem(#selector(AppDelegate.toggleWorkspaceFullScreen(_:)))
+        XCTAssertEqual(item.keyEquivalent, "f")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command, .shift])
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        XCTAssertEqual(item.title, loc("menu.view.enterFullScreen"))
+        XCTAssertTrue(
+            try XCTUnwrap(wc.window).collectionBehavior.contains(.fullScreenPrimary), "the window can go full screen")
+    }
+
+    // MARK: Names
+
+    func testAnUnnamedCueWithNoDefaultNameShowsAnEmptyNameCellAndDefaultNamesAreLowerCase() async throws {
+        try await threeCues()
+        let addedMemo = await wc.editor.add(.memo, after: [])
+        let memo = try XCTUnwrap(addedMemo)
+        await assertEventually { self.wc.cueList.node(memo) != nil }
+        XCTAssertEqual(cellText(memo, "name"), "", "no kind label stands in for a name")
+        let addedFade = await wc.editor.add(.fade, after: [cues[0]])
+        let fade = try XCTUnwrap(addedFade)
+        await assertEventually("fade named after its target, was \(String(describing: self.cellText(fade, "name")))") {
+            self.cellText(fade, "name") == "fade 1.wav"
+        }
+        let addedWait = await wc.editor.add(.wait, after: [])
+        let wait = try XCTUnwrap(addedWait)
+        await assertEventually { self.cellText(wait, "name") == "wait 00:05.00" }
     }
 }

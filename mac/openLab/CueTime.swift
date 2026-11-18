@@ -50,6 +50,14 @@ enum CueTime {
         return (h > 0 ? String(format: "%d:%02d:%02d.", h, m, sec) : String(format: "%02d:%02d.", m, sec)) + fraction
     }
 
+    /// `parse` with an optional leading minus: a negative time counts back from a cue's end (Load to
+    /// Time, QLab manual p. 149). `-0` is zero.
+    static func parseSigned(_ text: String) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("-") else { return parse(trimmed) }
+        return parse(String(trimmed.dropFirst())).map { $0 == 0 ? 0 : -$0 }
+    }
+
     /// Seconds from `s.sss`, `m:ss.sss` or `h:mm:ss.sss` (rounded to a millisecond), or nil for
     /// anything else: empty, signs, exponents, `nan`, a colon part of 60 or more, over 24 hours.
     static func parse(_ text: String) -> Double? {

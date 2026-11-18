@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import AppKit
 import XCTest
 
 /// The cue list on the real engine's demo show: Intro, a Fade cue of Intro, and a
@@ -55,6 +56,118 @@ final class CueListUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["01:30.00"].waitForExistence(timeout: 10), "the cell shows the stored duration")
         let inspector = app.textFields["inspector-duration"]
         XCTAssertTrue(waitFor("value == '01:30.00'", inspector, timeout: 5), "the inspector follows")
+    }
+}
+
+/// The cue list's group, header and columns while a cue plays and the window changes size, with
+/// real keys and presses (QLab 5 manual, the cue list).
+@MainActor
+final class CueListLayoutUITests: XCTestCase {
+    private static let titles = ["Number", "Name", "Target", "Pre-Wait", "Duration", "Post-Wait"]
+
+    /// The demo show, Intro a 30 s tone playing.
+    private func launchPlaying() -> XCUIApplication {
+        let app = launchApp(opening: ["Demo"]) { copies in
+            try writeWAV(copies.appendingPathComponent("Demo/media/a.wav"), seconds: 30)
+        }
+        XCTAssertTrue(waitFor("isHittable == true", app.staticTexts["Intro"]), "the demo is ready")
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        XCTAssertTrue(cueState("Running", of: "Intro", in: app).waitForExistence(timeout: 10), "Intro plays")
+        return app
+    }
+
+    private func header(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        app.outlines["cue-list"].buttons[title]
+    }
+
+    /// The window dragged by its corner to its least size.
+    private func shrinkToLeast(_ app: XCUIApplication) {
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
+            .press(forDuration: 0.2, thenDragTo: window.coordinate(withNormalizedOffset: .zero))
+    }
+
+    /// Each cell `row` shows lies under its column's title.
+    private func assertUnderTitles(_ row: String, cells: [String: String], in app: XCUIApplication, line: UInt = #line)
+    {
+        let r = cueRow(row, in: app)
+        for (title, value) in cells {
+            let cell = r.staticTexts[value].firstMatch
+            let column = header(title, in: app)
+            XCTAssertTrue(cell.exists && column.exists, "\(row): \(title) \(value)", line: line)
+            XCTAssertTrue(
+                column.frame.minX - 1 <= cell.frame.minX && cell.frame.maxX <= column.frame.maxX + 1,
+                "\(row)'s \(value) \(cell.frame) under \(title) \(column.frame)", line: line)
+        }
+    }
+
+    func testGroupClosedAndOpenedByTriangleAndArrowsWhileACuePlaysAndTheWindowIsResized() {
+        let app = launchPlaying()
+        let door = app.staticTexts["Door slam"]
+        selectCue("Act One", in: app)
+        app.typeKey(XCUIKeyboardKey.leftArrow.rawValue, modifierFlags: [])
+        XCTAssertTrue(waitFor("exists == false", door), "Left closes the group")
+        shrinkToLeast(app)
+        app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
+        XCTAssertTrue(door.waitForExistence(timeout: 5), "Right opens it at the least size")
+        assertUnderTitles("Door slam", cells: ["Number": "2.1", "Name": "Door slam"], in: app)
+        let triangle = cueRow("Act One", in: app).disclosureTriangles.firstMatch
+        triangle.click()
+        XCTAssertTrue(waitFor("exists == false", door), "the triangle closes it")
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -2, dy: -2))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1))
+                    .withOffset(CGVector(dx: 300, dy: 100)))
+        triangle.click()
+        XCTAssertTrue(door.waitForExistence(timeout: 5), "and opens it in the larger window")
+        assertUnderTitles("Door slam", cells: ["Number": "2.1", "Name": "Door slam"], in: app)
+        assertUnderTitles("Intro", cells: ["Number": "1", "Name": "Intro"], in: app)
+        XCTAssertTrue(cueState("Running", of: "Intro", in: app).exists, "Intro played on throughout")
+        XCTAssertTrue(cueRow("Act One", in: app).isSelected, "the group stays selected")
+    }
+
+    /// At the least window size every column title is shown, in order, side by side inside the
+    /// list, and above the inspector.
+    func testTheHeaderAtTheLeastWindowSize() {
+        let app = launchPlaying()
+        shrinkToLeast(app)
+        let list = app.outlines["cue-list"]
+        let inspector = app.descendants(matching: .any)["inspector-tabs"]
+        var right = -CGFloat.infinity
+        for title in Self.titles {
+            let h = header(title, in: app)
+            XCTAssertTrue(
+                h.isHittable, "\(title) is shown; headers: \(list.buttons.allElementsBoundByIndex.map(\.label))")
+            XCTAssertGreaterThanOrEqual(h.frame.minX, right - 0.5, "\(title) is right of the one before")
+            XCTAssertLessThanOrEqual(h.frame.maxX, app.windows.firstMatch.frame.maxX + 0.5, "\(title) is in the window")
+            XCTAssertLessThan(h.frame.maxY, inspector.frame.minY, "\(title) is above the inspector")
+            right = h.frame.maxX
+        }
+    }
+
+    /// A column made wider than the window has room for: the list scrolls sideways and every title
+    /// stays over its column.
+    func testASidewaysScrollKeepsTitlesOverTheirColumns() {
+        let app = launchPlaying()
+        shrinkToLeast(app)
+        let list = app.outlines["cue-list"]
+        let pre = header("Pre-Wait", in: app)
+        let edge = pre.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(CGVector(dx: -1, dy: 0))
+        edge.press(forDuration: 0.2, thenDragTo: edge.withOffset(CGVector(dx: 600, dy: 0)))
+        let before = header("Duration", in: app).frame.minX
+        list.scroll(byDeltaX: -400, deltaY: 0)
+        XCTAssertLessThan(header("Duration", in: app).frame.minX, before - 50, "the list scrolled sideways")
+        assertUnderTitles("Intro", cells: ["Number": "1", "Name": "Intro"], in: app)
+        let duration = cueRow("Intro", in: app).staticTexts.matching(NSPredicate(format: "value BEGINSWITH '00:'"))
+        XCTAssertGreaterThan(duration.count, 0, "Intro's times are shown")
+        let column = header("Duration", in: app).frame
+        XCTAssertTrue(
+            duration.allElementsBoundByIndex.contains {
+                column.minX - 1 <= $0.frame.minX && $0.frame.maxX <= column.maxX + 1
+            },
+            "a time under Duration \(column): \(duration.allElementsBoundByIndex.map(\.frame))")
     }
 }
 
@@ -148,12 +261,12 @@ final class PlayheadClickUITests: XCTestCase {
     /// of Intro, which has its default name, follows it.
     func testDoubleClickName() {
         let app = launchDemo()
-        XCTAssertTrue(app.staticTexts["Fade and stop Intro"].waitForExistence(timeout: 10), "the fade follows Intro")
+        XCTAssertTrue(app.staticTexts["fade and stop Intro"].waitForExistence(timeout: 10), "the fade follows Intro")
         app.staticTexts["Intro"].doubleClick()
         app.typeText("entrance\r")
         XCTAssertTrue(app.staticTexts["entrance"].waitForExistence(timeout: 10), "the cell shows entrance")
         XCTAssertTrue(
-            app.staticTexts["Fade and stop entrance"].waitForExistence(timeout: 10), "the fade's name follows")
+            app.staticTexts["fade and stop entrance"].waitForExistence(timeout: 10), "the fade's name follows")
         XCTAssertFalse(cueState("Running", of: "entrance", in: app).exists, "Return did not fire GO")
     }
 
@@ -161,7 +274,7 @@ final class PlayheadClickUITests: XCTestCase {
     /// retargets the Fade: the cell and the inspector show the new target, and Return fires no GO.
     func testDoubleClickTargetRetargetsTheFade() {
         let app = launchDemo()
-        let fade = row("Fade and stop Intro", in: app)
+        let fade = row("fade and stop Intro", in: app)
         XCTAssertTrue(fade.waitForExistence(timeout: 10))
         // Its Target cell shows the target's number, the only "1" in the row (the Fade has no number of its
         // own): the columns move with the window's width, so the cell is found by what it shows.
@@ -172,7 +285,7 @@ final class PlayheadClickUITests: XCTestCase {
         app.typeText("2.1\r")
         XCTAssertTrue(
             waitFor("value == '2.1'", app.textFields["inspector-target"]), "the inspector shows the new target")
-        XCTAssertTrue(app.staticTexts["Fade and stop Door slam"].waitForExistence(timeout: 10), "the name follows it")
+        XCTAssertTrue(app.staticTexts["fade and stop Door slam"].waitForExistence(timeout: 10), "the name follows it")
         XCTAssertFalse(cueStates("Running", in: app).firstMatch.exists, "Return did not fire GO")
     }
 
@@ -281,5 +394,74 @@ final class CueTargetUITests: XCTestCase {
         // A key, not the Cancel button: the first element of that name is the panel's Touch Bar one.
         app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
         XCTAssertTrue(waitFor("exists == false", app.buttons["Choose"]), "and closes")
+    }
+}
+
+/// The list tools with a real mouse and the real menu bar: a cue-type button dragged into the list,
+/// and the window taken full screen (QLab 5, manual pp. 119 and 91).
+@MainActor
+final class ListToolsUITests: XCTestCase {
+    /// The cue-type button labelled `name` in the toolbar above the list (a segment of one of its
+    /// segmented controls).
+    private func toolbarButton(_ name: String, in app: XCUIApplication) -> XCUIElement {
+        let kinds = [XCUIElement.ElementType.radioButton, .button].map(\.rawValue)
+        return app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == %@ AND elementType IN %@", name, kinds)
+        ).firstMatch
+    }
+
+    private func selectedIndex(_ rows: XCUIElementQuery) -> Int? {
+        (0..<rows.count).first { rows.element(boundBy: $0).isSelected }
+    }
+
+    func testAToolbarButtonDraggedIntoTheListMakesACueWhereItLandsAndInAnOpenGroupJoinsIt() {
+        let app = launchDemo()
+        let rows = app.outlines["cue-list"].outlineRows
+        // Intro, the Fade, Act One and its three cues, the group open.
+        XCTAssertTrue(waitFor("count == 6", rows), "the demo's rows: \(rows.count)")
+        let memo = toolbarButton("Memo", in: app)
+        XCTAssertTrue(memo.waitForExistence(timeout: 10), "the Memo button")
+        // Dropped on Intro's row: the new cue is made just after it, and selected.
+        memo.press(forDuration: 0.3, thenDragTo: cueRow("Intro", in: app))
+        XCTAssertTrue(waitFor("count == 7", rows), "a cue was made: \(rows.count)")
+        XCTAssertTrue(waitFor("selected == true", rows.element(boundBy: 1)), "right after Intro")
+        XCTAssertTrue(rows.element(boundBy: 0).staticTexts["Intro"].exists, "Intro keeps its place")
+        // Dropped on the open group's row: the new cue joins the group, after its last cue.
+        let wait = toolbarButton("Wait", in: app)
+        wait.press(forDuration: 0.3, thenDragTo: cueRow("Act One", in: app))
+        XCTAssertTrue(waitFor("count == 8", rows), "a second cue was made: \(rows.count)")
+        XCTAssertEqual(selectedIndex(rows), 7, "after Radio, the group's last cue")
+        // Closing the group hides it with the group's other cues: it is inside.
+        let twisty = cueRow("Act One", in: app).disclosureTriangles.firstMatch
+        XCTAssertTrue(twisty.exists)
+        twisty.click()
+        XCTAssertTrue(waitFor("count == 4", rows), "the group's four cues are hidden: \(rows.count)")
+    }
+
+    func testEnterFullScreenTakesTheWorkspaceWindowFullScreenAndBack() {
+        let app = launchDemo()
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 10))
+        let before = window.frame
+        app.menuBars.menuBarItems["View"].click()
+        let enter = app.menuBars.menuItems["Enter Full Screen"].firstMatch
+        XCTAssertTrue(enter.waitForExistence(timeout: 5))
+        XCTAssertTrue(enter.isEnabled)
+        enter.click()
+        // Full screen: the window fills its screen, and the item now takes it back.
+        let screen = NSScreen.main?.frame.size ?? .zero
+        XCTAssertTrue(
+            waitUntil { window.frame.width >= screen.width - 1 && window.frame.height >= screen.height - 1 },
+            "the window fills the screen: \(window.frame) of \(screen)")
+        // The menu bar hides in full screen; the item's keys take it back.
+        app.typeKey("f", modifierFlags: [.command, .shift])
+        XCTAssertTrue(waitUntil { abs(window.frame.width - before.width) <= 1 }, "the window is back: \(window.frame)")
+    }
+
+    /// True once `condition` holds, false after `timeout` seconds; the waiter polls it.
+    private func waitUntil(timeout: TimeInterval = 10, _ condition: @escaping @MainActor () -> Bool) -> Bool {
+        let met = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in MainActor.assumeIsolated { condition() } }, object: nil)
+        return XCTWaiter().wait(for: [met], timeout: timeout) == .completed
     }
 }

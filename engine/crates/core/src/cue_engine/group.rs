@@ -14,6 +14,14 @@ use super::time::SampleTime;
 use super::types::EngineWarning;
 use super::{Ctx, CueEngine};
 
+/// A cue's sequence (see [`CueEngine::sequence`]).
+pub(super) struct Sequence {
+    /// The cues in start order, each with the sample from the first cue's start it starts on.
+    pub cues: Vec<(CueId, SampleTime)>,
+    /// The sample from the first cue's start the last of them ends on; `None` if unknown.
+    pub end: Option<SampleTime>,
+}
+
 /// A random group's round-robin memory (engine only: not saved, gone with the engine).
 #[derive(Clone, Debug, Default)]
 pub(super) struct RandomCycle {
@@ -1042,38 +1050,151 @@ impl CueEngine {
         }
     }
 
-    /// Loads the cue; a group also loads the children its action will start first (timeline:
-    /// all; start-first modes and an unshuffled playlist: the first), at the time left after the
-    /// group's pre-wait. Iterative over nested groups; each cue is loaded at most once, so a
-    /// duplicate id cannot make it loop.
-    pub(super) fn load_tree(&mut self, cue: CueId, time: f64, cx: &mut Ctx) {
+    /// Loads the cue and, with `sequence`, the rest of its sequence (the cues its auto-continue
+    /// or auto-follow chain would start) as QLab 5 carries a load time on through a sequence
+    /// (manual pp. 149, 680-681): each later cue is loaded at the time left once it would have
+    /// started, and one the time does not reach at its top (left as it is if it already stands
+    /// there). A group also loads the children its action will start first (timeline: all;
+    /// start-first modes and an unshuffled playlist: the first), with their own sequences when
+    /// `sequence` is set, at the time left after the group's pre-wait. Iterative over nested
+    /// groups; each cue is loaded at most once, so a duplicate id cannot make it loop.
+    pub(super) fn load_tree(&mut self, cue: CueId, time: f64, sequence: bool, cx: &mut Ctx) {
         let mut work = vec![(cue, time)];
         let mut done = HashSet::new();
-        while let Some((id, time)) = work.pop() {
-            if !done.insert(id) {
-                continue;
+        while let Some((first, time)) = work.pop() {
+            let mut later = Vec::new();
+            let cues = if sequence {
+                self.sequence(first, cx).cues
+            } else {
+                vec![(first, 0)]
+            };
+            for (id, start) in cues {
+                let time = time - self.seconds(start);
+                if !done.insert(id) {
+                    break;
+                }
+                if id != first {
+                    // A later cue that would play nothing (disarmed, or static problems) is not
+                    // loaded, but the time carries on past it; one already running or broken at
+                    // run time ends what the load reaches. Quietly: only the cue asked for warns.
+                    if self.has_problems(id)
+                        || cx.ws.find_cue(id).is_some_and(|c| !self.is_armed(c))
+                    {
+                        continue;
+                    }
+                    if matches!(self.slots.get(&id), Some(s) if !matches!(s, Slot::Loaded(_))) {
+                        break;
+                    }
+                    // One the time does not reach is loaded at its top; one already standing
+                    // there (a preload) is left as it is.
+                    if time <= 0.0 && self.stands_at_top(id) {
+                        continue;
+                    }
+                }
+                let time = time.max(0.0);
+                self.load(id, time, cx);
+                if !matches!(self.slots.get(&id), Some(Slot::Loaded(_))) {
+                    break;
+                }
+                let Some(CueKind::Group { mode, children }) = cx.ws.find_cue(id).map(|m| &m.kind)
+                else {
+                    continue;
+                };
+                let pre_wait = cx.ws.find_cue(id).map_or(0.0, |m| m.pre_wait);
+                let inner = (time - pre_wait).max(0.0);
+                let starts = match mode {
+                    GroupMode::Timeline => children.len(),
+                    GroupMode::StartFirstAndEnter
+                    | GroupMode::StartFirstAndGoToNext
+                    | GroupMode::Playlist { shuffle: false, .. } => 1,
+                    GroupMode::Playlist { shuffle: true, .. } | GroupMode::StartRandom => 0,
+                };
+                let present = children.iter().filter(|c| !self.is_skipped(c));
+                later.extend(present.take(starts).map(|c| (c.id, inner)));
             }
-            self.load(id, time, cx);
-            if !matches!(self.slots.get(&id), Some(Slot::Loaded(_))) {
-                continue;
-            }
-            let Some(model) = cx.ws.find_cue(id) else {
-                continue;
-            };
-            let CueKind::Group { mode, children } = &model.kind else {
-                continue;
-            };
-            let inner = (time - model.pre_wait).max(0.0);
-            let first = match mode {
-                GroupMode::Timeline => children.len(),
-                GroupMode::StartFirstAndEnter
-                | GroupMode::StartFirstAndGoToNext
-                | GroupMode::Playlist { shuffle: false, .. } => 1,
-                GroupMode::Playlist { shuffle: true, .. } | GroupMode::StartRandom => 0,
-            };
-            let present = children.iter().filter(|c| !self.is_skipped(c));
-            let firsts: Vec<CueId> = present.take(first).map(|c| c.id).collect();
-            work.extend(firsts.into_iter().rev().map(|c| (c, inner)));
+            // Children first, in list order: the stack pops the last pushed first.
+            work.extend(later.into_iter().rev());
         }
+    }
+
+    /// Whether `cue` is loaded at its very top: its whole pre-wait and its action ahead of it.
+    fn stands_at_top(&self, cue: CueId) -> bool {
+        matches!(self.slots.get(&cue), Some(Slot::Loaded(l))
+            if l.action_offset == 0 && l.pre_wait_left == l.pre_wait_total && l.seek.is_none())
+    }
+
+    /// The sequence that starts at `cue`: `cue` and the cues its auto-continue and auto-follow
+    /// chain would start after it among its siblings, each with the sample (from `cue`'s start)
+    /// it would start on, and the sequence's nominal end (`None` if unknown or endless). The
+    /// chain is the one a run follows: a skipped cue is passed over, a disarmed one or one with
+    /// static problems keeps its waits and has no action, a Devamp cue that starts the next cue
+    /// ends it (that start waits on the loop being left), and an auto-follow after a cue of
+    /// unknown length ends it. For the end, an Audio cue that loops forever counts one pass
+    /// (QLab 5.6.5 measured), though no auto-follow fires after it.
+    pub(super) fn sequence(&self, cue: CueId, cx: &Ctx) -> Sequence {
+        let ws = cx.ws;
+        let mut out = Sequence {
+            cues: Vec::new(),
+            end: Some(0),
+        };
+        let Some(model) = ws.find_cue(cue) else {
+            out.end = None;
+            return out;
+        };
+        let rest: &[Cue] = tree::find_path(ws, cue)
+            .and_then(|path| {
+                let (parents, index) = path.split()?;
+                tree::container(ws, path.list, parents)?.get(index.checked_add(1)?..)
+            })
+            .unwrap_or_default();
+        let mut rest = rest.iter().filter(|c| !self.is_skipped(c));
+        let mut current = model;
+        let mut at: SampleTime = 0;
+        loop {
+            out.cues.push((current.id, at));
+            let span = self.nominal_span(current, 0, cx);
+            let end = span.or_else(|| self.pass_span(current, cx));
+            out.end = out.end.zip(end).map(|(e, s)| e.max(at.saturating_add(s)));
+            let armed = self.is_armed(current) && !self.has_problems(current.id);
+            if super::starts_next_on_devamp(current, armed) {
+                break;
+            }
+            let next_at = match effective_continue(ws, current) {
+                ContinueMode::AutoContinue => at
+                    .saturating_add(cx.secs(current.pre_wait, &self.config))
+                    .saturating_add(cx.secs(current.effective_post_wait(), &self.config)),
+                ContinueMode::AutoFollow => match span {
+                    Some(span) => at.saturating_add(span),
+                    None => {
+                        out.end = None;
+                        break;
+                    }
+                },
+                ContinueMode::DoNotContinue => break,
+            };
+            let Some(next) = rest.next() else { break };
+            at = next_at;
+            current = next;
+        }
+        out
+    }
+
+    /// An Audio cue that loops forever: pre-wait plus one pass of its trimmed range.
+    fn pass_span(&self, cue: &Cue, cx: &Ctx) -> Option<SampleTime> {
+        if !matches!(cue.kind, CueKind::Audio { .. }) {
+            return None;
+        }
+        let pass = self.pass_lengths.get(&cue.id)?;
+        Some(cx.secs(cue.pre_wait, &self.config).saturating_add(*pass))
+    }
+
+    /// Samples as seconds at the engine's rate.
+    pub(super) fn seconds(&self, samples: SampleTime) -> f64 {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a span is at most a day of samples, far below 2^52"
+        )]
+        let samples = samples as f64;
+        samples / f64::from(self.config.sample_rate().get())
     }
 }

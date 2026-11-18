@@ -224,6 +224,12 @@ pub enum ResultData {
     PreshowCheck(Box<PreshowReport>),
     /// Answer to `waveform` (AUD-14). Boxed, as the report is.
     Waveform(Box<WaveformData>),
+    /// Answer to `sequence_span`: seconds; absent when the end is unknown (audio not probed,
+    /// a loop or group with no end) or the cue is unknown.
+    SequenceSpan {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        span: Option<f64>,
+    },
     /// Answer to `list_patch_mappings`: every patch of the workspace, in workspace order.
     PatchMappings { patches: Vec<PatchMappingEntry> },
     /// Answer to `list_displays`. `video` is false where this machine's openLab has no video
@@ -254,6 +260,14 @@ pub struct StageMappingEntry {
     pub mapping: Option<crate::settings::StageMapping>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<crate::stage_link::StageState>,
+    /// A stage keeping black whose black a panic took down (QLab 5 manual p. 227): it is hidden
+    /// between cues, as a stage not keeping black is, until a cue plays on it again. Absent:
+    /// `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub panicked: bool,
+    /// The stage's monitor window is open (`set_stage_monitor`). Absent: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub monitor: bool,
 }
 
 /// One patch's mapping on this machine; `mapping` is absent for a patch that has none (never
