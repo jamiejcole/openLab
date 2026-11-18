@@ -1355,8 +1355,9 @@ fn end_at(
 /// goes on from what the ring holds, so no frame plays twice or is missed.
 #[test]
 fn an_end_moved_while_streaming_is_where_voice_and_stream_stop() {
-    let cases: [(&str, u64, Vec<(u64, u64)>, u64); 5] = [
-        ("shorter", 20_000, vec![(5_000, 10_000)], 10_000),
+    // (what, the plan's end, each move's sample and new end, the frames heard)
+    let cases = [
+        ("shorter", 20_000u64, vec![(5_000u64, 10_000u64)], 10_000u64),
         ("behind the voice", 20_000, vec![(6_000, 3_000)], 6_000),
         ("longer", 10_000, vec![(5_000, 25_000)], 25_000),
         (

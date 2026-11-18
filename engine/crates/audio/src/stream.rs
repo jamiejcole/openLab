@@ -1111,6 +1111,10 @@ struct Task {
 impl Task {
     fn step(&mut self) -> Progress {
         if self.shared.cancelled.load(Ordering::Acquire) || self.producer.is_abandoned() {
+            // A new end not taken yet will never be: nothing is to come.
+            if self.shared.end_asked.swap(false, Ordering::AcqRel) {
+                self.shared.update(|s| s.end = None);
+            }
             return Progress::Done;
         }
         contain(|| self.fill()).unwrap_or_else(Progress::Failed)
@@ -1242,6 +1246,7 @@ impl Task {
             return;
         };
         let more = self.apply_end(end.0, end.1);
+        let done = self.entry >= self.slices.len();
         let asked = &self.shared.end_asked;
         self.shared.update(|s| {
             if s.end == Some(end) {
@@ -1252,6 +1257,10 @@ impl Task {
             }
             if more {
                 s.finished = false;
+            } else if done {
+                // Past the new end: every frame of the plan is in the ring now.
+                s.finished = true;
+                s.primed = true;
             }
         });
     }
