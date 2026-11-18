@@ -149,34 +149,102 @@ struct Watched {
     subs: Subs,
 }
 
-/// The doc keys naming one file, with each doc's watch id for it: a few at most (one per doc
-/// using the file, mostly), kept in the order they came.
-#[derive(Default)]
-struct Subs(Vec<(Sub, u64)>);
+/// Subscribers of one file kept as a list; past this many, as a map. Most files have one per
+/// doc using them; a show can spell one file many ways (`a/../x.wav`, `b/../x.wav`, ...), and a
+/// list of thousands would make each key cost a walk of all the others.
+const FEW_SUBS: usize = 8;
+
+/// The doc keys naming one file, with each doc's watch id for it.
+enum Subs {
+    /// In the order they came.
+    Few(Vec<(Sub, u64)>),
+    Many(HashMap<Sub, u64>),
+}
+
+impl Default for Subs {
+    fn default() -> Self {
+        Self::Few(Vec::new())
+    }
+}
 
 impl Subs {
     fn insert(&mut self, sub: Sub, id: u64) {
-        match self.0.iter_mut().find(|(s, _)| *s == sub) {
-            Some((_, old)) => *old = id,
-            None => {
-                self.0.reserve_exact(1);
-                self.0.push((sub, id));
+        match self {
+            Self::Few(list) => {
+                if let Some((_, old)) = list.iter_mut().find(|(s, _)| *s == sub) {
+                    *old = id;
+                } else if list.len() < FEW_SUBS {
+                    list.reserve_exact(1);
+                    list.push((sub, id));
+                } else {
+                    let mut map: HashMap<Sub, u64> = list.drain(..).collect();
+                    map.insert(sub, id);
+                    *self = Self::Many(map);
+                }
+            }
+            Self::Many(map) => {
+                map.insert(sub, id);
+            }
+        }
+        steps(self);
+    }
+
+    fn get(&self, sub: &Sub) -> Option<u64> {
+        steps(self);
+        match self {
+            Self::Few(list) => list.iter().find(|(s, _)| s == sub).map(|(_, id)| *id),
+            Self::Many(map) => map.get(sub).copied(),
+        }
+    }
+
+    fn remove(&mut self, sub: &Sub) {
+        steps(self);
+        match self {
+            Self::Few(list) => {
+                if let Some(i) = list.iter().position(|(s, _)| s == sub) {
+                    list.remove(i);
+                }
+            }
+            Self::Many(map) => {
+                map.remove(sub);
             }
         }
     }
 
-    fn get(&self, sub: &Sub) -> Option<u64> {
-        self.0.iter().find(|(s, _)| s == sub).map(|(_, id)| *id)
-    }
-
-    fn remove(&mut self, sub: &Sub) {
-        self.0.retain(|(s, _)| s != sub);
-    }
-
     fn len(&self) -> usize {
-        self.0.len()
+        match self {
+            Self::Few(list) => list.len(),
+            Self::Many(map) => map.len(),
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Sub, &u64)> {
+        let (few, many) = match self {
+            Self::Few(list) => (Some(list.iter().map(|(s, id)| (s, id))), None),
+            Self::Many(map) => (None, Some(map.iter())),
+        };
+        few.into_iter().flatten().chain(many.into_iter().flatten())
     }
 }
+
+#[cfg(test)]
+thread_local! {
+    /// Subscriber entries looked at by this thread's share operations (a cost measure).
+    static SUB_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts what one operation on `subs` looks at: the whole list, or one map entry.
+#[cfg(test)]
+fn steps(subs: &Subs) {
+    let n = match subs {
+        Subs::Few(list) => list.len(),
+        Subs::Many(_) => 1,
+    };
+    SUB_STEPS.with(|c| c.set(c.get() + n));
+}
+
+#[cfg(not(test))]
+fn steps(_: &Subs) {}
 
 /// What came off the share's maps, only there to be dropped: the caller hands it to the
 /// document worker so the control thread does not free thousands of strings.
@@ -576,7 +644,7 @@ impl WatchShare {
             else {
                 continue;
             };
-            for ((doc, key), id) in &file.subs.0 {
+            for ((doc, key), id) in file.subs.iter() {
                 out.push((*doc, retarget(&event, key, *id)));
             }
         }
@@ -1068,5 +1136,28 @@ mod tests {
         docs.extend(pass(&mut s).into_iter().map(|(d, _)| d));
         docs.sort();
         assert_eq!(docs, vec![A, B], "both hear 1999.wav went");
+    }
+
+    /// One file named 20,000 ways (a show can spell it `x0/../a.wav`, `x1/../a.wav`, ...): each
+    /// key costs a few steps, not a walk of every other key of the file, as it is taken up and
+    /// as it is let go of (a reset beside another doc).
+    #[test]
+    fn a_file_named_many_ways_costs_each_key_a_few_steps() {
+        let (mut s, fs) = share();
+        fs.put("/show/a.wav", 1);
+        s.apply(B, vec![watch("b.wav", "/show/b.wav", 1)]);
+        let n = 20_000;
+        let spellings: Vec<_> = (0..n)
+            .map(|i| watch(&format!("x{i}/../a.wav"), "/show/a.wav", i + 1))
+            .collect();
+        SUB_STEPS.with(|c| c.set(0));
+        s.apply(A, spellings);
+        s.apply(A, vec![KeyChange::Reset]);
+        let steps = SUB_STEPS.with(std::cell::Cell::get);
+        assert!(steps < n as usize * 16, "{steps} steps for {n} keys");
+        while s.waiting() > 0 {
+            wake(&mut s);
+        }
+        assert_eq!(s.watched_files(), 1, "B's file only");
     }
 }
