@@ -648,6 +648,62 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(v.patchRow?.isHidden, false)
     }
 
+    /// The frame `stage`'s monitor window shows at 640 x 360 (nil: none, or no window open), read
+    /// back from the stage host.
+    func monitorFrame(_ stage: ModelID = VideoCueTests.stage) async -> UInt16? {
+        guard
+            case .success(let ok) = await store.client.send({
+                .request(id: $0, .monitorProbe(stage: stage, width: 640, height: 360, points: [[0.5, 0.5]]))
+            }),
+            case .stageProbe(let frame, _)? = ok.data
+        else { return nil }
+        return frame
+    }
+
+    /// #648 flows 1, 2 and 5 from a Video cue's I/O tab: the watch button beside its stage opens the
+    /// stage's monitor window; GO plays the movie and the window shows the frame the stage shows;
+    /// Show Mode leaves the window as it is. A cue on no stage has the button off.
+    func testTheMonitorButtonOnAVideoCuesIOTabOpensItsStageAndShowsTheSameFramesAsTheDisplay() async throws {
+        try await openVideoShow()
+        click(Self.movie)
+        let inspector = wc.inspector
+        await soon("the inspector shows the movie") { inspector.cue?.id == Self.movie }
+        let io = try XCTUnwrap(inspector.tabView.tabViewItems.first { $0.identifier as? String == "io" })
+        inspector.tabView.selectTabViewItem(io)
+        let v = inspector.videoIO
+        XCTAssertEqual(v.monitorButton.title, loc("inspector.io.monitor"))
+        XCTAssertTrue(v.monitorButton.isEnabled)
+        XCTAssertTrue(v.monitorButton.superview === v.stagePopup.superview, "beside the stage pop-up")
+        v.monitorButton.performClick(nil)
+        await soon("the monitor is open") {
+            // Pushes are spaced by the engine's clock, which stands still here: read them.
+            await self.store.refreshVideoOutputs()
+            return self.store.videoOutputs.stages.first { $0.stage == Self.stage }?.monitor == true
+        }
+        XCTAssertEqual(inspector.messageLabel.stringValue, "")
+        try await go()
+        try await play(1.0)
+        let onStage = await shownFrame()
+        let watched = await monitorFrame()
+        XCTAssertNotNil(onStage, "the movie plays")
+        XCTAssertEqual(watched, onStage, "the window shows the stage's frame")
+        // Show Mode: the window stays as it is, and keeps up.
+        wc.setShowMode(true)
+        await soon { self.store.showMode }
+        try await play(0.5)
+        await store.refreshVideoOutputs()
+        XCTAssertEqual(store.videoOutputs.stages.first { $0.stage == Self.stage }?.monitor, true)
+        let later = await monitorFrame()
+        let laterOnStage = await shownFrame()
+        XCTAssertEqual(later, laterOnStage)
+        XCTAssertNotEqual(later, watched, "it moves on with the movie")
+        wc.setShowMode(false)
+        // A cue on no stage: nothing to watch.
+        click(Self.noStage)
+        await soon("the inspector shows the cue on no stage") { inspector.cue?.id == Self.noStage }
+        XCTAssertFalse(v.monitorButton.isEnabled)
+    }
+
     // MARK: Flow 5: missing file, relink, Show Mode
 
     /// A movie that goes missing shows the missing-file mark and reason; Find Missing Files lists
