@@ -39,9 +39,12 @@ final class ScenarioRunner {
         /// the control's bounds from its top-left (default its middle).
         case click(id: String, at: CGPoint, modifiers: NSEvent.ModifierFlags, clicks: Int)
         /// `{"drag": id, "from": [fx, fy], "to": [fx, fy]}`. With `"header": "Name"` on a table, the
-        /// fractions are of that column header (and may lie outside 0 to 1, to drag past it). A row
-        /// cannot be dragged: AppKit's drag session needs real input and would wait for ever.
-        case drag(id: String, from: CGPoint, to: CGPoint, modifiers: NSEvent.ModifierFlags, part: Part?)
+        /// fractions are of that column header (and may lie outside 0 to 1, to drag past it). With
+        /// `"row": "2", "to_row": "4"` the cue's row is dragged onto another's: AppKit's drag session
+        /// needs real input, so the outline is fed the calls a session makes, with the drag ending at
+        /// `to` (fractions of the target row), and proposes the drop itself. A refused drop is logged.
+        case drag(
+            id: String, from: CGPoint, to: CGPoint, modifiers: NSEvent.ModifierFlags, part: Part?, onto: String?)
         /// `{"hover": id, "at": [fx, fy]}` (or `"header"`/`"row"` as `drag`, or `"segment": "Wait"`,
         /// fractions of that segment as AppKit lays it out): the pointer rests on the
         /// control. The next shots draw the tooltip text AppKit would show there, as a bubble under the
@@ -263,7 +266,8 @@ final class ScenarioRunner {
         }
         let options: [String: Set<String>] = [
             "click": ["at", "modifiers"], "double_click": ["at", "modifiers"],
-            "drag": ["from", "to", "modifiers", "header"], "hover": ["at", "header", "row", "segment"],
+            "drag": ["from", "to", "modifiers", "header", "row", "to_row"],
+            "hover": ["at", "header", "row", "segment"],
             "shot": ["display", "monitor", "monitor_size"],
             "type": ["text", "enter"], "key": ["modifiers"], "scroll": ["dx", "dy", "precise", "modifiers", "at"],
             "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"], "set_media": ["file"],
@@ -327,9 +331,18 @@ final class ScenarioRunner {
             return .click(id: try string("double_click"), at: try point("at"), modifiers: mods, clicks: 2)
         case "drag":
             let aimed = try part()
+            var onto: String?
+            if o["to_row"] != nil {
+                guard case .row? = aimed else { throw Failure("\"to_row\" needs \"row\": the cue to drag") }
+                onto = try string("to_row")
+            }
+            if case .row? = aimed, onto == nil { throw Failure("a row drag needs \"to_row\": the cue to drop it on") }
+            if case .header? = aimed, o["to_row"] != nil {
+                throw Failure("\"to_row\" goes with \"row\", not \"header\"")
+            }
             return .drag(
                 id: try string("drag"), from: try point("from", beyond: aimed != nil),
-                to: try point("to", beyond: aimed != nil), modifiers: mods, part: aimed)
+                to: try point("to", beyond: aimed != nil), modifiers: mods, part: aimed, onto: onto)
         case "hover":
             let aimed = try part()
             return .hover(id: try string("hover"), at: try point("at", beyond: aimed != nil), part: aimed)
@@ -712,7 +725,9 @@ final class ScenarioRunner {
             }
             let hit = try press(events, on: view)
             note("\(clicks == 2 ? "double_click" : "click") \(id) at \(Self.text(p)): \(hit)")
-        case .drag(let id, let from, let to, let mods, let part):
+        case .drag(let id, _, let to, _, .row(let what)?, let onto?):
+            try await dragRow(id, what, onto: onto, at: to)
+        case .drag(let id, let from, let to, let mods, let part, _):
             let (view, rect) = try aim(id, part)
             let column = columnOf(id, part)
             let widthBefore = column?.width
@@ -1028,7 +1043,9 @@ final class ScenarioRunner {
             }
         }
         walk(wc.cueList.roots)
-        if let n = all.first(where: { $0.cue.number == what }) ?? all.first(where: { $0.cue.displayName == what }) {
+        if let n = all.first(where: { $0.cue.number == what }) ?? all.first(where: { $0.cue.displayName == what })
+            ?? all.first(where: { wc.cueList.shownName($0.cue) == what })
+        {
             return n
         }
         let names = all.map { "\($0.cue.number ?? "-") \"\($0.cue.displayName)\"" }
@@ -1079,6 +1096,74 @@ final class ScenarioRunner {
                     + "fractions may go past the header cell but must stay inside the table's header")
         }
         return p
+    }
+
+    /// A drag of cue `what`'s row onto cue `onto`'s row, ending over `at` of the target row. AppKit's
+    /// drag session needs real input, so the outline is fed the same calls a session makes (entered,
+    /// updated, perform) with a stand-in for the dragging info: the drop AppKit proposes goes through
+    /// the list's validateDrop and acceptDrop. Pressing the row selects it unless it is selected, and
+    /// the dragged cues are the selection's top-level ones. A drop the list refuses is logged, not a
+    /// failure.
+    private func dragRow(_ id: String, _ what: String, onto: String, at: CGPoint) async throws {
+        let (view, _) = try aim(id, .row(what))
+        let list = wc.cueList
+        guard let table = view as? NSOutlineView, table === list.outlineView else {
+            throw Failure("\"\(id)\" is not the cue list: only its rows can be dragged")
+        }
+        let grabbed = try cue(what)
+        let (_, targetRect) = try aim(id, .row(onto))
+        guard let rect = targetRect else { throw Failure("cue \(onto) has no row") }
+        if !list.selectedIDs().contains(grabbed.id) { list.selectAsUser([grabbed.id]) }
+        list.dragged = CueEditor.topLevel(list.selectedIDs().compactMap(list.node))
+        defer {
+            list.dragged = []
+            list.showTargetOutline(nil)
+        }
+        let local = NSPoint(x: rect.minX + at.x * rect.width, y: rect.minY + at.y * rect.height)
+        let info = StandInDraggingInfo(at: table.convert(local, to: nil), window: window)
+        let before = describe(list.roots)
+        _ = table.draggingEntered(info)
+        let operation = table.draggingUpdated(info)
+        guard !operation.isEmpty else {
+            table.draggingExited(info)
+            note("drag \(id) row \(what) onto row \(onto): refused, order \(before)")
+            return
+        }
+        let accepted = table.performDragOperation(info)
+        table.concludeDragOperation(info)
+        await catchUp()
+        note(
+            "drag \(id) row \(what) onto row \(onto): \(accepted ? "dropped" : "not accepted"), "
+                + "order \(describe(list.roots)); targets \(describeTargets(list))")
+    }
+
+    /// Each cue that has a target, as `cue -> target` by their numbers (else names).
+    private func describeTargets(_ list: CueListViewController) -> String {
+        func label(_ n: CueNode) -> String { n.cue.number ?? (n.cue.displayName.isEmpty ? "-" : n.cue.displayName) }
+        var pairs: [String] = []
+        func walk(_ nodes: [CueNode]) {
+            for n in nodes {
+                if let raw = n.cue.raw["kind"]?["target"]?.stringValue, let t = list.node(ModelID(raw)) {
+                    pairs.append("\(label(n)) -> \(label(t))")
+                }
+                walk(n.children)
+            }
+        }
+        walk(list.roots)
+        return pairs.isEmpty ? "none" : pairs.joined(separator: ", ")
+    }
+
+    /// The cues in list order, a child's number after a `>` per level.
+    private func describe(_ nodes: [CueNode]) -> String {
+        func walk(_ nodes: [CueNode], _ depth: Int) -> [String] {
+            nodes.flatMap { n in
+                [
+                    String(repeating: ">", count: depth)
+                        + (n.cue.number ?? (n.cue.displayName.isEmpty ? "-" : n.cue.displayName))
+                ] + walk(n.children, depth + 1)
+            }
+        }
+        return walk(nodes, 0).joined(separator: ", ")
     }
 
     /// The view and the rectangle (its coordinates; nil: all of it) a step aims at: the control, or
@@ -1547,7 +1632,7 @@ final class ScenarioRunner {
         case .select(let s): return "select \(s.joined(separator: ", "))"
         case .pasteProperties(let s, _): return "paste_properties \(s)"
         case .click(let id, _, _, let n): return "\(n == 2 ? "double_click" : "click") \(id)"
-        case .drag(let id, _, _, _, let part): return "drag \(id)\(partText(part))"
+        case .drag(let id, _, _, _, let part, _): return "drag \(id)\(partText(part))"
         case .hover(let id, _, let part): return "hover \(id)\(partText(part))"
         case .openMenu(let id): return "open_menu \(id)"
         case .menuCommand(let name): return "menu_command \(name)"
@@ -1600,6 +1685,37 @@ final class ScenarioRunner {
 /// `make ui-shots`: the scenario named by `OPENLAB_SCENARIO`, its shots into `OPENLAB_SHOTS_OUT`
 /// (both reach the test process through xcodebuild's `TEST_RUNNER_` prefix). Without a scenario it
 /// reports a skip. The tests after it are the runner's own.
+/// The dragging info a real drag session would give the outline, for a drag that ends at one point.
+private final class StandInDraggingInfo: NSObject, NSDraggingInfo {
+    let location: NSPoint
+    weak var targetWindow: NSWindow?
+    let board = NSPasteboard(name: NSPasteboard.Name("dev.openlab.scenario-drag"))
+    init(at point: NSPoint, window: NSWindow) {
+        location = point
+        targetWindow = window
+        board.clearContents()
+    }
+    var draggingDestinationWindow: NSWindow? { targetWindow }
+    var draggingSourceOperationMask: NSDragOperation { .every }
+    var draggingLocation: NSPoint { location }
+    var draggedImageLocation: NSPoint { location }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { board }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    func enumerateDraggingItems(
+        options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+        searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+        using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+    ) {}
+    func resetSpringLoading() {}
+}
+
 @MainActor
 final class ScenarioShotTests: XCTestCase {
     func testScenario() async throws {
@@ -1819,7 +1935,7 @@ final class ScenarioShotTests: XCTestCase {
               {"shot": "both", "display": ["V1", "V2"]}, {"shot": "one", "display": "V1"}]}
             """)
         XCTAssertEqual(s.steps.count, 10)
-        guard case .drag(_, _, let to, _, let part) = s.steps[6] else { return XCTFail("\(s.steps[6])") }
+        guard case .drag(_, _, let to, _, let part, _) = s.steps[6] else { return XCTFail("\(s.steps[6])") }
         XCTAssertEqual(part, .header("Name"))
         XCTAssertEqual(to, CGPoint(x: -3, y: 0.5))
         guard case .shot(_, let displays, nil) = s.steps[8] else { return XCTFail("\(s.steps[8])") }
@@ -1861,7 +1977,8 @@ final class ScenarioShotTests: XCTestCase {
         try refused(#"{"hover": "x", "row": "1", "segment": "Wait"}"#, "not row and segment")
         try refused(#"{"drag": "x", "segment": "Wait"}"#, "\"drag\" does not take \"segment\"")
         try refused(#"{"drag": "x", "header": "a", "to": [0, 99]}"#, "fractions -20 to 20 of the header or row")
-        try refused(#"{"drag": "x", "row": "1"}"#, "\"drag\" does not take \"row\"")
+        try refused(#"{"drag": "x", "row": "1"}"#, "a row drag needs \"to_row\"")
+        try refused(#"{"drag": "x", "to_row": "1"}"#, "\"to_row\" needs \"row\"")
         try refused(#"{"drag": "x", "to": [0, 2]}"#, "fractions 0 to 1 of the control")
         try refused(#"{"click": "x", "header": "a"}"#, "\"click\" does not take \"header\"")
         try refused(
@@ -2066,6 +2183,57 @@ final class ScenarioShotTests: XCTestCase {
         XCTAssertEqual(widths.count, 2, log)
         XCTAssertGreaterThan(widths[0].1, widths[0].0, "Pre-Wait was widened: \(log)")
         XCTAssertEqual(widths[1].0, widths[1].1, "Name takes no user resize: \(log)")
+    }
+
+    func testADragFromANamedRowOntoAnotherNamedRowMovesTheCueInTheList() async throws {
+        // Over the last child of the open group Act One, AppKit proposes a drop below it in the group; over the
+        // group's own row (lower part), as the group's first child.
+        let log = try await runLog(
+            of: """
+                {"show": "Demo", "steps": [
+                  {"drag": "cue-list", "row": "2.1", "to_row": "2.3", "to": [0.3, 0.9]},
+                  {"drag": "cue-list", "row": "1", "to_row": "Act One", "to": [0.3, 0.9]}]}
+                """)
+        let orders = log.split(separator: "\n").filter { $0.contains("order ") }.map {
+            $0.components(separatedBy: "order ")[1].components(separatedBy: ";")[0]
+        }
+        XCTAssertEqual(orders.count, 2, log)
+        XCTAssertEqual(orders[0], "1, -, 2, >2.2, >2.3, >2.1", "cue 2.1 now follows 2.3 inside the group")
+        XCTAssertEqual(orders[1], "-, 2, >1, >2.2, >2.3, >2.1", "cue 1 became the group's first child")
+    }
+
+    func testADropOnAnotherCuesTargetCellSetsItsTargetAndDoesNotReorder() async throws {
+        let log = try await runLog(
+            of: """
+                {"show": "Demo", "window": {"width": 1200, "height": 800}, "steps": [
+                  {"drag": "cue-list", "row": "2.1", "to_row": "fade and stop Intro", "to": [0.74, 0.5]}]}
+                """)
+        XCTAssertTrue(log.contains("order 1, -, 2, >2.1, >2.2, >2.3;"), "the order is unchanged: \(log)")
+        XCTAssertTrue(log.contains("- -> 2.1"), "the fade cue now targets cue 2.1: \(log)")
+    }
+
+    func testADropIsRefusedInShowModeAndTheRunGoesOn() async throws {
+        let log = try await runLog(
+            of: """
+                {"show": "Demo", "steps": [
+                  {"click": "mode-switch", "at": [0.9, 0.5]}, {"advance": 0.3},
+                  {"drag": "cue-list", "row": "2.1", "to_row": "2.3", "to": [0.3, 0.9]},
+                  {"shot": "after"}]}
+                """)
+        XCTAssertTrue(log.contains("onto row 2.3: refused, order 1, -, 2, >2.1, >2.2, >2.3"), log)
+        XCTAssertTrue(log.contains("shot 01-after.png"), "the run went on: \(log)")
+    }
+
+    func testADragOntoAnUnknownRowNameStopsTheRunWithTheCueList() async throws {
+        let message = try await failure(
+            of: #"{"show": "Demo", "steps": [{"drag": "cue-list", "row": "1", "to_row": "nope"}]}"#)
+        XCTAssertTrue(message.contains("no cue numbered or named \"nope\"; cues: "), message)
+        let from = try await failure(
+            of: #"{"show": "Demo", "steps": [{"drag": "cue-list", "row": "zz", "to_row": "1"}]}"#)
+        XCTAssertTrue(from.contains("no cue numbered or named \"zz\""), from)
+        let header = try await failure(
+            of: #"{"show": "Demo", "steps": [{"drag": "cue-list", "header": "Nope"}]}"#)
+        XCTAssertTrue(header.contains("no column header \"Nope\" in \"cue-list\"; headers: "), header)
     }
 
     func testAShotWithADisplayWritesItsCompositeBesideTheWindowShotAndShowsTheCardWhilePlaying() async throws {

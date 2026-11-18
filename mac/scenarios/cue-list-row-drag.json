@@ -1,0 +1,37 @@
+{
+  "about": "A drag that starts on a named cue row and ends on another named row, with the drop AppKit proposes: cue 2.1 dropped on the lower part of 2.3 goes below it in its group, then cue 1 dropped on the lower part of the open group Act One becomes the group's first child.",
+  "show": "Demo",
+  "window": {
+    "width": 1200,
+    "height": 800
+  },
+  "steps": [
+    {
+      "shot": "start"
+    },
+    {
+      "drag": "cue-list",
+      "row": "2.1",
+      "to_row": "2.3",
+      "to": [
+        0.3,
+        0.9
+      ]
+    },
+    {
+      "shot": "cue-2-1-dropped-below-2-3"
+    },
+    {
+      "drag": "cue-list",
+      "row": "1",
+      "to_row": "Act One",
+      "to": [
+        0.3,
+        0.9
+      ]
+    },
+    {
+      "shot": "cue-1-dropped-on-the-group-row"
+    }
+  ]
+}

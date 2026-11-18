@@ -827,7 +827,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     var onMove: (([ModelID], ModelID?, Int) -> Void)?
     /// A validated drop on a Target cell: the cues to set, and the cue they now target.
     var onDropTarget: (([ModelID], ModelID) -> Void)?
-    private var dragged: [CueNode] = []
+    var dragged: [CueNode] = []
     static let dragType = NSPasteboard.PasteboardType("dev.openlab.cue-id")
 
     /// Select Next / Previous: selects the visible row `delta` rows from the last selected one (from
