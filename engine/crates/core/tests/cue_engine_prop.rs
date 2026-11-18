@@ -1907,15 +1907,19 @@ impl Run {
         let mut playlists = Vec::new();
         each(&self.ws.cue_lists[0].cues, &mut |c| {
             if let CueKind::Group {
-                mode: GroupMode::Playlist { shuffle: false, .. },
+                mode:
+                    GroupMode::Playlist {
+                        shuffle: false,
+                        loop_,
+                    },
                 children,
             } = &c.kind
             {
                 let kids: Vec<(CueId, bool)> = children.iter().map(|k| (k.id, k.armed)).collect();
-                playlists.push((c.id, kids));
+                playlists.push((c.id, *loop_, kids));
             }
         });
-        for (group, children) in playlists {
+        for (group, loop_, children) in playlists {
             // Not running: idle, loaded, broken, or left paused by a lost device (a start clears
             // that once the device is back and plays the group from its beginning).
             if !matches!(
@@ -1940,11 +1944,11 @@ impl Run {
                 }
                 _ => None,
             });
+            let at = |id: CueId| children.iter().position(|(k, _)| *k == id);
             if let Some(started) = started {
                 // A disarmed child plays only its pre-wait and reports no state of its own when
                 // that is zero: the first state reported may be a later child's, after the marked
                 // one and disarmed children only.
-                let at = |id: CueId| children.iter().position(|(k, _)| *k == id);
                 let passed = marked.and_then(at).zip(at(started)).is_some_and(|(m, s)| {
                     m <= s
                         && children
@@ -1958,6 +1962,35 @@ impl Run {
                     marked,
                     started
                 );
+            } else if let Some(m) = marked.and_then(at) {
+                // No child reported a state: the start may have taken a child's own run as the
+                // one playing. The playlist then plays on from that child, so the next child it
+                // marks comes after the marked one; a mark past that child shows up here. Not
+                // checked: a looping playlist (it wraps), a child with static problems before
+                // the mark (it keeps its timing as the current child although the mark passes
+                // over it), and a start the chain limit cut short.
+                let limited = actions
+                    .iter()
+                    .any(|a| matches!(a, Action::Warning(EngineWarning::ChainLimit { .. })));
+                let problems_before = children
+                    .get(..m)
+                    .is_some_and(|b| b.iter().any(|(k, _)| !self.engine.problems(*k).is_empty()));
+                if !loop_
+                    && !limited
+                    && !problems_before
+                    && copy.state(group) == CueState::Running
+                    && !copy.is_halted(group)
+                {
+                    let after = copy.next_in_playlist(group);
+                    prop_assert!(
+                        after.and_then(at).is_none_or(|a| a > m),
+                        "playlist {}: marked {:?}, but its start plays a child before it (next \
+                         after the start: {:?})",
+                        group,
+                        marked,
+                        after
+                    );
+                }
             }
         }
         Ok(())
@@ -3422,6 +3455,62 @@ fn a_playlists_mark_moves_on_when_a_childs_broken_run_settles_with_no_state_chan
         lookahead: 0,
         min_go: 0,
         panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
+}
+
+/// A playlist's child started on its own is fading out in its own panic (its second trigger)
+/// when a Disarm cue makes it skipped. A start of the playlist lets it go on fading and takes
+/// it as the child playing, which reports no state: the mark names it, not the child after it.
+#[test]
+fn a_playlists_mark_names_a_child_of_its_own_that_the_start_takes_as_playing() {
+    let spec = |kind: u8, level: u8| Spec {
+        kind,
+        pre: 0,
+        post: 0,
+        mode: 0,
+        armed: true,
+        dup: false,
+        level,
+        group_mode: 0,
+        target: 0,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    // A Disarm cue (id 1) aimed at the sound; the playlist (id 2) holds the sound (id 3, panic on
+    // a second trigger, skipped while disarmed) and a Wait (id 4).
+    let case = Case {
+        specs: vec![
+            spec(12, 0),
+            Spec {
+                group_mode: 4,
+                ..spec(4, 0)
+            },
+            Spec {
+                second: 8,
+                ..spec(2, 1)
+            },
+            Spec {
+                post: 2,
+                ..spec(1, 1)
+            },
+        ],
+        // Start the sound, start it again (its panic, 0.4 s), then disarm it.
+        steps: [(0, 5), (50, 5), (10, 1), (10, 0)]
+            .into_iter()
+            .map(|(dt, a)| Step {
+                dt,
+                op: if a == 0 { 0 } else { 2 },
+                a,
+                b: 0,
+            })
+            .collect(),
+        lookahead: 0,
+        min_go: 0,
+        panic: 2,
     };
     if let Err(e) = invariants(&case) {
         panic!("{e}");
