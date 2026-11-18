@@ -841,6 +841,161 @@ fn reordering_a_playlist_while_it_plays_applies_to_the_next_child() {
     assert_eq!(starts(&rig.tick(1000)), vec![(id(12), 1000)]);
 }
 
+// ----- the playlist's next child (the cue list's mark) -----
+
+fn marks(actions: &[Action]) -> Vec<(CueId, Option<CueId>)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::PlaylistNextChanged { group, next } => Some((*group, *next)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn three_waits(loop_: bool) -> Rig {
+    Rig::new(vec![grp(
+        1,
+        playlist(loop_, false),
+        vec![wait(10, 1.0), wait(11, 1.0), wait(12, 1.0)],
+    )])
+}
+
+#[test]
+fn a_playlist_marks_its_first_child_then_the_one_after_the_playing_child_and_the_first_after_a_reset()
+ {
+    let mut rig = three_waits(false);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    assert_eq!(
+        rig.engine.playlist_marks().collect::<Vec<_>>(),
+        vec![(id(1), id(10))]
+    );
+    assert_eq!(marks(&rig.go(0)), vec![(id(1), Some(id(11)))]);
+    assert_eq!(marks(&rig.tick(1000)), vec![(id(1), Some(id(12)))]);
+    // The last child plays: nothing comes after it.
+    assert_eq!(marks(&rig.tick(2000)), vec![(id(1), None)]);
+    assert_eq!(rig.engine.playlist_marks().count(), 0);
+    let reset = rig.at(2500, Input::Reset { cue: id(1) });
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(marks(&reset), vec![(id(1), Some(id(10)))]);
+    // Nothing changed: nothing reported.
+    assert!(marks(&rig.tick(3000)).is_empty());
+}
+
+#[test]
+fn a_looping_playlist_marks_its_first_child_while_the_last_plays() {
+    let mut rig = three_waits(true);
+    rig.go(0);
+    rig.tick(1000);
+    assert_eq!(marks(&rig.tick(2000)), vec![(id(1), Some(id(10)))]);
+    assert_eq!(marks(&rig.tick(3000)), vec![(id(1), Some(id(11)))]);
+}
+
+#[test]
+fn the_mark_passes_over_a_skipped_child_and_one_broken_at_run_time() {
+    let mut skipped = wait(10, 1.0);
+    skipped.armed = false;
+    skipped.skip_if_disarmed = true;
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![skipped, wait(11, 1.0), wait(12, 1.0)],
+    )]);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    // A child that broke while it played is passed over until it is reset.
+    rig.ws.cue_lists[0].cues.push(grp(
+        2,
+        playlist(false, false),
+        vec![cue(20, audio()), wait(21, 1.0)],
+    ));
+    rig.start(0, 20);
+    rig.failed(10, 20);
+    assert_eq!(rig.state(20), CueState::Broken);
+    assert_eq!(rig.engine.next_in_playlist(id(2)), Some(id(21)));
+    assert_eq!(
+        marks(&rig.at(20, Input::Reset { cue: id(20) })),
+        vec![(id(2), Some(id(20)))]
+    );
+}
+
+#[test]
+fn a_shuffled_playlist_marks_the_child_its_pass_plays_next_and_none_before_it_is_drawn() {
+    let kids = (10..15).map(|n| wait(n, 1.0)).collect();
+    let mut rig = Rig::seeded(vec![grp(1, playlist(false, true), kids)], 7);
+    assert_eq!(
+        rig.engine.next_in_playlist(id(1)),
+        None,
+        "the order is drawn when it starts"
+    );
+    rig.go(0);
+    for t in 1..5 {
+        let marked = rig.engine.next_in_playlist(id(1));
+        assert!(marked.is_some());
+        let started: Vec<CueId> = starts(&rig.tick(t * 1000))
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
+        assert_eq!(
+            started,
+            vec![marked.unwrap()],
+            "the marked child is the one that plays next"
+        );
+    }
+    assert_eq!(
+        rig.engine.next_in_playlist(id(1)),
+        None,
+        "the pass's last child plays"
+    );
+}
+
+#[test]
+fn a_stopping_playlist_marks_nothing_until_it_is_idle_again() {
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![cue(10, audio()), cue(11, audio())],
+    )]);
+    rig.go(0);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let fading = rig.at(
+        100,
+        Input::Stop {
+            cue: id(1),
+            fade_out: Some(FadeSpec {
+                duration: 1.0,
+                curve: FadeCurve::Linear,
+            }),
+        },
+    );
+    assert_eq!(
+        marks(&fading),
+        vec![(id(1), None)],
+        "a stopping playlist starts no child"
+    );
+    assert_eq!(marks(&rig.stop(200, 1)), vec![(id(1), Some(id(10)))]);
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
+fn edits_move_the_mark_and_a_group_that_leaves_playlist_mode_or_the_show_reports_none() {
+    let mut rig = three_waits(false);
+    // A reorder of the children while idle: the new first child.
+    children_mut(&mut rig.ws.cue_lists[0].cues[0]).swap(0, 2);
+    assert_eq!(marks(&rig.tick(10)), vec![(id(1), Some(id(12)))]);
+    if let CueKind::Group { mode, .. } = &mut rig.ws.cue_lists[0].cues[0].kind {
+        *mode = TIMELINE;
+    }
+    assert_eq!(marks(&rig.tick(20)), vec![(id(1), None)]);
+    let mut rig = three_waits(false);
+    rig.ws.cue_lists[0].cues.clear();
+    assert_eq!(
+        marks(&rig.tick(10)),
+        vec![(id(1), None)],
+        "a deleted group reports none, once"
+    );
+    assert!(marks(&rig.tick(20)).is_empty());
+}
+
 // ----- random -----
 
 /// The child a random group started in `actions` (the group itself excluded).

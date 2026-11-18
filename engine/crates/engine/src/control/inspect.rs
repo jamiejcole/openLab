@@ -79,6 +79,7 @@ impl Control {
                 playheads: Vec::new(),
                 previewing: Vec::new(),
                 played: Vec::new(),
+                playlist_next: Vec::new(),
                 warnings: Vec::new(),
                 media_durations: Vec::new(),
             },

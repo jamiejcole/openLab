@@ -44,6 +44,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var previewing: Set<ModelID> = []
     /// Cues started since they were last reset: their rows show the second colour, if they have one.
     @Published private(set) var played: Set<ModelID> = []
+    /// Each Playlist group's next child, by group: the list marks it on the group's box.
+    @Published private(set) var playlistNext: [ModelID: ModelID] = [:]
     @Published private(set) var progress: [ModelID: ProgressItem] = [:]
     /// Where each loaded cue stands, as the engine's progress says: Load to Time or a Load cue's
     /// time into its action, a click in a timeline's point of its file. Only loaded cues are here;
@@ -451,6 +453,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         playheads = Dictionary(s.playheads.compactMap { e in e.cue.map { (e.list, $0) } }, uniquingKeysWith: { $1 })
         previewing = Set(s.previewing)
         played = Set(s.played ?? [])
+        playlistNext = Dictionary((s.playlistNext ?? []).map { ($0.group, $0.cue) }, uniquingKeysWith: { $1 })
         mediaDurations = Dictionary((s.mediaDurations ?? []).map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
         warnings = s.warnings
         progress = [:]
@@ -614,6 +617,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .played(let cue, let on):
                 if on { played.insert(cue) } else { played.remove(cue) }
                 cues.insert(cue)
+            case .playlistNext(let group, let next):
+                // The mark leaves one child's row for another's.
+                if let old = playlistNext[group] { cues.insert(old) }
+                playlistNext[group] = next
+                if let next { cues.insert(next) }
+                cues.insert(group)
             case .warning(let w):
                 // Nothing went wrong in these: the operator pressed a key twice, or a fade ran with
                 // nothing to fade. QLab shows nothing for them, so they are not listed or counted.

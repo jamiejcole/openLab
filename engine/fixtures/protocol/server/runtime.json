@@ -57,6 +57,16 @@
       "played": true
     },
     {
+      "type": "playlist_next",
+      "group": "00000000-0000-0000-0000-00000000000c",
+      "cue": "00000000-0000-0000-0000-00000000000d"
+    },
+    {
+      "type": "playlist_next",
+      "group": "00000000-0000-0000-0000-00000000000c",
+      "cue": null
+    },
+    {
       "type": "warning",
       "warning": {
         "type": "trigger_ignored",

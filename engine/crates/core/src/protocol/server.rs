@@ -805,6 +805,10 @@ pub struct Snapshot {
     /// one); later changes come as `played` runtime changes. Absent: none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub played: Vec<CueId>,
+    /// Each Playlist group with a child it plays next; later changes come as `playlist_next`
+    /// runtime changes. Absent: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub playlist_next: Vec<PlaylistNextEntry>,
     /// As in `warnings`.
     pub warnings: Vec<WireWarning>,
     /// The media lengths of the audio cues whose file is probed and playable, by cue id;
@@ -825,6 +829,12 @@ pub struct CueStateEntry {
 pub struct CueProblems {
     pub cue: CueId,
     pub problems: Vec<WireProblem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistNextEntry {
+    pub group: CueId,
+    pub cue: CueId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

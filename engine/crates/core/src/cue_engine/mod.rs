@@ -19,6 +19,7 @@ mod live_levels;
 mod operations;
 mod others;
 mod playhead;
+mod playlist_mark;
 mod preview;
 mod rng;
 mod run;
@@ -83,6 +84,8 @@ pub struct CueEngine {
     /// or of a group around it, Reset All): they show their second colour (QLab 5, manual
     /// p. 127). Runtime only, never saved: a reopened show starts with none.
     played: BTreeSet<CueId>,
+    /// Each Playlist group's next child, as last reported (`playlist_mark.rs`).
+    playlist_marks: BTreeMap<CueId, CueId>,
     /// Ducks and boosts in force, by the cue doing them (`others.rs`).
     ducks: BTreeMap<CueId, others::Duck>,
     /// Some voice may play at a duck gain other than 1.0: `sync_ducks` has work while this is
@@ -180,6 +183,7 @@ impl CueEngine {
             rng: SplitMix64::new(config.seed()),
             random_cycles: BTreeMap::new(),
             played: BTreeSet::new(),
+            playlist_marks: BTreeMap::new(),
             ducks: BTreeMap::new(),
             duck_live: false,
             duck_held: 0,
@@ -335,6 +339,7 @@ impl CueEngine {
         if self.panic.is_none() {
             self.panicked_previews.clear();
         }
+        let marks_edit = follow_edits.then(|| self.marks_edit_before_sync());
         // Before the runtimes follow the edits, so a deleted cue loses its problems while its
         // runtime still gives its state, and reports idle once. Only does work after
         // `model_changed`.
@@ -362,6 +367,7 @@ impl CueEngine {
         self.advance(&mut cx);
         self.settle_groups(&mut cx);
         self.sync_ducks(&mut cx);
+        self.sync_playlist_marks(marks_edit, &mut cx);
         // `limit - budget` is what this call and the earlier ones at `now` started (a raised
         // limit raises the budget by as much, see `budget_left`).
         self.spent = (now, cx.limit.saturating_sub(cx.budget));

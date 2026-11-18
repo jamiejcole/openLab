@@ -464,6 +464,12 @@ pub enum RuntimeChange {
         cue: CueId,
         played: bool,
     },
+    /// The child a Playlist group plays next changed (`cue`; `null`: none), which the cue list
+    /// marks on the group's box.
+    PlaylistNext {
+        group: CueId,
+        cue: Option<CueId>,
+    },
     Warning {
         warning: WireWarning,
     },
@@ -562,6 +568,10 @@ impl RuntimeChange {
             Action::PlayedChanged { cue, played } => Self::Played {
                 cue: *cue,
                 played: *played,
+            },
+            Action::PlaylistNextChanged { group, next } => Self::PlaylistNext {
+                group: *group,
+                cue: *next,
             },
             Action::Warning(warning) => Self::Warning {
                 warning: WireWarning::from_engine(warning, rate),

@@ -72,8 +72,8 @@ use openlab_audio::{
 };
 use openlab_core::protocol::{
     CueProblems, CueStateEntry, DocumentState, ErrorBody, ErrorCode, LogKind, LogLevel, OkBody,
-    Outcome, PlayheadEntry, Request, RuntimeChange, ServerMessage, Snapshot, WireProblem,
-    WireWarning,
+    Outcome, PlayheadEntry, PlaylistNextEntry, Request, RuntimeChange, ServerMessage, Snapshot,
+    WireProblem, WireWarning,
 };
 use openlab_core::{
     CommandError, CueEngine, CueId, CueKind, DeviceInfo, EngineConfig, EngineConfigError, History,
@@ -1292,6 +1292,12 @@ impl Doc {
                 .collect(),
             previewing: self.model.engine().previewing().collect(),
             played: self.model.engine().played().collect(),
+            playlist_next: self
+                .model
+                .engine()
+                .playlist_marks()
+                .map(|(group, cue)| PlaylistNextEntry { group, cue })
+                .collect(),
             warnings: self.warnings.clone(),
             media_durations: self.checks.media_durations(),
         }
