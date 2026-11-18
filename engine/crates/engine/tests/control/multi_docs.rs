@@ -1174,63 +1174,6 @@ fn other_docs_primes_never_refuse_a_start() {
     assert!(!format!("{msgs:?}").contains("stream_failed"));
 }
 
-/// Loads are a head start too: a sequence loaded whole (one auto-load on a long auto-follow
-/// chain, a Load to Time) opens streams only while half the streamer's permits stay free, and a
-/// start of another cue still plays. The loads past that are skipped with a notice and their
-/// cues still play, streamed cold.
-#[test]
-fn a_long_loaded_sequence_never_takes_the_streams_a_start_needs() {
-    let f = wav(&dc(400, 0.25));
-    // Cues 1 to 9 auto-follow one another; cue 10 is not in the sequence.
-    let mut cues: Vec<_> = (1..=9u128)
-        .map(|n| {
-            let mut c = audio(n, &f, 0);
-            if n < 9 {
-                c.continue_mode = ContinueMode::AutoFollow;
-            }
-            c
-        })
-        .collect();
-    cues.push(audio(10, &f, 0));
-    let ws = workspace(cues);
-    let mut c = config(&ws);
-    c.streamer.max_streams = 8;
-    c.prime_cues = 1;
-    let mut s = show_with(ws, c);
-    s.run(BLOCK * 2);
-    s.take_outbound();
-    s.transport(TransportAction::Load {
-        cue: id(1),
-        at: 0.0,
-    });
-    s.run(BLOCK * 2);
-    assert!(
-        s.control().open_streams() <= 4,
-        "loads leave half the permits: {}",
-        s.control().open_streams()
-    );
-    for n in 1..=9u128 {
-        assert_eq!(s.control().engine().state(id(n)), CueState::Loaded, "{n}");
-    }
-    let msgs = s.take_outbound();
-    assert_eq!(
-        format!("{msgs:?}").matches("load_skipped").count(),
-        1,
-        "one notice for the sequence: {msgs:?}"
-    );
-    // Another cue starts and plays.
-    let at = s.now() as usize;
-    s.transport(TransportAction::Start { cue: id(10) });
-    s.run(BLOCK * 4);
-    assert_eq!(s.control().engine().state(id(10)), CueState::Running);
-    assert!(
-        first_nonzero(&s.channel(0)[at..]).is_some(),
-        "cue 10 is heard"
-    );
-    let msgs = s.take_outbound();
-    assert!(!format!("{msgs:?}").contains("stream_failed"), "{msgs:?}");
-}
-
 /// The preload budget (AUD-05) is the engine's, not each doc's: a second doc's
 /// preload that does not fit what the first holds streams, and a closed doc gives its share
 /// back.

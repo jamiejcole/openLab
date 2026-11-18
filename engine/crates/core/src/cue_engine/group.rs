@@ -1050,22 +1050,25 @@ impl CueEngine {
         }
     }
 
-    /// Loads the cue and the rest of its sequence (the cues its auto-continue or auto-follow
-    /// chain would start) as QLab 5 carries a load time on through a sequence (manual pp. 149,
-    /// 680-681): each later cue is loaded at the time left once it would have started, and one
-    /// the time does not reach at its top (left as it is if it already stands there). A group
-    /// also loads the children its action will start first (timeline: all; start-first modes and an
-    /// unshuffled playlist: the first), with their own sequences, at the time left after the
-    /// group's pre-wait. Iterative over nested groups; each cue is loaded at most once, so a
-    /// duplicate id cannot make it loop.
-    /// Returns the cues it loaded (one kept as it stood is not among them).
-    pub(super) fn load_tree(&mut self, cue: CueId, time: f64, cx: &mut Ctx) -> Vec<CueId> {
-        let mut loaded = Vec::new();
+    /// Loads the cue and, with `sequence`, the rest of its sequence (the cues its auto-continue
+    /// or auto-follow chain would start) as QLab 5 carries a load time on through a sequence
+    /// (manual pp. 149, 680-681): each later cue is loaded at the time left once it would have
+    /// started, and one the time does not reach at its top (left as it is if it already stands
+    /// there). A group also loads the children its action will start first (timeline: all;
+    /// start-first modes and an unshuffled playlist: the first), with their own sequences when
+    /// `sequence` is set, at the time left after the group's pre-wait. Iterative over nested
+    /// groups; each cue is loaded at most once, so a duplicate id cannot make it loop.
+    pub(super) fn load_tree(&mut self, cue: CueId, time: f64, sequence: bool, cx: &mut Ctx) {
         let mut work = vec![(cue, time)];
         let mut done = HashSet::new();
         while let Some((first, time)) = work.pop() {
             let mut later = Vec::new();
-            for (id, start) in self.sequence(first, cx).cues {
+            let cues = if sequence {
+                self.sequence(first, cx).cues
+            } else {
+                vec![(first, 0)]
+            };
+            for (id, start) in cues {
                 let time = time - self.seconds(start);
                 if !done.insert(id) {
                     break;
@@ -1093,7 +1096,6 @@ impl CueEngine {
                 if !matches!(self.slots.get(&id), Some(Slot::Loaded(_))) {
                     break;
                 }
-                loaded.push(id);
                 let Some(CueKind::Group { mode, children }) = cx.ws.find_cue(id).map(|m| &m.kind)
                 else {
                     continue;
@@ -1113,7 +1115,6 @@ impl CueEngine {
             // Children first, in list order: the stack pops the last pushed first.
             work.extend(later.into_iter().rev());
         }
-        loaded
     }
 
     /// Whether `cue` is loaded at its very top: its whole pre-wait and its action ahead of it.

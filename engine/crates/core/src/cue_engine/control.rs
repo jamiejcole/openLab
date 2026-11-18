@@ -52,10 +52,7 @@ impl CueEngine {
             CueKind::Pause { .. } => self.as_of(at, cx, |e, cx| e.pause_tree(target, cx)),
             CueKind::Load { load_to_time, .. } => {
                 let time = self.load_time(target, *load_to_time, cx);
-                self.as_of(at, cx, |e, cx| {
-                    let loaded = e.load_tree(target, time, cx);
-                    e.forget_auto_loaded(&loaded);
-                });
+                self.as_of(at, cx, |e, cx| e.load_tree(target, time, true, cx));
             }
             CueKind::Reset { .. } => self.as_of(at, cx, |e, cx| e.reset_tree(target, cx)),
             CueKind::Devamp {
