@@ -277,6 +277,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView
+        // A screen smaller than the default size (a small laptop, a scaled display) gets the largest
+        // window that fits, before centring.
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+        if let visible, let fitted = WindowLayout.fit(window.frame, screens: [visible], minSize: window.minSize) {
+            window.setFrame(fitted, display: false)
+        }
         window.center()
         // Combine does not deliver in subscription order, so whatever reads the cue list's own
         // state (the shown list, its tree) waits for `onModelApplied`, which it calls once it has

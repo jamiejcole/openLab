@@ -1885,6 +1885,24 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertNil(WindowLayout.fit(good, screens: [], minSize: minSize))
     }
 
+    func testDefaultFrameFitsASmallScreenAndKeepsALargeOneAtDefaultSize() {
+        let minSize = NSSize(width: 800, height: 500)
+        let default1200 = NSRect(x: 0, y: 0, width: 1200, height: 828)
+        let small = NSRect(x: 0, y: 0, width: 1024, height: 768 - 25)
+        XCTAssertEqual(
+            WindowLayout.fit(default1200, screens: [small], minSize: minSize),
+            NSRect(x: 0, y: 0, width: 1024, height: 743), "the largest size that fits")
+        let large = NSRect(x: 0, y: 0, width: 2560, height: 1415)
+        XCTAssertEqual(WindowLayout.fit(default1200, screens: [large], minSize: minSize)?.size, default1200.size)
+    }
+
+    func testANewWorkspaceWindowOpensInsideItsScreensVisibleFrame() async throws {
+        let (_, wc) = try await open(try showFile("Fits"))
+        let window = try XCTUnwrap(wc.window)
+        let visible = try XCTUnwrap((window.screen ?? NSScreen.main)?.visibleFrame)
+        XCTAssertTrue(visible.insetBy(dx: -1, dy: -1).contains(window.frame), "\(window.frame) not in \(visible)")
+    }
+
     func testStoredLayoutRoundTripsAndDropsOnlyItsBadFields() {
         var layout = WindowLayout()
         layout.frame = NSRect(x: 1, y: 2, width: 900, height: 600)
