@@ -1860,7 +1860,12 @@ final class AppControllerTests: XCTestCase {
             let before = wc.isVisible(area)
             app.toggleLayout(area)
             XCTAssertEqual(wc.isVisible(area), !before, "\(area)")
-            XCTAssertEqual(wc.footer.toggles[area]?.state, before ? .off : .on, "footer follows \(area)")
+            if area == .toolbar {
+                // The footer has no button of its own for the cue toolbar (the GO area's hides both).
+                XCTAssertNil(wc.footer.toggles[area])
+            } else {
+                XCTAssertEqual(wc.footer.toggles[area]?.state, before ? .off : .on, "footer follows \(area)")
+            }
             app.toggleLayout(area)
             XCTAssertEqual(wc.isVisible(area), before)
         }
@@ -2255,8 +2260,10 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { recents.count == 2 }
         // The engine answers `open` before it lists the new doc, so the list may still be on its way.
         await assertEventually { app.session.workspaces.contains { $0.path == url.path } }
-        XCTAssertTrue(
-            app.windows.values.contains { $0.window?.title.hasPrefix("Lear — ") == true }, "the opened show's window")
+        // The title names the shown cue list too, which it learns from the snapshot after the list.
+        await assertEventually("the opened show's window") {
+            app.windows.values.contains { $0.window?.title.hasPrefix("Lear — ") == true }
+        }
         XCTAssertEqual(recents, [url, url])
     }
 

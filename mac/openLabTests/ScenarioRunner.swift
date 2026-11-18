@@ -1720,13 +1720,16 @@ final class ScenarioShotTests: XCTestCase {
     }
 
     /// A sideways scroll step over the cue list moves its column header with the rows, as the wheel does
-    /// (the step checks the two stay together and fails otherwise).
+    /// (the step checks the two stay together and fails otherwise). The columns fit the least window with
+    /// the sidebar open, so the Pre-Wait column is first widened by its header's edge until they do not.
     func testASidewaysScrollStepMovesTheCueListsHeaderWithItsRows() async throws {
         let runner = ScenarioRunner(
             scenario: try scenario(
                 """
                 {"show": "Demo", "window": {"width": 800, "height": 500},
-                 "steps": [{"click": "toggle-sidebar"}, {"scroll": "cue-list", "dx": -60, "at": [0.5, 0.05]},
+                 "steps": [{"click": "toggle-sidebar"},
+                           {"drag": "cue-list", "header": "Pre-Wait", "from": [0.999, 0.5], "to": [1.8, 0.5]},
+                           {"scroll": "cue-list", "dx": -60, "at": [0.5, 0.05]},
                            {"shot": "sideways"}]}
                 """), out: out)
         do { try await runner.run() } catch {

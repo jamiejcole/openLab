@@ -1194,9 +1194,11 @@ final class InspectorWindowFrameTests: XCTestCase {
         }
     }
 
-    /// A control in the Basics target row 16 pt wider than here (as on another macOS, whose controls and
-    /// fonts measure differently): opening the sidebar at the least window size narrows the file's path,
-    /// not the sidebar, and the window keeps its frame.
+    /// A control in the Basics target row wider than here (as on another macOS, whose controls and fonts
+    /// measure differently), so wide that the path would need less than its preferred 90 pt: at the least
+    /// window size, with the sidebar open, the file's path gives way, not the sidebar or the window. The
+    /// inspector spans the window under the sidebar, so the row has the window's width; the control is
+    /// widened by what the path has beyond 90 pt and 16 pt more.
     func testTheBasicsTargetRowGivesWayWhenItsControlsAreWider() async throws {
         window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
         settleLayout()
@@ -1205,13 +1207,16 @@ final class InspectorWindowFrameTests: XCTestCase {
         try clickTab("basics")
         let path = wc.inspector.targetPath
         XCTAssertFalse(path.isHidden, "an Audio cue's target is its file's path")
-        let choose = wc.inspector.chooseButton
-        let wider = choose.widthAnchor.constraint(equalToConstant: choose.frame.width + 16)
-        wider.isActive = true
-        defer { wider.isActive = false }
-        try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil)
+        if !wc.isVisible(.sidebar) { try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil) }
         settleLayout()
         XCTAssertTrue(wc.isVisible(.sidebar))
+        let spare = path.frame.width - 90
+        XCTAssertGreaterThan(spare, 0, "the path has its preferred width to begin with")
+        let choose = wc.inspector.chooseButton
+        let wider = choose.widthAnchor.constraint(equalToConstant: choose.frame.width + spare + 16)
+        wider.isActive = true
+        defer { wider.isActive = false }
+        settleLayout()
         XCTAssertEqual(window.frame, least, "the window keeps its frame")
         XCTAssertEqual(wc.sidebar.view.frame.width, 280, accuracy: 3, "the sidebar keeps its width")
         XCTAssertLessThan(path.frame.width, 90, "the path gave way")
