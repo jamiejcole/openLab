@@ -53,8 +53,10 @@ final class LevelsUITests: XCTestCase {
         XCTAssertTrue(waitFor("exists == false", field), "Return closes the box")
 
         field = openCell(matrix, row: 2, column: 1, field: "levels-field", in: app)  // file channel 2 to output 2
-        let label = app.staticTexts["levels-cell"]
-        XCTAssertTrue(waitFor("value == 'File channel 2 to output 2'", label), "the crosspoint is the chosen level")
+        // An Audio cue's column names no chosen level (it is buttons only): the box typed in is laid
+        // over the crosspoint that was double-clicked.
+        let crosspoint = cell(matrix, row: 2, column: 1).screenPoint
+        XCTAssertTrue(field.frame.contains(crosspoint), "the crosspoint is the chosen level: \(field.frame)")
         XCTAssertEqual(field.value as? String, "-inf", "a route that is not listed is silent")
         type("-12", into: field)
         XCTAssertTrue(waitFor("exists == false", field))
@@ -76,7 +78,7 @@ final class LevelsUITests: XCTestCase {
         let curve = app.popUpButtons["fade-curve"]
         XCTAssertTrue(curve.waitForExistence(timeout: 5))
         let duration = app.textFields["fade-duration"]
-        XCTAssertEqual(duration.value as? String, "00:05.00")
+        XCTAssertEqual(duration.value as? String, "00:05.000", "an inspector time shows milliseconds")
 
         open("Levels", in: app)
         let matrix = app.groups["fade-matrix"]
@@ -93,7 +95,7 @@ final class LevelsUITests: XCTestCase {
 
         open("Curve", in: app)
         type("3", into: duration)
-        XCTAssertTrue(waitFor("value == '00:03.00'", duration), "the duration is stored")
+        XCTAssertTrue(waitFor("value == '00:03.000'", duration), "the duration is stored")
     }
 }
 
@@ -127,7 +129,10 @@ final class PatchEditorUITests: XCTestCase {
         XCTAssertTrue(playing.waitForExistence(timeout: 10), "Intro plays")
 
         app.buttons["settings-button"].click()
-        tabButton("Audio", in: app).click()
+        // The settings window lists its categories down its left side.
+        let audio = app.staticTexts["settings-category-audio"]
+        XCTAssertTrue(audio.waitForExistence(timeout: 10), "the Audio category")
+        audio.click()
         let edit = app.buttons["settings-patch-edit-1"]
         XCTAssertTrue(edit.waitForExistence(timeout: 10), "the patch table")
         edit.click()

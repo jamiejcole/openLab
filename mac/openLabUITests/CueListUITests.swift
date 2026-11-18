@@ -54,8 +54,9 @@ final class CueListUITests: XCTestCase {
         // outline, which lists only its rows to accessibility, so it is reached by keyboard focus.
         app.typeText("1:30\r")
         XCTAssertTrue(app.staticTexts["01:30.00"].waitForExistence(timeout: 10), "the cell shows the stored duration")
+        // The inspector's time fields show milliseconds; the list keeps hundredths.
         let inspector = app.textFields["inspector-duration"]
-        XCTAssertTrue(waitFor("value == '01:30.00'", inspector, timeout: 5), "the inspector follows")
+        XCTAssertTrue(waitFor("value == '01:30.000'", inspector, timeout: 5), "the inspector follows")
     }
 }
 
@@ -156,6 +157,8 @@ final class CueListLayoutUITests: XCTestCase {
         let pre = header("Pre-Wait", in: app)
         let edge = pre.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5)).withOffset(CGVector(dx: -1, dy: 0))
         edge.press(forDuration: 0.2, thenDragTo: edge.withOffset(CGVector(dx: 600, dy: 0)))
+        // AppKit scrolls the list along as the edge is dragged past the list's right edge: back to its start first.
+        list.scroll(byDeltaX: 2000, deltaY: 0)
         let before = header("Duration", in: app).frame.minX
         list.scroll(byDeltaX: -400, deltaY: 0)
         XCTAssertLessThan(header("Duration", in: app).frame.minX, before - 50, "the list scrolled sideways")
