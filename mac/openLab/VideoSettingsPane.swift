@@ -96,7 +96,6 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     static let sizeWidth: CGFloat = 2 * sideWidth + 14
     static let leastDisplayWidth: CGFloat = 120
     static let mostDisplayWidth: CGFloat = 260
-    static let mostNameWidth: CGFloat = 260
     static let columnSpacing: CGFloat = 6
     /// Between the table's edge and its rows.
     static let inset: CGFloat = 6
@@ -192,7 +191,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             (scroll.contentView.bounds.width - 2 * Self.inset - fixed
             - Self.columnSpacing * CGFloat(Self.columns.count - 1)).rounded(.down)
         let display = min(Self.mostDisplayWidth, max(Self.leastDisplayWidth, spare - Self.columns[0]))
-        let name = min(Self.mostNameWidth, max(Self.columns[0], spare - display))
+        // The name takes all the rest, so a wide window shows a long name whole.
+        let name = max(Self.columns[0], spare - display)
         displayWidth = display
         nameWidth = name
         for g in [header, grid] {
@@ -407,25 +407,31 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private struct Typed {
         var kind: TypedField
         var stage: ModelID
-        var text: String
+        var text: String?
         var selection: NSRange
     }
 
+    /// The field holding the caret, and what was typed in it: nil text when it holds what the
+    /// page last drew there (a value already committed, as after Return), so a redraw shows the
+    /// workspace's value (an undo's, another client's), never a stale one a later click would send.
     private func typedIn() -> Typed? {
         guard let field = textFields.first(where: { $0.currentEditor() != nil }),
             let editor = field.currentEditor(), let row = row(field.tag),
             let kind = field.identifier.flatMap({ TypedField(rawValue: $0.rawValue) })
         else { return nil }
-        return Typed(kind: kind, stage: row.id, text: editor.string, selection: editor.selectedRange)
+        let typed = editor.string == Self.text(kind, row) ? nil : editor.string
+        return Typed(kind: kind, stage: row.id, text: typed, selection: editor.selectedRange)
     }
 
-    /// Puts the caret back in the redrawn field of the stage that was being typed in.
+    /// Puts the caret back in the redrawn field of the stage that was being typed in, with what
+    /// was typed, or the workspace's value when nothing new was.
     private func resume(_ typed: Typed) {
         guard let i = shown?.firstIndex(where: { $0.id == typed.stage }) else { return }
         let field = fields(typed.kind)[i]
         guard view.window?.makeFirstResponder(field) == true, let editor = field.currentEditor() else { return }
-        editor.string = typed.text
-        let length = (typed.text as NSString).length
+        let text = typed.text ?? field.stringValue
+        editor.string = text
+        let length = (text as NSString).length
         let start = min(typed.selection.location, length)
         editor.selectedRange = NSRange(location: start, length: min(typed.selection.length, length - start))
     }
@@ -519,7 +525,19 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if let stage, store.model?.stages.contains(where: { $0.id == stage }) != true {
             return loc("settings.video.gone")
         }
+        if let stage, let cue = Self.cueUsing(e), let name = rows().first(where: { $0.id == stage })?.name {
+            return String(format: loc("settings.video.inUse"), name, cue)
+        }
         return e.detailText
+    }
+
+    /// The cue the engine names when it refuses to remove a stage a cue uses (docs/protocol.md,
+    /// `remove_stage`: `stage "<name>" cannot be removed while cue "<cue>" uses it`).
+    static func cueUsing(_ e: EngineError) -> String? {
+        guard case .engine(_, let text) = e, text.hasSuffix("\" uses it"),
+            let start = text.range(of: "while cue \"", options: .backwards)
+        else { return nil }
+        return String(text[start.upperBound..<text.index(text.endIndex, offsetBy: -"\" uses it".count)])
     }
 
     /// The edits still on their way (tests wait for them).

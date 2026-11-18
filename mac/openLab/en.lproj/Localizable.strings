@@ -467,6 +467,7 @@
 "settings.video.width" = "Width in pixels";
 "settings.video.height" = "Height in pixels";
 "settings.video.gone" = "That stage is no longer in the workspace.";
+"settings.video.inUse" = "“%1$@” cannot be removed while cue %2$@ uses it. Stop the cue first.";
 "settings.video.warn.noDisplay" = "No display on this computer: choose one to show this stage.";
 "settings.video.warn.missing" = "Its display is not connected: the stage is not shown until it is.";
 "settings.video.warn.failed" = "Cannot be shown: %@";

@@ -569,4 +569,47 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(pane.messageLabel.stringValue, "")
         XCTAssertEqual(pane.heightFields[0].stringValue, "16384")
     }
+
+    /// A size typed and committed with Return, then undone from the workspace window: the field
+    /// shows the size the undo put back, and a click on another control of the page sends no size
+    /// (the undone one stays).
+    func testASizeUndoneAfterReturnIsShownAndAClickElsewhereNeverSendsItAgain() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080), (stageB, "Side", 1280, 720)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.heightFields.count == 2 }
+        try startTyping("400", in: pane.heightFields[0], sc)
+        let editor = try XCTUnwrap(pane.heightFields[0].currentEditor() as? NSTextView)
+        editor.insertNewline(nil)
+        await settled(sc) { pane.shown?.first?.height == 400 }
+        _ = await rig.store.undo()
+        await settled(sc) { pane.shown?.first?.height == 1080 }
+        XCTAssertEqual(pane.heightFields[0].stringValue, "1080", "the undone size is shown")
+        XCTAssertNotEqual(pane.heightFields[0].currentEditor()?.string, "400")
+        pane.blackBoxes[1].performClick(nil)
+        await settled(sc) { pane.shown?.last?.keepBlack == true }
+        XCTAssertEqual(rig.store.model?.stages.first?.raw["height"]?.doubleValue, 1080, "no size sent again")
+        XCTAssertEqual(pane.heightFields[0].stringValue, "1080")
+        XCTAssertEqual(pane.messageLabel.stringValue, "")
+    }
+
+    /// In a wide window the name column takes the room the display column leaves, so a long name
+    /// reads whole.
+    func testALongNameShowsWholeInAWideWindow() async throws {
+        let long = "Upstage cyclorama projector for the second act"
+        let (_, sc) = try await open(stages: [(stageA, long, 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.nameFields.count == 1 }
+        let window = try XCTUnwrap(sc.window)
+        sc.tabs.selectTabViewItem(withIdentifier: "video")
+        window.setContentSize(NSSize(width: 1600, height: 1000))
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.contentView?.layoutSubtreeIfNeeded()
+        let field = pane.nameFields[0]
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(field.cell).cellSize(forBounds: NSRect(x: 0, y: 0, width: 10_000, height: 100)).width,
+            field.frame.width, "the whole name fits")
+        XCTAssertEqual(pane.header.column(at: 0).width, pane.grid.column(at: 0).width)
+        let right = pane.grid.convert(pane.grid.bounds, to: pane.scroll.contentView).maxX
+        XCTAssertGreaterThan(right, pane.scroll.contentView.bounds.width - 40, "the table takes the page's width")
+    }
 }

@@ -527,8 +527,7 @@ final class VideoCueTests: XCTestCase {
         pane.removeButtons[0].performClick(nil)
         await pane.pending?.value
         await soon("the engine's reason is shown") { !pane.messageLabel.stringValue.isEmpty }
-        let message = pane.messageLabel.stringValue
-        XCTAssertTrue(message.contains("\"Stage 1\"") && message.contains("cue \"2\""), message)
+        XCTAssertEqual(pane.messageLabel.stringValue, String(format: loc("settings.video.inUse"), "Stage 1", "2"))
         XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1", "Side screen"], "the row stays")
         XCTAssertEqual(store.model?.stages.count, 2)
         try await play(0.2)
