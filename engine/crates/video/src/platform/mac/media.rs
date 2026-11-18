@@ -78,6 +78,19 @@ use openlab_core::stage_link::MAX_PICTURES;
 use openlab_core::video_probe::{MAX_PICTURE_PIXELS, picture_size_plays};
 
 use super::gpu::{Colour, Texture, empty_texture, hap_texture, replace};
+#[cfg(feature = "test-support")]
+use fault::media_call;
+
+/// A movie's calls into AVFoundation (its open, frame reads, primes and letting go) are each
+/// made under one of these, never nested. Only a test crash switch waits on them; a shipped
+/// stage host has nothing to wait for.
+#[cfg(not(feature = "test-support"))]
+struct MediaCall;
+
+#[cfg(not(feature = "test-support"))]
+fn media_call() -> MediaCall {
+    MediaCall
+}
 use crate::hap::{self, Variant};
 
 /// How far past the frame held a position may be before reading starts again there instead of
@@ -824,6 +837,7 @@ struct Movie {
 
 impl Movie {
     fn open(file: &str) -> Result<Self, String> {
+        let _call = media_call();
         if !Path::new(file).is_file() {
             return Err("the file is not there".into());
         }
@@ -938,6 +952,7 @@ impl Movie {
     /// Opens a second reader at `from` and reads its first frame, for a jump there. A failure
     /// leaves none: the jump then opens one itself, and reports what fails then.
     fn prime(&mut self, from: f64) {
+        let _call = media_call();
         if let Some(old) = self.spare.take() {
             // SAFETY: cancelling a reader this movie owns.
             unsafe { old.reader.0.cancelReading() };
@@ -1153,6 +1168,7 @@ impl Movie {
         pass: u64,
         progress: &dyn Fn(),
     ) -> Result<Option<Frame>, String> {
+        let _call = media_call();
         #[cfg(feature = "test-support")]
         {
             let ask = self.asks;
@@ -1256,6 +1272,7 @@ fn reader_error(reader: &AVAssetReader) -> String {
 impl Movie {
     /// Cancels its readers and drops the frames it read ahead.
     fn let_go(&mut self) {
+        let _call = media_call();
         self.next = None;
         self.skip = None;
         let spare = self.spare.take().map(|s| s.reader);
@@ -1278,7 +1295,7 @@ impl Drop for Movie {
 #[cfg(feature = "test-support")]
 pub mod fault {
     use super::Shared;
-    use std::sync::PoisonError;
+    use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
     pub const HANG_OPEN: &str = "openlab-test-hang-open";
     pub const HANG_DECODE: &str = "openlab-test-hang-decode";
@@ -1411,8 +1428,92 @@ pub mod fault {
         }
     }
 
+    /// The decode threads' calls into AVFoundation in flight, and whether a crash switch is
+    /// waiting for them to end.
+    pub(super) struct Calls {
+        state: Mutex<CallState>,
+        ended: Condvar,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub(super) struct CallState {
+        pub(super) in_flight: usize,
+        pub(super) crashing: bool,
+    }
+
+    /// One call into AVFoundation in flight; it ends when dropped.
+    pub(super) struct Call<'a>(&'a Calls);
+
+    impl Drop for Call<'_> {
+        fn drop(&mut self) {
+            let mut state = self.0.lock();
+            state.in_flight = state.in_flight.saturating_sub(1);
+            self.0.ended.notify_all();
+        }
+    }
+
+    impl Calls {
+        pub(super) const fn new() -> Self {
+            Self {
+                state: Mutex::new(CallState {
+                    in_flight: 0,
+                    crashing: false,
+                }),
+                ended: Condvar::new(),
+            }
+        }
+
+        fn lock(&self) -> MutexGuard<'_, CallState> {
+            self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        #[cfg(test)]
+        pub(super) fn state(&self) -> CallState {
+            *self.lock()
+        }
+
+        /// Starts a call; once a crash switch is waiting, none starts (the thread waits for
+        /// the crash).
+        pub(super) fn enter(&self) -> Call<'_> {
+            let mut state = self.lock();
+            while state.crashing {
+                state = self
+                    .ended
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            state.in_flight += 1;
+            Call(self)
+        }
+
+        /// Lets no call start and returns once every call in flight has ended. Called from a
+        /// thread with no call of its own in flight.
+        pub(super) fn quiesce(&self) {
+            let mut state = self.lock();
+            state.crashing = true;
+            while state.in_flight > 0 {
+                state = self
+                    .ended
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    }
+
+    static CALLS: Calls = Calls::new();
+
+    pub(super) fn media_call() -> Call<'static> {
+        CALLS.enter()
+    }
+
+    /// Crashes the stage host as a decoder crash would (SIGABRT), but only once no decode
+    /// thread is inside AVFoundation: a client dying mid-call may leave the system's shared
+    /// media services stuck for the processes after it (opens and probes then wait on them),
+    /// which a test crash must not do to the tests that run after it. The crash is still in
+    /// this picture's open or frame read, at the same point of the engine's flow.
     pub(super) fn crash_if(file: &str, fault: &str) {
         if file.contains(fault) {
+            CALLS.quiesce();
             std::process::abort();
         }
     }
@@ -1438,6 +1539,41 @@ mod tests {
             vec![
                 255, 128, 0, 255, 128, 128, 128, 128, 0, 0, 64, 64, 0, 0, 0, 0
             ]
+        );
+    }
+
+    /// A crash switch waits for every decode thread's AVFoundation call in flight to end
+    /// before it crashes the stage host: it never returns while one is in flight, and does
+    /// once the last ends.
+    #[test]
+    fn a_test_crash_waits_for_the_media_calls_in_flight() {
+        use std::sync::atomic::AtomicBool;
+        let calls = fault::Calls::new();
+        let crashed = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let first = calls.enter();
+            let second = calls.enter();
+            let crash = scope.spawn(|| {
+                calls.quiesce();
+                crashed.store(true, Ordering::SeqCst);
+            });
+            while !calls.state().crashing {
+                std::thread::yield_now();
+            }
+            // The crash is waiting now, and stays waiting while a call is in flight.
+            drop(first);
+            assert_eq!(calls.state().in_flight, 1);
+            assert!(!crashed.load(Ordering::SeqCst), "it crashed mid-call");
+            drop(second);
+            crash.join().unwrap();
+        });
+        assert!(crashed.load(Ordering::SeqCst));
+        assert_eq!(
+            calls.state(),
+            fault::CallState {
+                in_flight: 0,
+                crashing: true
+            }
         );
     }
 
