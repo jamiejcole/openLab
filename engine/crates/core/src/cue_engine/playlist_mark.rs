@@ -25,13 +25,13 @@ impl CueEngine {
     /// one playing (a broken one too) unless its second trigger ends it (a stop, or a panic
     /// that stops it at once rather than fading it out); a cue broken at run time with no run,
     /// one left paused by a lost device still away, a skipped one and a new run of one with
-    /// static problems are passed over. A looping one whose pass plays none but started a run
-    /// goes round, to the children whose runs it ended as new runs. Playing: the one after its
-    /// current child as the group stands (wrapping when it loops, the current one as a new
-    /// run). None once it is stopping, devamped or halted, past its last child, or for a
-    /// shuffled playlist whose order is not drawn yet (not running, or between passes); none
-    /// too, before its action, for a disarmed one, one with static problems or one loaded to a
-    /// time at or past its span (its start plays no child), and for any other cue.
+    /// static problems are passed over. A looping one goes round again after every pass that
+    /// plays none but started a run, to the children whose runs it ended as new runs. Playing:
+    /// the one after its current child as the group stands (wrapping when it loops, the current
+    /// one as a new run). None once it is stopping, devamped or halted, past its last child, or
+    /// for a shuffled playlist whose order is not drawn yet (not running, or between passes);
+    /// none too, before its action, for a disarmed one or one loaded to a time at or past its
+    /// span (its start plays no child), and for any other cue.
     /// `Action::PlaylistNextChanged` reports each change.
     pub fn next_in_playlist(&self, group: CueId) -> Option<CueId> {
         self.playlist_marks.get(&group).copied()
@@ -111,6 +111,10 @@ impl CueEngine {
                 _ => {}
             }
         }
+        // A length that arrived may put a playlist loaded to a time past its span.
+        for cue in std::mem::take(&mut self.lengths_changed) {
+            look.extend(tree.ancestors(cue));
+        }
         for action in &cx.out {
             let cue = match action {
                 Action::StateChanged { cue, .. } | Action::SetArmed { cue, .. } => *cue,
@@ -148,18 +152,14 @@ impl CueEngine {
         else {
             return None;
         };
-        // Children the playlist meets, as `playlist_next` meets them: in order from `from`, and
-        // round again when it loops. A pass that plays none goes round only if a child started
-        // in it (its run ends and the playlist moves on again); a start of the playlist opens
-        // with a pass, so it goes round only that way. The children whose run a start ends are
-        // idle when it comes round to them again, as is the child playing now (it has ended
-        // by the time the playlist moves on).
-        let walk = |from: usize, idle: Option<CueId>, opens_with_pass: bool| {
-            let mut ended: Vec<CueId> = idle.into_iter().collect();
+        // One pass over `kids` as `playlist_next` makes it: the child that plays, else whether a
+        // child started a run in it. The runs it ends join `ended`, idle when it meets them again,
+        // as is the child playing now (it has ended by the time the playlist moves on).
+        let pass = |kids: &[Cue], ended: &mut Vec<CueId>| {
             let mut started = false;
-            for c in children.iter().skip(from) {
-                match self.child_meets(c, false, now, ws) {
-                    Meet::Plays => return Some(c.id),
+            for c in kids {
+                match self.child_meets(c, ended.contains(&c.id), now, ws) {
+                    Meet::Plays => return (Some(c.id), started),
                     Meet::Passed {
                         started: s,
                         ended: e,
@@ -171,22 +171,32 @@ impl CueEngine {
                     }
                 }
             }
-            if !*loop_ || (opens_with_pass && !started) {
-                return None;
-            }
-            children
-                .iter()
-                .find(|c| self.child_meets(c, ended.contains(&c.id), now, ws) == Meet::Plays)
-                .map(|c| c.id)
+            (None, started)
         };
-        // A disarmed group, or one with static problems, keeps only its timing: its start plays
-        // no child.
-        let plays_children = !*shuffle && self.is_armed(group) && !self.has_problems(group.id);
-        // Loaded to a time at or past its span, its start plays no child either.
-        let spent = |offset| self.playlist_spent(children, *loop_, offset, cx);
+        // The pass from `from`, then round again while it loops: a running playlist goes round
+        // at the end of its pass, and after any pass in which a child started a run (that run's
+        // end moves it on again); a start of the playlist opens with a pass, so it goes round only
+        // that way. A round that ended no run is the same as the one after it: none plays.
+        let walk = |from: usize, idle: Option<CueId>, opens_with_pass: bool| {
+            let mut ended: Vec<CueId> = idle.into_iter().collect();
+            let (mut next, mut started) =
+                pass(children.get(from..).unwrap_or_default(), &mut ended);
+            let mut round = *loop_ && (started || !opens_with_pass);
+            while next.is_none() && round {
+                let before = ended.len();
+                (next, started) = pass(children, &mut ended);
+                round = started && ended.len() > before;
+            }
+            next
+        };
+        // A disarmed group keeps only its timing: its start plays no child.
+        let plays_children = !*shuffle && self.is_armed(group);
         let first = || plays_children.then(|| walk(0, None, true)).flatten();
         let run = match self.slots.get(&group.id) {
-            Some(Slot::Loaded(l)) if spent(l.action_offset) => return None,
+            // Loaded to a time at or past its span, its start plays no child either.
+            Some(Slot::Loaded(l)) if self.playlist_spent(children, *loop_, l.action_offset, cx) => {
+                return None;
+            }
             Some(Slot::Active(run)) => run,
             _ => return first(),
         };
@@ -197,7 +207,6 @@ impl CueEngine {
             return None;
         }
         match run.phase {
-            Phase::PreWait { .. } if spent(run.action_offset) => return None,
             Phase::PreWait { .. } => return first(),
             Phase::Done => return None,
             Phase::Action { .. } => {}
