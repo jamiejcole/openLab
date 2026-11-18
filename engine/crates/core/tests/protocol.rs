@@ -411,6 +411,10 @@ fn request_variants() -> Vec<(&'static str, Request)> {
                 device: Some("openlab:virtual-2".into()),
             },
         ),
+        ("backup_keep", Request::BackupKeep),
+        ("set_backup_keep", Request::SetBackupKeep { count: 20 }),
+        ("osc_state", Request::OscState),
+        ("set_osc_port", Request::SetOscPort { port: 53100 }),
     ]
 }
 
@@ -1485,6 +1489,30 @@ fn fixtures() -> Vec<(String, Sample)> {
                 ErrorCode::CommandRefused,
                 format!("cue {} does not exist", cue_id(99)),
             )),
+        }),
+    );
+    add(
+        "result_backup_keep",
+        server(ServerMessage::Result {
+            id: rid(48),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::BackupKeep { count: 20 }),
+            }),
+        }),
+    );
+    add(
+        "result_osc",
+        server(ServerMessage::Result {
+            id: rid(47),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::Osc {
+                    port: 53000,
+                    open: true,
+                    error: Some("could not listen on 0.0.0.0:53100: it is already in use".into()),
+                }),
+            }),
         }),
     );
     add(
@@ -4700,6 +4728,10 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
         Just(Request::ListPatchMappings),
+        Just(Request::BackupKeep),
+        any::<u32>().prop_map(|count| Request::SetBackupKeep { count }),
+        Just(Request::OscState),
+        any::<u16>().prop_map(|port| Request::SetOscPort { port }),
         Just(Request::ListDisplays),
         Just(Request::ListStageMappings),
         any::<u128>().prop_map(|c| Request::SequenceSpan {

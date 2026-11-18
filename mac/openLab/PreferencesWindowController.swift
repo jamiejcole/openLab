@@ -8,6 +8,9 @@ import AppKit
 @MainActor
 final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
     let launchPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// How many backups of each workspace are kept (0: none), a machine setting (`+` the engine).
+    let backupField = NSTextField()
+    let generalMessage = NSTextField(wrappingLabelWithString: "")
     /// Sized before its tabs are added: a zero-sized tab view lays its tab strip out at a negative width.
     let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
     let clockPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -41,9 +44,29 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         launchPopup.target = self
         launchPopup.action = #selector(launchChanged)
         launchPopup.setAX(AX.preferencesLaunchPopup)
-        let row = NSStackView(views: [label, launchPopup])
-        row.orientation = .horizontal
-        row.spacing = 8
+        let launchRow = NSStackView(views: [label, launchPopup])
+        launchRow.orientation = .horizontal
+        launchRow.spacing = 8
+        backupField.alignment = .right
+        backupField.setAX(AX.preferencesBackupField, label: loc("prefs.general.backups"))
+        backupField.target = self
+        backupField.action = #selector(backupCommitted)
+        backupField.widthAnchor.constraint(equalToConstant: 60).isActive = true
+        let backupRow = NSStackView(views: [NSTextField(labelWithString: loc("prefs.general.backups")), backupField])
+        backupRow.orientation = .horizontal
+        backupRow.spacing = 8
+        let backupNote = NSTextField(wrappingLabelWithString: loc("prefs.general.backups.note"))
+        backupNote.font = .systemFont(ofSize: 11)
+        backupNote.textColor = .secondaryLabelColor
+        backupNote.preferredMaxLayoutWidth = 360
+        generalMessage.textColor = .systemRed
+        generalMessage.setAX(AX.preferencesGeneralMessage)
+        generalMessage.preferredMaxLayoutWidth = 360
+        generalMessage.isHidden = true
+        let row = NSStackView(views: [launchRow, backupRow, backupNote, generalMessage])
+        row.orientation = .vertical
+        row.alignment = .leading
+        row.spacing = 12
         row.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         let general = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -143,6 +166,7 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         guard let audio else { return }
         refreshing = Task {
             await audio.refresh()
+            await audio.refreshBackups()
             renderAudio()
         }
     }
@@ -225,6 +249,19 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         if deviceGrid.numberOfColumns > 1 { deviceGrid.column(at: 1).xPlacement = .trailing }
         audioMessage.stringValue = audio?.message ?? ""
         audioMessage.isHidden = audioMessage.stringValue.isEmpty
+        backupField.isEnabled = audio?.backupKeep != nil
+        if backupField.currentEditor() == nil { backupField.stringValue = audio?.backupKeep.map(String.init) ?? "" }
+    }
+
+    @objc private func backupCommitted() {
+        guard let audio else { return }
+        let text = backupField.stringValue
+        refreshing = Task {
+            await audio.setBackupKeep(text)
+            generalMessage.stringValue = audio.message ?? ""
+            generalMessage.isHidden = generalMessage.stringValue.isEmpty
+            backupField.stringValue = audio.backupKeep.map(String.init) ?? ""
+        }
     }
 
     @objc private func launchChanged() {

@@ -31,7 +31,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{WebSocketStream, accept_async_with_config};
 
 use super::NetError;
-use super::hub::{self, Broadcast, Hub, Kind};
+use super::hub::{self, Broadcast, Hub, Kind, TapSlot};
 use super::liveness::Liveness;
 use super::osc::{self, OscConfig, OscListenerStats, OscPorts};
 use super::refusals::Refusals;
@@ -137,7 +137,7 @@ pub struct WsServer {
     token: String,
     shutdown: watch::Sender<bool>,
     runtime: Mutex<Option<tokio::runtime::Runtime>>,
-    osc: Option<osc::Running>,
+    osc: Option<Arc<osc::OscServer>>,
 }
 
 impl std::fmt::Debug for WsServer {
@@ -172,31 +172,11 @@ impl WsServer {
             .map_err(NetError::Runtime)?;
         // OSC is optional and must never keep the engine from starting: a port in use (another
         // QLab-compatible app) is a warning in the log, and the UI protocol still works.
-        let osc_bound = config
+        let tap_slot = TapSlot::default();
+        let osc = config
             .osc
             .clone()
-            .and_then(|osc_config| match osc::bind(&osc_config) {
-                Ok(bound) => Some((bound, osc_config)),
-                Err(e) => {
-                    let _ = inbox.send(Inbox::Log {
-                        level: LogLevel::Warn,
-                        message: format!(
-                            "OSC server is off: could not listen on {}:{}: {e}",
-                            osc_config.bind, osc_config.port
-                        ),
-                    });
-                    None
-                }
-            });
-        let (osc, tap) = match osc_bound {
-            Some((bound, osc_config)) => {
-                match osc::start(&runtime, bound, osc_config, inbox.clone()) {
-                    Some((running, tap)) => (Some(running), Some(tap)),
-                    None => (None, None),
-                }
-            }
-            None => (None, None),
-        };
+            .map(|osc_config| osc::OscServer::start(osc_config, inbox.clone(), tap_slot.clone()));
         let (shutdown, shutdown_rx) = watch::channel(false);
         let shared = Arc::new(Shared {
             token: token.clone(),
@@ -209,7 +189,7 @@ impl WsServer {
             relaunches: Mutex::new(Budget::default()),
             app: Mutex::new(None),
         });
-        runtime.spawn(hub::distribute(shared.hub.clone(), outbound, tap));
+        runtime.spawn(hub::distribute(shared.hub.clone(), outbound, tap_slot));
         let accept_shared = shared.clone();
         runtime.spawn(async move {
             if let Ok(listener) = TcpListener::from_std(listener) {
@@ -231,12 +211,17 @@ impl WsServer {
 
     /// The OSC sockets' ports; `None` if OSC is off or could not bind.
     pub fn osc_ports(&self) -> Option<OscPorts> {
-        self.osc.as_ref().map(|o| o.ports)
+        self.osc.as_ref().and_then(|o| o.ports())
     }
 
     /// What the OSC listeners dropped, refused or answered; `None` if OSC is off.
     pub fn osc_stats(&self) -> Option<OscListenerStats> {
-        self.osc.as_ref().map(osc::Running::stats)
+        self.osc.as_ref().and_then(|o| o.stats())
+    }
+
+    /// The OSC server, to change its port (`None`: OSC is not configured).
+    pub fn osc_server(&self) -> Option<Arc<osc::OscServer>> {
+        self.osc.clone()
     }
 
     /// The token a client must present in `hello` (written to `engine.json`).
@@ -246,6 +231,9 @@ impl WsServer {
 
     /// Closes every connection and stops the runtime (and with it the fan-out task).
     pub fn stop(&self) {
+        if let Some(osc) = &self.osc {
+            osc.stop();
+        }
         let _ = self.shutdown.send(true);
         let runtime = lock(&self.runtime).take();
         if let Some(runtime) = runtime {

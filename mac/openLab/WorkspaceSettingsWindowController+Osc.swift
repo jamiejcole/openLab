@@ -85,7 +85,7 @@ extension WorkspaceSettingsWindowController {
         // It takes the height the pane gives it.
         scroll.setAX(AX.settingsOsc + "-table", label: loc("settings.tab.osc"))
 
-        let stack = NSStackView(views: [top, headerHolder, scroll])
+        let stack = NSStackView(views: [buildOscAccessBlock(), top, headerHolder, scroll])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.distribution = .fill
@@ -242,4 +242,84 @@ extension WorkspaceSettingsWindowController {
 
 extension Array {
     fileprivate subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+/// The top of the OSC page: whether OSC may reach this workspace at all, where it listens and
+/// whether that port is open, and this Mac's addresses (QLab 5, manual p. 112-113).
+extension WorkspaceSettingsWindowController {
+    func buildOscAccessBlock() -> NSView {
+        oscEnabledCheck.setAX("settings-osc-enabled")
+        oscEnabledCheck.target = self
+        oscEnabledCheck.action = #selector(oscEnabledClicked)
+        oscPortField.setAX("settings-osc-port", label: loc("settings.osc.port"))
+        oscPortField.alignment = .right
+        oscPortField.delegate = self
+        oscPortField.widthAnchor.constraint(equalToConstant: 70).isActive = true
+        oscPortStatus.setAX("settings-osc-port-status")
+        oscPortStatus.font = .systemFont(ofSize: 11)
+        oscPortStatus.preferredMaxLayoutWidth = 420
+        oscAddressesLabel.setAX("settings-osc-addresses")
+        oscAddressesLabel.font = .systemFont(ofSize: 11)
+        oscAddressesLabel.textColor = .secondaryLabelColor
+        oscAddressesLabel.preferredMaxLayoutWidth = 420
+        let portRow = row(loc("settings.osc.port"), oscPortField, nil)
+        let block = NSStackView(views: [oscEnabledCheck, portRow, oscPortStatus, oscAddressesLabel])
+        block.orientation = .vertical
+        block.alignment = .leading
+        block.spacing = 6
+        return block
+    }
+
+    func renderOscAccess() {
+        let on = model.isOn(.oscEnabled)
+        oscEnabledCheck.state = on == true ? .on : .off
+        oscEnabledCheck.isEnabled = on != nil
+        let listening = model.oscListening
+        oscPortField.isEnabled = listening != nil
+        if !(window?.firstResponder as? NSTextView).map({ $0.delegate === oscPortField }).orFalse {
+            oscPortField.stringValue = listening.map { String($0.port) } ?? ""
+        }
+        switch listening {
+        case nil:
+            oscPortStatus.stringValue = loc("settings.osc.noOsc")
+            oscPortStatus.textColor = .secondaryLabelColor
+        case let state? where state.open && state.error == nil:
+            oscPortStatus.stringValue = String(format: loc("settings.osc.open"), Int(state.port))
+            oscPortStatus.textColor = .systemGreen
+        case let state?:
+            let reason = state.error ?? ""
+            oscPortStatus.stringValue =
+                state.open
+                ? String(format: loc("settings.osc.stayedOpen"), Int(state.port), reason)
+                : String(format: loc("settings.osc.notOpen"), Int(state.port), reason)
+            oscPortStatus.textColor = .systemRed
+        }
+        let addresses = model.addresses
+        oscAddressesLabel.stringValue =
+            addresses.isEmpty ? loc("settings.osc.noAddresses")
+            : String(format: loc("settings.osc.addresses"), addresses.joined(separator: ", "))
+    }
+
+    @objc private func oscEnabledClicked() {
+        let on = oscEnabledCheck.state == .on
+        Task { [weak self] in
+            await self?.model.setOscEnabled(on)
+            self?.lastDrawn = nil
+            self?.render()
+        }
+    }
+
+    /// The port field was committed: the engine opens the new port, or says why not and the old one
+    /// stays.
+    func oscPortCommitted(_ text: String) {
+        Task { [weak self] in
+            await self?.model.setOscPort(text)
+            self?.lastDrawn = nil
+            self?.render()
+        }
+    }
+}
+
+private extension Optional where Wrapped == Bool {
+    var orFalse: Bool { self ?? false }
 }

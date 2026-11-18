@@ -47,6 +47,13 @@ final class WorkspaceSettingsModel: ObservableObject {
     @Published var keyRefusal: KeyRefusal?
     /// The device list could not be read (engine gone): nothing here can be changed.
     @Published private(set) var loaded = false
+    /// The OSC listening port and whether it is open, as the engine last said (nil: not read, or
+    /// the engine has no OSC).
+    @Published var oscListening: OscListening?
+    /// This Mac's IPv4 addresses, read when the page is shown (`localAddresses`).
+    @Published var addresses: [String] = []
+    /// Where the addresses come from (a test gives its own).
+    var localAddresses: () -> [String] = { LocalAddresses.ipv4() }
 
     init(store: WorkspaceStore) { self.store = store }
 
@@ -74,6 +81,7 @@ final class WorkspaceSettingsModel: ObservableObject {
 
     /// Reads the device list and the patch mappings again.
     func refresh() async {
+        await refreshOsc()
         switch await store.listDevices() {
         case .success(let ok):
             if case .devices(let list, _)? = ok.data {
@@ -217,18 +225,21 @@ final class WorkspaceSettingsModel: ObservableObject {
         var network: [NetworkPatchRow]
         var keys: [WorkspaceKey: KeyChord]
         var keyRefusal: KeyRefusal?
+        var oscListening: OscListening?
+        var addresses: [String]
         var newCuesAutoLoad: Bool?
         var switches: [WorkspaceSwitch: Bool]
         var autoNumberStep: Double?
+        var autosaveInterval: Double?
     }
 
     var displayState: DisplayState {
         DisplayState(
             devices: devices, patches: patches, loaded: loaded, message: message, panic: panicDuration,
             goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches, keys: keyMap.bound,
-            keyRefusal: keyRefusal, newCuesAutoLoad: newCuesAutoLoad,
+            keyRefusal: keyRefusal, oscListening: oscListening, addresses: addresses, newCuesAutoLoad: newCuesAutoLoad,
             switches: Dictionary(uniqueKeysWithValues: WorkspaceSwitch.allCases.compactMap { item in isOn(item).map { (item, $0) } }),
-            autoNumberStep: autoNumberStep)
+            autoNumberStep: autoNumberStep, autosaveInterval: autosaveInterval)
     }
 
     /// What keeps the patch from playing now, as the engine resolves it (or, from an engine that

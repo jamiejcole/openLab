@@ -14,7 +14,9 @@ final class LauncherWindowController: NSWindowController {
     /// Why something did not open at launch (shown above the recents; empty: hidden).
     let noticeLabel = NSTextField(wrappingLabelWithString: "")
 
-    init() {
+    /// `helpURL`: where help is (the build's page by default); nil shows no link.
+    init(helpURL: URL? = LauncherWindowController.helpURL) {
+        self.helpURL = helpURL
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 420),
             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -33,10 +35,26 @@ final class LauncherWindowController: NSWindowController {
         recentStack.alignment = .leading
         recentStack.spacing = 4
 
+        // What this is: its version, and a link to help where the build says one (the Info.plist
+        // key `OpenLabHelpURL`; a build with none shows no link).
+        let version = NSTextField(labelWithString: String(format: loc("launcher.version"), Self.version))
+        version.font = .systemFont(ofSize: 11)
+        version.textColor = .secondaryLabelColor
+        version.setAX(AX.launcherVersion)
+        var about: [NSView] = [version]
+        if helpURL != nil {
+            let help = NSButton(title: loc("launcher.help"), target: self, action: #selector(helpClicked))
+            help.bezelStyle = .inline
+            help.setAX(AX.launcherHelp)
+            about.append(help)
+        }
+        let aboutRow = NSStackView(views: about)
+        aboutRow.orientation = .horizontal
+        aboutRow.spacing = 8
         noticeLabel.textColor = .systemRed
         noticeLabel.isHidden = true
         noticeLabel.setAX(AX.launcherNotice)
-        let column = NSStackView(views: [noticeLabel, new, open, heading, recentStack])
+        let column = NSStackView(views: [noticeLabel, new, open, heading, recentStack, aboutRow])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 12
@@ -71,6 +89,24 @@ final class LauncherWindowController: NSWindowController {
             recentStack.addArrangedSubview(b)
         }
     }
+
+    /// The app's version as the bundle says it (`dev` for a bundle that says none, as a test's).
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
+    /// Where help is, if the build names a page (an http or https URL).
+    static var helpURL: URL? {
+        guard let text = Bundle.main.object(forInfoDictionaryKey: "OpenLabHelpURL") as? String,
+            let url = URL(string: text), ["http", "https"].contains(url.scheme)
+        else { return nil }
+        return url
+    }
+
+    let helpURL: URL?
+    /// Opens a URL (a test gives its own).
+    var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    @objc private func helpClicked() { helpURL.map(openURL) }
 
     @objc private func newClicked() { onNew?() }
     @objc private func openClicked() { onOpen?() }

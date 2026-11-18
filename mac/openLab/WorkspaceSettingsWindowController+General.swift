@@ -10,7 +10,8 @@ extension WorkspaceSettingsWindowController {
         panicField.setAX(AX.settingsPanicField, label: loc("settings.general.panic"))
         goIntervalField.setAX(AX.settingsGoIntervalField, label: loc("settings.general.goInterval"))
         autoNumberField.setAX("settings-auto-number-step", label: loc("settings.general.autoNumber"))
-        for field in [panicField, goIntervalField, autoNumberField] {
+        autosaveField.setAX("settings-autosave-interval", label: loc("settings.general.autosave"))
+        for field in [panicField, goIntervalField, autoNumberField, autosaveField] {
             field.alignment = .right
             field.delegate = self
             field.widthAnchor.constraint(equalToConstant: 70).isActive = true
@@ -30,6 +31,8 @@ extension WorkspaceSettingsWindowController {
             row(loc("settings.general.goInterval"), goIntervalField, loc("settings.seconds")),
             keyUpCheck, note("settings.general.keyUp.note"),
             row(loc("settings.general.panic"), panicField, loc("settings.seconds")),
+            row(loc("settings.general.autosave"), autosaveField, loc("settings.seconds")),
+            note("settings.general.autosave.note"),
             NSStackView(views: [autoNumberCheck, autoNumberField]), note("settings.general.autoNumber.note"),
             autoLoadCheck,
             lockPlayheadCheck, note("settings.general.lockPlayhead.note"),
@@ -121,6 +124,15 @@ extension WorkspaceSettingsModel {
         case .success: message = nil
         case .failure(let e): message = e.detailText
         }
+    }
+
+    static let autosaveRange = 5.0...3600.0
+
+    var autosaveInterval: Double? { store.model?.settings["autosave_interval"]?.doubleValue }
+
+    @discardableResult
+    func setAutosaveInterval(_ text: String) async -> Bool {
+        await setNumber("autosave_interval", text, Self.autosaveRange)
     }
 
     static let autoNumberStepRange = 0.001...1_000_000.0

@@ -1326,7 +1326,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(
             sc.patchEditButtons[0].convert(sc.patchEditButtons[0].bounds, to: nil).minX, editX, accuracy: 0.5,
             "a scroller does not move the rows")
-        window.setContentSize(NSSize(width: 1100, height: 1000))
+        window.setContentSize(NSSize(width: 1300, height: 1000))
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(sc.patchDevicePopups[0].bounds.width, narrow + 300, "the device column widens")
         let title = try XCTUnwrap(

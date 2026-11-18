@@ -368,6 +368,26 @@ pub enum Request {
         #[serde(default)]
         device: Option<String>,
     },
+    /// How many backups of each workspace this machine keeps (0: none are made): answers
+    /// `backup_keep`. App-scope.
+    BackupKeep,
+    /// Keeps this many backups of each workspace from the next save on (0 to the engine's maximum;
+    /// 0 turns backups off), in the machine settings. Answers `backup_keep`; `bad_request` above the
+    /// maximum, `io` when the choice cannot be kept; nothing changes on a refusal. App-scope.
+    SetBackupKeep {
+        count: u32,
+    },
+    /// The port OSC listens on and whether it is open: answers `osc` (`port`, `open`, `error`).
+    /// App-scope.
+    OscState,
+    /// Listens for OSC on `port` (1 to 65535, UDP and TCP) from now on and at every start: the
+    /// new port is opened first and the old one closed only then. Answers `osc` once it is open;
+    /// `bad_request` for port 0, `io` when the new port cannot be opened (in use, say): the old one
+    /// then goes on listening and the `osc` state carries the reason; `io` too when the choice
+    /// cannot be kept. App-scope.
+    SetOscPort {
+        port: u16,
+    },
     /// Sets the buffer size, in frames per callback, of output device `device` on this machine
     /// (AUD-21): 16 to 1024 (the default is 512). `device` must be a name `list_devices` gives.
     /// Kept in the machine settings. A device the engine plays on reopens at once at that size

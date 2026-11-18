@@ -133,6 +133,10 @@ pub struct MachineSettings {
     /// (`set_output_device`). None: the system default device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_device: Option<String>,
+    /// The port OSC listens on (UDP and TCP), set on the OSC settings page; absent: 53000.
+    /// 1 to 65535.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osc_port: Option<u16>,
     /// Frames per callback asked of each output device, by name ([`MIN_BUFFER_FRAMES`] to
     /// [`MAX_BUFFER_FRAMES`]); a device not here is asked for [`DEFAULT_BUFFER_FRAMES`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -156,6 +160,7 @@ impl Default for MachineSettings {
             settings_version: SETTINGS_VERSION,
             backup_keep: DEFAULT_BACKUP_KEEP,
             output_device: None,
+            osc_port: None,
             buffer_frames: BTreeMap::new(),
             workspaces: BTreeMap::new(),
             extra: BTreeMap::new(),
@@ -202,6 +207,15 @@ pub fn load_settings(text: &str) -> LoadedSettings {
     {
         object.remove("output_device");
         warnings.push("output device is not a name; using the system default".to_owned());
+    }
+    // Likewise an OSC port that is not a port number drops only itself.
+    if let Some(object) = value.as_object_mut()
+        && object
+            .get("osc_port")
+            .is_some_and(|v| !v.as_u64().is_some_and(|p| (1..=65535).contains(&p)))
+    {
+        object.remove("osc_port");
+        warnings.push("OSC port is not a port number; using 53000".to_owned());
     }
     // Likewise a buffer size that is not a frame count drops only itself.
     if let Some(sizes) = value
@@ -382,6 +396,25 @@ impl MachineSettings {
             .get(&workspace.to_string())?
             .patches
             .get(&patch.to_string())
+    }
+
+    /// Keeps `count` backups per workspace (0 turns them off). Refuses more than
+    /// [`MAX_BACKUP_KEEP`] and changes nothing.
+    pub fn set_backup_keep(&mut self, count: u32) -> Result<(), String> {
+        if count > MAX_BACKUP_KEEP {
+            return Err(format!("at most {MAX_BACKUP_KEEP} backups can be kept"));
+        }
+        self.backup_keep = count;
+        Ok(())
+    }
+
+    /// Sets the port OSC listens on from the next engine start. Refuses 0 and changes nothing.
+    pub fn set_osc_port(&mut self, port: u16) -> Result<(), String> {
+        if port == 0 {
+            return Err("an OSC port is a number from 1 to 65535".into());
+        }
+        self.osc_port = Some(port);
+        Ok(())
     }
 
     /// Chooses the output device the engine opens at its next start; `None` goes back to the

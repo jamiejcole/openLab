@@ -604,6 +604,11 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// playing now is the status message's `device`.
     case devices([DeviceEntry], selected: String?)
     case patchMappings([PatchMappingEntry])
+    /// `osc_state` and `set_osc_port`: the OSC listening port (the one in use while open), whether its
+    /// sockets are open, and why the last start or change failed.
+    case osc(port: UInt16, open: Bool, error: String?)
+    /// `backup_keep` and `set_backup_keep`: how many backups of each workspace are kept.
+    case backupKeep(count: UInt32)
     case relink(RelinkResult)
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
     case recoveryEntries([RecoveryEntryInfo])
@@ -634,6 +639,11 @@ enum ResultData: Sendable, Equatable, Decodable {
             self = .devices(
                 try c.decode([DeviceEntry].self, forKey: "devices"),
                 selected: try c.decodeIfPresent(String.self, forKey: "selected"))
+        case "backup_keep": self = .backupKeep(count: try c.decode(UInt32.self, forKey: "count"))
+        case "osc":
+            self = .osc(
+                port: try c.decode(UInt16.self, forKey: "port"), open: try c.decode(Bool.self, forKey: "open"),
+                error: try c.decodeIfPresent(String.self, forKey: "error"))
         case "patch_mappings": self = .patchMappings(try c.decode([PatchMappingEntry].self, forKey: "patches"))
         case "relink":
             self = .relink(

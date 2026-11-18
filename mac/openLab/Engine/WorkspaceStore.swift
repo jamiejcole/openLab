@@ -304,6 +304,17 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         await client.send { .request(id: $0, .listDevices) }
     }
 
+    /// The port OSC listens on and whether it is open (an app-scope request).
+    func oscState() async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .oscState) }
+    }
+
+    /// Listens for OSC on `port` from now on; refused, with the old port still listening, when it
+    /// cannot be opened.
+    func setOscPort(_ port: UInt16) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setOscPort(port: port)) }
+    }
+
     /// Chooses the output device for the engine's next start (nil: the system default).
     func setOutputDevice(_ name: String?) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .setOutputDevice(device: name)) }

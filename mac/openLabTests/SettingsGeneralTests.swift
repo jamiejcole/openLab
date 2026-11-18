@@ -111,6 +111,28 @@ final class SettingsGeneralTests: XCTestCase {
         await assertEventually("the step is 5") { rig.store.model?.settings["auto_number_increment"]?.doubleValue == 5 }
     }
 
+    // MARK: Autosave
+
+    /// Checklist: application preferences → autosave interval: typed on the General page (the
+    /// interval is the workspace's, kept in the show), a number outside 5 seconds to 1 hour is
+    /// refused and the engine's number shown again.
+    func testTheAutosaveIntervalIsTypedOnThePageAndKeptByTheEngine() async throws {
+        let (rig, sc) = try await open()
+        XCTAssertEqual(sc.autosaveField.stringValue, "30")
+        func type(_ text: String) {
+            sc.autosaveField.stringValue = text
+            sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: sc.autosaveField))
+        }
+        type("90")
+        await assertEventually("the engine kept 90") { rig.store.model?.settings["autosave_interval"]?.doubleValue == 90 }
+        type("2")
+        await assertEventually("the refusal shows") {
+            sc.messageLabel.stringValue == String(format: loc("settings.general.outOfRange"), 5.0, 3600.0)
+        }
+        XCTAssertEqual(sc.autosaveField.stringValue, "90")
+        XCTAssertEqual(rig.store.model?.settings["autosave_interval"]?.doubleValue, 90)
+    }
+
     // MARK: Lock playhead
 
     /// Checklist: "lock playhead to selection" on → selecting a row moves the playhead and moving the

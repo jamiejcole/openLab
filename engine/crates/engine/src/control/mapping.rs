@@ -436,6 +436,52 @@ impl Engine {
         Ok(())
     }
 
+    /// `set_backup_keep`: how many backups of each workspace later saves keep.
+    pub(super) fn set_backup_keep(&mut self, count: u32) -> Result<u32, ErrorBody> {
+        self.require_saveable()?;
+        self.config
+            .machine
+            .set_backup_keep(count)
+            .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
+        self.save_machine();
+        self.log(
+            LogLevel::Info,
+            format!("{count} backups of each workspace will be kept"),
+        );
+        Ok(count)
+    }
+
+    /// The OSC server's state, for `osc_state`.
+    pub(super) fn osc_state(&self) -> Option<crate::net::OscState> {
+        self.config.osc.as_ref().map(|osc| osc.state())
+    }
+
+    /// `set_osc_port`: opens the new port first and keeps the old one if that fails; the choice is
+    /// kept for the next start.
+    pub(super) fn set_osc_port(&mut self, port: u16) -> Result<crate::net::OscState, ErrorBody> {
+        let Some(osc) = self.config.osc.clone() else {
+            return Err(ErrorBody::new(ErrorCode::Unsupported, "OSC is not running"));
+        };
+        if port == 0 {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "an OSC port is a number from 1 to 65535",
+            ));
+        }
+        self.require_saveable()?;
+        let state = osc.set_port(port).map_err(|why| {
+            self.log(LogLevel::Warn, format!("OSC port {port}: {why}"));
+            ErrorBody::new(ErrorCode::Io, why)
+        })?;
+        self.config
+            .machine
+            .set_osc_port(port)
+            .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
+        self.save_machine();
+        self.log(LogLevel::Info, format!("OSC listens on port {port}"));
+        Ok(state)
+    }
+
     /// Refuses an operator's change to the machine settings that could not be kept: they would
     /// work until the app quits and then be gone, and the reply would have said all was well.
     /// With no settings folder configured (tests, the offline driver) there is nothing to keep.

@@ -21,7 +21,7 @@ The address space follows QLab 5's OSC dictionary so existing remotes work. Anyt
 - A Network cue is never broken for an unresolved host name or an unreachable destination (see `network-cue` reference).
 
 ## Transport
-- UDP and TCP on port **53000**, IPv4, all interfaces (as QLab; set a passcode on a network you do not control).
+- UDP and TCP on port **53000** (or the machine's `osc_port`, set on the OSC settings page with `set_osc_port`), IPv4, all interfaces (as QLab; set a passcode on a network you do not control). `OscServer` (`net/osc.rs`) runs the sockets on a runtime of its own; a new port is bound first, the tap swapped, the old runtime stopped, and a port that cannot be bound leaves the old listeners serving with `state().error` set.
 - UDP replies and updates go to the peer's IP on port **53001** whatever port it sent from, unless it set another with `/udpReplyPort`. A datagram is never answered on its source port.
 - TCP carries OSC 1.1 SLIP frames (END `0xC0` at both ends; `0xDB 0xDC` is a literal END, `0xDB 0xDD` a literal ESC). OSC 1.0 length-prefixed framing is not supported.
 - A UDP peer is identified by its IP, a TCP peer by its connection.

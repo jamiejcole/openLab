@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Darwin
 import Foundation
 
 /// The OSC passcode table of the workspace settings (NET-02). Every edit is one engine command
@@ -76,4 +77,78 @@ extension WorkspaceSettingsModel {
             return false
         }
     }
+}
+
+/// Where OSC is listening, as `osc_state` and `set_osc_port` answer.
+struct OscListening: Equatable {
+    let port: UInt16
+    let open: Bool
+    let error: String?
+}
+
+/// This Mac's addresses, for the OSC page (a console is pointed at one of them).
+enum LocalAddresses {
+    /// The IPv4 addresses of the interfaces that are up, loopback left out, in interface order.
+    static func ipv4() -> [String] {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return [] }
+        defer { freeifaddrs(list) }
+        var out: [String] = []
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let flags = Int32(entry.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0, let addr = entry.pointee.ifa_addr,
+                addr.pointee.sa_family == sa_family_t(AF_INET)
+            else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = getnameinfo(
+                addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
+            if result == 0 {
+                let text = String(cString: host)
+                if !out.contains(text) { out.append(text) }
+            }
+        }
+        return out
+    }
+}
+
+extension WorkspaceSettingsModel {
+    /// Reads where OSC listens (and this Mac's addresses). An engine without OSC leaves it unknown.
+    func refreshOsc() async {
+        let found = localAddresses()
+        if addresses != found { addresses = found }
+        if case .success(let ok) = await store.oscState(), case .osc(let port, let open, let error)? = ok.data {
+            let now = OscListening(port: port, open: open, error: error)
+            if oscListening != now { oscListening = now }
+        } else if oscListening != nil {
+            oscListening = nil
+        }
+    }
+
+    /// Listens on the port typed. False, with a message, when it is not a port number or the engine
+    /// could not open it: the old port goes on listening (the state is read again either way).
+    @discardableResult
+    func setOscPort(_ text: String) async -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let value = UInt16(trimmed), value >= 1 else {
+            message = loc("settings.osc.badPort")
+            return false
+        }
+        if oscListening?.open == true, oscListening?.port == value {
+            message = nil
+            return true
+        }
+        let result = await store.setOscPort(value)
+        await refreshOsc()
+        switch result {
+        case .success:
+            message = nil
+            return true
+        case .failure(let e):
+            message = String(format: loc("settings.osc.portRefused"), Int(value), e.detailText)
+            return false
+        }
+    }
+
+    /// Turns OSC access to this workspace on or off.
+    func setOscEnabled(_ on: Bool) async { await setSwitch(.oscEnabled, on) }
 }

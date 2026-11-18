@@ -28,6 +28,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let autoNumberCheck = NSButton(
         checkboxWithTitle: loc("settings.general.autoNumber"), target: nil, action: nil)
     let autoNumberField = NSTextField()
+    let autosaveField = NSTextField()
     let lockPlayheadCheck = NSButton(
         checkboxWithTitle: loc("settings.general.lockPlayhead"), target: nil, action: nil)
     // Audio: the patch table (`+Audio`) and the volume limits beside it.
@@ -49,6 +50,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var patchEditors: [ModelID: PatchEditorWindowController] = [:]
     /// Whether an opened patch editor is put on screen (a scenario run draws it off screen).
     var presentsEditors = true
+
+    // OSC page (`+Osc`): the access switch, the listening port, its state and this Mac's addresses.
+    let oscEnabledCheck = NSButton(checkboxWithTitle: loc("settings.osc.enabled"), target: nil, action: nil)
+    let oscPortField = NSTextField()
+    let oscPortStatus = NSTextField(wrappingLabelWithString: "")
+    let oscAddressesLabel = NSTextField(wrappingLabelWithString: "")
 
     // OSC passcode table (NET-02); built and drawn in `+Osc`.
     let oscAddButton = NSButton(title: loc("settings.osc.add"), target: nil, action: nil)
@@ -357,6 +364,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         lastDrawn = state
         renderCount += 1
         renderOsc(state.osc, forced: forced)
+        renderOscAccess()
         renderNetwork(state.network, forced: forced)
         renderKeys(state.keys, refusal: state.keyRefusal)
         renderGeneral()
@@ -379,6 +387,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         }
         renderSwitches()
         // A field being typed in keeps its text.
+        if !((editing as? NSTextView)?.delegate === autosaveField) {
+            autosaveField.stringValue = model.autosaveInterval.map(Self.format) ?? ""
+        }
         if !((editing as? NSTextView)?.delegate === autoNumberField) {
             autoNumberField.stringValue = model.autoNumberStep.map(Self.format) ?? ""
         }
@@ -423,6 +434,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             networkFieldCommitted(field)
             return
         }
+        if field === oscPortField {
+            oscPortCommitted(field.stringValue)
+            return
+        }
         if oscCodeFields.contains(field) {
             oscCodeCommitted(field)
             return
@@ -437,6 +452,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 await model.setPanicDuration(text)
             } else if field === goIntervalField {
                 await model.setMinGoInterval(text)
+            } else if field === autosaveField {
+                await model.setAutosaveInterval(text)
             } else if field === autoNumberField {
                 await model.setAutoNumberStep(text)
             } else if field === maxLimitField {
