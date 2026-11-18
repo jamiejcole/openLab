@@ -113,6 +113,8 @@ fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
             .join(format!("video-cues-media-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // Earlier runs' copies (ten-minute movies among them) would otherwise add up.
+        prune_old_process_dirs(&dir, "video-cues-media-");
         std::sync::Mutex::new((dir, Vec::new()))
     });
     let mut made = made
@@ -843,7 +845,7 @@ fn probe_at(s: &mut OfflineShow, points: &[[f32; 2]]) -> (Option<u16>, Vec<[u8; 
             Some(ResultData::StageProbe { frame, colours }) => (frame, colours),
             other => panic!("{other:?}"),
         },
-        Outcome::Error(e) => panic!("probe refused: {e:?}"),
+        Outcome::Error(e) => panic!("probe refused: {e:?}\n{}", seen(s)),
     }
 }
 

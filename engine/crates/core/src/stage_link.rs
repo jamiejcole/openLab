@@ -553,7 +553,12 @@ pub fn read_line(input: &mut impl BufRead, buf: &mut Vec<u8>) -> std::io::Result
     let mut total = 0usize;
     let mut saw_any = false;
     loop {
-        let chunk = input.fill_buf()?;
+        // A read a signal interrupted has read nothing: read again (the link is not over).
+        let chunk = match input.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         if chunk.is_empty() {
             return Ok(match (saw_any, total > MAX_LINE_BYTES) {
                 (false, _) => Line::End,
@@ -588,6 +593,37 @@ pub fn read_line(input: &mut impl BufRead, buf: &mut Vec<u8>) -> std::io::Result
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    /// A pipe read that a signal interrupts is read again: the line comes through whole and
+    /// the link is not taken to be over.
+    #[test]
+    fn a_read_a_signal_interrupts_is_read_again() {
+        struct Interrupted<'a> {
+            left: u32,
+            data: &'a [u8],
+        }
+        impl std::io::Read for Interrupted<'_> {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                if self.left > 0 {
+                    self.left -= 1;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let n = out.len().min(self.data.len()).min(3);
+                out[..n].copy_from_slice(&self.data[..n]);
+                self.data = &self.data[n..];
+                Ok(n)
+            }
+        }
+        let mut input = std::io::BufReader::new(Interrupted {
+            left: 2,
+            data: b"{\"a\":1}\n",
+        });
+        let mut line = Vec::new();
+        assert!(matches!(read_line(&mut input, &mut line), Ok(Line::Read)));
+        assert_eq!(line, b"{\"a\":1}");
+        line.clear();
+        assert!(matches!(read_line(&mut input, &mut line), Ok(Line::End)));
+    }
 
     fn stage(n: u128) -> StageId {
         StageId(Uuid::from_u128(n))
