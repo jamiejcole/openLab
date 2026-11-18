@@ -613,7 +613,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var listHasHours = false
 
     private func longestTime(_ node: CueNode) -> Double {
-        max(node.cue.raw["pre_wait"]?.doubleValue ?? 0, node.cue.postWait, restingDuration(node) ?? 0)
+        // A running time with no stored end (a looping group, a still held on screen) can pass an hour
+        // while it counts: the columns widen when it does, once, and narrow when it stops.
+        max(
+            node.cue.raw["pre_wait"]?.doubleValue ?? 0, node.cue.postWait, restingDuration(node) ?? 0,
+            shownDurationSeconds(node) ?? 0)
     }
 
     private func updateHoursShown(touched: Set<ModelID>? = nil) {
@@ -2117,19 +2121,28 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// the time left when the column shows that. A cue looping a slice with no end counts inside the slice
     /// and starts again each pass. Instantaneous cues (and Audio cues whose file is unknown) have none.
     private func durationText(_ node: CueNode) -> String {
+        shownDurationSeconds(node).map(CueTime.running) ?? ""
+    }
+
+    /// The seconds the Duration cell reads, nil for none; the column widths are worked out from the same.
+    private func shownDurationSeconds(_ node: CueNode) -> Double? {
         let remaining = timeShown["duration"] == .remaining
         // A cue loaded to a time stands there like a paused one: its Duration reads the point.
         if let stand = loadedStand(node) {
-            guard let length = stand.length else { return CueTime.running(stand.at) }
-            return CueTime.running(remaining ? length - stand.at : stand.at)
+            guard let length = stand.length else { return stand.at }
+            return remaining ? length - stand.at : stand.at
         }
-        if let p = store.shownProgress(node.id) {
-            if let left = p.remaining { return CueTime.running(remaining ? left : p.elapsed) }
-            if let pass = loopPass(node, p) { return CueTime.running(remaining ? pass.length - pass.gone : pass.gone) }
-            return CueTime.running(p.elapsed)
-        }
-        if let seconds = restingDuration(node) { return CueTime.running(seconds) }
-        return ""
+        if let p = store.shownProgress(node.id) { return shownRunningTime(node, p) }
+        return restingDuration(node)
+    }
+
+    /// The time the Duration cell reads for a running cue: the time gone, or the time left when the column
+    /// shows that; inside the pass for a cue looping with no end.
+    private func shownRunningTime(_ node: CueNode, _ p: ProgressItem) -> Double {
+        let remaining = timeShown["duration"] == .remaining
+        if let left = p.remaining { return remaining ? left : p.elapsed }
+        if let pass = loopPass(node, p) { return remaining ? pass.length - pass.gone : pass.gone }
+        return p.elapsed
     }
 
     /// Where a loaded cue stands in its action (Load to Time, a Load cue, a click in its timeline), and

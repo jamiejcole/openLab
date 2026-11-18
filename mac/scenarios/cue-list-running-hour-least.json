@@ -1,0 +1,32 @@
+{
+  "about": "A looping pre-show playlist group, closed, running past an hour in the cue list at its least width (800 pt with the sidebar shown, which squeezes the time columns): its Duration cell counts the whole running time, the time columns widening once when the shown time reaches an hour and narrowing again after the stop.",
+  "show": "Groups",
+  "window": {"width": 1400, "height": 900},
+  "appearance": "light",
+  "steps": [
+    {"select": "3"},
+    {"tab": "mode"},
+    {"click": "inspector-group-loop"},
+    {"select": "3"},
+    {"key": "left"},
+    {"resize": [800, 900]},
+    {"click": "toggle-sidebar"},
+    {"shot": "before-go-least"},
+    {"key": "space"},
+    {"advance": 600},
+    {"advance": 600},
+    {"advance": 600},
+    {"advance": 600},
+    {"advance": 600},
+    {"advance": 500},
+    {"select": "3"},
+    {"shot": "just-under-an-hour"},
+    {"advance": 200},
+    {"shot": "past-an-hour"},
+    {"advance": 600},
+    {"shot": "past-an-hour-later"},
+    {"key": "escape"},
+    {"advance": 1},
+    {"shot": "after-stop"}
+  ]
+}
