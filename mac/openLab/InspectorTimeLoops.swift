@@ -10,6 +10,11 @@ extension InspectorViewController {
         timeLoops.onChange = { [weak self] change in self?.sendTimeLoops(change) }
         timeLoops.onHold = { [weak self] in self?.gestureHold($0) }
         timeLoops.onInvalid = { [weak self] key in self?.showRefusal(loc(key)) }
+        timeLoops.onPreview = { [weak self] in self?.previewClicked() }
+        timeLoops.onReset = { [weak self] in
+            guard let self, let id = cue?.id, store.previewing.contains(id) else { return }
+            onTransport?(.stopPreview(cue: id))
+        }
         timeLoops.onSeek = { [weak self] cue, position in self?.seek(cue, to: position) }
         timeLoops.loadPeaks = { [weak self] cue, start, end, buckets in
             guard let self else { return .failure(.notConnected) }
@@ -64,6 +69,7 @@ extension InspectorViewController {
 
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         endGestures()
+        tabBar.select(tabViewItem?.identifier as? String)
         updateTimeLoopsActive()
     }
 
@@ -74,8 +80,9 @@ extension InspectorViewController {
     /// engine sends where in the file the cue is).
     func updateTimeLoopsProgress() {
         guard let cue, Self.timeLoopsKinds.contains(cue.kindType) else { return }
-        // Playing or paused: where it is; loaded: where it stands.
-        timeLoops.showProgress(position: store.progress[cue.id]?.position, loadedAt: store.loadedAt[cue.id]?.position)
+        // Playing, paused or previewing: where it is; loaded: where it stands.
+        timeLoops.showProgress(
+            position: store.shownProgress(cue.id)?.position, loadedAt: store.loadedAt[cue.id]?.position)
     }
 
     /// A click in the timeline: the cue (Audio or Video) plays on (or is loaded, or its pre-wait ends) from

@@ -134,7 +134,7 @@ final class SettingsGeneralTests: XCTestCase {
         XCTAssertEqual(masthead.goFlash.alphaValue, 1)
         try await rig.advance(1.5)
         await assertEventually("the protection ended") { !masthead.goProtectionShown }
-        XCTAssertEqual(masthead.goButton.layer?.borderWidth, 0)
+        XCTAssertEqual(masthead.goButton.layer?.borderWidth, 3)
         XCTAssertEqual(masthead.goFlash.alphaValue, 0, "the flash went with it")
     }
 
@@ -231,7 +231,7 @@ final class SettingsGeneralTests: XCTestCase {
 
         try await rig.advance(1.0)
         await assertEventually("the border is gone") { !masthead.goProtectionShown }
-        XCTAssertEqual(masthead.goButton.layer?.borderWidth, 0)
+        XCTAssertEqual(masthead.goButton.layer?.borderWidth, 3)
         masthead.goButton.performClick(nil)
         await assertEventually("a GO after the time is accepted") { head() == H.group }
         XCTAssertEqual(masthead.goFlashes, 1)

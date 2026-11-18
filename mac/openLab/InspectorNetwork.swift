@@ -14,23 +14,32 @@ extension InspectorViewController {
         networkPatchPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
         networkMessageField.placeholderString = loc("inspector.network.messageHint")
         networkMessageField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        networkMessageField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         networkSendButton.setAX("inspector-network-send")
         networkSendButton.target = self
         networkSendButton.action = #selector(networkSendClicked)
         networkSendButton.setContentHuggingPriority(.required, for: .horizontal)
-        let messageRow = NSStackView(views: [networkMessageField, networkSendButton])
-        messageRow.spacing = 6
-        let content = column(
-            [
-                row(loc("inspector.network.patch"), networkPatchPopup),
-                row(loc("inspector.network.message"), messageRow),
-            ],
-            nil)
+        // The message is an area over the tab's whole width, as QLab's is; Return still ends the edit.
+        networkMessageField.cell?.wraps = true
+        networkMessageField.cell?.isScrollable = false
+        networkMessageField.lineBreakMode = .byWordWrapping
+        networkMessageField.usesSingleLineMode = false
+        networkMessageField.maximumNumberOfLines = 0
+        networkMessageField.cell?.usesSingleLineMode = false
+        networkMessageField.alignment = .left
+        networkMessageField.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+        let patchLabel = NSTextField(labelWithString: loc("inspector.network.patch"))
+        patchLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        patchLabel.textColor = .secondaryLabelColor
+        let patchRow = NSStackView(views: [patchLabel, networkPatchPopup, networkSendButton])
+        patchRow.spacing = 6
+        patchRow.distribution = .fill
+        networkPatchPopup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let content = column([patchRow, networkMessageField], nil)
         content.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         for v in content.arrangedSubviews {
             v.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -24).isActive = true
         }
-        messageRow.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -24).isActive = true
         let item = NSTabViewItem(identifier: "network")
         item.label = loc("inspector.tab.network")
         item.view = content

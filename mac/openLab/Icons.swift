@@ -24,7 +24,7 @@ enum Icon: CaseIterable {
     case transportReset, transportPause, transportResume, transportPanic
     case activeCuePause, activeCueResume, activeCuePanic
     // Footer.
-    case layoutToolbar, layoutMasthead, layoutInspector, layoutSidebar, settings
+    case layoutMasthead, layoutInspector, layoutSidebar, settings
     // Engine status levels.
     case statusWaiting, statusNormal, statusWarning, statusAlarm
     // Cue list markers.
@@ -74,7 +74,6 @@ enum Icon: CaseIterable {
         case .transportPause: return "transport-pause"
         case .transportResume: return "transport-resume"
         case .activeCuePanic: return "active-cue-panic"
-        case .layoutToolbar: return "layout-toolbar"
         case .layoutMasthead: return "layout-masthead"
         case .layoutInspector: return "layout-inspector"
         case .layoutSidebar: return "layout-sidebar"

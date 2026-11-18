@@ -559,8 +559,11 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
 
 /// A window of the app, the tests or AppKit itself. Windows of other system frameworks (text input
 /// and its completion list) are made once for the process when a field first takes the keyboard.
+/// AppKit's tooltip panel is the same: one panel, made the first time a tooltip shows (when the real
+/// pointer rests over a view with a tooltip during a test) and kept for the process.
 @MainActor
 func isAppWindow(_ window: NSWindow) -> Bool {
+    if String(describing: type(of: window)) == "NSToolTipPanel" { return false }
     let owner = Bundle(for: type(of: window))
     return owner == Bundle.main || owner == Bundle(for: EngineTestObserver.self) || owner == Bundle(for: NSWindow.self)
 }
@@ -771,6 +774,8 @@ final class WireTap: EngineTransport {
     /// Results are unreadable when they reach the app (a held one when it is released).
     var garbleResults = false
     var holdFlush = false
+    /// For each app connection the app closed: whether the engine had already ended it.
+    fileprivate(set) var appClosesAfterTheEngine: [Bool] = []
     /// Flushes held by `holdFlush`, ended by `releaseResults` (one never ended would keep its
     /// caller, and all it holds, for the rest of the run).
     fileprivate var heldFlushes: [CheckedContinuation<Void, Never>] = []
@@ -971,6 +976,7 @@ final class TapConnection: EngineConnection {
     }
 
     func close() {
+        if doc == nil { tap.appClosesAfterTheEngine.append(failure != nil) }
         inner.close()
         fail(URLError(.networkConnectionLost))
     }
@@ -1327,5 +1333,35 @@ func stageHostPids(of engine: Int32) -> [Int32] {
         var name = [CChar](repeating: 0, count: 256)
         guard proc_name(pid, &name, UInt32(name.count)) > 0 else { return false }
         return String(cString: name) == "openlab-stage"
+    }
+}
+
+/// What the operator does in the Levels tab: right-click a box and choose Mute; switch gang mode
+/// on, type a letter in an output's box, and switch it off again.
+@MainActor
+extension LevelsPanel {
+    @discardableResult
+    func muteFromMenu(_ slot: LevelSet.Slot) -> Bool {
+        let box = matrix.rect(of: slot)
+        let at = matrix.convert(NSPoint(x: box.midX, y: box.midY), to: nil)
+        guard
+            let event = NSEvent.mouseEvent(
+                with: .rightMouseDown, location: at, modifierFlags: [], timestamp: 0,
+                windowNumber: matrix.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1,
+                pressure: 1),
+            let item = matrix.menu(for: event)?.items.first, item.isEnabled
+        else { return false }
+        _ = item.target?.perform(item.action, with: item)
+        return true
+    }
+
+    func assignGang(_ letter: String, to slot: LevelSet.Slot) {
+        if gangsButton.state != .on { gangsButton.performClick(nil) }
+        select(slot)
+        beginTyping(slot)
+        levelField.stringValue = letter
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: levelField))
+        controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: levelField))
+        gangsButton.performClick(nil)
     }
 }

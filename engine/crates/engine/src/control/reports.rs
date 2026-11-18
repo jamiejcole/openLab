@@ -203,14 +203,38 @@ impl DocCx<'_> {
             if items.len() > voiced || pictured {
                 items.sort_by_key(|i| i.cue);
             }
+            // A previewed cue (no show voice of its own sounding) counts as a play does; while
+            // it previews, its item is the preview's and not the point a Load left it at.
+            let previews: Vec<ProgressItem> = self
+                .doc
+                .voices
+                .preview_progress(rendered)
+                .into_iter()
+                .filter(|(cue, ..)| !items.iter().any(|i| i.cue == *cue))
+                .map(|(cue, pos, left, at)| ProgressItem {
+                    cue,
+                    elapsed: self.seconds(pos),
+                    remaining: left.map(|l| self.seconds(l)),
+                    position: at.map(|f| self.seconds(f)),
+                })
+                .collect();
             // Loaded cues stand at a time (Load to Time, a Load cue) or at a point of their file
             // (a click in the timeline): their items carry how far into the action they stand
             // (`elapsed`) and, for Audio and Video, that `position`. They ride on the message sent
             // for anything else, and make one of their own only when the set changed, so a
             // standing loaded cue costs no traffic.
-            let loaded = self.loaded_points();
-            let loaded_changed = loaded != self.doc.last_loaded;
-            if !items.is_empty() || !waits.is_empty() || loaded_changed {
+            let loaded: Vec<LoadedPoint> = self
+                .loaded_points()
+                .into_iter()
+                .filter(|(cue, ..)| !previews.iter().any(|p| p.cue == *cue))
+                .collect();
+            // What stands at a point (loaded cues, then previews): one more message when it changes,
+            // so a stopped preview's item is withdrawn and the loaded point it covered comes back.
+            let mut standing = loaded.clone();
+            standing.extend(previews.iter().map(|p| (p.cue, p.elapsed, p.position)));
+            let loaded_changed = standing != self.doc.last_loaded;
+            if !items.is_empty() || !waits.is_empty() || loaded_changed || !previews.is_empty() {
+                items.extend(previews);
                 items.extend(loaded.iter().map(|&(cue, elapsed, position)| ProgressItem {
                     cue,
                     elapsed,
@@ -224,7 +248,7 @@ impl DocCx<'_> {
                 // A message dropped for a slow client is made again next pass while the loaded
                 // set it carried is still unsent (a playing cue's progress comes again anyway).
                 if self.eng.out.send_lossy(Some(self.doc.id), m) {
-                    self.doc.last_loaded = loaded;
+                    self.doc.last_loaded = standing;
                 }
             }
         }

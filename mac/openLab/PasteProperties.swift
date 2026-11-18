@@ -218,6 +218,7 @@ extension LevelSet {
         case mute(Slot)
         case gang(output: Int, letter: String)
         case silenceAll
+        case clearMutes
         case defaults
     }
 
@@ -243,6 +244,7 @@ extension LevelSet {
         case .gang(let o, let letter):
             s.setGang(of: o, letter: letter)
         case .silenceAll: s.silenceAll()
+        case .clearMutes: s.clearMutes()
         case .defaults: s.setDefaults()
         }
         return s

@@ -11,7 +11,7 @@ final class TriggersUITests: XCTestCase {
         XCTAssertEqual(cueStates("Running", in: app).count, 0)
 
         selectCue("Rain", in: app)
-        app.tabGroups["inspector-tabs"].tabs.element(boundBy: 1).click()  // Basics, Triggers
+        tabButton("Triggers", in: app).click()
         let hotkey = app.staticTexts["inspector-hotkey"]
         XCTAssertTrue(hotkey.waitForExistence(timeout: 5))
         hotkey.click()

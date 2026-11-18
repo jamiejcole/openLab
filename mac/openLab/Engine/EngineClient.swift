@@ -65,6 +65,8 @@ struct ReconnectPolicy: Equatable, Sendable {
     /// Live requests timed out in a row, with no `result` between them, that mark the connection
     /// dead (an engine whose socket is open but that no longer answers): it is closed and retried.
     var deadAfterTimeouts = 2
+    /// How long `goodbye` waits for the engine to end the connection before the client closes it.
+    var goodbyeWait = 2.0
     func delay(attempt: Int) -> Double { min(cap, initial * pow(2, Double(min(attempt, 30)))) }
 }
 
@@ -114,6 +116,8 @@ final class EngineClient: ObservableObject {
 
     private var runTask: Task<Void, Never>?
     private var connection: (any EngineConnection)?
+    /// `goodbye` calls waiting for the current connection to end.
+    private var endWaiters: [CheckedContinuation<Void, Never>] = []
     private typealias Completion = @MainActor (Result<OkBody, EngineError>) -> Void
     private var pending: [UInt64: Completion] = [:]
     /// The one snapshot-answering request in flight, if any.
@@ -159,6 +163,7 @@ final class EngineClient: ObservableObject {
         connection?.close()
         connection = nil
         failPending(.notConnected)
+        endWaits()
         state = .idle
     }
 
@@ -201,11 +206,28 @@ final class EngineClient: ObservableObject {
         }
     }
 
-    /// `goodbye`, flushed to the socket. No reply exists; a no-op when not connected.
+    /// `goodbye`, flushed to the socket, then the engine's end of the connection (it closes it once it
+    /// has read the goodbye), for at most `goodbyeWait`. No reply exists; a no-op when not connected.
+    /// The caller closes the connection only after this: a socket closed with answers still arriving
+    /// is reset, and the reset throws away what the engine had not read yet, the goodbye with it. The
+    /// engine would take a quit for a crash and play on.
     func goodbye(shutdown: Bool) async {
         guard state == .connected, let connection, let text = try? ClientMessage.goodbye(shutdown: shutdown).text()
         else { return }
         await connection.sendAndFlush(text)
+        guard self.connection === connection else { return }
+        let timer = Task { [weak self, requestScheduler, wait = policy.goodbyeWait] in
+            do { try await requestScheduler.sleep(seconds: wait) } catch { return }
+            if !Task.isCancelled { self?.endWaits() }
+        }
+        await withCheckedContinuation { endWaiters.append($0) }
+        timer.cancel()
+    }
+
+    private func endWaits() {
+        let waiting = endWaiters
+        endWaiters = []
+        for w in waiting { w.resume() }
     }
 
     /// Asks for a snapshot unless one is already out. Fire and forget.
@@ -327,6 +349,7 @@ final class EngineClient: ObservableObject {
             if connection === conn {
                 connection = nil
                 failPending(.disconnected)
+                endWaits()
             }
         }
         // The pid lets the engine tell a slow reconnect from a crash (it relaunches only a gone app).

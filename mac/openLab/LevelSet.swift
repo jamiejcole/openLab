@@ -233,6 +233,16 @@ struct LevelSet: Equatable {
         }
     }
 
+    /// Un-mutes every cue output and crosspoint (an Audio cue only); levels are kept.
+    mutating func clearMutes() {
+        guard !isFade else { return }
+        for o in outputs.indices { outputs[o].mute = false }
+        for p in crosspoints.keys { crosspoints[p]?.mute = false }
+    }
+
+    /// Whether any cue output or crosspoint is muted.
+    var hasMute: Bool { outputs.contains { $0.mute } || crosspoints.values.contains { $0.mute } }
+
     /// A Fade stops moving this level (grey). Not for an Audio cue.
     mutating func deactivate(_ slot: Slot) {
         guard isFade else { return }

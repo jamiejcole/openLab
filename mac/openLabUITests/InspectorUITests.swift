@@ -30,21 +30,12 @@ final class InspectorUITests: XCTestCase {
 
         selectCue("Act One", in: app)
         tabButton("Mode", in: app).click()
-        let mode = app.popUpButtons["inspector-group-mode"]
-        XCTAssertTrue(mode.waitForExistence(timeout: 5))
-        let loop = app.checkBoxes["inspector-group-loop"]
-        XCTAssertFalse(loop.isEnabled, "loop is for playlists")
-        // A popup opened while another process holds focus can fail to show its
-        // menu; close it and open it once more before failing.
-        let playlist = app.menuItems["Playlist - one child at a time"]
-        mode.click()
-        if !playlist.waitForExistence(timeout: 3) {
-            app.typeKey(.escape, modifierFlags: [])
-            mode.click()
-        }
+        let playlist = app.radioButtons["inspector-group-mode-playlist"]
         XCTAssertTrue(playlist.waitForExistence(timeout: 5))
+        let loop = app.checkBoxes["inspector-group-loop"]
+        XCTAssertFalse(loop.exists, "loop is for playlists, shown only for one")
         playlist.click()
-        XCTAssertTrue(waitFor("isEnabled == true", loop))
+        XCTAssertTrue(loop.waitForExistence(timeout: 5))
         loop.click()
         XCTAssertTrue(waitFor("value == 1", loop))
     }

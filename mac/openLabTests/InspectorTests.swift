@@ -220,7 +220,7 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.intro])
         XCTAssertEqual(vc.numberField.stringValue, "1")
         XCTAssertEqual(vc.nameField.stringValue, "Intro")
-        XCTAssertEqual(vc.preWaitField.stringValue, "00:00.00")
+        XCTAssertEqual(vc.preWaitField.stringValue, "00:00.000")
         XCTAssertEqual(vc.continuePopup.indexOfSelectedItem, 0)
         XCTAssertEqual(vc.colourPopup.indexOfSelectedItem, 0)
         XCTAssertEqual(vc.armedCheck.state, .on)
@@ -246,7 +246,7 @@ final class InspectorTests: XCTestCase {
         edit(.preWait, "90")
         await assertEventually { self.commands.count == 3 }
         XCTAssertEqual(commands.last, property("pre_wait", "90"))
-        await assertEventually("the field shows what was stored") { self.vc.preWaitField.stringValue == "01:30.00" }
+        await assertEventually("the field shows what was stored") { self.vc.preWaitField.stringValue == "01:30.000" }
         edit(.postWait, "0:02.5")
         await assertEventually { self.commands.count == 4 }
         XCTAssertEqual(commands.last, property("post_wait", "2.5"))
@@ -314,9 +314,31 @@ final class InspectorTests: XCTestCase {
         XCTAssertFalse(hasMode())
         vc.setSelection([Self.group])
         XCTAssertTrue(hasMode())
-        XCTAssertEqual(vc.groupModePopup.indexOfSelectedItem, 0, "the demo group is a timeline")
+        XCTAssertEqual(vc.groupModeRadios.map(\.state), [.on, .off, .off, .off, .off], "the demo group is a timeline")
         vc.setSelection([Self.fade])
         XCTAssertFalse(hasMode())
+    }
+
+    /// Group, Mode tab: one choice per mode with a line saying what it does; loop and shuffle only for a playlist.
+    func testGroupModeTabShowsOneChoiceForEachModeWithALineAboutItAndPlaylistOptionsOnlyForAPlaylist() async {
+        vc.setSelection([Self.group])
+        XCTAssertEqual(
+            vc.groupModeRadios.map(\.title), InspectorViewController.groupModes.map { loc("inspector.groupMode.\($0)") }
+        )
+        XCTAssertEqual(Set(vc.groupModeRadios.map(\.title)).count, 5, "five different names")
+        for (n, mode) in InspectorViewController.groupModes.enumerated() {
+            vc.groupModeRadios[n].performClick(nil)
+            await assertEventually("\(mode) is chosen") {
+                self.vc.groupModeRadios.map(\.state) == (0..<5).map { $0 == n ? .on : .off }
+            }
+            XCTAssertEqual(vc.groupModeTitle.stringValue, loc("inspector.groupMode.\(mode)"))
+            XCTAssertEqual(vc.groupModeAbout.stringValue, loc("inspector.groupMode.\(mode).about"), "the line about it")
+            XCTAssertFalse(vc.groupModeAbout.stringValue.isEmpty)
+            XCTAssertFalse(vc.groupModeAbout.isHidden)
+            let playlist = mode == "playlist"
+            XCTAssertEqual(vc.groupLoopCheck.isHidden, !playlist, "loop is shown only for a playlist (\(mode))")
+            XCTAssertEqual(vc.groupShuffleCheck.isHidden, !playlist, "shuffle is shown only for a playlist (\(mode))")
+        }
     }
 
     func testEachGroupModeSendsItsCommand() async {
@@ -329,7 +351,7 @@ final class InspectorTests: XCTestCase {
             (0, #"{"type":"timeline"}"#),
         ]
         for (n, (index, mode)) in expected.enumerated() {
-            choose(vc.groupModePopup, index)
+            vc.groupModeRadios[index].performClick(nil)
             await assertEventually { self.commands.count == n + 1 }
             XCTAssertEqual(commands.last, groupMode(mode), mode)
             // The popup alone proves nothing: it shows the choice before the engine has answered. And
@@ -337,25 +359,25 @@ final class InspectorTests: XCTestCase {
             let type = JSONValue.parse(mode)?["type"]
             await assertEventually("the model answers") {
                 self.store.model?.cue(Self.group)?.raw["kind"]?["mode"]?["type"] == type
-                    && self.vc.groupModePopup.indexOfSelectedItem == index
+                    && self.vc.groupModeRadios[index].state == .on
             }
         }
     }
 
     func testLoopAndShuffleOnlyForPlaylistAndSendWholeMode() async {
         vc.setSelection([Self.group])
-        XCTAssertFalse(vc.groupLoopCheck.isEnabled)
-        XCTAssertFalse(vc.groupShuffleCheck.isEnabled)
-        choose(vc.groupModePopup, 1)
-        await assertEventually { self.vc.groupLoopCheck.isEnabled && self.vc.groupShuffleCheck.isEnabled }
+        XCTAssertTrue(vc.groupLoopCheck.isHidden, "a timeline has no loop or shuffle")
+        XCTAssertTrue(vc.groupShuffleCheck.isHidden)
+        vc.groupModeRadios[1].performClick(nil)
+        await assertEventually { !self.vc.groupLoopCheck.isHidden && !self.vc.groupShuffleCheck.isHidden }
         toggle(vc.groupLoopCheck, true)
         await assertEventually { self.commands.count == 2 }
         XCTAssertEqual(commands.last, groupMode(#"{"type":"playlist","loop":true,"shuffle":false}"#))
         toggle(vc.groupShuffleCheck, true)
         await assertEventually { self.commands.count == 3 }
         XCTAssertEqual(commands.last, groupMode(#"{"type":"playlist","loop":true,"shuffle":true}"#))
-        choose(vc.groupModePopup, 0)
-        await assertEventually { !self.vc.groupLoopCheck.isEnabled }
+        vc.groupModeRadios[0].performClick(nil)
+        await assertEventually { self.vc.groupLoopCheck.isHidden }
         XCTAssertEqual(vc.groupLoopCheck.state, .off)
     }
 
@@ -363,7 +385,7 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.group])
         try await setModeElsewhere(
             .object(["type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(true)]))
-        await assertEventually { self.vc.groupModePopup.indexOfSelectedItem == 1 }
+        await assertEventually { self.vc.groupModeRadios[1].state == .on }
         XCTAssertEqual(vc.groupLoopCheck.state, .on)
         XCTAssertEqual(vc.groupShuffleCheck.state, .on)
         XCTAssertTrue(vc.groupLoopCheck.isEnabled)
@@ -375,7 +397,7 @@ final class InspectorTests: XCTestCase {
             .object(["type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(true)]))
         await assertEventually { self.vc.groupShuffleCheck.state == .on }
         let before = commands.count
-        choose(vc.groupModePopup, 1)
+        vc.groupModeRadios[1].performClick(nil)
         // A command sent after it must be the very next one: the re-choice sent none.
         toggle(vc.groupShuffleCheck, false)
         await assertEventually { self.commands.count == before + 1 }
@@ -388,17 +410,17 @@ final class InspectorTests: XCTestCase {
 
     func testGroupControlsAreLockedInShowMode() async {
         vc.setSelection([Self.group])
-        choose(vc.groupModePopup, 1)
+        vc.groupModeRadios[1].performClick(nil)
         await assertEventually { self.vc.groupLoopCheck.isEnabled }
         vc.isLocked = true
-        for c in [vc.groupModePopup as NSControl, vc.groupLoopCheck, vc.groupShuffleCheck] {
+        for c in vc.groupModeRadios + [vc.groupLoopCheck, vc.groupShuffleCheck] {
             XCTAssertFalse(c.isEnabled)
         }
-        choose(vc.groupModePopup, 2)
+        vc.groupModeRadios[2].performClick(nil)
         await settle()
         XCTAssertEqual(commands.count, 1, "nothing is sent in Show Mode")
         vc.isLocked = false
-        XCTAssertTrue(vc.groupModePopup.isEnabled)
+        XCTAssertTrue(vc.groupModeRadios.allSatisfy(\.isEnabled))
         XCTAssertTrue(vc.groupLoopCheck.isEnabled)
     }
 
@@ -419,7 +441,7 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.fade])
         for text in ["abc", "-1", "25:00:00", "1:75", ""] {
             edit(.preWait, text)
-            XCTAssertEqual(vc.preWaitField.stringValue, "00:00.00", text)
+            XCTAssertEqual(vc.preWaitField.stringValue, "00:00.000", text)
             XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.time"), text)
         }
         edit(.target, "99")
@@ -473,7 +495,7 @@ final class InspectorTests: XCTestCase {
                 ])))
         await assertEventually { self.vc.notesView.string == "from another client" }
         XCTAssertEqual(vc.nameField.currentEditor()?.string, "half typed")
-        XCTAssertEqual(vc.preWaitField.stringValue, "00:02.00")
+        XCTAssertEqual(vc.preWaitField.stringValue, "00:02.000")
         window.makeFirstResponder(nil)  // focus loss commits the typed name
         await assertEventually { self.commands.count == 1 }
         XCTAssertEqual(commands.last, property("name", #""half typed""#))
@@ -920,6 +942,27 @@ final class NetworkInspectorTests: XCTestCase {
         XCTAssertEqual(inspector.networkSendButton.title, loc("inspector.network.send"))
         XCTAssertTrue(inspector.networkSendButton.isEnabled)
         XCTAssertTrue(isBroken(net), "a new cue has no message yet")
+    }
+
+    /// Network cue: the message area takes the tab's width, and is an area (more than one line high), at every inspector width.
+    func testTheMessageAreaTakesTheTabsWidthAtEveryInspectorWidth() async throws {
+        let window = try XCTUnwrap(wc.window)
+        let origin = window.frame.origin
+        for width in [1600.0, 1100.0, window.minSize.width] {
+            window.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: 800)), display: true)
+            window.contentView?.layoutSubtreeIfNeeded()
+            let field = inspector.networkMessageField
+            let tab = inspector.tabView.convert(inspector.tabView.bounds, to: nil)
+            let frame = field.convert(field.bounds, to: nil)
+            XCTAssertEqual(
+                frame.minX, tab.minX + 12, accuracy: 1, "at \(window.frame.width) pt the area starts at the tab's edge")
+            XCTAssertEqual(
+                frame.maxX, tab.maxX - 12, accuracy: 1, "at \(window.frame.width) pt it ends at the tab's far edge")
+            XCTAssertGreaterThan(frame.height, 40, "an area, not one line")
+            XCTAssertFalse(field.isHiddenOrHasHiddenAncestor)
+            let patch = inspector.networkPatchPopup.convert(inspector.networkPatchPopup.bounds, to: nil)
+            XCTAssertGreaterThanOrEqual(patch.minY, frame.maxY - 0.5, "the patch row is above the message")
+        }
     }
 
     func testChooseADestination() async throws {
@@ -1939,6 +1982,124 @@ final class UserTestFlowTests: XCTestCase {
         await select(Self.fade)
         inspector.tabView.selectTabViewItem(at: 0)
         XCTAssertEqual(inspector.durationField.stringValue, "00:01.234")
+    }
+
+    /// Every time field of the inspector shows milliseconds (a whole second is 00:01.000), in Basics, the Fade's Curve
+    /// tab, Time & Loops and the Triggers tab.
+    func testEveryTimeFieldInTheInspectorShowsMilliseconds() async throws {
+        for (cue, property) in [
+            (Self.fade, CueProperty.duration(3)), (Self.fade, .preWait(2)), (Self.fade, .postWait(1)),
+            (Self.intro, .preWait(2)),
+        ] {
+            guard case .success = await rig.store.send(command: .setProperty(cue, property)) else {
+                return XCTFail("\(property)")
+            }
+        }
+        func isMillis(_ f: NSTextField, _ what: String, file: StaticString = #filePath, line: UInt = #line) {
+            XCTAssertNotNil(
+                f.stringValue.range(of: #"^\d\d:\d\d\.\d{3}$"#, options: .regularExpression),
+                "\(what) shows \"\(f.stringValue)\"", file: file, line: line)
+        }
+        await select(Self.fade)
+        inspector.tabView.selectTabViewItem(withIdentifier: "basics")
+        await assertEventually("the fade's times") {
+            self.inspector.preWaitField.stringValue == "00:02.000"
+                && self.inspector.postWaitField.stringValue == "00:01.000"
+                && self.inspector.durationField.stringValue == "00:03.000"
+        }
+        inspector.tabView.selectTabViewItem(withIdentifier: "curve")
+        isMillis(inspector.fadeSettings.durationField, "the Fade's Curve duration")
+        XCTAssertEqual(inspector.fadeSettings.durationField.stringValue, "00:03.000")
+        await select(Self.intro)
+        inspector.tabView.selectTabViewItem(withIdentifier: "basics")
+        for (f, what) in [
+            (inspector.preWaitField, "pre-wait"), (inspector.postWaitField, "post-wait"),
+            (inspector.durationField, "duration"),
+        ] {
+            isMillis(f, what)
+        }
+        inspector.tabView.selectTabViewItem(withIdentifier: "timeLoops")
+        isMillis(inspector.timeLoops.startField, "start time")
+        await assertEventually("the end time") { self.inspector.timeLoops.endField.stringValue.contains(".") }
+        isMillis(inspector.timeLoops.endField, "end time")
+        inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+        isMillis(inspector.fadeOthersTimeField, "fade others' time")
+        isMillis(inspector.duckTimeField, "duck others' time")
+    }
+
+    /// A cue whose file is missing: the inspector says why beside the target, and says nothing once it is back.
+    func testACueWhoseFileIsMissingSaysWhyBesideTheTarget() async throws {
+        await select(Self.intro)
+        inspector.tabView.selectTabViewItem(withIdentifier: "basics")
+        wc.window?.layoutIfNeeded()
+        XCTAssertTrue(inspector.targetNote.isHidden, "a file that is there says nothing")
+        guard case .success = await rig.store.send(command: .setProperty(Self.intro, .media("media/not-there.wav")))
+        else { return XCTFail("media") }
+        try await rig.advance(0.5)
+        await assertEventually("the reason shows") { !self.inspector.targetNote.isHidden }
+        wc.window?.layoutIfNeeded()
+        let note = inspector.targetNote
+        XCTAssertEqual(note.stringValue, loc("inspector.target.fileMissing"))
+        XCTAssertEqual(note.alphaValue, 1)
+        let noteFrame = note.convert(note.bounds, to: nil)
+        let path = inspector.targetPath.convert(inspector.targetPath.bounds, to: nil)
+        XCTAssertGreaterThanOrEqual(noteFrame.minX, path.maxX - 0.5, "beside the target, after it")
+        XCTAssertEqual(noteFrame.midY, path.midY, accuracy: 6, "on its row")
+        let wanted = (note.stringValue as NSString).size(withAttributes: [.font: note.font ?? .systemFont(ofSize: 13)])
+            .width
+        XCTAssertGreaterThanOrEqual(noteFrame.width + 1, wanted, "the whole reason shows")
+        XCTAssertTrue(note.toolTip?.contains("not-there.wav") == true, "its tip names the file: \(note.toolTip ?? "")")
+        guard case .success = await rig.store.send(command: .setProperty(Self.intro, .media("media/a.wav")))
+        else { return XCTFail("media back") }
+        await assertEventually("and clears when the file is back") { self.inspector.targetNote.isHidden }
+    }
+
+    /// The tabs are flat and start at the left; at the least window every title is whole, and a bar too narrow for
+    /// them scrolls to the chosen one.
+    func testInspectorTabsAreFlatAndLeftAlignedAndAtTheLeastWindowEveryTitleIsWholeOrTheBarScrolls() async throws {
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
+        await select(Self.intro)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let bar = inspector.tabBar
+        XCTAssertEqual(inspector.tabView.tabViewType, .noTabsNoBorder, "the tab view draws no strip of its own")
+        func segmented(_ v: NSView) -> Bool { v is NSSegmentedControl || v.subviews.contains(where: segmented) }
+        XCTAssertFalse(segmented(inspector.tabView), "no centred segmented strip")
+        XCTAssertEqual(bar.buttons.map(\.title), inspector.tabView.tabViewItems.map(\.label))
+        let first = try XCTUnwrap(bar.buttons.first)
+        XCTAssertEqual(
+            first.convert(first.bounds, to: nil).minX, bar.convert(bar.bounds, to: nil).minX, accuracy: 1,
+            "the first tab is at the bar's left edge")
+        for b in bar.buttons {
+            let title = (b.title as NSString).size(withAttributes: [.font: InspectorTabButton.font]).width
+            XCTAssertGreaterThanOrEqual(b.frame.width, title.rounded(.up), "\(b.title) is whole")
+        }
+        // Each tab can be reached: when the bar is too narrow it scrolls, and the chosen one is in view.
+        for b in bar.buttons {
+            b.performClick(nil)
+            XCTAssertEqual(inspector.tabView.selectedTabViewItem?.identifier as? String, b.tabID)
+            XCTAssertTrue(
+                bar.scroll.contentView.bounds.insetBy(dx: -0.5, dy: 0).contains(b.frame),
+                "\(b.title) is whole in the bar's view")
+            XCTAssertTrue(b.isChosen)
+        }
+        XCTAssertEqual(bar.buttons.filter(\.isChosen).count, 1)
+    }
+
+    /// A tab bar narrower than its titles scrolls: the wheel moves it and a chosen tab is brought in.
+    func testATabBarNarrowerThanItsTitlesScrollsToTheChosenTab() {
+        let bar = InspectorTabBar(frame: NSRect(x: 0, y: 0, width: 200, height: InspectorTabBar.height))
+        let tabs = ["Basics", "Triggers", "I/O", "Timing & Loops", "Levels", "Geometry"].map { (id: $0, title: $0) }
+        bar.show(tabs, selected: "Basics")
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(bar.scrolls, "six titles do not fit in 200 pt")
+        let last = bar.buttons[5]
+        XCTAssertFalse(bar.scroll.contentView.bounds.contains(last.frame), "the last is out of view at first")
+        bar.select("Geometry")
+        XCTAssertTrue(bar.scroll.contentView.bounds.insetBy(dx: -0.5, dy: 0).contains(last.frame), "brought in whole")
+        XCTAssertEqual(bar.buttons.filter(\.isChosen).map(\.tabID), ["Geometry"])
+        bar.select("Basics")
+        XCTAssertEqual(bar.scroll.contentView.bounds.minX, 0, accuracy: 0.5, "and back to the start")
     }
 
     func testAFileTargetIsDrawnAsAPathAndACueWithoutAFileShowsThePlainField() async throws {

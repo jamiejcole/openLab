@@ -1,0 +1,14 @@
+{
+  "about": "A Network cue's Settings tab: the message area takes the tab's width at a wide, a middle and the least window.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
+  "window": {"width": 1400, "height": 900},
+  "steps": [
+    {"select": "4.2"},
+    {"tab": "network"},
+    {"shot": "wide"},
+    {"resize": [1000, 700]},
+    {"shot": "middle"},
+    {"resize": [800, 520]},
+    {"shot": "least"}
+  ]
+}

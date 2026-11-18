@@ -49,6 +49,12 @@ final class LevelMatrixView: NSView {
         didSet { needsDisplay = true }
     }
     var isLocked = false
+    /// Gang assignment: the levels are not drawn; each cue output's box shows its gang letter.
+    var gangMode = false {
+        didSet { if gangMode != oldValue { needsDisplay = true } }
+    }
+    /// The context menu's Mute on this level.
+    var onMute: ((LevelSet.Slot) -> Void)?
 
     /// A click or arrow key chose this level.
     var onSelect: ((LevelSet.Slot) -> Void)?
@@ -160,6 +166,13 @@ final class LevelMatrixView: NSView {
         }
     }
 
+    /// A value box: dark in a dark window, a plain light well in a light one, so an off crosspoint
+    /// reads as an empty box in both.
+    private static let valueBoxFill = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0, alpha: 0.45) : NSColor(white: 1, alpha: 0.9)
+    }
+
     private func cell(_ slot: LevelSet.Slot, _ levels: LevelSet) {
         let r = rect(of: slot).insetBy(dx: 1, dy: 1)
         let db = levels.db(slot)
@@ -172,7 +185,7 @@ final class LevelMatrixView: NSView {
             NSColor.systemYellow.withAlphaComponent(0.55).setFill()
         } else {
             // A value box is dark whatever it holds, as QLab's are; the number says how loud.
-            NSColor(white: 0, alpha: 0.45).setFill()
+            Self.valueBoxFill.setFill()
         }
         path.fill()
         NSColor.separatorColor.setStroke()
@@ -183,7 +196,19 @@ final class LevelMatrixView: NSView {
             path.lineWidth = 2
             path.stroke()
         }
+        if gangMode {
+            guard case .output(let o) = slot, !hidesGangs, let g = levels.gang(of: o) else { return }
+            centred(
+                LevelSet.gangLetter(g), in: r,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.labelColor,
+                ])
+            return
+        }
         guard active, let db else { return }
+        // A crosspoint that is off (not listed, so silent) is an empty box, as QLab draws it (an empty
+        // box is -inf, manual p. 182); a muted one still shows its level.
+        if case .cross = slot, db <= LevelText.silence, !muted { return }
         let text = mixed.contains(slot) ? loc("inspector.mixed.level") : (muted ? "M " : "") + LevelText.format(db)
         centred(
             text, in: r,
@@ -254,7 +279,7 @@ final class LevelMatrixView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard !isLocked, let s = dragSlot, levels != nil else { return }
+        guard !isLocked, !gangMode, let s = dragSlot, levels != nil else { return }
         let dy = dragStartY - convert(event.locationInWindow, from: nil).y  // up is louder
         guard dragging || abs(dy) >= 3 else { return }
         let first = !dragging
@@ -264,6 +289,32 @@ final class LevelMatrixView: NSView {
         let ceiling = min(max(0, dragStartDb), limits.max)
         let db = min(ceiling, (dragStartDb + Double(dy) * 0.25).rounded(toPlaces: 1))
         onDrag?(s, db, first)
+    }
+
+    /// Right-click on a level: its Mute (a cue output, or a crosspoint that is routed).
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard !isLocked, !gangMode, let levels, let s = slot(at: convert(event.locationInWindow, from: nil)) else {
+            return nil
+        }
+        selection = s
+        onSelect?(s)
+        let item = NSMenuItem(title: loc("levels.mute"), action: #selector(muteChosen(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = SlotBox(s)
+        item.state = levels.isMuted(s) ? .on : .off
+        switch s {
+        case .master: item.isEnabled = false
+        case .output: break
+        case .cross(let i, let o): item.isEnabled = levels.crosspoints[.init(input: i, output: o)] != nil
+        }
+        if levels.isFade { item.isEnabled = false }
+        let menu = NSMenu()
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func muteChosen(_ item: NSMenuItem) {
+        if let box = item.representedObject as? SlotBox { onMute?(box.slot) }
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -312,6 +363,11 @@ final class LevelMatrixView: NSView {
     override func accessibilityValue() -> Any? {
         "\(inputs) x \(outputCount)"
     }
+}
+
+private final class SlotBox: NSObject {
+    let slot: LevelSet.Slot
+    init(_ slot: LevelSet.Slot) { self.slot = slot }
 }
 
 extension Double {

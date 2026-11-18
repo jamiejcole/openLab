@@ -210,9 +210,8 @@ final class CueEditingTests: XCTestCase {
         let tab = try XCTUnwrap(inspector.tabView.tabViewItems.first { $0.identifier as? String == "mode" })
         inspector.tabView.selectTabViewItem(tab)
         for mode in InspectorViewController.groupModes.dropFirst() + ["timeline"] {
-            let popup = inspector.groupModePopup
-            popup.selectItem(at: try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode)))
-            _ = popup.sendAction(popup.action, to: popup.target)  // the menu choice, without a tracking menu
+            inspector.groupModeRadios[try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode))]
+                .performClick(nil)
             await assertEventually(mode) {
                 h.store.model?.cue(group)?.raw["kind"]?["mode"]?["type"]?.stringValue == mode
             }

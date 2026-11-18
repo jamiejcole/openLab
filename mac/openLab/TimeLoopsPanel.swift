@@ -206,6 +206,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     let waveform = WaveformView()
     let zoomOutButton = NSButton()
     let zoomInButton = NSButton()
+    /// Stops the cue's preview and puts the playhead line back at the start (the timeline's rewind).
+    let resetButton = NSButton()
+    /// Previews the cue from the start; while it previews, stops it.
+    let previewButton = NSButton()
     let deleteSlicesButton = NSButton(title: loc("timeLoops.deleteSlices"), target: nil, action: nil)
     let addSliceButton = NSButton(title: loc("timeLoops.addSlice"), target: nil, action: nil)
     let fadeCheck = NSButton(checkboxWithTitle: loc("timeLoops.fades"), target: nil, action: nil)
@@ -220,6 +224,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     private var editingMark: Double?
 
     var onChange: ((Change) -> Void)?
+    /// The preview button asked to start or stop the shown cue's preview, the reset button to end it.
+    var onPreview: (() -> Void)?
+    var onReset: (() -> Void)?
     /// A click in the waveform asks the shown cue to play from this file time (seconds, 0 or more).
     var onSeek: ((ModelID, Double) -> Void)?
     /// A drag on the waveform starts or ends: its commit must reach the cue it started on.
@@ -272,6 +279,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         waveform.setAX(AX.timeLoopsWaveform, label: loc("timeLoops.waveform"))
         zoomOutButton.setAX(AX.timeLoopsZoomOut)
         zoomInButton.setAX(AX.timeLoopsZoomIn)
+        resetButton.setAX(AX.timeLoopsReset)
+        previewButton.setAX(AX.timeLoopsPreview)
         deleteSlicesButton.setAX(AX.timeLoopsDeleteSlices)
         addSliceButton.setAX(AX.timeLoopsAddSlice)
         fadeCheck.setAX(AX.timeLoopsFades)
@@ -310,6 +319,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         for (b, symbol, key, action) in [
             (zoomOutButton, "minus.magnifyingglass", "timeLoops.zoomOut", #selector(zoomOut)),
             (zoomInButton, "plus.magnifyingglass", "timeLoops.zoomIn", #selector(zoomIn)),
+            (resetButton, "backward.end.fill", "timeLoops.reset", #selector(resetClicked)),
+            (previewButton, "play.fill", "timeLoops.preview", #selector(previewClicked)),
         ] {
             b.bezelStyle = .texturedRounded
             b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: loc(key))
@@ -322,7 +333,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         slicesNote.preferredMaxLayoutWidth = 170
         waveform.onTrimChanging = { [weak self] handle, t in
             guard let self else { return }
-            (handle == .start ? startField : endField).stringValue = CueTime.format(t)
+            (handle == .start ? startField : endField).stringValue = CueTime.precise(t)
         }
         waveform.onTrimCommit = { [weak self] handle, t in self?.commitDrag(handle, t) }
         waveform.onSliceCommit = { [weak self] from, to in
@@ -375,9 +386,17 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         }
         let playRow = NSStackView(views: [playRadio, countField, NSTextField(labelWithString: loc("timeLoops.times"))])
         playRow.spacing = 6
+        // The slice buttons sit under the trim and play controls, in the left column.
+        let sliceButtons = NSStackView(views: [deleteSlicesButton, addSliceButton])
+        sliceButtons.spacing = 6
+        sliceButtons.distribution = .fillEqually
+        for b in [deleteSlicesButton, addSliceButton] {
+            b.controlSize = .small
+            b.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        }
         let left = NSStackView(views: [
             row(loc("timeLoops.start"), startField), row(loc("timeLoops.end"), endField), playRow, loopRadio,
-            holdCheck, slicesNote,
+            holdCheck, slicesNote, sliceButtons,
         ])
         left.orientation = .vertical
         left.alignment = .leading
@@ -391,7 +410,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         // A Video cue's keep-last-frame box is with the play count on the left. Two rows under the
         // timeline, each narrow enough that the tab fits the least window with the sidebar open: the
         // slice and zoom buttons, then the built-in fades.
-        let strip = NSStackView(views: [deleteSlicesButton, addSliceButton, spacer, zoomOutButton, zoomInButton])
+        let strip = NSStackView(views: [spacer, zoomOutButton, zoomInButton, resetButton, previewButton])
         strip.spacing = 4
         let fadeStrip = NSStackView(views: [fadeCheck, fadeCurvePopup])
         fadeStrip.spacing = 6
@@ -416,6 +435,19 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         right.heightAnchor.constraint(equalTo: view.heightAnchor).isActive = true
         // Start stays at the top; whatever does not fit in a short inspector is cut at the bottom.
         left.topAnchor.constraint(equalTo: view.topAnchor).isActive = true
+    }
+
+    @objc private func previewClicked() { onPreview?() }
+    @objc private func resetClicked() { onReset?() }
+
+    /// The preview button shows Stop while the cue previews; Reset is for a preview or a started cue.
+    func showPreview(active: Bool, canPreview: Bool) {
+        previewButton.image = NSImage(
+            systemSymbolName: active ? "stop.fill" : "play.fill",
+            accessibilityDescription: loc(active ? "timeLoops.stopPreview" : "timeLoops.preview"))
+        previewButton.toolTip = loc(active ? "timeLoops.stopPreview" : "timeLoops.preview")
+        previewButton.isEnabled = canPreview
+        resetButton.isEnabled = canPreview && active
     }
 
     // MARK: Showing
@@ -476,9 +508,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             waveform.endPress()
             endSliceCountEdit()
         }
-        if startField.currentEditor() == nil { startField.stringValue = CueTime.format(startTime) }
+        if startField.currentEditor() == nil { startField.stringValue = CueTime.precise(startTime) }
         if endField.currentEditor() == nil {
-            endField.stringValue = (endTime ?? duration).map(CueTime.format) ?? ""
+            endField.stringValue = (endTime ?? duration).map(CueTime.precise) ?? ""
         }
         let looping = playCount == .endless
         if countField.currentEditor() == nil { countField.stringValue = playCount.fieldText }
@@ -857,21 +889,21 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         if field === startField {
             if let key = startRefusal(t) { return refuse(field, key) }
             if t != startTime { onChange?(.start(t)) }
-            field.stringValue = CueTime.format(t)
+            field.stringValue = CueTime.precise(t)
         } else if field === endField {
             if let key = endRefusal(t) { return refuse(field, key) }
             let value = endValue(t)
             if value != endTime { onChange?(.end(value)) }
-            field.stringValue = CueTime.format(value ?? t)
+            field.stringValue = CueTime.precise(value ?? t)
         }
     }
 
     private func refuse(_ field: NSTextField, _ key: String) {
         onInvalid?(key)
         if field === startField {
-            field.stringValue = CueTime.format(startTime)
+            field.stringValue = CueTime.precise(startTime)
         } else if field === endField {
-            field.stringValue = (endTime ?? file?.duration).map(CueTime.format) ?? ""
+            field.stringValue = (endTime ?? file?.duration).map(CueTime.precise) ?? ""
         } else {
             field.stringValue = playCount.fieldText
         }

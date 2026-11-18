@@ -1,0 +1,13 @@
+{
+  "about": "The inspector's tabs are drawn flat and start at the left; at the least window with every tab of a Video cue and a Fade cue each title is whole, or the bar scrolls.",
+  "show": "Video",
+  "window": {"width": 1400, "height": 900},
+  "steps": [
+    {"select": "1"},
+    {"shot": "wide"},
+    {"resize": [800, 520]},
+    {"shot": "least-video"},
+    {"tab": "timeLoops"},
+    {"shot": "least-last-tab"}
+  ]
+}

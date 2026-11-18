@@ -6,7 +6,7 @@ import AppKit
 /// notes are editable in Edit Mode and read-only in Show Mode.
 final class MastheadView: NSView, NSTextViewDelegate {
     let goButton = NSButton(title: loc("masthead.go"), target: nil, action: nil)
-    let standbyField = NSTextField(labelWithString: loc("masthead.standby.none"))
+    let standbyField = StandbyField()
     let notesView = NotesTextView()
     /// The cue the masthead shows; nil when nothing stands by.
     private(set) var cueID: ModelID?
@@ -14,14 +14,14 @@ final class MastheadView: NSView, NSTextViewDelegate {
     var isLocked = false { didSet { applyEditable() } }
     /// The typed notes for the shown cue; the window sends them the way the inspector does.
     var onCommitNotes: ((ModelID, String) -> Void)?
-    /// Show Mode: bigger GO, standby and notes and the high-contrast colours (SM-01, SM-03).
+    /// Show Mode: bigger GO, standby and notes (SM-01), the same colours.
     private(set) var isShowMode = false
     private(set) var metrics = MastheadMetrics.make(showMode: false, window: NSSize(width: 1200, height: 800))
     private var heightConstraint: NSLayoutConstraint!
     private var goWidth: NSLayoutConstraint!
     private var goHeight: NSLayoutConstraint!
     private var notesHeight: NSLayoutConstraint!
-    private let notesScroll = NSScrollView()
+    private let notesScroll = BoxedScrollView()
     /// The red area behind the GO button that flashes when a GO was ignored (double-GO protection).
     let goFlash = NSView()
     /// Whether the GO button shows its protection border.
@@ -44,9 +44,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
         goButton.setAX(AX.goButton, label: loc("masthead.go.label"))
         goButton.isBordered = false
         goButton.wantsLayer = true
-        goButton.layer?.cornerRadius = 8
-        goButton.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.5).cgColor
+        goButton.layer?.cornerRadius = 4
+        goButton.layer?.borderWidth = 3
 
+        standbyField.stringValue = loc("masthead.standby.none")
         standbyField.setAX(AX.standbyField)
         standbyField.lineBreakMode = .byTruncatingTail
         standbyField.maximumNumberOfLines = 1
@@ -66,7 +67,9 @@ final class MastheadView: NSView, NSTextViewDelegate {
         notesScroll.documentView = notesView
         notesScroll.hasVerticalScroller = true
         notesScroll.drawsBackground = false
-        notesScroll.borderType = .bezelBorder
+        notesScroll.borderType = .noBorder
+        notesView.placeholder = loc("masthead.notes.placeholder")
+        notesView.textContainerInset = NSSize(width: 4, height: 3)
 
         goFlash.wantsLayer = true
         goFlash.layer?.cornerRadius = 14
@@ -118,18 +121,17 @@ final class MastheadView: NSView, NSTextViewDelegate {
         goWidth.constant = m.goSize.width
         goHeight.constant = m.goSize.height
         notesHeight.constant = m.notesHeight
-        let p = ShowModePalette.self
-        let goText = showMode ? p.goText.color : NSColor.white
+        // Edit Mode and Show Mode look the same (QLab's do); Show Mode only makes them larger.
         goButton.attributedTitle = NSAttributedString(
             string: loc("masthead.go"),
-            attributes: [.font: NSFont.systemFont(ofSize: m.goFontSize, weight: .bold), .foregroundColor: goText])
-        goButton.layer?.backgroundColor =
-            (showMode ? p.goFill.color : NSColor.systemGreen.withAlphaComponent(0.5)).cgColor
-        standbyField.font = .systemFont(ofSize: m.standbyFontSize, weight: showMode ? .semibold : .regular)
-        standbyField.textColor = showMode ? p.standbyText.color : .secondaryLabelColor
+            attributes: [
+                .font: NSFont.systemFont(ofSize: m.goFontSize, weight: .regular), .foregroundColor: Self.goText,
+            ])
+        standbyField.font = .systemFont(ofSize: m.standbyFontSize)
+        standbyField.textColor = .labelColor
         notesView.font = .systemFont(ofSize: m.notesFontSize)
-        notesView.textColor = showMode ? p.notesText.color : .secondaryLabelColor
-        layer?.backgroundColor = showMode ? p.background.color.cgColor : nil
+        notesView.textColor = .labelColor
+        applyColours()
         needsLayout = true
     }
 
@@ -142,8 +144,7 @@ final class MastheadView: NSView, NSTextViewDelegate {
             flashEnd?.cancel()
             goFlash.alphaValue = 0
         }
-        goButton.layer?.borderWidth = on ? 4 : 0
-        goButton.layer?.borderColor = NSColor.systemRed.cgColor
+        applyColours()
     }
 
     /// A GO came while protected: the area around the button flashes red and fades.
@@ -155,6 +156,39 @@ final class MastheadView: NSView, NSTextViewDelegate {
         let end = DispatchWorkItem { [weak self] in self?.goFlash.alphaValue = 0 }
         flashEnd = end
         scheduleFlashEnd(flashDuration, end)
+    }
+
+    /// The GO button's text: white on its grey-violet fill in both appearances.
+    static let goText = NSColor.white
+    /// QLab's GO button: a grey-violet face with a green edge. Dark enough under white text to read in the
+    /// light appearance too.
+    static let goFill = NSColor(srgbRed: 0.43, green: 0.43, blue: 0.56, alpha: 1)
+    /// The standby line's and notes' boxes: a step off the window's background in either appearance.
+    static let boxFill = NSColor(name: nil) { a in
+        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.30, alpha: 1) : NSColor(white: 0.90, alpha: 1)
+    }
+
+    /// Layer colours are fixed when set: they are resolved again whenever the appearance changes.
+    private func applyColours() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            goButton.layer?.backgroundColor = Self.goFill.cgColor
+            // The green edge, red while double-GO protection is in force.
+            goButton.layer?.borderWidth = goProtectionShown ? 4 : 3
+            goButton.layer?.borderColor = (goProtectionShown ? NSColor.systemRed : NSColor.systemGreen).cgColor
+            standbyField.layer?.backgroundColor = Self.boxFill.cgColor
+            notesScroll.needsDisplay = true
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyColours()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyColours()
     }
 
     private func applyEditable() {
@@ -237,4 +271,48 @@ final class MastheadView: NSView, NSTextViewDelegate {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+}
+
+/// The standby line: the cue's number and name in a filled box with room inside it.
+final class StandbyField: NSTextField {
+    private static let inset = NSSize(width: 6, height: 3)
+
+    init() {
+        super.init(frame: .zero)
+        cell = StandbyCell(textCell: "")
+        isEditable = false
+        isSelectable = false
+        isBordered = false
+        drawsBackground = false
+        wantsLayer = true
+        layer?.cornerRadius = 3
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override var intrinsicContentSize: NSSize {
+        let size = super.intrinsicContentSize
+        return NSSize(width: size.width, height: size.height + 2 * Self.inset.height)
+    }
+
+    private final class StandbyCell: NSTextFieldCell {
+        override func drawingRect(forBounds rect: NSRect) -> NSRect {
+            super.drawingRect(forBounds: rect.insetBy(dx: StandbyField.inset.width, dy: StandbyField.inset.height))
+        }
+    }
+}
+
+/// The notes box: filled and outlined by its own drawing, so it looks the same in both modes (a layer set on
+/// a scroll view is replaced when AppKit makes its own).
+final class BoxedScrollView: NSScrollView {
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 3, yRadius: 3)
+        MastheadView.boxFill.setFill()
+        path.fill()
+        NSColor.separatorColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        super.draw(dirtyRect)
+    }
 }

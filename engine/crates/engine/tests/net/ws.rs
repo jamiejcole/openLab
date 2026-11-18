@@ -1660,3 +1660,30 @@ async fn an_app_lost_while_the_engine_shuts_down_is_not_relaunched() {
     assert_eq!(fix.logs_with("relaunching the app"), 0);
     assert!(!launched.load(Ordering::SeqCst));
 }
+
+/// A `goodbye { shutdown: true }` sent behind requests whose replies are still being written
+/// reaches the control loop when the client waits for the server to close the connection (the
+/// client contract in docs/protocol.md). A client that closes at once under the replies resets the
+/// connection, which can throw the goodbye away unread; that half is the client's to avoid.
+#[tokio::test]
+async fn a_shutdown_goodbye_behind_replies_reaches_the_control_loop_when_the_client_waits_for_the_close()
+ {
+    for attempt in 0..10 {
+        let f = fixture();
+        let mut c = f.client().await;
+        for n in 1..=20 {
+            send(&mut c, &go(n)).await;
+        }
+        send(&mut c, &ClientMessage::Goodbye { shutdown: true }).await;
+        expect_closed(&mut c).await;
+        drop(c);
+        // The stand-in records the goodbye on its thread; a round trip orders after it.
+        let mut e = f.client().await;
+        send(&mut e, &go(100)).await;
+        wait_result(&mut e, 100).await;
+        assert!(
+            f.control.shutdown.load(Ordering::SeqCst),
+            "attempt {attempt}"
+        );
+    }
+}

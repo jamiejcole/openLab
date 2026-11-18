@@ -110,7 +110,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate {
             label, field, countLabel, previousButton, nextButton, selectFoundButton, spacer, doneButton,
         ])
         stack.spacing = 8
-        field.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+        field.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
         countLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 70).isActive = true
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)

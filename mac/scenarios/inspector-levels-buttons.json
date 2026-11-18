@@ -1,0 +1,14 @@
+{
+  "about": "An Audio cue's Levels tab: buttons for defaults, all silent, gangs, clear mutes and the patch editor; an unrouted crosspoint drawn blank; faders reaching the workspace's maximum with 0 dB part-way; gang mode hiding the levels.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
+  "window": {"width": 1400, "height": 900},
+  "steps": [
+    {"select": "2"},
+    {"tab": "levels"},
+    {"shot": "levels"},
+    {"click": "levels-gangs"},
+    {"shot": "gang-mode"},
+    {"click": "levels-gangs"},
+    {"shot": "back-from-gang-mode"}
+  ]
+}

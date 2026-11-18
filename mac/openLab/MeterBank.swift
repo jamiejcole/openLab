@@ -308,6 +308,8 @@ final class MeterView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSBezierPath.clip(bounds)
         let count = source.flatMap { bank?.channelCount($0) } ?? 0
+        // A source with nothing to show (no channels sent yet) draws nothing, not an empty bar.
+        if fixedRows == nil && count == 0 { return }
         let rows = fixedRows.map { max($0, 1) } ?? max(count, 1)
         // Every row stays inside the view: with many channels the gaps go first, then the rows
         // get thinner than a point.
