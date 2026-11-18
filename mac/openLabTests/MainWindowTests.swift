@@ -1993,7 +1993,7 @@ extension MainWindowTests {
             try? await rig.advance(1)
             return footer.presentation.summary.hasPrefix(loc("status.ok"))
         }
-        XCTAssertTrue(footer.statusButton.isHidden)
+        XCTAssertEqual(footer.statusButton.title, "", "no audio words, only the mark that opens the details")
         XCTAssertFalse(
             footer.subviews.flatMap(\.subviews).contains {
                 $0 is NSTextField && $0.accessibilityIdentifier() == "wall-clock"

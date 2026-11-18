@@ -108,14 +108,15 @@ final class StatusLogTests: XCTestCase {
     func testFooterFollowsTheStoresStatus() async throws {
         let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
-        XCTAssertEqual(wc.footer.statusButton.title, loc("status.waiting"))
+        XCTAssertEqual(wc.footer.presentation.summary, loc("status.waiting"))
         try send(rig.store, xruns: 1)
         XCTAssertEqual(wc.footer.presentation.level, .normal, "the first status is the baseline")
-        XCTAssertTrue(wc.footer.statusButton.title.contains("Dropouts 1"), "the count is always shown")
+        XCTAssertFalse(wc.footer.statusButton.isHidden, "the mark that opens the details is there")
+        XCTAssertEqual(wc.footer.statusButton.title, "", "but no words while all is well")
         try send(rig.store, xruns: 2)
         XCTAssertEqual(wc.footer.presentation.level, .warning, "a new dropout warns")
         try send(rig.store, xruns: 2)
-        XCTAssertEqual(wc.footer.presentation.level, .normal, "no new dropouts since the last status")
+        XCTAssertEqual(wc.footer.presentation.level, .warning, "the warning stays until the details are seen")
         rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "status_device_lost")))
         let button = wc.footer.statusButton
         XCTAssertEqual(wc.footer.presentation.level, .alarm)
@@ -124,6 +125,82 @@ final class StatusLogTests: XCTestCase {
         XCTAssertNotNil(button.image)
         try send(rig.store, xruns: 1)
         XCTAssertEqual(wc.footer.presentation.level, .normal, "recovers when the device is back")
+    }
+
+    /// DX-03: dropouts since the operator last looked keep the warning in the footer, however many
+    /// statuses later; opening the details (which list the total) and closing them is seeing them.
+    func testNewDropoutsWarnUntilTheDetailsAreSeen() async throws {
+        let rig = try await Rig.open()
+        let wc = WorkspaceWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in
+            wc.footer.popover?.close()
+            wc.window?.close()
+        }
+        wc.showWindow(nil)
+        try send(rig.store, xruns: 0)
+        try send(rig.store, xruns: 3)
+        for _ in 0..<5 { try send(rig.store, xruns: 3) }
+        let footer = wc.footer
+        XCTAssertEqual(footer.presentation.level, .warning)
+        XCTAssertEqual(footer.statusButton.title, loc("status.warning") + " " + String(format: loc("status.xruns"), 3))
+        footer.statusButton.performClick(nil)
+        XCTAssertEqual(footer.popover?.isShown, true)
+        let details = try XCTUnwrap(
+            footer.popover?.contentViewController?.view.subviews
+                .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField)
+        XCTAssertTrue(details.stringValue.contains(String(format: loc("status.detail.xruns"), 3)), details.stringValue)
+        XCTAssertEqual(footer.presentation.level, .warning, "still warning while the details are open")
+        footer.popover?.close()
+        await assertEventually("seen") { footer.presentation.level == .normal }
+        XCTAssertEqual(footer.statusButton.title, "")
+        try send(rig.store, xruns: 3)
+        XCTAssertEqual(footer.presentation.level, .normal, "seen dropouts do not warn again")
+        try send(rig.store, xruns: 4)
+        XCTAssertEqual(footer.presentation.level, .warning, "a later one does")
+        // An engine that started again counts from zero: its total is the new baseline.
+        try send(rig.store, xruns: 0)
+        XCTAssertEqual(footer.presentation.level, .normal)
+        try send(rig.store, xruns: 1)
+        XCTAssertEqual(footer.presentation.level, .warning)
+    }
+
+    /// DX-03 with all well: the footer shows no audio words, and its status mark opens the details with
+    /// the CPU, engine load, dropout total and the device's format (the real engine's own status).
+    func testWithAllWellTheStatusMarkOpensTheDetails() async throws {
+        let rig = try await Rig.open()
+        let wc = WorkspaceWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in
+            wc.footer.popover?.close()
+            wc.window?.close()
+        }
+        wc.showWindow(nil)
+        await assertEventually("a status came") {
+            try? await rig.advance(1)
+            return rig.store.status != nil
+        }
+        let footer = wc.footer
+        let status = try XCTUnwrap(rig.store.status)
+        XCTAssertEqual(footer.presentation.level, .normal)
+        XCTAssertEqual(footer.statusButton.title, "", "no audio words while all is well")
+        XCTAssertFalse(footer.statusButton.isHiddenOrHasHiddenAncestor)
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        let mark = footer.convert(footer.statusButton.bounds, from: footer.statusButton)
+        XCTAssertTrue(footer.bounds.contains(mark), "\(mark) in \(footer.bounds)")
+        XCTAssertGreaterThan(mark.width, 10, "a mark the operator can press")
+        footer.statusButton.performClick(nil)
+        XCTAssertEqual(footer.popover?.isShown, true)
+        XCTAssertTrue(footer.popover?.contentViewController?.view.window != nil)
+        let details = try XCTUnwrap(
+            footer.popover?.contentViewController?.view.subviews
+                .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField)
+        let lines = details.stringValue.components(separatedBy: "\n")
+        let device = status.device
+        XCTAssertTrue(lines.contains { $0.hasPrefix(String(format: loc("status.detail.format"), Int(device.sampleRate), Int(device.channels))) }, "\(lines)")
+        XCTAssertTrue(lines.contains(String(format: loc("status.detail.xruns"), Int(status.xruns))), "\(lines)")
+        let cpu = String(format: loc("status.detail.cpu"), "")
+        let load = String(format: loc("status.detail.load"), "")
+        XCTAssertTrue(lines.contains { $0.hasPrefix(cpu) }, "\(lines)")
+        XCTAssertTrue(lines.contains { $0.hasPrefix(load) }, "\(lines)")
     }
 
     /// The real engine's own status (about once a second of device time): its device, healthy.
@@ -146,7 +223,7 @@ final class StatusLogTests: XCTestCase {
         XCTAssertTrue(wc.footer.statusButton.title.contains(loc("status.offline")))
         rig.client.start()
         await assertEventually { rig.client.state == .connected }
-        await assertEventually { wc.footer.statusButton.title == loc("status.waiting") }
+        await assertEventually { wc.footer.presentation.summary == loc("status.waiting") }
         try send(rig.store, xruns: 0)
         XCTAssertEqual(wc.footer.presentation.level, .normal)
         rig.client.stop()
@@ -161,7 +238,7 @@ final class StatusLogTests: XCTestCase {
         XCTAssertNotNil(rig.store.status)
         rig.client.requestSnapshot()  // the engine's snapshot
         await assertEventually { rig.store.status == nil }
-        XCTAssertEqual(wc.footer.statusButton.title, loc("status.waiting"))
+        XCTAssertEqual(wc.footer.presentation.summary, loc("status.waiting"))
     }
 
     // MARK: Log window

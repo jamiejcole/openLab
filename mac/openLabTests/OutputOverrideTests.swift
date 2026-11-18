@@ -194,6 +194,13 @@ final class OutputOverrideTests: XCTestCase {
             .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField
         XCTAssertEqual(shown?.stringValue.components(separatedBy: "\n").first, loc("status.detail.networkOff"))
         XCTAssertEqual(wc.footer.popover?.isShown, true)
+        try assertPopoverPoints(at: wc.footer.overrideBadge, not: wc.footer.statusButton, in: wc)
+        // The status mark beside it opens the same details, pointing at the mark, not the badge.
+        wc.footer.popover?.close()
+        wc.footer.statusButton.performClick(nil)
+        XCTAssertEqual(wc.footer.popover?.isShown, true)
+        try assertPopoverPoints(at: wc.footer.statusButton, not: wc.footer.overrideBadge, in: wc)
+        wc.footer.popover?.close()
         try assertBadgeOnScreen(wc)
         XCTAssertEqual(wc.footer.overrideBadge.layer?.backgroundColor, NSColor.systemRed.cgColor)
         // A focused selection draws its marks white, so the colour is read on a row that is not selected.
@@ -222,6 +229,16 @@ final class OutputOverrideTests: XCTestCase {
             }
         }
         return red > 0 && other == 0
+    }
+
+    /// The open details sit over `anchor` (what was pressed), nearer it than `other`.
+    private func assertPopoverPoints(at anchor: NSView, not other: NSView, in wc: WorkspaceWindowController) throws {
+        let window = try XCTUnwrap(wc.window)
+        let popover = try XCTUnwrap(wc.footer.popover?.contentViewController?.view.window?.frame)
+        func midX(_ view: NSView) -> CGFloat { window.convertToScreen(view.convert(view.bounds, to: nil)).midX }
+        XCTAssertLessThan(
+            abs(popover.midX - midX(anchor)), abs(popover.midX - midX(other)),
+            "the details point at \(anchor), not \(other)")
     }
 
     /// The badge is really in the footer: in the window, with a frame inside the footer that no other

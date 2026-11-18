@@ -185,7 +185,7 @@ final class FooterWarningsTests: XCTestCase {
         try await rig.advance(1)
         await assertEventually("the footer is OK with the second device up") {
             try? await rig.advance(1)
-            return wc.footer.statusButton.title.hasPrefix(loc("status.ok"))
+            return wc.footer.presentation.summary.hasPrefix(loc("status.ok"))
         }
 
         guard case .success = await engine.request(.loseDevice(device: TestEngine.deviceIDs[1])) else {
@@ -215,10 +215,10 @@ final class FooterWarningsTests: XCTestCase {
         }
         await assertEventually("the footer is OK again") {
             try? await rig.advance(1)
-            return wc.footer.statusButton.title.hasPrefix(loc("status.ok"))
+            return wc.footer.presentation.summary.hasPrefix(loc("status.ok"))
         }
         XCTAssertEqual(wc.footer.presentation.icon, .statusNormal)
-        XCTAssertTrue(wc.footer.statusButton.isHidden, "with all well the footer says nothing about the audio")
+        XCTAssertEqual(wc.footer.statusButton.title, "", "with all well the footer says nothing about the audio")
     }
 
     /// Only the first device, unplugged → as before: the alarm names the audio device, not a second one.

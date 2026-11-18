@@ -18,8 +18,10 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - Closing a workspace while cues play asks first. Closing the last one shows a launcher window.
 - No `NSDocument` subclass. UI is built in code: no storyboards or XIBs, main menu included.
 - Main window (UI-07): `topColumn` (GO area, cue toolbar, Find and Load bars, cue list) and the sidebar sit in `horizontalSplit`, which with the inspector forms `verticalSplit`: the sidebar starts at the window's top and ends above the inspector, which spans the width. Dark appearance by default.
-- The footer has one GO-area toggle (hides masthead and cue toolbar, `setVisible(.masthead)`; View > Cue Toolbar stays its own), the warnings mark beside the inspector, sidebar and settings buttons, the cue count centred, and no clock. `statusButton` shows only an alarm or warning, never while all is well.
-- Edit and Show Mode draw the masthead alike (grey-violet GO with a green edge, boxed standby line and notes, `MastheadView.goFill`/`boxFill`); Show Mode only enlarges (`MastheadMetrics`). The window title is "workspace \u2014 shown list".
+- The footer has one GO-area toggle (hides masthead and cue toolbar, `setVisible(.masthead)`; View > Cue Toolbar stays its own), the warnings mark beside the inspector, sidebar and settings buttons, the cue count centred, and no clock.
+- `statusButton` (DX-03) is a small mark without words while all is well (the summary is its tip) and the alarm or warning in words otherwise; pressing it or the override badge opens the details popover beside what was pressed. Dropouts warn until the operator has opened and closed the details (`seenXruns`); a lower total (an engine started again) is the new baseline.
+- A restored layout applies the GO area before the toolbar, so the toolbar's own saved choice wins.
+- Edit and Show Mode draw the masthead alike (grey-violet GO with a green edge, boxed standby line and notes, `MastheadView.goFill`/`boxFill`); Show Mode only enlarges (`MastheadMetrics`). The window title is "workspace — shown list".
 - A plain press in a row's status column (`CueOutlineView.onStatusPress`) moves the playhead and leaves the selection; `unlinkedHead` stops the follow until the user selects or the playhead moves on. A Group's Name cell is boxed by mode (`GroupOutline`).
 
 ## Meters (AUD-19, NFR-26)
