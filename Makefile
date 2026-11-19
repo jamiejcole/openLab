@@ -13,6 +13,8 @@ LATE_TEST_CLASSES := $(shell grep -hoE 'class [M-Z][A-Za-z0-9_]*: XCTestCase' ma
 SHARD1_CLASSES := $(shell awk '$$1 == "1" { print $$2 }' scripts/mac-test-shards.txt)
 # The everyday-flow tests (scripts/core-flows.txt), unit and UI, as -only-testing arguments.
 CORE_FLOWS := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/core-flows.txt),-only-testing:$(t))
+# The UI tests the hosted CI runners cannot pass (scripts/ui-local-only.txt).
+UI_LOCAL_ONLY_LIST := $(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-local-only.txt)
 
 FUZZ_TIME ?= 30
 FUZZ_TOOLCHAIN ?= nightly
@@ -20,7 +22,7 @@ FUZZ_TOOLCHAIN ?= nightly
 SAN_TOOLCHAIN ?= nightly-2026-10-15
 SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: ui-shots lint test test-rust test-mac test-mac-shard test-mac-unit test-mac-core-flows test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
+.PHONY: ui-shots lint test test-rust test-mac test-mac-shard test-mac-unit test-mac-core-flows test-mac-ui-full test-mac-local-only mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
 
 lint:
 	scripts/check-repo.sh
@@ -140,9 +142,15 @@ test-mac-core-flows: project
 	@test -n "$(CORE_FLOWS)" || { echo "scripts/core-flows.txt lists no tests"; exit 1; }
 	$(MAC_TESTS_WITH_LIMIT) -- $(CORE_FLOWS)
 
-# Every unit test and the whole UI suite: what the nightly run does.
+# Every unit test and the whole UI suite: what the nightly run does. On CI (CI set) it skips the tests in
+# scripts/ui-local-only.txt, which `make test-mac-local-only` runs on a Mac.
 test-mac-ui-full: project
-	$(MAC_TESTS_WITH_LIMIT) --
+	$(MAC_TESTS_WITH_LIMIT) -- $(if $(CI),$(foreach t,$(UI_LOCAL_ONLY_LIST),-skip-testing:$(t)))
+
+# The UI tests CI skips (scripts/ui-local-only.txt), on this Mac.
+test-mac-local-only: project
+	@test -n "$(UI_LOCAL_ONLY_LIST)" || { echo "scripts/ui-local-only.txt lists no tests"; exit 1; }
+	$(MAC_TESTS_WITH_LIMIT) -- $(foreach t,$(UI_LOCAL_ONLY_LIST),-only-testing:$(t))
 
 # Pictures of the real workspace window driven through a scenario on the real engine, drawn offscreen
 # (no focus taken): `make ui-shots SCENARIO=mac/scenarios/<name>.json [OUT=<dir>]`. It waits for any other

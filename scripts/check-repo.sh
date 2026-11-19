@@ -620,8 +620,8 @@ make_test_mac_cases() {
   done
 }
 
-# 12. Every identifier in scripts/ui-smoke.txt and scripts/core-flows.txt names an existing test, so a
-# rename cannot silently drop it from the per-PR set or the core-flows set.
+# 12. Every identifier in scripts/ui-smoke.txt, scripts/core-flows.txt and scripts/ui-local-only.txt names an
+# existing test, so a rename cannot silently drop it from the per-PR set, the core-flows set or the local-only set.
 # test_in_class <class> <test> <files...>: true when the test function is declared inside that class.
 test_in_class() {
   local cls=$1 name=$2
@@ -678,6 +678,7 @@ ui_smoke() {
   [ "$LIST_N" -ge 3 ] || fail ui-smoke "scripts/ui-smoke.txt lists $LIST_N tests; the smoke set needs launch, GO and panic"
   test_list scripts/core-flows.txt core-flows openLabTests
   [ "$LIST_N" -ge 10 ] || fail core-flows "scripts/core-flows.txt lists $LIST_N tests; the core-flows set is the everyday flows"
+  test_list scripts/ui-local-only.txt ui-local-only openLabUITests
 }
 
 # `make test-mac` splits the unit tests over two processes: what the first skips, the second must run.

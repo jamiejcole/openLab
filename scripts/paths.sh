@@ -5,7 +5,7 @@
 # ERE patterns, matched with `grep -E` against repo-relative paths.
 
 # A CI, Makefile or gate-script change re-runs everything.
-PATHS_ALL_RE='^(\.github/workflows/|Makefile$|scripts/(paths|rust-checks|soak-rt-ci|run-mac-tests)\.sh$|scripts/(ui-smoke|core-flows|mac-test-shards)\.txt$)'
+PATHS_ALL_RE='^(\.github/workflows/|Makefile$|scripts/(paths|rust-checks|soak-rt-ci|run-mac-tests)\.sh$|scripts/(ui-smoke|core-flows|ui-local-only|mac-test-shards)\.txt$)'
 # The Rust workspace (Cargo files, toolchain pin and deny.toml all live under engine/), and the OSC
 # reference, which an engine test holds to the addresses the engine answers.
 PATHS_ENGINE_RE='^(engine/|docs/osc\.md$)'
