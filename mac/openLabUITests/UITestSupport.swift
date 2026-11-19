@@ -23,7 +23,8 @@ extension XCTestCase {
     /// `prepare` is handed the folder of the shows' copies before the app starts (to write media
     /// or move files).
     @MainActor func launchApp(
-        opening shows: [String] = ["Demo", "Second"], displays: String? = nil, prepare: ((URL) throws -> Void)? = nil
+        opening shows: [String] = ["Demo", "Second"], displays: String? = nil, windowSize: String? = nil,
+        prepare: ((URL) throws -> Void)? = nil
     ) -> XCUIApplication {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent(
             "openlab-ui-\(UUID().uuidString)", isDirectory: true)
@@ -44,6 +45,7 @@ extension XCTestCase {
             "-OpenLabEngine", "test", "-OpenLabVirtualDevice", "realtime", "-OpenLabAppSupport", support.path,
         ]
         if let displays { app.launchArguments += ["-OpenLabVirtualDisplays", displays] }
+        if let windowSize { app.launchArguments += ["-OpenLabWindowSize", windowSize] }
         for show in shows {
             app.launchArguments += ["-OpenLabOpen", copies.appendingPathComponent("\(show)/\(show).openlab").path]
         }
@@ -58,38 +60,52 @@ extension XCTestCase {
             try? FileManager.default.removeItem(at: base)
         }
         app.launch()
+        if let windowSize { assertWindowSize(windowSize, of: app) }
         return app
     }
 
-    /// The workspace window dragged to its least width (800 points), by a corner. The window of a small
-    /// screen (the hosted runner's is 1024 wide) fills it, and a press at its bottom-right corner, at the
-    /// screen's edge, left it full width there: the top-left corner is tried first, then the bottom-right
-    /// one. The window keeps its right edge. A window that stays wide fails here, by name, instead of in
-    /// the assertions that rely on it.
-    @MainActor func shrinkWindowToLeast(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+    /// A window size asked for at launch (`least`: width 800 and the least height, else `WxH`) was applied: an
+    /// option the app ignored fails here, by name, not in the layout assertions that rely on the size.
+    @MainActor private func assertWindowSize(_ size: String, of app: XCUIApplication, line: UInt = #line) {
         let window = app.windows.firstMatch
-        let narrow = NSPredicate { _, _ in MainActor.assumeIsolated { window.frame.width <= 801 } }
-        func shrunk() -> Bool {
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: narrow, object: nil)], timeout: 3) == .completed
+        XCTAssertTrue(window.waitForExistence(timeout: 20), "the window is up", line: line)
+        let parts = size.split(separator: "x").compactMap { Double($0) }
+        let want = size == "least" ? CGSize(width: 800, height: 516) : CGSize(width: parts[0], height: parts[1])
+        let ok = NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                abs(window.frame.width - want.width) <= 1 && abs(window.frame.height - want.height) <= 6
+            }
         }
-        window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 3, dy: 3))
-            .press(forDuration: 0.2, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9)))
-        if shrunk() { return }
-        window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -3, dy: -3))
-            .press(forDuration: 0.2, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.1)))
-        XCTAssertTrue(shrunk(), "the window is at its least width: \(window.frame)", file: file, line: line)
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: ok, object: nil)], timeout: 5), .completed,
+            "the window is \(size) as launched: \(window.frame)", line: line)
     }
 
-    /// The window, shrunk by `shrinkWindowToLeast`, grown again by its top-left corner (the bottom-right one
-    /// can be at the screen's edge) toward the screen's top-left, and checked to be wider than its least.
+    /// The window, shrunk by `shrinkWindowToLeast`, grown again by its bottom-right corner toward the
+    /// screen's, and checked to be wider than its least. A window launched with `windowSize` stays off
+    /// the screen's edges, so the press and the drag both land.
     @MainActor func growWindow(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let window = app.windows.firstMatch
         let wide = NSPredicate { _, _ in MainActor.assumeIsolated { window.frame.width > 801 } }
-        let corner = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 3, dy: 3))
-        corner.press(forDuration: 0.2, thenDragTo: corner.withOffset(CGVector(dx: -200, dy: -40)))
+        let corner = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(
+            CGVector(dx: -3, dy: -3))
+        corner.press(forDuration: 0.2, thenDragTo: corner.withOffset(CGVector(dx: 80, dy: 20)))
         XCTAssertEqual(
             XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: wide, object: nil)], timeout: 3), .completed,
             "the window grew: \(window.frame)", file: file, line: line)
+    }
+
+    /// The window dragged to its least width (800 points) by its top-left corner, as the operator does.
+    /// The window must be off the screen's edges (launch it with `windowSize`): a corner at an edge does
+    /// not resize.
+    @MainActor func shrinkWindowToLeast(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let window = app.windows.firstMatch
+        let narrow = NSPredicate { _, _ in MainActor.assumeIsolated { window.frame.width <= 801 } }
+        window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 3, dy: 3))
+            .press(forDuration: 0.2, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9)))
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: narrow, object: nil)], timeout: 3), .completed,
+            "the window is at its least width: \(window.frame)", file: file, line: line)
     }
 
     /// The demo show alone, its list loaded.

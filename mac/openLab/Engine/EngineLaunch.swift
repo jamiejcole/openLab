@@ -43,6 +43,21 @@ enum EngineMode: Equatable {
         #endif
     }
 
+    #if DEBUG
+        /// The size a test asks for the workspace window (`-OpenLabWindowSize WxH`, in points, or `least`
+        /// for the window's least size), read only under the test engine: a small screen's window fills
+        /// the screen, where a corner drag cannot resize it, so a test that needs a size starts there.
+        static func testWindowSize(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> TestWindowSize? {
+            guard !isUnitTestHost(), value(of: "-OpenLabEngine", in: arguments) == "test",
+                let text = value(of: "-OpenLabWindowSize", in: arguments)
+            else { return nil }
+            if text == "least" { return .least }
+            let parts = text.split(separator: "x").compactMap { Double($0) }
+            guard parts.count == 2, parts.allSatisfy({ $0 > 0 && $0 <= 20000 }) else { return nil }
+            return .size(CGSize(width: parts[0], height: parts[1]))
+        }
+    #endif
+
     private static func value(of flag: String, in arguments: [String]) -> String? {
         guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
         return arguments[i + 1]
@@ -72,6 +87,11 @@ enum EngineMode: Equatable {
 }
 
 #if DEBUG
+    enum TestWindowSize: Equatable {
+        case least
+        case size(CGSize)
+    }
+
     /// The test engine's launch: its clock, its Application Support folder and the shows it opens
     /// when first started (not when restarted after a crash: the app reopens its workspaces then).
     struct TestEngineOptions: Equatable {

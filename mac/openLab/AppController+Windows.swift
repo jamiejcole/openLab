@@ -53,6 +53,9 @@ extension AppController {
             if let path = doc.flatMap({ session.takeOpenedPath($0) }) ?? listed?.path, let defaults = layoutDefaults {
                 wc.restoreLayout(from: WindowLayoutStore(defaults: defaults), path: path)
             }
+            #if DEBUG
+                if let size = EngineMode.testWindowSize() { wc.placeForTest(size) }
+            #endif
             show(wc)
             if !previousRunAnnounced {
                 previousRunAnnounced = true
