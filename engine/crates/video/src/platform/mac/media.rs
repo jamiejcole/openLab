@@ -965,7 +965,7 @@ impl Movie {
             self.prime_failed = Some(from);
             return;
         };
-        let Ok(first) = self.read_from(&reader, from) else {
+        let Ok(first) = self.read_from(&reader, from, &|| {}) else {
             // SAFETY: cancelling a reader this movie owns.
             unsafe { reader.0.cancelReading() };
             self.prime_failed = Some(from);
@@ -1018,10 +1018,10 @@ impl Movie {
     }
 
     /// Reads the next frame; `None` at the end of the movie.
-    fn read(&mut self) -> Result<Option<Frame>, String> {
+    fn read(&mut self, progress: &dyn Fn()) -> Result<Option<Frame>, String> {
         let before = self.skip.take().unwrap_or(f64::NEG_INFINITY);
         match &self.reader {
-            Some(reader) => self.read_from(reader, before),
+            Some(reader) => self.read_from(reader, before, progress),
             None => Ok(None),
         }
     }
@@ -1030,8 +1030,14 @@ impl Movie {
     /// its end. A reader opens a frame early (`open_reader`): a frame whose successor, a frame
     /// period on, is at or before `before` is passed over without copying its pixels, so a
     /// seam or a jump copies no more frames than a reader opened at the place itself would.
-    /// The last frame there is is kept, whatever its time.
-    fn read_from(&self, (reader, output): &Reader, before: f64) -> Result<Option<Frame>, String> {
+    /// The last frame there is is kept, whatever its time. `progress` is called for each frame
+    /// read, passed over or not: a long run of them is a decoder working, not a stalled one.
+    fn read_from(
+        &self,
+        (reader, output): &Reader,
+        before: f64,
+        progress: &dyn Fn(),
+    ) -> Result<Option<Frame>, String> {
         // SAFETY: reading the reader's own output; a sample buffer's image is a pixel buffer
         // of BGRA (asked for above), locked while its bytes are copied out.
         unsafe {
@@ -1041,7 +1047,9 @@ impl Movie {
                 if self.slow {
                     fault::slow_frame();
                 }
-                let Some(sample) = output.copyNextSampleBuffer() else {
+                let next = output.copyNextSampleBuffer();
+                progress();
+                let Some(sample) = next else {
                     if reader.status() == AVAssetReaderStatus::Failed {
                         return Err(reader_error(reader));
                     }
@@ -1200,7 +1208,7 @@ impl Movie {
                 Some(f) => Some(f),
                 None if self.ended => None,
                 None => {
-                    let read = self.read()?;
+                    let read = self.read(progress)?;
                     progress();
                     if read.is_some() {
                         self.good = self.good.saturating_add(1);
@@ -1246,8 +1254,7 @@ impl Movie {
         loop {
             let from = (position - back).max(0.0);
             let reader = self.open_reader(from)?;
-            let found = self.read_from(&reader, position);
-            progress();
+            let found = self.read_from(&reader, position, progress);
             if let Some((old, _)) = self.reader.replace(reader) {
                 // SAFETY: cancelling a reader this movie owns.
                 unsafe { old.cancelReading() };
@@ -1863,6 +1870,22 @@ mod tests {
                 fresh = Movie::open(&file).unwrap();
             }
         }
+    }
+
+    /// A reader opened far into a sound track that runs past the picture reads back for the last
+    /// frame, every frame it passes counted as progress: a long way back is a working decoder,
+    /// never timed out as a stalled one by the frame limit.
+    #[test]
+    fn reading_back_for_the_last_frame_counts_each_frame_as_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = tailed(dir.path(), "~sound:100+pcm:2:48000");
+        let mut m = Movie::open(&file).unwrap();
+        let reads = std::cell::Cell::new(0u32);
+        let f = m.frame_at(5.9, 0, &|| reads.set(reads.get() + 1)).unwrap();
+        assert_eq!(f.as_ref().and_then(card_of), Some(49));
+        // Three readers opened (from 4.9, 3.9 and 1.9 s): more counts than that, one for each
+        // frame read from 1.9 s on.
+        assert!(reads.get() >= 6, "{} reads counted", reads.get());
     }
 
     /// The frame number a decoded test-card frame shows in its barcode (BGRA pixels).
