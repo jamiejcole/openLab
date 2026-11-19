@@ -318,6 +318,28 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertNil(v1, "Esc took it away")
     }
 
+    /// #708 flow: a hung engine while a stage covers the only display: the cover comes down by itself
+    /// and the operator reaches the app. The app's half: Esc takes the app's black off the display with
+    /// the menu bar at once although the engine (stopped) never answers the panic, and it is not put
+    /// back while the panic waits and fails. (The stage host's half, its window let go after the
+    /// engine's silence: stages.rs.)
+    func testAHungEngineWhileAStageCoversTheOnlyDisplayTheCoverComesDownByItselfAndTheOperatorReachesTheApp()
+        async throws
+    {
+        let (store, _, stage2) = try await start()
+        await played(store, stage2)
+        await pushed("the menu bar's display held black") { self.app.backstop.windows["V2"] != nil }
+        let pid = engine.pid
+        XCTAssertEqual(kill(pid, SIGSTOP), 0)
+        defer { kill(pid, SIGCONT) }
+        app.beep = {}
+        let esc = Task { await self.app.panicAll() }
+        await assertEventually("Esc took the app's black down") { self.app.backstop.windows.isEmpty }
+        let answer = await esc.value
+        if case .success = answer { XCTFail("a stopped engine answered") }
+        XCTAssertTrue(app.backstop.windows.isEmpty, "not put back while the engine is hung")
+    }
+
     /// #708 flow: quit with unsaved changes while a stage covers the only display (the one with
     /// the menu bar) → the cover comes down (as Esc) before the save question is asked.
     func testQuitWithUnsavedChangesWhileAStageCoversTheOnlyDisplayReachesTheSaveQuestion() async throws {

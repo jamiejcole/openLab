@@ -406,6 +406,20 @@ impl OfflineShow {
     }
 
     /// Hands the probe workers' answers that have arrived to the control loop.
+    /// Handles the next inbox message to arrive within `within` (a report from the stage host,
+    /// say) and nothing else: no tick, so the control thread does no routine work, as a hung one
+    /// would not. `false` when none came in time.
+    #[cfg(feature = "test-support")]
+    pub fn handle_next_within(&mut self, within: Duration) -> bool {
+        match self.inbox.recv_timeout(within) {
+            Ok(msg) => {
+                let _ = self.control.handle(msg);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     fn pump_inbox(&mut self) {
         while let Ok(msg) = self.inbox.try_recv() {
             if self.control.handle(msg) == Flow::Shutdown {

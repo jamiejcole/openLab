@@ -31,6 +31,10 @@ enum ProbeTarget {
 /// in a burst cannot flood them.
 const PUSH_EVERY_MS: i64 = 100;
 
+/// The least time between two words to the supervisor that the control thread runs: a quarter
+/// of its ping period, so a running engine never misses a ping.
+const ALIVE_EVERY_MS: i64 = 250;
+
 /// Log lines from the stage host's reports put in the show log per second.
 const MAX_REPORT_LINES_PER_SECOND: u32 = 20;
 
@@ -70,6 +74,8 @@ pub(super) struct Stages {
     monitors: HashSet<StageId>,
     /// Counts changes to [`Stages::monitors`].
     monitor_changes: u64,
+    /// When the control thread last told the supervisor it runs (control clock, ms).
+    alive_ms: Option<i64>,
     /// Something a `video_outputs` push carries changed since the last one went out.
     push_due: bool,
     /// When the last `video_outputs` went out (control clock, ms).
@@ -193,6 +199,23 @@ impl Engine {
     /// workspace opened and last panicked.
     fn keeps_black(&self, stage: &openlab_core::Stage) -> bool {
         stage.keep_black && self.stages.armed.contains(&stage.id)
+    }
+
+    /// Each tick: tells the supervisor the control thread runs, at most every
+    /// [`ALIVE_EVERY_MS`], so its pings (and so the stage host's) stop when this thread hangs.
+    pub(super) fn stages_alive(&mut self) {
+        let now = self.config.clock.now_ms();
+        if self
+            .stages
+            .alive_ms
+            .is_some_and(|last| now >= last && now - last < ALIVE_EVERY_MS)
+        {
+            return;
+        }
+        if let Some(host) = &self.stages.host {
+            host.alive();
+            self.stages.alive_ms = Some(now);
+        }
     }
 
     /// The stage host supervisor, if video output runs.

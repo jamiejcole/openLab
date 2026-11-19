@@ -40,10 +40,9 @@ use objc2_app_kit::{
     NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::CGSize;
-#[cfg(feature = "test-support")]
-use objc2_core_graphics::CGMainDisplayID;
 use objc2_core_graphics::{
     CGDirectDisplayID, CGDisplayChangeSummaryFlags, CGDisplayRegisterReconfigurationCallback,
+    CGMainDisplayID,
 };
 use objc2_foundation::{NSNumber, NSRect, NSString};
 use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLDrawable, MTLPixelFormat};
@@ -123,6 +122,10 @@ pub struct Mac {
     /// Test support: displays that stand in for real ones, drawn offscreen only.
     #[cfg(feature = "test-support")]
     virtual_displays: Option<Vec<Display>>,
+    /// Test support: the virtual display that stands for the one with the menu bar
+    /// (`--menu-bar-display`).
+    #[cfg(feature = "test-support")]
+    virtual_menu_bar: Option<String>,
 }
 
 struct Windows {
@@ -353,6 +356,17 @@ impl Platform for Mac {
         }
     }
 
+    fn menu_bar_display(&self) -> Option<String> {
+        #[cfg(feature = "test-support")]
+        if self.virtual_displays.is_some() {
+            return self.virtual_menu_bar.clone();
+        }
+        let main = CGMainDisplayID();
+        (self.found.iter())
+            .find(|f| f.cg == main)
+            .map(|f| f.display.id.clone())
+    }
+
     fn take_closed_monitors(&mut self) -> Vec<StageId> {
         let Some(windows) = self.windows.as_mut() else {
             return Vec::new();
@@ -509,6 +523,7 @@ fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
         good_limits: media::LIMITS,
         found: Vec::new(),
         virtual_displays: None,
+        virtual_menu_bar: None,
     };
     mac.displays();
     let main = CGMainDisplayID();
@@ -677,6 +692,8 @@ fn windowed() -> ExitCode {
         found: Vec::new(),
         #[cfg(feature = "test-support")]
         virtual_displays: None,
+        #[cfg(feature = "test-support")]
+        virtual_menu_bar: None,
     };
     HOST.with(|h| *h.borrow_mut() = Some(Host::new(platform)));
     // SAFETY: a plain function with no user data; it only queues work on the main thread.
@@ -848,6 +865,10 @@ struct Offscreen {
     good_limits: media::Limits,
     /// `--media-clock-by-hand`: the limits run on a media clock only the test moves.
     hand_clock: bool,
+    /// `--menu-bar-display ID`: the virtual display that stands for the one with the menu bar.
+    menu_bar: Option<String>,
+    /// `--engine-silence-ms MS`: how long the engine may be silent (shipped `ENGINE_SILENCE`).
+    engine_silence: Option<std::time::Duration>,
 }
 
 /// Test support: the offscreen options, or `None` for anything unknown, malformed or repeated.
@@ -855,6 +876,7 @@ struct Offscreen {
 #[cfg(feature = "test-support")]
 fn offscreen_options(mut args: &[String]) -> Option<Offscreen> {
     let (mut fault, mut good, mut hand_clock) = (None, None, false);
+    let (mut menu_bar, mut engine_silence) = (None, None);
     loop {
         args = match args {
             [] => {
@@ -862,7 +884,23 @@ fn offscreen_options(mut args: &[String]) -> Option<Offscreen> {
                     fault_limits: fault.unwrap_or(media::LIMITS),
                     good_limits: good.unwrap_or(media::LIMITS),
                     hand_clock,
+                    menu_bar,
+                    engine_silence,
                 });
+            }
+            [flag, value, rest @ ..] if flag == "--menu-bar-display" && menu_bar.is_none() => {
+                menu_bar = Some(value.clone());
+                rest
+            }
+            [flag, value, rest @ ..]
+                if flag == "--engine-silence-ms" && engine_silence.is_none() =>
+            {
+                let ms: u64 = value
+                    .parse()
+                    .ok()
+                    .filter(|ms| (1..=3_600_000).contains(ms))?;
+                engine_silence = Some(std::time::Duration::from_millis(ms));
+                rest
             }
             [flag, value, rest @ ..] if flag == "--media-limits" && fault.is_none() => {
                 fault = Some(media_limits(value)?);
@@ -894,7 +932,11 @@ fn offscreen(displays: Vec<Display>, options: Offscreen) -> ExitCode {
         good_limits: options.good_limits,
         found: Vec::new(),
         virtual_displays: Some(displays),
+        virtual_menu_bar: options.menu_bar,
     });
+    if let Some(limit) = options.engine_silence {
+        host.set_engine_silence(limit);
+    }
     crate::host::serve(
         std::io::BufReader::new(std::io::stdin()),
         &mut std::io::stdout().lock(),
@@ -936,6 +978,7 @@ mod tests {
             },
             found: Vec::new(),
             virtual_displays: None,
+            virtual_menu_bar: None,
         };
         let fault = mac.limits_of("/shows/openlab-test-hang-open.mov");
         assert_eq!((fault.open, fault.frame), (ms(1), ms(2)));

@@ -463,6 +463,70 @@ fn a_hung_stage_host_is_killed_and_replaced() {
     );
 }
 
+/// #708 flow: a hung engine while a stage covers the only display: the cover comes down by
+/// itself and the operator reaches the app. The engine's control thread stops (the test stops
+/// calling into it) while its supervisor's clock runs on: no ping goes (each needs the control
+/// thread to have said it runs), so after the stage host's silence limit (shortened here; shipped
+/// `ENGINE_SILENCE`, 4 s) the stage on the display with the menu bar (V1) is taken down and
+/// says so, while the stage on V2 (the audience's) stays up. When the engine speaks again the
+/// stage comes back. Waits are on the stage host's report, bounded.
+#[test]
+fn a_hung_engine_while_a_stage_covers_the_only_display_the_cover_comes_down_by_itself() {
+    let hand = HandClock::new();
+    let mut host = host_config(&[
+        "--virtual-displays",
+        "V1:1920x1080,V2:1280x720",
+        "--menu-bar-display",
+        "V1",
+        "--engine-silence-ms",
+        "300",
+    ]);
+    host.hello_within = SLOW_MACHINE;
+    hand.drive(&mut host);
+    let ws = with_stages(vec![], vec![stage(1), stage(2)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(host);
+    for (n, display) in [(1, "V1"), (2, "V2")] {
+        c.machine
+            .set_stage_mapping(ws.id, stage_id(n), Some(mapping(display)))
+            .unwrap();
+    }
+    c.push_log = true;
+    let mut s = show_patient(ws, c);
+    s.settle_stages();
+    let shown = |d: &str| Some(StageState::Shown { display: d.into() });
+    assert_eq!(state(&mut s, 1), shown("V1"));
+    assert_eq!(state(&mut s, 2), shown("V2"));
+    // The control thread hangs. Its supervisor's clock moves a second at a time: a ping would
+    // go each time if pings did not wait for the control thread.
+    let mut taken_down = false;
+    for _ in 0..50 {
+        hand.advance(&mut s, 1);
+        while s.handle_next_within(Duration::from_millis(100)) {}
+        if s.control().stage_state(stage_id(1)) == Some(&StageState::Hidden) {
+            taken_down = true;
+            break;
+        }
+    }
+    assert!(
+        taken_down,
+        "the cover on the menu bar's display never came down"
+    );
+    assert_eq!(
+        s.control().stage_state(stage_id(2)),
+        shown("V2").as_ref(),
+        "the audience's display keeps its stage"
+    );
+    assert!(
+        logged(&mut s, "taken down until it does"),
+        "the stage host said why"
+    );
+    // The engine runs again: its next ping brings the stage back.
+    s.tick();
+    hand.advance(&mut s, 1);
+    assert!(s.wait_for(|c| c.stage_state(stage_id(1)) == shown("V1").as_ref()));
+}
+
 /// A stage host slow to start (here a second of real time before it runs, while the
 /// supervisor's clock is moved past a ping's answer time) is not killed as hung: `hello` has a
 /// deadline of its own.

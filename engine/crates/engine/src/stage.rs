@@ -178,6 +178,8 @@ enum Order {
     /// Test support: nothing; the supervisor looks at its (hand-moved) clock again.
     #[cfg(feature = "test-support")]
     Wake,
+    /// The control thread runs: the next ping may go.
+    Alive,
     Quit,
 }
 
@@ -220,6 +222,13 @@ impl StageHost {
     #[cfg(feature = "test-support")]
     pub fn send(&self, message: ToStage) {
         let _ = self.commands.send(Order::Send(message));
+    }
+
+    /// The control thread is running. Pings go only after this was said since the last one,
+    /// so a stage host hears nothing from a hung engine (its stage on the menu bar's display
+    /// then lets the operator back in) however healthy this thread is.
+    pub fn alive(&self) {
+        let _ = self.commands.send(Order::Alive);
     }
 
     /// Test support: has the supervisor look at its clock again (a test moved it by hand).
@@ -281,6 +290,8 @@ struct Supervisor {
     /// A stage host of another link version: never started again.
     incompatible: bool,
     seq: u64,
+    /// The control thread said it runs since the last ping went (`Order::Alive`).
+    alive: bool,
 }
 
 impl Supervisor {
@@ -295,6 +306,7 @@ impl Supervisor {
             paused_until: None,
             incompatible: false,
             seq: 0,
+            alive: false,
         }
     }
 
@@ -325,6 +337,7 @@ impl Supervisor {
                     Ok(Order::Send(message)) => self.write(&message),
                     #[cfg(feature = "test-support")]
                     Ok(Order::Wake) => {}
+                    Ok(Order::Alive) => self.alive = true,
                     // Only once it has its stages: the engine sends every picture again when
                     // a stage host starts.
                     Ok(Order::Picture(message)) => {
@@ -573,7 +586,8 @@ impl Supervisor {
                 self.stop("it stopped answering".into());
             }
             Some(_) => {}
-            None if now >= r.next_ping => {
+            None if now >= r.next_ping && self.alive => {
+                self.alive = false;
                 self.seq = self.seq.wrapping_add(1);
                 r.ping = Some((self.seq, now));
                 r.next_ping = now + self.config.ping_every;

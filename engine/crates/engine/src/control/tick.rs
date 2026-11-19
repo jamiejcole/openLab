@@ -50,6 +50,7 @@ impl Control {
         self.eng.resend_closed();
         self.publish_workspaces();
         self.sync_stages();
+        self.eng.stages_alive();
         let now = self.eng.now();
         self.eng.prune_pictures(now);
         self.eng.try_held_back_pictures(now);

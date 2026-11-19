@@ -352,7 +352,18 @@ pub trait Platform {
     fn take_closed_monitors(&mut self) -> Vec<StageId> {
         Vec::new()
     }
+    /// The display with the menu bar (the operator's; a laptop's only one), if it is one of
+    /// the displays listed.
+    fn menu_bar_display(&self) -> Option<String> {
+        None
+    }
 }
+
+/// How long the stage host may hear nothing at all from the engine (it pings every second while
+/// its control thread runs, and sends the clock while pictures play) before it takes its window
+/// off the display with the menu bar: four missed pings, so one late or slow tick never does,
+/// and the operator of a hung engine has their display back within about five seconds.
+pub const ENGINE_SILENCE: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// One stage's monitor window as the engine asked for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -407,6 +418,12 @@ pub struct Host<P: Platform> {
     clock: Option<Clock>,
     /// Displays with a window up.
     presented: BTreeSet<String>,
+    /// When the engine last sent anything.
+    heard: Instant,
+    /// The engine has been silent past `silence_limit`: the display with the menu bar has no
+    /// window, so a hung engine never locks the operator out of their own display.
+    silent: bool,
+    silence_limit: std::time::Duration,
     /// A failed picture was dropped since the stages were last drawn: the next poll draws them
     /// again, so its last frame never stays in a window.
     redraw_due: bool,
@@ -426,6 +443,9 @@ impl<P: Platform> Host<P> {
             plays: 0,
             clock: None,
             presented: BTreeSet::new(),
+            heard: Instant::now(),
+            silent: false,
+            silence_limit: ENGINE_SILENCE,
             redraw_due: false,
             monitors: BTreeMap::new(),
         }
@@ -640,6 +660,7 @@ impl<P: Platform> Host<P> {
     /// Between messages: reports what became of pictures' files (an open that ended, a decode
     /// that failed or fell behind) and the monitor windows the operator closed.
     pub fn poll(&mut self, out: &mut Vec<FromStage>) {
+        self.check_silence(Instant::now(), out);
         self.report_failures(out);
         // A picture that failed leaves its display now, whether or not others still play:
         // nothing else would draw a stage left with none.
@@ -742,8 +763,45 @@ impl<P: Platform> Host<P> {
         &mut self.platform
     }
 
-    /// Handles one message from the engine; the answers go to `out`.
+    /// Test support: how long the engine may be silent (`--engine-silence-ms`).
+    #[cfg(feature = "test-support")]
+    pub fn set_engine_silence(&mut self, limit: std::time::Duration) {
+        self.silence_limit = limit;
+    }
+
+    /// Takes the window off the display with the menu bar once the engine has said nothing for
+    /// `silence_limit` at `now` (a hung engine: its pings stop when its control thread does).
+    /// Every other display keeps what it shows.
+    pub fn check_silence(&mut self, now: Instant, out: &mut Vec<FromStage>) {
+        if self.silent || now.saturating_duration_since(self.heard) < self.silence_limit {
+            return;
+        }
+        self.silent = true;
+        if let Some(display) = self.platform.menu_bar_display() {
+            out.push(FromStage::Log {
+                level: LinkLevel::Warn,
+                message: format!(
+                    "the engine has not answered for {} s: the stage window on the display with the menu bar ({display}) is taken down until it does",
+                    self.silence_limit.as_secs_f64()
+                ),
+            });
+        }
+        self.apply(out);
+    }
+
+    /// Handles one message from the engine; the answers go to `out`. The engine is heard: a
+    /// window taken off the menu bar's display for its silence comes back as its stage says.
     pub fn handle(&mut self, message: ToStage, out: &mut Vec<FromStage>) -> Flow {
+        self.heard = Instant::now();
+        let back = std::mem::take(&mut self.silent);
+        let flow = self.handle_message(message, out);
+        if back && flow == Flow::Continue {
+            self.apply(out);
+        }
+        flow
+    }
+
+    fn handle_message(&mut self, message: ToStage, out: &mut Vec<FromStage>) -> Flow {
         match message {
             ToStage::Hello { version } => {
                 out.push(FromStage::Hello {
@@ -914,6 +972,17 @@ impl<P: Platform> Host<P> {
                 }
             };
             states.push((stage.id, state));
+        }
+        // A hung engine's stage on the operator's display: no window there, the stage hidden.
+        let menu_bar = self.platform.menu_bar_display().filter(|_| self.silent);
+        if let Some(id) = &menu_bar
+            && on.remove(id).is_some()
+        {
+            for (_, state) in &mut states {
+                if matches!(state, StageState::Shown { display } if display == id) {
+                    *state = StageState::Hidden;
+                }
+            }
         }
         for display in self.displays.clone() {
             let Some(mut layers) = on.remove(&display.id) else {
@@ -1325,6 +1394,8 @@ pub(crate) mod tests {
         shown: HashMap<String, Vec<StageId>>,
         /// Each display's pictures as last presented, over all its layers.
         pictures_drawn: HashMap<String, Vec<u64>>,
+        /// The display with the menu bar.
+        menu_bar: Option<String>,
         fail: bool,
         live: bool,
         events: Vec<PictureEvent>,
@@ -1403,6 +1474,9 @@ pub(crate) mod tests {
         }
         fn close_monitor(&mut self, stage: StageId) {
             self.monitors.remove(&stage);
+        }
+        fn menu_bar_display(&self) -> Option<String> {
+            self.menu_bar.clone()
         }
         fn take_closed_monitors(&mut self) -> Vec<StageId> {
             let closed = std::mem::take(&mut self.user_closed);
@@ -2129,6 +2203,63 @@ pub(crate) mod tests {
         }
     }
 
+    /// #708: a hung engine (nothing heard for `ENGINE_SILENCE`) takes the window off the display
+    /// with the menu bar (the operator's) and nothing else: the stage there says hidden, why goes
+    /// to the log, the other display keeps its picture. Any word from the engine brings it back.
+    #[test]
+    fn a_silent_engine_takes_only_the_menu_bars_window_down_until_it_speaks() {
+        let mut h = host(&["M", "D"]);
+        h.platform.menu_bar = Some("M".into());
+        let version = LINK_VERSION;
+        send(&mut h, ToStage::Hello { version });
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("M"), true), stage(2, Some("D"), true)],
+            },
+        );
+        assert!(h.platform.shown.contains_key("M") && h.platform.shown.contains_key("D"));
+        // Times from when the engine was last heard.
+        let heard = h.heard;
+        let mut out = Vec::new();
+        h.check_silence(heard + ENGINE_SILENCE / 2, &mut out);
+        assert!(
+            out.is_empty() && h.platform.shown.contains_key("M"),
+            "not yet"
+        );
+        h.check_silence(heard + ENGINE_SILENCE, &mut out);
+        assert_eq!(
+            h.platform.shown.get("M"),
+            None,
+            "the operator's display let go"
+        );
+        assert_eq!(
+            h.platform.shown.get("D"),
+            Some(&vec![id(2)]),
+            "the audience's kept"
+        );
+        assert!(
+            states(&out).contains(&(id(1), StageState::Hidden)),
+            "{out:?}"
+        );
+        assert!(matches!(&logs(&out)[..], [(LinkLevel::Warn, m)] if m.contains("menu bar")));
+        // Said once; still down at the next frame-loop tick.
+        out.clear();
+        h.check_silence(heard + ENGINE_SILENCE * 2, &mut out);
+        h.step(None, &mut out);
+        assert!(logs(&out).is_empty());
+        assert_eq!(h.platform.shown.get("M"), None);
+        // The engine speaks (a ping): back as its stage says.
+        let out = send(&mut h, ToStage::Ping { seq: 1 });
+        assert_eq!(h.platform.shown.get("M"), Some(&vec![id(1)]));
+        assert!(states(&out).contains(&(
+            id(1),
+            StageState::Shown {
+                display: "M".into()
+            }
+        )));
+    }
+
     pub(crate) fn id(n: u8) -> StageId {
         StageId(uuid::Uuid::from_u128(n.into()))
     }
@@ -2159,6 +2290,7 @@ pub(crate) mod tests {
             displays: displays.iter().map(|d| display(d)).collect(),
             shown: HashMap::new(),
             pictures_drawn: HashMap::new(),
+            menu_bar: None,
             fail: false,
             live: false,
             events: Vec::new(),
