@@ -60,7 +60,25 @@ extension XCTestCase {
             try? FileManager.default.removeItem(at: base)
         }
         app.launch()
+        if let windowSize { assertWindowSize(windowSize, of: app) }
         return app
+    }
+
+    /// A window size asked for at launch (`least`: width 800 and the least height, else `WxH`) was applied: an
+    /// option the app ignored fails here, by name, not in the layout assertions that rely on the size.
+    @MainActor private func assertWindowSize(_ size: String, of app: XCUIApplication, line: UInt = #line) {
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 20), "the window is up", line: line)
+        let parts = size.split(separator: "x").compactMap { Double($0) }
+        let want = size == "least" ? CGSize(width: 800, height: 516) : CGSize(width: parts[0], height: parts[1])
+        let ok = NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                abs(window.frame.width - want.width) <= 1 && abs(window.frame.height - want.height) <= 6
+            }
+        }
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: ok, object: nil)], timeout: 5), .completed,
+            "the window is \(size) as launched: \(window.frame)", line: line)
     }
 
     /// The window, shrunk by `shrinkWindowToLeast`, grown again by its bottom-right corner toward the
