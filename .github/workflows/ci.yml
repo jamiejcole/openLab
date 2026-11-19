@@ -68,7 +68,7 @@ jobs:
       # splits them into two shards (scripts/mac-test-shards.txt); one that does not runs the engine-free
       # unit tests in one job (a fraction of the time, so a split would only add setups). When the build
       # changes (bundle), one more entry builds and checks the Release bundle in parallel with the tests, so
-      # it adds no time to a shard. Nightly and on demand run the core flows, the whole UI suite and the
+      # it adds no time to a shard. Nightly and on demand run the core flows, the whole UI suite (minus scripts/ui-local-only.txt) and the
       # bundle in one job. `lint` marks the one entry that runs the format lint; `bundle` the one that
       # builds the bundle.
       - id: matrix

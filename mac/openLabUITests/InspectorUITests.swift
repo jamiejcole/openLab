@@ -243,12 +243,13 @@ final class VideoUITests: XCTestCase {
     /// At the window's least size the fields scroll: Tab goes from field to field in reading
     /// order, and a field further down comes into view as it takes the focus.
     func testGeometryTabOrderBringsAFieldBelowTheScrolledAreaIntoView() throws {
-        let app = launchGeometry(windowSize: "least")
+        // At its least width, and tall enough that the list shows the custom cue's row above the inspector (at the
+        // least height it is out of view). A local-only test (scripts/ui-local-only.txt): it needs a Mac's screen.
+        let app = launchGeometry(windowSize: "800x900")
         selectCue("Custom: moved, turned and cropped", in: app)
         tabButton("Geometry", in: app).click()
         XCTAssertTrue(waitFor("isHittable == true", field("x", in: app)), "the custom fields are shown")
-        // The window launched at its least size; the inspector at its least height: the divider above it
-        // dragged down as far as it goes.
+        // The inspector at its least height: the divider above it dragged down as far as it goes.
         let window = app.windows.firstMatch
         let divider = app.splitters.allElementsBoundByIndex.first { $0.frame.width > $0.frame.height }
         let bar = try XCTUnwrap(divider, "the divider above the inspector")

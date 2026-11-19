@@ -145,12 +145,12 @@ test-mac-core-flows: project
 # Every unit test and the whole UI suite: what the nightly run does. On CI (CI set) it skips the tests in
 # scripts/ui-local-only.txt, which `make test-mac-local-only` runs on a Mac.
 test-mac-ui-full: project
+	$(if $(CI),@printf 'test-mac-ui-full: skipped on CI (scripts/ui-local-only.txt): %s\n' $(UI_LOCAL_ONLY_LIST))
 	$(MAC_TESTS_WITH_LIMIT) -- $(if $(CI),$(foreach t,$(UI_LOCAL_ONLY_LIST),-skip-testing:$(t)))
 
 # The UI tests CI skips (scripts/ui-local-only.txt), on this Mac.
 test-mac-local-only: project
-	@test -n "$(UI_LOCAL_ONLY_LIST)" || { echo "scripts/ui-local-only.txt lists no tests"; exit 1; }
-	$(MAC_TESTS_WITH_LIMIT) -- $(foreach t,$(UI_LOCAL_ONLY_LIST),-only-testing:$(t))
+	$(if $(UI_LOCAL_ONLY_LIST),$(MAC_TESTS_WITH_LIMIT) -- $(foreach t,$(UI_LOCAL_ONLY_LIST),-only-testing:$(t)),@echo "scripts/ui-local-only.txt lists no tests: nothing to run")
 
 # Pictures of the real workspace window driven through a scenario on the real engine, drawn offscreen
 # (no focus taken): `make ui-shots SCENARIO=mac/scenarios/<name>.json [OUT=<dir>]`. It waits for any other

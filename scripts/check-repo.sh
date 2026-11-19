@@ -679,6 +679,14 @@ ui_smoke() {
   test_list scripts/core-flows.txt core-flows openLabTests
   [ "$LIST_N" -ge 10 ] || fail core-flows "scripts/core-flows.txt lists $LIST_N tests; the core-flows set is the everyday flows"
   test_list scripts/ui-local-only.txt ui-local-only openLabUITests
+  # A local-only test in a set CI runs by -only-testing would still run there.
+  local t
+  while IFS= read -r t; do
+    case "$t" in ''|'#'*) continue ;; esac
+    if grep -qxF "$t" scripts/ui-smoke.txt scripts/core-flows.txt; then
+      fail ui-local-only "'$t' is local-only but also in scripts/ui-smoke.txt or scripts/core-flows.txt, which CI runs"
+    fi
+  done < scripts/ui-local-only.txt
 }
 
 # `make test-mac` splits the unit tests over two processes: what the first skips, the second must run.
