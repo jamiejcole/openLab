@@ -267,9 +267,15 @@ fn a_stream_prepared_after_a_relink_probes_the_file_it_read() {
         *media = Some(openlab_core::MediaRef::new(b.to_str().unwrap()));
     }
     set_kind(&mut s, 1, kind);
-    // b's probe lands while a's is still held; the failed stream is seen by the next ticks.
+    // b's probe lands while a's is still held; the stream prepared from it fails on its disk
+    // thread, whenever that runs. The ticks that see the failure ask for b's probe again: wait
+    // for that, not for a number of blocks.
     wait_probed(std::slice::from_ref(&b), 1);
-    s.run_unsettled(BLOCK * 16);
+    let (probed_a, probed_b) = (a.clone(), b.clone());
+    assert!(
+        s.wait_for(|_| probe_order(&[probed_a.clone(), probed_b.clone()]).len() >= 3),
+        "b is asked for again once its stream failed"
+    );
     release(&a);
     s.settle_media();
     s.run(BLOCK * 4);
