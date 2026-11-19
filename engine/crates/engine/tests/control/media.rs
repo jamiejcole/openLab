@@ -256,7 +256,12 @@ fn a_stream_failure_is_never_missed_by_the_voice_that_ends_with_it() {
     std::fs::write(&path, std::fs::read(wav(&dc(1500, 0.5))).unwrap()).unwrap();
     go(&mut s);
     // Not `run`: that waits for the worker to feed the voice, and so for the failure.
-    s.run_unsettled(1500);
+    let mut blocks = 0;
+    while s.control().engine().state(id(1)) == CueState::Running && blocks < 4000 {
+        s.run_unsettled(BLOCK);
+        s.wait_step();
+        blocks += 1;
+    }
     s.settle_media();
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
     let st = states(&s.take_outbound(), id(1));
