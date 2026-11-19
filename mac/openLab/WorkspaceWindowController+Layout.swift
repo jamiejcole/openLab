@@ -164,11 +164,14 @@ extension WorkspaceWindowController {
             guard let window else { return }
             let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
             var want = window.minSize
-            if case .size(let s) = size { want = CGSize(width: max(s.width, want.width), height: max(s.height, want.height)) }
+            if case .size(let s) = size {
+                want = CGSize(width: max(s.width, want.width), height: max(s.height, want.height))
+            }
             let width = min(want.width, visible.width - 100)
             let height = min(want.height, visible.height - 50)
             window.setFrame(
-                NSRect(x: visible.minX + 80, y: visible.maxY - 40 - height, width: width, height: height), display: false)
+                NSRect(x: visible.minX + 80, y: visible.maxY - 40 - height, width: width, height: height),
+                display: false)
         }
     }
 #endif

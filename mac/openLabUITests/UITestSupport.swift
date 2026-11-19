@@ -69,7 +69,8 @@ extension XCTestCase {
     @MainActor func growWindow(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let window = app.windows.firstMatch
         let wide = NSPredicate { _, _ in MainActor.assumeIsolated { window.frame.width > 801 } }
-        let corner = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(CGVector(dx: -3, dy: -3))
+        let corner = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1)).withOffset(
+            CGVector(dx: -3, dy: -3))
         corner.press(forDuration: 0.2, thenDragTo: corner.withOffset(CGVector(dx: 80, dy: 20)))
         XCTAssertEqual(
             XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: wide, object: nil)], timeout: 3), .completed,
