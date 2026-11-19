@@ -176,6 +176,24 @@ final class WarningsTests: XCTestCase {
         XCTAssertEqual(side.warningsCount.stringValue, String(format: loc("warnings.many"), side.warningRows.count))
     }
 
+    /// #770: a Video cue whose picture failed while playing is one warning: its own entry, saying
+    /// why in the engine's words, not a second entry for the engine's notice of the same failure.
+    func testAPictureThatFailedIsOneWarningOnItsCueSayingWhy() async throws {
+        try await make()
+        let why = "the Video cue's picture failed: the movie could not be read"
+        try runtime(
+            #"{"type":"cue_state","cue":"\#(rain)","state":"broken","reason":"decode_failed"},"#
+                + #"{"type":"warning","warning":{"type":"notice","code":"video_decode_failed","#
+                + #""message":"\#(why)","cue":"\#(rain)"}}"#)
+        let rows = side.warningRows.filter { $0.cue == rain || $0.detail.contains(why) || $0.title.contains(why) }
+        XCTAssertEqual(rows.count, 1, "\(side.warningRows)")
+        XCTAssertEqual(rows.first?.cue, rain)
+        XCTAssertEqual(rows.first?.detail, why)
+        // Reset and playable again: the failure is past, not listed on its own.
+        try runtime(#"{"type":"cue_state","cue":"\#(rain)","state":"idle"}"#)
+        XCTAssertFalse(side.warningRows.contains { $0.cue == rain || $0.title.contains(why) }, "\(side.warningRows)")
+    }
+
     func testRowsUpdateInPlaceWithoutReloading() async throws {
         try await make()
         spy.wholeReloads = 0

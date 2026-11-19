@@ -772,8 +772,16 @@ final class VideoCueTests: XCTestCase {
         XCTAssertTrue(brokenTip(Self.long)?.contains(loc("broken.decode_failed")) == true)
         XCTAssertEqual(status(Self.movie), loc("cue.state.running"), "the other cue plays on")
         await soon("the footer counts it") { !self.wc.footer.warningsButton.isHidden }
+        // One warning (#770): the cue's own entry, saying why in the engine's words; the engine's
+        // notice of the same failure is not a second entry.
+        await soon("the engine's reason arrived") {
+            self.store.runtimeWarnings.contains { $0.json["code"]?.stringValue == "video_decode_failed" }
+        }
         let rows = WarningRows.make(store: store)
-        XCTAssertTrue(rows.contains { $0.cue == Self.long && $0.detail.contains(loc("broken.decode_failed")) })
+        let failed = rows.filter { $0.cue == Self.long || $0.detail.contains("picture failed") }
+        XCTAssertEqual(failed.count, 1, "\(rows)")
+        XCTAssertEqual(failed.first?.cue, Self.long)
+        XCTAssertTrue(failed.first?.detail.contains("picture failed") == true, failed.first?.detail ?? "")
         XCTAssertNil(wc.window?.attachedSheet, "Show Mode raises no sheet")
     }
 

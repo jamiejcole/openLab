@@ -140,6 +140,12 @@ enum WarningRows {
     /// The most of a stage's name a warning row shows before its reason.
     static let stageNameLength = 24
 
+    /// A notice saying why a Video cue's picture broke its cue (it fails or cannot be shown).
+    private static func isPictureFailure(_ w: WireWarning) -> Bool {
+        guard w.type == "notice", w.json["cue"] != nil else { return false }
+        return ["video_decode_failed", "video_unplayable"].contains(w.json["code"]?.stringValue ?? "")
+    }
+
     /// The most of a device's name a warning row's title shows.
     static let deviceNameLength = 48
 
@@ -160,8 +166,13 @@ enum WarningRows {
             list.map { (prefix, $0) }
         }
         var refusals: [ModelID: Int] = [:]
-        for (_, w) in notices where w.type == "cue_broken" {
-            if let id = w.json["cue"]?.stringValue { refusals[ModelID(id), default: 0] += 1 }
+        // Why a cue's picture broke it, in the engine's words: told on that cue's entry in place
+        // of the general reason, never as an entry of its own (one failure, one warning).
+        var pictureFailures: [ModelID: String] = [:]
+        for (_, w) in notices {
+            guard let id = w.json["cue"]?.stringValue else { continue }
+            if w.type == "cue_broken" { refusals[ModelID(id), default: 0] += 1 }
+            if isPictureFailure(w) { pictureFailures[ModelID(id)] = ProblemText.warning(w, label: label) }
         }
         var rows: [WarningRow] = []
         func walk(_ cues: [Cue]) {
@@ -171,7 +182,11 @@ enum WarningRows {
                 let reason = run?.reason
                 if !problems.isEmpty || reason != nil {
                     var reasons = problems.map { ProblemText.problem($0, label: label) }
-                    if let reason { reasons.append(ProblemText.reason(reason, state: run?.state)) }
+                    if reason == .decodeFailed, let why = pictureFailures[cue.id] {
+                        reasons.append(why)
+                    } else if let reason {
+                        reasons.append(ProblemText.reason(reason, state: run?.state))
+                    }
                     if let n = refusals[cue.id] {
                         reasons.append(
                             n == 1 ? loc("warnings.refused.one") : String(format: loc("warnings.refused.many"), n))
@@ -195,7 +210,7 @@ enum WarningRows {
         var beyond: [String: (device: String, patch: String)] = [:]
         for (prefix, w) in notices {
             // Told on the broken cue's own entry, or past: the cue plays again.
-            if w.type == "cue_broken" { continue }
+            if w.type == "cue_broken" || isPictureFailure(w) { continue }
             // The system output with no output device selected: one entry, as a device's, titled
             // as the patch pop-up names that choice, the reason under it in our words.
             if w.type == "notice", w.json["code"]?.stringValue == "patch_no_system_output" {
