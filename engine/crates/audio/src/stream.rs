@@ -111,6 +111,11 @@ pub struct StreamerConfig {
     /// support only: not in a shipped build.
     #[cfg(any(test, feature = "test-support"))]
     pub before_open: fn(&Path),
+    /// Called by a fill worker after it published a stream's failure and before it lets go of
+    /// the stream's ring: tests hold the worker there, so a voice can meet the failure at the
+    /// slowest point. Test support only: not in a shipped build.
+    #[cfg(any(test, feature = "test-support"))]
+    pub after_failure: fn(),
 }
 
 impl StreamerConfig {
@@ -130,6 +135,8 @@ impl StreamerConfig {
             exit_budget_bytes: DEFAULT_EXIT_BUDGET_BYTES,
             #[cfg(any(test, feature = "test-support"))]
             before_open: |_| {},
+            #[cfg(any(test, feature = "test-support"))]
+            after_failure: || {},
         }
     }
 }
@@ -249,8 +256,9 @@ impl StreamHandle {
         let _ = self.wake.send(Msg::Wake);
     }
 
-    /// Why the stream failed. Once this is set the stream has let go of its ring, so the voice
-    /// plays what was written and then ends with `FinishReason::EndOfStream`.
+    /// Why the stream failed. Set before the stream lets go of its ring, so a voice's
+    /// `FinishReason::EndOfStream` is never seen without it: the voice plays what was written
+    /// and then ends.
     pub fn error(&self) -> Option<MediaError> {
         self.shared.lock().error.clone()
     }
@@ -472,9 +480,17 @@ impl DiskStreamer {
             }
             for i in 0..config.workers {
                 let (tx, rx) = mpsc::channel();
+                #[cfg(any(test, feature = "test-support"))]
+                let after_failure = config.after_failure;
                 std::thread::Builder::new()
                     .name(format!("openlab-disk-{i}"))
-                    .spawn(move || run_worker(rx))?;
+                    .spawn(move || {
+                        run_worker(
+                            rx,
+                            #[cfg(any(test, feature = "test-support"))]
+                            after_failure,
+                        );
+                    })?;
                 workers.push(Worker { tx });
             }
             Ok::<(), std::io::Error>(())
@@ -949,7 +965,7 @@ enum Opening {
     Done,
 }
 
-fn run_worker(rx: Receiver<Msg>) {
+fn run_worker(rx: Receiver<Msg>, #[cfg(any(test, feature = "test-support"))] after_failure: fn()) {
     let mut tasks: Vec<Box<Task>> = Vec::new();
     loop {
         loop {
@@ -971,12 +987,17 @@ fn run_worker(rx: Receiver<Msg>) {
                 Progress::Idle => i += 1,
                 Progress::Done => drop(tasks.swap_remove(i)),
                 Progress::Failed(e) => {
+                    // Published before the task (and its ring producer) is dropped: the voice
+                    // ends as soon as the producer is gone and the ring empty, and control must
+                    // never see that end without the error already readable (it would take the
+                    // end for a clean one and never probe the file again). The task wrote
+                    // nothing since its step failed, so the voice still ends after the frames
+                    // already written; until the drop (right below) it merely waits for more.
                     let shared = Arc::clone(&t.shared);
-                    drop(tasks.swap_remove(i));
-                    // Published right after the task (and its ring producer) is dropped, before
-                    // any other stream's step can block: once a caller sees the error, the voice
-                    // is certain to end after the frames already written.
                     shared.update(|s| s.error = Some(e));
+                    #[cfg(any(test, feature = "test-support"))]
+                    after_failure();
+                    drop(tasks.swap_remove(i));
                 }
             }
         }

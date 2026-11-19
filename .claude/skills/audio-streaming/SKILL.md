@@ -14,7 +14,7 @@ Everything here runs on disk, opener or I/O threads, never on the audio thread. 
 - Seeking yields exactly the frames a decode from the start yields (AAC noise substitution is the one tolerance).
 - A hung open (dead network share, stalled USB disk) never starves a stream that is already open, never takes the last opener, and never blocks the caller.
 - A FIFO, socket, device or folder at a media path is refused at once (`NotAFile`), never opened for a blocking read.
-- A stream's error is published only after its ring producer is dropped, so the voice is certain to play out what was written.
+- A stream's error is published before its ring producer is dropped: a voice ends (`EndOfStream`) as soon as the producer is gone and the ring empty, and control must never see that end without the error readable (it would take it for a clean end: no broken cue, no new probe). The failed task writes nothing after its step failed, so the voice still plays out what was written.
 - The voice and the disk worker agree exactly on the slice table, loop boundaries, and whether a loop exit is used.
 - No sample reaching the mixer is non-finite or beyond +-16.0.
 - Memory is bounded per stream and engine-wide, allocated fallibly on the worker, and over-budget degrades (seek, refuse) rather than aborts.
