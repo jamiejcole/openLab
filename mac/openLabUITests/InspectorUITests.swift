@@ -240,8 +240,8 @@ final class VideoUITests: XCTestCase {
         }
     }
 
-    /// At the window's least size the fields scroll: Tab goes from field to field in reading
-    /// order, and a field further down comes into view as it takes the focus.
+    /// At the window's least width, with the inspector at its least height, the fields scroll: Tab goes from
+    /// field to field in reading order, and a field further down comes into view as it takes the focus.
     func testGeometryTabOrderBringsAFieldBelowTheScrolledAreaIntoView() throws {
         // At its least width, and tall enough that the list shows the custom cue's row above the inspector (at the
         // least height it is out of view). A local-only test (scripts/ui-local-only.txt): it needs a Mac's screen.
