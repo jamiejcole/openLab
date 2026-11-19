@@ -1627,6 +1627,183 @@ fn panic_takes_every_stage_to_black_over_the_panic_time_and_closes_its_window() 
     assert_eq!(stage_state(&mut s, stage_two()), Some(StageState::Hidden));
 }
 
+/// A show the engine opens (as the app's New and Open do, not a running one: `open_doc`) of
+/// `ws` with stages 1 and 2 as a new workspace makes them (keeping black), shown on V1 and V2.
+fn opened_show(mut ws: Workspace) -> OfflineShow {
+    ws.stages = vec![
+        Stage::new(stage_id(), "Stage 1", 1920, 1080),
+        Stage::new(stage_two(), "Stage 2", 1280, 720),
+    ];
+    let mut c: ControlConfig = config_at(&ws, RATE, BLOCK);
+    slow_media_ok(&mut c);
+    for (stage, display, (w, h)) in [
+        (stage_id(), "V1", (1920, 1080)),
+        (stage_two(), "V2", (1280, 720)),
+    ] {
+        let mapping = openlab_core::StageMapping {
+            display: display.into(),
+            name: format!("Virtual {display}"),
+            width: w,
+            height: h,
+        };
+        c.machine
+            .set_stage_mapping(ws.id, stage, Some(mapping))
+            .unwrap();
+    }
+    c.stage_host = Some(test_stage_host_on("V1:1920x1080,V2:1280x720", &[]));
+    let mut s = OfflineShow::empty(mixer_config_at(RATE, BLOCK), c).unwrap();
+    s.set_settle_timeout(SETTLE);
+    s.open_doc(openlab_engine::control::DocSource::Workspace(Box::new(ws)))
+        .unwrap();
+    s.settle_stages();
+    s.settle_media();
+    s
+}
+
+/// Whether stage `stage` covers its display (`display`) with black: shown there, nothing of a
+/// picture drawn, black at the middle and the edge.
+fn covered_black(s: &mut OfflineShow, stage: StageId, display: &str) -> bool {
+    stage_state(s, stage) == shown_on(display)
+        && display_shows(s, display, &[RED_AT, EDGE_AT]) == (None, vec![BLACK; 2])
+}
+
+/// Whether stage `stage` covers nothing: its window is down and its black too, as clients are
+/// told.
+fn uncovered(s: &mut OfflineShow, stage: StageId) -> bool {
+    stage_state(s, stage) == Some(StageState::Hidden) && panicked(s, stage)
+}
+
+/// A movie cue of `movie` on `stage`.
+fn movie_on(n: u128, movie: &Path, stage: StageId) -> Cue {
+    let mut c = video_cue(n, Some(movie));
+    if let CueKind::Video { stage: on, .. } = &mut c.kind {
+        *on = Some(stage);
+    }
+    c
+}
+
+/// #708 flows on `stage` shown on `display`: GO → the picture covers the whole display; its
+/// media ends → black that stays; Esc (the app's panic of every workspace) → the black goes;
+/// the next cue covers the display again and black follows it again.
+fn covers_then_black_until_esc(stage: StageId, display: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (25, 25));
+    let mut s = opened_show(workspace(vec![movie_on(1, &movie, stage)]));
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5));
+    assert_eq!(stage_state(&mut s, stage), shown_on(display));
+    // The card fills the display, its red quadrant at the display's very edge.
+    let (frame, colours) = display_shows(&mut s, display, &[EDGE_AT, [0.01, 0.95]]);
+    assert!(frame.is_some(), "the picture on {display}");
+    let &[red, blue] = colours.as_slice() else {
+        panic!("two colours: {colours:?}")
+    };
+    assert!(
+        red[0] > 200 && red[1] < 60 && blue[2] > 200 && blue[0] < 60,
+        "the card's red and blue at the display's left edge, top and bottom: {colours:?}"
+    );
+    // The media ends: black, no last frame, and it stays.
+    run_to(&mut s, at + samples(1.0) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended");
+    assert!(
+        covered_black(&mut s, stage, display),
+        "black after the media"
+    );
+    s.run(samples(2.0));
+    assert!(covered_black(&mut s, stage, display), "and it stays black");
+    // Esc with nothing playing: the black goes.
+    s.panic_all();
+    s.run(BLOCK);
+    assert!(uncovered(&mut s, stage), "Esc took the black away");
+    // The next cue covers the display again, and black follows it again.
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5));
+    assert!(display_shows(&mut s, display, &[RED_AT]).0.is_some());
+    assert!(!panicked(&mut s, stage));
+    run_to(&mut s, at + samples(1.0) + 2 * BLOCK);
+    assert!(
+        covered_black(&mut s, stage, display),
+        "black after it again"
+    );
+}
+
+/// #708 flow (one display with the menu bar; the engine's side): GO a Video cue → the picture
+/// covers the whole display; its media ends → black that stays; Esc → the black goes; the next
+/// Video cue covers the display again and black follows it again. That the window is over
+/// every app's windows, the menu bar and the Dock is its level, the same on every display
+/// (`tests/output_window.rs`).
+#[test]
+fn one_display_go_covers_it_black_follows_the_media_and_esc_takes_the_black_away() {
+    covers_then_black_until_esc(stage_id(), "V1");
+}
+
+/// #708 flow: two displays, the stage on the one without the menu bar → the same.
+#[test]
+fn two_displays_the_stage_on_the_one_without_the_menu_bar_behaves_the_same() {
+    covers_then_black_until_esc(stage_two(), "V2");
+}
+
+/// #708 flow: Esc while the cue is still playing → the cue is panicked (fades out over the panic
+/// time) and then the black goes.
+#[test]
+fn esc_while_the_cue_plays_panics_it_and_then_the_black_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![still_cue(1, &png, None)]);
+    ws.settings.panic_duration = 1.0;
+    let mut s = opened_show(ws);
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    assert_eq!(display_shows(&mut s, "V1", &[RED_AT]).1, vec![RED]);
+    s.panic_all();
+    let at = s.now();
+    run_to(&mut s, at + samples(0.5));
+    let half = stage_shows(&mut s, stage_id(), &[RED_AT]).1[0];
+    assert!(
+        (100..=160).contains(&half[0]) && half[1] < 10,
+        "fading: {half:?}"
+    );
+    run_to(&mut s, at + samples(1.1));
+    expect_state(&s, 1, CueState::Idle, "panicked");
+    assert!(uncovered(&mut s, stage_id()), "then the black goes");
+}
+
+/// #708 flow: a new workspace, nothing played yet → no display is covered (the operator is never
+/// locked out before the first cue plays), and a stage's black comes with the first picture
+/// played on it, only on that stage's display.
+#[test]
+fn a_new_workspace_with_nothing_played_covers_no_display_until_its_first_picture() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = opened_show(workspace(vec![still_cue(1, &png, Some(0.5))]));
+    for stage in [stage_id(), stage_two()] {
+        assert!(
+            s.control()
+                .workspace()
+                .stages
+                .iter()
+                .all(|st| st.keep_black)
+        );
+        assert!(uncovered(&mut s, stage), "nothing covered yet");
+    }
+    s.run(samples(1.0));
+    assert!(
+        uncovered(&mut s, stage_id()),
+        "still nothing as time passes"
+    );
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended");
+    assert!(
+        covered_black(&mut s, stage_id(), "V1"),
+        "black came with the picture"
+    );
+    assert!(
+        uncovered(&mut s, stage_two()),
+        "the other display stays uncovered"
+    );
+}
+
 /// #674 flows: a stage's size changed while a cue plays on it → the picture follows at once
 /// (fitted to the new shape, drawn there on its display) without the cue stopping; one undo
 /// step puts it back. A size of 0 or past the limit is refused with the reason and the size

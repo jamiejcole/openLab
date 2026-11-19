@@ -628,6 +628,7 @@ impl Control {
     ) -> Result<Self, ControlError> {
         // The doc's from here on (a save-as moves it); the config keeps only engine settings.
         let show_path = config.show_path.take();
+        let ws_stages: Vec<openlab_core::StageId> = ws.stages.iter().map(|s| s.id).collect();
         let mut control = Self::empty(mixer, backend, config, inbox, outbound)?;
         let id = control.eng.take_doc_id().unwrap_or(DocId(0));
         let show_dir = show_path
@@ -647,6 +648,12 @@ impl Control {
             show_path,
             media,
         );
+        // This way in stands for a show already running (tests, the offline driver): its stages
+        // keep black as if a picture had played on each. A workspace the engine opens
+        // (`open_doc`) starts with every stage's black down until its first picture.
+        for stage in &ws_stages {
+            control.eng.arm_stage(*stage);
+        }
         control.docs.push(doc);
         control.eng.open_docs = control.docs.len();
         // Before the doc's first reports: the app connections (and the OSC side, which follows

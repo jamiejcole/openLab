@@ -226,8 +226,10 @@ extension AppController {
         for e in failures { log(e, on: store) }
     }
 
-    /// Esc: every workspace, by the engine's app-scope panic.
+    /// Esc: every workspace, by the engine's app-scope panic. The app's own black over the stages'
+    /// displays goes at once, whether or not an engine answers: the operator is never locked out.
     func panicAll() async -> Result<OkBody, EngineError> {
+        backstop.dismiss()
         let result = await session.panicAll()
         if case .failure(let e) = result {
             beep()

@@ -1906,9 +1906,9 @@ impl DocCx<'_> {
                 first = true;
             }
         }
-        // A picture starting on a stage whose black a panic took down puts it back up.
+        // A picture starting on a stage arms its black for after it (if it keeps black).
         if first {
-            self.eng.unrelease_stage(plays.stage);
+            self.eng.arm_stage(plays.stage);
         }
         self.eng.picture_clock(true);
         self.eng.picture(message);

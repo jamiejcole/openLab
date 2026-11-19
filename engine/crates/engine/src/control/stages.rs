@@ -52,17 +52,19 @@ pub(super) struct Stages {
     /// The stage set last handed to the supervisor.
     sent: Option<Vec<StageOutput>>,
     /// What that set was made from: each open doc's stages, [`Stages::mappings`],
-    /// [`Stages::releases`] and [`Stages::monitor_changes`] then. An idle tick finds them
+    /// [`Stages::arms`] and [`Stages::monitor_changes`] then. An idle tick finds them
     /// unchanged and does no more.
     synced: Option<(Vec<DocStages>, u64, u64, u64)>,
     /// Counts changes to this machine's stage display choices.
     mappings: u64,
-    /// Stages whose black a panic took down (QLab 5 manual p. 227: a stage keeps black until
-    /// the workspace panics): the stage host is told they do not keep black until a picture
-    /// plays on them again.
-    released: HashSet<StageId>,
-    /// Counts changes to [`Stages::released`].
-    releases: u64,
+    /// Stages a picture has played on since their workspace opened (or the stage was added)
+    /// and its last panic. Only these keep black: a stage covers its display after its first
+    /// picture, never before (a new or opened workspace locks no operator out), and a panic
+    /// takes the black down (QLab 5 manual p. 227: kept until the workspace panics) until a
+    /// picture plays there again.
+    armed: HashSet<StageId>,
+    /// Counts changes to [`Stages::armed`].
+    arms: u64,
     /// Stages whose monitor window the operator has open (`set_stage_monitor`): not saved,
     /// closed with their stage, their workspace or the app.
     monitors: HashSet<StageId>,
@@ -173,24 +175,24 @@ impl Engine {
     pub(super) fn release_stages(&mut self, stages: impl IntoIterator<Item = StageId>) {
         let mut changed = false;
         for id in stages {
-            changed |= self.stages.released.insert(id);
+            changed |= self.stages.armed.remove(&id);
         }
         if changed {
-            self.stages.releases = self.stages.releases.wrapping_add(1);
+            self.stages.arms = self.stages.arms.wrapping_add(1);
         }
     }
 
-    /// A picture plays on `stage`: its black (if it keeps black) stays up again between cues.
-    pub(super) fn unrelease_stage(&mut self, stage: StageId) {
-        if self.stages.released.remove(&stage) {
-            self.stages.releases = self.stages.releases.wrapping_add(1);
+    /// A picture plays on `stage`: its black (if it keeps black) stays up between cues from now.
+    pub(super) fn arm_stage(&mut self, stage: StageId) {
+        if self.stages.armed.insert(stage) {
+            self.stages.arms = self.stages.arms.wrapping_add(1);
         }
     }
 
-    /// Whether `stage` keeps black now: it does, and no panic has taken it down since a picture
-    /// last played on it.
+    /// Whether `stage` keeps black now: it does, and a picture has played on it since its
+    /// workspace opened and last panicked.
     fn keeps_black(&self, stage: &openlab_core::Stage) -> bool {
-        stage.keep_black && !self.stages.released.contains(&stage.id)
+        stage.keep_black && self.stages.armed.contains(&stage.id)
     }
 
     /// The stage host supervisor, if video output runs.
@@ -229,9 +231,9 @@ impl Control {
                 .stages
                 .synced
                 .as_ref()
-                .is_some_and(|(docs, mappings, releases, monitors)| {
+                .is_some_and(|(docs, mappings, arms, monitors)| {
                     *mappings == self.eng.stages.mappings
-                        && *releases == self.eng.stages.releases
+                        && *arms == self.eng.stages.arms
                         && *monitors == self.eng.stages.monitor_changes
                         && docs.len() == self.docs.len()
                         && docs
@@ -248,7 +250,7 @@ impl Control {
                 .map(|d| (d.id, d.model.ws().stages.clone()))
                 .collect(),
             self.eng.stages.mappings,
-            self.eng.stages.releases,
+            self.eng.stages.arms,
             self.eng.stages.monitor_changes,
         ));
         let mut outputs = Vec::new();
@@ -276,11 +278,11 @@ impl Control {
                 });
             }
         }
-        // A closed workspace's or a removed stage's release is forgotten, so the set stays
-        // within the stages open.
+        // A closed workspace's or a removed stage's played picture is forgotten, so the set
+        // stays within the stages open, and the workspace opened again starts with none.
         self.eng
             .stages
-            .released
+            .armed
             .retain(|id| outputs.iter().any(|o| o.id == *id));
         // Likewise a monitor: it goes with its stage.
         self.eng
@@ -826,6 +828,8 @@ impl Control {
                     if let Some(host) = self.eng.stages_host() {
                         host.send(ToStage::TestCard { stage, frame });
                     }
+                    // A picture shown on the stage, as a cue's is: its black stays up after.
+                    self.eng.arm_stage(stage);
                     reply(to, ok(id, None));
                 }
             },

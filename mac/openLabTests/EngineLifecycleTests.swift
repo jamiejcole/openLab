@@ -1049,9 +1049,10 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertTrue(alerts.log.isEmpty)
     }
 
-    /// VID-12: a stage with keep-black on, the engine killed and relaunched by the app: the output
-    /// display shows black, never the desktop, from the kill until the new engine's stage host has
-    /// drawn the stage again (the app's backstop; BlackBackstopTests for the rest).
+    /// VID-12: a stage with its black up, the engine killed and relaunched by the app: the output
+    /// display shows black, never the desktop, from the kill on, through the relaunch (which
+    /// reopens the workspace with the stage's black down) until Esc (the app's backstop;
+    /// BlackBackstopTests for the rest).
     func testAKeepBlackStageShowsBlackNeverTheDesktopWhileTheEngineIsKilledAndRelaunched() async throws {
         try await launch(displays: BlackBackstopTests.displays)
         app.backstop.readDisplays = { BlackBackstopTests.virtual }
@@ -1070,7 +1071,9 @@ final class EngineCrashFlowTests: XCTestCase {
         guard case .success = await store.setStageMapping(stage, display: "V1"),
             case .success = await store.send(
                 command: .setStage(stage, .object(["type": .string("keep_black"), "value": .bool(true)]))),
-            case .success = await store.save()
+            case .success = await store.save(),
+            // A picture shown on it (the test card): its black is up from then on.
+            case .success = await store.client.send({ .request(id: $0, .stageTestCard(stage: stage, frame: 1)) })
         else { return XCTFail("the stage was not set up") }
         let shown: @MainActor () -> Bool = {
             store.videoOutputs.stages.first { $0.stage == stage }?.state?.state == "shown"
@@ -1096,21 +1099,24 @@ final class EngineCrashFlowTests: XCTestCase {
             return self.presenter.detail.contains(loc("engine.alarm.back"))
         }
         XCTAssertTrue(back, "a new engine reattached the workspace")
-        let black: [UInt8] = [0, 0, 0, 255]
-        let drawn = await eventually {
+        // The new engine opened the workspace with the stage's black down (no picture played on it
+        // there yet): the app carries the black through, so the display never shows the desktop.
+        let told = await eventually {
             covered()
             try? await self.advance(0.11)
-            guard shown(),
-                case .success(let ok) = await session.appClient.send({
-                    .request(id: $0, .displayProbe(display: "V1", points: [[0.5, 0.5]]))
-                }),
-                case .stageProbe(_, let colours)? = ok.data
-            else { return false }
-            return colours == [black]
+            let entry = store.videoOutputs.stages.first { $0.stage == stage }
+            return entry?.state?.state == "hidden" && entry?.panicked == true
         }
-        XCTAssertTrue(drawn, "the new engine's stage host draws the stage black")
-        XCTAssertFalse(uncovered, "the backstop stayed up from the kill until the stage was drawn again")
+        XCTAssertTrue(told, "the new engine's stage host has the stage hidden")
+        await settle()
+        covered()
+        XCTAssertFalse(uncovered, "the backstop stayed up from the kill on, through the relaunch")
         XCTAssertTrue(app.backstop.windows["V1"] === window && window.isVisible)
+        // Esc takes it away.
+        app.beep = {}
+        _ = await app.panicAll()
+        XCTAssertNil(app.backstop.windows["V1"])
+        XCTAssertFalse(window.isVisible)
     }
 
     /// The output override lives in the engine only: after a crash and restart the app follows the

@@ -1901,7 +1901,7 @@ fn stages_can_be_added_removed_moved_and_edited() {
             width: 3840,
             height: 2160,
         },
-        StageProperty::KeepBlack { value: true },
+        StageProperty::KeepBlack { value: false },
         StageProperty::Layer { value: 1000 },
     ] {
         round_trip(&ws, stage_prop(1, property));

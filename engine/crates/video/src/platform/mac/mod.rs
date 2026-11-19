@@ -33,15 +33,17 @@ use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
+#[cfg(feature = "test-support")]
+use objc2_app_kit::NSNormalWindowLevel;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSNormalWindowLevel,
-    NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowLevel,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSScreen,
+    NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::CGSize;
+#[cfg(feature = "test-support")]
+use objc2_core_graphics::CGMainDisplayID;
 use objc2_core_graphics::{
     CGDirectDisplayID, CGDisplayChangeSummaryFlags, CGDisplayRegisterReconfigurationCallback,
-    CGMainDisplayID,
 };
 use objc2_foundation::{NSNumber, NSRect, NSString};
 use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLDrawable, MTLPixelFormat};
@@ -174,7 +176,6 @@ impl Platform for Mac {
         }
         let w = windows.open.get(&display.id).ok_or("window lost")?;
         w.window.setFrame_display(frame, false);
-        fit_level(&w.window, cg);
         w.layer.setDrawableSize(CGSize::new(
             f64::from(display.width),
             f64::from(display.height),
@@ -468,28 +469,6 @@ fn output_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
     window
 }
 
-/// The level of an output window on display `cg`. The display with the menu bar is the one
-/// the operator works on (a laptop has no other): there the window is just under every app's
-/// normal windows, still over the desktop and its icons, so the openLab app's windows, sheets,
-/// alerts and menus, and the menu bar and Dock, stay over a black stage. Anywhere else it is
-/// at screen-saver level, over everything. Read at every present, which every display change
-/// (a display plugged in or out, the menu bar moved) brings, so the level follows at once.
-fn level_on(cg: CGDirectDisplayID) -> NSWindowLevel {
-    if cg == CGMainDisplayID() {
-        NSNormalWindowLevel - 1
-    } else {
-        NSScreenSaverWindowLevel
-    }
-}
-
-/// Puts `window` at its level for display `cg`, touching AppKit only when it changes.
-fn fit_level(window: &NSWindow, cg: CGDirectDisplayID) {
-    let level = level_on(cg);
-    if window.level() != level {
-        window.setLevel(level);
-    }
-}
-
 /// Orders an output window front, without making it key or activating the stage host.
 fn order_front(window: &NSWindow) {
     #[cfg(feature = "test-support")]
@@ -512,8 +491,9 @@ thread_local! {
 }
 
 /// Test support: a stage presented through the shipped `present` on the display with the menu
-/// bar, never ordered front: the levels its window had as it was ordered front, and its level
-/// after. `None` without a GPU or a display with the menu bar.
+/// bar (the operator's, a laptop's only one), never ordered front: the levels its window had as
+/// it was ordered front, and its level after. `None` without a GPU or a display with the menu
+/// bar.
 #[cfg(feature = "test-support")]
 fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
     let mut mac = Mac {
@@ -554,11 +534,6 @@ fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
 pub struct WindowReport {
     pub level: isize,
     pub screen_saver_level: isize,
-    /// Its level once fitted to the display with the menu bar, then to another display, then
-    /// to the menu bar's display again (the menu bar moved back).
-    pub level_on_main: isize,
-    pub level_on_other: isize,
-    pub level_back_on_main: isize,
     pub normal_level: isize,
     /// A stage presented on the menu bar's display through the shipped path (never really
     /// ordered front): its window's level each time it was ordered front, and after.
@@ -604,19 +579,9 @@ pub fn window_report() -> Option<WindowReport> {
     let window = output_window(mtm, frame);
     let got = window.frame();
     let level = window.level();
-    let main = CGMainDisplayID();
-    fit_level(&window, main);
-    let level_on_main = window.level();
-    fit_level(&window, main.wrapping_add(1));
-    let level_on_other = window.level();
-    fit_level(&window, main);
-    let level_back_on_main = window.level();
     let report = WindowReport {
         level,
         screen_saver_level: NSScreenSaverWindowLevel,
-        level_on_main,
-        level_on_other,
-        level_back_on_main,
         normal_level: NSNormalWindowLevel,
         presented_on_main: presented_on_main(mtm),
         menu_bar_level: objc2_app_kit::NSMainMenuWindowLevel,

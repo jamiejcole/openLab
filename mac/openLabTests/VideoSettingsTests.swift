@@ -128,9 +128,9 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { pane.shown?.isEmpty == true }
     }
 
-    /// Flow 4: the keep-black box: on, the stage on its display stays up black between cues
-    /// (shown); off, its window is hidden while nothing plays.
-    func testTheKeepBlackBoxShowsBlackOrHidesTheStageBetweenCues() async throws {
+    /// Flow 4: the keep-black box sets the stage's keep-black; its black comes only with the first
+    /// picture played on it (#708; black between cues itself: the engine's video_cues.rs).
+    func testTheKeepBlackBoxSetsTheStagesBlackWhichComesOnlyWithItsFirstPicture() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
         await settled(sc) { pane.displayPopups.count == 1 }
@@ -139,10 +139,15 @@ final class VideoSettingsTests: XCTestCase {
         _ = popup.sendAction(popup.action, to: popup.target)
         await settled(sc) { rig.store.videoOutputs.stages.first?.state?.state == "hidden" }
         pane.blackBoxes[0].performClick(nil)
-        await settled(sc) { rig.store.videoOutputs.stages.first?.state?.state == "shown" }
+        await settled(sc) { rig.store.model?.stages.first?.raw["keep_black"] == .bool(true) }
         XCTAssertEqual(pane.blackBoxes[0].state, .on)
+        // #708: no picture has played on the stage since the show opened, so its black is not up yet:
+        // ticking the box never covers a display.
+        await settled(sc) { rig.store.videoOutputs.stages.first?.panicked == true }
+        XCTAssertEqual(rig.store.videoOutputs.stages.first?.state?.state, "hidden")
         pane.blackBoxes[0].performClick(nil)
-        await settled(sc) { rig.store.videoOutputs.stages.first?.state?.state == "hidden" }
+        await settled(sc) { rig.store.model?.stages.first?.raw["keep_black"] == .bool(false) }
+        XCTAssertEqual(rig.store.videoOutputs.stages.first?.state?.state, "hidden")
     }
 
     /// What `stage`'s monitor window shows at a content size of `width` x `height` pixels, read back

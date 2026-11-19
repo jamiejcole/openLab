@@ -53,18 +53,23 @@ final class BlackBackstopTests: XCTestCase {
             })
     }
 
-    /// Only a keep-black stage shown on a connected display without the menu bar is held black,
-    /// whatever the stage host last said of it (it may be gone, failed or not yet started).
-    func testOnlyAKeepBlackStageOnAConnectedOutputDisplayIsHeldBlack() {
+    /// A keep-black stage shown on a connected display is held black, the display with the menu bar
+    /// included (#708), whatever the stage host last said of it (it may be gone, failed or not yet
+    /// started).
+    func testAKeepBlackStageOnAConnectedDisplayIsHeldBlackTheMenuBarsIncluded() {
         let displays = Self.virtual + [BackstopDisplay(id: "V3", frame: .zero, hasMenuBar: false)]
         let m = model([("a", true), ("b", false), ("c", true), ("d", true), ("e", true)])
         let o = outputs([
             ("a", "V1", "failed"), ("b", "V3", "shown"), ("c", "V2", "shown"), ("d", nil, nil), ("e", "GONE", nil),
         ])
-        XCTAssertEqual(BackstopPlan.covers(workspaces: [(m, o)], displays: displays), ["V1": Self.v1Frame])
+        XCTAssertEqual(
+            BackstopPlan.covers(workspaces: [(m, o)], displays: displays), ["V1": Self.v1Frame, "V2": Self.v2Frame])
         let gone = outputs([("a", "V1", nil)])
         XCTAssertEqual(BackstopPlan.covers(workspaces: [(m, gone)], displays: displays), ["V1": Self.v1Frame])
         XCTAssertEqual(BackstopPlan.covers(workspaces: [(nil, o)], displays: displays), [:], "no model yet")
+        // Taken down by the operator's Esc: held nowhere, the other stage still held.
+        XCTAssertEqual(
+            BackstopPlan.covers(workspaces: [(m, o)], displays: displays, dismissed: ["c"]), ["V1": Self.v1Frame])
     }
 
     /// A keep-black stage whose black a panic took down holds nothing until a cue plays on it again
@@ -112,7 +117,8 @@ final class BlackBackstopTests: XCTestCase {
     // MARK: The app on the real engine
 
     /// The app on a real engine with two virtual displays, a new workspace made (one stage per
-    /// display: Stage 1 on V1, Stage 2 on V2, keep-black off); its store and stage ids.
+    /// display: Stage 1 on V1, Stage 2 on V2, keeping black, their black down until a picture
+    /// plays); its store and stage ids.
     private func start() async throws -> (WorkspaceStore, ModelID, ModelID) {
         engine = try await TestEngine.start(displays: Self.displays)
         let url = engine.infoURL
@@ -163,6 +169,12 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertTrue(ok, message, file: file, line: line)
     }
 
+    /// A picture shown on `stage` (the test card): its black is up from then on.
+    private func played(_ store: WorkspaceStore, _ stage: ModelID) async {
+        let result = await store.client.send { .request(id: $0, .stageTestCard(stage: stage, frame: 1)) }
+        guard case .success = result else { return XCTFail("test card refused: \(result)") }
+    }
+
     private func keepBlack(_ store: WorkspaceStore, _ stage: ModelID, _ on: Bool) async {
         let result = await store.send(
             command: .setStage(stage, .object(["type": .string("keep_black"), "value": .bool(on)])))
@@ -201,56 +213,151 @@ final class BlackBackstopTests: XCTestCase {
         }
     }
 
-    /// Flow 1: a stage with keep-black on, its stage host killed: the output display shows black,
+    /// Kills the stage host and waits until a new one draws `stage` on `display` black again,
+    /// checking the backstop on `display` stayed up the whole time.
+    private func killStageHostAndWaitForBlack(
+        _ store: WorkspaceStore, _ stage: ModelID, on display: String, file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let window = try XCTUnwrap(app.backstop.windows[display], file: file, line: line)
+        let hosts = stageHostPids(of: engine.pid)
+        XCTAssertEqual(hosts.count, 1, "one stage host runs", file: file, line: line)
+        let old = try XCTUnwrap(hosts.first, file: file, line: line)
+        XCTAssertEqual(kill(old, SIGKILL), 0, file: file, line: line)
+        var uncovered = false
+        let black: [UInt8] = [0, 0, 0, 255]
+        let drawnAgain = await eventually {
+            if self.app.backstop.windows[display] !== window || !window.isVisible { uncovered = true }
+            try? await self.engine.advance(seconds: 0.11)
+            let now = stageHostPids(of: self.engine.pid)
+            guard now.count == 1, now != [old], self.state(store, stage) == "shown",
+                case .success(let ok) = await self.engine.request(
+                    .displayProbe(display: display, points: [[0.5, 0.5]])),
+                case .stageProbe(_, let colours)? = ok.data
+            else { return false }
+            return colours == [black]
+        }
+        XCTAssertTrue(drawnAgain, "a new stage host draws the stage black again", file: file, line: line)
+        XCTAssertFalse(uncovered, "the backstop stayed up the whole time", file: file, line: line)
+        XCTAssertTrue(app.backstop.windows[display] === window, file: file, line: line)
+    }
+
+    /// Flow 1: a stage keeping black, its stage host killed: the output display shows black,
     /// never the desktop, until the stage is drawn again.
     func testAStageWithKeepBlackOnItsStageHostKilledShowsBlackNeverTheDesktopUntilTheStageIsDrawnAgain()
         async throws
     {
         let (store, stage1, _) = try await start()
-        await keepBlack(store, stage1, true)
-        await pushed("the stage is up black") { self.state(store, stage1) == "shown" && self.v1 != nil }
+        await played(store, stage1)
+        await pushed("the stage is up") { self.state(store, stage1) == "shown" && self.v1 != nil }
         try assertHoldsV1Black()
-        let window = try XCTUnwrap(v1)
-        let hosts = stageHostPids(of: engine.pid)
-        XCTAssertEqual(hosts.count, 1, "one stage host runs")
-        let old = try XCTUnwrap(hosts.first)
-        XCTAssertEqual(kill(old, SIGKILL), 0)
-        var uncovered = false
-        let black: [UInt8] = [0, 0, 0, 255]
-        let drawnAgain = await eventually {
-            if self.v1 !== window || !window.isVisible { uncovered = true }
-            try? await self.engine.advance(seconds: 0.11)
-            let now = stageHostPids(of: self.engine.pid)
-            guard now.count == 1, now != [old], self.state(store, stage1) == "shown",
-                case .success(let ok) = await self.engine.request(.displayProbe(display: "V1", points: [[0.5, 0.5]])),
-                case .stageProbe(_, let colours)? = ok.data
-            else { return false }
-            return colours == [black]
-        }
-        XCTAssertTrue(drawnAgain, "a new stage host draws the stage black again")
-        XCTAssertFalse(uncovered, "the backstop stayed up the whole time")
-        XCTAssertTrue(v1 === window)
+        try await killStageHostAndWaitForBlack(store, stage1, on: "V1")
         try assertHoldsV1Black()
     }
 
-    /// Flow 3: the backstop never covers the operator's display (the one with the menu bar) or takes
-    /// the focus, and goes when the stage is removed, keep-black is turned off, or the workspace closes.
-    func testTheBackstopNeverCoversTheOperatorsDisplayOrTakesFocusAndGoesWhenItsStageGoes() async throws {
+    /// #708 flow: a new workspace, nothing played yet → no display is covered, the app's black
+    /// included; its black comes with the first picture played on a stage.
+    func testANewWorkspaceWithNothingPlayedCoversNoDisplayUntilItsFirstPicture() async throws {
+        let (store, stage1, stage2) = try await start()
+        XCTAssertEqual(store.model?.stages.map { $0.raw["keep_black"] }, [.bool(true), .bool(true)])
+        await pushed("both stages said hidden") {
+            self.state(store, stage1) == "hidden" && self.state(store, stage2) == "hidden"
+        }
+        await settle()
+        XCTAssertTrue(app.backstop.windows.isEmpty, "nothing covered before the first picture")
+        await played(store, stage2)
+        await pushed("the first picture brings the black") { self.app.backstop.windows["V2"] != nil }
+        XCTAssertEqual(Array(app.backstop.windows.keys), ["V2"])
+    }
+
+    /// #708 flow: a stage host that crashes or is restarting while a stage is black → the display
+    /// stays black (the app's backstop), on the display with the menu bar too, and Esc still takes
+    /// it away, with no beep; the app keeps the key window and focus throughout.
+    func testAStageHostCrashingWhileTheMenuBarsDisplayIsBlackKeepsItBlackAndEscTakesItAway() async throws {
+        let (store, _, stage2) = try await start()
+        let wc = try XCTUnwrap(app.controllers[ObjectIdentifier(store)])
+        let workspaceWindow = try XCTUnwrap(wc.window)
+        let key = NSApp.keyWindow
+        let responder = workspaceWindow.firstResponder
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        await played(store, stage2)
+        await pushed("the menu bar's display held black") { self.app.backstop.windows["V2"] != nil }
+        let window = try XCTUnwrap(app.backstop.windows["V2"])
+        XCTAssertEqual(window.frame, Self.v2Frame)
+        XCTAssertFalse(window.canBecomeKey || window.canBecomeMain || window.isKeyWindow)
+        XCTAssertTrue(window.ignoresMouseEvents)
+        try await killStageHostAndWaitForBlack(store, stage2, on: "V2")
+        XCTAssertTrue(NSApp.keyWindow === key, "the key window is unchanged")
+        XCTAssertTrue(workspaceWindow.firstResponder === responder, "the focus is unchanged")
+        // Esc: the app's black goes at once, and the engine takes the stage's down.
+        _ = await app.panicAll()
+        XCTAssertTrue(app.backstop.windows.isEmpty, "gone at once")
+        XCTAssertFalse(window.isVisible)
+        await pushed("the engine took the stage's black down") {
+            store.videoOutputs.stages.first { $0.stage == stage2 }?.panicked == true
+        }
+        XCTAssertTrue(app.backstop.windows.isEmpty)
+        XCTAssertEqual(beeps, 0, "no beep")
+        // The next picture brings the black back.
+        await played(store, stage2)
+        await pushed("black again after the next picture") { self.app.backstop.windows["V2"] != nil }
+    }
+
+    /// #708: Esc takes the app's black away even with no engine to hear it (one relaunching).
+    func testEscTakesTheAppsBlackAwayWithoutAnEngine() async throws {
+        let (store, stage1, _) = try await start()
+        await played(store, stage1)
+        await pushed { self.v1 != nil }
+        // The engine killed (no supervisor here relaunches it): the workspace keeps what it last heard.
+        XCTAssertEqual(kill(engine.pid, SIGKILL), 0)
+        await assertEventually("the engine gone") { self.app.session.connectionState != .connected }
+        XCTAssertNotNil(v1, "kept while the engine is gone")
+        app.beep = {}
+        _ = await app.panicAll()
+        XCTAssertNil(v1, "Esc took it away")
+    }
+
+    /// #708 flow: quit with unsaved changes while a stage covers the only display (the one with
+    /// the menu bar) → the cover comes down (as Esc) before the save question is asked.
+    func testQuitWithUnsavedChangesWhileAStageCoversTheOnlyDisplayReachesTheSaveQuestion() async throws {
+        let (store, _, stage2) = try await start()
+        await played(store, stage2)
+        await pushed("the stage covers the menu bar's display") {
+            self.state(store, stage2) == "shown" && self.app.backstop.windows["V2"] != nil
+        }
+        let rename = Command.setStage(stage2, .object(["type": .string("name"), "value": .string("Front")]))
+        guard case .success = await store.send(command: rename) else { return XCTFail("rename") }
+        await assertEventually("unsaved") { store.document?.dirty == true }
+        let alerts = try XCTUnwrap(app.alerts as? ScriptedAlerts)
+        var appBlackWhenAsked: Bool?
+        alerts.onUnsaved = { appBlackWhenAsked = !self.app.backstop.windows.isEmpty }
+        alerts.saveChoices = [.cancel]
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit, "cancelled at the save question")
+        XCTAssertEqual(appBlackWhenAsked, false, "the app's black was down when the question was asked")
+        // The stage itself was taken down as Esc does (the panic went before the question).
+        await pushed("the engine took the stage down") {
+            store.videoOutputs.stages.first { $0.stage == stage2 }?.panicked == true
+        }
+    }
+
+    /// Flow 3: the backstop covers every display its stage is on, the one with the menu bar too
+    /// (#708), never takes the focus, and goes when the stage is removed, keep-black is turned
+    /// off, or the workspace closes.
+    func testTheBackstopCoversItsStagesDisplayNeverTakesFocusAndGoesWhenItsStageGoes() async throws {
         let (store, stage1, stage2) = try await start()
         let wc = try XCTUnwrap(app.controllers[ObjectIdentifier(store)])
         let workspaceWindow = try XCTUnwrap(wc.window)
         let key = NSApp.keyWindow
         let responder = workspaceWindow.firstResponder
 
-        await keepBlack(store, stage2, true)
-        await pushed { self.state(store, stage2) == "shown" }
-        await settle()
-        XCTAssertTrue(app.backstop.windows.isEmpty, "the menu bar's display is the operator's: never covered")
-
-        await keepBlack(store, stage1, true)
+        await played(store, stage2)
+        await pushed { self.state(store, stage2) == "shown" && self.app.backstop.windows["V2"] != nil }
+        await played(store, stage1)
         await pushed { self.v1 != nil }
         try assertHoldsV1Black()
-        XCTAssertEqual(Array(app.backstop.windows.keys), ["V1"])
+        XCTAssertEqual(Set(app.backstop.windows.keys), ["V1", "V2"])
         XCTAssertTrue(NSApp.keyWindow === key, "the key window is unchanged")
         XCTAssertTrue(workspaceWindow.firstResponder === responder, "the focus is unchanged")
 
@@ -267,25 +374,29 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertFalse(window.isVisible)
 
         guard case .success = await store.undo() else { return XCTFail("undo") }
-        await pushed("the stage back on its display: up again") { self.v1 != nil }
+        // A stage put back has had no picture played on it since: its black is down.
+        await played(store, stage1)
+        await pushed("the stage back on its display, a picture played: up again") { self.v1 != nil }
         window = try XCTUnwrap(v1)
         let doc = try XCTUnwrap(app.session.doc(of: store))
         guard case .success = await app.session.close(doc: doc, discardChanges: true) else { return XCTFail("close") }
-        await pushed("the workspace closed: gone") { self.v1 == nil }
+        await pushed("the workspace closed: gone") { self.app.backstop.windows.isEmpty }
         XCTAssertFalse(window.isVisible)
     }
 
-    /// The stage moved to the operator's display, its display unplugged, or the menu bar moved onto
-    /// it: the backstop goes; back on an output display, it comes back over that display's frame.
+    /// The stage moved to another display, its display unplugged, or the menu bar moved onto it:
+    /// the backstop follows its stage's display, over that display's frame, and goes with it.
     func testTheBackstopFollowsItsStagesDisplayAndThisMacsDisplays() async throws {
         let (store, stage1, _) = try await start()
-        await keepBlack(store, stage1, true)
+        await played(store, stage1)
         await pushed { self.v1 != nil }
 
         _ = await store.setStageMapping(stage1, display: "V2")
-        await pushed("moved to the operator's display: gone") { self.app.backstop.windows.isEmpty }
+        await pushed("moved to the menu bar's display: covered there") {
+            Array(self.app.backstop.windows.keys) == ["V2"]
+        }
         _ = await store.setStageMapping(stage1, display: "V1")
-        await pushed { self.v1 != nil }
+        await pushed { self.v1 != nil && self.app.backstop.windows["V2"] == nil }
 
         app.backstop.readDisplays = { [Self.virtual[1]] }
         app.backstop.displaysChanged()
@@ -302,7 +413,7 @@ final class BlackBackstopTests: XCTestCase {
             ]
         }
         app.backstop.displaysChanged()
-        XCTAssertTrue(app.backstop.windows.isEmpty, "the menu bar moved onto V1: gone")
+        XCTAssertEqual(v1?.frame, moved, "the menu bar moved onto V1: still covered")
     }
 
     /// The system moves a window whose display went away onto another display, maybe the
@@ -310,7 +421,7 @@ final class BlackBackstopTests: XCTestCase {
     /// the backstop back over its own display, or takes it down if that display is gone.
     func testABackstopTheSystemMovedAfterADisplayChangeGoesBackOrGoes() async throws {
         let (store, stage1, _) = try await start()
-        await keepBlack(store, stage1, true)
+        await played(store, stage1)
         await pushed { self.v1 != nil }
         let window = try XCTUnwrap(v1)
         NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: NSApp)
@@ -325,7 +436,7 @@ final class BlackBackstopTests: XCTestCase {
         window.setFrame(Self.v2Frame, display: false)
         await assertEventually { await self.scheduler.waitingCount == 1 }
         await scheduler.fire()
-        await assertEventually("V1 gone: the backstop goes, never over the operator's display") {
+        await assertEventually("V1 gone: the backstop goes, never over another display") {
             self.app.backstop.windows.isEmpty
         }
         XCTAssertFalse(window.isVisible)
@@ -336,8 +447,8 @@ final class BlackBackstopTests: XCTestCase {
     func testTwoWorkspacesOnOneDisplayShareOneBackstop() async throws {
         let (first, a, _) = try await start()
         let (second, b, _) = try await newWorkspace()
-        await keepBlack(first, a, true)
-        await keepBlack(second, b, true)
+        await played(first, a)
+        await played(second, b)
         await pushed { self.v1 != nil }
         let window = try XCTUnwrap(v1)
         await keepBlack(first, a, false)
@@ -349,16 +460,15 @@ final class BlackBackstopTests: XCTestCase {
     }
 
     /// #642 flow: Panic takes every stage to black and closes its window: a keep-black stage's
-    /// backstop goes too, so its display shows what it shows with keep-black off.
+    /// backstop goes too, so its display shows what it shows with keep-black off. (The stage's own
+    /// window going is the engine's: video_cues.rs; the test card used here stays drawn.)
     func testAPanicTakesAKeepBlackStagesBackstopDown() async throws {
         let (store, stage1, _) = try await start()
-        await keepBlack(store, stage1, true)
-        await pushed("the stage is up black") { self.state(store, stage1) == "shown" && self.v1 != nil }
+        await played(store, stage1)
+        await pushed("the stage is up") { self.state(store, stage1) == "shown" && self.v1 != nil }
         let window = try XCTUnwrap(v1)
         guard case .success = await store.panic() else { return XCTFail("panic") }
-        await pushed("the panic took the stage and its backstop down") {
-            self.state(store, stage1) == "hidden" && self.v1 == nil
-        }
+        await pushed("the panic took the backstop down") { self.v1 == nil }
         XCTAssertFalse(window.isVisible)
         XCTAssertEqual(store.videoOutputs.stages.first { $0.stage == stage1 }?.panicked, true)
     }

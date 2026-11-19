@@ -212,8 +212,8 @@ fn a_stage_on_its_chosen_display_shows_black_and_then_the_test_card() {
 }
 
 /// A new workspace on a Mac with two displays has one stage per display (QLab 5 manual
-/// p. 226): named, with its display's pixel size, shown on it on this machine, and hidden while
-/// nothing plays (keep-black off), so the operator's own display is never covered.
+/// p. 226): named, with its display's pixel size, shown on it on this machine, keeping black,
+/// and hidden until a picture plays on it (#708), so no display is covered before then.
 #[test]
 fn a_new_workspace_has_one_stage_per_display() {
     let mut c: ControlConfig = config(&workspace(vec![]));
@@ -229,10 +229,7 @@ fn a_new_workspace_has_one_stage_per_display() {
             .iter()
             .map(|st| (st.name.as_str(), st.width, st.height, st.keep_black))
             .collect::<Vec<_>>(),
-        [
-            ("Stage 1", 1920, 1080, false),
-            ("Stage 2", 1280, 720, false)
-        ]
+        [("Stage 1", 1920, 1080, true), ("Stage 2", 1280, 720, true)]
     );
     let entries = mappings(&mut s);
     assert_eq!(
@@ -243,6 +240,7 @@ fn a_new_workspace_has_one_stage_per_display() {
         [Some("V1"), Some("V2")]
     );
     assert!(entries.iter().all(|e| e.state == Some(StageState::Hidden)));
+    assert!(entries.iter().all(|e| e.panicked), "their black is down");
     assert_eq!(s.stalls(), 0);
 }
 
@@ -1622,19 +1620,18 @@ fn the_app_force_quit_while_a_cue_plays_leaves_the_picture_up_and_the_engine_pla
     let (mut window, _) = connect(port, &token, Some(doc));
     advance(&mut app, 1, 0.0);
     // The stage host starts beside the engine: wait (a count of round trips, no clock) until
-    // it has put the stage up on V1.
-    let shown = Some(StageState::Shown {
-        display: "V1".into(),
-    });
+    // it has said where the stage is: hidden, as no picture has played on it since the show
+    // opened (#708: nothing covers a display before then).
+    let hidden = Some(StageState::Hidden);
     let up = (0..20_000u64).any(|n| {
         let outcome = call(&mut window, 1_000 + n, |id| ClientMessage::Request {
             id,
             request: Request::ListStageMappings,
         });
         matches!(outcome, Outcome::Ok(body) if matches!(&body.data,
-            Some(ResultData::StageMappings { stages }) if stages.first().map(|e| &e.state) == Some(&shown)))
+            Some(ResultData::StageMappings { stages }) if stages.first().map(|e| &e.state) == Some(&hidden)))
     });
-    assert!(up, "the stage host never put the stage up");
+    assert!(up, "the stage host never said where the stage is");
     let go = call(&mut window, 2, |id| ClientMessage::Transport {
         id,
         action: TransportAction::Go { list: list_id() },

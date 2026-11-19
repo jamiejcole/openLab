@@ -12,6 +12,8 @@ final class ScriptedAlerts: WorkspaceAlerts {
     var closeShowMode = true
     var quitShowMode = true
     var saveChoices: [SaveChoice] = []
+    /// Called as the save question is asked, before it is answered.
+    var onUnsaved: (@MainActor () -> Void)?
     private(set) var log: [String] = []
     private(set) var errors: [String] = []
 
@@ -42,6 +44,7 @@ final class ScriptedAlerts: WorkspaceAlerts {
 
     func unsavedChanges(workspace: String) -> SaveChoice {
         log.append("unsaved:\(workspace)")
+        onUnsaved?()
         return saveChoices.isEmpty ? .cancel : saveChoices.removeFirst()
     }
 
