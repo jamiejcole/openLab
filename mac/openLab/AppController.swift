@@ -46,6 +46,8 @@ final class AppController {
     var engineWatchScheduler: Scheduler = SystemScheduler()
     var engineWatch: Task<Void, Never>?
     var engineAsked = false
+    /// The last `set_stand_back` sent (`AppController+StandBack`): the next waits for it.
+    var standBackSend: Task<Void, Never>?
     /// `alerts` for errors and notices: with a window in Show Mode they become a log record and a
     /// footer line on that window instead of a modal (NFR-10). Confirmations are not gated.
     var gatedAlerts: WorkspaceAlerts {
@@ -172,6 +174,10 @@ final class AppController {
         StandBack.shared.changed = { [weak self] asking in self?.questionsChanged(asking) }
         backstop.asking = StandBack.shared.isAsking
         backstop.menuBarCoverChanged = { [weak self] covered in self?.watchEngine(covered) }
+        subs.append(
+            session.$connectionState.removeDuplicates().sink { [weak self] state in
+                if state == .connected { self?.sendStandBack() }
+            })
         // A key released while the app is inactive never reaches the monitor: forget held keys.
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: nil, queue: .main

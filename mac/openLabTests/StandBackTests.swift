@@ -61,6 +61,24 @@ final class StandBackTests: XCTestCase {
         XCTAssertEqual(told, [true, false])
     }
 
+    /// A window closed while its sheet is up (its workspace dropped): the question ends with it, once,
+    /// so the stage never stays standing back.
+    func testASheetsWindowClosedWhileItIsUpEndsTheQuestion() {
+        let window = NSWindow(
+            contentRect: NSRect(x: -30000, y: -30000, width: 400, height: 300), styleMask: [.titled],
+            backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let alert = NSAlert()
+        alert.addButton(withTitle: "OK")
+        StandBack.beginSheet(alert, for: window)
+        XCTAssertTrue(StandBack.shared.isAsking)
+        window.close()
+        XCTAssertFalse(StandBack.shared.isAsking, "ended with its window")
+        window.endSheet(alert.window)
+        XCTAssertEqual(StandBack.shared.questions, 0, "not ended twice")
+        XCTAssertEqual(told, [true, false])
+    }
+
     /// What Esc does on the app's alerts: AppKit gives Esc to a button titled Cancel; an alert with
     /// only OK has no Esc button, so there Esc answers nothing (the app's key monitor still panics
     /// first, as everywhere). Return answers OK.

@@ -12,7 +12,8 @@ import XCTest
 /// EngineCrashFlowTests.
 @MainActor
 final class BlackBackstopTests: XCTestCase {
-    static let displays = "V1:1920x1080,V2:1280x720"
+    /// V2 is marked (`*`) as the display with the menu bar for the stage host too.
+    static let displays = "V1:1920x1080,V2:1280x720*"
     static let v1Frame = NSRect(x: -40000, y: -40000, width: 1920, height: 1080)
     static let v2Frame = NSRect(x: -36000, y: -40000, width: 1280, height: 720)
     static let virtual = [
@@ -423,6 +424,9 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertEqual(menuBarBlackStandsBack, false, "over everything again")
         await settle()
         XCTAssertEqual(store.cueStates[cue]?.state.isActive, true, "the show plays on")
+        // The engine heard it: its stage host stood the stage back for the question, then covered.
+        let said = await eventuallyLogged([standsBack, coversAgain])
+        XCTAssertTrue(said, "the stage host stood back and covered again, in that order")
         XCTAssertEqual(store.videoOutputs.stages.first { $0.stage == stage2Of(store) }?.panicked, false, "no panic")
     }
 
@@ -448,6 +452,25 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertFalse(StandBack.shared.isAsking)
         XCTAssertEqual(menuBarBlackStandsBack, false, "the cover is back")
         XCTAssertEqual(store.cueStates[cue]?.state.isActive, true)
+        let said = await eventuallyLogged([standsBack, coversAgain])
+        XCTAssertTrue(said, "the stage host stood back for the alert and covered again")
+    }
+
+    private let standsBack = "stands back for the app's question"
+    private let coversAgain = "covers its display again"
+
+    /// Whether the engine's show log holds lines containing `texts`, in that order, waiting for them
+    /// (the stepped engine moved on between looks).
+    private func eventuallyLogged(_ texts: [String]) async -> Bool {
+        await eventually {
+            try? await self.engine.advance(seconds: 0.05)
+            guard case .success(let ok) = await self.engine.request(.logTail(max: nil)),
+                case .logTail(let entries, _, _)? = ok.data
+            else { return false }
+            var rest = texts[...]
+            for entry in entries where rest.first.map(entry.message.contains) == true { rest = rest.dropFirst() }
+            return rest.isEmpty
+        }
     }
 
     /// Flow 3: the backstop covers every display its stage is on, the one with the menu bar too

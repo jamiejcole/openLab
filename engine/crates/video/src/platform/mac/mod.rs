@@ -87,8 +87,10 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
         #[cfg(feature = "test-support")]
         [flag, list, options @ ..] if flag == "--virtual-displays" => {
-            match (virtual_displays(list), offscreen_options(options)) {
-                (Some(displays), Some(options)) => {
+            let (list, starred) = menu_bar_marked(list);
+            match (virtual_displays(&list), offscreen_options(options)) {
+                (Some(displays), Some(mut options)) => {
+                    options.menu_bar = options.menu_bar.or(starred);
                     if options.hand_clock {
                         media::fault::use_hand_clock();
                     }
@@ -865,6 +867,25 @@ fn virtual_displays(list: &str) -> Option<Vec<Display>> {
         .collect()
 }
 
+/// Test support: a `--virtual-displays` list with a `*` after one display's size (`V2:1280x720*`)
+/// names that display as the one with the menu bar (as `--menu-bar-display` does): the list
+/// without the mark, and the display marked.
+#[cfg(feature = "test-support")]
+fn menu_bar_marked(list: &str) -> (String, Option<String>) {
+    let mut marked = None;
+    let items: Vec<&str> = list
+        .split(',')
+        .map(|item| match item.strip_suffix('*') {
+            Some(plain) => {
+                marked = plain.split_once(':').map(|(id, _)| id.to_owned());
+                plain
+            }
+            None => item,
+        })
+        .collect();
+    (items.join(","), marked)
+}
+
 /// Test support: `OPEN_MS,FRAME_MS`, the limits on a picture's open and frames, each at most
 /// an hour (so a deadline counted from now never overflows).
 #[cfg(feature = "test-support")]
@@ -972,6 +993,15 @@ fn offscreen(displays: Vec<Display>, options: Offscreen) -> ExitCode {
 #[cfg(all(test, feature = "test-support"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_virtual_display_marked_with_a_star_has_the_menu_bar() {
+        assert_eq!(
+            menu_bar_marked("V1:1920x1080,V2:1280x720*"),
+            ("V1:1920x1080,V2:1280x720".to_owned(), Some("V2".to_owned()))
+        );
+        assert_eq!(menu_bar_marked("V1:64x36"), ("V1:64x36".to_owned(), None));
+    }
 
     #[test]
     fn virtual_displays_are_parsed_or_refused() {

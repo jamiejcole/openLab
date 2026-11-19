@@ -45,24 +45,54 @@ final class StandBack {
         return panel.runModal()
     }
 
-    /// `alert` as a sheet on `window`, the stage standing back until it is answered.
+    /// `alert` as a sheet on `window`, the stage standing back until it is answered or `window`
+    /// closes.
     static func beginSheet(
         _ alert: NSAlert, for window: NSWindow,
         completion: (@MainActor (NSApplication.ModalResponse) -> Void)? = nil
     ) {
-        shared.begin()
+        let question = shared.sheetQuestion(on: window)
         alert.beginSheetModal(for: window) { response in
             MainActor.assumeIsolated {
-                shared.end()
+                question.end()
                 completion?(response)
             }
         }
     }
 
-    /// `sheet` on `window`, the stage standing back until the sheet ends.
+    /// `sheet` on `window`, the stage standing back until the sheet ends or `window` closes.
     static func beginSheet(_ sheet: NSWindow, on window: NSWindow) {
-        shared.begin()
-        window.beginSheet(sheet) { _ in MainActor.assumeIsolated { shared.end() } }
+        let question = shared.sheetQuestion(on: window)
+        window.beginSheet(sheet) { _ in MainActor.assumeIsolated { question.end() } }
+    }
+
+    /// One question in a sheet on `window`: it ends when the sheet ends, or when its window closes
+    /// (a window closed with its sheet up may never call the sheet's completion), once.
+    private func sheetQuestion(on window: NSWindow) -> SheetQuestion {
+        begin()
+        let question = SheetQuestion(stand: self)
+        question.closing = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [question] _ in MainActor.assumeIsolated { question.end() } }
+        return question
+    }
+}
+
+/// A question in a sheet, ended once.
+@MainActor
+private final class SheetQuestion {
+    private let stand: StandBack
+    private var ended = false
+    var closing: NSObjectProtocol?
+
+    init(stand: StandBack) { self.stand = stand }
+
+    func end() {
+        guard !ended else { return }
+        ended = true
+        if let closing { NotificationCenter.default.removeObserver(closing) }
+        closing = nil
+        stand.end()
     }
 }
 

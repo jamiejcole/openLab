@@ -12,8 +12,20 @@ extension AppController {
 
     func questionsChanged(_ asking: Bool) {
         backstop.asking = asking
+        sendStandBack(asking)
+    }
+
+    /// Tells the engine whether a question is up (`on`, as it was when it changed): one send after
+    /// another, so an on and the off that follows it arrive in that order however short the
+    /// question. Also sent, as it is then, each time the app's connection comes back (a relaunched
+    /// engine starts with no question up).
+    func sendStandBack(_ on: Bool = StandBack.shared.isAsking) {
+        let previous = standBackSend
         let client = session.appClient
-        Task { _ = await client.send { .request(id: $0, .setStandBack(on: asking)) } }
+        standBackSend = Task {
+            await previous?.value
+            _ = await client.send { .request(id: $0, .setStandBack(on: on)) }
+        }
     }
 
     /// Watches the engine's answers while the app's black covers the display with the menu bar

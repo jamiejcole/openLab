@@ -365,7 +365,7 @@ stand_back_gate() {
   local hits
   hits=$(grep -rn '' mac/openLab --include='*.swift' | grep -v '^mac/openLab/StandBack.swift:' \
     | sed -E 's/StandBack\.(runModal|beginSheet)\(//g' \
-    | grep -E '\.runModal\(|beginSheetModal\(|\.beginSheet\(|runModal\(for:')
+    | grep -E '\.runModal\(|beginSheetModal\(|\.beginSheet\(|runModal\(for:|presentAsSheet|presentAsModalWindow|beginCriticalSheet|beginModalSession|[Pp]anel\.begin(WithCompletionHandler)?\(')
   [ -z "$hits" ] || fail stand-back "a modal alert, sheet or panel outside StandBack.swift (call StandBack.runModal / StandBack.beginSheet): $(echo "$hits" | head -n 3 | tr '\n' ' ')"
 }
 
