@@ -67,8 +67,8 @@ final class CueListLayoutUITests: XCTestCase {
     private static let titles = ["Number", "Name", "Target", "Pre-Wait", "Duration", "Post-Wait"]
 
     /// The demo show, Intro a 30 s tone playing.
-    private func launchPlaying() -> XCUIApplication {
-        let app = launchApp(opening: ["Demo"]) { copies in
+    private func launchPlaying(windowSize: String? = nil) -> XCUIApplication {
+        let app = launchApp(opening: ["Demo"], windowSize: windowSize) { copies in
             try writeWAV(copies.appendingPathComponent("Demo/media/a.wav"), seconds: 30)
         }
         XCTAssertTrue(waitFor("isHittable == true", app.staticTexts["Intro"]), "the demo is ready")
@@ -96,7 +96,7 @@ final class CueListLayoutUITests: XCTestCase {
     }
 
     func testGroupClosedAndOpenedByTriangleAndArrowsWhileACuePlaysAndTheWindowIsResized() {
-        let app = launchPlaying()
+        let app = launchPlaying(windowSize: "820x560")
         let door = app.staticTexts["Door slam"]
         selectCue("Act One", in: app)
         app.typeKey(XCUIKeyboardKey.leftArrow.rawValue, modifierFlags: [])
@@ -120,8 +120,7 @@ final class CueListLayoutUITests: XCTestCase {
     /// At the least window size every column title is shown, in order, side by side inside the
     /// list, and above the inspector.
     func testTheHeaderAtTheLeastWindowSize() {
-        let app = launchPlaying()
-        shrinkWindowToLeast(app)
+        let app = launchPlaying(windowSize: "least")
         let list = app.outlines["cue-list"]
         let inspector = app.descendants(matching: .any)["inspector-tabs"]
         var right = -CGFloat.infinity
@@ -139,8 +138,7 @@ final class CueListLayoutUITests: XCTestCase {
     /// A column made wider than the window has room for: the list scrolls sideways and every title
     /// stays over its column.
     func testASidewaysScrollKeepsTitlesOverTheirColumns() {
-        let app = launchPlaying()
-        shrinkWindowToLeast(app)
+        let app = launchPlaying(windowSize: "least")
         let list = app.outlines["cue-list"]
         // Each time column dragged as far right as the window goes: a drag past the screen's edge is lost, and
         // a small screen's window ends at it. Name gives up what it can; the columns together then need more

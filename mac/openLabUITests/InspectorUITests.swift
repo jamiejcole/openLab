@@ -135,8 +135,8 @@ final class TimeLoopsUITests: XCTestCase {
 final class VideoUITests: XCTestCase {
     /// The Geometry show (cue 6 is in custom mode: moved, scaled 2x locked, turned, cropped, anchored),
     /// its movie and still made now.
-    private func launchGeometry() -> XCUIApplication {
-        let app = launchApp(opening: ["Geometry"], displays: "V1:1920x1080") { copies in
+    private func launchGeometry(windowSize: String? = nil) -> XCUIApplication {
+        let app = launchApp(opening: ["Geometry"], displays: "V1:1920x1080", windowSize: windowSize) { copies in
             try writeTestMedia(copies.appendingPathComponent("Geometry/media/clip.mov"), seconds: 4)
             try writeTestMedia(copies.appendingPathComponent("Geometry/media/still.png"), seconds: 0)
         }
@@ -243,13 +243,12 @@ final class VideoUITests: XCTestCase {
     /// At the window's least size the fields scroll: Tab goes from field to field in reading
     /// order, and a field further down comes into view as it takes the focus.
     func testGeometryTabOrderBringsAFieldBelowTheScrolledAreaIntoView() throws {
-        let app = launchGeometry()
+        let app = launchGeometry(windowSize: "least")
         selectCue("Custom: moved, turned and cropped", in: app)
         tabButton("Geometry", in: app).click()
         XCTAssertTrue(waitFor("isHittable == true", field("x", in: app)), "the custom fields are shown")
-        // The window at its least size, the inspector at its least height: the divider above it
+        // The window launched at its least size; the inspector at its least height: the divider above it
         // dragged down as far as it goes.
-        shrinkWindowToLeast(app)
         let window = app.windows.firstMatch
         let divider = app.splitters.allElementsBoundByIndex.first { $0.frame.width > $0.frame.height }
         let bar = try XCTUnwrap(divider, "the divider above the inspector")
