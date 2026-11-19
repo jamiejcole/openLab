@@ -12,10 +12,10 @@ final class ScriptedAlerts: WorkspaceAlerts {
     var closeShowMode = true
     var quitShowMode = true
     var saveChoices: [SaveChoice] = []
-    /// Called as the save question is asked, before it is answered.
-    var onUnsaved: (@MainActor () -> Void)?
-    private(set) var log: [String] = []
-    private(set) var errors: [String] = []
+    /// Called as each question is asked, before it is answered.
+    var onAsk: (@MainActor () -> Void)?
+    private(set) var log: [String] = [] { didSet { onAsk?() } }
+    private(set) var errors: [String] = [] { didSet { onAsk?() } }
 
     func confirmCloseWhilePlaying(workspace: String) -> Bool {
         log.append("closePlaying")
@@ -44,7 +44,6 @@ final class ScriptedAlerts: WorkspaceAlerts {
 
     func unsavedChanges(workspace: String) -> SaveChoice {
         log.append("unsaved:\(workspace)")
-        onUnsaved?()
         return saveChoices.isEmpty ? .cancel : saveChoices.removeFirst()
     }
 

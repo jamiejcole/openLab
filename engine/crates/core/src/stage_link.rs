@@ -54,6 +54,10 @@ pub enum ToStage {
     /// The stage's monitor window (it has one in the `stages` set) comes to the front, opened
     /// again if the operator closed it since.
     RaiseMonitor { stage: StageId },
+    /// While `on`, the window on the display with the menu bar stands back under every app's
+    /// windows (over the desktop), so the operator can see the app's question; what it draws
+    /// is unchanged.
+    StandBack { on: bool },
     /// The engine's sample clock: `sample` is now, at `rate` samples a second. Every picture's
     /// position follows it; the stage host moves it on by its own clock between messages.
     Clock { sample: u64, rate: u32 },
@@ -649,6 +653,7 @@ mod tests {
             ToStage::Ping { seq: 7 },
             ToStage::Quit,
             ToStage::RaiseMonitor { stage: stage(1) },
+            ToStage::StandBack { on: true },
             ToStage::Load {
                 picture: 4,
                 stage: stage(1),

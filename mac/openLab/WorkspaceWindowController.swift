@@ -531,7 +531,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let alert = NSAlert()
         alert.messageText = message
         alert.addButton(withTitle: loc("edit.ok"))
-        alert.beginSheetModal(for: window)
+        StandBack.beginSheet(alert, for: window)
     }
 
     /// Asks for the first number, the increment and an optional prefix and suffix, then renumbers the
@@ -559,7 +559,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         alert.accessoryView = form
         alert.addButton(withTitle: loc("edit.renumber.ok"))
         alert.addButton(withTitle: loc("edit.cancel"))
-        alert.beginSheetModal(for: window) { [weak self] response in
+        StandBack.beginSheet(alert, for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             guard let a = Double(start.stringValue), let b = Double(step.stringValue) else {
                 return self.showNotice(loc("edit.error.renumberValues"))
@@ -602,7 +602,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         alert.accessoryView = form
         alert.addButton(withTitle: loc(key + ".ok"))
         alert.addButton(withTitle: loc("edit.cancel"))
-        alert.beginSheetModal(for: window) { [weak self] response in
+        StandBack.beginSheet(alert, for: window) { [weak self] response in
             _ = filler  // the button's target lives as long as the sheet
             guard response == .alertFirstButtonReturn, let self,
                 let problem = self.applyCueNumber(input.stringValue, movePlayhead: movePlayhead)
@@ -931,7 +931,7 @@ extension WorkspaceWindowController {
         panel.prompt = loc("inspector.target.choosePrompt")
         let extensions = kind == .video ? CueEditor.videoExtensions : CueEditor.audioExtensions
         panel.allowedContentTypes = extensions.sorted().compactMap { UTType(filenameExtension: $0) }
-        return panel.runModal() == .OK ? panel.url : nil
+        return StandBack.runModal(panel) == .OK ? panel.url : nil
     }
 }
 

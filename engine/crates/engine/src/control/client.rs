@@ -96,7 +96,13 @@ impl Control {
             Inbox::Log { level, message } => self.eng.log(level, message),
             Inbox::Trigger { source, detail } => self.eng.observe_trigger(source, detail),
             Inbox::Stage(event) => self.stage_event(event),
-            Inbox::AppsGone => self.close_monitors(),
+            Inbox::AppsGone => {
+                self.close_monitors();
+                // No app is left to take a question down: the stage covers its display again.
+                if self.eng.stages.stand_back {
+                    self.eng.set_stand_back(false);
+                }
+            }
             Inbox::Shutdown => return Flow::Shutdown,
         }
         Flow::Continue
@@ -287,6 +293,10 @@ impl Control {
                     modified_ms,
                 } => self.discard_recovery(workspace_id, path_hash, modified_ms, id, to),
                 Request::ListDisplays => self.list_displays(id, to),
+                Request::SetStandBack { on } => {
+                    self.eng.set_stand_back(on);
+                    reply(to, ok(id, None));
+                }
                 Request::ListDevices => reply(
                     to,
                     ServerMessage::Result {

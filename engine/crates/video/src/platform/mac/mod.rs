@@ -6,10 +6,10 @@
 //! windows come up with `orderFrontRegardless`, are borderless, ignore the mouse and cannot
 //! become key, so the operator's keys stay with the openLab app. A stage's window covers its
 //! display's whole frame, joins every Space and stays out of Mission Control and window
-//! cycling. On a display without the menu bar it is at screen-saver level, over everything;
-//! on the one with the menu bar (the operator's, a laptop's only one) it is just under every
-//! app's windows, so the app stays usable over a black desktop. System full-screen mode is
-//! never used: it would need activation and a Space of its own.
+//! cycling. It is at screen-saver level, over everything, on every display; on the one with the
+//! menu bar (the operator's, a laptop's only one) it stands back just under every app's windows
+//! while the app has a question up or the engine has gone silent, so the operator can see the
+//! app. System full-screen mode is never used: it would need activation and a Space of its own.
 //!
 //! AppKit and the drawing live on the main thread, with the [`Host`]. A reader thread decodes
 //! the engine's lines and hands each to the main queue. Every picture's file is opened and
@@ -33,11 +33,10 @@ use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-#[cfg(feature = "test-support")]
-use objc2_app_kit::NSNormalWindowLevel;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSScreen,
-    NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSNormalWindowLevel,
+    NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowLevel,
+    NSWindowStyleMask,
 };
 use objc2_core_foundation::CGSize;
 use objc2_core_graphics::{
@@ -119,6 +118,8 @@ pub struct Mac {
     good_limits: media::Limits,
     /// The displays last read, with their CoreGraphics ids.
     found: Vec<Found>,
+    /// The display whose window stands back under the app's windows (`Platform::stand_back`).
+    standing_back: Option<String>,
     /// Test support: displays that stand in for real ones, drawn offscreen only.
     #[cfg(feature = "test-support")]
     virtual_displays: Option<Vec<Display>>,
@@ -179,6 +180,10 @@ impl Platform for Mac {
         }
         let w = windows.open.get(&display.id).ok_or("window lost")?;
         w.window.setFrame_display(frame, false);
+        let level = level_for(self.standing_back.as_deref() == Some(display.id.as_str()));
+        if w.window.level() != level {
+            w.window.setLevel(level);
+        }
         w.layer.setDrawableSize(CGSize::new(
             f64::from(display.width),
             f64::from(display.height),
@@ -356,6 +361,10 @@ impl Platform for Mac {
         }
     }
 
+    fn stand_back(&mut self, display: Option<&str>) {
+        self.standing_back = display.map(str::to_owned);
+    }
+
     fn menu_bar_display(&self) -> Option<String> {
         #[cfg(feature = "test-support")]
         if self.virtual_displays.is_some() {
@@ -483,6 +492,18 @@ fn output_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
     window
 }
 
+/// An output window's level: screen-saver, over every app's windows, the menu bar and the Dock;
+/// or, standing back (a question of the app's is up, or the engine has gone silent), just under
+/// every app's normal windows, still over the desktop and its icons, so the operator sees the app
+/// while what the stage draws is unchanged.
+fn level_for(standing_back: bool) -> NSWindowLevel {
+    if standing_back {
+        NSNormalWindowLevel - 1
+    } else {
+        NSScreenSaverWindowLevel
+    }
+}
+
 /// Orders an output window front, without making it key or activating the stage host.
 fn order_front(window: &NSWindow) {
     #[cfg(feature = "test-support")]
@@ -522,6 +543,7 @@ fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
         fault_limits: media::LIMITS,
         good_limits: media::LIMITS,
         found: Vec::new(),
+        standing_back: None,
         virtual_displays: None,
         virtual_menu_bar: None,
     };
@@ -690,6 +712,7 @@ fn windowed() -> ExitCode {
         #[cfg(feature = "test-support")]
         good_limits: media::LIMITS,
         found: Vec::new(),
+        standing_back: None,
         #[cfg(feature = "test-support")]
         virtual_displays: None,
         #[cfg(feature = "test-support")]
@@ -931,6 +954,7 @@ fn offscreen(displays: Vec<Display>, options: Offscreen) -> ExitCode {
         fault_limits: options.fault_limits,
         good_limits: options.good_limits,
         found: Vec::new(),
+        standing_back: None,
         virtual_displays: Some(displays),
         virtual_menu_bar: options.menu_bar,
     });
@@ -977,6 +1001,7 @@ mod tests {
                 frame: ms(4),
             },
             found: Vec::new(),
+            standing_back: None,
             virtual_displays: None,
             virtual_menu_bar: None,
         };

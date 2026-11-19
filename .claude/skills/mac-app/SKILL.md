@@ -12,7 +12,7 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - `EngineClient` (socket, reconnect, message codec; `URLSessionWebSocketTask`, `Codable`) -> `WorkspaceStore` (mirrored model and runtime state, publishes changes) -> AppKit view controllers.
 - View controllers never touch the socket.
 - One window per open workspace, each with its own `EngineClient` bound to that doc (`hello { workspace }`) and its own `WorkspaceStore`.
-- An app-level session holds the unbound connection and owns launch, New/Open/recovery flows, the workspace list, recent files and the quit walk (one save prompt per dirty workspace). The walk first takes the app's black down and, when a stage is up on the display with the menu bar, panics as Esc does, so no question is asked under a stage (#708).
+- An app-level session holds the unbound connection and owns launch, New/Open/recovery flows, the workspace list, recent files and the quit walk (one save prompt per dirty workspace).
 - The front window decides which doc GO, Pause All and other window-scoped keys address. Esc sends the app-scope `panic`.
 - Edit > Undo and Redo act on the workspace whose window or settings window is key (`AppController.undoController`), so a settings change (the OSC passcode table, NET-02) is undone from the settings window; every other window-scoped key still needs the workspace window itself.
 - Closing a workspace while cues play asks first. Closing the last one shows a launcher window.
@@ -243,3 +243,5 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - A Group's Mode tab is one radio per mode (`groupModeRadios`) with the chosen mode's name and a line saying what it does beside them; Loop and Shuffle are drawn only for a playlist (`showGroupModes`). A Network cue's Settings tab is the patch row (pop-up, Send) over a message area filling the tab's width and height.
 - Every inspector time field shows milliseconds (`CueTime.precise`: `00:01.000`); the cue list keeps hundredths. A file cue whose file is missing or unplayable shows `inspector.target.fileMissing` or `fileUnsupported` beside its target (`targetNote`, the engine's problem in its tip).
 - Time & Loops: Clear Slices and New Slice are in the left column under the play controls; reset (ends a preview) and preview sit under the timeline beside zoom (`TimeLoopsPanel.showPreview`). A ruler label that would run past the view's edge is left out, never drawn cut.
+
+- Every alert, sheet and panel goes through `StandBack.swift` (`StandBack.runModal`, `StandBack.beginSheet`; `AppController.alerts` wraps any `WorkspaceAlerts` in `StandingBackAlerts`); `scripts/check-repo.sh` fails on a site that does not. While one is up the stage and the app's black on the display with the menu bar stand back (skill `video`), so the operator sees it; Esc keeps AppKit's behaviour (a Cancel button takes it; an OK-only alert has none) after the key monitor's panic.

@@ -153,17 +153,28 @@ final class BlackBackstop {
         }
     }
 
-    /// Whether a stage of a followed workspace is up (a picture or its black) on the display with
-    /// the menu bar, as its engine last said: it covers the operator's windows and every question
-    /// the app asks there.
-    func stageCoversMenuBarDisplay() -> Bool {
-        let menuBar = Set(displays.filter(\.hasMenuBar).map(\.id))
-        return stores.contains { store in
-            store.videoOutputs.stages.contains { entry in
-                guard let display = entry.mapping?.display, menuBar.contains(display) else { return false }
-                return entry.state?.state == "shown"
-            }
-        }
+    /// The app has a question up (`StandBack`): its black on the display with the menu bar stands
+    /// back under the app's windows, as the stage does.
+    var asking = false {
+        didSet { if asking != oldValue { update() } }
+    }
+    /// The engine has not answered for a while (`AppController`'s engine watch): its black on the
+    /// display with the menu bar stands back too; the stage host stands its own window back after
+    /// its silence limit.
+    var engineSilent = false {
+        didSet { if engineSilent != oldValue { update() } }
+    }
+    /// Told when a window of its own starts or stops covering the display with the menu bar.
+    var menuBarCoverChanged: (@MainActor (Bool) -> Void)?
+    private var coveredMenuBar = false
+
+    /// Its black on the display with the menu bar stands back under the app's windows, just under
+    /// the stage's window standing back there.
+    static let standingBackLevel = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 2)
+
+    /// Whether a window of its own is up on the display with the menu bar.
+    var coversMenuBarDisplay: Bool {
+        windows.keys.contains { id in displays.contains { $0.id == id && $0.hasMenuBar } }
     }
 
     /// Esc: every black held goes now, whether or not an engine is there to hear the panic (a
@@ -213,13 +224,21 @@ final class BlackBackstop {
         for id in windows.keys where plan[id] == nil {
             windows.removeValue(forKey: id)?.close()
         }
+        let back = asking || engineSilent
         for (id, frame) in plan {
             let window = windows[id] ?? Self.makeWindow(frame: frame)
             windows[id] = window
             // Also puts back a window the system moved (its display went away).
             if window.frame != frame { window.setFrame(frame, display: false) }
+            let menuBar = displays.contains { $0.id == id && $0.hasMenuBar }
+            let level = back && menuBar ? Self.standingBackLevel : Self.level
+            if window.level != level { window.level = level }
             // Never key, never activating: the operator's keys and focus stay where they are.
             if !window.isVisible { window.orderFrontRegardless() }
+        }
+        if coversMenuBarDisplay != coveredMenuBar {
+            coveredMenuBar.toggle()
+            menuBarCoverChanged?(coveredMenuBar)
         }
     }
 

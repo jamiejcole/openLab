@@ -388,6 +388,13 @@ pub enum Request {
     SetOscPort {
         port: u16,
     },
+    /// While `on`, the stage on the display with the menu bar stands back: under every app's
+    /// windows (over the desktop), so a question the app asks there can be seen; nothing stops
+    /// or fades. The app sets it for as long as an alert, sheet or panel of its own is up. Reset
+    /// when the last app connection ends. Answers `ok`. App-scope.
+    SetStandBack {
+        on: bool,
+    },
     /// Sets the buffer size, in frames per callback, of output device `device` on this machine
     /// (AUD-21): 16 to 1024 (the default is 512). `device` must be a name `list_devices` gives.
     /// Kept in the machine settings. A device the engine plays on reopens at once at that size

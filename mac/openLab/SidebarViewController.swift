@@ -572,7 +572,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         alert.accessoryView = field
         alert.addButton(withTitle: loc("sidebar.list.rename.ok"))
         alert.addButton(withTitle: loc("edit.cancel"))
-        alert.beginSheetModal(for: window) { [weak self] response in
+        StandBack.beginSheet(alert, for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             Task { await self?.rename(list: list.id, to: field.stringValue) }
         }

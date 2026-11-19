@@ -466,7 +466,8 @@ extension ClientMessage {
             // itself after its timeout.
             case .new, .open, .openRecovery, .scanRecovery, .discardRecovery, .save, .saveAs, .relink, .waveform:
                 return false
-            case .listDevices, .setOutputDevice, .oscState, .setOscPort, .backupKeep, .setBackupKeep, .setBufferSize,
+            case .listDevices, .setOutputDevice, .oscState, .setOscPort, .setStandBack, .backupKeep, .setBackupKeep,
+                .setBufferSize,
                 .listPatchMappings, .preshowCheck, .logTail,
                 .setOutputOverrides,
                 .setShowMode, .setPatchMapping, .listDisplays, .listStageMappings, .setStageMapping,

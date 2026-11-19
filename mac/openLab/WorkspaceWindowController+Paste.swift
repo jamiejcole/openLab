@@ -46,7 +46,7 @@ extension WorkspaceWindowController {
             PastePropertiesSheet.remember(ticked, offered: all, in: pasteDefaults)
             Task { await self.editor.pasteProperties(ticked, from: source, onto: cues) }
         }
-        if let presentSheet { presentSheet(sheet.window) } else { window.beginSheet(sheet.window) }
+        if let presentSheet { presentSheet(sheet.window) } else { StandBack.beginSheet(sheet.window, on: window) }
     }
 
     /// Tools > Paste Levels: the copied cue's levels onto the selected cues at once, without the sheet.

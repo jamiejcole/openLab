@@ -1464,6 +1464,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::SetBackupKeep { .. } => "set_backup_keep",
         Request::OscState => "osc_state",
         Request::SetOscPort { .. } => "set_osc_port",
+        Request::SetStandBack { .. } => "set_stand_back",
         Request::SetBufferSize { .. } => "set_buffer_size",
         Request::PreshowCheck => "preshow_check",
         Request::ListPatchMappings => "list_patch_mappings",

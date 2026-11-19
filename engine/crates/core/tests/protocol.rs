@@ -419,6 +419,7 @@ fn request_variants() -> Vec<(&'static str, Request)> {
         ("set_backup_keep", Request::SetBackupKeep { count: 20 }),
         ("osc_state", Request::OscState),
         ("set_osc_port", Request::SetOscPort { port: 53100 }),
+        ("set_stand_back", Request::SetStandBack { on: true }),
     ]
 }
 
@@ -4754,6 +4755,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<u32>().prop_map(|count| Request::SetBackupKeep { count }),
         Just(Request::OscState),
         any::<u16>().prop_map(|port| Request::SetOscPort { port }),
+        any::<bool>().prop_map(|on| Request::SetStandBack { on }),
         Just(Request::ListDisplays),
         Just(Request::ListStageMappings),
         any::<u128>().prop_map(|c| Request::SequenceSpan {

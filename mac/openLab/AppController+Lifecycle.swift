@@ -132,10 +132,6 @@ extension AppController {
         }
         quitting = true
         defer { quitting = false }
-        // A stage over the operator's display would hide every question asked below: the app's
-        // own black goes now, and a stage up there is taken down as Esc does (a panic).
-        backstop.dismiss()
-        if !engineUnreachable, backstop.stageCoversMenuBarDisplay() { _ = await panicAll() }
         if session.connectionState == .retrying(.engineStopping) {
             // The engine is shutting down: no save, close or goodbye can reach it, and it writes
             // the recovery file of every workspace with unsaved changes itself. Nothing is left

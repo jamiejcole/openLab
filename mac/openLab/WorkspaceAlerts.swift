@@ -74,7 +74,7 @@ struct AppKitAlerts: WorkspaceAlerts {
         alert.messageText = String(format: loc("alert.unsaved.title"), workspace)
         alert.informativeText = loc("alert.unsaved.message")
         for key in ["alert.save", "alert.cancel", "alert.dontSave"] { alert.addButton(withTitle: loc(key)) }
-        switch alert.runModal() {
+        switch StandBack.runModal(alert) {
         case .alertFirstButtonReturn: return .save
         case .alertThirdButtonReturn: return .dontSave
         default: return .cancel
@@ -86,7 +86,7 @@ struct AppKitAlerts: WorkspaceAlerts {
         alert.alertStyle = .warning
         alert.messageText = message
         alert.addButton(withTitle: loc("alert.ok"))
-        alert.runModal()
+        StandBack.runModal(alert)
     }
 
     func showInfo(_ message: String) {
@@ -94,7 +94,7 @@ struct AppKitAlerts: WorkspaceAlerts {
         alert.alertStyle = .informational
         alert.messageText = message
         alert.addButton(withTitle: loc("alert.ok"))
-        alert.runModal()
+        StandBack.runModal(alert)
     }
 
     func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice? {
@@ -104,7 +104,7 @@ struct AppKitAlerts: WorkspaceAlerts {
         for key in ["alert.recoveryOffer.restore", "alert.cancel", "alert.recoveryOffer.ignore"] {
             alert.addButton(withTitle: loc(key))
         }
-        switch alert.runModal() {
+        switch StandBack.runModal(alert) {
         case .alertFirstButtonReturn: return .restore
         case .alertThirdButtonReturn: return .ignore
         default: return nil
@@ -118,7 +118,7 @@ struct AppKitAlerts: WorkspaceAlerts {
         alert.alertStyle = .warning
         // Cancel first: a stray Return must not delete work.
         for key in ["alert.cancel", "alert.autosaveDelete.delete"] { alert.addButton(withTitle: loc(key)) }
-        return alert.runModal() == .alertSecondButtonReturn
+        return StandBack.runModal(alert) == .alertSecondButtonReturn
     }
 
     func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> AutosaveChoice {
@@ -129,7 +129,7 @@ struct AppKitAlerts: WorkspaceAlerts {
             modifiedMs.map(Self.date) ?? "?")
         for key in ["alert.autosave.open", "alert.autosave.skip"] { alert.addButton(withTitle: loc(key)) }
         if setAside { alert.addButton(withTitle: loc("alert.autosave.delete")) }
-        switch alert.runModal() {
+        switch StandBack.runModal(alert) {
         case .alertFirstButtonReturn: return .restore
         case .alertThirdButtonReturn: return .delete
         default: return .skip
@@ -147,7 +147,7 @@ struct AppKitAlerts: WorkspaceAlerts {
         alert.messageText = loc(title)
         alert.informativeText = loc(message)
         for key in buttons { alert.addButton(withTitle: loc(key)) }
-        return alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        return StandBack.runModal(alert).rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
     }
 }
 

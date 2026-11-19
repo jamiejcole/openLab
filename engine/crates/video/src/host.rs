@@ -357,12 +357,16 @@ pub trait Platform {
     fn menu_bar_display(&self) -> Option<String> {
         None
     }
+    /// The window on `display` (none: on no display) stands back under every app's windows,
+    /// over the desktop, from its next present; every other window covers its display.
+    fn stand_back(&mut self, _display: Option<&str>) {}
 }
 
 /// How long the stage host may hear nothing at all from the engine (it pings every second while
-/// its control thread runs, and sends the clock while pictures play) before it takes its window
-/// off the display with the menu bar: four missed pings, so one late or slow tick never does,
-/// and the operator of a hung engine has their display back within about five seconds.
+/// its control thread runs, and sends the clock while pictures play) before the window on the
+/// display with the menu bar stands back under the app's windows: four missed pings, so one
+/// late or slow tick never does, and the operator of a hung engine sees the app again within
+/// about five seconds.
 pub const ENGINE_SILENCE: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// One stage's monitor window as the engine asked for it.
@@ -420,9 +424,12 @@ pub struct Host<P: Platform> {
     presented: BTreeSet<String>,
     /// When the engine last sent anything.
     heard: Instant,
-    /// The engine has been silent past `silence_limit`: the display with the menu bar has no
-    /// window, so a hung engine never locks the operator out of their own display.
+    /// The engine has been silent past `silence_limit`: the window on the display with the menu
+    /// bar stands back, so a hung engine never locks the operator out of their own display.
     silent: bool,
+    /// The app asked the window on the display with the menu bar to stand back (a question of
+    /// its own is up).
+    stand_back: bool,
     silence_limit: std::time::Duration,
     /// A failed picture was dropped since the stages were last drawn: the next poll draws them
     /// again, so its last frame never stays in a window.
@@ -445,6 +452,7 @@ impl<P: Platform> Host<P> {
             presented: BTreeSet::new(),
             heard: Instant::now(),
             silent: false,
+            stand_back: false,
             silence_limit: ENGINE_SILENCE,
             redraw_due: false,
             monitors: BTreeMap::new(),
@@ -769,9 +777,9 @@ impl<P: Platform> Host<P> {
         self.silence_limit = limit;
     }
 
-    /// Takes the window off the display with the menu bar once the engine has said nothing for
-    /// `silence_limit` at `now` (a hung engine: its pings stop when its control thread does).
-    /// Every other display keeps what it shows.
+    /// Stands the window on the display with the menu bar back once the engine has said nothing
+    /// for `silence_limit` at `now` (a hung engine: its pings stop when its control thread
+    /// does). What every display shows is unchanged.
     pub fn check_silence(&mut self, now: Instant, out: &mut Vec<FromStage>) {
         if self.silent || now.saturating_duration_since(self.heard) < self.silence_limit {
             return;
@@ -781,7 +789,7 @@ impl<P: Platform> Host<P> {
             out.push(FromStage::Log {
                 level: LinkLevel::Warn,
                 message: format!(
-                    "the engine has not answered for {} s: the stage window on the display with the menu bar ({display}) is taken down until it does",
+                    "the engine has not answered for {} s: the stage window on the display with the menu bar ({display}) stands back under the app's windows until it does",
                     self.silence_limit.as_secs_f64()
                 ),
             });
@@ -790,7 +798,7 @@ impl<P: Platform> Host<P> {
     }
 
     /// Handles one message from the engine; the answers go to `out`. The engine is heard: a
-    /// window taken off the menu bar's display for its silence comes back as its stage says.
+    /// window standing back for its silence covers its display again.
     pub fn handle(&mut self, message: ToStage, out: &mut Vec<FromStage>) -> Flow {
         self.heard = Instant::now();
         let back = std::mem::take(&mut self.silent);
@@ -847,6 +855,23 @@ impl<P: Platform> Host<P> {
                     self.platform.close_monitor(stage);
                 }
                 return Flow::Quit;
+            }
+            ToStage::StandBack { on } => {
+                if std::mem::replace(&mut self.stand_back, on) != on
+                    && let Some(display) = self.platform.menu_bar_display()
+                {
+                    out.push(FromStage::Log {
+                        level: LinkLevel::Info,
+                        message: if on {
+                            format!(
+                                "the stage window on {display} stands back for the app's question"
+                            )
+                        } else {
+                            format!("the stage window on {display} covers its display again")
+                        },
+                    });
+                }
+                self.apply(out);
             }
             ToStage::RaiseMonitor { stage } => {
                 if let Some(m) = self.monitors.get_mut(&stage) {
@@ -973,17 +998,11 @@ impl<P: Platform> Host<P> {
             };
             states.push((stage.id, state));
         }
-        // A hung engine's stage on the operator's display: no window there, the stage hidden.
-        let menu_bar = self.platform.menu_bar_display().filter(|_| self.silent);
-        if let Some(id) = &menu_bar
-            && on.remove(id).is_some()
-        {
-            for (_, state) in &mut states {
-                if matches!(state, StageState::Shown { display } if display == id) {
-                    *state = StageState::Hidden;
-                }
-            }
-        }
+        // A question of the app's, or a hung engine: the operator's display's window stands back.
+        let back = (self.stand_back || self.silent)
+            .then(|| self.platform.menu_bar_display())
+            .flatten();
+        self.platform.stand_back(back.as_deref());
         for display in self.displays.clone() {
             let Some(mut layers) = on.remove(&display.id) else {
                 if self.presented.remove(&display.id) {
@@ -1396,6 +1415,8 @@ pub(crate) mod tests {
         pictures_drawn: HashMap<String, Vec<u64>>,
         /// The display with the menu bar.
         menu_bar: Option<String>,
+        /// The display whose window stands back, as last told.
+        stood_back: Option<String>,
         fail: bool,
         live: bool,
         events: Vec<PictureEvent>,
@@ -1477,6 +1498,9 @@ pub(crate) mod tests {
         }
         fn menu_bar_display(&self) -> Option<String> {
             self.menu_bar.clone()
+        }
+        fn stand_back(&mut self, display: Option<&str>) {
+            self.stood_back = display.map(str::to_owned);
         }
         fn take_closed_monitors(&mut self) -> Vec<StageId> {
             let closed = std::mem::take(&mut self.user_closed);
@@ -2203,11 +2227,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// #708: a hung engine (nothing heard for `ENGINE_SILENCE`) takes the window off the display
-    /// with the menu bar (the operator's) and nothing else: the stage there says hidden, why goes
-    /// to the log, the other display keeps its picture. Any word from the engine brings it back.
-    #[test]
-    fn a_silent_engine_takes_only_the_menu_bars_window_down_until_it_speaks() {
+    /// A host with displays M (the menu bar's) and D, a stage keeping black on each.
+    fn menu_bar_host() -> Host<Fake> {
         let mut h = host(&["M", "D"]);
         h.platform.menu_bar = Some("M".into());
         let version = LINK_VERSION;
@@ -2218,46 +2239,59 @@ pub(crate) mod tests {
                 stages: vec![stage(1, Some("M"), true), stage(2, Some("D"), true)],
             },
         );
-        assert!(h.platform.shown.contains_key("M") && h.platform.shown.contains_key("D"));
+        h
+    }
+
+    /// #708: the app's question up (`stand_back`) → the window on the display with the menu bar
+    /// stands back, drawing what it drew, its stage still shown; the question answered → it
+    /// covers again. Other displays never stand back.
+    #[test]
+    fn the_menu_bars_window_stands_back_while_the_app_asks_and_covers_again_after() {
+        let mut h = menu_bar_host();
+        assert_eq!(h.platform.stood_back, None);
+        let out = send(&mut h, ToStage::StandBack { on: true });
+        assert_eq!(h.platform.stood_back.as_deref(), Some("M"));
+        assert_eq!(h.platform.shown.get("M"), Some(&vec![id(1)]), "still drawn");
+        assert_eq!(h.platform.shown.get("D"), Some(&vec![id(2)]));
+        assert!(states(&out).is_empty(), "no stage changed: {out:?}");
+        send(&mut h, ToStage::StandBack { on: false });
+        assert_eq!(h.platform.stood_back, None);
+    }
+
+    /// #708: a hung engine (nothing heard for `ENGINE_SILENCE`) stands the window on the display
+    /// with the menu bar (the operator's) back, and nothing else: what it draws and every stage's
+    /// state are unchanged, why goes to the log once. Any word from the engine covers again.
+    #[test]
+    fn a_silent_engine_stands_only_the_menu_bars_window_back_until_it_speaks() {
+        let mut h = menu_bar_host();
         // Times from when the engine was last heard.
         let heard = h.heard;
         let mut out = Vec::new();
         h.check_silence(heard + ENGINE_SILENCE / 2, &mut out);
-        assert!(
-            out.is_empty() && h.platform.shown.contains_key("M"),
-            "not yet"
-        );
+        assert!(out.is_empty() && h.platform.stood_back.is_none(), "not yet");
         h.check_silence(heard + ENGINE_SILENCE, &mut out);
         assert_eq!(
-            h.platform.shown.get("M"),
-            None,
-            "the operator's display let go"
+            h.platform.stood_back.as_deref(),
+            Some("M"),
+            "the operator's display"
         );
+        assert_eq!(h.platform.shown.get("M"), Some(&vec![id(1)]), "still drawn");
         assert_eq!(
             h.platform.shown.get("D"),
             Some(&vec![id(2)]),
             "the audience's kept"
         );
-        assert!(
-            states(&out).contains(&(id(1), StageState::Hidden)),
-            "{out:?}"
-        );
+        assert!(states(&out).is_empty(), "{out:?}");
         assert!(matches!(&logs(&out)[..], [(LinkLevel::Warn, m)] if m.contains("menu bar")));
-        // Said once; still down at the next frame-loop tick.
+        // Said once; still back at the next frame-loop tick.
         out.clear();
         h.check_silence(heard + ENGINE_SILENCE * 2, &mut out);
         h.step(None, &mut out);
         assert!(logs(&out).is_empty());
-        assert_eq!(h.platform.shown.get("M"), None);
-        // The engine speaks (a ping): back as its stage says.
-        let out = send(&mut h, ToStage::Ping { seq: 1 });
-        assert_eq!(h.platform.shown.get("M"), Some(&vec![id(1)]));
-        assert!(states(&out).contains(&(
-            id(1),
-            StageState::Shown {
-                display: "M".into()
-            }
-        )));
+        assert_eq!(h.platform.stood_back.as_deref(), Some("M"));
+        // The engine speaks (a ping): it covers again.
+        send(&mut h, ToStage::Ping { seq: 1 });
+        assert_eq!(h.platform.stood_back, None);
     }
 
     pub(crate) fn id(n: u8) -> StageId {
@@ -2291,6 +2325,7 @@ pub(crate) mod tests {
             shown: HashMap::new(),
             pictures_drawn: HashMap::new(),
             menu_bar: None,
+            stood_back: None,
             fail: false,
             live: false,
             events: Vec::new(),
@@ -2449,8 +2484,8 @@ pub(crate) mod tests {
     }
 
     /// A display change that leaves the list as it was (the menu bar moved to another display)
-    /// still presents every shown stage again, so its window takes the level for where the
-    /// menu bar now is at once.
+    /// still presents every shown stage again, so a window standing back does so on the display
+    /// that has the menu bar now, at once.
     #[test]
     fn a_display_change_with_the_same_displays_presents_the_shown_stages_again() {
         let mut h = host(&["D1", "D2"]);

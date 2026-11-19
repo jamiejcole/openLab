@@ -230,7 +230,7 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
             refresh()
             askNext()
         }
-        if let presentSheet { presentSheet(sheet.window) } else { window.beginSheet(sheet.window) }
+        if let presentSheet { presentSheet(sheet.window) } else { StandBack.beginSheet(sheet.window, on: window) }
     }
 
     private func dismissChoice() {

@@ -194,6 +194,8 @@ enum Request: Hashable, Sendable, Codable {
     /// Listens for OSC on this port from now on (1 to 65535). The engine opens it first and closes the
     /// old one after; one that cannot be opened is refused and the old one stays. App-scope.
     case setOscPort(port: UInt16)
+    /// The stage on the display with the menu bar stands back under the app's windows while `on`.
+    case setStandBack(on: Bool)
     /// AUD-21: frames per callback asked of an output device on this machine, 16 to 1024. A
     /// device the engine plays on reopens at that size. App-scope.
     case setBufferSize(device: String, frames: UInt32)
@@ -289,6 +291,7 @@ enum Request: Hashable, Sendable, Codable {
         case .setBackupKeep(let count): return ("set_backup_keep", [("count", Int(count))])
         case .oscState: return ("osc_state", [])
         case .setOscPort(let port): return ("set_osc_port", [("port", Int(port))])
+        case .setStandBack(let on): return ("set_stand_back", [("on", on)])
         case .listPatchMappings: return ("list_patch_mappings", [])
         case .preshowCheck: return ("preshow_check", [])
         case .logTail(let max):
@@ -367,6 +370,7 @@ enum Request: Hashable, Sendable, Codable {
         case "set_backup_keep": self = .setBackupKeep(count: try c.decode(UInt32.self, forKey: "count"))
         case "osc_state": self = .oscState
         case "set_osc_port": self = .setOscPort(port: try c.decode(UInt16.self, forKey: "port"))
+        case "set_stand_back": self = .setStandBack(on: try c.decode(Bool.self, forKey: "on"))
         case "list_patch_mappings": self = .listPatchMappings
         case "preshow_check": self = .preshowCheck
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))

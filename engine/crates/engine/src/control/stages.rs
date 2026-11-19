@@ -76,6 +76,9 @@ pub(super) struct Stages {
     monitor_changes: u64,
     /// When the control thread last told the supervisor it runs (control clock, ms).
     alive_ms: Option<i64>,
+    /// The app asked the stage on the display with the menu bar to stand back
+    /// (`set_stand_back`): an alert, sheet or panel of its own is up.
+    pub(super) stand_back: bool,
     /// Something a `video_outputs` push carries changed since the last one went out.
     push_due: bool,
     /// When the last `video_outputs` went out (control clock, ms).
@@ -199,6 +202,14 @@ impl Engine {
     /// workspace opened and last panicked.
     fn keeps_black(&self, stage: &openlab_core::Stage) -> bool {
         stage.keep_black && self.stages.armed.contains(&stage.id)
+    }
+
+    /// `set_stand_back`: told to the stage host now, and again to each one that starts.
+    pub(super) fn set_stand_back(&mut self, on: bool) {
+        self.stages.stand_back = on;
+        if let Some(host) = &self.stages.host {
+            host.picture(openlab_core::stage_link::ToStage::StandBack { on });
+        }
     }
 
     /// Each tick: tells the supervisor the control thread runs, at most every
@@ -435,8 +446,11 @@ impl Control {
                     );
                 }
                 // A new stage host (after a crash too) shows the pictures that are up, and is
-                // sent the pictures opened ahead again.
+                // sent the pictures opened ahead again, and stands back if the app asks.
                 self.eng.resend_pictures();
+                if self.eng.stages.stand_back {
+                    self.eng.set_stand_back(true);
+                }
                 self.eng.primes_host_started();
                 self.reprime();
             }

@@ -359,6 +359,16 @@ one_gate() {
   done
 }
 
+# 9b. #708: every modal alert, sheet and panel of the mac app goes through StandBack.swift, so a stage
+# over the operator's display stands back while the question is up.
+stand_back_gate() {
+  local hits
+  hits=$(grep -rn '' mac/openLab --include='*.swift' | grep -v '^mac/openLab/StandBack.swift:' \
+    | sed -E 's/StandBack\.(runModal|beginSheet)\(//g' \
+    | grep -E '\.runModal\(|beginSheetModal\(|\.beginSheet\(|runModal\(for:')
+  [ -z "$hits" ] || fail stand-back "a modal alert, sheet or panel outside StandBack.swift (call StandBack.runModal / StandBack.beginSheet): $(echo "$hits" | head -n 3 | tr '\n' ' ')"
+}
+
 # 10. Regression (#408): `prepush.sh --check` with no stamp file must say why it refuses.
 prepush_no_stamp() {
   local out
@@ -860,6 +870,7 @@ path_filters
 wall_clock
 wall_clock_cases
 one_gate
+stand_back_gate
 prepush_no_stamp
 soak_classifier
 wedged_classifier

@@ -34,7 +34,18 @@ final class AppController {
     var statusSubs: [ObjectIdentifier: AnyCancellable] = [:]
 
     // Seams for tests (no modal loops, no panels, no real recents list or key window).
-    var alerts: WorkspaceAlerts = AppKitAlerts()
+    /// The questions the app asks; each stands the stage on the display with the menu bar back
+    /// while it is up (`StandingBackAlerts`).
+    var alerts: WorkspaceAlerts {
+        get { StandingBackAlerts(base: askedBy) }
+        set { askedBy = newValue }
+    }
+    private var askedBy: WorkspaceAlerts = AppKitAlerts()
+    /// The engine watch's clock (a seam: tests move it by hand), its loop, and whether its last ask
+    /// is still unanswered (`AppController+StandBack`).
+    var engineWatchScheduler: Scheduler = SystemScheduler()
+    var engineWatch: Task<Void, Never>?
+    var engineAsked = false
     /// `alerts` for errors and notices: with a window in Show Mode they become a log record and a
     /// footer line on that window instead of a modal (NFR-10). Confirmations are not gated.
     var gatedAlerts: WorkspaceAlerts {
@@ -156,6 +167,11 @@ final class AppController {
         self.scheduler = scheduler
         self.timeout = timeout
         backstop = BlackBackstop(scheduler: scheduler)
+        // A question of the app's up: the stage and the app's black on the display with the menu bar
+        // stand back under the app's windows until it is answered (#708).
+        StandBack.shared.changed = { [weak self] asking in self?.questionsChanged(asking) }
+        backstop.asking = StandBack.shared.isAsking
+        backstop.menuBarCoverChanged = { [weak self] covered in self?.watchEngine(covered) }
         // A key released while the app is inactive never reaches the monitor: forget held keys.
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
@@ -321,7 +337,7 @@ final class AppController {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         if let type = UTType(filenameExtension: "openlab") { panel.allowedContentTypes = [type] }
-        return panel.runModal() == .OK ? panel.url : nil
+        return StandBack.runModal(panel) == .OK ? panel.url : nil
     }
 
     private static func folderPanel() -> URL? {
@@ -331,7 +347,7 @@ final class AppController {
         panel.allowsMultipleSelection = false
         panel.message = loc("relink.panel.message")
         panel.prompt = loc("relink.panel.prompt")
-        return panel.runModal() == .OK ? panel.url : nil
+        return StandBack.runModal(panel) == .OK ? panel.url : nil
     }
 
     /// A workspace name as the Save panel's suggested file name: its first line, trimmed, without
@@ -350,6 +366,6 @@ final class AppController {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = suggestedFileName(name)
         if let type = UTType(filenameExtension: "openlab") { panel.allowedContentTypes = [type] }
-        return panel.runModal() == .OK ? panel.url : nil
+        return StandBack.runModal(panel) == .OK ? panel.url : nil
     }
 }

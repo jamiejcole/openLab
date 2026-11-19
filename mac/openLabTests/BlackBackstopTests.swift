@@ -318,14 +318,10 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertNil(v1, "Esc took it away")
     }
 
-    /// #708 flow: a hung engine while a stage covers the only display: the cover comes down by itself
-    /// and the operator reaches the app. The app's half: Esc takes the app's black off the display with
-    /// the menu bar at once although the engine (stopped) never answers the panic, and it is not put
-    /// back while the panic waits and fails. (The stage host's half, its window let go after the
-    /// engine's silence: stages.rs.)
-    func testAHungEngineWhileAStageCoversTheOnlyDisplayTheCoverComesDownByItselfAndTheOperatorReachesTheApp()
-        async throws
-    {
+    /// #708: Esc with the engine hung takes the app's black off the display with the menu bar at once,
+    /// although the engine (stopped) never answers the panic, and it is not put back while the panic
+    /// waits and fails.
+    func testEscWithAHungEngineTakesTheAppsBlackAwayAtOnce() async throws {
         let (store, _, stage2) = try await start()
         await played(store, stage2)
         await pushed("the menu bar's display held black") { self.app.backstop.windows["V2"] != nil }
@@ -340,28 +336,118 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertTrue(app.backstop.windows.isEmpty, "not put back while the engine is hung")
     }
 
-    /// #708 flow: quit with unsaved changes while a stage covers the only display (the one with
-    /// the menu bar) → the cover comes down (as Esc) before the save question is asked.
-    func testQuitWithUnsavedChangesWhileAStageCoversTheOnlyDisplayReachesTheSaveQuestion() async throws {
+    /// #708 flow: a hung engine while a stage covers the only display: the app's black stands back by
+    /// itself (no Esc) and the operator reaches the app. The engine is stopped; the app's watch asks it
+    /// each second (its clock moved by hand here): an ask still unanswered at the next stands the
+    /// black on the display with the menu bar back under the app's windows. The engine answering
+    /// again puts it back over everything. (The stage host's own window: stages.rs.)
+    func testAHungEngineWhileAStageCoversTheOnlyDisplayTheAppsBlackStandsBackByItself() async throws {
+        let watch = ManualScheduler()
+        let (store, _, stage2) = try await start()
+        app.engineWatchScheduler = watch
+        await played(store, stage2)
+        await pushed("the menu bar's display held black") { self.app.backstop.windows["V2"] != nil }
+        let window = try XCTUnwrap(app.backstop.windows["V2"])
+        XCTAssertEqual(window.level, BlackBackstop.level)
+        let pid = engine.pid
+        XCTAssertEqual(kill(pid, SIGSTOP), 0)
+        var stopped = true
+        defer { if stopped { kill(pid, SIGCONT) } }
+        for _ in 0..<2 {
+            await assertEventually { await watch.waitingCount == 1 }
+            await watch.fire()
+        }
+        await assertEventually("stood back by itself") { window.level == BlackBackstop.standingBackLevel }
+        XCTAssertTrue(window.isVisible && app.backstop.windows["V2"] === window, "black, under the app")
+        XCTAssertLessThan(window.level.rawValue, NSWindow.Level.normal.rawValue)
+        XCTAssertEqual(kill(pid, SIGCONT), 0)
+        stopped = false
+        var back = false
+        for _ in 0..<20 where !back {
+            await assertEventually { await watch.waitingCount == 1 }
+            await watch.fire()
+            back = await eventually { window.level == BlackBackstop.level }
+        }
+        XCTAssertTrue(back, "the engine answers again: over everything again")
+    }
+
+    /// The menu bar's display covered: a stage of the workspace shows a picture there (the test card)
+    /// and the app holds black under it; and a cue that keeps running (a long pre-wait).
+    private func coveredWhileACuePlays() async throws -> (WorkspaceStore, ModelID) {
         let (store, _, stage2) = try await start()
         await played(store, stage2)
-        await pushed("the stage covers the menu bar's display") {
-            self.state(store, stage2) == "shown" && self.app.backstop.windows["V2"] != nil
-        }
-        let rename = Command.setStage(stage2, .object(["type": .string("name"), "value": .string("Front")]))
-        guard case .success = await store.send(command: rename) else { return XCTFail("rename") }
-        await assertEventually("unsaved") { store.document?.dirty == true }
-        let alerts = try XCTUnwrap(app.alerts as? ScriptedAlerts)
-        var appBlackWhenAsked: Bool?
-        alerts.onUnsaved = { appBlackWhenAsked = !self.app.backstop.windows.isEmpty }
-        alerts.saveChoices = [.cancel]
+        await pushed("the menu bar's display covered") { self.app.backstop.windows["V2"] != nil }
+        let list = try XCTUnwrap(store.model?.cueLists.first?.id)
+        let cue = ModelID("00000000-0000-0000-0000-0000000007a1")
+        let memo: JSONValue = .object([
+            "id": .string(cue.raw), "number": .null, "name": .string("Wait"), "notes": .string(""),
+            "color": .string("none"), "second_color": .string("none"), "flagged": .bool(false),
+            "armed": .bool(true), "auto_load": .bool(false), "skip_if_disarmed": .bool(false),
+            "pre_wait": .double(600), "post_wait": .double(0), "continue_mode": .string("do_not_continue"),
+            "triggers": .object(["hotkey": .null, "hotkey_enabled": .bool(true)]),
+            "second_trigger": .string("nothing"), "second_trigger_on_release": .bool(false),
+            "fade_and_stop_others": .object([
+                "enabled": .bool(false), "scope": .string("peers"), "duration": .double(1),
+            ]),
+            "duck_others": .object(["enabled": .bool(false), "db": .double(-12), "duration": .double(1)]),
+            "kind": .object(["type": .string("memo")]),
+        ])
+        guard case .success = await store.send(command: .addCue(memo, list: list, parent: nil, index: 0)),
+            case .success = await store.transport(.start(cue: cue))
+        else { throw TestEngineError.refused("a playing cue") }
+        await pushed("the cue plays") { store.cueStates[cue]?.state.isActive == true }
+        return (store, cue)
+    }
+
+    /// The app's black on the display with the menu bar, whether it stands back now.
+    private var menuBarBlackStandsBack: Bool? {
+        app.backstop.windows["V2"].map { $0.level == BlackBackstop.standingBackLevel }
+    }
+
+    /// #708 flow: Cmd-Q while a cue plays on the only display, then Cancel → the show plays on and the
+    /// stage covers again. While the question is up, the stage and the app's black stand back under
+    /// the app's windows (the question can be seen); nothing is panicked or stopped.
+    func testCmdQWhileACuePlaysOnTheOnlyDisplayThenCancelTheShowPlaysOnAndTheStageCoversAgain() async throws {
+        let (store, cue) = try await coveredWhileACuePlays()
+        let alerts = ScriptedAlerts()
+        app.alerts = alerts
+        alerts.quitPlaying = false
+        var whenAsked: (asking: Bool, back: Bool?)?
+        alerts.onAsk = { whenAsked = (StandBack.shared.isAsking, self.menuBarBlackStandsBack) }
         let quit = await app.prepareToQuit()
-        XCTAssertFalse(quit, "cancelled at the save question")
-        XCTAssertEqual(appBlackWhenAsked, false, "the app's black was down when the question was asked")
-        // The stage itself was taken down as Esc does (the panic went before the question).
-        await pushed("the engine took the stage down") {
-            store.videoOutputs.stages.first { $0.stage == stage2 }?.panicked == true
-        }
+        XCTAssertFalse(quit, "cancelled")
+        XCTAssertEqual(alerts.log, ["quitPlaying"])
+        XCTAssertEqual(whenAsked?.asking, true, "the question stood the stage back")
+        XCTAssertEqual(whenAsked?.back, true, "the app's black under the app's windows while asked")
+        XCTAssertFalse(StandBack.shared.isAsking)
+        XCTAssertEqual(menuBarBlackStandsBack, false, "over everything again")
+        await settle()
+        XCTAssertEqual(store.cueStates[cue]?.state.isActive, true, "the show plays on")
+        XCTAssertEqual(store.videoOutputs.stages.first { $0.stage == stage2Of(store) }?.panicked, false, "no panic")
+    }
+
+    private func stage2Of(_ store: WorkspaceStore) -> ModelID? { store.model?.stages.last?.id }
+
+    /// #708 flow: a save that fails while a stage covers the only display → the alert is visible over
+    /// the picture (the stage and the app's black stand back while it is up) and answering it brings
+    /// the cover back.
+    func testASaveThatFailsWhileAStageCoversTheOnlyDisplayShowsItsAlertOverThePictureAndAnsweringBringsTheCoverBack()
+        async throws
+    {
+        let (store, cue) = try await coveredWhileACuePlays()
+        let alerts = ScriptedAlerts()
+        app.alerts = alerts
+        app.pickSaveURL = { _ in URL(fileURLWithPath: "/nonexistent-openlab-folder/show.openlab") }
+        var whenAsked: (asking: Bool, back: Bool?)?
+        alerts.onAsk = { whenAsked = (StandBack.shared.isAsking, self.menuBarBlackStandsBack) }
+        let saved = await app.saveWorkspace(store)
+        XCTAssertFalse(saved)
+        XCTAssertEqual(alerts.errors.count, 1, "\(alerts.errors)")
+        XCTAssertEqual(whenAsked?.asking, true)
+        XCTAssertEqual(whenAsked?.back, true)
+        XCTAssertFalse(StandBack.shared.isAsking)
+        XCTAssertEqual(menuBarBlackStandsBack, false, "the cover is back")
+        XCTAssertEqual(store.cueStates[cue]?.state.isActive, true)
     }
 
     /// Flow 3: the backstop covers every display its stage is on, the one with the menu bar too
