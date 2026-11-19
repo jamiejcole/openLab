@@ -46,7 +46,8 @@ use crate::hap::{Variant, write};
 /// `prores4444` (the card's right half below the barcode at half alpha), or `hap` (Snappy),
 /// `hap-alpha` (Snappy; alpha as `prores4444`'s) or `hap-q` (in Snappy chunks), any HAP kind
 /// with `@<n>` after it to have every frame from `n` on damaged ([`damage`]) (with a frame count
-/// and rate), each with `+<format>:<channels>:<rate>` after it for every sound track it is to have
+/// and rate), a movie kind with `~still:<n>` or `~sound:<n>` after its codec to end as [`Tail`]
+/// says, each with `+<format>:<channels>:<rate>` after it for every sound track it is to have
 /// (`h264+pcm:2:48000`, `h264+aac:2:44100+pcm:6:48000`; see [`sound_sample`] for what a track
 /// carries), or `png`, `jpeg`, `tiff` (frame 0's card), `huge-png` (a black
 /// PNG of 16384 x 8192 pixels, one bit each: small on disk, too many pixels to play), or the
@@ -544,9 +545,43 @@ unsafe fn hap_input(
     }
 }
 
+/// How a test movie ends, from `~` options after its codec: `~still:<n>` holds its last frame
+/// `n` frame periods longer (the movie's length runs on with it, as a screen recording whose
+/// screen stood still at the end), `~sound:<n>` has every sound track run on `n` frame periods
+/// past the last frame (the movie's length is the longer track's).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Tail {
+    still: u32,
+    sound: u32,
+}
+
+/// The codec part of `kind` without its `~` options, and the options.
+fn tail_of(kind: &str) -> Result<(&str, Tail), String> {
+    let mut parts = kind.split('~');
+    let codec = parts.next().unwrap_or_default();
+    let mut tail = Tail::default();
+    for option in parts {
+        let (name, n) = option
+            .split_once(':')
+            .ok_or_else(|| format!("bad movie option {option}"))?;
+        let n: u32 = n
+            .parse()
+            .map_err(|_| format!("bad movie option {option}"))?;
+        if !(1..=100_000).contains(&n) {
+            return Err(format!("bad movie option {option}"));
+        }
+        match name {
+            "still" => tail.still = n,
+            "sound" => tail.sound = n,
+            _ => return Err(format!("unknown movie option {name}")),
+        }
+    }
+    Ok((codec, tail))
+}
+
 fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
     let mut parts = kind.split('+');
-    let kind = parts.next().unwrap_or_default();
+    let (kind, tail) = tail_of(parts.next().unwrap_or_default())?;
     let sounds = sounds(&parts.collect::<Vec<_>>())?;
     let hap = hap_kind(kind)?;
     // SAFETY: framework constants, always set on a Mac with AVFoundation.
@@ -624,7 +659,8 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
         // Whichever input takes more data is given its next piece (a frame, or a tenth of a
         // second of a sound track): the writer interleaves its tracks and decides itself which
         // may run ahead.
-        let total = |s: &Sound| u64::from(frames) * u64::from(s.rate) / fps as u64;
+        let sound_frames = u64::from(frames) + u64::from(tail.sound);
+        let total = |s: &Sound| sound_frames * u64::from(s.rate) / fps as u64;
         // The card below its barcode is the same in every frame: made once, in the writer's
         // byte order (ProRes 4444 carries alpha: the right half below the barcode at half
         // alpha, the colour itself, as a straight-alpha file holds it).
@@ -694,7 +730,14 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        writer.endSessionAtSourceTime(CMTime::new(i64::from(frames), fps));
+        // The movie's length: its last frame held for `still` more periods, or its sound
+        // tracks' end, whichever is later.
+        let end = (u64::from(frames) + u64::from(tail.still)).max(if sounds.is_empty() {
+            0
+        } else {
+            sound_frames
+        });
+        writer.endSessionAtSourceTime(CMTime::new(end as i64, fps));
         #[allow(deprecated)]
         let done = writer.finishWriting();
         if !done || writer.status() != AVAssetWriterStatus::Completed {

@@ -407,6 +407,9 @@ pub struct Host<P: Platform> {
     clock: Option<Clock>,
     /// Displays with a window up.
     presented: BTreeSet<String>,
+    /// A failed picture was dropped since the stages were last drawn: the next poll draws them
+    /// again, so its last frame never stays in a window.
+    redraw_due: bool,
     /// Monitor windows the engine asked for, by stage.
     monitors: BTreeMap<StageId, Monitor>,
 }
@@ -423,6 +426,7 @@ impl<P: Platform> Host<P> {
             plays: 0,
             clock: None,
             presented: BTreeSet::new(),
+            redraw_due: false,
             monitors: BTreeMap::new(),
         }
     }
@@ -457,7 +461,7 @@ impl<P: Platform> Host<P> {
     /// Draws again (the clock moved) and drops pictures whose fade is over; reports any that
     /// failed.
     pub fn redraw(&mut self, out: &mut Vec<FromStage>) {
-        if self.pics.is_empty() {
+        if self.pics.is_empty() && !self.redraw_due {
             return;
         }
         self.apply(out);
@@ -622,6 +626,7 @@ impl<P: Platform> Host<P> {
                     message: short(why),
                 }),
                 PictureEvent::Failed(picture, reason) => {
+                    self.redraw_due |= self.pics.contains_key(&picture);
                     self.drop_picture(picture);
                     out.push(FromStage::PictureFailed {
                         picture,
@@ -636,6 +641,11 @@ impl<P: Platform> Host<P> {
     /// that failed or fell behind) and the monitor windows the operator closed.
     pub fn poll(&mut self, out: &mut Vec<FromStage>) {
         self.report_failures(out);
+        // A picture that failed leaves its display now, whether or not others still play:
+        // nothing else would draw a stage left with none.
+        if self.redraw_due {
+            self.apply(out);
+        }
         for stage in self.platform.take_closed_monitors() {
             self.monitor_closed(stage, out);
         }
@@ -866,6 +876,7 @@ impl<P: Platform> Host<P> {
     /// Shows, hides or redraws each stage and reports each state that changed. The stages
     /// shown on one display are drawn in one window, bottom first by their `stack`.
     fn apply(&mut self, out: &mut Vec<FromStage>) {
+        self.redraw_due = false;
         let now = self.now();
         self.prune(now);
         let mut states: Vec<(StageId, StageState)> = Vec::new();
@@ -1312,6 +1323,8 @@ pub(crate) mod tests {
         displays: Vec<Display>,
         /// Each display's layers as last presented, bottom first.
         shown: HashMap<String, Vec<StageId>>,
+        /// Each display's pictures as last presented, over all its layers.
+        pictures_drawn: HashMap<String, Vec<u64>>,
         fail: bool,
         live: bool,
         events: Vec<PictureEvent>,
@@ -1337,10 +1350,13 @@ pub(crate) mod tests {
             }
             self.shown
                 .insert(d.id.clone(), layers.iter().map(|l| l.stage).collect());
+            let pictures = layers.iter().flat_map(|l| l.cues.iter().map(|c| c.picture));
+            self.pictures_drawn.insert(d.id.clone(), pictures.collect());
             Ok(())
         }
         fn close(&mut self, display: &str) {
             self.shown.remove(display);
+            self.pictures_drawn.remove(display);
         }
         #[cfg(feature = "test-support")]
         fn probe(
@@ -2064,6 +2080,55 @@ pub(crate) mod tests {
         assert!(!h.playing());
     }
 
+    /// #770: a picture whose decoder fails while it plays leaves its display at once, with
+    /// nothing else to tell the stage host: the next frame-loop tick draws the display without
+    /// it (black on a stage keeping black), or takes the stage down (hidden) when it does not.
+    /// Never its last frame left in the window.
+    #[test]
+    fn a_picture_that_fails_while_playing_leaves_the_display_at_once() {
+        for keep_black in [true, false] {
+            let mut h = host(&["D"]);
+            let version = LINK_VERSION;
+            send(&mut h, ToStage::Hello { version });
+            send(
+                &mut h,
+                ToStage::Stages {
+                    stages: vec![stage(1, Some("D"), keep_black)],
+                },
+            );
+            load(&mut h, 3, 1);
+            play(&mut h, 3, 0);
+            clock(&mut h, 100);
+            h.step(None, &mut Vec::new());
+            assert_eq!(h.platform.pictures_drawn.get("D"), Some(&vec![3]));
+            h.platform.events.push(PictureEvent::Failed(
+                3,
+                "the movie could not be read".into(),
+            ));
+            // The frame loop's tick: nothing playing is left.
+            let mut out = Vec::new();
+            h.step(None, &mut out);
+            assert!(
+                out.iter()
+                    .any(|m| matches!(m, FromStage::PictureFailed { picture: 3, .. })),
+                "{out:?}"
+            );
+            if keep_black {
+                assert_eq!(
+                    h.platform.pictures_drawn.get("D"),
+                    Some(&vec![]),
+                    "drawn black"
+                );
+            } else {
+                assert_eq!(h.platform.shown.get("D"), None, "taken down");
+                assert!(
+                    states(&out).contains(&(id(1), StageState::Hidden)),
+                    "{out:?}"
+                );
+            }
+        }
+    }
+
     pub(crate) fn id(n: u8) -> StageId {
         StageId(uuid::Uuid::from_u128(n.into()))
     }
@@ -2093,6 +2158,7 @@ pub(crate) mod tests {
         Host::new(Fake {
             displays: displays.iter().map(|d| display(d)).collect(),
             shown: HashMap::new(),
+            pictures_drawn: HashMap::new(),
             fail: false,
             live: false,
             events: Vec::new(),

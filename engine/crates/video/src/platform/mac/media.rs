@@ -809,8 +809,10 @@ struct Movie {
     skip: Option<f64>,
     /// The reader has no frame after `next`.
     ended: bool,
-    /// The movie's length and one frame's time, in seconds, as its file says.
-    length: f64,
+    /// Since reading last started, a reader that ended with no frame was followed back to the
+    /// movie's last frame ([`Movie::last_frame_before`]); not done again until the next start.
+    looked_back: bool,
+    /// One frame's time, in seconds, as its file says.
     frame: f64,
     /// This movie was opened again after the reader of the one before it failed.
     reopened: bool,
@@ -881,7 +883,7 @@ impl Movie {
             next: None,
             skip: None,
             ended: false,
-            length,
+            looked_back: false,
             frame: 1.0 / f64::from(fps),
             reopened: false,
             good: 0,
@@ -920,6 +922,7 @@ impl Movie {
         self.next = None;
         self.skip = None;
         self.ended = false;
+        self.looked_back = false;
         #[cfg(test)]
         {
             self.restarts += 1;
@@ -1184,7 +1187,9 @@ impl Movie {
         let back = self.shown.is_some_and(|t| {
             position < t - BACK_HOLD_FRAMES * self.frame || (seam && position < t)
         });
-        let far = self.shown.is_some_and(|t| position > t + SKIP_AHEAD);
+        // Past a reader's clean end there is nothing to read: its last frame holds (a movie's
+        // picture may end well before its length: a still tail, a longer sound track).
+        let far = !self.ended && self.shown.is_some_and(|t| position > t + SKIP_AHEAD);
         if self.reader.is_none() || back || far {
             self.restart(position)?;
             self.shown = None;
@@ -1215,18 +1220,47 @@ impl Movie {
                 break;
             }
         }
+        // A reader opened past the movie's last frame (in its still tail, or past a picture
+        // track shorter than the movie) ends at once with none: the frame on show there is
+        // that last frame. A file cut short or damaged under the reader is not this: its
+        // reader fails (`read_from`), and the picture fails as it always has.
+        if best.is_none() && self.shown.is_none() && self.ended && !self.looked_back {
+            self.looked_back = true;
+            best = self.last_frame_before(position, progress)?;
+        }
         if let Some(f) = &best {
             self.shown = Some(f.time);
         }
-        // The frames ran out well before the movie's end: its file is damaged or was cut short
-        // under it. Holding the last frame would freeze the picture; the cue breaks instead.
-        let short = self.ended
-            && position < self.length - 2.0 * self.frame
-            && self.shown.is_none_or(|t| position > t + 2.0 * self.frame);
-        if short {
-            return Err("the movie stops before its end (the file may be damaged)".into());
-        }
         Ok(best)
+    }
+
+    /// The movie's last frame at or before `position`, for a reader that found none from there
+    /// on: read again from a second before it, then twice as far back each time, to the start
+    /// at most. The reader is left at its end.
+    fn last_frame_before(
+        &mut self,
+        position: f64,
+        progress: &dyn Fn(),
+    ) -> Result<Option<Frame>, String> {
+        let mut back = 1.0;
+        loop {
+            let from = (position - back).max(0.0);
+            let reader = self.open_reader(from)?;
+            let found = self.read_from(&reader, position);
+            progress();
+            if let Some((old, _)) = self.reader.replace(reader) {
+                // SAFETY: cancelling a reader this movie owns.
+                unsafe { old.cancelReading() };
+            }
+            match found? {
+                Some(frame) => {
+                    self.good = self.good.saturating_add(1);
+                    return Ok(Some(frame));
+                }
+                None if from <= 0.0 => return Ok(None),
+                None => back *= 2.0,
+            }
+        }
     }
 }
 
@@ -1780,6 +1814,67 @@ mod tests {
         assert!(!m.may_reopen(), "a frame short of the settle");
         m.good += 1;
         assert!(m.may_reopen());
+    }
+
+    /// A test movie of 50 frames at 25 fps ending as `tail` says (`~still:100`: its last frame
+    /// held four more seconds; `~sound:100+pcm:2:48000`: its sound track runs four seconds past
+    /// its last frame), so 6 s long.
+    fn tailed(dir: &Path, tail: &str) -> String {
+        let file = dir.join("tail.mov").to_str().unwrap().to_owned();
+        super::super::testmedia::make(&[
+            format!("h264{tail}"),
+            file.clone(),
+            "50".into(),
+            "25".into(),
+        ])
+        .unwrap();
+        file
+    }
+
+    /// #770: a movie whose last frame is shown for seconds (a screen recording whose screen
+    /// stood still), or whose sound track runs past its picture, ends its reader cleanly well
+    /// before the movie's length: that is no damage. Played through, its last frame holds to
+    /// the end with no error, and a reader opened in that tail (a load to time, a re-open, a
+    /// restarted stage host) starts on that last frame.
+    #[test]
+    fn a_movie_whose_picture_ends_before_its_length_holds_its_last_frame() {
+        for tail in ["~still:100", "~sound:100+pcm:2:48000"] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = tailed(dir.path(), tail);
+            let mut m = Movie::open(&file).unwrap();
+            // SAFETY: a plain property of a loaded asset.
+            let length = unsafe { m.asset.duration().seconds() };
+            assert!((length - 6.0).abs() < 1e-6, "{tail}: {length}");
+            let mut last = None;
+            for i in 0..150 {
+                let at = f64::from(i) * 0.04;
+                match m.frame_at(at, 0, &|| {}) {
+                    Ok(Some(f)) => last = card_of(&f),
+                    Ok(None) => {}
+                    Err(why) => panic!("{tail}: at {at} s: {why}"),
+                }
+            }
+            assert_eq!(last, Some(49), "{tail}: the last frame is held");
+            let mut fresh = Movie::open(&file).unwrap();
+            for at in [4.0, 5.9, 2.5] {
+                let f = fresh.frame_at(at, 0, &|| {});
+                let shown = f.as_ref().ok().and_then(|f| f.as_ref().and_then(card_of));
+                assert_eq!(shown, Some(49), "{tail}: opened at {at} s: {:?}", f.err());
+                fresh = Movie::open(&file).unwrap();
+            }
+        }
+    }
+
+    /// The frame number a decoded test-card frame shows in its barcode (BGRA pixels).
+    fn card_of(frame: &Frame) -> Option<u16> {
+        let cells: Vec<[u8; 4]> = (0..crate::card::CELLS)
+            .map(|cell| {
+                let at = 8 * frame.stride + (cell * 16 + 8) * 4;
+                let px = frame.pixels.get(at..at + 4).unwrap_or(&[128; 4]);
+                [px[0], px[1], px[2], px[3]]
+            })
+            .collect();
+        crate::card::read_frame(&cells)
     }
 
     /// The frame number a decoded test-card frame carries (its time at 25 fps).

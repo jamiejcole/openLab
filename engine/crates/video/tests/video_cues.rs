@@ -124,8 +124,9 @@ fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
         "h264" | "hevc" | "prores" | "prores4444" => "mov",
         // HAP, written by openLab's own test writer (`hap`, `hap-alpha`, `hap-q`, `@<n>`).
         hap if hap.starts_with("hap") => "mov",
-        // A movie with sound tracks (`h264+pcm:2:48000`).
-        with_sound if with_sound.contains('+') => "mov",
+        // A movie with sound tracks (`h264+pcm:2:48000`), or one whose end is shaped
+        // (`h264~still:100`).
+        movie if movie.contains('+') || movie.contains('~') => "mov",
         "huge-png" | "wide-png" | "tall-png" | "alpha-png" | "tiny-png" => "png",
         other => other,
     };
@@ -6248,6 +6249,207 @@ fn damage_met_mid_play_breaks_that_cue_and_the_others_play_on() {
     let sound = in_step(&mut s, RATE, 25.0, "the other cue, in step");
     let played = (s.now() - other) as f64 / f64::from(RATE);
     assert!((sound - played).abs() < 0.01, "{sound} s after {played} s");
+}
+
+/// A movie in [`play_codec`] ending as `tail` says (`~still:<n>`, `~sound:<n>`, then any sound
+/// tracks: the test-support `--make-test-media` options), or `None` when no codec decodes
+/// reliably here.
+fn tailed_movie(dir: &Path, name: &str, frames_fps: (u16, u16), tail: &str) -> Option<PathBuf> {
+    let kind = format!("{}{tail}", play_codec()?);
+    Some(make(dir, name, &kind, Some(frames_fps)))
+}
+
+/// `tailed_movie!(dir, name, (frames, fps), tail)`: [`tailed_movie`], or the test ends skipped.
+macro_rules! tailed_movie {
+    ($dir:expr, $name:expr, $frames_fps:expr, $tail:expr) => {
+        match tailed_movie($dir, $name, $frames_fps, $tail) {
+            Some(movie) => movie,
+            None => return skipped("no codec decodes reliably on this machine"),
+        }
+    };
+}
+
+/// The show log's warnings and errors about pictures and their files since it began.
+fn picture_warnings(s: &OfflineShow) -> Vec<String> {
+    (s.control().show_log().tail(2000).into_iter())
+        .filter(|e| {
+            matches!(
+                e.level,
+                openlab_core::protocol::LogLevel::Warn | openlab_core::protocol::LogLevel::Error
+            )
+        })
+        .map(|e| e.message.clone())
+        .filter(|m| {
+            ["picture", "movie", "reading", ".mov"]
+                .iter()
+                .any(|w| m.contains(w))
+        })
+        .collect()
+}
+
+/// #770 flows 1 and 2: GO on a movie whose picture ends before its length (its last frame
+/// shown for seconds, or a sound track longer than its picture) plays every frame, holds the
+/// last one to the cue's end, and ends normally: no warning, nothing broken, no frame left up.
+fn a_movie_whose_picture_ends_early_holds_its_last_frame(movie: &Path) {
+    let mut s = video_show(vec![sounding_cue(1, movie)]);
+    assert_eq!(problems(&s, 1), vec![]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(1.01));
+    assert_eq!(shown(&mut s), Some(25));
+    for played in [2.5, 4.0, 5.8] {
+        run_to(&mut s, at + samples(played));
+        assert_eq!(
+            on_stage(&mut s, "the tail"),
+            49,
+            "{played} s: the last frame held"
+        );
+        expect_state(&s, 1, CueState::Running, "plays on through the tail");
+    }
+    run_to(&mut s, at + samples(6.0) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ends normally at the movie's length");
+    assert_eq!(s.control().engine().broken_reason(id(1)), None);
+    assert_eq!(shown(&mut s), None, "nothing of it left on the stage");
+    assert_eq!(notice_texts(&mut s), vec![], "no warning");
+    assert_eq!(
+        picture_warnings(&s),
+        Vec::<String>::new(),
+        "no warning logged"
+    );
+}
+
+/// #770 flow: a movie whose last frame is shown for seconds (variable frame rate, a still
+/// tail: a screen recording whose screen stood still) → GO → it plays to its end with its last
+/// frame held until the cue's end; no warning; the cue ends normally and is not broken.
+#[test]
+fn a_movie_whose_last_frame_is_shown_for_seconds_plays_to_its_end_holding_it_with_no_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = tailed_movie!(dir.path(), "still.mov", (50, 25), "~still:100");
+    a_movie_whose_picture_ends_early_holds_its_last_frame(&movie);
+}
+
+/// #770 flow: a movie whose sound track is longer than its picture track → the same: its last
+/// frame held to the end, no warning.
+#[test]
+fn a_movie_whose_sound_track_is_longer_than_its_picture_holds_its_last_frame_to_the_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = tailed_movie!(dir.path(), "long.mov", (50, 25), "~sound:100+pcm:2:48000");
+    a_movie_whose_picture_ends_early_holds_its_last_frame(&movie);
+}
+
+/// #770 flow: a movie really cut short in its picture data (its file cut under the playing
+/// cue) still breaks only its cue, with one warning: one notice saying why (the app shows it on
+/// the broken cue's own entry), not two.
+#[test]
+fn a_movie_really_cut_short_in_its_picture_data_breaks_only_its_cue_with_one_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    // ProRes: a file far larger than what its reader reads ahead; no sound track, so the
+    // picture is what meets the damage.
+    let cut = movie!(dir.path(), "cut.mov", (250, 25), "prores");
+    let mut s = video_show(vec![video_cue(1, Some(&cut))]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    on_stage(&mut s, "before the damage");
+    let length = std::fs::metadata(&cut).unwrap().len();
+    let file = std::fs::OpenOptions::new().write(true).open(&cut).unwrap();
+    file.set_len(length / 2).unwrap();
+    drop(file);
+    let mut played = 0;
+    while state(&s, 1) != CueState::Broken && played < 80 {
+        s.run(samples(0.1));
+        // Frames are asked for as a display's frame loop asks: the probe draws the stage.
+        shown(&mut s);
+        played += 1;
+    }
+    expect_state(&s, 1, CueState::Broken, "the cut movie's cue breaks");
+    assert_eq!(
+        s.control().engine().broken_reason(id(1)),
+        Some(openlab_core::BrokenReason::DecodeFailed)
+    );
+    let texts = notice_texts(&mut s);
+    let why: Vec<_> = (texts.iter())
+        .filter(|(code, _)| code == "video_decode_failed")
+        .collect();
+    assert_eq!(why.len(), 1, "one notice says why: {texts:?}");
+    assert_eq!(s.control().pictures_live(), 0);
+    assert_eq!(shown(&mut s), None, "its picture left the stage");
+}
+
+/// #770 flow: a Video cue whose picture fails while playing → the picture leaves the stage at
+/// once: on a stage keeping black the display is black, on one that does not its window goes
+/// (the stage host says hidden). No frozen frame stays on either display.
+#[test]
+fn a_video_cue_whose_picture_fails_while_playing_leaves_the_stage_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = movie!(dir.path(), "good.mov", (250, 25));
+    let doomed = faulty(dir.path(), &good, "openlab-test-fail-decode-again");
+    let other = dir
+        .path()
+        .join("other")
+        .join("openlab-test-fail-decode-again.mov");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    std::fs::copy(&good, &other).unwrap();
+    let mut on_two = video_cue(2, Some(&other));
+    if let CueKind::Video { stage, .. } = &mut on_two.kind {
+        *stage = Some(stage_two());
+    }
+    let ws = workspace(vec![video_cue(1, Some(&doomed)), on_two]);
+    let mut s = two_stage_show(ws, [true, false]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(samples(0.2));
+    assert_eq!(stage_state(&mut s, stage_two()), shown_on("V2"));
+    // Each fails a second in, and again once opened again.
+    let mut played = 0;
+    while [1, 2].iter().any(|n| state(&s, *n) != CueState::Broken) && played < 40 {
+        s.run(samples(0.1));
+        // Frames are asked for as a display's frame loop asks: the probe draws the stages.
+        stage_shows(&mut s, stage_id(), &[RED_AT]);
+        stage_shows(&mut s, stage_two(), &[RED_AT]);
+        played += 1;
+    }
+    for n in [1, 2] {
+        expect_state(&s, n, CueState::Broken, "its picture failed");
+    }
+    assert_eq!(s.control().pictures_live(), 0);
+    assert_eq!(
+        display_shows(&mut s, "V1", &[RED_AT, EDGE_AT]),
+        (None, vec![BLACK; 2]),
+        "black on the stage keeping black"
+    );
+    assert_eq!(stage_state(&mut s, stage_id()), shown_on("V1"));
+    assert_eq!(
+        stage_state(&mut s, stage_two()),
+        Some(StageState::Hidden),
+        "the other stage's window goes"
+    );
+}
+
+/// #770 flow: after a Video cue ends normally, nothing of it stays on the display: black on a
+/// stage keeping black, the window gone on one that does not.
+#[test]
+fn after_a_video_cue_ends_normally_nothing_of_it_stays_on_the_display() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (25, 25));
+    let mut on_two = video_cue(2, Some(&movie));
+    if let CueKind::Video { stage, .. } = &mut on_two.kind {
+        *stage = Some(stage_two());
+    }
+    let ws = workspace(vec![video_cue(1, Some(&movie)), on_two]);
+    let mut s = two_stage_show(ws, [true, false]);
+    let at = start(&mut s, 1);
+    start(&mut s, 2);
+    run_to(&mut s, at + samples(0.5));
+    assert!(display_shows(&mut s, "V1", &[RED_AT]).0.is_some());
+    assert_eq!(stage_state(&mut s, stage_two()), shown_on("V2"));
+    run_to(&mut s, at + samples(1.0) + 2 * BLOCK);
+    for n in [1, 2] {
+        expect_state(&s, n, CueState::Idle, "ended");
+    }
+    assert_eq!(
+        display_shows(&mut s, "V1", &[RED_AT, EDGE_AT]),
+        (None, vec![BLACK; 2])
+    );
+    assert_eq!(stage_state(&mut s, stage_two()), Some(StageState::Hidden));
 }
 
 /// Flow 11 (d): seeded-mutated movies with sound (a walk over the whole file, and one over its
