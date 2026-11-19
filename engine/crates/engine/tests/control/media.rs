@@ -235,6 +235,42 @@ fn stale_probe(p: &std::path::Path) -> Result<openlab_audio::Probed, openlab_aud
     }
 }
 
+/// The disk worker is held between publishing a stream's failure and letting go of its ring.
+fn hold_after_failure() {
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}
+
+#[test]
+fn a_stream_failure_is_never_missed_by_the_voice_that_ends_with_it() {
+    // The voice ends as soon as its stream lets go of the ring; the failure must already be
+    // published then, or the end is taken for a clean one: no broken cue, no new probe.
+    let path = wav(&dc(2000, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.probe = gated_probe;
+    c.streamer.after_failure = hold_after_failure;
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    wait_probed(std::slice::from_ref(&path), 1);
+    s.settle_media();
+    std::fs::write(&path, std::fs::read(wav(&dc(1500, 0.5))).unwrap()).unwrap();
+    go(&mut s);
+    // Not `run`: that waits for the worker to feed the voice, and so for the failure.
+    s.run_unsettled(1500);
+    s.settle_media();
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    let st = states(&s.take_outbound(), id(1));
+    assert_eq!(
+        st.last(),
+        Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
+    );
+    assert_eq!(
+        probe_order(std::slice::from_ref(&path)).len(),
+        2,
+        "probed again"
+    );
+}
+
 #[test]
 #[allow(clippy::unwrap_used)]
 fn a_stream_prepared_after_a_relink_probes_the_file_it_read() {
@@ -249,6 +285,7 @@ fn a_stream_prepared_after_a_relink_probes_the_file_it_read() {
     let mut c = config(&ws);
     c.prime_cues = 0;
     c.probe = stale_probe;
+    c.streamer.after_failure = hold_after_failure;
     // The watchdog's clock stands still: the held probe of `a` is never given up on.
     c.probe_clock = ProbeTime::new().clock();
     gate(&a);
@@ -268,14 +305,17 @@ fn a_stream_prepared_after_a_relink_probes_the_file_it_read() {
     }
     set_kind(&mut s, 1, kind);
     // b's probe lands while a's is still held; the stream prepared from it fails on its disk
-    // thread, whenever that runs. The ticks that see the failure ask for b's probe again: wait
-    // for that, not for a number of blocks.
+    // thread, whenever that runs. Render until b is asked for again, so the voice's end is met
+    // too (a fixed number of blocks would end before a slow thread got there).
     wait_probed(std::slice::from_ref(&b), 1);
-    let (probed_a, probed_b) = (a.clone(), b.clone());
-    assert!(
-        s.wait_for(|_| probe_order(&[probed_a.clone(), probed_b.clone()]).len() >= 3),
-        "b is asked for again once its stream failed"
-    );
+    let both = [a.clone(), b.clone()];
+    let mut blocks = 0;
+    while probe_order(&both).len() < 3 {
+        assert!(blocks < 4000, "b is asked for again once its stream failed");
+        s.run_unsettled(BLOCK);
+        s.wait_step();
+        blocks += 1;
+    }
     release(&a);
     s.settle_media();
     s.run(BLOCK * 4);
