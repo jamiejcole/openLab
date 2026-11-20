@@ -80,6 +80,9 @@ pub struct StageHostConfig {
     /// out before it moves the clock past its answer time.
     #[cfg(feature = "test-support")]
     pub pings_sent: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Test support: counts the supervisor's wakes, so a test sees it sleeps between checks.
+    #[cfg(feature = "test-support")]
+    pub wakes: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl StageHostConfig {
@@ -96,6 +99,8 @@ impl StageHostConfig {
             clock: StageClock::system(),
             #[cfg(feature = "test-support")]
             pings_sent: None,
+            #[cfg(feature = "test-support")]
+            wakes: None,
         }
     }
 }
@@ -244,6 +249,22 @@ impl Drop for StageHost {
     }
 }
 
+/// When the supervisor must look again at a stage host that answered `hello`: its ping's answer
+/// time, or the next ping once the control thread has said it runs. While the control thread is
+/// hung no ping can go, so the next one is no deadline (it would be in the past and the supervisor
+/// would never sleep); the control thread's next `Order::Alive` wakes it and the ping goes then.
+fn ping_deadline(
+    ping_sent: Option<Instant>,
+    next_ping: Instant,
+    alive: bool,
+    answer_within: Duration,
+) -> Option<Instant> {
+    match ping_sent {
+        Some(sent) => Some(sent + answer_within),
+        None => alive.then_some(next_ping),
+    }
+}
+
 /// Lines the writer thread may have queued for a stage host before it counts as not reading.
 const WRITE_QUEUE: usize = 64;
 /// Messages the reader may hold for the supervisor; it waits beyond that.
@@ -312,6 +333,10 @@ impl Supervisor {
 
     fn run(mut self) {
         loop {
+            #[cfg(feature = "test-support")]
+            if let Some(count) = &self.config.wakes {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             let now = self.config.clock.now();
             if self.running.is_none() && self.may_start(now) {
                 self.start(now);
@@ -388,10 +413,12 @@ impl Supervisor {
     fn next_deadline(&self, now: Instant) -> Option<Instant> {
         match &self.running {
             Some(r) if !r.hello => Some(r.started + self.config.hello_within),
-            Some(r) => Some(match r.ping {
-                Some((_, sent)) => sent + self.config.answer_within,
-                None => r.next_ping,
-            }),
+            Some(r) => ping_deadline(
+                r.ping.map(|(_, sent)| sent),
+                r.next_ping,
+                self.alive,
+                self.config.answer_within,
+            ),
             None => self.paused_until.or(Some(now + self.config.retry_after)),
         }
     }
@@ -826,14 +853,31 @@ fn forward_stderr(stderr: impl std::io::Read, events: &EventSink) {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::process::ExitStatusExt;
+
+    /// #789: with the control thread hung (no alive mark since the last ping) the next ping is
+    /// not a deadline, however far in the past it is, so the supervisor sleeps; a ping waiting
+    /// for its answer keeps its answer time, and an alive mark makes the next ping due again.
+    #[test]
+    fn a_ping_waits_for_the_control_thread_without_being_a_deadline() {
+        let now = Instant::now();
+        let answer = Duration::from_secs(5);
+        let overdue = now.checked_sub(Duration::from_secs(30)).unwrap_or(now);
+        assert_eq!(ping_deadline(None, overdue, false, answer), None);
+        assert_eq!(ping_deadline(None, overdue, true, answer), Some(overdue));
+        assert_eq!(
+            ping_deadline(Some(now), overdue, false, answer),
+            Some(now + answer)
+        );
+    }
 
     /// A fault signal or a failing exit is a crash; a kill from outside or a clean exit is not.
+    #[cfg(unix)]
     #[test]
     fn only_a_fault_or_a_failing_exit_is_a_crash() {
+        use std::os::unix::process::ExitStatusExt;
         // Raw wait statuses: a signal in the low bits, an exit code in the next byte.
         for signal in [4, 5, 6, 8, 11] {
             assert!(crashed(ExitStatus::from_raw(signal)), "signal {signal}");

@@ -463,6 +463,57 @@ fn a_hung_stage_host_is_killed_and_replaced() {
     );
 }
 
+/// #789 flow: control thread hung (no alive mark) with a stage host running: the supervisor
+/// sleeps between its checks, still kills and relaunches a stage host that stops answering, and
+/// pings again as soon as the control thread is alive. The control thread hangs while the test
+/// does not tick it; the supervisor's clock moves by hand past many pings. Its wakes are counted:
+/// a supervisor whose next ping (never sent) were its deadline would wake without end in the
+/// bounded waits for its reports.
+#[test]
+fn control_thread_hung_the_supervisor_sleeps_still_replaces_a_hung_stage_host_and_pings_when_alive()
+{
+    let hand = HandClock::new();
+    let mut host = virtual_host();
+    hand.drive(&mut host);
+    host.answer_within = Duration::from_secs(5);
+    let mut s = stage_show(with_stages(vec![], vec![stage(1)]), host, Some("V1"));
+    let first = s.control().stage_host_pid().expect("a stage host runs");
+    let woke = hand.wakes();
+    for _ in 0..6 {
+        hand.advance(&mut s, 1);
+        while s.handle_next_within(Duration::from_millis(200)) {}
+    }
+    let wakes = hand.wakes() - woke;
+    // Six moves of the clock, an answered ping, a few reports: tens at most, never thousands.
+    assert!(wakes < 200, "the supervisor woke {wakes} times while idle");
+    // The stage host stops answering while the control thread is still hung: no ping goes, so
+    // nothing tells it is hung yet.
+    s.control_mut().hang_stage_host();
+    let sent = hand.pings();
+    hand.advance(&mut s, 10);
+    while s.handle_next_within(Duration::from_millis(200)) {}
+    assert_eq!(
+        hand.pings(),
+        sent,
+        "a ping went while the control thread was hung"
+    );
+    // The control thread runs again: a ping goes at once, without the clock moving.
+    assert!(
+        s.wait_for(|_| hand.pings() > sent),
+        "no ping when alive again"
+    );
+    hand.advance(&mut s, 6);
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != first)));
+    assert!(!alive(first), "the hung stage host was not killed");
+    s.settle_stages();
+    assert_eq!(
+        state(&mut s, 1),
+        Some(StageState::Shown {
+            display: "V1".into()
+        })
+    );
+}
+
 /// Stage 1 on V1 (standing for the display with the menu bar) and stage 2 on V2, both keeping
 /// black, on a stage host with `extra` arguments and a hand-moved supervisor clock.
 fn menu_bar_show(hand: &HandClock, extra: &[&str]) -> OfflineShow {
