@@ -2414,7 +2414,9 @@ final class AppControllerTests: XCTestCase {
         try click(AX.launcherNew)
         await assertEventually { app.windows.count == before + 2 }
         await assertEventually { !(app.launcher.window?.isVisible ?? true) }
-        XCTAssertTrue(app.session.workspaces.contains { $0.path == nil })
+        await assertEventually("the untitled workspace is listed") {
+            app.session.workspaces.contains { $0.path == nil }
+        }
     }
 
     /// Checklist: A recent show whose file was moved or deleted → click it → the launcher stays, a
