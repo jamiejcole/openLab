@@ -1059,7 +1059,8 @@ final class CueListTests: XCTestCase {
         XCTAssertGreaterThan(end.alphaComponent, 0.05, "the faint track reaches the end of the cell")
         let fill = try XCTUnwrap(pixel(bar, x: 10))
         XCTAssertGreaterThan(fill.alphaComponent, 0.2, "and the fill is part of it")
-        XCTAssertEqual(try XCTUnwrap(pixel(bar, x: 60)).alphaComponent, 0, accuracy: 0.01, "inside the track, past the fill: clear")
+        let inside = try XCTUnwrap(pixel(bar, x: 60))
+        XCTAssertEqual(inside.alphaComponent, 0, accuracy: 0.01, "inside the track, past the fill: clear")
         bar.progress = nil
         XCTAssertEqual(try XCTUnwrap(pixel(bar, x: 118)).alphaComponent, 0, accuracy: 0.01, "no run: nothing drawn")
     }

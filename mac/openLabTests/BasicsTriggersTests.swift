@@ -436,7 +436,8 @@ extension PlayheadFlowTests {
         XCTAssertEqual(inspector.hotkeyField.stringValue, "")
         tick(inspector.hotkeyEnableCheck, true)
         XCTAssertEqual(
-            inspector.hotkeyField.placeholderString, inspector.hotkeyField.recordingPlaceholder, "the tick asks for the key")
+            inspector.hotkeyField.placeholderString, inspector.hotkeyField.recordingPlaceholder,
+            "the tick asks for the key")
         XCTAssertEqual(raw(cues[2], "triggers")?["hotkey"], .null)
         // The key press that ends recording hands the focus back (the recorder calls this when it takes a key).
         inspector.view.window?.makeFirstResponder(nil)
@@ -681,7 +682,8 @@ extension PlayheadFlowTests {
             else { return XCTFail("switch") }
         }
         let third = try await memos(1)
-        guard case .success = await store.send(command: .setProperty(third[0], .triggers(hotkey: KeyChord("m", []).hotkeyJSON, enabled: true)))
+        let m = KeyChord("m", []).hotkeyJSON
+        guard case .success = await store.send(command: .setProperty(third[0], .triggers(hotkey: m, enabled: true)))
         else { return XCTFail("switch") }
         await select(cues + third)
         inspector.tabView.selectTabViewItem(withIdentifier: "triggers")

@@ -6,7 +6,7 @@ import AppKit
 /// button from about 7% x 9% of the window to 12% x 13%, the standby line to twice its size and the
 /// notes to 1.7 times theirs.
 /// The standby field's room above and below its text.
-let StandbyFieldInset: CGFloat = 3
+let standbyFieldInset: CGFloat = 3
 
 struct MastheadMetrics: Equatable {
     var goSize: NSSize
@@ -29,7 +29,7 @@ struct MastheadMetrics: Equatable {
         let notesFont = showMode ? editNotesFont * 1.7 : editNotesFont
         let notesHeight = showMode ? editNotesHeight * 1.7 : editNotesHeight
         // The standby field's box keeps room above and below the text (`StandbyField`), on top of its line.
-        let column = (standby * 1.25).rounded(.up) + 2 * StandbyFieldInset + 6 + notesHeight.rounded()
+        let column = (standby * 1.25).rounded(.up) + 2 * standbyFieldInset + 6 + notesHeight.rounded()
         return MastheadMetrics(
             goSize: go, goFontSize: min(go.height * 0.5, go.width * 0.4), standbyFontSize: standby,
             notesFontSize: notesFont.rounded(), notesHeight: notesHeight.rounded(),

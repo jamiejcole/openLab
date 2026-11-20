@@ -243,7 +243,8 @@ final class SidebarTests: XCTestCase {
         side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
         XCTAssertTrue(side.newListButton.isEnabled)
         func buttons(_ v: NSView) -> [NSButton] { (v as? NSButton).map { [$0] } ?? v.subviews.flatMap(buttons) }
-        XCTAssertEqual(buttons(side.view).map(\.title).filter { $0.contains("Cart") }, [], "no New Cart button: carts are not built")
+        let carts = buttons(side.view).map(\.title).filter { $0.contains("Cart") }
+        XCTAssertEqual(carts, [], "no New Cart button: carts are not built")
         var picked: ModelID?
         side.onSelectList = { picked = $0 }
         side.newListButton.performClick(nil)

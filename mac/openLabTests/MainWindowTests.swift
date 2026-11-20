@@ -948,7 +948,8 @@ final class MainWindowTests: XCTestCase {
             let font = try XCTUnwrap(field.font)
             let line = ceil(font.ascender - font.descender + font.leading)
             XCTAssertGreaterThanOrEqual(
-                field.frame.height, line + 2 * StandbyFieldInset, "show mode \(show): the box holds the text's whole line")
+                field.frame.height, line + 2 * standbyFieldInset,
+                "show mode \(show): the box holds the text's whole line")
         }
     }
 
