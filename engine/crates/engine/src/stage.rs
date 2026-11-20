@@ -253,12 +253,13 @@ impl Drop for StageHost {
 /// time, or the next ping once the control thread has said it runs. While the control thread is
 /// hung no ping can go, so the next one is no deadline (it would be in the past and the supervisor
 /// would never sleep); the control thread's next `Order::Alive` wakes it and the ping goes then.
-fn ping_deadline(
-    ping_sent: Option<Instant>,
-    next_ping: Instant,
+/// Generic over the time so its test needs no clock.
+fn ping_deadline<T: std::ops::Add<Duration, Output = T>>(
+    ping_sent: Option<T>,
+    next_ping: T,
     alive: bool,
     answer_within: Duration,
-) -> Option<Instant> {
+) -> Option<T> {
     match ping_sent {
         Some(sent) => Some(sent + answer_within),
         None => alive.then_some(next_ping),
@@ -862,9 +863,10 @@ mod tests {
     /// for its answer keeps its answer time, and an alive mark makes the next ping due again.
     #[test]
     fn a_ping_waits_for_the_control_thread_without_being_a_deadline() {
-        let now = Instant::now();
+        // Times as offsets from the supervisor's start: now is 60 s, the next ping 30 s overdue.
+        let now = Duration::from_secs(60);
+        let overdue = Duration::from_secs(30);
         let answer = Duration::from_secs(5);
-        let overdue = now.checked_sub(Duration::from_secs(30)).unwrap_or(now);
         assert_eq!(ping_deadline(None, overdue, false, answer), None);
         assert_eq!(ping_deadline(None, overdue, true, answer), Some(overdue));
         assert_eq!(
