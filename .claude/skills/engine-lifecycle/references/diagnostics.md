@@ -69,7 +69,7 @@ Aborts and signals leave no file (no code of ours runs); the run marker catches 
 ## macOS app side
 
 - Help > Show Crash Reports in Finder reveals `~/Library/Logs/openLab/Crashes` and `~/Library/Logs/DiagnosticReports` (those that exist; a message when neither does), so a report can be attached by hand (`revealCrashReports`, `AppController+Windows.swift`).
-- When the first workspace window opens, the app reads `log_tail`; if it holds the run-marker record (kind `engine`, "previous run ended without a clean shutdown"), the footer says so, never an alert. The record stays in the Show Log window.
+- When the first workspace window opens, the app reads `log_tail`; if it holds the run-marker record (kind `engine`, "previous run ended without a clean shutdown"), the footer says so, never an alert. The record stays on the Logs page of the status window.
 
 ## Tests
 
