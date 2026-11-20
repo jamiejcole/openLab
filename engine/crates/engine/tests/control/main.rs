@@ -29,5 +29,6 @@ mod seek;
 mod shutdown;
 mod timing;
 mod undo_active;
+mod wall_clock;
 mod watch;
 mod wide_media;

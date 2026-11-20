@@ -1,6 +1,6 @@
 ---
 name: engine-control
-description: "Load when changing or reviewing the engine control thread, engine/crates/engine/src/control/: inbox, replies, model_changed, wake/tick, DocId, voices, Action to mixer commands, patch slots, priming, feedback, mixer faults, lost-event reconciliation, performance budgets, pre-show check, hotkeys."
+description: "Load when changing or reviewing the engine control thread, engine/crates/engine/src/control/: inbox, replies, model_changed, wake/tick, wall-clock triggers, DocId, voices, Action to mixer commands, patch slots, priming, feedback, mixer faults, lost-event reconciliation, performance budgets, pre-show check, hotkeys."
 ---
 
 # Engine control loop
@@ -10,7 +10,7 @@ description: "Load when changing or reviewing the engine control thread, engine/
 
 ## Must not break
 - **The control thread never touches the disk, sockets or the device layer.** Reads and saves go to the document worker and writer, probes and preloads to probe workers, sends to per-destination workers, device open/close/list to device threads. A GO never waits on any of them.
-- **No thread or clock of its own.** Time is the master clock: the primary device's sample counter (skill `devices`, several devices). Wall clock is used only by the device policy, the master clock while the primary is away and another device plays, and the probe/document watchdogs.
+- **No thread or clock of its own.** Time is the master clock: the primary device's sample counter (skill `devices`, several devices). Wall clock is used only by the device policy, the master clock while the primary is away and another device plays, the probe/document watchdogs and wall-clock triggers.
 - **Every workspace edit reaches the cue engine** (only through `DocModel::edit()`; a forgotten signal must not compile). A refused or no-op command changes and broadcasts nothing.
 - Exactly one `result` per command/transport/undo/redo/request, and `model_changed` goes out before it.
 - `VoiceId`s are engine-wide and never reused; each has an owning doc. A voice event no open doc owns is dropped.
@@ -143,6 +143,9 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 - **Panic** (`panic_all`, Esc or `transport: panic` on an app connection) panics every doc as a `panic` transport (twice within the fade is a hard stop in each).
 - **Hotkeys**: `Control::hotkey` (`phase: down`) sends `Start` for every cue of every doc that `Workspace::cues_with_hotkey` returns (same key and modifiers, workspace order; shared hotkeys all start, no warning). A doc whose workspace map (transport, selected-cue or cue-editing keys) uses that key starts nothing (the workspace action wins; that action is the front window's, not the engine's; the engine does nothing on a cue-editing key).
   `Control::hotkey_released` (`phase: up`) sends `TriggerReleased` to the same cues; a cue whose second trigger is not on release ignores it. A press on a paused cue resumes it. Semantics: skill `cue-engine`.
+- **Wall-clock triggers** (`control/wall_clock.rs`, TRG-05): each wake reads `ControlConfig::clock` once (`Engine::read_local_time`) and adds `ControlConfig::local_zone`'s offset (`LocalZone::system()` set by the host: a thread `openlab-localtime` works out the next 4 s of offsets every 250 ms, as the zone database may be read from disk; the control thread only `try_lock`s it and keeps the last offset; default and stepped virtual device: UTC). 
+  Each doc's `WallClockWatch` (core) is new with the doc, so a time already passed does not fire.
+  The cues it returns get a `start` transport, as a hotkey's do, with a `trigger` log record (source `wall clock`; `warn` for a disarmed or broken cue). A step it fired nothing over is logged only when the doc has a trigger on, each missed cue as a `warn`. Tests set a `ManualClock` and `LocalZone::fixed`/`new`. Rules: skill `cue-engine`.
 - **Open** is refused (`command_refused`) while another document request runs (one at a time, engine-wide) or with `MAX_DOCS` open, and with `io` while reads are stuck.
   The document worker builds the doc's parts (`DocParts`: workspace, followed cue engine, catalog index with paths resolved, slice-plan checks), so installing on the control thread is an insert plus probe jobs, slot commands (`SnapPatch`), first reports, `result { opened { doc } }` and the `workspaces` list. Install and close stay under half an audio block.
 - **Close** order: `no_workspace` if not open; `unsaved_changes` unless `discard_changes` (then the autosave it wrote is removed after any write in flight).

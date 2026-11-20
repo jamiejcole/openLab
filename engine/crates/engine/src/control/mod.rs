@@ -53,6 +53,7 @@ pub mod virtual_device;
 mod voice_ids;
 mod voices;
 mod wake;
+pub mod wall_clock;
 pub mod watch;
 mod watch_share;
 mod waveform_reader;
@@ -218,8 +219,12 @@ pub struct ControlConfig {
     /// Where backups, autosaves and the settings file live. `None`: nothing can be saved
     /// (saves answer `io`), autosave and recovery are off.
     pub app_dirs: Option<AppDirs>,
-    /// Wall-clock milliseconds for backup names and autosave pacing (tests inject one).
+    /// Wall-clock milliseconds for backup names, autosave pacing and wall-clock triggers
+    /// (tests inject one).
     pub clock: EpochClock,
+    /// The computer's time zone, for wall-clock triggers: the host sets the system's; tests
+    /// and the offline driver have UTC or one of their own.
+    pub local_zone: wall_clock::LocalZone,
     /// Called on the writer thread before each save (tests only).
     pub save_hook: Option<SaveHook>,
     /// Called on the document worker before each read (tests only).
@@ -304,6 +309,7 @@ impl ControlConfig {
             preload_budget: openlab_audio::DEFAULT_PRELOAD_BUDGET,
             app_dirs: None,
             clock: EpochClock::system(),
+            local_zone: wall_clock::LocalZone::fixed(0),
             save_hook: None,
             doc_hook: None,
             doc_timeout: DOC_TIMEOUT,
@@ -450,6 +456,8 @@ struct Engine {
     /// `samples_rendered` at the last tick, and whether that tick saw it unchanged.
     last_tick_rendered: SampleTime,
     last_tick_stalled: bool,
+    /// The UTC second and the local second it is, at this wake (`wall_clock`).
+    local_time: (Option<i64>, Option<i64>),
     /// The mixers' cue outputs: the most a patch can have, the stride of a voice-meter read.
     cue_outputs: usize,
     /// The most device outputs of any output's mixer (each device has its own count): the
@@ -599,6 +607,9 @@ struct Doc {
     /// saved or autosaved copy (`saved_workspace`); changing it does not mark the doc unsaved.
     /// Holds off sleep (SM-07).
     show_mode: bool,
+    /// The wall-clock triggers' look at the clock (TRG-05): new with the doc, so a time passed
+    /// before it opened does not fire.
+    wall_clock: openlab_core::WallClockWatch,
 }
 
 /// Counters already reported, so each increase is reported once.
@@ -791,6 +802,7 @@ impl Control {
             now_floor: 0,
             last_tick_rendered: 0,
             last_tick_stalled: false,
+            local_time: (None, None),
             cue_outputs,
             device_outputs,
             seen: Seen::default(),
@@ -1233,6 +1245,7 @@ impl Doc {
             meters_live: false,
             waveforms: waveforms::Waveforms::default(),
             show_mode: false,
+            wall_clock: openlab_core::WallClockWatch::new(),
         }
     }
 

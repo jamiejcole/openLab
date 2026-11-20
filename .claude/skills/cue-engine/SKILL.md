@@ -1,6 +1,6 @@
 ---
 name: cue-engine
-description: "Load when changing or reviewing the cue state machine in engine/crates/core/src/cue_engine/: timing, states, chains, groups, GO, playhead, second trigger, level edits and takeover, fades, panic, Stop All/Reset All, preview, broken cues, display_name (cue.rs), cues_with_hotkey (model.rs)."
+description: "Load when changing or reviewing the cue state machine in engine/crates/core/src/cue_engine/: timing, states, chains, groups, GO, playhead, second trigger, level edits and takeover, fades, panic, Stop All/Reset All, preview, broken cues, display_name (cue.rs), cues_with_hotkey (model.rs), wall-clock triggers (wall_clock.rs)."
 ---
 
 # Cue engine (`openlab-core::cue_engine`)
@@ -61,6 +61,11 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - Why per sample, not per call: feedback can be dated on the very sample that started the lap (a voice that ends on its start sample), and a binary may hand it over at the same `now`. Such a lap repeats call after call only until the sample's budget is spent. In the real binary `now` advances a block, so it runs once per block like a timed loop.
 - A cycle that moves time (non-zero wait, Wait or Fade duration) is a timed loop, not a hang; Stop, Reset and Panic end it.
 - A cue acting while its own action is under way ignores a trigger back to itself (`TriggerIgnored`).
+
+## Wall-clock triggers (single home)
+- `WallClockWatch::advance(ws, local)` (`wall_clock.rs`) takes the local time as whole seconds since 1970-01-01 local (UTC plus the zone's offset) and returns the cues to start (workspace order, children included) and any step it fired nothing over. The binary starts them with `Input::Start`, so rule 1 and the playhead rules of a hotkey apply.
+- The first look only notes the time. A step of 1 to `MAX_GAP_SECS` (2) fires every enabled time on a chosen day in `(last, now]`; a longer step or one back fires nothing and reports the step (forward: the cues passed over). A cue never fires twice for one local instant (`fired`), so the hour daylight saving repeats does not fire again.
+- A trigger whose time is out of range or with no day never fires; validation switches it off and commands refuse it.
 
 ## Reviewer checklist
 - Does a new start path charge the chain budget and respect rule 1?

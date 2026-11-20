@@ -470,6 +470,17 @@ fn run_with(
     config.show_log = show_log;
     config.status = Some(StatusConfig::default());
     config.push_log = true;
+    match crate::control::wall_clock::LocalZone::system() {
+        Ok(zone) => config.local_zone = zone,
+        Err(e) => {
+            let _ = inbox_tx.send(Inbox::Log {
+                level: LogLevel::Error,
+                message: format!(
+                    "wall-clock triggers run on UTC: the time zone thread did not start: {e}"
+                ),
+            });
+        }
+    }
     match stage_host_program() {
         Some(program) => config.stage_host = Some(crate::stage::StageHostConfig::new(program)),
         None => {
@@ -487,6 +498,11 @@ fn run_with(
     if let Some(vd) = virtual_device {
         say(&format!("audio: the virtual device ({:?})", vd.mode()));
         config.clock = vd.epoch_clock();
+        if vd.mode() == VirtualMode::Stepped {
+            // Stepped time starts at a known UTC instant; its local time is that, whatever
+            // zone the machine running the tests is in.
+            config.local_zone = crate::control::wall_clock::LocalZone::fixed(0);
+        }
         config.seed = VIRTUAL_SEED;
         if vd.mode() == VirtualMode::Stepped {
             config.cpu_probe = no_cpu;
