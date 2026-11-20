@@ -7,7 +7,7 @@
 //! runtime change, and revisions rise by one (NFR-01, ED-07; docs/protocol.md).
 
 use crate::show::*;
-use openlab_core::protocol::{ClientMessage, ServerMessage};
+use openlab_core::protocol::{ClientMessage, ServerMessage, TransportAction};
 use openlab_core::{Command, CueKind, CueProperty, CueState, Position, Workspace};
 use openlab_engine::control::offline::OfflineShow;
 
@@ -181,6 +181,50 @@ fn a_runtime_arm_change_is_sent_as_an_upsert_of_that_cue() {
     assert_eq!(mirror.catch_up(&mut s), 1);
     assert_eq!(mirror.entities, 1);
     assert!(!mirror.workspace.find_cue(id(3)).unwrap().armed);
+}
+
+#[test]
+fn running_a_target_cue_changes_what_its_target_acts_on_and_edits_nothing() {
+    let path = wav(&dc(48_000, 0.5));
+    let retarget = cue(
+        1,
+        CueKind::Target {
+            target: Some(id(2)),
+            new_target: Some(id(5)),
+        },
+    );
+    let start_cue = cue(
+        2,
+        CueKind::Start {
+            target: Some(id(3)),
+        },
+    );
+    let ws = workspace(vec![retarget, start_cue, audio(3, &path, 0), audio(5, &path, 0)]);
+    let mut s = show(ws.clone());
+    let mut mirror = Mirror::new(&s);
+    let revision = s.control().revision();
+    go(&mut s);
+    s.run(BLOCK * 2);
+    // Not an edit: no model change, nothing to save, nothing to undo.
+    assert_eq!(mirror.catch_up(&mut s), 0);
+    assert_eq!(s.control().revision(), revision);
+    let document = s.control().snapshot().document;
+    assert!(!document.dirty);
+    assert!(!document.can_undo);
+    assert_eq!(s.control().workspace(), &ws);
+    assert_eq!(s.control().engine().temp_target(id(2)), Some(id(5)));
+    // The Start cue starts cue 5 now.
+    start(&mut s, 2);
+    s.run(BLOCK * 2);
+    assert_eq!(state(&s, 5), CueState::Running);
+    assert_eq!(state(&s, 3), CueState::Idle);
+    // Reset All puts its saved target back.
+    s.transport(TransportAction::ResetAll);
+    s.run(BLOCK * 2);
+    start(&mut s, 2);
+    s.run(BLOCK * 2);
+    assert_eq!(state(&s, 3), CueState::Running);
+    assert_eq!(state(&s, 5), CueState::Idle);
 }
 
 // ---- Every path that changes the workspace reaches the cue engine ----
