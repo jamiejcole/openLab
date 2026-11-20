@@ -107,7 +107,7 @@ final class SidebarTests: XCTestCase {
         let wc = try await make()
         wc.sidebar.loadViewIfNeeded()
         XCTAssertEqual(wc.sidebar.tabs.segmentCount, 2)
-        let labels = (0..<2).map { wc.sidebar.tabs.label(forSegment: $0) }
+        let labels = (0..<2).map { wc.sidebar.tabs.label(forSegment: $0) ?? "" }
         XCTAssertTrue(labels[0].contains("Cue List"), labels[0])
         XCTAssertTrue(labels[1].contains("Active Cue"), labels[1])
         for tab in 0..<2 {
