@@ -176,7 +176,7 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
     private var recentHeading: NSTextField?
     private var listHeight = NSLayoutConstraint()
     /// Where the list starts: below the app name's line, level with the bottom of the icon.
-    private static let listTop: CGFloat = 92
+    private static let listTop: CGFloat = 76
     private let emptyView = NSStackView()
     private let newButton = LauncherActionButton(
         symbol: "doc.badge.plus", title: loc("launcher.new"), detail: loc("launcher.new.detail"))

@@ -159,6 +159,16 @@ final class AppController {
         }
     }
     private var memory: [URL] = []
+    /// A bookmark per remembered path, made while its file existed: it still finds the file after
+    /// the file is moved or renamed.
+    var recentBookmarks: [String: Data] {
+        get { (launchDefaults?.dictionary(forKey: "launcher-recent-bookmarks") as? [String: Data]) ?? bookmarkMemory }
+        set {
+            bookmarkMemory = newValue
+            launchDefaults?.set(newValue, forKey: "launcher-recent-bookmarks")
+        }
+    }
+    private var bookmarkMemory: [String: Data] = [:]
     var launchWaiters: [CheckedContinuation<Void, Never>] = []
     /// Show files asked for before `launchApplied`.
     var filesToOpen: [URL] = []

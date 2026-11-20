@@ -302,13 +302,31 @@ extension AppController {
     }
 
     /// The launcher lists the system's recent workspaces, then the ones it listed before whose file
-    /// has gone (the system forgets those), marked as missing.
+    /// has gone (the system forgets those), marked as missing. A remembered file that was moved or
+    /// renamed is found again by its bookmark and is not listed as gone (the system lists it at its
+    /// new place); a file the bookmark cannot find is deleted, and stays listed as missing.
     func reloadLauncher() {
         let system = recentURLs()
-        let gone = rememberedRecents.filter { !system.contains($0) && !recentExists($0) }
+        var marks = recentBookmarks
+        let gone = rememberedRecents.filter { old in
+            guard !system.contains(old), !recentExists(old) else { return false }
+            if let data = marks[old.path], let now = Self.resolve(data), recentExists(now) { return false }
+            return true
+        }
         let all = Array((system + gone).prefix(10))
         rememberedRecents = all
+        for url in all where marks[url.path] == nil && recentExists(url) {
+            marks[url.path] = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        }
+        recentBookmarks = marks.filter { key, _ in all.contains { $0.path == key } }
         launcher.reload(recents: all, missing: Set(all.filter { !recentExists($0) }))
+    }
+
+    private static func resolve(_ data: Data) -> URL? {
+        var stale = false
+        return try? URL(
+            resolvingBookmarkData: data, options: [.withoutUI, .withoutMounting], relativeTo: nil,
+            bookmarkDataIsStale: &stale)
     }
 
     private func save(_ store: WorkspaceStore, name: String, asNew: Bool = false) async -> Bool {

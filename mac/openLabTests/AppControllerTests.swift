@@ -2475,6 +2475,32 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept"], "removed for good")
     }
 
+    /// A show moved or renamed in Finder is followed by the system's list to its new place: the
+    /// launcher shows it once, not missing. A deleted one still shows as missing.
+    func testAMovedShowIsListedOnceAtItsNewPlaceAndADeletedOneStaysMissing() async throws {
+        newestFirstRecents()
+        app.recentExists = { FileManager.default.fileExists(atPath: $0.path) }
+        let dir = real.folder.appendingPathComponent("moves-\(UUID().uuidString)", isDirectory: true)
+        let a = dir.appendingPathComponent("A", isDirectory: true)
+        let b = dir.appendingPathComponent("B", isDirectory: true)
+        for d in [a, b] { try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true) }
+        let hamlet = a.appendingPathComponent("Hamlet.openlab")
+        let lear = a.appendingPathComponent("Lear.openlab")
+        for u in [hamlet, lear] { try "x".write(to: u, atomically: true, encoding: .utf8) }
+        recents = [hamlet, lear]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, false])
+        // Hamlet is moved (the system follows it); Lear is deleted (the system drops it).
+        let moved = b.appendingPathComponent("Hamlet.openlab")
+        try FileManager.default.moveItem(at: hamlet, to: moved)
+        try FileManager.default.removeItem(at: lear)
+        recents = [moved]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Hamlet", "Lear"])
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, true])
+        XCTAssertEqual(app.launcher.recents.first?.url.path, moved.path)
+    }
+
     /// A missing-file notice is about the list it was raised on: showing the launcher again, or
     /// opening another recent, clears it.
     func testTheMissingFileNoticeGoesWhenTheLauncherIsShownAgainOrARecentOpens() async throws {
