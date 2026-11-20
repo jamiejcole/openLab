@@ -47,9 +47,13 @@ final class AboutWindowTests: XCTestCase {
         var controls: [NSView] = []
         func walk(_ v: NSView) {
             if v is NSControl && !(v is NSTextField) && !(v is NSImageView) { controls.append(v) }
-            if let t = v as? NSTextField, t.allowsEditingTextAttributes || !t.attributedStringValue.string.isEmpty
-                && t.attributedStringValue.attribute(.link, at: 0, effectiveRange: nil) != nil
-            { controls.append(v) }
+            if let t = v as? NSTextField,
+                t.allowsEditingTextAttributes
+                    || !t.attributedStringValue.string.isEmpty
+                        && t.attributedStringValue.attribute(.link, at: 0, effectiveRange: nil) != nil
+            {
+                controls.append(v)
+            }
             v.subviews.forEach(walk)
         }
         walk(content)
