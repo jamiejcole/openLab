@@ -580,7 +580,12 @@ final class BlackBackstopTests: XCTestCase {
         let (second, b, _) = try await newWorkspace()
         await played(first, a)
         await played(second, b)
-        await pushed { self.v1 != nil }
+        // Both blacks up, not just the first: until the second's is, the first alone holds V1.
+        await pushed("both stages' black is up") {
+            [(first, a), (second, b)].allSatisfy { store, stage in
+                store.videoOutputs.stages.first { $0.stage == stage }?.panicked == false
+            } && self.v1 != nil
+        }
         let window = try XCTUnwrap(v1)
         await keepBlack(first, a, false)
         await pushed { first.model?.stages.first?.raw["keep_black"] == .bool(false) }
