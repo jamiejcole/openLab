@@ -1349,6 +1349,7 @@ impl Checker {
                         None => self.warn(id, IssueKind::TargetMissing { target: *new }),
                         Some(n) => {
                             if let Some(t) = target.and_then(|t| by_id.get(&t))
+                                && can_target(&cue.kind, &t.kind)
                                 && retarget_problem(t, n) == Some(Retarget::WrongKind)
                             {
                                 self.warn(id, IssueKind::TargetWrongKind { target: *new });

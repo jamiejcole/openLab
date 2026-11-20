@@ -1215,7 +1215,7 @@ fn facts_of<'w>(
         None
     };
     // A Target cue's new target: there, with a number, and one its target can act on. Judged
-    // against the target only while the target is there.
+    // against the target only while the target is there and of a kind it can retarget.
     let new_target = match &cue.kind {
         CueKind::Target { target, new_target } => match new_target {
             None => Some(CueProblem::NoNewTarget),
@@ -1223,8 +1223,8 @@ fn facts_of<'w>(
                 None => Some(CueProblem::NewTargetMissing { target: *new }),
                 Some(n) => {
                     let problem = match target.and_then(&cue_of) {
-                        Some(t) => retarget_problem(t, n),
-                        None => n.number.is_none().then_some(Retarget::Unnumbered),
+                        Some(t) if can_target(&cue.kind, &t.kind) => retarget_problem(t, n),
+                        _ => n.number.is_none().then_some(Retarget::Unnumbered),
                     };
                     problem.map(|p| match p {
                         Retarget::WrongKind => CueProblem::NewTargetWrongKind { target: *new },
@@ -1301,7 +1301,10 @@ fn facts_of<'w>(
             && !(geometry.any() && pictured(target)));
     (target.is_some()
         || new_target.is_some()
-        || audio.is_some() || network.is_some() || video.is_some() || nothing_to_fade)
+        || audio.is_some()
+        || network.is_some()
+        || video.is_some()
+        || nothing_to_fade)
         .then_some(Facts {
             target,
             new_target,

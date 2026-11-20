@@ -115,7 +115,10 @@ impl CueEngine {
             return;
         };
         let Some(new_model) = ws.find_cue(new) else {
-            return cx.warn(EngineWarning::TargetMissing { cue: by, target: new });
+            return cx.warn(EngineWarning::TargetMissing {
+                cue: by,
+                target: new,
+            });
         };
         if !crate::validate::can_target(&by_model.kind, &target_model.kind)
             || crate::validate::retarget_problem(target_model, new_model).is_some()
