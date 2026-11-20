@@ -956,6 +956,9 @@ fn unplayable_streams_fail_with_a_typed_error() {
 fn play_until_failure(media: Media, info: MediaInfo, device_rate: u32) -> MediaError {
     let mut c = StreamerConfig::new(device_rate);
     c.buffer_ms = 100;
+    // The worker publishes the failure before it lets go of the ring; holding it there makes
+    // the gap between the two, which a slow runner can hit, certain.
+    c.after_failure = || std::thread::sleep(std::time::Duration::from_millis(20));
     let mut d = DiskStreamer::new(c).unwrap();
     let cfg = openlab_audio::MixerConfig {
         sample_rate: device_rate,
@@ -985,7 +988,11 @@ fn play_until_failure(media: Media, info: MediaInfo, device_rate: u32) -> MediaE
     }
     let failed = failed.expect("the stream failed");
     assert_eq!(h.error(), Some(failed.clone()));
-    // The stream is gone: the voice plays out what is in the ring, then ends.
+    // The error is readable before the worker lets go of the ring; until it does, the voice
+    // waits for more (an underrun). Once it has, the voice plays out the ring, then ends.
+    spin::spin_until("the failed stream to let go of its ring", || {
+        d.open_streams() == 0
+    });
     let written = h.frames_written();
     assert!(written < total);
     let left = (written - ctl.samples_rendered()) as usize;
