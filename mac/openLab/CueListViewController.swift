@@ -198,8 +198,8 @@ final class CueOutlineView: NSOutlineView {
     }
 }
 
-/// A running cue's progress behind its Duration text: the cell filled and outlined from the left up
-/// to `fraction` of its width (nothing drawn when nil).
+/// A running cue's progress behind its Duration text: the cell faintly outlined, filled and outlined in
+/// the colour from the left up to `fraction` of its width (nothing drawn when nil).
 final class ProgressFillView: NSView {
     var progress: (fraction: Double, colour: NSColor)? {
         didSet {
@@ -213,6 +213,12 @@ final class ProgressFillView: NSView {
         let box = bounds.insetBy(dx: 1, dy: 2)
         let rect = NSRect(
             x: box.minX, y: box.minY, width: box.width * CGFloat(min(1, progress.fraction)), height: box.height)
+        // The whole cell is drawn faintly under the fill, so a part-way fill reads as progress along a bar and not
+        // as a box around the first digits.
+        let track = NSBezierPath(roundedRect: box, xRadius: 3, yRadius: 3)
+        NSColor.tertiaryLabelColor.setStroke()
+        track.lineWidth = 1
+        track.stroke()
         guard rect.width >= 1 else { return }
         let path = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
         progress.colour.withAlphaComponent(0.3).setFill()
