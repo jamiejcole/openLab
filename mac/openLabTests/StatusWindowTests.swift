@@ -27,12 +27,12 @@ final class StatusWindowTests: XCTestCase {
         let (rig, wc) = try await open()
         // The shortcut is Window's Workspace Status item on Shift-Command-W.
         let item = try XCTUnwrap(
-            MainMenu.make().windows.items.first { $0.action == #selector(AppDelegate.showPreshowCheck(_:)) })
+            MainMenu.make().windows.items.first { $0.action == #selector(AppDelegate.showWorkspaceStatus(_:)) })
         XCTAssertEqual(item.title, loc("menu.window.status"))
         XCTAssertEqual(item.keyEquivalent, "W")
         XCTAssertNil(wc.existingStatusWindow)
 
-        await wc.showPreshowCheck().value
+        await wc.showWorkspaceStatus().value
         let status = try XCTUnwrap(wc.existingStatusWindow)
         XCTAssertTrue(status.window?.isVisible == true)
         XCTAssertEqual(status.page, .warnings)
@@ -73,7 +73,7 @@ final class StatusWindowTests: XCTestCase {
     func testAWarningsRowSelectsItsCue() async throws {
         let (rig, wc) = try await open()
         let playheads = rig.store.playheads
-        await wc.showPreshowCheck().value
+        await wc.showWorkspaceStatus().value
         let status = try XCTUnwrap(wc.existingStatusWindow)
         let row = try XCTUnwrap(status.warnings.rows.firstIndex { $0.cue == radio && $0.section == .brokenCues })
         XCTAssertTrue(status.warnings.choose(row: row))

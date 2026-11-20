@@ -574,6 +574,11 @@
 "status.info.notSaved" = "Not saved yet";
 "status.info.idNote" = "The workspace ID can be used in OSC addresses that act on this workspace.";
 "menu.window.status" = "Workspace Status";
+"warnings.inspect" = "Inspect Cue";
+"warnings.hide" = "Hide";
+"warnings.unhide" = "Unhide";
+"warnings.showHidden" = "Show hidden";
+"warnings.summary.hidden" = "%@ (%d hidden)";
 "settings.osc.enabled" = "Allow OSC control of this workspace";
 "settings.osc.port" = "Listening port";
 "settings.osc.offOpen" = "OSC control is off: every message to this workspace is refused. Port %d is still bound.";
@@ -657,11 +662,9 @@
 "menu.help.openLabHelp" = "openLab Help";
 "menu.help.crashReports" = "Show Crash Reports in Finder";
 "crash.none" = "There are no crash reports on this Mac.";
-"crash.previousRun" = "The last run did not end cleanly. See Show Log; crash reports: Help > Show Crash Reports in Finder.";
+"crash.previousRun" = "The last run did not end cleanly. See the Logs page of Workspace Status; crash reports: Help > Show Crash Reports in Finder.";
 
 /* Sidebar: Warnings tab (DX-01). {name} is replaced by the engine's field of that name. */
-"sidebar.tab.warnings" = "Warnings";
-"sidebar.warnings.label" = "Warnings";
 "warnings.none" = "No warnings";
 "warnings.one" = "1 warning";
 "warnings.many" = "%d warnings";
@@ -750,8 +753,7 @@
 /* Footer status (DX-03) */
 
 /* Log window (DX-02) */
-"menu.window.log" = "Show Log";
-"log.title" = "Show Log";
+"log.title" = "Logs";
 "log.refresh" = "Refresh";
 "log.filter.label" = "Show";
 "log.filter.all" = "All records";
@@ -768,39 +770,6 @@
 "log.column.message" = "Message";
 "log.tailFailed" = "The engine's log history could not be loaded.";
 "log.dropped" = "%d records were dropped by the engine.";
-"menu.window.preshowCheck" = "Workspace Status";
-"preshow.title" = "Pre-Show Check";
-"preshow.title.workspace" = "Pre-Show Check: %@";
-"preshow.checkAgain" = "Check Again";
-"preshow.inspect" = "Inspect Cue";
-"preshow.hide" = "Hide";
-"preshow.unhide" = "Unhide";
-"preshow.showHidden" = "Show hidden";
-"preshow.summary.hidden" = "%@ (%d hidden)";
-"preshow.checking" = "Checking…";
-"preshow.failed" = "The check could not be run. Try again.";
-"preshow.disconnected" = "The engine is not connected: nothing has been checked.";
-"preshow.summary.ok" = "No problems found.";
-"preshow.summary.one" = "1 problem found.";
-"preshow.summary.many" = "%d problems found.";
-"preshow.summary.problems" = "Problems found.";
-"preshow.section.brokenCues" = "Broken cues (%d)";
-"preshow.section.media" = "Media files (%d)";
-"preshow.section.devices" = "Audio patches without a device (%d)";
-"preshow.section.network" = "Network destinations (%d)";
-"preshow.section.system" = "Engine warnings (%d)";
-"preshow.cue.deleted" = "%@ (deleted)";
-"preshow.usedBy" = "Used by: %@";
-"preshow.usedBy.more" = "%@ and %d more";
-"preshow.media.missing" = "File not found.";
-"preshow.media.unsupported" = "Cannot be played: %@";
-"preshow.patch.unknown" = "Patch %@";
-"preshow.patch.missing" = "Cues use this patch, but the workspace does not have it.";
-"preshow.patch.noDevice" = "No audio device to play on.";
-"preshow.patch.unused" = "No cue uses this patch.";
-"preshow.network.unknown" = "Network patch %@";
-"preshow.network.missing" = "Cues use this destination, but the workspace does not have it.";
-"preshow.network.notChecked" = "%@: not checked (reachability is not tested).";
 
 /* Recover autosaves; Find Missing Files folder panel (WS-03) */
 "menu.file.recover" = "Recover Autosaves…";

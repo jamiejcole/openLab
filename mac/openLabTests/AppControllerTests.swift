@@ -429,7 +429,7 @@ final class AppControllerTests: XCTestCase {
         let editor = try XCTUnwrap(wc.editPatch(patch))
         editor.showWindow(nil)
         wc.missingFiles.showWindow(nil)
-        await wc.showPreshowCheck().value
+        await wc.showWorkspaceStatus().value
         await wc.showLog().value
         if sheet { wc.showNotice("a refusal") }
         var released = Released()
@@ -515,7 +515,7 @@ final class AppControllerTests: XCTestCase {
             engine.holdResults = true
             let wc = try XCTUnwrap(app.windows[doc])
             wc.masthead.onCommitNotes?(fade, "pending")
-            _ = wc.showPreshowCheck()
+            _ = wc.showWorkspaceStatus()
             // Both wait on their answers. Others may be held beside them: a read the owned windows started
             // before the hold (the patch editor's mappings, sent once its device list came back) can be
             // answered after it on a slow machine.

@@ -70,9 +70,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
     /// Find Missing Files was asked for from a Warnings row.
-    var onRelink: (() -> Void)? {
-        didSet { sidebar.onRelink = onRelink }
-    }
+    var onRelink: (() -> Void)?
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
     let findBar = FindBarView()
@@ -98,7 +96,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// info as its pages. It closes with this window.
     var statusWindow: StatusWindowController {
         if let statusController { return statusController }
-        let made = StatusWindowController(store: store, warnings: preshowWindow, logs: logWindow)
+        let made = StatusWindowController(store: store, warnings: warningsPage, logs: logWindow)
         made.retitle(workspaceName)
         statusController = made
         return made
@@ -113,13 +111,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
     /// The log window if it was ever made (closing a workspace must not make one just to close it).
     var existingLogWindow: LogWindowController? { logController }
-    private var preshowController: PreshowWindowController?
-    /// The pre-show check panel, made on first use. It closes with this window.
-    var preshowWindow: PreshowWindowController {
-        if let pc = preshowController { return pc }
-        let pc = PreshowWindowController(store: store)
+    private var warningsController: WarningsPageController?
+    /// The Warnings page of the status window, made on first use; it lists what the footer counts.
+    var warningsPage: WarningsPageController {
+        if let pc = warningsController { return pc }
+        let pc = WarningsPageController(store: store)
         pc.onInspect = { [weak self] id, tab in self?.inspect(cue: id, tab: tab) }
-        preshowController = pc
+        pc.onRelink = { [weak self] in self?.onRelink?() }
+        pc.relinkLocked = isShowMode
+        pc.show(WarningRows.make(store: store))
+        warningsController = pc
         return pc
     }
     private var settingsController: WorkspaceSettingsWindowController?
@@ -362,12 +363,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cues.contains { $0.id == id || contains(id, in: $0.children) }
     }
 
-    /// Window > Log: the status window on its Logs page.
-    @discardableResult
-    func showLog() -> Task<Void, Never> { showStatus(.logs) }
-
-    /// Opens the status window on `page` and reads what it shows. The task's value tells tests it is
-    /// done.
+    /// Opens the status window on `page` without taking the keyboard. The task's value tells tests the
+    /// page has read what it shows (the Logs page reads the engine's tail).
     @discardableResult
     func showStatus(_ page: StatusWindowController.Page) -> Task<Void, Never> {
         let status = statusWindow
@@ -392,15 +389,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         return settingsWindow.openPatchEditor(patch)
     }
 
-    /// The pre-show check asks the engine: without a connection there is nothing to ask (the menu
-    /// item is greyed rather than showing an empty, all-clear-looking report).
-    var canRunPreshowCheck: Bool { store.connectionState == .connected }
-
-    /// Opens the pre-show check (SM-06) and runs it. The task's value tells tests it answered.
+    /// Window > Workspace Status and View > Warnings: the status window on its Warnings page.
     @discardableResult
-    func showPreshowCheck() -> Task<Void, Never> { showStatus(.warnings) }
+    func showWorkspaceStatus() -> Task<Void, Never> { showStatus(.warnings) }
 
-    /// A pre-show report entry was chosen: reveals the cue (the playhead stays) and, in Edit Mode,
+    /// A Warnings row was chosen: reveals the cue (the playhead stays) and, in Edit Mode,
     /// shows the inspector on the tab that holds what to fix, as QLab's "Inspect Cue" does.
     func inspect(cue id: ModelID, tab: String?) {
         reveal(cue: id)
@@ -455,7 +448,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         masthead.isLocked = on
         cueToolbar.isLocked = on
         cueList.isEditLocked = on
-        sidebar.relinkLocked = on
+        warningsController?.relinkLocked = on
         sidebar.listEditLocked = on
         footer.setShowMode(on)
         for area in Self.hiddenInShowMode { show(area, on ? false : wanted[area] ?? true) }
@@ -677,7 +670,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         syncFooterWarnings()
     }
 
-    /// The footer's warnings button counts the rows the Warnings tab lists.
+    /// The footer's warnings button counts the rows the Warnings page lists, and the page, if made, is
+    /// given them: it is live.
     /// With `changed` (a runtime change), only a cue that has a row, problems or a runtime reason can
     /// change the count, so a busy show does not rescan the cue tree for every tick (as the sidebar).
     func syncFooterWarnings(changed: Set<ModelID>? = nil) {
@@ -691,6 +685,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let rows = WarningRows.make(store: store)
         footerWarned = Set(rows.compactMap(\.cue))
         footer.showWarnings(count: rows.count)
+        warningsController?.show(rows)
     }
 
     private var footerWarned: Set<ModelID> = []
@@ -698,12 +693,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// View > Switch Sidebar Between Lists and Active Cues: shows the sidebar on the other of its two tabs.
     func toggleSidebarTab() {
         sidebar.showTab(sidebar.tabs.selectedSegment == 0 ? 1 : 0)
-        setVisible(.sidebar, true)
-    }
-
-    /// View > Show Warnings: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
-    func showWarnings() {
-        sidebar.showTab(2)  // before setVisible, which saves the layout
         setVisible(.sidebar, true)
     }
 

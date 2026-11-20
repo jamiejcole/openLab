@@ -134,6 +134,8 @@ struct WarningRow: Hashable {
     let detail: String
     /// The cue is broken by media that cannot be found: the row offers Find Missing Files.
     let canRelink: Bool
+    /// The inspector tab that holds what to fix (`basics`: the file and the target are chosen there).
+    var inspectorTab: String?
 }
 
 enum WarningRows {
@@ -148,6 +150,12 @@ enum WarningRows {
 
     /// The most of a device's name a warning row's title shows.
     static let deviceNameLength = 48
+
+    /// Problems fixed on the Basics tab: the file and the target are chosen there.
+    private static let basicsProblems: Set<String> = [
+        "no_target", "target_missing", "target_self", "target_wrong_kind", "no_media", "media_missing",
+        "media_unsupported",
+    ]
 
     /// Broken cues in list order first, then workspace warnings, then runtime warnings (oldest
     /// first). Groups that are only flagged for a broken child are not listed: the child is.
@@ -196,7 +204,8 @@ enum WarningRows {
                             id: "c:\(cue.id.raw)", cue: cue.id,
                             title: cueTitle(cue, name: model?.listName(cue) ?? CueKindStyle.kindLabel(cue.kindType)),
                             detail: reasons.joined(separator: "\n"),
-                            canRelink: problems.contains { $0.type == "media_missing" }))
+                            canRelink: problems.contains { $0.type == "media_missing" },
+                            inspectorTab: problems.contains { basicsProblems.contains($0.type) } ? "basics" : nil))
                 }
                 walk(cue.children)
             }

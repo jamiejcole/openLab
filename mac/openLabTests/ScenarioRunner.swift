@@ -914,12 +914,11 @@ final class ScenarioRunner {
                 aboutWindow = about
                 focused = w
             } else if which == "status" {
-                // The workspace status window, drawn off screen on its Warnings page.
+                // The workspace status window, drawn off screen on its Warnings page (live: it already has the rows).
                 let status = wc.statusWindow
                 let w = try XCTUnwrap(status.window)
                 w.appearance = wc.window?.appearance
                 status.tabs.selectTabViewItem(withIdentifier: StatusWindowController.Page.warnings.rawValue)
-                await status.warnings.runCheck()
                 await status.logs.refresh()
                 focused = w
             } else if which == "sheet" {

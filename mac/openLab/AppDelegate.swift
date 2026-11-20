@@ -230,7 +230,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func revealTargetFile(_ sender: Any?) {
         appController.frontController?.cueList.revealSelectedTarget()
     }
-    @MainActor @objc func showWarnings(_ sender: Any?) { appController.frontController?.showWarnings() }
     @MainActor @objc func jumpToTargets(_ sender: Any?) { appController.frontController?.jumpToTargets() }
     @MainActor @objc func showAbout(_ sender: Any?) { appController.aboutWindow.showWindow(nil) }
     @MainActor @objc func showPreferences(_ sender: Any?) {
@@ -258,7 +257,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    @MainActor @objc func showLog(_ sender: Any?) { appController.showLog() }
     @MainActor @objc func revealCrashReports(_ sender: Any?) { appController.revealCrashReports() }
     @MainActor @objc func showWorkspaceSettings(_ sender: Any?) { appController.frontController?.showSettings() }
     @MainActor @objc func showWorkspaceSettingsPage(_ sender: NSMenuItem) {
@@ -266,7 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         appController.frontController?.showSettings(page: page)
     }
     @MainActor @objc func showOverrideControls(_ sender: Any?) { appController.showOverrideControls() }
-    @MainActor @objc func showPreshowCheck(_ sender: Any?) { appController.frontController?.showPreshowCheck() }
+    @MainActor @objc func showWorkspaceStatus(_ sender: Any?) { appController.frontController?.showWorkspaceStatus() }
 
     @MainActor @objc func findMissingFiles(_ sender: Any?) {
         guard let store = appController.frontController?.store else { return }
@@ -322,7 +320,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(loadToTime(_:))?:
             // An operator's tool: on in Show Mode too (QLab manual p. 149); it cycles the bar.
             return appController.frontController != nil
-        case #selector(showWarnings(_:))?: return appController.frontController != nil  // views only: Show Mode too
         case #selector(jumpToTargets(_:))?:
             // Not while a text field is edited: the jump would take its focus.
             return (appController.frontController?.canJumpToTargets ?? false) && !appController.isTextEditing()
@@ -350,10 +347,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(saveWorkspace(_:))?, #selector(saveWorkspaceAs(_:))?:
             return appController.canSaveFront
         case #selector(recoverAutosaves(_:))?: return engineSession.connectionState == .connected
-        case #selector(showLog(_:))?: return appController.frontController != nil
         case #selector(showWorkspaceSettings(_:))?, #selector(showWorkspaceSettingsPage(_:))?:
             return appController.frontController != nil
-        case #selector(showPreshowCheck(_:))?: return appController.frontController?.canRunPreshowCheck ?? false
+        case #selector(showWorkspaceStatus(_:))?: return appController.frontController != nil  // Show Mode too
         default: break
         }
         guard let raw = item.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
