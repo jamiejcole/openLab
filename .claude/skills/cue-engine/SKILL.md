@@ -1,6 +1,6 @@
 ---
 name: cue-engine
-description: "Load when changing or reviewing the cue state machine in engine/crates/core/src/cue_engine/: timing, states, chains, groups, GO, playhead, second trigger, level edits and takeover, fades, panic, Stop All/Reset All, preview, broken cues, display_name (cue.rs), cues_with_hotkey (model.rs), wall-clock triggers (wall_clock.rs)."
+description: "Load when changing or reviewing the cue state machine in engine/crates/core/src/cue_engine/: timing, states, chains, groups, GO, playhead, second trigger, level edits, fades, panic, Stop/Reset All, preview, broken cues, display_name (cue.rs), cues_with_hotkey (model.rs), wall_clock.rs."
 ---
 
 # Cue engine (`openlab-core::cue_engine`)

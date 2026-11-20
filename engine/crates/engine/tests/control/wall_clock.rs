@@ -70,8 +70,18 @@ fn at(s: &mut OfflineShow, clock: &ManualClock, local: i64, ms: i64) {
     s.run(BLOCK);
 }
 
-fn set_triggers(s: &mut OfflineShow, n: u128, edit: impl FnOnce(&mut Triggers)) -> Vec<ServerMessage> {
-    let mut triggers = s.control().workspace().find_cue(id(n)).unwrap().triggers.clone();
+fn set_triggers(
+    s: &mut OfflineShow,
+    n: u128,
+    edit: impl FnOnce(&mut Triggers),
+) -> Vec<ServerMessage> {
+    let mut triggers = s
+        .control()
+        .workspace()
+        .find_cue(id(n))
+        .unwrap()
+        .triggers
+        .clone();
     edit(&mut triggers);
     let rid = s.request_id();
     s.send(ClientMessage::Command {
@@ -152,7 +162,11 @@ fn enable_it_for_a_time_one_minute_ahead_the_cue_starts_at_that_second_once() {
     assert_eq!(log.len(), 1, "{log:?}");
     assert_eq!(log[0].level, LogLevel::Info);
     assert_eq!(log[0].cue, Some(id(1)));
-    assert!(log[0].message.starts_with("wall clock 10:31:00"), "{}", log[0].message);
+    assert!(
+        log[0].message.starts_with("wall clock 10:31:00"),
+        "{}",
+        log[0].message
+    );
 }
 
 /// Flow: days limited to other days do not start the cue; a chosen day does. Local time is the
@@ -168,13 +182,21 @@ fn day_of_week_limited_to_other_days_does_not_fire_and_a_chosen_day_does_in_loca
     mon.triggers.wall_clock.days = Weekdays::NONE.with(Weekday::Monday, true);
     let zone = 2 * 3600;
     let local = hms(MONDAY + DAY, 0, 59, 59);
-    let (mut s, clock) = zone_show(workspace(vec![tue, mon]), local, LocalZone::fixed(zone), zone);
+    let (mut s, clock) = zone_show(
+        workspace(vec![tue, mon]),
+        local,
+        LocalZone::fixed(zone),
+        zone,
+    );
     clock.set(utc_ms(local + 1, zone, 0));
     s.run(BLOCK);
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
     s.run(BLOCK * 4);
-    assert!(s.channel(1).iter().all(|&v| v == 0.0), "Monday's cue played on Tuesday");
+    assert!(
+        s.channel(1).iter().all(|&v| v == 0.0),
+        "Monday's cue played on Tuesday"
+    );
 }
 
 /// Flow: the trigger fires only while its workspace is open: a workspace opened after the time
@@ -191,14 +213,20 @@ fn the_trigger_fires_only_while_its_workspace_is_open() {
         ws.id = WorkspaceId(Uuid::from_u128(500 + n));
         ws
     };
-    let b = s.open_doc(DocSource::Workspace(Box::new(second(1)))).unwrap();
-    let closed = s.open_doc(DocSource::Workspace(Box::new(second(2)))).unwrap();
+    let b = s
+        .open_doc(DocSource::Workspace(Box::new(second(1))))
+        .unwrap();
+    let closed = s
+        .open_doc(DocSource::Workspace(Box::new(second(2))))
+        .unwrap();
     s.settle_media();
     at(&mut s, &clock, now + 1, 0);
     s.close_doc(closed, true).unwrap();
     at(&mut s, &clock, now + 2, 0);
     // Opened on its very second: it does not fire.
-    let late = s.open_doc(DocSource::Workspace(Box::new(second(3)))).unwrap();
+    let late = s
+        .open_doc(DocSource::Workspace(Box::new(second(3))))
+        .unwrap();
     s.settle_media();
     at(&mut s, &clock, now + 2, 400);
     at(&mut s, &clock, now + 3, 0);
@@ -207,7 +235,10 @@ fn the_trigger_fires_only_while_its_workspace_is_open() {
     assert_eq!(state(&s, first), CueState::Running);
     assert_eq!(state(&s, b), CueState::Running);
     assert_eq!(state(&s, late), CueState::Idle);
-    let started: Vec<_> = wall_clock_log(&s).into_iter().filter(|e| e.cue == Some(id(1))).collect();
+    let started: Vec<_> = wall_clock_log(&s)
+        .into_iter()
+        .filter(|e| e.cue == Some(id(1)))
+        .collect();
     assert_eq!(started.len(), 2, "{started:?}");
 }
 
@@ -222,7 +253,13 @@ fn save_close_reopen_the_trigger_remains_set_and_fires() {
     let ws = openlab_core::load_show(&text).unwrap().workspace;
     let now = hms(MONDAY, 20, 59, 59);
     let (mut s, clock) = zone_show(ws, now, LocalZone::fixed(ZONE), ZONE);
-    let trigger = &s.control().workspace().find_cue(id(1)).unwrap().triggers.wall_clock;
+    let trigger = &s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .triggers
+        .wall_clock;
     assert!(trigger.enabled && trigger.days.contains(Weekday::Monday));
     at(&mut s, &clock, now + 1, 0);
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
@@ -262,7 +299,11 @@ fn the_trigger_time_passes_while_running_paused_in_show_mode_disarmed_or_broken(
     at(&mut s, &clock, now + 1, 0);
     let engine = s.control().engine();
     assert_eq!(engine.state(id(1)), CueState::Running);
-    assert_eq!(engine.state(id(2)), CueState::Running, "a trigger resumes a paused cue");
+    assert_eq!(
+        engine.state(id(2)),
+        CueState::Running,
+        "a trigger resumes a paused cue"
+    );
     assert_eq!(s.control().live_voices(), 2, "no second voice");
     let log = wall_clock_log(&s);
     let of = |n: u128| log.iter().find(|e| e.cue == Some(id(n))).unwrap();
@@ -289,7 +330,11 @@ fn a_trigger_missed_while_asleep_or_held_up_does_not_fire_later() {
     at(&mut s, &clock, now + 3601, 0);
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     let log = wall_clock_log(&s);
-    assert!(log.iter().any(|e| e.cue == Some(id(1)) && e.level == LogLevel::Warn), "{log:?}");
+    assert!(
+        log.iter()
+            .any(|e| e.cue == Some(id(1)) && e.level == LogLevel::Warn),
+        "{log:?}"
+    );
     // Held up for three seconds over 09:00:10 the next day: missed too.
     let next = now + DAY + 10;
     at(&mut s, &clock, next - 1, 0);
@@ -309,7 +354,13 @@ fn clock_changes_fire_the_trigger_once_at_its_wall_time() {
     a.second_trigger = openlab_core::SecondTrigger::HardStopAndRestart;
     // Offset +11 h until the UTC instant that is 03:00 local, +10 h after.
     let change_utc = hms(MONDAY, 3, 0, 0) - 11 * 3600;
-    let zone = LocalZone::new(move |utc| Some(if utc < change_utc { 11 * 3600 } else { 10 * 3600 }));
+    let zone = LocalZone::new(move |utc| {
+        Some(if utc < change_utc {
+            11 * 3600
+        } else {
+            10 * 3600
+        })
+    });
     let start_local = hms(MONDAY, 2, 29, 59);
     let (mut s, clock) = zone_show(workspace(vec![a]), start_local, zone, 11 * 3600);
     let mut utc = utc_ms(start_local, 11 * 3600, 0);
@@ -333,7 +384,13 @@ fn clock_changes_fire_the_trigger_once_at_its_wall_time() {
         },
         start_local,
     );
-    for local in [start_local + 1, start_local + 2, start_local - 2, start_local - 1, start_local + 1] {
+    for local in [
+        start_local + 1,
+        start_local + 2,
+        start_local - 2,
+        start_local - 1,
+        start_local + 1,
+    ] {
         at(&mut s, &clock, local, 0);
     }
     let started: Vec<_> = wall_clock_log(&s)
@@ -356,6 +413,12 @@ fn a_wall_clock_time_out_of_range_is_refused_over_the_protocol() {
     let (mut s, _clock) = clock_show(vec![audio(1, &path, 0)], MONDAY);
     let replies = set_triggers(&mut s, 1, |t| t.wall_clock = clocked(24, 0, 0));
     assert!(!outcome_ok(&replies));
-    let trigger = &s.control().workspace().find_cue(id(1)).unwrap().triggers.wall_clock;
+    let trigger = &s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .triggers
+        .wall_clock;
     assert_eq!(*trigger, WallClockTrigger::default());
 }

@@ -1298,7 +1298,9 @@ fn wall_clock() -> impl Strategy<Value = WallClockTrigger> {
             let days = Weekday::ALL
                 .into_iter()
                 .enumerate()
-                .fold(Weekdays::NONE, |set, (i, d)| set.with(d, days & (1 << i) != 0));
+                .fold(Weekdays::NONE, |set, (i, d)| {
+                    set.with(d, days & (1 << i) != 0)
+                });
             WallClockTrigger {
                 enabled,
                 hours,
@@ -2257,9 +2259,11 @@ fn save_close_reopen_the_wall_clock_trigger_remains_set() {
     let text = save_show(&loaded.workspace).unwrap();
     assert_eq!(load_show(&text).unwrap().workspace, loaded.workspace);
     let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert!(doc["workspace"]["cue_lists"][0]["cues"][0]["triggers"]
-        .get("wall_clock")
-        .is_none());
+    assert!(
+        doc["workspace"]["cue_lists"][0]["cues"][0]["triggers"]
+            .get("wall_clock")
+            .is_none()
+    );
 }
 
 /// A wall-clock value of the wrong type or past what the field holds is refused like any other
@@ -2287,7 +2291,10 @@ fn a_bad_wall_clock_value_refuses_the_file_and_repeated_days_count_once() {
         serde_json::json!(["friday", "monday", "friday"]);
     let loaded = load_show(&doc.to_string()).unwrap();
     assert_eq!(loaded.warnings, vec![]);
-    let days = loaded.workspace.cue_lists[0].cues[1].triggers.wall_clock.days;
+    let days = loaded.workspace.cue_lists[0].cues[1]
+        .triggers
+        .wall_clock
+        .days;
     assert_eq!(
         Vec::<Weekday>::from(days),
         vec![Weekday::Monday, Weekday::Friday]

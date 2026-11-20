@@ -1,6 +1,6 @@
 ---
 name: engine-control
-description: "Load when changing or reviewing the engine control thread, engine/crates/engine/src/control/: inbox, replies, model_changed, wake/tick, wall-clock triggers, DocId, voices, Action to mixer commands, patch slots, priming, feedback, mixer faults, lost-event reconciliation, performance budgets, pre-show check, hotkeys."
+description: "Load when changing or reviewing the engine control thread, engine/crates/engine/src/control/: inbox, replies, model_changed, wake/tick, DocId, voices, Action to mixer commands, patch slots, priming, feedback, mixer faults, lost-event reconciliation, budgets, pre-show check, hotkeys, wall clock."
 ---
 
 # Engine control loop

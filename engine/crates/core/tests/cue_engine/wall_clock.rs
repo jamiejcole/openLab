@@ -60,18 +60,14 @@ fn enable_it_for_a_time_one_minute_ahead_the_cue_starts_at_that_second_once() {
     let ws = workspace(vec![clocked(memo(1), 10, 31, 0), memo(2)]);
     let mut w = WallClockWatch::new();
     let t = at(MONDAY, 10, 30, 0);
-    let got = looks(&mut w, &ws, &[t, t + 30, t + 59, t + 60, t + 60, t + 61, t + 62]);
+    let got = looks(
+        &mut w,
+        &ws,
+        &[t, t + 30, t + 59, t + 60, t + 60, t + 61, t + 62],
+    );
     assert_eq!(
         got,
-        vec![
-            vec![],
-            vec![],
-            vec![],
-            vec![id(1)],
-            vec![],
-            vec![],
-            vec![]
-        ]
+        vec![vec![], vec![], vec![], vec![id(1)], vec![], vec![], vec![]]
     );
 }
 
@@ -134,9 +130,15 @@ fn day_of_week_limited_to_other_days_does_not_fire_and_a_chosen_day_does() {
     ]);
     let mut w = WallClockWatch::new();
     let mon = at(MONDAY, 9, 0, 0);
-    assert_eq!(looks(&mut w, &ws, &[mon - 1, mon]), vec![vec![], vec![id(2)]]);
+    assert_eq!(
+        looks(&mut w, &ws, &[mon - 1, mon]),
+        vec![vec![], vec![id(2)]]
+    );
     let tue = at(MONDAY + DAY, 9, 0, 0);
-    assert_eq!(looks(&mut w, &ws, &[tue - 1, tue]), vec![vec![], vec![id(1)]]);
+    assert_eq!(
+        looks(&mut w, &ws, &[tue - 1, tue]),
+        vec![vec![], vec![id(1)]]
+    );
     let wed = at(MONDAY + 2 * DAY, 9, 0, 0);
     assert_eq!(looks(&mut w, &ws, &[wed - 1, wed]), vec![vec![], vec![]]);
 }
@@ -166,7 +168,10 @@ fn a_step_of_up_to_two_seconds_fires_what_it_crossed_and_a_longer_one_fires_noth
     let mut w = WallClockWatch::new();
     assert_eq!(looks(&mut w, &ws, &[t - 2, t]), vec![vec![], vec![id(1)]]);
     let mut w = WallClockWatch::new();
-    assert_eq!(looks(&mut w, &ws, &[t - 1, t + 1]), vec![vec![], vec![id(1)]]);
+    assert_eq!(
+        looks(&mut w, &ws, &[t - 1, t + 1]),
+        vec![vec![], vec![id(1)]]
+    );
     // Three seconds: the control thread was held up, or the clock was set: missed, reported.
     let mut w = WallClockWatch::new();
     w.advance(&ws, t - 1);
@@ -185,7 +190,10 @@ fn a_step_of_up_to_two_seconds_fires_what_it_crossed_and_a_longer_one_fires_noth
 
 #[test]
 fn a_trigger_missed_while_asleep_does_not_fire_later() {
-    let ws = workspace(vec![clocked(memo(1), 10, 30, 0), clocked(memo(2), 12, 0, 0)]);
+    let ws = workspace(vec![
+        clocked(memo(1), 10, 30, 0),
+        clocked(memo(2), 12, 0, 0),
+    ]);
     let mut w = WallClockWatch::new();
     let before = at(MONDAY, 10, 0, 0);
     w.advance(&ws, before);
@@ -198,7 +206,10 @@ fn a_trigger_missed_while_asleep_does_not_fire_later() {
     assert!(got.iter().all(Vec::is_empty));
     // Cue 2 still fires at its time.
     let noon = at(MONDAY, 12, 0, 0);
-    assert_eq!(looks(&mut w, &ws, &[noon - 1, noon]), vec![vec![], vec![id(2)]]);
+    assert_eq!(
+        looks(&mut w, &ws, &[noon - 1, noon]),
+        vec![vec![], vec![id(2)]]
+    );
 }
 
 #[test]
@@ -250,7 +261,11 @@ fn the_clock_set_back_a_few_seconds_does_not_fire_the_same_second_twice() {
     let ws = workspace(vec![clocked(memo(1), 10, 30, 0)]);
     let mut w = WallClockWatch::new();
     let t = at(MONDAY, 10, 30, 0);
-    let got = looks(&mut w, &ws, &[t - 1, t, t + 1, t - 3, t - 2, t - 1, t, t + 1]);
+    let got = looks(
+        &mut w,
+        &ws,
+        &[t - 1, t, t + 1, t - 3, t - 2, t - 1, t, t + 1],
+    );
     assert_eq!(got.iter().filter(|s| !s.is_empty()).count(), 1, "{got:?}");
 }
 
@@ -263,10 +278,7 @@ fn the_clock_set_back_a_day_fires_at_the_time_on_that_day() {
     let t = at(MONDAY + DAY, 10, 30, 0);
     assert_eq!(looks(&mut w, &ws, &[t - 1, t]), vec![vec![], vec![id(1)]]);
     let y = t - DAY;
-    assert_eq!(
-        looks(&mut w, &ws, &[y - 1, y]),
-        vec![vec![], vec![id(1)]]
-    );
+    assert_eq!(looks(&mut w, &ws, &[y - 1, y]), vec![vec![], vec![id(1)]]);
 }
 
 #[test]
@@ -314,7 +326,16 @@ fn cues_sharing_a_time_all_start_in_workspace_order_children_included() {
 fn extreme_clock_values_are_total() {
     let ws = workspace(vec![clocked(memo(1), 23, 59, 59)]);
     let mut w = WallClockWatch::new();
-    for t in [i64::MIN, i64::MIN + 1, -1, 0, i64::MAX - 1, i64::MAX, i64::MIN, 0] {
+    for t in [
+        i64::MIN,
+        i64::MIN + 1,
+        -1,
+        0,
+        i64::MAX - 1,
+        i64::MAX,
+        i64::MIN,
+        0,
+    ] {
         let _ = w.advance(&ws, t);
     }
 }
