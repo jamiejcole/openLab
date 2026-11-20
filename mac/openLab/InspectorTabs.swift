@@ -169,7 +169,7 @@ extension InspectorViewController {
         targetField.isHidden = fileURL != nil
         if let fileURL, targetPath.url != fileURL {
             targetPath.url = fileURL
-            targetPath.pathItems = Self.shownPathItems(targetPath.pathItems, of: fileURL)
+            targetPath.setFullItems(Self.shownPathItems(targetPath.pathItems, of: fileURL))
         } else if fileURL == nil {
             targetPath.url = nil
         }
@@ -248,9 +248,73 @@ extension InspectorViewController {
     }
 }
 
-/// A file cue's Target drawn as a path; a double-click chooses another file.
+/// A file cue's Target drawn as a path; a double-click chooses another file. When the path does not fit,
+/// the middle folders give way to one ellipsis item (the home folder and the file stay), never a name cut
+/// mid-word; the tooltip holds the whole path.
 final class TargetPathControl: NSPathControl {
     var onDoubleClick: (() -> Void)?
+    private var fullItems: [NSPathControlItem] = []
+    private var shownCount = -1
+
+    /// The width one item takes: its icon, gaps and separator around the title.
+    static func itemWidth(_ title: String, font: NSFont) -> CGFloat {
+        ceil((title as NSString).size(withAttributes: [.font: font]).width) + 30
+    }
+
+    /// How many of the folders just before the file are kept (the first item and the file always are,
+    /// unless nothing fits), for `titles` in `width`. `nil` when everything fits.
+    static func keptTail(titles: [String], width: CGFloat, font: NSFont) -> (head: Bool, tail: Int)? {
+        let widths = titles.map { itemWidth($0, font: font) }
+        if widths.reduce(0, +) <= width { return nil }
+        guard titles.count > 2 else { return nil }
+        let ellipsis = itemWidth("\u{2026}", font: font)
+        var head = true
+        var used = widths[0] + widths[widths.count - 1] + ellipsis
+        if used > width {
+            head = false
+            used -= widths[0]
+        }
+        var tail = 0
+        var index = widths.count - 2
+        while index >= 1, used + widths[index] <= width {
+            used += widths[index]
+            tail += 1
+            index -= 1
+        }
+        return (head, tail)
+    }
+
+    func setFullItems(_ items: [NSPathControlItem]) {
+        fullItems = items
+        shownCount = -1
+        pathItems = items
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        fitItems()
+    }
+
+    private func fitItems() {
+        let font = self.font ?? .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let titles = fullItems.map(\.title)
+        guard !titles.isEmpty, bounds.width > 0 else { return }
+        let kept = Self.keptTail(titles: titles, width: bounds.width, font: font)
+        let key = kept.map { ($0.head ? 1000 : 0) + $0.tail } ?? -1
+        guard key != shownCount else { return }
+        shownCount = key
+        guard let kept else {
+            pathItems = fullItems
+            return
+        }
+        let dots = NSPathControlItem()
+        dots.title = "\u{2026}"
+        var items: [NSPathControlItem] = kept.head ? [fullItems[0]] : []
+        items.append(dots)
+        items.append(contentsOf: fullItems[(fullItems.count - 1 - kept.tail)...])
+        pathItems = items
+    }
 
     override func mouseDown(with event: NSEvent) {
         if isEnabled, event.clickCount == 2 { onDoubleClick?() }
