@@ -39,14 +39,6 @@ extension KeyChord {
     }
 }
 
-extension Cue {
-    var hotkeyHasKey: Bool { raw["triggers"]?["hotkey"].map { $0 != .null } ?? false }
-
-    /// What the inspector's hotkey box shows: ticked when there is a key and its switch is not off. A new
-    /// cue stores the switch on with no key, which would read as a hotkey that does not exist.
-    var hotkeyShownOn: Bool { hotkeyHasKey && raw["triggers"]?["hotkey_enabled"] != .bool(false) }
-}
-
 extension WorkspaceModel {
     /// Every cue with a hotkey trigger that is on, with its chord (keys the app cannot match are left
     /// out). A trigger switched off keeps its key but takes no key press and clashes with no cue.

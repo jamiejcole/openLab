@@ -236,7 +236,7 @@ final class SidebarTests: XCTestCase {
     }
 
     /// CL-01: New List asks the engine for an empty list after the last one and shows it once the
-    /// engine has accepted; New Cart stays off (CL-05).
+    /// engine has accepted; there is no New Cart button.
     func testNewListAddsAnEmptyListAtTheEndAndShowsIt() async throws {
         let wired = try await Rig.open()
         side = SidebarViewController(store: wired.store, activeTable: spy)

@@ -426,41 +426,64 @@ extension PlayheadFlowTests {
         XCTAssertEqual(try tint(cue), colour("red"), "reopened: the first colour")
     }
 
+    /// A new cue's hotkey is unticked with an empty field, on every path that makes a cue (the add menu and toolbar,
+    /// dropped files); a pasted copy keeps the switch it was copied with.
+    func testANewCueStoresItsHotkeyOffOnEveryCreationPath() async throws {
+        let memo = try await memos(1)
+        let dropped = try await tones(1)
+        for id in memo + dropped {
+            XCTAssertEqual(raw(id, "triggers")?["hotkey_enabled"], .bool(false), "a new cue's switch is off")
+            XCTAssertEqual(raw(id, "triggers")?["hotkey"], .null)
+        }
+        await select(memo)
+        inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off)
+        tick(inspector.hotkeyEnableCheck, true)
+        await assertEventually { self.raw(memo[0], "triggers")?["hotkey_enabled"] == .bool(true) }
+        await select(memo)
+        let before = Set(wc.cueList.roots.map(\.id))
+        _ = await wc.editor.copySelection(of: memo)
+        await wc.editor.paste(after: memo)
+        await assertEventually("the copy is added") { self.wc.cueList.roots.count == before.count + 1 }
+        let copy = try XCTUnwrap(wc.cueList.roots.map(\.id).first { !before.contains($0) })
+        XCTAssertEqual(raw(copy, "triggers")?["hotkey_enabled"], .bool(true), "a pasted copy keeps its source's switch")
+    }
+
     func testEachTriggerHasAnEnableBoxAnUntickedHotkeyKeepsItsKeyAndDoesNotFire() async throws {
         let cues = try await tones(3, seconds: 5)
-        // A cue with no key reads unticked; ticking it asks for the key, which then fires (QLab 5, manual p. 128).
+        // Ticked first, then the key typed (QLab 5, manual p. 128): the key fires.
         await select([cues[2]])
         inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
         XCTAssertTrue(inspector.hotkeyEnableCheck.isEnabled, "usable before there is a key")
-        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off, "a cue with no key does not read as having a hotkey on")
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off, "a new cue's hotkey is unticked, its field empty")
         XCTAssertEqual(inspector.hotkeyField.stringValue, "")
         tick(inspector.hotkeyEnableCheck, true)
-        XCTAssertEqual(
-            inspector.hotkeyField.placeholderString, inspector.hotkeyField.recordingPlaceholder,
-            "the tick asks for the key")
-        XCTAssertEqual(raw(cues[2], "triggers")?["hotkey"], .null)
-        // The key press that ends recording hands the focus back (the recorder calls this when it takes a key).
-        inspector.view.window?.makeFirstResponder(nil)
-        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off, "still no key: not ticked")
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .on, "the tick stays while there is no key yet")
+        await assertEventually { self.raw(cues[2], "triggers")?["hotkey_enabled"] == .bool(true) }
         XCTAssertTrue(inspector.record(KeyChord("j", [])))
         await assertEventually("J is set") { self.store.model?.cueHotkeys.map(\.cue) == [cues[2]] }
         XCTAssertEqual(inspector.hotkeyEnableCheck.state, .on)
         XCTAssertNil(app.handleKeyDown(try key("j", code: 38)), "J is a cue key")
         try await play(0.2)
         await assertEventually("J started the cue") { self.state(cues[2]) == loc("cue.state.running") }
-        // A key switched off after it is typed: kept, faint, and it does not fire.
+        // Unticked first, then the key typed: kept, faint, and it does not fire.
         await select([cues[0]])
         inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
-        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off, "no key yet: not ticked")
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off, "a new cue's trigger is off")
+        XCTAssertEqual(raw(cues[0], "triggers")?["hotkey_enabled"], .bool(false), "a new cue stores it off")
         XCTAssertTrue(inspector.record(KeyChord("k", [])))
         await assertEventually("K is kept") { self.raw(cues[0], "triggers")?["hotkey"] != .null }
-        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .on, "a first key switches the trigger on")
-        tick(inspector.hotkeyEnableCheck, false)
-        await assertEventually("switched off") { self.raw(cues[0], "triggers")?["hotkey_enabled"] == .bool(false) }
         XCTAssertEqual(raw(cues[0], "triggers")?["hotkey_enabled"], .bool(false), "the key keeps the box's switch")
         XCTAssertEqual(inspector.hotkeyField.stringValue, "K", "the key is kept and shown")
         XCTAssertEqual(inspector.hotkeyField.textColor, .disabledControlTextColor, "drawn faint")
         XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off)
+        // Typing another key over a key that is off keeps it off.
+        XCTAssertTrue(inspector.record(KeyChord("u", [])))
+        await assertEventually("U replaces K") { self.raw(cues[0], "triggers")?["hotkey"]?["key"] == .string("u") }
+        XCTAssertEqual(raw(cues[0], "triggers")?["hotkey_enabled"], .bool(false), "a re-recorded key stays off")
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off)
+        XCTAssertTrue(inspector.record(KeyChord("k", [])))
+        await assertEventually("K is back") { self.raw(cues[0], "triggers")?["hotkey"]?["key"] == .string("k") }
         // K is not a cue key now: the app does not take it and nothing starts.
         let sentBefore = wire.sent.count
         XCTAssertNotNil(app.handleKeyDown(try key("k", code: 40)), "the key is not taken")
@@ -469,6 +492,8 @@ extension PlayheadFlowTests {
         XCTAssertNil(state(cues[0]), "the cue did not start")
         // Nor does it clash: another cue may take K, and then the first cannot be switched back on.
         await select([cues[1]])
+        tick(inspector.hotkeyEnableCheck, true)
+        await assertEventually { self.raw(cues[1], "triggers")?["hotkey_enabled"] == .bool(true) }
         XCTAssertTrue(inspector.record(KeyChord("k", [])), "no clash with a key that is off")
         await assertEventually { self.store.model?.cueHotkeys.map(\.cue) == [cues[1], cues[2]] }
         await select([cues[0]])
@@ -674,7 +699,7 @@ extension PlayheadFlowTests {
                         id, .fadeAndStopOthers(enabled: id == cues[1], scope: "peers", duration: time)))
             else { return XCTFail("setup") }
         }
-        // Both cues hold K, switched off, beside a third with its own key, on: the box is mixed, and on
+        // Both cues hold K, switched off, beside a third with no key, on: the box is mixed, and on
         // for all would give two cues one key, so it is refused for all.
         let k = KeyChord("k", []).hotkeyJSON
         for id in cues {
@@ -682,8 +707,8 @@ extension PlayheadFlowTests {
             else { return XCTFail("switch") }
         }
         let third = try await memos(1)
-        let m = KeyChord("m", []).hotkeyJSON
-        guard case .success = await store.send(command: .setProperty(third[0], .triggers(hotkey: m, enabled: true)))
+        // The third has no key but its box is ticked (ticked first, the key typed after).
+        guard case .success = await store.send(command: .setProperty(third[0], .triggers(hotkey: nil, enabled: true)))
         else { return XCTFail("switch") }
         await select(cues + third)
         inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
@@ -693,10 +718,8 @@ extension PlayheadFlowTests {
         XCTAssertEqual(inspector.hotkeyEnableCheck.state, .mixed, "the box is put back")
         await sync()
         XCTAssertEqual(cues.map { raw($0, "triggers")?["hotkey_enabled"] }, [.bool(false), .bool(false)])
-        // The second cue holds another key, on: the switches now differ, with no clash.
-        guard
-            case .success = await store.send(
-                command: .setProperty(cues[1], .triggers(hotkey: KeyChord("j", []).hotkeyJSON, enabled: true)))
+        // The second cue's key cleared and its switch on: the switches now differ, with no clash.
+        guard case .success = await store.send(command: .setProperty(cues[1], .triggers(hotkey: nil, enabled: true)))
         else { return XCTFail("switch") }
         // Shown first alone, the first cue leaves the fade-out time field off; with both shown it is on.
         await select([cues[0]])

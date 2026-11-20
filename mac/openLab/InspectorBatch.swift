@@ -102,7 +102,7 @@ extension InspectorViewController {
         showTicks(autoLoadCheck, cues.map { $0.raw["auto_load"] == .bool(true) })
         showTicks(skipCheck, cues.map { $0.raw["skip_if_disarmed"] == .bool(true) })
         // Each cue's own switch: mixed when they differ (the box sets it on every cue).
-        showTicks(hotkeyEnableCheck, cues.map(\.hotkeyShownOn))
+        showTicks(hotkeyEnableCheck, cues.map { $0.raw["triggers"]?["hotkey_enabled"] != .bool(false) })
         hotkeyEnableCheck.isEnabled = !isLocked
         hotkeyField.textColor = .controlTextColor
         showChoice(continuePopup, Self.continueModes, modes)

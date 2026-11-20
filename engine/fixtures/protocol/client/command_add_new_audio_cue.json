@@ -24,7 +24,7 @@
       "continue_mode": "do_not_continue",
       "triggers": {
         "hotkey": null,
-        "hotkey_enabled": true
+        "hotkey_enabled": false
       },
       "second_trigger": "nothing",
       "second_trigger_on_release": false,
