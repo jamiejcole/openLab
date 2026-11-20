@@ -1143,7 +1143,7 @@ impl CueEngine {
     /// chain is the one a run follows: a skipped cue is passed over, a disarmed one or one with
     /// static problems keeps its waits and has no action, a Devamp cue that starts the next cue
     /// ends it (that start waits on the loop being left), and an auto-follow after a cue of
-    /// unknown length ends it. For the end, an Audio cue that loops forever counts one pass
+    /// unknown length ends it. For the end, an Audio or Video cue that loops forever counts one pass
     /// (QLab 5.6.5 measured), though no auto-follow fires after it.
     pub(super) fn sequence(&self, cue: CueId, cx: &Ctx) -> Sequence {
         let ws = cx.ws;
@@ -1193,9 +1193,9 @@ impl CueEngine {
         out
     }
 
-    /// An Audio cue that loops forever: pre-wait plus one pass of its trimmed range.
+    /// An Audio or Video cue that loops forever: pre-wait plus one pass of its trimmed range.
     fn pass_span(&self, cue: &Cue, cx: &Ctx) -> Option<SampleTime> {
-        if !matches!(cue.kind, CueKind::Audio { .. }) {
+        if !matches!(cue.kind, CueKind::Audio { .. } | CueKind::Video { .. }) {
             return None;
         }
         let pass = self.pass_lengths.get(&cue.id)?;

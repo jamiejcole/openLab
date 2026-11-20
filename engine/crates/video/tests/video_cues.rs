@@ -2171,6 +2171,50 @@ fn set_media(s: &mut OfflineShow, n: u128, file: &Path) {
     });
 }
 
+/// A still with a 2 s duration whose GO waited 1 s for its file's probe, shown 0.5 s, paused
+/// 1 s and resumed: it stays up for the 1.5 s it has left, its auto-follow fires then and not
+/// before, and its remaining time after the resume counts down from 1.5 s.
+#[test]
+fn a_still_whose_go_was_held_keeps_its_whole_duration_over_a_pause_and_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = make(dir.path(), "a.png", "png", None);
+    let b = make(dir.path(), "b.png", "png", None);
+    let mut first = still_cue(1, &a, Some(2.0));
+    first.continue_mode = openlab_core::ContinueMode::AutoFollow;
+    let mut s = gated_video_show(vec![first, still_cue(2, &a, None)]);
+    GATED.lock().unwrap().push(b.clone());
+    set_media(&mut s, 1, &b);
+    s.take_outbound();
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(1.0));
+    expect_state(&s, 1, CueState::Running, "held by its probe");
+    release_probe(&b);
+    s.settle_media();
+    let released = s.now();
+    run_to(&mut s, released + samples(0.5));
+    assert_eq!(shown(&mut s), Some(0), "the still is up");
+    s.transport(TransportAction::Pause { cue: id(1) });
+    let paused = s.now();
+    run_to(&mut s, paused + samples(1.0));
+    expect_state(&s, 1, CueState::Paused, "paused");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    let (elapsed, remaining, _) =
+        progress_at(&mut s, 1, resumed + samples(0.5)).expect("progress after the resume");
+    let remaining = remaining.expect("a still with a duration has an end");
+    assert!(
+        (elapsed - 1.0).abs() <= 0.1 && (remaining - 1.0).abs() <= 0.1,
+        "0.5 s after the resume: {elapsed} s elapsed, {remaining} s left"
+    );
+    // 0.5 s shown before the pause: 1.5 s of its 2 s are left after the resume.
+    run_to(&mut s, resumed + samples(1.3));
+    expect_state(&s, 1, CueState::Running, "1.3 s after the resume");
+    expect_state(&s, 2, CueState::Idle, "its auto-follow not yet");
+    run_to(&mut s, resumed + samples(1.7));
+    expect_state(&s, 1, CueState::Idle, "its 2 s shown");
+    expect_state(&s, 2, CueState::Running, "its auto-follow fired");
+}
+
 /// GO on a Video cue whose new file is still being probed waits for the probe, as an Audio
 /// cue does: it is not broken, the operator is told it waits, and the picture starts (late,
 /// from its first frame) when the file is known to play. A file whose probe then fails breaks
