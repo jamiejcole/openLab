@@ -15,6 +15,9 @@ trap 'rm -rf "$stage"' EXIT
 # ditto keeps the signature's extended attributes and symlinks.
 ditto "$app" "$stage/openLab $version.app"
 ln -s /Applications "$stage/Applications"
+# The licence texts sit beside the app (the notices are also inside it).
+cp "$app/Contents/Resources/LICENSE" "$stage/LICENSE.txt"
+cp "$app/Contents/Resources/THIRD-PARTY-NOTICES.txt" "$stage/THIRD-PARTY-NOTICES.txt"
 codesign --verify --deep --strict "$stage/openLab $version.app"
 dmg="$out/openLab-$version.dmg"
 rm -f "$dmg"

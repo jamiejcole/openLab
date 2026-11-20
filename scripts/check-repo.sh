@@ -133,7 +133,7 @@ known_entries() {
 # 1. SPDX header on every source file (CLAUDE.md, "Contracts (same commit)").
 spdx() {
   local missing
-  missing=$(git ls-files -co --exclude-standard '*.rs' '*.swift' '*.sh' '*.yml' '*.strings' 'scripts/hooks/*' Makefile |
+  missing=$(git ls-files -co --exclude-standard '*.rs' '*.swift' '*.sh' '*.py' '*.yml' '*.strings' 'scripts/hooks/*' Makefile |
     sort -u | xargs grep -L "SPDX-License-Identifier: GPL-3.0-or-later")
   if [ -n "$missing" ]; then
     fail spdx "missing 'SPDX-License-Identifier: GPL-3.0-or-later' in: $(echo $missing)"
@@ -859,8 +859,22 @@ $hits"
 $hits"
 }
 
+# 16. THIRD-PARTY-NOTICES.txt names every third-party crate the shipped binaries link (the licences
+# require the notices to ship). Where the crate sources are not fetched it is checked against Cargo.lock only.
+notices() {
+  local out
+  if ! command -v python3 >/dev/null 2>&1; then
+    fail notices "python3 is needed to check THIRD-PARTY-NOTICES.txt"
+    return
+  fi
+  if ! out=$(python3 -I scripts/third-party-notices.py check 2>&1); then
+    fail notices "$out"
+  fi
+}
+
 known_entries
 spdx
+notices
 strings_keys
 debug_assertions
 versions

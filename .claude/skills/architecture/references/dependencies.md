@@ -45,3 +45,5 @@ Calls std lacks are declared next to their one use, each with a `// SAFETY:` com
 
 ## No `tracing`
 The show log's records are structured protocol values (`LogEntry`) that clients read with `log_tail`. A small writer thread in `diag/` (bounded channel, size rotation, drop-and-count) replaces the crate and its tree. Skill `engine-lifecycle`.
+
+A new or updated shipped crate changes `THIRD-PARTY-NOTICES.txt`: run `scripts/third-party-notices.py generate` and commit the result (`make lint` fails otherwise).

@@ -21,6 +21,11 @@ targets:
     platform: macOS
     sources:
       - openLab
+      # The licence and the third-party notices travel inside the app (scripts/third-party-notices.py).
+      - path: ../LICENSE
+        buildPhase: resources
+      - path: ../THIRD-PARTY-NOTICES.txt
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLab
