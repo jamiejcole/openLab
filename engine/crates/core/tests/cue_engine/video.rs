@@ -1001,3 +1001,30 @@ fn a_video_cue_seeked_in_its_pre_wait_starts_its_action_at_the_point_now() {
     );
     assert_eq!(rig.state(1), CueState::Running);
 }
+
+/// A Video cue that loops forever has no length; a negative load time counts back from one
+/// pass of it, pre-wait included, as for an Audio cue.
+#[test]
+fn a_negative_load_time_on_a_looping_video_cue_counts_back_from_one_pass() {
+    let load = cue(
+        1,
+        CueKind::Load {
+            target: Some(id(2)),
+            load_to_time: -1.5,
+        },
+    );
+    let mut rig = rig(vec![load, video_on(2, Some(stage_id(1)))]);
+    rig.find_mut(2).pre_wait = 1.0;
+    rig.engine.model_changed();
+    let passes = [(id(2), Some(4000))].into_iter().collect();
+    rig.at(0, Input::CuePassLengths { lengths: passes });
+    let go = rig.go(0);
+    // 1 s pre-wait + one 4 s pass; 1.5 s back: 2.5 s into the picture.
+    assert!(
+        go.iter().any(|a| matches!(
+            a,
+            Action::LoadVoice { cue, offset: 2500, .. } if *cue == id(2)
+        )),
+        "{go:?}"
+    );
+}

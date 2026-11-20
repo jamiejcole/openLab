@@ -374,7 +374,11 @@ impl Voices {
                 return None;
             }
             let h = r.stream.as_ref()?;
-            let played = r.position(t)?.saturating_sub(r.offset);
+            // What it missed in underruns it reads later.
+            let played = r
+                .position(t)?
+                .saturating_sub(r.offset)
+                .saturating_sub(r.late);
             let needed = if r.scale.is_same() {
                 played
             } else {

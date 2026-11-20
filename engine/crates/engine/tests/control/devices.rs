@@ -4447,6 +4447,240 @@ fn a_cue_plays_on_a_patch_whose_device_is_changed_and_is_heard_on_the_new_device
     assert_eq!(s.control().live_voices(), 0);
 }
 
+/// The file positions (`ramp`: sample `i` heard as `(i + 1) / 2^20`) heard at unity gain on
+/// `x`, as (sample, position): two neighbours one step apart, so neither fades.
+fn unity_positions(x: &[f32]) -> Vec<(usize, i64)> {
+    let mut out = Vec::new();
+    for j in 1..x.len() {
+        let (a, b) = (x[j - 1], x[j]);
+        if a != 0.0 && b != 0.0 && ((b - a) * 1_048_576.0 - 1.0).abs() < 1e-3 {
+            out.push((j, (b * 1_048_576.0).round() as i64 - 1));
+        }
+    }
+    out
+}
+
+/// A cue on patch B (the second device, its clock `ppm` fast) is moved to the primary after
+/// `seconds`; with `starve`, its stream's open is held for its first 0.5 s, so it underruns and
+/// plays late by about that much. Returns the file positions the move skipped: the first heard
+/// at unity on the new device less the last heard so on the old one (the crossfade between
+/// them when the move is in step).
+fn moved_gap(ppm: i64, seconds: u64, starve: bool) -> i64 {
+    let frames = (seconds as usize + 3) * RATE as usize;
+    let path = wav(&ramp(frames));
+    let mut s = two_patch_show_with(
+        vec![audio_b(2, &path, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| {
+            c.prime_cues = 0;
+            c.streamer.before_open = gated_open;
+        },
+    );
+    s.wait_output(DEV2_NAME);
+    s.take_outbound();
+    s.fake.set_drift(DEV2, ppm);
+    if starve {
+        gate(&path);
+        s.starved = true;
+    }
+    start(&mut s, 2);
+    if starve {
+        s.run(u64::from(RATE) / 2);
+        release(&path);
+        s.starved = false;
+    }
+    s.run(u64::from(RATE) * seconds);
+    map_b(&mut s, DEV_NAME);
+    s.run(u64::from(RATE));
+    let old = unity_positions(&s.device_channel(DEV2, 0));
+    let new = unity_positions(&s.channel(0));
+    let old_last = old.last().expect("heard on the old device").1;
+    let new_first = new.first().expect("heard on the new device").1;
+    assert!(
+        old_last > i64::from(RATE),
+        "{old_last}: the old device played"
+    );
+    new_first - old_last
+}
+
+/// A cue playing on a second device whose clock drifts from the master's is moved to another
+/// device: the new one carries on where the old one's sound was, whether that device ran fast
+/// (it played more than the master clock counted) or slow, as for one that does not drift.
+/// The drift is read from the device's smoothed clock, which follows a steady drift 2 s late:
+/// at 100 ppm that is 1.6 frames at this rate.
+#[test]
+fn a_cue_that_has_played_on_a_drifting_second_device_moved_to_another_carries_on_within_a_frame() {
+    let in_step = moved_gap(0, 60, false);
+    // A minute at 100 ppm: the second device's sound is 48 frames from the master clock's count.
+    for ppm in [100, -100] {
+        let gap = moved_gap(ppm, 60, false);
+        assert!(
+            (gap - in_step).abs() <= 2,
+            "{ppm} ppm: the move skipped {gap} positions where in step it skips {in_step}"
+        );
+    }
+}
+
+/// A cue whose voice underran (its stream came late) plays late by what it missed; moved to
+/// another device it carries on from where its sound is, skipping nothing.
+#[test]
+fn a_cue_whose_voice_underran_earlier_is_moved_with_no_skip() {
+    let in_step = moved_gap(0, 3, false);
+    let gap = moved_gap(0, 3, true);
+    assert!(
+        (gap - in_step).abs() <= 2,
+        "after an underrun the move skipped {gap} positions where in step it skips {in_step}"
+    );
+}
+
+/// How a looping cue devamped and moved was heard: the file positions heard at unity on the
+/// old device and on the new one, and the first sample cue 2 (the Devamp cue's next) was heard.
+struct LoopedMove {
+    old: Vec<i64>,
+    new: Vec<i64>,
+    next: Option<usize>,
+}
+
+/// A 10,000-frame ramp whose first 2,000 frames loop until devamped, the rest (the tail) once,
+/// on patch B (the second device, its clock `ppm` fast; with `starve` its stream's open held
+/// for its first 0.5 s, so it plays late by about that much). After `seconds` a Devamp cue
+/// leaves the loop at the end of the pass and starts cue 2 (on the primary's channel 1). With
+/// `moves` the patch is moved to the primary: `after` the leave (the sound in the tail), or
+/// else just before the devamp, the pass ending before the move's swap.
+fn looped_move(ppm: i64, starve: bool, seconds: u64, moves: bool, after: bool) -> LoopedMove {
+    let path = wav(&ramp(10_000));
+    let b = wav(&dc(200, 0.5));
+    let mut looping = audio_b(1, &path, 0);
+    if let CueKind::Audio { slices, .. } = &mut looping.kind {
+        *slices = vec![openlab_core::SliceMarker {
+            time: 0.25,
+            play_count: 0.into(),
+        }];
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = two_patch_show_with(
+        vec![looping, devamp, audio(2, &b, 1)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| {
+            c.prime_cues = 0;
+            c.streamer.before_open = gated_open;
+        },
+    );
+    s.wait_output(DEV2_NAME);
+    s.take_outbound();
+    s.fake.set_drift(DEV2, ppm);
+    if starve {
+        gate(&path);
+        s.starved = true;
+    }
+    start(&mut s, 1);
+    if starve {
+        s.run(u64::from(RATE) / 2);
+        release(&path);
+        s.starved = false;
+    }
+    s.run(u64::from(RATE) * seconds);
+    let primary_from = s.channel(1).len();
+    if after {
+        start(&mut s, 3);
+        s.run(2600);
+        if moves {
+            map_b(&mut s, DEV_NAME);
+        }
+    } else {
+        // Where the sound is in the loop: late in a pass, so it ends between the devamp and
+        // the swap a move's lead later.
+        loop {
+            let at = unity_positions(&s.device_channel(DEV2, 0));
+            let pos = at.last().expect("heard on the second device").1;
+            if (1150..1350).contains(&pos) {
+                break;
+            }
+            s.run(BLOCK);
+        }
+        if moves {
+            map_b(&mut s, DEV_NAME);
+        }
+        s.run(64);
+        start(&mut s, 3);
+    }
+    s.run(u64::from(RATE) * 2);
+    LoopedMove {
+        old: unity_positions(&s.device_channel(DEV2, 0))
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect(),
+        new: unity_positions(&s.channel(0))
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect(),
+        next: s.channel(1)[primary_from..]
+            .iter()
+            .position(|&v| v != 0.0)
+            .map(|p| p + primary_from),
+    }
+}
+
+/// The move went on from where the sound was, in the tail: the loop not played again, the
+/// tail heard once to its end, within `slack` positions of an in-step move (`in_step`), and
+/// cue 2 started where it does with no move (`still`).
+fn assert_looped_move(h: &LoopedMove, still: &LoopedMove, in_step: i64, slack: i64, what: &str) {
+    let old_last = *h.old.last().expect("heard on the old device");
+    let new_first = *h.new.first().expect("heard on the new device");
+    assert!(
+        old_last >= 2000,
+        "{what}: moved before the leave ({old_last})"
+    );
+    assert!(
+        (new_first - old_last - in_step).abs() <= slack,
+        "{what}: moved from {old_last} to {new_first} (in step: {in_step} on)"
+    );
+    assert!(
+        h.new.windows(2).all(|w| w[1] > w[0]),
+        "{what}: the new device went back (the loop again?)"
+    );
+    assert_eq!(h.new.last(), Some(&9999), "{what}: the tail's end");
+    assert_eq!(h.next, still.next, "{what}: cue 2's start");
+    assert!(h.next.is_some(), "{what}: cue 2 never started");
+}
+
+/// A looping cue devamped (it leaves the loop at the end of the pass) after its voice underran,
+/// then moved to another device while its tail plays, or moved just before the devamp so the
+/// loop is left before the move's swap: the loop is left once, the tail heard once from where
+/// the sound was, and the next cue starts on time.
+#[test]
+fn a_looping_cue_that_underran_devamped_and_moved_leaves_its_loop_once() {
+    let in_step = moved_gap(0, 3, false);
+    for after in [true, false] {
+        let h = looped_move(0, true, 2, true, after);
+        let still = looped_move(0, true, 2, false, after);
+        assert_looped_move(&h, &still, in_step, 2, &format!("underran, after {after}"));
+    }
+}
+
+/// The same on a second device whose clock runs slow: after a minute at -1000 ppm it has
+/// played 480 frames fewer than the master clock counted (the smoothed reading of it lags by
+/// 16, hence the slack).
+#[test]
+fn a_looping_cue_on_a_slow_device_devamped_and_moved_leaves_its_loop_once() {
+    let in_step = moved_gap(0, 3, false);
+    for after in [true, false] {
+        let h = looped_move(-1000, false, 60, true, after);
+        let still = looped_move(-1000, false, 60, false, after);
+        assert_looped_move(&h, &still, in_step, 20, &format!("slow, after {after}"));
+    }
+}
+
 #[test]
 fn a_cue_put_on_a_patch_on_another_device_moves_there_at_once_in_step() {
     let frames = 4000;

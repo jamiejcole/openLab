@@ -502,6 +502,9 @@ pub struct DeviceShow {
     /// Streams prepared but not playing are not waited for before a callback: a slow disk,
     /// whose stream a move to another device cannot have by its swap.
     pub slow_disk: bool,
+    /// No stream is waited for before a callback: a disk that has not delivered, so a playing
+    /// voice underruns (tests of a starved voice).
+    pub starved: bool,
     /// Timed-out 20 ms waits before the probes are called hung: [`WAIT_STEPS`], or more when
     /// the engine's own probe watchdog (`probe_timeout`) waits longer before giving up on one.
     probe_wait_steps: u32,
@@ -571,6 +574,7 @@ impl DeviceShow {
             captures: Vec::new(),
             next_id: 0,
             slow_disk: false,
+            starved: false,
             probe_wait_steps,
         };
         show.settle_media();
@@ -781,6 +785,9 @@ impl DeviceShow {
     }
 
     fn settle_streams(&mut self, frames: u64) {
+        if self.starved {
+            return;
+        }
         let end = self.rendered() + frames;
         // A device whose clock runs fast plays more of its streams than the master clock counts:
         // as much more is waited for (on every stream, as the test does not say which is whose).

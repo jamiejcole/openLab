@@ -391,6 +391,7 @@ impl Voices {
                 rest: Some((plan.table, plan.rate)),
                 shown: plan.shown,
                 delay: counted.saturating_sub(plan.offset),
+                carried_drift: plan.carried_drift,
                 moved: true,
                 relocated: true,
                 swap_limit: swap.saturating_add(seconds_to_samples(SEEK_PRIME_WAIT, env.rate)),
