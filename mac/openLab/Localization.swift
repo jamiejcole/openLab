@@ -108,7 +108,6 @@ enum AX {
     static let activeCuePanic = "active-cue-panic"
     static let activeCueTimes = "active-cue-times"
     static let newListButton = "new-list-button"
-    static let newCartButton = "new-cart-button"
     static let transportReset = "transport-reset"
     static let transportPause = "transport-pause"
     static let transportResume = "transport-resume"

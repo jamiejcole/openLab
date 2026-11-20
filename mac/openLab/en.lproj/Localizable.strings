@@ -405,6 +405,7 @@
 "sidebar.tab.activeCues" = "Active Cues";
 "sidebar.list.label" = "Cue lists";
 "sidebar.active.label" = "Active cues";
+"sidebar.active.empty" = "Nothing is playing";
 "activeCue.pause" = "Pause";
 "activeCue.resume" = "Resume";
 "activeCue.panic" = "Panic this cue";
@@ -413,7 +414,6 @@
 "sidebar.list.delete" = "Delete List";
 "sidebar.list.rename.prompt" = "Name for this cue list";
 "sidebar.list.rename.ok" = "Rename";
-"sidebar.newCart" = "New Cart";
 "sidebar.newList.name" = "Cue List %d";
 
 "footer.mode.label" = "Mode";

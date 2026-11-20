@@ -43,11 +43,11 @@ final class SidebarUITests: XCTestCase {
         XCTAssertTrue(selected.firstMatch.staticTexts["Radio"].exists)
     }
 
-    /// CL-01: New List adds a list and shows it; New Cart is off (carts are not in v0.0.1).
-    func testNewListAddsAListAndNewCartIsDisabled() {
+    /// CL-01: New List adds a list and shows it; there is no New Cart button (carts are not built).
+    func testNewListAddsAListAndThereIsNoNewCart() {
         let app = launchDemo()
         app.checkBoxes["toggle-sidebar"].click()
-        XCTAssertFalse(app.buttons["new-cart-button"].isEnabled)
+        XCTAssertFalse(app.buttons["New Cart"].exists)
         app.buttons["new-list-button"].click()
         let intro = app.staticTexts["Intro"]
         XCTAssertTrue(waitFor("exists == false", intro), "the new empty list is shown in place of the demo cues")
