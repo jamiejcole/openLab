@@ -7,7 +7,7 @@ enum LayoutArea: CaseIterable {
 }
 
 /// Bottom bar: Edit/Show switch (Show Mode), area toggles, status text, settings.
-final class FooterBar: NSView, NSPopoverDelegate {
+final class FooterBar: NSView {
     var onToggle: ((LayoutArea, Bool) -> Void)?
     /// The gear was used: open the workspace settings.
     var onSettings: (() -> Void)?
@@ -17,32 +17,21 @@ final class FooterBar: NSView, NSPopoverDelegate {
     let modeSwitch = NSSegmentedControl(
         labels: [loc("footer.mode.edit"), loc("footer.mode.show")],
         trackingMode: .selectOne, target: nil, action: nil)
-    /// The engine's health (DX-03); clicking it opens the details. While all is well it is a small mark
-    /// without words, so the details (CPU, engine load, dropouts, device format) stay one click away.
-    let statusButton = NSButton()
-    /// Red "NETWORK OUTPUT OFF" while the engine's output override is on (PB-10). Always in the
-    /// footer, Show Mode included; words and a filled red pill, never colour alone. Opens the same
-    /// details as the status line.
-    let overrideBadge = NSButton()
+    /// The alarm for an audio device the engine lost or gave up on (a show-safety alarm, drawn in words
+    /// and a symbol, not by colour alone). Present only while a device is in that state: with all well
+    /// the footer says nothing about the audio. Pressing it opens Status > Warnings, where the same
+    /// fault is a row.
+    let alarmButton = NSButton()
     /// The footer's own entry to the Warnings tab: shown only while there is something to see, with
     /// the count. Part of the footer in Show Mode too. Never takes the keys from the cue list.
     let warningsButton = NSButton()
-    /// The warnings button was used: open the sidebar on the Warnings tab.
+    /// The warnings button or the alarm was used: open the Status window on its Warnings page.
     var onWarnings: (() -> Void)?
-    private(set) var presentation = StatusPresentation.make(nil)
     /// A note that needs no answer (an edit refused, a crash note); clears after a while
     /// (`noticeLifetime`) unless replaced.
     let noticeLabel = NSTextField(labelWithString: "")
     /// "12 cues in 2 lists", from the model (QLab's footer centre).
     let countLabel = NSTextField(labelWithString: "")
-    /// The dropout total the operator has seen: at the first status, or in the details they last
-    /// closed. Dropouts past it keep the warning up until the details are opened and closed again.
-    private var seenXruns: UInt64?
-    /// The last status shown, to show again once new dropouts are seen.
-    private var lastStatus: SystemStatus?
-    /// The dropout total in the details now open.
-    private var xrunsInDetails: UInt64?
-    private(set) var popover: NSPopover?
     let settingsButton = NSButton()
     private(set) var toggles: [LayoutArea: NSButton] = [:]
 
@@ -61,34 +50,25 @@ final class FooterBar: NSView, NSPopoverDelegate {
         modeSwitch.setAX(AX.modeSwitch, label: loc("footer.mode.label"))
         modeSwitch.target = self
         modeSwitch.action = #selector(modeChanged)
-        overrideBadge.isBordered = false
-        overrideBadge.wantsLayer = true
-        overrideBadge.layer?.backgroundColor = NSColor.systemRed.cgColor
-        overrideBadge.layer?.cornerRadius = 4
-        overrideBadge.attributedTitle = NSAttributedString(
-            string: " " + loc("footer.override.badge") + " ",
-            attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 12, weight: .bold)])
-        overrideBadge.setAX(AX.overrideBadge, label: loc("footer.override.badge"))
-        overrideBadge.toolTip = loc("footer.override.tooltip")
-        overrideBadge.target = self
-        overrideBadge.action = #selector(showStatusDetails(_:))
-        overrideBadge.isHidden = true
         warningsButton.isBordered = false
         warningsButton.imagePosition = .imageLeading
         warningsButton.refusesFirstResponder = true
         // The notice has no minimum width (it truncates): its old 120 pt minimum is what made a new
         // footer control widen the window. At the minimum width the button does not widen it, in Edit
-        // and Show Mode; Show Mode with the override badge is already wider than the minimum.
+        // and Show Mode.
         warningsButton.setAX(AX.warningsButton)
         warningsButton.toolTip = loc("footer.warnings.tooltip")
         warningsButton.target = self
         warningsButton.action = #selector(warningsClicked)
         showWarnings(count: 0)
-        statusButton.isBordered = false
-        statusButton.imagePosition = .imageLeading
-        statusButton.setAX(AX.statusLabel)
-        statusButton.target = self
-        statusButton.action = #selector(showStatusDetails(_:))
+        alarmButton.isBordered = false
+        alarmButton.imagePosition = .imageLeading
+        alarmButton.refusesFirstResponder = true
+        alarmButton.setAX(AX.deviceAlarm)
+        alarmButton.toolTip = loc("footer.alarm.tooltip")
+        alarmButton.target = self
+        alarmButton.action = #selector(warningsClicked)
+        alarmButton.isHidden = true
         countLabel.setAX(AX.footerCount)
         countLabel.textColor = .secondaryLabelColor
         countLabel.font = .systemFont(ofSize: 12)
@@ -97,7 +77,6 @@ final class FooterBar: NSView, NSPopoverDelegate {
         noticeLabel.textColor = .secondaryLabelColor
         noticeLabel.lineBreakMode = .byTruncatingTail
         noticeLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        show(status: nil, connected: true)
 
         for spec in Self.specs {
             let name = loc(spec.key)
@@ -122,10 +101,10 @@ final class FooterBar: NSView, NSPopoverDelegate {
 
         // QLab's footer: the mode switch and the one GO area toggle on the left; the count in the middle;
         // the warnings mark with the inspector, sidebar and settings buttons on the right.
-        let left = NSStackView(views: [modeSwitch, overrideBadge] + [.masthead].compactMap { toggles[$0] })
+        let left = NSStackView(views: [modeSwitch] + [.masthead].compactMap { toggles[$0] })
         let right = NSStackView(
             views: [warningsButton] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
-        let centre = NSStackView(views: [countLabel, statusButton, noticeLabel])
+        let centre = NSStackView(views: [countLabel, alarmButton, noticeLabel])
         let bar = NSStackView(views: [left, centre, right])
         bar.distribution = .equalCentering
         bar.translatesAutoresizingMaskIntoConstraints = false
@@ -189,75 +168,39 @@ final class FooterBar: NSView, NSPopoverDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { work() } }
     }
 
-    /// Without a connection the last status is stale: the line says the engine is offline.
-    func show(status: SystemStatus?, connected: Bool) {
-        let p: StatusPresentation
-        if !connected {
-            // A new engine counts from zero: its first status is the new baseline.
-            seenXruns = nil
-            // The details still open list the old engine's total; closing them must not raise the
-            // new engine's baseline to it.
-            xrunsInDetails = nil
-            lastStatus = nil
-            p = StatusPresentation.offline()
-        } else {
-            if let s = status {
-                // A lower total is a count that started again (the engine restarted): nothing new in it yet.
-                seenXruns = min(seenXruns ?? s.xruns, s.xruns)
-            }
-            lastStatus = status
-            let unseen = status.map { s in seenXruns.map { s.xruns > $0 } ?? false } ?? false
-            p = StatusPresentation.make(status, unseenXruns: unseen)
+    /// The alarm text for the engine's `status`: the audio device, or an output device patches use, that
+    /// was lost or failed; nil while all is well (or with no status: an engine that is away has its own
+    /// alarm). The primary device comes first.
+    static func alarmText(_ status: SystemStatus?) -> String? {
+        guard let s = status else { return nil }
+        var named: String?
+        switch s.device.state {
+        case .lost: named = loc("footer.alarm.deviceLost")
+        case .failed: named = loc("footer.alarm.deviceFailed")
+        default: break
         }
-        presentation = p
-        // Stale status (no connection) is not shown as an override either.
-        overrideBadge.isHidden = !(connected && status?.networkOutputDisabled == true)
-        // While all is well the footer says nothing about the audio: the mark alone, with the summary as
-        // its tip. A warning or an alarm (a lost or failed device, an offline engine) is drawn in words.
-        let normal = p.level == .normal
-        statusButton.title = normal ? "" : p.summary
-        statusButton.imagePosition = normal ? .imageOnly : .imageLeading
-        let image = p.icon.image(p.summary, compact: true)
-        // All well: only the mark is green.
-        statusButton.image =
-            p.icon == .statusNormal
-            ? TimeHeaderCell.tinted(image, .systemGreen, size: image.size, description: p.summary) : image
-        statusButton.contentTintColor = p.level == .alarm ? .systemRed : p.level == .warning ? MarkColour.caution : nil
-        statusButton.font = .systemFont(ofSize: 12, weight: normal ? .regular : .semibold)
-        statusButton.setAccessibilityLabel(p.summary)
-        statusButton.toolTip = normal ? p.summary + "\n" + loc("status.tooltip") : loc("status.tooltip")
+        if named == nil {
+            // A secondary device the engine lost or gave up on stops the cues patched to it: name it.
+            for o in s.outputs where !o.primary {
+                if o.state == .lost { named = String(format: loc("footer.alarm.outputLost"), o.name) }
+                if o.state == .failed { named = String(format: loc("footer.alarm.outputFailed"), o.name) }
+                if named != nil { break }
+            }
+        }
+        return named.map { loc("footer.alarm") + " " + $0 }
     }
 
-    /// Opens the details beside `sender`: the status mark or line, or the override badge.
-    @objc func showStatusDetails(_ sender: NSView? = nil) {
-        popover?.close()
-        let text = NSTextField(wrappingLabelWithString: presentation.details.joined(separator: "\n"))
-        text.setAX(AX.statusDetails)
-        text.isSelectable = true
-        text.preferredMaxLayoutWidth = 340
-        text.frame = NSRect(x: 12, y: 12, width: 340, height: max(40, text.fittingSize.height))
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 364, height: text.frame.height + 24))
-        content.addSubview(text)
-        let controller = NSViewController()
-        controller.view = content
-        let p = NSPopover()
-        p.behavior = .transient
-        p.contentViewController = controller
-        p.delegate = self
-        xrunsInDetails = lastStatus?.xruns
-        let anchor = sender ?? statusButton
-        p.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
-        popover = p
-    }
-
-    /// The details were read: the dropouts they listed are seen, and their warning goes. Done on close,
-    /// so the line the popover points at does not change under it.
-    func popoverDidClose(_ notification: Notification) {
-        guard let closed = notification.object as? NSPopover, closed === popover else { return }
-        if let seen = xrunsInDetails { seenXruns = max(seenXruns ?? seen, seen) }
-        xrunsInDetails = nil
-        // The same status again: only whether its dropouts are new changes.
-        if let status = lastStatus { show(status: status, connected: true) }
+    /// Shows or clears the device alarm. Without a connection the last status is stale: nothing is
+    /// shown (the engine alarm window speaks for a missing engine).
+    func show(status: SystemStatus?, connected: Bool) {
+        let text = connected ? Self.alarmText(status) : nil
+        alarmButton.isHidden = text == nil
+        guard let text else { return }
+        alarmButton.title = text
+        alarmButton.image = Icon.statusAlarm.image(text, compact: true)
+        alarmButton.contentTintColor = .systemRed
+        alarmButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        alarmButton.setAccessibilityLabel(text)
     }
 
     /// Reflects the window's mode in the switch and the indicator (also when set from the menu).
