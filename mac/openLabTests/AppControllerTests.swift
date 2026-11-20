@@ -2501,6 +2501,34 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(app.launcher.recents.first?.url.path, moved.path)
     }
 
+    /// A show moved to the Trash is a deleted one: listed as missing, whether the system list
+    /// dropped it or follows it into the Trash.
+    func testAShowMovedToTheTrashIsListedAsMissingWhetherOrNotTheSystemFollowsIt() async throws {
+        newestFirstRecents()
+        app.recentExists = { FileManager.default.fileExists(atPath: $0.path) }
+        let dir = real.folder.appendingPathComponent("trash-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let kept = dir.appendingPathComponent("Kept.openlab")
+        let dropped = dir.appendingPathComponent("Dropped.openlab")
+        let followed = dir.appendingPathComponent("Followed.openlab")
+        for u in [kept, dropped, followed] { try "x".write(to: u, atomically: true, encoding: .utf8) }
+        recents = [kept, dropped, followed]
+        app.showLauncher()
+        var inTrash: [URL] = []
+        for u in [dropped, followed] {
+            var result: NSURL?
+            try FileManager.default.trashItem(at: u, resultingItemURL: &result)
+            inTrash.append(try XCTUnwrap(result as URL?))
+        }
+        addTeardownBlock { for u in inTrash { try? FileManager.default.removeItem(at: u) } }
+        // The system list drops one and follows the other into the Trash.
+        recents = [kept, inTrash[1]]
+        app.showLauncher()
+        let rows = app.launcher.recents
+        XCTAssertEqual(rows.map(\.name), ["Kept", "Followed", "Dropped"])
+        XCTAssertEqual(rows.map(\.missing), [false, true, true])
+    }
+
     /// A missing-file notice is about the list it was raised on: showing the launcher again, or
     /// opening another recent, clears it.
     func testTheMissingFileNoticeGoesWhenTheLauncherIsShownAgainOrARecentOpens() async throws {

@@ -310,7 +310,11 @@ extension AppController {
         var marks = recentBookmarks
         let gone = rememberedRecents.filter { old in
             guard !system.contains(old), !recentExists(old) else { return false }
-            if let data = marks[old.path], let now = Self.resolve(data), recentExists(now) { return false }
+            if let data = marks[old.path], let now = Self.resolve(data), recentExists(now) {
+                // Found: moved (listed at its new place), or in the Trash, which is deleted; the
+                // system's own entry for a trashed show is the one listed, as missing.
+                return !Self.inTrash(now) ? false : !system.contains(now)
+            }
             return true
         }
         let all = Array((system + gone).prefix(10))
@@ -319,7 +323,13 @@ extension AppController {
             marks[url.path] = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         }
         recentBookmarks = marks.filter { key, _ in all.contains { $0.path == key } }
-        launcher.reload(recents: all, missing: Set(all.filter { !recentExists($0) }))
+        launcher.reload(recents: all, missing: Set(all.filter { !recentExists($0) || Self.inTrash($0) }))
+    }
+
+    /// A show moved to the Trash is deleted as far as the operator is concerned: it is listed as
+    /// missing, never as one that opens from there.
+    static func inTrash(_ url: URL) -> Bool {
+        url.pathComponents.contains { $0 == ".Trash" || $0 == ".Trashes" }
     }
 
     private static func resolve(_ data: Data) -> URL? {
