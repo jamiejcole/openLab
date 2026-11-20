@@ -1383,6 +1383,26 @@ fn reset_or_reset_all_returns_the_saved_target() {
 }
 
 #[test]
+fn every_change_of_a_temporary_target_is_counted_for_the_binary() {
+    let mut rig = target_rig();
+    assert_eq!(rig.engine.temp_target_changes(), 0);
+    rig.go(0);
+    assert_eq!(rig.engine.temp_target_changes(), 1);
+    // The same change again is none.
+    rig.start(10, 1);
+    assert_eq!(rig.engine.temp_target_changes(), 1);
+    rig.at(20, Input::Reset { cue: id(2) });
+    assert_eq!(rig.engine.temp_target_changes(), 2);
+    // A reset with nothing to drop, and Reset All with none set, count nothing.
+    rig.at(30, Input::Reset { cue: id(2) });
+    rig.at(40, Input::ResetAll);
+    assert_eq!(rig.engine.temp_target_changes(), 2);
+    rig.start(50, 1);
+    rig.at(60, Input::ResetAll);
+    assert_eq!(rig.engine.temp_target_changes(), 4);
+}
+
+#[test]
 fn a_target_cue_aimed_at_a_fade_or_a_missing_or_unnumbered_cue_is_broken_and_does_nothing() {
     let fade_cue = cue(2, fade(3));
     let mut rig = Rig::checked(vec![

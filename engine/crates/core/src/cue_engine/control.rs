@@ -87,8 +87,9 @@ impl CueEngine {
     }
 
     /// The cue a control cue acts on now: the temporary target a Target cue gave it, else its
-    /// own. A Fade is never given one (`can_target`), so its own is read where it starts.
-    pub(super) fn acts_on(&self, cue: &Cue) -> Option<CueId> {
+    /// own. A Fade is never given one (`can_target`), so its own is read where it starts. The one
+    /// rule for every reader (the binary's priming looks ahead with it too).
+    pub fn acts_on(&self, cue: &Cue) -> Option<CueId> {
         self.temp_targets
             .get(&cue.id)
             .copied()
@@ -99,6 +100,19 @@ impl CueEngine {
     /// `tempCueTargetID`).
     pub fn temp_target(&self, cue: CueId) -> Option<CueId> {
         self.temp_targets.get(&cue).copied()
+    }
+
+    /// How many times the temporary targets have changed (set, dropped by a reset, cleared by
+    /// Reset All): a change means what the binary loads ahead for a cue's target may be stale.
+    pub fn temp_target_changes(&self) -> u64 {
+        self.temp_target_changes
+    }
+
+    /// Drops `cue`'s temporary target, counting the change.
+    pub(super) fn drop_temp_target(&mut self, cue: CueId) {
+        if self.temp_targets.remove(&cue).is_some() {
+            self.temp_target_changes = self.temp_target_changes.wrapping_add(1);
+        }
     }
 
     /// A Target cue `by`: `target` acts on `new` from now on, until it is reset (QLab 5 manual
@@ -126,9 +140,9 @@ impl CueEngine {
             return cx.warn(EngineWarning::TargetWrongKind { cue: by, target });
         }
         if target_model.kind.target() == Some(new) {
-            self.temp_targets.remove(&target);
-        } else {
-            self.temp_targets.insert(target, new);
+            self.drop_temp_target(target);
+        } else if self.temp_targets.insert(target, new) != Some(new) {
+            self.temp_target_changes = self.temp_target_changes.wrapping_add(1);
         }
     }
 

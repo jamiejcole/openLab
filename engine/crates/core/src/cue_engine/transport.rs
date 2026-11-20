@@ -113,7 +113,10 @@ impl CueEngine {
         self.continued.clear();
         self.random_cycles.clear();
         // Every Target cue's change is undone (QLab 5 manual pp. 97-98, 686).
-        self.temp_targets.clear();
+        if !self.temp_targets.is_empty() {
+            self.temp_targets.clear();
+            self.temp_target_changes = self.temp_target_changes.wrapping_add(1);
+        }
         // Every row shows its first colour again (QLab 5, manual p. 127).
         for cue in std::mem::take(&mut self.played) {
             cx.out.push(Action::PlayedChanged { cue, played: false });

@@ -1472,6 +1472,65 @@ fn a_cue_primed_from_disk_is_primed_again_from_memory_when_its_preload_lands() {
 }
 
 #[test]
+fn a_retargeted_cue_at_the_playhead_has_its_new_target_primed_and_a_reset_primes_the_saved_one() {
+    // Start cue 2 stands by (its target, sound 3, primed); a Target cue (1), fired with the
+    // playhead left on cue 2, points it at sound 5: 5 is primed instead and GO uses that prime.
+    // A reset of cue 2 brings the prime back to 3. One cue looked ahead, so only the standing-by
+    // cue's target is primed.
+    let path = wav(&dc(48_000, 0.5));
+    let ws = workspace(vec![
+        cue(
+            2,
+            CueKind::Start {
+                target: Some(id(3)),
+            },
+        ),
+        cue(
+            1,
+            CueKind::Target {
+                target: Some(id(2)),
+                new_target: Some(id(5)),
+            },
+        ),
+        audio(3, &path, 0),
+        audio(5, &path, 1),
+    ]);
+    let mut config = config(&ws);
+    config.prime_cues = 1;
+    let mut s = show_with(ws, config);
+    s.run(BLOCK);
+    assert_eq!(s.control().primed(), vec![id(3)]);
+    start(&mut s, 1);
+    s.run(BLOCK);
+    assert_eq!(
+        s.control().primed(),
+        vec![id(5)],
+        "the new target is primed"
+    );
+    let hits = s.control().prime_hits();
+    go(&mut s);
+    s.run(BLOCK);
+    assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
+    assert_eq!(s.control().engine().state(id(5)), CueState::Running);
+    // Back on cue 2, reset: the saved target is primed again.
+    s.transport(TransportAction::StopAll);
+    s.transport(TransportAction::SetPlayhead {
+        list: list_id(),
+        cue: Some(id(2)),
+    });
+    // The stopped voice lets go, then cue 5 is primed again for the next GO.
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().primed(), vec![id(5)]);
+    s.transport(TransportAction::Reset { cue: id(2) });
+    s.run(BLOCK);
+    assert_eq!(
+        s.control().primed(),
+        vec![id(3)],
+        "a reset primes the saved target"
+    );
+}
+
+#[test]
 #[allow(clippy::unwrap_used)]
 fn an_edit_to_a_primed_cue_is_heard_at_go_not_the_old_prime() {
     // A prime is reused only while its cue's signature (its own file, start, end, slices)

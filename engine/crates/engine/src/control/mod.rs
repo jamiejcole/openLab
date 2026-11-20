@@ -559,6 +559,8 @@ struct Doc {
     events_routed: u64,
     /// Model changes nobody signalled, already reported (seams note (c)).
     seen_unsignalled: u64,
+    /// The cue engine's temporary-target changes already primed for.
+    seen_temp_targets: u64,
     voices: Voices,
     checks: PlanChecks,
     /// The show file, if saved: relative media references resolve against its folder.
@@ -1208,6 +1210,7 @@ impl Doc {
             events: Vec::new(),
             events_routed: 0,
             seen_unsignalled: 0,
+            seen_temp_targets: 0,
             voices: Voices::new(),
             checks: PlanChecks::default(),
             show_path,
