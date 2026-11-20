@@ -2515,18 +2515,29 @@ final class AppControllerTests: XCTestCase {
         recents = [kept, dropped, followed]
         app.showLauncher()
         var inTrash: [URL] = []
+        addTeardownBlock { for u in inTrash { try? FileManager.default.removeItem(at: u) } }
         for u in [dropped, followed] {
             var result: NSURL?
             try FileManager.default.trashItem(at: u, resultingItemURL: &result)
             inTrash.append(try XCTUnwrap(result as URL?))
         }
-        addTeardownBlock { for u in inTrash { try? FileManager.default.removeItem(at: u) } }
         // The system list drops one and follows the other into the Trash.
         recents = [kept, inTrash[1]]
         app.showLauncher()
         let rows = app.launcher.recents
         XCTAssertEqual(rows.map(\.name), ["Kept", "Followed", "Dropped"])
         XCTAssertEqual(rows.map(\.missing), [false, true, true])
+        // Choosing the trashed row opens nothing and offers its removal.
+        let before = app.windows.count
+        app.launcher.select(row: 1)
+        app.launcher.openSelected()
+        await settle()
+        XCTAssertEqual(app.windows.count, before, "nothing opens from the Trash")
+        XCTAssertFalse(app.launcher.noticeLabel.isHidden)
+        try click(AX.launcherRemove)
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept", "Dropped"])
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept", "Dropped"], "stays gone after a reload")
     }
 
     /// A missing-file notice is about the list it was raised on: showing the launcher again, or

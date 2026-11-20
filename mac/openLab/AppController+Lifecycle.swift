@@ -323,8 +323,12 @@ extension AppController {
             marks[url.path] = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         }
         recentBookmarks = marks.filter { key, _ in all.contains { $0.path == key } }
-        launcher.reload(recents: all, missing: Set(all.filter { !recentExists($0) || Self.inTrash($0) }))
+        launcher.reload(recents: all, missing: Set(all.filter(isMissingRecent)))
     }
+
+    /// A recent workspace the operator cannot open: its file is gone, or it is in the Trash. The
+    /// rows are marked, and a choice is refused, by this one test.
+    func isMissingRecent(_ url: URL) -> Bool { !recentExists(url) || Self.inTrash(url) }
 
     /// A show moved to the Trash is deleted as far as the operator is concerned: it is listed as
     /// missing, never as one that opens from there.

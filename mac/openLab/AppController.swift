@@ -213,7 +213,7 @@ final class AppController {
         launcher.onOpenRecent = { [weak self] url in
             guard let self else { return }
             // The file may have gone since the list was drawn: say so, and leave the launcher up.
-            if !recentExists(url) {
+            if isMissingRecent(url) {
                 launcher.showMissing(url)
                 return
             }
