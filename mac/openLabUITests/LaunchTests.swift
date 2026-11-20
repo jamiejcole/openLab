@@ -31,6 +31,8 @@ final class LaunchTests: XCTestCase {
         XCTAssertTrue(app.windows["launcher-window"].waitForExistence(timeout: 10))
         XCTAssertTrue(
             app.tables["launcher-recents"].tableRows.firstMatch.waitForExistence(timeout: 10), "Demo is listed")
+        // The list is usable once the engine is ready.
+        XCTAssertTrue(waitFor("isEnabled == true", app.buttons["launcher-new"], timeout: 20))
         return app
     }
 
@@ -46,7 +48,9 @@ final class LaunchTests: XCTestCase {
     /// Launcher flow: select a recent show and press Return: it opens and the launcher closes.
     func testReturnOnTheSelectedRecentShowOpensItAndClosesTheLauncher() {
         let app = launcherWithADemoRecent()
-        app.tables["launcher-recents"].tableRows.firstMatch.click()
+        // A click at the row's centre (the row can report itself not hittable while the window comes forward).
+        app.tables["launcher-recents"].tableRows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click()
         app.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(app.windows.matching(identifier: "main-window").element(boundBy: 0).waitForExistence(timeout: 10))
         XCTAssertTrue(waitFor("exists == false", app.windows["launcher-window"], timeout: 10), "the launcher closes")
