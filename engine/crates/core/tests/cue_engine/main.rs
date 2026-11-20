@@ -24,3 +24,4 @@ mod seek;
 mod timers;
 mod transport;
 mod video;
+mod wall_clock;

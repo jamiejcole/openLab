@@ -675,6 +675,28 @@ impl Checker {
         }
     }
 
+    /// A wall-clock trigger whose time is out of range (an hour past 23, a minute or second past
+    /// 59) or that has no day to fire on is switched off, its time put in range and its days
+    /// set to every day: it never fires on a time or day the file did not mean.
+    fn wall_clock(&mut self, cue_id: Option<CueId>, trigger: &mut crate::cue::WallClockTrigger) {
+        if trigger.second_of_day().is_some() && !trigger.days.is_empty() {
+            return;
+        }
+        trigger.enabled = false;
+        trigger.hours = trigger.hours.min(23);
+        trigger.minutes = trigger.minutes.min(59);
+        trigger.seconds = trigger.seconds.min(59);
+        if trigger.days.is_empty() {
+            trigger.days = crate::cue::Weekdays::EVERY_DAY;
+        }
+        self.warn(
+            cue_id,
+            IssueKind::InvalidValue {
+                field: "triggers.wall_clock",
+            },
+        );
+    }
+
     /// The OSC passcode table: rights need View; rows that are empty, too long, repeated
     /// or past the table's size are removed (the first of a repeat stays). A passcode that is
     /// not digits is kept and pointed out: dropping it would silently lock a console out of a
@@ -909,6 +931,7 @@ impl Checker {
             self.too_large(id, "name", cue.name.len(), MAX_CUE_NAME_BYTES);
             self.too_large(id, "notes", cue.notes.len(), MAX_CUE_NOTES_BYTES);
             self.hotkey(id, "triggers.hotkey", cue.triggers.hotkey.as_ref());
+            self.wall_clock(id, &mut cue.triggers.wall_clock);
             self.time(id, "pre_wait", &mut cue.pre_wait);
             self.time(id, "post_wait", &mut cue.post_wait);
             self.time(

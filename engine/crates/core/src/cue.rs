@@ -383,10 +383,149 @@ pub struct Triggers {
     /// a file: on (a show from before the switch had only working hotkeys).
     #[serde(default = "enabled")]
     pub hotkey_enabled: bool,
+    /// Starts the cue at a time of day (TRG-05). Left out when it is a new cue's (off, at
+    /// midnight, every day); absent in a file: that.
+    #[serde(default, skip_serializing_if = "WallClockTrigger::is_default")]
+    pub wall_clock: WallClockTrigger,
 }
 
 fn enabled() -> bool {
     true
+}
+
+/// "Wall clock trigger" (QLab 5 Triggers tab, manual p. 129): starts the cue when the computer's
+/// local time reaches `hours:minutes:seconds` on one of `days`, while the workspace is open.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WallClockTrigger {
+    pub enabled: bool,
+    /// 0 to 23 (validation turns a trigger with a time out of range off).
+    pub hours: u8,
+    /// 0 to 59.
+    pub minutes: u8,
+    /// 0 to 59.
+    pub seconds: u8,
+    /// The days of the week it starts the cue on; absent in a file: every day.
+    #[serde(default)]
+    pub days: Weekdays,
+    /// The inspector shows the time on a 12-hour clock with AM or PM, instead of 0 to 23. Only
+    /// how the time is shown and typed; `hours` is always 0 to 23.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub twelve_hour: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl Default for WallClockTrigger {
+    /// Off, at midnight, every day: what a new cue has.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+            days: Weekdays::EVERY_DAY,
+            twelve_hour: false,
+        }
+    }
+}
+
+impl WallClockTrigger {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Seconds after local midnight it fires at; `None` when the time is out of range.
+    pub fn second_of_day(&self) -> Option<u32> {
+        (self.hours < 24 && self.minutes < 60 && self.seconds < 60).then(|| {
+            u32::from(self.hours) * 3600 + u32::from(self.minutes) * 60 + u32::from(self.seconds)
+        })
+    }
+}
+
+/// A day of the week, as the file names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Weekday {
+    Sunday,
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+}
+
+impl Weekday {
+    pub const ALL: [Self; 7] = [
+        Self::Sunday,
+        Self::Monday,
+        Self::Tuesday,
+        Self::Wednesday,
+        Self::Thursday,
+        Self::Friday,
+        Self::Saturday,
+    ];
+
+    /// The day of local day number `day` (days since 1970-01-01, a Thursday).
+    pub fn of_day(day: i64) -> Self {
+        // rem_euclid(7) is 0..=6, so the index is always in range.
+        let index = usize::try_from((day + 4).rem_euclid(7)).unwrap_or(0);
+        Self::ALL.get(index).copied().unwrap_or(Self::Sunday)
+    }
+
+    fn bit(self) -> u8 {
+        1 << (self as u8)
+    }
+}
+
+/// A set of days of the week; in the file a list of day names (repeats count once).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "Vec<Weekday>", into = "Vec<Weekday>")]
+pub struct Weekdays(u8);
+
+impl Weekdays {
+    pub const EVERY_DAY: Self = Self(0b111_1111);
+    pub const NONE: Self = Self(0);
+
+    pub fn contains(self, day: Weekday) -> bool {
+        self.0 & day.bit() != 0
+    }
+
+    pub fn with(self, day: Weekday, on: bool) -> Self {
+        if on {
+            Self(self.0 | day.bit())
+        } else {
+            Self(self.0 & !day.bit())
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl Default for Weekdays {
+    fn default() -> Self {
+        Self::EVERY_DAY
+    }
+}
+
+impl From<Vec<Weekday>> for Weekdays {
+    fn from(days: Vec<Weekday>) -> Self {
+        days.into_iter()
+            .fold(Self::NONE, |set, day| set.with(day, true))
+    }
+}
+
+impl From<Weekdays> for Vec<Weekday> {
+    fn from(set: Weekdays) -> Self {
+        Weekday::ALL
+            .into_iter()
+            .filter(|d| set.contains(*d))
+            .collect()
+    }
 }
 
 impl Triggers {

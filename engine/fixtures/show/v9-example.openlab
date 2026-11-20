@@ -307,7 +307,21 @@
                   "command": true
                 }
               },
-              "hotkey_enabled": true
+              "hotkey_enabled": true,
+              "wall_clock": {
+                "enabled": true,
+                "hours": 19,
+                "minutes": 25,
+                "seconds": 0,
+                "days": [
+                  "tuesday",
+                  "wednesday",
+                  "thursday",
+                  "friday",
+                  "saturday"
+                ],
+                "twelve_hour": true
+              }
             },
             "second_trigger": "panic",
             "second_trigger_on_release": false,

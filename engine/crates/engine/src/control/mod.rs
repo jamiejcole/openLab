@@ -1670,6 +1670,7 @@ mod tests {
                     triggers: openlab_core::Triggers {
                         hotkey: None,
                         hotkey_enabled: true,
+                        wall_clock: Default::default(),
                     },
                     second_trigger: openlab_core::SecondTrigger::Nothing,
                     second_trigger_on_release: false,

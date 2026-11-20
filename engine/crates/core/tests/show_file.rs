@@ -47,6 +47,11 @@ fn example_older() -> Workspace {
         patch.crosspoints.clear();
         patch.device_outputs.clear();
     }
+    for list in &mut ws.cue_lists {
+        for cue in &mut list.cues {
+            cue.triggers.wall_clock = WallClockTrigger::default();
+        }
+    }
     ws
 }
 
@@ -1270,10 +1275,39 @@ fn hotkey() -> impl Strategy<Value = Hotkey> {
 }
 
 fn triggers() -> impl Strategy<Value = Triggers> {
-    (option::of(hotkey()), any::<bool>()).prop_map(|(hotkey, hotkey_enabled)| Triggers {
-        hotkey,
-        hotkey_enabled,
-    })
+    (option::of(hotkey()), any::<bool>(), wall_clock()).prop_map(
+        |(hotkey, hotkey_enabled, wall_clock)| Triggers {
+            hotkey,
+            hotkey_enabled,
+            wall_clock,
+        },
+    )
+}
+
+/// In range: what a saved show holds (out-of-range times are the validation tests').
+fn wall_clock() -> impl Strategy<Value = WallClockTrigger> {
+    (
+        any::<bool>(),
+        0u8..24,
+        0u8..60,
+        0u8..60,
+        1u8..128,
+        any::<bool>(),
+    )
+        .prop_map(|(enabled, hours, minutes, seconds, days, twelve_hour)| {
+            let days = Weekday::ALL
+                .into_iter()
+                .enumerate()
+                .fold(Weekdays::NONE, |set, (i, d)| set.with(d, days & (1 << i) != 0));
+            WallClockTrigger {
+                enabled,
+                hours,
+                minutes,
+                seconds,
+                days,
+                twelve_hour,
+            }
+        })
 }
 
 /// A cue with id and number left for [`assign_ids`]; `number` is `Some` when it should get one.
@@ -2206,4 +2240,56 @@ fn a_bad_basics_value_refuses_the_file() {
         load_show(&doc.to_string()),
         Err(LoadError::Model(_))
     ));
+}
+
+/// TRG-05 flow "Save, close, reopen": the wall-clock trigger comes back as saved; a cue whose
+/// trigger is a new cue's writes no key and loads off.
+#[test]
+fn save_close_reopen_the_wall_clock_trigger_remains_set() {
+    let loaded = load_show(EXAMPLE).unwrap();
+    let cues = &loaded.workspace.cue_lists[0].cues;
+    let preshow = &cues[1].triggers.wall_clock;
+    assert!(preshow.enabled && preshow.twelve_hour);
+    assert_eq!(preshow.second_of_day(), Some(19 * 3600 + 25 * 60));
+    assert!(!preshow.days.contains(Weekday::Sunday) && !preshow.days.contains(Weekday::Monday));
+    assert!(preshow.days.contains(Weekday::Saturday));
+    assert_eq!(cues[0].triggers.wall_clock, WallClockTrigger::default());
+    let text = save_show(&loaded.workspace).unwrap();
+    assert_eq!(load_show(&text).unwrap().workspace, loaded.workspace);
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(doc["workspace"]["cue_lists"][0]["cues"][0]["triggers"]
+        .get("wall_clock")
+        .is_none());
+}
+
+/// A wall-clock value of the wrong type or past what the field holds is refused like any other
+/// wrongly typed field: the file does not load, nothing panics. Repeated days count once.
+#[test]
+fn a_bad_wall_clock_value_refuses_the_file_and_repeated_days_count_once() {
+    for (key, bad) in [
+        ("hours", serde_json::json!(300)),
+        ("minutes", serde_json::json!(-1)),
+        ("seconds", serde_json::json!(1.5)),
+        ("enabled", serde_json::json!("yes")),
+        ("days", serde_json::json!(["funday"])),
+        ("days", serde_json::json!("monday")),
+        ("twelve_hour", serde_json::json!(null)),
+    ] {
+        let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+        doc["workspace"]["cue_lists"][0]["cues"][1]["triggers"]["wall_clock"][key] = bad;
+        assert!(
+            matches!(load_show(&doc.to_string()), Err(LoadError::Model(_))),
+            "{key}"
+        );
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["cue_lists"][0]["cues"][1]["triggers"]["wall_clock"]["days"] =
+        serde_json::json!(["friday", "monday", "friday"]);
+    let loaded = load_show(&doc.to_string()).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    let days = loaded.workspace.cue_lists[0].cues[1].triggers.wall_clock.days;
+    assert_eq!(
+        Vec::<Weekday>::from(days),
+        vec![Weekday::Monday, Weekday::Friday]
+    );
 }

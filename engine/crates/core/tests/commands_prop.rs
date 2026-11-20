@@ -312,6 +312,19 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
                         modifiers: Modifiers::default(),
                     }),
                 hotkey_enabled: p.c.is_multiple_of(2),
+                // Times past 23:59:59 and an empty day set are refused like a bad key.
+                wall_clock: WallClockTrigger {
+                    enabled: p.d.is_multiple_of(2),
+                    hours: (p.d % 26) as u8,
+                    minutes: (p.d / 26 % 61) as u8,
+                    seconds: (p.a % 61) as u8,
+                    days: if p.a.is_multiple_of(9) {
+                        Weekdays::NONE
+                    } else {
+                        Weekdays::EVERY_DAY.with(Weekday::ALL[(p.a % 7) as usize], false)
+                    },
+                    twelve_hour: p.d.is_multiple_of(3),
+                },
             },
         },
         9 => CueProperty::Target {

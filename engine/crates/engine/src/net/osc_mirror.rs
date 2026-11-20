@@ -769,6 +769,7 @@ mod tests {
             triggers: Triggers {
                 hotkey: None,
                 hotkey_enabled: true,
+                wall_clock: Default::default(),
             },
             second_trigger: SecondTrigger::Nothing,
             second_trigger_on_release: false,
