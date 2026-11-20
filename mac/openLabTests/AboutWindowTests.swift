@@ -17,8 +17,8 @@ final class AboutWindowTests: XCTestCase {
         return out
     }
 
-    private func controller() -> AboutWindowController {
-        let about = AboutWindowController()
+    private func controller(source: URL? = nil) -> AboutWindowController {
+        let about = AboutWindowController(sourceURL: source)
         addTeardownBlock { @MainActor in about.window?.close() }
         return about
     }
@@ -46,7 +46,8 @@ final class AboutWindowTests: XCTestCase {
         wc.showWindow(nil)
         addTeardownBlock { @MainActor in wc.window?.close() }
         let revision = rig.store.revision
-        let about = controller()
+        let source = URL(string: "https://example.org/openlab")!
+        let about = controller(source: source)
         about.showWindow(nil)
         var opened: [URL] = []
         about.openURL = { opened.append($0) }
@@ -54,11 +55,31 @@ final class AboutWindowTests: XCTestCase {
         XCTAssertTrue(loc("about.licence").contains("GNU General Public License, version 3 or later"))
         about.licenceButton.performClick(nil)
         about.sourceButton.performClick(nil)
-        XCTAssertEqual(opened, [AboutWindowController.licenceURL, AboutWindowController.sourceURL])
+        XCTAssertFalse(about.sourceButton.isHidden)
+        XCTAssertEqual(opened, [AboutWindowController.licenceURL, source])
         XCTAssertEqual(AboutWindowController.licenceURL.host, "www.gnu.org")
-        XCTAssertEqual(AboutWindowController.sourceURL.host, "github.com")
         XCTAssertEqual(rig.store.revision, revision)
         XCTAssertTrue(wc.window?.isVisible == true)
+    }
+
+    /// With no source address (the bundle's key is empty) the Source link is not shown; the key is empty.
+    func testAboutHidesTheSourceLinkWhenTheBundleGivesNoAddress() {
+        let about = controller()
+        XCTAssertTrue(about.sourceButton.isHidden)
+        about.sourceButton.performClick(nil)
+        XCTAssertFalse(about.licenceButton.isHidden)
+        XCTAssertNil(AboutWindowController.bundledSourceURL)
+        XCTAssertNotNil(Bundle.main.object(forInfoDictionaryKey: "OpenLabSourceURL"), "the key is in the bundle")
+    }
+
+    /// Credits wrap under their first line, with room inside the pane.
+    func testAboutCreditsHangWrappedLinesAndKeepAnInset() throws {
+        let about = controller()
+        let storage = try XCTUnwrap(about.creditsText.textStorage)
+        let style = try XCTUnwrap(storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertGreaterThan(style.headIndent, 0)
+        XCTAssertGreaterThanOrEqual(about.creditsText.textContainerInset.width, 10)
+        XCTAssertGreaterThanOrEqual(about.creditsText.textContainerInset.height, 10)
     }
 
     /// Checklist: Credits shows the third-party components and licences, scrolls and closes.

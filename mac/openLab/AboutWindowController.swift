@@ -50,7 +50,12 @@ private final class AboutWindow: NSWindow {
 @MainActor
 final class AboutWindowController: NSWindowController {
     static let licenceURL = URL(string: "https://www.gnu.org/licenses/gpl-3.0.html")!
-    static let sourceURL = URL(string: "https://github.com/jamiejcole/openLab")!
+    /// The source repository's address: the bundle's `OpenLabSourceURL`; empty or absent, there is no link.
+    static var bundledSourceURL: URL? {
+        let text = (Bundle.main.object(forInfoDictionaryKey: "OpenLabSourceURL") as? String)?
+            .trimmingCharacters(in: .whitespaces)
+        return text.flatMap { $0.isEmpty ? nil : URL(string: $0) }
+    }
 
     static var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -69,7 +74,10 @@ final class AboutWindowController: NSWindowController {
     let creditsScroll = NSScrollView(frame: .zero)
     private let column = NSStackView()
 
-    init() {
+    let sourceURL: URL?
+
+    init(sourceURL: URL? = AboutWindowController.bundledSourceURL) {
+        self.sourceURL = sourceURL
         let window = AboutWindow(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 300),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -108,6 +116,7 @@ final class AboutWindowController: NSWindowController {
                 ])
             button.setAX(id)
         }
+        sourceButton.isHidden = sourceURL == nil
         let links = NSStackView(views: [licenceButton, sourceButton])
         links.spacing = 16
 
@@ -117,17 +126,24 @@ final class AboutWindowController: NSWindowController {
         creditsButton.setAX(AX.aboutCreditsButton)
         creditsText.isEditable = false
         creditsText.drawsBackground = false
-        creditsText.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        creditsText.textColor = .labelColor
-        creditsText.textContainerInset = NSSize(width: 6, height: 6)
-        creditsText.string = loc("about.credits.heading") + "\n\n" + AboutCredits.text
+        creditsText.textContainerInset = NSSize(width: 10, height: 10)
+        // A wrapped entry hangs under its first line, so "A OR B OR / C" never reads as two entries.
+        let style = NSMutableParagraphStyle()
+        style.headIndent = 14
+        creditsText.textStorage?.setAttributedString(
+            NSAttributedString(
+                string: loc("about.credits.heading") + "\n\n" + AboutCredits.text,
+                attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                    .foregroundColor: NSColor.labelColor, .paragraphStyle: style,
+                ]))
         creditsText.autoresizingMask = [.width]
         creditsScroll.documentView = creditsText
         creditsScroll.hasVerticalScroller = true
         creditsScroll.borderType = .bezelBorder
         creditsScroll.isHidden = true
         creditsScroll.setAX(AX.aboutCredits)
-        creditsScroll.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        creditsScroll.widthAnchor.constraint(equalToConstant: 330).isActive = true
         creditsScroll.heightAnchor.constraint(equalToConstant: 180).isActive = true
 
         column.orientation = .vertical
@@ -175,8 +191,9 @@ final class AboutWindowController: NSWindowController {
         creditsScroll.isHidden.toggle()
         creditsButton.title = loc(creditsShown ? "about.credits.hide" : "about.credits")
         fit()
+        if creditsShown { creditsScroll.flashScrollers() }
     }
 
     @objc private func licenceClicked() { openURL(Self.licenceURL) }
-    @objc private func sourceClicked() { openURL(Self.sourceURL) }
+    @objc private func sourceClicked() { if let sourceURL { openURL(sourceURL) } }
 }
