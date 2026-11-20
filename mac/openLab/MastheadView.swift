@@ -275,7 +275,7 @@ final class MastheadView: NSView, NSTextViewDelegate {
 
 /// The standby line: the cue's number and name in a filled box with room inside it.
 final class StandbyField: NSTextField {
-    private static let inset = NSSize(width: 6, height: 3)
+    private static let inset = NSSize(width: 6, height: StandbyFieldInset)
 
     init() {
         super.init(frame: .zero)

@@ -5,6 +5,9 @@ import AppKit
 /// Sizes of the masthead's parts (SM-01), from the window's content size. Show Mode grows the GO
 /// button from about 7% x 9% of the window to 12% x 13%, the standby line to twice its size and the
 /// notes to 1.7 times theirs.
+/// The standby field's room above and below its text.
+let StandbyFieldInset: CGFloat = 3
+
 struct MastheadMetrics: Equatable {
     var goSize: NSSize
     var goFontSize: CGFloat
@@ -25,7 +28,8 @@ struct MastheadMetrics: Equatable {
         let standby = showMode ? editStandbyFont * 2 : editStandbyFont
         let notesFont = showMode ? editNotesFont * 1.7 : editNotesFont
         let notesHeight = showMode ? editNotesHeight * 1.7 : editNotesHeight
-        let column = (standby * 1.25).rounded(.up) + 6 + notesHeight.rounded()
+        // The standby field's box keeps room above and below the text (`StandbyField`), on top of its line.
+        let column = (standby * 1.25).rounded(.up) + 2 * StandbyFieldInset + 6 + notesHeight.rounded()
         return MastheadMetrics(
             goSize: go, goFontSize: min(go.height * 0.5, go.width * 0.4), standbyFontSize: standby,
             notesFontSize: notesFont.rounded(), notesHeight: notesHeight.rounded(),

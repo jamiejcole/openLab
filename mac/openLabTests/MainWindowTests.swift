@@ -925,6 +925,22 @@ final class MainWindowTests: XCTestCase {
             MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
     }
 
+    /// The standby line's box is as tall as its text and the room above and below it, in both modes, so the
+    /// letters' tails are not cut off.
+    func testStandbyLineBoxHoldsItsWholeText() async throws {
+        let (wc, rig) = try await demoController()
+        try await standBy(rig, TestSnapshots.intro)
+        for show in [false, true] {
+            wc.setShowMode(show)
+            wc.window?.contentView?.layoutSubtreeIfNeeded()
+            let field = wc.masthead.standbyField
+            let font = try XCTUnwrap(field.font)
+            let line = ceil(font.ascender - font.descender + font.leading)
+            XCTAssertGreaterThanOrEqual(
+                field.frame.height, line + 2 * StandbyFieldInset, "show mode \(show): the box holds the text's whole line")
+        }
+    }
+
     /// A cue with a 120-character name standing by: the window keeps its width and the name is cut short
     /// inside the masthead, in Show Mode at 1200 pt and in Edit Mode at the smallest width the window allows.
     func testALongStandbyNameIsCutShortAndNeverWidensTheWindow() async throws {
