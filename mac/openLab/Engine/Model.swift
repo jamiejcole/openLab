@@ -78,9 +78,9 @@ struct Cue: Hashable, Sendable, Decodable {
     }
 
     /// Kinds whose default name is the kind and the name of the cue they act on (QLab 5, manual pp.
-    /// 93, 126: Fade, Start, Stop, Pause, Load, Reset, Devamp, Go To, Arm, Disarm).
+    /// 93, 126: Fade, Start, Stop, Pause, Load, Reset, Devamp, Go To, Target, Arm, Disarm).
     static let namedAfterTarget: Set<String> = [
-        "fade", "start", "stop", "pause", "load", "reset", "go_to", "arm", "disarm", "devamp",
+        "fade", "start", "stop", "pause", "load", "reset", "go_to", "target", "arm", "disarm", "devamp",
     ]
 
     /// The default name of an unnamed cue that acts on another: its kind and the target's shown name

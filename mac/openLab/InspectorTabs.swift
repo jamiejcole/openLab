@@ -12,6 +12,7 @@ enum InspectorTabs {
         case "fade": return common + ["curve", "fadeLevels"]
         case "group": return common + ["mode"]
         case "load": return common + ["loadTime"]
+        case "target": return common + ["newTarget"]
         case "devamp": return common + ["devamp"]
         case "network": return common + ["network"]
         case "video": return common + ["io", "geometry", "timeLoops"]

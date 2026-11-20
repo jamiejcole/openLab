@@ -77,7 +77,8 @@ final class CueToolbarView: NSView {
             (.kindStart, "cue.type.start"), (.kindStop, "cue.type.stop"),
             (.kindPause, "cue.type.pause"), (.kindLoad, "cue.type.load"),
             (.kindReset, "cue.type.reset"), (.kindDevamp, "cue.type.devamp"),
-            (.kindGoTo, "cue.type.goto"), (.kindArm, "cue.type.arm"), (.kindDisarm, "cue.type.disarm"),
+            (.kindGoTo, "cue.type.goto"), (.kindTarget, "cue.type.target"), (.kindArm, "cue.type.arm"),
+            (.kindDisarm, "cue.type.disarm"),
             (.kindWait, "cue.type.wait"), (.kindMemo, "cue.type.memo"),
         ],
     ]

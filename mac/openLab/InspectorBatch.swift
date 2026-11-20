@@ -80,6 +80,8 @@ extension InspectorViewController {
         }
         postWaitField.isEnabled = modes.contains { $0 != "auto_follow" }
         loadTimeField.isEnabled = kind == "load"
+        // A new target names one cue for one Target cue; its tab is not shown for several.
+        newTargetField.isEnabled = false
         networkMessageField.isEnabled = kind == "network"
         // The others' fields are switched on or off by their boxes before the hints below are judged.
         renderBatchOthers(cues)
@@ -307,7 +309,7 @@ extension InspectorViewController {
     /// come back. Called before the single-cue render sets each control from the cue.
     /// The text fields several selected cues can turn off, and how faint they are then.
     var batchDimmed: [NSTextField] {
-        [numberField, durationField, targetField, hotkeyField, loadTimeField, networkMessageField]
+        [numberField, durationField, targetField, hotkeyField, loadTimeField, networkMessageField, newTargetField]
     }
     static let offAlpha: CGFloat = 0.45
 
@@ -318,7 +320,9 @@ extension InspectorViewController {
         ] {
             c.allowsMixedState = false
         }
-        for c in singleCueControls + [numberField, loadTimeField, networkMessageField] { c.isEnabled = !isLocked }
+        for c in singleCueControls + [numberField, loadTimeField, networkMessageField, newTargetField] {
+            c.isEnabled = !isLocked
+        }
         for f in batchDimmed { f.alphaValue = 1 }
         audioLevels.mixed = []
         audioLevels.gangsMixed = false

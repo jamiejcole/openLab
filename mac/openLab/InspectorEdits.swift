@@ -3,9 +3,9 @@
 import Foundation
 
 /// The inspector's text fields: the Basics tab's, the Triggers tab's times and level for other
-/// cues, the Load Time tab's time, and the Network cue's message.
+/// cues, the Load Time tab's time, the Network cue's message and a Target cue's new target.
 enum InspectorField: Hashable, CaseIterable {
-    case number, name, notes, preWait, postWait, target, duration, loadTime, message
+    case number, name, notes, preWait, postWait, target, duration, loadTime, message, newTarget
     case fadeOthersTime, duckDb, duckTime
 
     /// The fields that hold a time, shown as stored (`90` becomes `01:30.00`) once committed.
@@ -36,6 +36,10 @@ enum InspectorEdit {
         case invalidMessage
         /// Not a number of dB (from -inf to +12).
         case invalidLevel
+        /// Only Target cues have a new target.
+        case noNewTarget
+        /// A Target cue's new target names the cue it retargets (that cue would target itself).
+        case newTargetIsTarget
 
         /// The `Localizable.strings` key of the message shown for it.
         var messageKey: String {
@@ -53,6 +57,8 @@ enum InspectorEdit {
             case .noMessage: return "inspector.invalid.noMessage"
             case .invalidMessage: return "inspector.invalid.networkMessage"
             case .invalidLevel: return "inspector.invalid.level"
+            case .noNewTarget: return "inspector.invalid.noNewTarget"
+            case .newTargetIsTarget: return "inspector.invalid.newTargetIsTarget"
             }
         }
     }
@@ -79,7 +85,7 @@ enum InspectorEdit {
 
     /// Kinds with a cue target (core's `CueKind::has_target`).
     static let targetKinds: Set<String> = [
-        "fade", "start", "stop", "pause", "load", "reset", "devamp", "go_to", "arm", "disarm",
+        "fade", "start", "stop", "pause", "load", "reset", "devamp", "go_to", "target", "arm", "disarm",
     ]
 
     /// What the field shows for `cue`: times in milliseconds, or as the cue list draws them (`inList`: the
@@ -119,6 +125,11 @@ enum InspectorEdit {
             guard let target = model.cue(ModelID(id)) else { return "" }
             // The number only; the name shows beside the field (QLab 5, manual p. 127).
             return target.number ?? ""
+        case .newTarget:
+            // Set by its number (QLab 5, manual p. 686); one that is gone or lost its number shows
+            // empty, and the cue's problem says why.
+            guard cue.kindType == "target", let id = cue.raw["kind"]?["new_target"]?.stringValue else { return "" }
+            return model.cue(ModelID(id))?.number ?? ""
         case .fadeOthersTime: return shown(fadeOthers(cue).duration)
         case .duckDb: return OthersLevel.format(duckOthers(cue).db)
         case .duckTime: return shown(duckOthers(cue).duration)
@@ -177,6 +188,7 @@ enum InspectorEdit {
                 return .success(.setProperty(cue.id, .loadToTime(seconds)))
             }
         case .message: return messageCommand(text: text, cue: cue)
+        case .newTarget: return newTargetCommand(text: text, cue: cue, model: model)
         case .fadeOthersTime, .duckDb, .duckTime: return othersCommand(field, text: text, cue: cue)
         case .target:
             guard targetKinds.contains(cue.kindType) else { return .failure(.notApplicable) }
@@ -208,6 +220,9 @@ extension InspectorEdit {
     static func targetRejection(ofKind kind: String, target: Cue) -> Rejection? {
         guard targetKinds.contains(kind) else { return .notApplicable }
         switch kind {
+        // A Target cue retargets a cue that acts on a cue, never a Fade (QLab 5, manual p. 686).
+        case "target":
+            return targetKinds.contains(target.kindType) && target.kindType != "fade" ? nil : .wrongTargetKind
         case "fade":
             return ["audio", "video", "group"].contains(target.kindType) ? nil : .wrongTargetKind
         case "devamp":
@@ -215,6 +230,27 @@ extension InspectorEdit {
             return ["audio", "video"].contains(target.kindType) || playlist ? nil : .wrongTargetKind
         default: return nil
         }
+    }
+
+    /// A Target cue's new target from a typed cue number (QLab 5, manual p. 686), or why not: a number
+    /// no cue has, the cue it retargets, or a cue that cue cannot act on (core's `retarget_problem`).
+    /// Empty clears it. Judged against its target only while that is set and is a cue it can retarget.
+    static func newTargetCommand(text: String, cue: Cue, model: WorkspaceModel) -> Result<Command?, Rejection> {
+        guard cue.kindType == "target" else { return .failure(.noNewTarget) }
+        let n = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let had = cue.raw["kind"]?["new_target"]?.stringValue
+        if n.isEmpty {
+            return .success(had == nil ? nil : .setProperty(cue.id, .kindFields(["new_target": .null])))
+        }
+        guard let new = model.cue(number: n) else { return .failure(.unknownTarget) }
+        if let id = cue.raw["kind"]?["target"]?.stringValue, let target = model.cue(ModelID(id)),
+            targetRejection(of: cue, target: target) == nil
+        {
+            if new.id == target.id { return .failure(.newTargetIsTarget) }
+            if let rejection = targetRejection(ofKind: target.kindType, target: new) { return .failure(rejection) }
+        }
+        if new.id.raw == had { return .success(nil) }
+        return .success(.setProperty(cue.id, .kindFields(["new_target": .string(new.id.raw)])))
     }
 
     /// Seconds from what the user typed (`CueTime.parse`), or why not: a decimal comma has
