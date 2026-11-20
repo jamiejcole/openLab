@@ -438,6 +438,8 @@ extension PlayheadFlowTests {
         XCTAssertEqual(
             inspector.hotkeyField.placeholderString, inspector.hotkeyField.recordingPlaceholder, "the tick asks for the key")
         XCTAssertEqual(raw(cues[2], "triggers")?["hotkey"], .null)
+        // The key press that ends recording hands the focus back (the recorder calls this when it takes a key).
+        inspector.view.window?.makeFirstResponder(nil)
         XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off, "still no key: not ticked")
         XCTAssertTrue(inspector.record(KeyChord("j", [])))
         await assertEventually("J is set") { self.store.model?.cueHotkeys.map(\.cue) == [cues[2]] }
