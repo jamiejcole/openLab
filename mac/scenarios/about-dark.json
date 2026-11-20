@@ -1,11 +1,9 @@
 {
-  "about": "About window (#772), dark: closed, then with Credits open.",
+  "about": "About window (#772), dark.",
   "show": "new",
   "appearance": "dark",
   "steps": [
     {"focus": "about"},
-    {"shot": "about-dark"},
-    {"click": "about-credits-button"},
-    {"shot": "about-credits-dark"}
+    {"shot": "about-dark"}
   ]
 }

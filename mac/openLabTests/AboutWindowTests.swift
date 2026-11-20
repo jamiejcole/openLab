@@ -17,8 +17,8 @@ final class AboutWindowTests: XCTestCase {
         return out
     }
 
-    private func controller(source: URL? = nil) -> AboutWindowController {
-        let about = AboutWindowController(sourceURL: source)
+    private func controller() -> AboutWindowController {
+        let about = AboutWindowController()
         addTeardownBlock { @MainActor in about.window?.close() }
         return about
     }
@@ -38,91 +38,25 @@ final class AboutWindowTests: XCTestCase {
         XCTAssertNotEqual(AboutWindowController.version, "dev", "the bundle names its version")
     }
 
-    /// Checklist: the licence and a working link to its text, and a link to the source; clicking one
-    /// opens the browser only and leaves the app and its cues untouched.
-    func testAboutLicenceAndSourceLinksOpenTheBrowserAndNothingElse() async throws {
-        let rig = try await Rig.open()
-        let wc = WorkspaceWindowController(store: rig.store)
-        wc.showWindow(nil)
-        addTeardownBlock { @MainActor in wc.window?.close() }
-        let revision = rig.store.revision
-        let source = URL(string: "https://example.org/openlab")!
-        let about = controller(source: source)
-        about.showWindow(nil)
-        var opened: [URL] = []
-        about.openURL = { opened.append($0) }
-        XCTAssertTrue(texts(try XCTUnwrap(about.window?.contentView)).contains(loc("about.licence")))
-        XCTAssertTrue(loc("about.licence").contains("GNU General Public License, version 3 or later"))
-        about.licenceButton.performClick(nil)
-        about.sourceButton.performClick(nil)
-        XCTAssertFalse(about.sourceButton.isHidden)
-        XCTAssertEqual(opened, [AboutWindowController.licenceURL, source])
-        XCTAssertEqual(AboutWindowController.licenceURL.host, "www.gnu.org")
-        XCTAssertEqual(rig.store.revision, revision)
-        XCTAssertTrue(wc.window?.isVisible == true)
-    }
-
-    /// With no source address (the bundle's key is empty) the Source link is not shown; the key is empty.
-    func testAboutHidesTheSourceLinkWhenTheBundleGivesNoAddress() {
-        let about = controller()
-        XCTAssertTrue(about.sourceButton.isHidden)
-        about.sourceButton.performClick(nil)
-        XCTAssertFalse(about.licenceButton.isHidden)
-        XCTAssertNil(AboutWindowController.bundledSourceURL)
-        XCTAssertNotNil(Bundle.main.object(forInfoDictionaryKey: "OpenLabSourceURL"), "the key is in the bundle")
-    }
-
-    /// Credits wrap under their first line, with room inside the pane.
-    func testAboutCreditsHangWrappedLinesAndKeepAnInset() throws {
-        let about = controller()
-        let storage = try XCTUnwrap(about.creditsText.textStorage)
-        let style = try XCTUnwrap(storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
-        XCTAssertGreaterThan(style.headIndent, 0)
-        XCTAssertGreaterThanOrEqual(about.creditsText.textContainerInset.width, 10)
-        XCTAssertGreaterThanOrEqual(about.creditsText.textContainerInset.height, 10)
-    }
-
-    /// Checklist: Credits shows the third-party components and licences, scrolls and closes.
-    func testAboutCreditsListEveryComponentScrollAndHide() throws {
+    /// Checklist: nothing in the window is a link, button or credits control, and the licence line
+    /// is the owner's wording.
+    func testAboutHasNoLinksButtonsOrCreditsAndTheLicenceLineIsAsWorded() throws {
         let about = controller()
         about.showWindow(nil)
-        let window = try XCTUnwrap(about.window)
-        let closedHeight = window.contentView?.frame.height ?? 0
-        XCTAssertFalse(about.creditsShown)
-        about.creditsButton.performClick(nil)
-        XCTAssertTrue(about.creditsShown)
-        XCTAssertGreaterThan(window.contentView?.frame.height ?? 0, closedHeight)
-        for entry in AboutCredits.entries {
-            for name in entry.names { XCTAssertTrue(about.creditsText.string.contains(name), name) }
-            XCTAssertTrue(about.creditsText.string.contains(entry.licence))
+        let content = try XCTUnwrap(about.window?.contentView)
+        var controls: [NSView] = []
+        func walk(_ v: NSView) {
+            if v is NSControl && !(v is NSTextField) && !(v is NSImageView) { controls.append(v) }
+            if let t = v as? NSTextField, t.allowsEditingTextAttributes || !t.attributedStringValue.string.isEmpty
+                && t.attributedStringValue.attribute(.link, at: 0, effectiveRange: nil) != nil
+            { controls.append(v) }
+            v.subviews.forEach(walk)
         }
-        XCTAssertTrue(about.creditsScroll.hasVerticalScroller)
-        XCTAssertGreaterThan(about.creditsText.frame.height, about.creditsScroll.frame.height, "it scrolls")
-        about.creditsScroll.contentView.scroll(to: NSPoint(x: 0, y: 40))
-        XCTAssertEqual(about.creditsScroll.contentView.bounds.origin.y, 40)
-        about.creditsButton.performClick(nil)
-        XCTAssertFalse(about.creditsShown)
-        XCTAssertEqual(window.contentView?.frame.height ?? 0, closedHeight)
-    }
-
-    /// The credits are the dependency register's shipped components, no more and no fewer.
-    func testAboutCreditsMatchTheDependencyRegister() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let register = try String(
-            contentsOf: root.appendingPathComponent(".claude/skills/architecture/references/dependencies.md"),
-            encoding: .utf8)
-        var registered = Set<String>()
-        for line in register.split(separator: "\n") where line.hasPrefix("| ") {
-            let cell = line.dropFirst(2).prefix { $0 != "|" }.trimmingCharacters(in: .whitespaces)
-            guard !cell.contains("(dev)"), !cell.hasPrefix("cargo-fuzz"), cell != "Crate", !cell.hasPrefix("---")
-            else { continue }
-            for name in cell.split(separator: ",") {
-                registered.insert(String(name.trimmingCharacters(in: .whitespaces).prefix { $0 != " " }))
-            }
-        }
-        XCTAssertFalse(registered.isEmpty)
-        XCTAssertEqual(registered, Set(AboutCredits.entries.flatMap(\.names)))
+        walk(content)
+        XCTAssertTrue(controls.isEmpty, "\(controls)")
+        let shown = texts(content)
+        XCTAssertTrue(shown.contains("Licensed under the GNU General Public License (GPLv3)."))
+        XCTAssertTrue(shown.contains("Show playback for live theatre"))
     }
 
     /// Checklist: a second About command comes to the front; there is never a second window.
@@ -166,15 +100,12 @@ final class AboutWindowTests: XCTestCase {
         XCTAssertFalse(window.styleMask.contains(.resizable))
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = NSAppearance(named: appearance)
-            for shown in [false, true] {
-                if about.creditsShown != shown { about.toggleCredits() }
-                let content = try XCTUnwrap(window.contentView)
-                content.layoutSubtreeIfNeeded()
-                XCTAssertEqual(content.frame.size, content.fittingSize, "\(appearance.rawValue) credits \(shown)")
-                for field in texts2(content) {
-                    XCTAssertLessThanOrEqual(field.fittingSize.height, field.frame.height + 0.5, field.stringValue)
-                    XCTAssertTrue(content.bounds.contains(field.convert(field.bounds, to: content)))
-                }
+            let content = try XCTUnwrap(window.contentView)
+            content.layoutSubtreeIfNeeded()
+            XCTAssertEqual(content.frame.size, content.fittingSize, appearance.rawValue)
+            for field in texts2(content) {
+                XCTAssertLessThanOrEqual(field.fittingSize.height, field.frame.height + 0.5, field.stringValue)
+                XCTAssertTrue(content.bounds.contains(field.convert(field.bounds, to: content)))
             }
         }
         about.showWindow(nil)

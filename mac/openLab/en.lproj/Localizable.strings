@@ -6,13 +6,8 @@
 "menu.app.about" = "About openLab";
 "about.name" = "openLab";
 "about.version" = "Version %@ (%@)";
-"about.description" = "Show playback for live theatre.";
-"about.licence" = "Free software, licensed under the GNU General Public License, version 3 or later.";
-"about.licenceLink" = "Read the licence";
-"about.sourceLink" = "Source code";
-"about.credits" = "Credits";
-"about.credits.hide" = "Hide Credits";
-"about.credits.heading" = "openLab uses these open-source components:";
+"about.description" = "Show playback for live theatre";
+"about.licence" = "Licensed under the GNU General Public License (GPLv3).";
 "menu.app.hide" = "Hide openLab";
 "menu.app.hideOthers" = "Hide Others";
 "menu.app.showAll" = "Show All";

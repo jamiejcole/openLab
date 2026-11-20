@@ -907,7 +907,7 @@ final class ScenarioRunner {
                 sc.render()
                 focused = w
             } else if which == "about" {
-                // The About window, drawn off screen; `{"click": "about-credits-button"}` opens its credits.
+                // The About window, drawn off screen
                 let about = AboutWindowController()
                 let w = try XCTUnwrap(about.window)
                 w.appearance = wc.window?.appearance

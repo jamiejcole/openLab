@@ -37,8 +37,6 @@ targets:
     info:
       path: openLab/Info.plist
       properties:
-        # Where the About window's Source link points; empty hides the link.
-        OpenLabSourceURL: ""
         CFBundleDocumentTypes:
           - CFBundleTypeName: openLab Show
             CFBundleTypeRole: Editor

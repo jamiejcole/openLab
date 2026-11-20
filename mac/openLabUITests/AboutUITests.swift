@@ -29,16 +29,14 @@ final class AboutUITests: XCTestCase {
         XCTAssertTrue(running.firstMatch.waitForExistence(timeout: 10), "GO acts once About is closed")
     }
 
-    /// Credits shown → Esc closes the window and, as everywhere, panics the playing cue.
-    func testAboutEscWithCreditsShownClosesItAndPanicsTheShow() {
+    /// Esc closes the window and, as everywhere, panics the playing cue.
+    func testAboutEscClosesItAndPanicsTheShow() {
         let app = launchDemo()
         app.staticTexts["Intro"].click()
         let running = cueStates("Running", in: app)
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
         XCTAssertTrue(running.firstMatch.waitForExistence(timeout: 10))
         let about = openAbout(app)
-        about.buttons["about-credits-button"].click()
-        XCTAssertTrue(about.scrollViews["about-credits"].waitForExistence(timeout: 5))
         app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
         XCTAssertTrue(waitFor("exists == false", about, timeout: 5), "Esc closes About")
         XCTAssertTrue(waitFor("count == 0", running, timeout: 20), "Esc also panicked the show")
