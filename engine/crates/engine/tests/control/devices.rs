@@ -4447,6 +4447,93 @@ fn a_cue_plays_on_a_patch_whose_device_is_changed_and_is_heard_on_the_new_device
     assert_eq!(s.control().live_voices(), 0);
 }
 
+/// The file positions (`ramp`: sample `i` heard as `(i + 1) / 2^20`) heard at unity gain on
+/// `x`, as (sample, position): two neighbours one step apart, so neither fades.
+fn unity_positions(x: &[f32]) -> Vec<(usize, i64)> {
+    let mut out = Vec::new();
+    for j in 1..x.len() {
+        let (a, b) = (x[j - 1], x[j]);
+        if a != 0.0 && b != 0.0 && ((b - a) * 1_048_576.0 - 1.0).abs() < 1e-3 {
+            out.push((j, (b * 1_048_576.0).round() as i64 - 1));
+        }
+    }
+    out
+}
+
+/// A cue on patch B (the second device, its clock `ppm` fast) is moved to the primary after
+/// `seconds`; with `starve`, its stream's open is held for its first 0.5 s, so it underruns and
+/// plays late by about that much. Returns the file positions the move skipped: the first heard
+/// at unity on the new device less the last heard so on the old one (the crossfade between
+/// them when the move is in step).
+fn moved_gap(ppm: i64, seconds: u64, starve: bool) -> i64 {
+    let frames = (seconds as usize + 3) * RATE as usize;
+    let path = wav(&ramp(frames));
+    let mut s = two_patch_show_with(
+        vec![audio_b(2, &path, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| {
+            c.prime_cues = 0;
+            c.streamer.before_open = gated_open;
+        },
+    );
+    s.wait_output(DEV2_NAME);
+    s.take_outbound();
+    s.fake.set_drift(DEV2, ppm);
+    if starve {
+        gate(&path);
+        s.starved = true;
+    }
+    start(&mut s, 2);
+    if starve {
+        s.run(u64::from(RATE) / 2);
+        release(&path);
+        s.starved = false;
+    }
+    s.run(u64::from(RATE) * seconds);
+    map_b(&mut s, DEV_NAME);
+    s.run(u64::from(RATE));
+    let old = unity_positions(&s.device_channel(DEV2, 0));
+    let new = unity_positions(&s.channel(0));
+    let old_last = old.last().expect("heard on the old device").1;
+    let new_first = new.first().expect("heard on the new device").1;
+    assert!(
+        old_last > i64::from(RATE),
+        "{old_last}: the old device played"
+    );
+    new_first - old_last
+}
+
+/// A cue playing on a second device whose clock drifts from the master's is moved to another
+/// device: the new one carries on where the old one's sound was, whether that device ran fast
+/// (it played more than the master clock counted) or slow, as for one that does not drift.
+/// The drift is read from the device's smoothed clock, which follows a steady drift 2 s late:
+/// at 100 ppm that is 1.6 frames at this rate.
+#[test]
+fn a_cue_that_has_played_on_a_drifting_second_device_moved_to_another_carries_on_within_a_frame() {
+    let in_step = moved_gap(0, 60, false);
+    // A minute at 100 ppm: the second device's sound is 48 frames from the master clock's count.
+    for ppm in [100, -100] {
+        let gap = moved_gap(ppm, 60, false);
+        assert!(
+            (gap - in_step).abs() <= 2,
+            "{ppm} ppm: the move skipped {gap} positions where in step it skips {in_step}"
+        );
+    }
+}
+
+/// A cue whose voice underran (its stream came late) plays late by what it missed; moved to
+/// another device it carries on from where its sound is, skipping nothing.
+#[test]
+fn a_cue_whose_voice_underran_earlier_is_moved_with_no_skip() {
+    let in_step = moved_gap(0, 3, false);
+    let gap = moved_gap(0, 3, true);
+    assert!(
+        (gap - in_step).abs() <= 2,
+        "after an underrun the move skipped {gap} positions where in step it skips {in_step}"
+    );
+}
+
 #[test]
 fn a_cue_put_on_a_patch_on_another_device_moves_there_at_once_in_step() {
     let frames = 4000;

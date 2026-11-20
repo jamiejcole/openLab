@@ -234,6 +234,17 @@ pub struct VoiceRec {
     /// A move to another device whose old voice has nothing left to play by the swap since a
     /// devamp's answer (it leaves its loop, or stops, first): given up on the next tick.
     nothing_left: bool,
+    /// How many master frames its sound has played more than its position counts from its
+    /// device's clock drifting against the master's (fewer: negative), as read on the last
+    /// tick (`Voices::note_drifts`). 0 on the primary.
+    drift: i64,
+    /// Master frames its sound has fallen behind its position by underrunning (each
+    /// `UnderrunEnded`): a starved voice plays on late, it does not skip.
+    late: u64,
+    /// The drift of the voices of its run it was moved on from (to another device), which its
+    /// table already starts after: its run's sound is this plus `drift` past the master clock
+    /// (a Video cue's picture follows the sum).
+    carried_drift: i64,
     /// Its table's frames (its device's) against the master clock's.
     scale: Scale,
     /// The time and loops its table was planned from (`None`: not known, a table handed on
@@ -337,20 +348,30 @@ struct MovePlan {
     rate: u32,
     offset: u64,
     shown: u64,
+    /// The drift the old voice's run carried by then (see [`VoiceRec::carried_drift`]).
+    carried_drift: i64,
 }
 
 /// Plans the move of voice `o` to another device on sample `swap` from its own state there:
-/// its position, its table, the devamp cuts it has been given and whether the latest stops it.
-/// `None` when it has nothing left to play by then (it ended, or will have).
+/// where its sound is in its table, the devamp cuts it has been given and whether the latest
+/// stops it. `None` when it has nothing left to play by then (it ended, or will have).
 fn move_plan(o: &VoiceRec, swap: SampleTime) -> Option<MovePlan> {
     let here = o.position(swap.max(o.start_at)).unwrap_or(o.offset);
     let played = here.saturating_sub(o.offset);
-    let table = rest_of_table(&o.table, &o.cuts, o.devamp_stop, o.scale.local(played))?;
+    let table = rest_of_table(
+        &o.table,
+        &o.cuts,
+        o.devamp_stop,
+        o.scale.local(o.heard(played)),
+    )?;
     Some(MovePlan {
         table,
         rate: o.scale.local,
+        // The core's count goes on from the master clock's place; only the table follows
+        // the sound.
         offset: here,
         shown: o.shown.saturating_add(played),
+        carried_drift: o.carried_drift.saturating_add(o.drift),
     })
 }
 
@@ -362,6 +383,16 @@ impl VoiceRec {
         self.rest = Some((plan.table, plan.rate));
         self.shown = plan.shown;
         self.delay = counted.saturating_sub(plan.offset);
+        self.carried_drift = plan.carried_drift;
+    }
+
+    /// Master frames into its table its sound has reached once its position is `played`
+    /// frames past its start: its device's drift on, its underruns back. A move to another
+    /// device goes on from there, not from the master clock's count, or it would replay (or
+    /// skip) the difference.
+    fn heard(&self, played: u64) -> u64 {
+        let heard = i128::from(played) + i128::from(self.drift) - i128::from(self.late);
+        u64::try_from(heard.max(0)).unwrap_or(u64::MAX)
     }
 }
 
@@ -487,6 +518,23 @@ impl Voices {
     }
 
     /// The voice of run `run` while it plays.
+    /// Each playing voice takes its device's drift now, `drift(id)` in master frames (where a
+    /// move to another device plans from).
+    pub fn note_drifts(&mut self, drift: impl Fn(VoiceId) -> f64) {
+        for (&id, r) in &mut self.recs {
+            if matches!(r.phase, Phase::Playing) {
+                // `as` saturates; no clock drifts anywhere near that far.
+                r.drift = drift(id).round() as i64;
+            }
+        }
+    }
+
+    /// The drift voice `voice`'s run carried from the voices it was moved on from (see
+    /// [`VoiceRec::carried_drift`]); 0 for an unknown one.
+    pub fn carried_drift(&self, voice: VoiceId) -> i64 {
+        self.recs.get(&voice).map_or(0, |r| r.carried_drift)
+    }
+
     pub fn playing(&self, run: RunId) -> Option<VoiceId> {
         let id = *self.by_run.get(&run)?;
         let r = self.recs.get(&id)?;
@@ -794,6 +842,9 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         moved_from: None,
         devamps_out: 0,
         nothing_left: false,
+        drift: 0,
+        late: 0,
+        carried_drift: 0,
         scale: Scale::new(1, 1),
         planned: None,
     }

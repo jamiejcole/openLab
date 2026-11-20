@@ -2230,7 +2230,8 @@ impl DocCx<'_> {
     /// clock counts as that device's clock drifts from the master's, so once the drift its
     /// picture has not followed reaches [`DRIFT_STEP_US`] the picture is put on (or back) by it
     /// from `now`, as for a sound the disk made late. A picture whose sound moved to another
-    /// device since follows that one, giving back all it followed of the first in one move. Dated
+    /// device since follows that one from where the first one's drift had taken it (the moved
+    /// sound goes on from there). Dated
     /// `now` (a lookahead ahead): an underrun reported in the block after is counted back from it.
     pub(super) fn follow_sound_clocks(&mut self, now: SampleTime, fx: &mut Effects) {
         let step = (u64::from(self.eng.rate.get()) * DRIFT_STEP_US / 1_000_000).max(1);
@@ -2244,7 +2245,8 @@ impl DocCx<'_> {
                 continue;
             };
             // Saturating: no clock drifts this far, and the step stays far below the limit.
-            let drift = self.eng.outputs.drift(voice).round() as i64;
+            let drift = (self.eng.outputs.drift(voice).round() as i64)
+                .saturating_add(self.doc.voices.carried_drift(voice));
             let ahead = drift.saturating_sub(plan.followed);
             if ahead.unsigned_abs() < step {
                 continue;

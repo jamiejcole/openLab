@@ -75,6 +75,12 @@ impl Voices {
                 }
             }
             Event::UnderrunEnded { voice, at, frames } => {
+                // It plays on that much later: a move to another device goes on from there.
+                if let Some((id, _)) = self.resolve(voice)
+                    && let Some(r) = self.recs.get_mut(&id)
+                {
+                    r.late = r.late.saturating_add(frames);
+                }
                 if let Some((_, run)) = self.name(voice) {
                     fx.late
                         .push((run, at, i64::try_from(frames).unwrap_or(i64::MAX)));

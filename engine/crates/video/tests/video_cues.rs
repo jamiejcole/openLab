@@ -6817,9 +6817,19 @@ fn picture_and_sound_stay_within_one_frame_of_each_other() {
 /// host on a virtual display, each device `(id, name, rate)`; `mappings` name each patch's
 /// device.
 fn device_video_show(
+    ws: Workspace,
+    devices: &[(&str, &str, u32)],
+    mappings: &[(PatchId, &str)],
+) -> show::device::DeviceShow {
+    device_video_show_with(ws, devices, mappings, |_| {})
+}
+
+/// [`device_video_show`] with the config changed by `tweak` first.
+fn device_video_show_with(
     mut ws: Workspace,
     devices: &[(&str, &str, u32)],
     mappings: &[(PatchId, &str)],
+    tweak: impl FnOnce(&mut ControlConfig),
 ) -> show::device::DeviceShow {
     let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
     stage.keep_black = true;
@@ -6839,6 +6849,7 @@ fn device_video_show(
     c.mixer_patches = 4;
     slow_media_ok(&mut c);
     c.stage_host = Some(test_stage_host(&[]));
+    tweak(&mut c);
     let listed = devices
         .iter()
         .map(|(id, name, rate)| show::device::listed_at(id, name, 2, *rate))
@@ -7264,11 +7275,11 @@ fn a_video_cue_on_a_second_device_back_from_a_loss_starts_in_step() {
 }
 
 /// A Video cue whose picture has followed its fast second device's clock (30 ms ahead of the
-/// master after thirty seconds at 1000 ppm) and whose patch is then moved to the primary gives
-/// all of that back at once: its sound is moved there at the master clock's place, and the
-/// picture is in step with it there from the move on, not 30 ms ahead.
+/// master after thirty seconds at 1000 ppm) and whose patch is then moved to the primary keeps
+/// that lead: its sound goes on there from where the fast device had taken it, and the picture
+/// stays in step with it from the move on.
 #[test]
-fn a_picture_gives_back_its_followed_drift_when_its_sound_moves_to_the_primary() {
+fn a_picture_that_followed_a_fast_device_stays_with_its_sound_moved_to_the_primary() {
     let dir = tempfile::tempdir().unwrap();
     let movie = sound_movie!(dir.path(), "clip.mov", (25 * 40, 25), "pcm:2:8000");
     let mut ws: Workspace = workspace(vec![sounding_cue(1, &movie)]);
@@ -7323,6 +7334,71 @@ fn a_picture_gives_back_its_followed_drift_when_its_sound_moves_to_the_primary()
             25.0,
             &format!("{t} s, on the primary"),
         );
+    }
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+}
+
+/// A Video cue's sound underran at its start (its stream's open held 0.5 s on a slow disk), so
+/// its picture was put back with it; its patch is then moved to another device: the moved
+/// sound goes on from where the sound was, and picture and sound stay within a frame of each
+/// other there to the end.
+#[test]
+fn a_video_cues_sound_moved_after_an_underrun_stays_with_its_picture() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (25 * 12, 25), "pcm:2:8000");
+    let mut ws: Workspace = workspace(vec![sounding_cue(1, &movie)]);
+    ws.patches[0].name = "Main".into();
+    let two = [("fake:1", "Fake 1", RATE), ("fake:2", "Fake 2", RATE)];
+    let mut s = device_video_show_with(ws, &two, &[(patch_id(), "Fake 2")], |c| {
+        c.prime_cues = 0;
+        c.streamer.before_open = gated_open;
+    });
+    s.wait_output("Fake 2");
+    gate(&movie);
+    s.starved = true;
+    s.transport(TransportAction::Start { cue: id(1) });
+    let at = s.control().rendered();
+    let until = |s: &mut show::device::DeviceShow, t: f64| {
+        while s.control().rendered() < at + samples(t) {
+            s.step();
+        }
+    };
+    until(&mut s, 0.5);
+    release(&movie);
+    s.starved = false;
+    until(&mut s, 3.5);
+    let missed = s
+        .control()
+        .output_mixer("Fake 2")
+        .unwrap()
+        .underrun_frames();
+    assert!(missed > samples(0.2), "the sound underran {missed} frames");
+    device_in_step(&mut s, "Fake 2", "fake:2", 25.0, "3.5 s, before the move");
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch: patch_id(),
+            mapping: Some(openlab_core::PatchMapping {
+                device: "Fake 1".into(),
+                channels: vec![0, 1],
+                system: false,
+            }),
+        },
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    for t in [4.5, 6.5, 9.5] {
+        until(&mut s, t);
+        device_in_step(&mut s, "Fake 1", "fake:1", 25.0, &format!("{t} s, moved"));
     }
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
 }
