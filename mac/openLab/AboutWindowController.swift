@@ -29,7 +29,7 @@ final class AboutWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         super.init(window: window)
 
-        let icon = NSImageView(image: NSImage(named: "AppIcon") ?? NSApp?.applicationIconImage ?? NSImage())
+        let icon = NSImageView(image: NSApp?.applicationIconImage ?? NSImage())
         icon.widthAnchor.constraint(equalToConstant: 64).isActive = true
         icon.heightAnchor.constraint(equalToConstant: 64).isActive = true
         let name = NSTextField(labelWithString: loc("about.name"))
