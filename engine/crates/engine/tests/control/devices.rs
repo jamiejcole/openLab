@@ -4786,6 +4786,24 @@ fn a_playing_cue_moved_to_another_device_auto_follows_once_at_its_end() {
     assert_eq!(first_dc, last_ramp + 1);
 }
 
+/// Sets cue 1's end time to `secs` (as the inspector does); the command must be accepted.
+fn set_end_time(s: &mut DeviceShow, secs: f64) {
+    let rid = s.request_id();
+    let json = format!(
+        r#"{{"type":"command","id":{},"command":{{"type":"set_cue_property","id":"{}","property":{{"type":"kind_fields","value":{{"end_time":{secs}}}}}}}}}"#,
+        rid.0,
+        id(1).0
+    );
+    let replies = s.send(openlab_core::protocol::decode_client(&json).unwrap());
+    assert!(replies.iter().any(|m| matches!(
+        m,
+        ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }
+    )));
+}
+
 /// An end time moved while the cue plays goes with it to another device: moved before its
 /// patch moves, or while the move waits to swap, the cue plays to the new end there, never
 /// past it on either device, and auto-follows once on the sample after its last.
@@ -4799,22 +4817,7 @@ fn a_cue_whose_end_time_is_moved_ends_there_after_a_move_to_another_device() {
         let mut s = two_device_show(vec![first, audio(2, &b, 0)]);
         start(&mut s, 1);
         s.run(BLOCK * 10);
-        let set_end = |s: &mut DeviceShow| {
-            let rid = s.request_id();
-            let json = format!(
-                r#"{{"type":"command","id":{},"command":{{"type":"set_cue_property","id":"{}","property":{{"type":"kind_fields","value":{{"end_time":0.25}}}}}}}}"#,
-                rid.0,
-                id(1).0
-            );
-            let replies = s.send(openlab_core::protocol::decode_client(&json).unwrap());
-            assert!(replies.iter().any(|m| matches!(
-                m,
-                ServerMessage::Result {
-                    outcome: Outcome::Ok(_),
-                    ..
-                }
-            )));
-        };
+        let set_end = |s: &mut DeviceShow| set_end_time(s, 0.25);
         if edit_first {
             set_end(&mut s);
             map_patch(&mut s, patch_id(), DEV2_NAME);
@@ -5610,6 +5613,27 @@ fn a_looping_cue_moved_then_devamped_and_panicked_before_the_swap_plays_nothing_
     for [h, still] in &heard {
         assert_eq!(h, still);
         assert_eq!(h.next_starts, 0, "{h:?}");
+        assert_eq!((h.state, h.live), (CueState::Idle, 0), "{h:?}");
+    }
+}
+
+/// #788 review: the same, its end time moved into the tail (0.4 s, 800 frames before the
+/// tail's end) right after the devamp, while the move waits: heard as with no move; the loop
+/// is left at the end of that pass, the tail plays to the new end and cue 2 starts as the loop
+/// is left.
+#[test]
+fn a_looping_cue_moved_then_devamped_whose_end_time_is_moved_in_the_wait_ends_there() {
+    let heard = moved_then_devamped(false, 0, |s| set_end_time(s, 0.4));
+    for [moved, still] in &heard {
+        assert_eq!(moved, still);
+    }
+    for [h, _] in &heard[..3] {
+        assert_eq!(h.runs, [(1, 2000), (1, 3200)], "{h:?}");
+        assert_eq!(
+            (h.last, h.next, h.next_starts),
+            (Some(5199), Some(4000), 1),
+            "{h:?}"
+        );
         assert_eq!((h.state, h.live), (CueState::Idle, 0), "{h:?}");
     }
 }
