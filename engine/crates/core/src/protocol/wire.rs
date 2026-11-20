@@ -187,6 +187,20 @@ pub enum WireProblem {
     },
     /// A Video cue whose file has sound has its output patch set to "none".
     NoPatch,
+    /// A Target cue with no new target set.
+    NoNewTarget,
+    /// A Target cue's new target is not in the workspace.
+    NewTargetMissing {
+        target: CueId,
+    },
+    /// A Target cue's new target is one its target cannot act on, or its target itself.
+    NewTargetWrongKind {
+        target: CueId,
+    },
+    /// A Target cue's new target has no number.
+    NewTargetUnnumbered {
+        target: CueId,
+    },
 }
 
 impl From<&CueProblem> for WireProblem {
@@ -196,6 +210,14 @@ impl From<&CueProblem> for WireProblem {
             CueProblem::TargetMissing { target } => Self::TargetMissing { target: *target },
             CueProblem::TargetSelf => Self::TargetSelf,
             CueProblem::TargetWrongKind { target } => Self::TargetWrongKind { target: *target },
+            CueProblem::NoNewTarget => Self::NoNewTarget,
+            CueProblem::NewTargetMissing { target } => Self::NewTargetMissing { target: *target },
+            CueProblem::NewTargetWrongKind { target } => {
+                Self::NewTargetWrongKind { target: *target }
+            }
+            CueProblem::NewTargetUnnumbered { target } => {
+                Self::NewTargetUnnumbered { target: *target }
+            }
             CueProblem::NothingToFade => Self::NothingToFade,
             CueProblem::NoMedia => Self::NoMedia,
             CueProblem::MediaMissing { media } => Self::MediaMissing {

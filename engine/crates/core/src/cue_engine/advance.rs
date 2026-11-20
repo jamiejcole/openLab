@@ -163,7 +163,8 @@ impl CueEngine {
             | CueKind::Devamp { .. }
             | CueKind::GoTo { .. }
             | CueKind::Arm { .. }
-            | CueKind::Disarm { .. } => Act::Control,
+            | CueKind::Disarm { .. }
+            | CueKind::Target { .. } => Act::Control,
             CueKind::Network { .. } => Act::Send,
         };
         // QLab: a Devamp cue's "start next cue" is its continue, fired when the loop is left

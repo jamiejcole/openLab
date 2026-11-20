@@ -105,6 +105,10 @@ pub struct CueEngine {
     continued: BTreeSet<CueId>,
     /// Arm/Disarm cue changes made in this call (see `Action::SetArmed`).
     armed: BTreeMap<CueId, bool>,
+    /// Temporary targets set by Target cues, by the cue that acts on them (QLab 5 manual
+    /// p. 686): runtime only, never in the model or the file; a reset of the cue or Reset All
+    /// drops one, and a reopened show starts with none.
+    temp_targets: BTreeMap<CueId, CueId>,
     /// Static problems (CUE-06) and what they are computed from.
     problems: broken::Problems,
     /// The panic fade under way: the sample it came on and the one it ends on.
@@ -196,6 +200,7 @@ impl CueEngine {
             duck_owed: Vec::new(),
             continued: BTreeSet::new(),
             armed: BTreeMap::new(),
+            temp_targets: BTreeMap::new(),
             problems: broken::Problems::default(),
             panic: None,
             model_dirty: true,

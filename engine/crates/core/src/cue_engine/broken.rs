@@ -29,7 +29,7 @@ use crate::cue_index::{CueContainer, CueIndex, IndexChange, IndexDelta};
 use crate::model::{CueId, NetworkPatch, NetworkPatchId, PatchId, StageId, Workspace};
 use crate::network::{HostKind, check_endpoint, check_message};
 use crate::settings::PatchResolution;
-use crate::validate::can_target;
+use crate::validate::{Retarget, can_target, retarget_problem};
 
 use super::run::{Lost, Slot};
 use super::types::{Action, BrokenReason, CueProblem, MediaStatus, SliceProblem};
@@ -44,6 +44,8 @@ const STARTED_BROKEN: &[CueProblem] = &[CueProblem::StartedBroken];
 struct Facts {
     /// Target problems (at most one).
     target: Option<CueProblem>,
+    /// A Target cue's new-target problem (at most one).
+    new_target: Option<CueProblem>,
     /// Audio cues: the media reference and patch, and whether the patch exists.
     audio: Option<AudioFacts>,
     /// Network cues: what is wrong with the destination and the message.
@@ -137,10 +139,10 @@ struct ModelFacts {
     facts: BTreeMap<CueId, Facts>,
     by_media: HashMap<String, BTreeSet<CueId>>,
     by_patch: HashMap<PatchId, BTreeSet<CueId>>,
-    /// The cues that name a cue as their target, by that cue; and the reverse. Empty sets are
-    /// removed, so a rebuilt model equals an incrementally kept one.
+    /// The cues that name a cue as their target or new target, by that cue; and the reverse.
+    /// Empty sets are removed, so a rebuilt model equals an incrementally kept one.
     by_target: HashMap<CueId, BTreeSet<CueId>>,
-    target_of: HashMap<CueId, CueId>,
+    target_of: HashMap<CueId, Refs>,
     /// The patch ids `facts` were computed against (a change rebuilds everything).
     patch_ids: Vec<PatchId>,
     /// The network patches `facts` were computed against (any change rebuilds everything).
@@ -412,7 +414,7 @@ impl CueEngine {
             .and_then(|c| {
                 facts_of(
                     c,
-                    |t| ws.find_cue(t).map(|t| &t.kind),
+                    |t| ws.find_cue(t),
                     |p| ws.patches.iter().any(|x| x.id == p),
                     |n| ws.network_patches.iter().find(|x| x.id == n),
                     |s| ws.stages.iter().any(|x| x.id == s),
@@ -520,12 +522,12 @@ impl CueEngine {
             };
             let facts = facts_of(
                 cue,
-                |t| model.tree.locate(ws, t).map(|t| &t.kind),
+                |t| model.tree.locate(ws, t),
                 |p| ws.patches.iter().any(|x| x.id == p),
                 |n| ws.network_patches.iter().find(|x| x.id == n),
                 |s| ws.stages.iter().any(|x| x.id == s),
             );
-            computed.push((*id, facts, own_target(cue)));
+            computed.push((*id, facts, own_refs(cue)));
         }
         for (id, facts, target) in computed {
             model.set(id, facts, target);
@@ -948,7 +950,7 @@ fn is_mapped(r: Option<&PatchResolution>) -> bool {
 /// network destination.
 fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
     let (media, patches) = (&p.media, &p.patches);
-    let mut found: Vec<CueProblem> = f.target.iter().cloned().collect();
+    let mut found: Vec<CueProblem> = f.target.iter().chain(&f.new_target).cloned().collect();
     if f.nothing_to_fade {
         found.push(CueProblem::NothingToFade);
     }
@@ -1073,19 +1075,19 @@ fn model_facts(ws: &Workspace) -> ModelFacts {
     for cue in order {
         let facts = facts_of(
             cue,
-            |t| by_id.get(&t).map(|c| &c.kind),
+            |t| by_id.get(&t).copied(),
             |p| patches.contains(&p),
             |n| network.get(&n).copied(),
             |s| stages.contains(&s),
         );
-        out.set(cue.id, facts, own_target(cue));
+        out.set(cue.id, facts, own_refs(cue));
     }
     out
 }
 
 impl ModelFacts {
     /// Replaces what the model says about `id`, keeping the indexes in step.
-    fn set(&mut self, id: CueId, facts: Option<Facts>, target: Option<CueId>) {
+    fn set(&mut self, id: CueId, facts: Option<Facts>, refs: Refs) {
         self.forget(id);
         if let Some(facts) = &facts
             && let Some(audio) = &facts.audio
@@ -1112,9 +1114,11 @@ impl ModelFacts {
         if let Some(facts) = facts {
             self.facts.insert(id, facts);
         }
-        if let Some(target) = target {
-            self.by_target.entry(target).or_default().insert(id);
-            self.target_of.insert(id, target);
+        for target in refs.iter().flatten() {
+            self.by_target.entry(*target).or_default().insert(id);
+        }
+        if refs.iter().any(Option::is_some) {
+            self.target_of.insert(id, refs);
         }
     }
 
@@ -1161,31 +1165,36 @@ impl ModelFacts {
                 }
             }
         }
-        if let Some(target) = self.target_of.remove(&id)
-            && let Some(on) = self.by_target.get_mut(&target)
-        {
-            on.remove(&id);
-            if on.is_empty() {
-                self.by_target.remove(&target);
+        for target in self.target_of.remove(&id).iter().flatten().flatten() {
+            if let Some(on) = self.by_target.get_mut(target) {
+                on.remove(&id);
+                if on.is_empty() {
+                    self.by_target.remove(target);
+                }
             }
         }
     }
 }
 
-/// The cue `cue` names as its target, if it is a targeting kind with one set.
-fn own_target(cue: &Cue) -> Option<CueId> {
-    if cue.kind.has_target() {
+/// The cues another cue's problems depend on: its target and a Target cue's new target.
+type Refs = [Option<CueId>; 2];
+
+/// The cues `cue` names: its target, if it is a targeting kind with one set, and a Target cue's
+/// new target.
+fn own_refs(cue: &Cue) -> Refs {
+    let target = if cue.kind.has_target() {
         cue.kind.target()
     } else {
         None
-    }
+    };
+    [target, cue.kind.new_target()]
 }
 
-/// What the model says about `cue`, or `None` for a kind that cannot have problems. `kind_of`
-/// gives a target's kind (`None`: not in the workspace).
+/// What the model says about `cue`, or `None` for a kind that cannot have problems. `cue_of`
+/// gives another cue (`None`: not in the workspace).
 fn facts_of<'w>(
     cue: &Cue,
-    kind_of: impl Fn(CueId) -> Option<&'w CueKind>,
+    cue_of: impl Fn(CueId) -> Option<&'w Cue>,
     patch_exists: impl Fn(PatchId) -> bool,
     network_patch: impl Fn(NetworkPatchId) -> Option<&'w NetworkPatch>,
     stage_exists: impl Fn(StageId) -> bool,
@@ -1194,7 +1203,7 @@ fn facts_of<'w>(
         match cue.kind.target() {
             None => Some(CueProblem::NoTarget),
             Some(target) if target == cue.id => Some(CueProblem::TargetSelf),
-            Some(target) => match kind_of(target) {
+            Some(target) => match cue_of(target).map(|t| &t.kind) {
                 None => Some(CueProblem::TargetMissing { target }),
                 Some(kind) if !can_target(&cue.kind, kind) => {
                     Some(CueProblem::TargetWrongKind { target })
@@ -1204,6 +1213,27 @@ fn facts_of<'w>(
         }
     } else {
         None
+    };
+    // A Target cue's new target: there, with a number, and one its target can act on. Judged
+    // against the target only while the target is there.
+    let new_target = match &cue.kind {
+        CueKind::Target { target, new_target } => match new_target {
+            None => Some(CueProblem::NoNewTarget),
+            Some(new) => match cue_of(*new) {
+                None => Some(CueProblem::NewTargetMissing { target: *new }),
+                Some(n) => {
+                    let problem = match target.and_then(&cue_of) {
+                        Some(t) => retarget_problem(t, n),
+                        None => n.number.is_none().then_some(Retarget::Unnumbered),
+                    };
+                    problem.map(|p| match p {
+                        Retarget::WrongKind => CueProblem::NewTargetWrongKind { target: *new },
+                        Retarget::Unnumbered => CueProblem::NewTargetUnnumbered { target: *new },
+                    })
+                }
+            },
+        },
+        _ => None,
     };
     let audio = match &cue.kind {
         CueKind::Audio { media, patch, .. } => PlanKey::of(&cue.kind).map(|plan| AudioFacts {
@@ -1260,8 +1290,8 @@ fn facts_of<'w>(
     // A ticked picture value is something to fade (QLab 5 manual p. 247: a level or a
     // parameter) only for a target that has a picture: a Video cue, or a target not set or not
     // there yet (its own problem shows). An Audio or Group target is moved by levels alone.
-    let pictured = |target: &Option<CueId>| match target.and_then(&kind_of) {
-        Some(kind) => matches!(kind, CueKind::Video { .. }),
+    let pictured = |target: &Option<CueId>| match target.and_then(&cue_of) {
+        Some(t) => matches!(t.kind, CueKind::Video { .. }),
         None => true,
     };
     let nothing_to_fade = matches!(&cue.kind, CueKind::Fade { levels, geometry, target, .. }
@@ -1269,9 +1299,12 @@ fn facts_of<'w>(
             && levels.output_db.iter().all(Option::is_none)
             && levels.crosspoints.is_empty()
             && !(geometry.any() && pictured(target)));
-    (target.is_some() || audio.is_some() || network.is_some() || video.is_some() || nothing_to_fade)
+    (target.is_some()
+        || new_target.is_some()
+        || audio.is_some() || network.is_some() || video.is_some() || nothing_to_fade)
         .then_some(Facts {
             target,
+            new_target,
             audio,
             network,
             video,

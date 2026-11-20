@@ -29,8 +29,8 @@ const V2_EXAMPLE: &str = include_str!("../../../fixtures/show/v2-example.openlab
 const V1_EXAMPLE: &str = include_str!("../../../fixtures/show/v1-example.openlab");
 const V0_EXAMPLE: &str = include_str!("../../../fixtures/show/v0-example.openlab");
 
-/// The current example as an older fixture migrates to: the same show without its stages and
-/// Video cues, with every cue output unnamed and no patch crosspoints or device-output levels,
+/// The current example as an older fixture migrates to: the same show without its stages,
+/// Video cues and Target cue, with every cue output unnamed and no patch crosspoints or device-output levels,
 /// which only the current version's example has (optional keys and a new cue kind; no migration
 /// adds them).
 fn example_older() -> Workspace {
@@ -38,7 +38,7 @@ fn example_older() -> Workspace {
     ws.stages.clear();
     for list in &mut ws.cue_lists {
         list.cues
-            .retain(|c| !matches!(c.kind, CueKind::Video { .. }));
+            .retain(|c| !matches!(c.kind, CueKind::Video { .. } | CueKind::Target { .. }));
     }
     for output in ws.patches.iter_mut().flat_map(|p| p.outputs.iter_mut()) {
         output.name.clear();
@@ -64,6 +64,7 @@ fn kind_name(kind: &CueKind) -> &'static str {
         CueKind::GoTo { .. } => "go_to",
         CueKind::Arm { .. } => "arm",
         CueKind::Disarm { .. } => "disarm",
+        CueKind::Target { .. } => "target",
         CueKind::Wait { .. } => "wait",
         CueKind::Memo => "memo",
         CueKind::Network { .. } => "network",
@@ -92,7 +93,7 @@ fn golden_fixture_loads_cleanly_and_covers_every_cue_kind_and_group_mode() {
             }
         });
     }
-    assert_eq!(kinds.len(), 16, "{kinds:?}");
+    assert_eq!(kinds.len(), 17, "{kinds:?}");
     modes.sort_by_key(|d| format!("{d:?}"));
     modes.dedup();
     assert_eq!(modes.len(), 5);

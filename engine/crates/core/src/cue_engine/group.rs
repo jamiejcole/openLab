@@ -743,6 +743,7 @@ impl CueEngine {
                 | CueKind::GoTo { .. }
                 | CueKind::Arm { .. }
                 | CueKind::Disarm { .. }
+                | CueKind::Target { .. }
                 | CueKind::Network { .. } => 0,
             }
         };
@@ -1003,9 +1004,12 @@ impl CueEngine {
                 self.reset_one(id, cx);
             }
             self.forget_played(id, cx);
+            self.temp_targets.remove(&id);
         }
         self.reset_one(cue, cx);
         self.forget_played(cue, cx);
+        // A temporary target set by a Target cue goes too (QLab 5 manual p. 681).
+        self.temp_targets.remove(&cue);
     }
 
     pub(super) fn pause_tree(&mut self, cue: CueId, cx: &mut Ctx) {
