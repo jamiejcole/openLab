@@ -83,6 +83,7 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 - As for a seek, the moved voice is given the Fade cues' levels and its duck (`regive_levels`). Timers, post-wait, continues and the group are untouched.
 - A run whose devamp is sent and not answered (`DevampWait.at` is `None`, about one block) is not moved yet: only the audio side knows where its voice is in the loop, and a voice moved then could play the loop again. `Run::move_pending` holds the move; `DevampScheduled` or `DevampIgnored` makes it, and it goes with the run (a stop, a failure).
 - A run whose devamp is scheduled moves at once; its leave deadline (and the Devamp cue's next cue) stays where the answer put it and no devamp is sent again: the binary plans the moved voice to leave on the same sample (its table ends the loop there).
+- A devamp given after the move, while its voice waits to swap, is sent for the fresh run as any devamp; the binary gives it to the old voice (what sounds) and answers for the fresh run, so its leave deadline and the Devamp cue's next cue fall on the end of the pass it came in (skill `engine-control`, patch slots).
 
 ## Operations (CUE-05)
 Voice actions apply to armed Audio cues only. Group operations also reach descendants.

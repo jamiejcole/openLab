@@ -4786,6 +4786,24 @@ fn a_playing_cue_moved_to_another_device_auto_follows_once_at_its_end() {
     assert_eq!(first_dc, last_ramp + 1);
 }
 
+/// Sets cue 1's end time to `secs` (as the inspector does); the command must be accepted.
+fn set_end_time(s: &mut DeviceShow, secs: f64) {
+    let rid = s.request_id();
+    let json = format!(
+        r#"{{"type":"command","id":{},"command":{{"type":"set_cue_property","id":"{}","property":{{"type":"kind_fields","value":{{"end_time":{secs}}}}}}}}}"#,
+        rid.0,
+        id(1).0
+    );
+    let replies = s.send(openlab_core::protocol::decode_client(&json).unwrap());
+    assert!(replies.iter().any(|m| matches!(
+        m,
+        ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }
+    )));
+}
+
 /// An end time moved while the cue plays goes with it to another device: moved before its
 /// patch moves, or while the move waits to swap, the cue plays to the new end there, never
 /// past it on either device, and auto-follows once on the sample after its last.
@@ -4799,22 +4817,7 @@ fn a_cue_whose_end_time_is_moved_ends_there_after_a_move_to_another_device() {
         let mut s = two_device_show(vec![first, audio(2, &b, 0)]);
         start(&mut s, 1);
         s.run(BLOCK * 10);
-        let set_end = |s: &mut DeviceShow| {
-            let rid = s.request_id();
-            let json = format!(
-                r#"{{"type":"command","id":{},"command":{{"type":"set_cue_property","id":"{}","property":{{"type":"kind_fields","value":{{"end_time":0.25}}}}}}}}"#,
-                rid.0,
-                id(1).0
-            );
-            let replies = s.send(openlab_core::protocol::decode_client(&json).unwrap());
-            assert!(replies.iter().any(|m| matches!(
-                m,
-                ServerMessage::Result {
-                    outcome: Outcome::Ok(_),
-                    ..
-                }
-            )));
-        };
+        let set_end = |s: &mut DeviceShow| set_end_time(s, 0.25);
         if edit_first {
             set_end(&mut s);
             map_patch(&mut s, patch_id(), DEV2_NAME);
@@ -5334,12 +5337,14 @@ struct Heard {
 }
 
 /// A 4,000-frame ramp whose first 2,000 frames loop until devamped and whose 2,000-frame tail
-/// plays `tail` times; devamped (stopping it there with `stop`) 200 frames into its second pass,
-/// so it leaves at 4,000 frames in, and the Devamp cue starts cue 2 there. Its patch moves to
-/// "Fake 2" `move_after` frames after the devamp; with `slow` the new stream's open is held
-/// that many frames (a slow disk). `mid` runs right after the move.
+/// plays `tail` times; devamped (stopping it there with `stop`) `devamp_at` frames after its
+/// start, in its second pass, so it leaves at 4,000 frames in, and the Devamp cue starts cue 2
+/// there. Its patch moves to "Fake 2" `move_at` frames after its start (`None`: never), before
+/// or after the devamp; with `slow` the new stream's open is held that many frames (a slow
+/// disk). `mid` runs right after the later of the two.
 fn devamped_move(
-    move_after: u64,
+    devamp_at: u64,
+    move_at: Option<u64>,
     stop: bool,
     tail: u32,
     slow: u64,
@@ -5379,14 +5384,29 @@ fn devamped_move(
     s.take_outbound();
     let started = start(&mut s, 1) as usize;
     let t0 = s.rendered() as usize;
-    s.run((started + 2200 - t0) as u64);
-    start(&mut s, 3);
-    s.run(move_after);
-    if slow > 0 {
-        gate(&a);
-        s.slow_disk = true;
+    // Each step `gap` frames after the one before (a tie: the devamp first).
+    let mut steps = vec![(devamp_at, false)];
+    steps.extend(move_at.map(|m| (m, true)));
+    steps.sort_unstable();
+    let mut gap = (started + steps[0].0 as usize - t0) as u64;
+    let mut last = steps[0].0;
+    for (at, moves) in steps {
+        gap += at - last;
+        last = at;
+        if gap > 0 {
+            s.run(gap);
+        }
+        gap = 0;
+        if !moves {
+            start(&mut s, 3);
+            continue;
+        }
+        if slow > 0 {
+            gate(&a);
+            s.slow_disk = true;
+        }
+        map_patch(&mut s, patch_id(), DEV2_NAME);
     }
-    map_patch(&mut s, patch_id(), DEV2_NAME);
     mid(&mut s);
     if slow > 0 {
         s.run(slow);
@@ -5452,7 +5472,7 @@ fn assert_devamped_in_step(h: &Heard, stop: bool, tail: u32, what: &str) {
 #[test]
 fn a_move_of_a_cue_a_devamp_stops_whose_stream_is_late_plays_nothing_after_its_end() {
     for move_after in [64, 600] {
-        let h = devamped_move(move_after, true, 1, 1500, |_| {});
+        let h = devamped_move(2200, Some(2200 + move_after), true, 1, 1500, |_| {});
         assert_devamped_in_step(&h, true, 1, &format!("moved {move_after} after"));
     }
 }
@@ -5462,7 +5482,7 @@ fn a_move_of_a_cue_a_devamp_stops_whose_stream_is_late_plays_nothing_after_its_e
 #[test]
 fn a_move_whose_stream_is_late_past_the_leave_plays_the_tail_its_full_count() {
     for move_after in [64, 600] {
-        let h = devamped_move(move_after, false, 2, 1500, |_| {});
+        let h = devamped_move(2200, Some(2200 + move_after), false, 2, 1500, |_| {});
         assert_devamped_in_step(&h, false, 2, &format!("moved {move_after} after"));
     }
 }
@@ -5471,7 +5491,7 @@ fn a_move_whose_stream_is_late_past_the_leave_plays_the_tail_its_full_count() {
 #[test]
 fn a_devamped_move_renders_the_same_every_time() {
     for n in 0..3 {
-        let h = devamped_move(64, false, 2, 0, |_| {});
+        let h = devamped_move(2200, Some(2264), false, 2, 0, |_| {});
         assert_devamped_in_step(&h, false, 2, &format!("render {n}"));
     }
 }
@@ -5480,7 +5500,7 @@ fn a_devamped_move_renders_the_same_every_time() {
 #[test]
 fn a_re_planned_swap_on_either_side_of_the_leave_plays_every_sample_once() {
     for move_after in (900..1100).step_by(16) {
-        let h = devamped_move(move_after, false, 1, 900, |_| {});
+        let h = devamped_move(2200, Some(2200 + move_after), false, 1, 900, |_| {});
         assert_devamped_in_step(&h, false, 1, &format!("moved {move_after} after"));
     }
 }
@@ -5490,7 +5510,7 @@ fn a_re_planned_swap_on_either_side_of_the_leave_plays_every_sample_once() {
 /// loop at the end of that pass; cue 2 starts once.
 #[test]
 fn a_seek_between_the_devamps_answer_and_the_swap_plays_from_the_point_and_leaves_the_loop() {
-    let h = devamped_move(64, false, 1, 0, |s| {
+    let h = devamped_move(2200, Some(2264), false, 1, 0, |s| {
         s.transport(TransportAction::Seek {
             cue: id(1),
             position: 0.1,
@@ -5501,6 +5521,191 @@ fn a_seek_between_the_devamps_answer_and_the_swap_plays_from_the_point_and_leave
     assert!((801..=881).contains(&from) && to == 4000, "{h:?}");
     assert_eq!(h.next_starts, 1, "{h:?}");
     assert_eq!((h.state, h.live), (CueState::Idle, 0), "{h:?}");
+}
+
+/// Moves first, then devamps: (move, devamp) frames after cue 1's start, in its second pass
+/// (2,000 to 4,000), the end of that pass falling between the devamp and the planned swap (a
+/// move's lead, 0.1 s or 800 frames, after the move). The last devamp comes too late to leave
+/// on that pass, with or without a move (the commands' lookahead and the answer's way back).
+const MOVE_THEN_DEVAMP: [(u64, u64); 4] = [(3300, 64), (3700, 64), (3500, 250), (3850, 64)];
+
+/// Cue 1 of [`devamped_move`] moved, then devamped, at each of [`MOVE_THEN_DEVAMP`] (devamp
+/// stopping it with `stop`, a slow disk holding the new stream `slow` frames, `mid` right after
+/// the devamp), and the same show with no move: what each was heard as, moved first.
+fn moved_then_devamped(stop: bool, slow: u64, mid: impl Fn(&mut DeviceShow)) -> Vec<[Heard; 2]> {
+    let at = |(m, d): (u64, u64), moves: bool| {
+        devamped_move(m + d, moves.then_some(m), stop, 1, slow, &mid)
+    };
+    (MOVE_THEN_DEVAMP.into_iter())
+        .map(|c| [at(c, true), at(c, false)])
+        .collect()
+}
+
+/// #788: a looping cue is moved to another device and devamped before the swap, the end of the
+/// pass falling before the swap: it leaves the loop at the end of the pass the devamp came in
+/// (heard as when devamped first, or not moved), and the Devamp cue's next cue starts on that
+/// sample.
+#[test]
+fn a_looping_cue_moved_then_devamped_before_the_swap_leaves_the_loop_on_that_pass() {
+    for stop in [false, true] {
+        let heard = moved_then_devamped(stop, 0, |_| {});
+        for [moved, still] in &heard {
+            assert_eq!(moved, still, "stop {stop}");
+        }
+        for [h, _] in &heard[..3] {
+            assert_devamped_in_step(h, stop, 1, &format!("stop {stop}"));
+        }
+    }
+}
+
+/// #788: the same with the swap delayed by a late stream (planned again): the same result.
+#[test]
+fn a_looping_cue_moved_then_devamped_whose_swap_is_delayed_leaves_the_loop_on_that_pass() {
+    for stop in [false, true] {
+        let heard = moved_then_devamped(stop, 1500, |_| {});
+        for [moved, still] in &heard {
+            assert_eq!(moved, still, "stop {stop}");
+        }
+        for [h, _] in &heard[..3] {
+            assert_devamped_in_step(h, stop, 1, &format!("stop {stop}"));
+        }
+    }
+}
+
+/// #788: the same, paused right after the devamp (before its answer) and resumed 1,000 frames
+/// later: it ends, and cue 2 starts, as with no move (the pause and the resume fade a little
+/// differently for a move waiting); the loop is left at the end of that pass, the tail plays
+/// once and cue 2 starts as it begins.
+#[test]
+fn a_looping_cue_moved_then_devamped_and_paused_before_the_swap_plays_nothing_extra() {
+    let heard = moved_then_devamped(false, 0, |s| {
+        s.transport(TransportAction::Pause { cue: id(1) });
+        s.run(1000);
+        s.transport(TransportAction::Resume { cue: id(1) });
+    });
+    for [moved, still] in &heard {
+        let ends = |h: &Heard| (h.last, h.next, h.next_starts, h.state, h.live);
+        assert_eq!(ends(moved), ends(still), "{moved:?}");
+    }
+    for [h, _] in &heard[..3] {
+        // The pause and the resume fade, so only whole runs are read: the first pass, the
+        // second up to the pause, then from the resume to the end of the tail.
+        let whole: Vec<_> = h.runs.iter().filter(|r| r.1 - r.0 > 3).collect();
+        assert_eq!(whole.len(), 3, "{h:?}");
+        assert_eq!(
+            (*whole[0], whole[1].0, whole[2].1),
+            ((1, 2000), 1, 4000),
+            "{h:?}"
+        );
+        let tail_from = h.last.map(|l| l as usize - 1999);
+        assert_eq!((h.next, h.next_starts), (tail_from, 1), "{h:?}");
+        assert_eq!((h.state, h.live), (CueState::Idle, 0), "{h:?}");
+    }
+}
+
+/// #788: the same with a panic right after the devamp: heard as with no move (the panic's
+/// fade), cue 2 never starts, and nothing is left.
+#[test]
+fn a_looping_cue_moved_then_devamped_and_panicked_before_the_swap_plays_nothing_extra() {
+    let heard = moved_then_devamped(false, 0, |s| {
+        s.transport(TransportAction::Panic);
+    });
+    for [h, still] in &heard {
+        assert_eq!(h, still);
+        assert_eq!(h.next_starts, 0, "{h:?}");
+        assert_eq!((h.state, h.live), (CueState::Idle, 0), "{h:?}");
+    }
+}
+
+/// #788 review: the same, its end time moved into the tail (0.4 s, 800 frames before the
+/// tail's end) right after the devamp, while the move waits: heard as with no move; the loop
+/// is left at the end of that pass, the tail plays to the new end and cue 2 starts as the loop
+/// is left.
+#[test]
+fn a_looping_cue_moved_then_devamped_whose_end_time_is_moved_in_the_wait_ends_there() {
+    let heard = moved_then_devamped(false, 0, |s| set_end_time(s, 0.4));
+    for [moved, still] in &heard {
+        assert_eq!(moved, still);
+    }
+    for [h, _] in &heard[..3] {
+        assert_eq!(h.runs, [(1, 2000), (1, 3200)], "{h:?}");
+        assert_eq!(
+            (h.last, h.next, h.next_starts),
+            (Some(5199), Some(4000), 1),
+            "{h:?}"
+        );
+        assert_eq!((h.state, h.live), (CueState::Idle, 0), "{h:?}");
+    }
+}
+
+/// #788 review: cue 1 of [`devamped_move`] on patch B ("Fake 2", not the clock's device) moved
+/// to "Fake 1" 1,300 frames into its second pass and devamped 64 frames later, then "Fake 2"
+/// lost before its mixer can answer the devamp: the moved voice still carries the devamp out
+/// (the swap comes after the end of the pass the devamp came in, so it leaves at the end of the
+/// pass under way then, as a devamp held for the moved voice always did; never loops for
+/// ever), the Devamp cue's next cue starts once as the loop is left, and nothing is left.
+#[test]
+fn a_devamp_whose_old_device_is_lost_before_it_answers_is_carried_out_by_the_moved_voice() {
+    let a = wav(&ramp(4000));
+    let b = wav(&dc(200, 0.5));
+    let mut looping = audio_b(1, &a, 0);
+    if let CueKind::Audio {
+        slices,
+        last_slice_play_count,
+        ..
+    } = &mut looping.kind
+    {
+        *slices = vec![openlab_core::SliceMarker {
+            time: 0.25,
+            play_count: 0.into(),
+        }];
+        *last_slice_play_count = 1.into();
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = two_device_show(vec![looping, devamp, audio(2, &b, 1)]);
+    let started = start(&mut s, 1) as usize;
+    let t0 = s.rendered() as usize;
+    s.run((started + 3300 - t0) as u64);
+    map_patch(&mut s, patch_b(), DEV_NAME);
+    s.run(64);
+    start(&mut s, 3);
+    unplug(&mut s, DEV2);
+    let mut msgs = Vec::new();
+    for _ in 0..300 {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    let one = s.channel(0);
+    let unit = 1.0 / 1_048_576.0;
+    let seq: Vec<u32> = (one.iter())
+        .map(|&x| (x / unit).round() as u32)
+        .filter(|&v| v != 0)
+        .collect();
+    let runs = runs_of(&seq);
+    let starts = states(&msgs, id(2))
+        .iter()
+        .filter(|(st, _)| *st == WireCueState::Running)
+        .count();
+    // Heard on "Fake 1" from the swap (its fade-in aside) to the end of the tail, once: the
+    // loop left at the end of the pass under way, never played again.
+    let whole: Vec<_> = runs.iter().filter(|r| r.1 - r.0 > 3).collect();
+    assert_eq!(whole.len(), 1, "{runs:?}");
+    assert_eq!(whole[0].1, 4000, "{runs:?}");
+    let next = s.channel(1).iter().position(|&v| v != 0.0);
+    let tail = one.iter().position(|&v| v == 2001.0 * unit);
+    assert!(tail.is_some());
+    assert_eq!(next, tail, "cue 2 starts as the loop is left");
+    assert_eq!(starts, 1, "{msgs:?}");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
 }
 
 /// Fix check 1: a new stream still not ready 0.25 s after the first planned swap (a disk far

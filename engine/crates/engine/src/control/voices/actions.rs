@@ -396,6 +396,7 @@ impl Voices {
                 swap_limit: swap.saturating_add(seconds_to_samples(SEEK_PRIME_WAIT, env.rate)),
                 gave_up,
                 replaces,
+                moved_from: replaces,
                 swap_after,
                 release_fade: crossfade,
                 media: cue_media(env.ws, cue),
@@ -411,6 +412,9 @@ impl Voices {
     /// that stream is ready ([`Self::try_start`]); a load there that a burst held back is
     /// prepared.
     fn advance_seek(&mut self, id: VoiceId, env: &mut Env<'_>, fx: &mut Effects) {
+        if self.recs.get(&id).is_some_and(|r| r.nothing_left) {
+            return self.give_up_move(id, false, env, fx);
+        }
         let Some(r) = self.recs.get(&id) else { return };
         let Phase::Waiting {
             prepared: None,
@@ -582,6 +586,9 @@ impl Voices {
 
     /// Puts a waiting voice into the mixer once it has a stream and a start and is not paused.
     pub(super) fn try_start(&mut self, id: VoiceId, env: &mut Env<'_>, fx: &mut Effects) {
+        if self.recs.get(&id).is_some_and(|r| r.nothing_left) {
+            return self.give_up_move(id, false, env, fx);
+        }
         // Held with a sequence whose pictures are not all open yet.
         if self.recs.get(&id).is_some_and(|r| r.gate.is_some()) {
             return;
@@ -695,6 +702,14 @@ impl Voices {
                 if start >= env.now.saturating_add(env.window) {
                     return;
                 }
+                // A devamp sent to the old voice not answered yet: where it leaves its loop is
+                // not known, so the swap moves on by a lead, as for a late stream.
+                let answer_due = (r.moved_from)
+                    .and_then(|o| self.recs.get(&o))
+                    .is_some_and(|o| o.devamps_out > 0);
+                if answer_due && r.replaces.is_some() {
+                    return self.replan_move(id, env, fx);
+                }
                 // Its stream not ready by then: started late it would play again what the old
                 // device has just played. The swap moves on by a lead instead, from where the
                 // sound will be then, until `swap_limit`; after it, it is made late.
@@ -745,6 +760,7 @@ impl Voices {
             FadeIn::None
         };
         let replaces = r.replaces.take();
+        r.moved_from = None;
         if r.moved {
             r.swap_after = at.saturating_add(crossfade.frames);
         }
@@ -884,10 +900,7 @@ impl Voices {
             *start = Some(next);
             *prepared = None;
         }
-        r.offset = plan.offset;
-        r.rest = Some((plan.table, plan.rate));
-        r.shown = plan.shown;
-        r.delay = counted.saturating_sub(plan.offset);
+        r.take_move_plan(plan, counted);
     }
 
     /// A move to another device that cannot be made in step: the old voice keeps the run where
@@ -922,6 +935,8 @@ impl Voices {
         if let Some(o) = self.recs.get_mut(&old) {
             o.retired = false;
             o.run = r.run;
+            // A devamp sent to it during the move is answered as its own run's.
+            o.devamps_out = 0;
             if late {
                 let wait = seconds_to_samples(MOVE_RETRY, env.rate) << r.gave_up.min(4);
                 o.retry_at = Some(now.saturating_add(wait));
@@ -1067,10 +1082,7 @@ impl Voices {
                     let counted = r.offset.saturating_add(r.delay).saturating_sub(back);
                     *start = Some(date);
                     *prepared = None;
-                    r.offset = plan.offset;
-                    r.rest = Some((plan.table, plan.rate));
-                    r.shown = plan.shown;
-                    r.delay = counted.saturating_sub(plan.offset);
+                    r.take_move_plan(plan, counted);
                 }
             }
             Phase::Ended => {}
@@ -1096,6 +1108,9 @@ impl Voices {
         self.by_run.remove(&paused);
         r.run = run;
         r.resumed_at = Some(at);
+        // A move to another device resumed takes no answer of its old voice from now on: the
+        // cue engine sends its pending devamp again for the fresh run.
+        r.moved_from = None;
         // Only the id just replaced can still carry an event; an older one is named for one
         // more meter read (`gone`) and then forgotten, so a cue paused and resumed many times
         // keeps one alias, not one per resume.
@@ -1143,6 +1158,23 @@ impl Voices {
         let Some(&id) = self.by_run.get(&run) else {
             return;
         };
+        // A move to another device still waiting to swap: the voice it moves from is what
+        // sounds, so it leaves its loop at the end of the pass under way now. The move then
+        // waits for the answer and plays on from where that voice is ([`move_plan`] with the
+        // cut), as if the devamp had come before the move.
+        let moving_from = self
+            .recs
+            .get(&id)
+            .filter(|r| r.relocated && matches!(r.phase, Phase::Waiting { .. }))
+            .and_then(|r| r.replaces);
+        if let (Some(old), Queued::Devamp { stop }) = (moving_from, cmd)
+            && let Some(o) = self.recs.get_mut(&old)
+        {
+            o.devamp_stop = stop;
+            o.devamps_out = o.devamps_out.saturating_add(1);
+            fx.commands.push((at, queued(old, cmd)));
+            return;
+        }
         let Some(r) = self.recs.get_mut(&id) else {
             return;
         };
@@ -1150,7 +1182,8 @@ impl Voices {
             Phase::Playing => fx.commands.push((at, queued(id, cmd))),
             Phase::Waiting { queue, .. } => {
                 // A seek still waiting: the voice it moves from is what sounds until the swap,
-                // so it follows every level change too (a devamp is the moved voice's alone).
+                // so it follows every level change too (a seek's devamp is the moved voice's
+                // alone: it plays on from another point).
                 if let (Some(old), Queued::Ramp { .. }) = (r.replaces, cmd) {
                     fx.commands.push((at, queued(old, cmd)));
                 }
@@ -1179,6 +1212,22 @@ impl Voices {
         }
         self.drop_aliases(&r);
         self.freed |= !r.preview;
+        // A voice a move to another device is taking over, gone (its device lost, a fault)
+        // before it answered a devamp sent to it: the moved voice carries the devamp out
+        // instead and answers it, so the run still leaves its loop.
+        if r.devamps_out > 0
+            && let Some(w) = (self.recs.values_mut())
+                .find(|w| w.moved_from == Some(id) && matches!(w.phase, Phase::Waiting { .. }))
+            && let Phase::Waiting { queue, .. } = &mut w.phase
+        {
+            queue.push((
+                0,
+                Queued::Devamp {
+                    stop: r.devamp_stop,
+                },
+            ));
+            w.moved_from = None;
+        }
         if self.gone.len() >= GONE_LIMIT {
             self.gone.remove(0);
         }
