@@ -124,7 +124,7 @@ final class AppController {
     /// is left, since the release may then go to another app.
     var goKeysDown: Set<UInt16> = []
 
-    private var subs: [AnyCancellable] = []
+    var subs: [AnyCancellable] = []
     private var keyMonitor: Any?
     /// How many monitors `installKeyMonitor` has registered (tests: exactly one).
     private(set) var keyMonitorInstalls = 0
@@ -149,6 +149,26 @@ final class AppController {
     /// The real app is starting: `applyLaunchBehavior` has not finished. Commands that need the engine
     /// (`afterLaunch`) wait while it is true.
     var awaitingLaunch = false
+    /// The recents the launcher last listed, kept with `launchDefaults`: the system list drops a
+    /// deleted file, and the launcher keeps it (marked missing) until the operator removes it.
+    var rememberedRecents: [URL] {
+        get { launchDefaults?.stringArray(forKey: "launcher-recents")?.map { URL(fileURLWithPath: $0) } ?? memory }
+        set {
+            memory = newValue
+            launchDefaults?.set(newValue.map(\.path), forKey: "launcher-recents")
+        }
+    }
+    private var memory: [URL] = []
+    /// A bookmark per remembered path, made while its file existed: it still finds the file after
+    /// the file is moved or renamed.
+    var recentBookmarks: [String: Data] {
+        get { (launchDefaults?.dictionary(forKey: "launcher-recent-bookmarks") as? [String: Data]) ?? bookmarkMemory }
+        set {
+            bookmarkMemory = newValue
+            launchDefaults?.set(newValue, forKey: "launcher-recent-bookmarks")
+        }
+    }
+    private var bookmarkMemory: [String: Data] = [:]
     var launchWaiters: [CheckedContinuation<Void, Never>] = []
     /// Show files asked for before `launchApplied`.
     var filesToOpen: [URL] = []
@@ -190,7 +210,16 @@ final class AppController {
         }
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
         launcher.onOpen = { [weak self] in Task { await self?.openWorkspace() } }
-        launcher.onOpenRecent = { [weak self] url in Task { await self?.openWorkspace(url: url) } }
+        launcher.onOpenRecent = { [weak self] url in
+            guard let self else { return }
+            // The file may have gone since the list was drawn: say so, and leave the launcher up.
+            if isMissingRecent(url) {
+                launcher.showMissing(url)
+                return
+            }
+            Task { await self.openWorkspace(url: url) }
+        }
+        launcher.onForgetRecent = { [weak self] url in self?.forgetRecent(url) }
         subs.append(session.storesChanged.sink { [weak self] in self?.sync() })
         // $workspaces publishes before the property changes: use the delivered value.
         subs.append(session.$workspaces.sink { [weak self] in self?.updateTitles($0) })

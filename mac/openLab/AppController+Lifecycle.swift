@@ -288,7 +288,59 @@ extension AppController {
 
     func clearRecents() {
         forgetRecents()
-        launcher.reload(recents: existingRecentURLs())
+        rememberedRecents = []
+        reloadLauncher()
+    }
+
+    /// Takes one workspace off the recents list, keeping the others in order.
+    func forgetRecent(_ url: URL) {
+        let keep = recentURLs().filter { $0 != url }
+        forgetRecents()
+        for kept in keep.reversed() { noteRecent(kept) }
+        rememberedRecents = rememberedRecents.filter { $0 != url }
+        reloadLauncher()
+    }
+
+    /// The launcher lists the system's recent workspaces, then the ones it listed before whose file
+    /// has gone (the system forgets those), marked as missing. A remembered file that was moved or
+    /// renamed is found again by its bookmark and is not listed as gone (the system lists it at its
+    /// new place); a file the bookmark cannot find is deleted, and stays listed as missing.
+    func reloadLauncher() {
+        let system = recentURLs()
+        var marks = recentBookmarks
+        let gone = rememberedRecents.filter { old in
+            guard !system.contains(old), !recentExists(old) else { return false }
+            if let data = marks[old.path], let now = Self.resolve(data), recentExists(now) {
+                // Found: moved (listed at its new place), or in the Trash, which is deleted; the
+                // system's own entry for a trashed show is the one listed, as missing.
+                return !Self.inTrash(now) ? false : !system.contains(now)
+            }
+            return true
+        }
+        let all = Array((system + gone).prefix(10))
+        rememberedRecents = all
+        for url in all where marks[url.path] == nil && recentExists(url) {
+            marks[url.path] = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        }
+        recentBookmarks = marks.filter { key, _ in all.contains { $0.path == key } }
+        launcher.reload(recents: all, missing: Set(all.filter(isMissingRecent)))
+    }
+
+    /// A recent workspace the operator cannot open: its file is gone, or it is in the Trash. The
+    /// rows are marked, and a choice is refused, by this one test.
+    func isMissingRecent(_ url: URL) -> Bool { !recentExists(url) || Self.inTrash(url) }
+
+    /// A show moved to the Trash is deleted as far as the operator is concerned: it is listed as
+    /// missing, never as one that opens from there.
+    static func inTrash(_ url: URL) -> Bool {
+        url.pathComponents.contains { $0 == ".Trash" || $0 == ".Trashes" }
+    }
+
+    private static func resolve(_ data: Data) -> URL? {
+        var stale = false
+        return try? URL(
+            resolvingBookmarkData: data, options: [.withoutUI, .withoutMounting], relativeTo: nil,
+            bookmarkDataIsStale: &stale)
     }
 
     private func save(_ store: WorkspaceStore, name: String, asNew: Bool = false) async -> Bool {

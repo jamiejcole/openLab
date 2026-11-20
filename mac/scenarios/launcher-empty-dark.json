@@ -1,0 +1,9 @@
+{
+  "about": "Launcher (#771): empty recents (first launch), dark.",
+  "show": "new",
+  "appearance": "dark",
+  "steps": [
+    {"focus": "launcher"},
+    {"shot": "launcher-empty-dark"}
+  ]
+}

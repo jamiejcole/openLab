@@ -1,0 +1,9 @@
+{
+  "about": "Launcher (#771): a long folder path truncates in the middle, a long name truncates at the end, at the smallest size, light.",
+  "show": "new",
+  "appearance": "light",
+  "steps": [
+    {"focus": "launcher", "recents": ["Hamlet@/Shows/Season Two/Rehearsal Files/Archive/Old Versions/Backups of the Main Machine", "A Very Long Show Name That Keeps Going And Going Past The Edge Of The List@/Shows", "Lear"], "size": [560, 380]},
+    {"shot": "launcher-long-path-light"}
+  ]
+}

@@ -1905,6 +1905,114 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertTrue(app.allWindows.isEmpty)
     }
 
+    /// Checklist: No workspace open, three recent shows, launch preference "show the launcher" → app
+    /// starts → the launcher lists the three shows newest first (name plus folder), with New and Open
+    /// buttons and the app version; nothing else is open.
+    func testTheLauncherAtStartListsThreeRecentsNewestFirstWithNewOpenAndTheVersion() async throws {
+        makePrefs(.launcher)
+        let urls = ["Hamlet", "Lear", "Macbeth"].map { URL(fileURLWithPath: "/Shows/Season/\($0).openlab") }
+        try await startApp {
+            self.app.recentURLs = { urls }
+            self.app.recentExists = { _ in true }
+        }
+        XCTAssertTrue(launcherShown)
+        XCTAssertTrue(app.allWindows.isEmpty, "nothing else is open")
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Hamlet", "Lear", "Macbeth"])
+        let root = try XCTUnwrap(app.launcher.window?.contentView)
+        let table = app.launcher.recentsTable
+        for (i, name) in ["Hamlet", "Lear", "Macbeth"].enumerated() {
+            let cell = try XCTUnwrap(table.view(atColumn: 0, row: i, makeIfNecessary: true))
+            XCTAssertEqual(launcherTexts(cell), [name, "/Shows/Season"])
+        }
+        let shown = launcherTexts(root)
+        XCTAssertTrue(shown.contains { $0.hasPrefix(loc("launcher.new")) })
+        XCTAssertTrue(shown.contains { $0.hasPrefix(loc("launcher.open")) })
+        XCTAssertTrue(shown.contains(String(format: loc("launcher.version"), LauncherWindowController.version)))
+    }
+
+    /// Checklist: App just started, engine still starting → the launcher is already visible; New, Open
+    /// and recents show a clear "starting" state (disabled with a visible reason); once the engine is
+    /// ready they become usable with no further action; a click made while starting is not lost or
+    /// doubled.
+    func testTheLauncherIsVisibleWhileTheEngineStartsDisabledWithAReasonThenUsable() async throws {
+        makePrefs(.launcher)
+        let url = URL(fileURLWithPath: try runs.show("Demo", named: "Early"))
+        var seen: [String] = []
+        var disabled = false
+        try await startApp {
+            self.app.recentURLs = { [url] }
+            self.app.reloadLauncher()
+            XCTAssertTrue(self.launcherShown, "visible before the engine answers")
+            let launcher = self.app.launcher
+            let root = launcher.window?.contentView ?? NSView()
+            seen = launcherTexts(root)
+            disabled =
+                [AX.launcherNew, AX.launcherOpen].allSatisfy { id in
+                    (self.view(id, in: root) as? NSButton)?.isEnabled == false
+                } && !launcher.recentsTable.isEnabled
+            // Return on the list and a click on New do nothing yet.
+            launcher.openSelected()
+            (self.view(AX.launcherNew, in: root) as? NSButton)?.performClick(nil)
+        }
+        XCTAssertTrue(seen.contains(loc("launcher.starting")), "\(seen)")
+        XCTAssertTrue(seen.contains(loc("launcher.starting.detail")))
+        XCTAssertTrue(disabled)
+        await settle()
+        XCTAssertTrue(app.allWindows.isEmpty, "the starting clicks did nothing: not queued and doubled later")
+        XCTAssertEqual(app.launcher.engineState, .ready)
+        let root = try XCTUnwrap(app.launcher.window?.contentView)
+        XCTAssertEqual((view(AX.launcherNew, in: root) as? NSButton)?.isEnabled, true)
+        XCTAssertEqual((view(AX.launcherOpen, in: root) as? NSButton)?.isEnabled, true)
+        XCTAssertTrue(app.launcher.recentsTable.isEnabled)
+        XCTAssertFalse(launcherTexts(root).contains(loc("launcher.starting")))
+        (view(AX.launcherNew, in: root) as? NSButton)?.performClick(nil)
+        await assertEventually { self.app.allWindows.count == 1 }
+        await settle()
+        XCTAssertEqual(app.allWindows.count, 1, "one workspace")
+    }
+
+    /// Checklist: Engine fails to start → the launcher says so plainly and what to do next instead of
+    /// staying blank or showing an enabled-looking New.
+    func testTheLauncherSaysThePlainReasonWhenTheEngineDoesNotStartAndRecoversWhenItAnswers() async throws {
+        makePrefs(.launcher)
+        try await startApp()
+        let supervisor = try XCTUnwrap(supervisor)
+        let launcher = app.launcher
+        let root = try XCTUnwrap(launcher.window?.contentView)
+        // Each reason is shown as the supervisor words it, with no advice added on top: the
+        // crash-loop text says openLab tries again, the unkillable one says to restart the
+        // computer, and a spawn error says to quit and reopen.
+        let reasons = [
+            loc("engine.alarm.crashLoop"), loc("engine.alarm.unkillable"),
+            String(format: loc("engine.alarm.spawnFailed"), "2"),
+        ]
+        for reason in reasons {
+            supervisor.alarms.send(.cannotStart(reason))
+            let shown = launcherTexts(root)
+            XCTAssertTrue(shown.contains(loc("launcher.failed")))
+            XCTAssertTrue(shown.contains(reason), "\(shown)")
+            let advice = loc("engine.alarm.spawnFailed").components(separatedBy: ". ").last ?? "-"
+            XCTAssertEqual(
+                shown.contains { $0.contains(advice) }, reason.contains(advice), "advice only where it fits: \(reason)")
+            for id in [AX.launcherNew, AX.launcherOpen] {
+                XCTAssertEqual((view(id, in: root) as? NSButton)?.isEnabled, false, id)
+            }
+            XCTAssertFalse(launcher.recentsTable.isEnabled)
+        }
+        // An engine that is being replaced reads as starting; one that answers, as ready.
+        supervisor.alarms.send(.startTimedOut)
+        XCTAssertEqual(launcher.engineState, .starting)
+        supervisor.ready.send()
+        XCTAssertEqual(launcher.engineState, .ready)
+        XCTAssertEqual((view(AX.launcherNew, in: root) as? NSButton)?.isEnabled, true)
+    }
+
+    private func view(_ id: String, in root: NSView) -> NSView? {
+        if root.accessibilityIdentifier() == id { return root }
+        for sub in root.subviews { if let hit = view(id, in: sub) { return hit } }
+        return nil
+    }
+
     func testRestoreReopensWhatWasOpen() async throws {
         makePrefs(.restore)
         try await startApp()
