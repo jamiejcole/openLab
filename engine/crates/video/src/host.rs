@@ -284,6 +284,15 @@ impl Pic {
     }
 }
 
+/// What became of one display's frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presented {
+    Drawn,
+    /// The window is up but could not take this frame (the system gave no drawable for it in
+    /// time, as under heavy GPU load): it keeps showing what it showed.
+    Skipped,
+}
+
 /// The windows and the drawing of one platform.
 pub trait Platform {
     /// Whether this build shows video at all.
@@ -291,8 +300,8 @@ pub trait Platform {
     /// The displays connected now.
     fn displays(&mut self) -> Vec<Display>;
     /// Draws `layers` (bottom first, each stage fitted to the display) on `display`, opening
-    /// or moving its window as needed.
-    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<(), String>;
+    /// or moving its window as needed. An error: the display's stages cannot be drawn.
+    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<Presented, String>;
     /// Takes the window of display `display` down, if it has one.
     fn close(&mut self, display: &str);
     /// Draws `layers` (bottom first, each fitted) on a target of `size` pixels and reads the
@@ -368,6 +377,10 @@ pub trait Platform {
 /// late or slow tick never does, and the operator of a hung engine sees the app again within
 /// about five seconds.
 pub const ENGINE_SILENCE: std::time::Duration = std::time::Duration::from_secs(4);
+/// How long a display may give no drawable, frame after frame, before its stages fail: three of
+/// macOS's one-second drawable timeouts, past a burst of GPU load, while a frozen picture on the
+/// audience's display is still told to the engine and the operator within seconds.
+pub const SKIP_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// One stage's monitor window as the engine asked for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -422,6 +435,9 @@ pub struct Host<P: Platform> {
     clock: Option<Clock>,
     /// Displays with a window up.
     presented: BTreeSet<String>,
+    /// Displays whose last frame was skipped, with when the stretch of skips began (warned once
+    /// for the stretch).
+    skipping: BTreeMap<String, Instant>,
     /// When the engine last sent anything.
     heard: Instant,
     /// The engine has been silent past `silence_limit`: the window on the display with the menu
@@ -450,6 +466,7 @@ impl<P: Platform> Host<P> {
             plays: 0,
             clock: None,
             presented: BTreeSet::new(),
+            skipping: BTreeMap::new(),
             heard: Instant::now(),
             silent: false,
             stand_back: false,
@@ -956,6 +973,31 @@ impl<P: Platform> Host<P> {
         self.apply(out);
     }
 
+    /// `display` could not take this frame. Its window stays up with its last frame and the next
+    /// poll draws again (nothing else might: no picture may be playing), warning once per
+    /// stretch so a GPU under load does not flood the show log. Past [`SKIP_LIMIT`] of skips
+    /// the display counts as failed.
+    fn skipped(&mut self, display: &str, out: &mut Vec<FromStage>) -> Result<(), String> {
+        let now = Instant::now();
+        let began = *self.skipping.entry(display.to_owned()).or_insert_with(|| {
+            out.push(FromStage::Log {
+                level: LinkLevel::Warn,
+                message: short(format!(
+                    "display {display} skipped frames: the system gave no picture to draw into"
+                )),
+            });
+            now
+        });
+        if now.saturating_duration_since(began) >= SKIP_LIMIT {
+            return Err(format!(
+                "the system gave no picture to draw into for {} s",
+                SKIP_LIMIT.as_secs()
+            ));
+        }
+        self.redraw_due = true;
+        Ok(())
+    }
+
     /// Shows, hides or redraws each stage and reports each state that changed. The stages
     /// shown on one display are drawn in one window, bottom first by their `stack`.
     fn apply(&mut self, out: &mut Vec<FromStage>) {
@@ -1003,6 +1045,9 @@ impl<P: Platform> Host<P> {
             .then(|| self.platform.menu_bar_display())
             .flatten();
         self.platform.stand_back(back.as_deref());
+        // A window closed since starts a new stretch.
+        let presented = &self.presented;
+        self.skipping.retain(|d, _| presented.contains(d));
         for display in self.displays.clone() {
             let Some(mut layers) = on.remove(&display.id) else {
                 if self.presented.remove(&display.id) {
@@ -1012,11 +1057,20 @@ impl<P: Platform> Host<P> {
             };
             layers.sort_by_key(|(stack, _)| *stack);
             let layers: Vec<Layer> = layers.into_iter().map(|(_, l)| l).collect();
-            match self.platform.present(&display, &layers) {
+            let presented = match self.platform.present(&display, &layers) {
+                Ok(Presented::Drawn) => {
+                    self.skipping.remove(&display.id);
+                    Ok(())
+                }
+                Ok(Presented::Skipped) => self.skipped(&display.id, out),
+                Err(reason) => Err(reason),
+            };
+            match presented {
                 Ok(()) => {
                     self.presented.insert(display.id.clone());
                 }
                 Err(reason) => {
+                    self.skipping.remove(&display.id);
                     for (id, state) in &mut states {
                         if layers.iter().any(|l| l.stage == *id) {
                             *state = StageState::Failed {
@@ -1418,6 +1472,8 @@ pub(crate) mod tests {
         /// The display whose window stands back, as last told.
         stood_back: Option<String>,
         fail: bool,
+        /// Each frame is skipped (no drawable), the window staying up.
+        skip: bool,
         live: bool,
         events: Vec<PictureEvent>,
         /// Each monitor window up: its title and the stage drawn in it last, with its cues.
@@ -1436,15 +1492,18 @@ pub(crate) mod tests {
         fn displays(&mut self) -> Vec<Display> {
             self.displays.clone()
         }
-        fn present(&mut self, d: &Display, layers: &[Layer]) -> Result<(), String> {
+        fn present(&mut self, d: &Display, layers: &[Layer]) -> Result<Presented, String> {
             if self.fail {
                 return Err("no GPU".into());
+            }
+            if self.skip {
+                return Ok(Presented::Skipped);
             }
             self.shown
                 .insert(d.id.clone(), layers.iter().map(|l| l.stage).collect());
             let pictures = layers.iter().flat_map(|l| l.cues.iter().map(|c| c.picture));
             self.pictures_drawn.insert(d.id.clone(), pictures.collect());
-            Ok(())
+            Ok(Presented::Drawn)
         }
         fn close(&mut self, display: &str) {
             self.shown.remove(display);
@@ -2227,6 +2286,100 @@ pub(crate) mod tests {
         }
     }
 
+    /// #789: a display that gives no drawable for `SKIP_LIMIT` fails its stages and its window
+    /// closes, so the engine and operator are told; short of the limit it is still a skip. The
+    /// stretch's start is moved back by hand, as the silence test moves `heard`.
+    #[test]
+    fn a_display_skipping_frames_past_the_limit_fails_its_stages() {
+        let mut h = host(&["D1"]);
+        let mut out = Vec::new();
+        let version = LINK_VERSION;
+        send(&mut h, ToStage::Hello { version });
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D1"), true)],
+            },
+        );
+        h.platform.skip = true;
+        h.displays_changed(&mut out);
+        let move_back = |h: &mut Host<Fake>, by: std::time::Duration| {
+            let began = h.skipping.get_mut("D1").expect("a stretch of skips");
+            *began = began.checked_sub(by).expect("an earlier instant");
+        };
+        // Short of the limit (a second to spare): still skipped, the stage still shown.
+        move_back(&mut h, SKIP_LIMIT - std::time::Duration::from_secs(1));
+        out.clear();
+        h.displays_changed(&mut out);
+        assert_eq!(states(&out), vec![]);
+        assert!(h.platform.shown.contains_key("D1"));
+        // Past it: failed with the reason, the window closed.
+        move_back(&mut h, std::time::Duration::from_secs(1));
+        h.displays_changed(&mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Failed {
+                    reason: "the system gave no picture to draw into for 3 s".into()
+                }
+            )]
+        );
+        assert!(!h.platform.shown.contains_key("D1"), "the window stayed up");
+        // Drawables again: the next frame opens the window and shows the stage.
+        h.platform.skip = false;
+        out.clear();
+        h.displays_changed(&mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Shown {
+                    display: "D1".into()
+                }
+            )]
+        );
+        assert!(h.platform.shown.contains_key("D1"));
+    }
+
+    /// #789: the frame that should take a failed picture down is skipped (no drawable): the
+    /// next frame-loop tick draws again, though nothing plays, so its last frame never stays up.
+    #[test]
+    fn a_skipped_frame_after_a_picture_fails_is_drawn_again_at_the_next_tick() {
+        let mut h = host(&["D"]);
+        let version = LINK_VERSION;
+        send(&mut h, ToStage::Hello { version });
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), true)],
+            },
+        );
+        load(&mut h, 3, 1);
+        play(&mut h, 3, 0);
+        clock(&mut h, 100);
+        h.step(None, &mut Vec::new());
+        assert_eq!(h.platform.pictures_drawn.get("D"), Some(&vec![3]));
+        h.platform.skip = true;
+        h.platform.events.push(PictureEvent::Failed(
+            3,
+            "the movie could not be read".into(),
+        ));
+        h.step(None, &mut Vec::new());
+        assert_eq!(
+            h.platform.pictures_drawn.get("D"),
+            Some(&vec![3]),
+            "skipped"
+        );
+        h.platform.skip = false;
+        h.step(None, &mut Vec::new());
+        assert_eq!(
+            h.platform.pictures_drawn.get("D"),
+            Some(&vec![]),
+            "the failed picture's last frame stayed up"
+        );
+    }
+
     /// A host with displays M (the menu bar's) and D, a stage keeping black on each.
     fn menu_bar_host() -> Host<Fake> {
         let mut h = host(&["M", "D"]);
@@ -2327,6 +2480,7 @@ pub(crate) mod tests {
             menu_bar: None,
             stood_back: None,
             fail: false,
+            skip: false,
             live: false,
             events: Vec::new(),
             monitors: HashMap::new(),
@@ -2547,6 +2701,77 @@ pub(crate) mod tests {
         assert_eq!(h.platform.shown.len(), 1);
         h.handle(ToStage::Stages { stages: vec![] }, &mut out);
         assert!(h.platform.shown.is_empty());
+    }
+
+    /// #789 flow: a frame for which the display gives no drawable is skipped: the window stays
+    /// up, nothing is marked failed, one warning per stretch of skipped frames; a real failure
+    /// still fails the stage.
+    #[test]
+    fn a_frame_with_no_drawable_is_skipped_and_the_window_stays_up() {
+        let mut h = host(&["D1"]);
+        let mut out = Vec::new();
+        h.handle(
+            ToStage::Hello {
+                version: LINK_VERSION,
+            },
+            &mut out,
+        );
+        h.handle(
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D1"), true)],
+            },
+            &mut out,
+        );
+        let shown = StageState::Shown {
+            display: "D1".into(),
+        };
+        assert_eq!(states(&out), vec![(id(1), shown.clone())]);
+        let warnings = |out: &[FromStage]| {
+            logs(out)
+                .into_iter()
+                .filter(|(level, _)| *level == LinkLevel::Warn)
+                .count()
+        };
+        for stretch in 0..2 {
+            out.clear();
+            h.platform.skip = true;
+            for _ in 0..5 {
+                h.displays_changed(&mut out);
+            }
+            assert_eq!(states(&out), vec![], "stretch {stretch}: a state changed");
+            assert!(h.platform.shown.contains_key("D1"), "the window was closed");
+            assert_eq!(warnings(&out), 1, "stretch {stretch}: {out:?}");
+            h.platform.skip = false;
+            h.displays_changed(&mut out);
+            assert_eq!(states(&out), vec![]);
+            assert_eq!(warnings(&out), 1);
+        }
+        // A window closed mid-stretch: skipped frames in the next one warn again.
+        h.platform.skip = true;
+        h.displays_changed(&mut out);
+        h.handle(ToStage::Stages { stages: vec![] }, &mut out);
+        out.clear();
+        h.handle(
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D1"), true)],
+            },
+            &mut out,
+        );
+        assert_eq!(warnings(&out), 1, "{out:?}");
+        h.platform.skip = false;
+        h.platform.fail = true;
+        out.clear();
+        h.displays_changed(&mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Failed {
+                    reason: "no GPU".into()
+                }
+            )]
+        );
+        assert!(!h.platform.shown.contains_key("D1"));
     }
 
     #[test]

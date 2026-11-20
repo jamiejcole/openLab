@@ -608,6 +608,7 @@ pub fn statuses(msgs: Vec<ServerMessage>) -> Vec<openlab_core::protocol::SystemS
 pub struct HandClock {
     ms: std::sync::Arc<AtomicU64>,
     pings: std::sync::Arc<AtomicU64>,
+    wakes: std::sync::Arc<AtomicU64>,
 }
 
 impl HandClock {
@@ -615,10 +616,11 @@ impl HandClock {
         Self {
             ms: std::sync::Arc::new(AtomicU64::new(0)),
             pings: std::sync::Arc::new(AtomicU64::new(0)),
+            wakes: std::sync::Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Runs `host`'s supervisor on this clock, counting its pings.
+    /// Runs `host`'s supervisor on this clock, counting its pings and wakes.
     pub fn drive(&self, host: &mut openlab_engine::stage::StageHostConfig) {
         let base = std::time::Instant::now();
         let ms = std::sync::Arc::clone(&self.ms);
@@ -626,12 +628,18 @@ impl HandClock {
             base + std::time::Duration::from_millis(ms.load(Ordering::SeqCst))
         });
         host.pings_sent = Some(std::sync::Arc::clone(&self.pings));
+        host.wakes = Some(std::sync::Arc::clone(&self.wakes));
     }
 
     /// Moves the clock on by `seconds` and has the supervisor look at it.
     pub fn advance(&self, s: &mut OfflineShow, seconds: u64) {
         self.ms.fetch_add(seconds * 1000, Ordering::SeqCst);
         s.control().wake_stage_supervisor();
+    }
+
+    /// Times the supervisor's loop has woken.
+    pub fn wakes(&self) -> u64 {
+        self.wakes.load(Ordering::SeqCst)
     }
 
     /// Pings the supervisor has sent.

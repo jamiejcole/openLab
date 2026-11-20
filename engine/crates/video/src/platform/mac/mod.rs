@@ -51,7 +51,7 @@ use openlab_core::stage_link::{Display, FromStage, LinkLevel, ToStage};
 
 use self::displays::Found;
 use self::gpu::Gpu;
-use crate::host::{Flow, Host, Layer, PictureEvent, Platform, write_all};
+use crate::host::{Flow, Host, Layer, PictureEvent, Platform, Presented, write_all};
 use openlab_core::stage_link::{Line, read_line};
 
 pub fn run(args: Vec<String>) -> ExitCode {
@@ -162,11 +162,11 @@ impl Platform for Mac {
         self.found.iter().map(|f| f.display.clone()).collect()
     }
 
-    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<(), String> {
+    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<Presented, String> {
         let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
         let Some(windows) = self.windows.as_mut() else {
             // Offscreen: the stages are drawn only when a probe asks.
-            return Ok(());
+            return Ok(Presented::Drawn);
         };
         let cg = self
             .found
@@ -191,10 +191,10 @@ impl Platform for Mac {
             f64::from(display.height),
         ));
         order_front(&w.window);
-        let drawable = w
-            .layer
-            .nextDrawable()
-            .ok_or("no drawable for the display's window")?;
+        // No drawable in time (the GPU under load): this frame is skipped, the window kept.
+        let Some(drawable) = w.layer.nextDrawable() else {
+            return Ok(Presented::Skipped);
+        };
         let device = gpu.device_owned();
         let (media, failed) = (&mut self.media, &mut self.failed);
         let mut drawn = Vec::new();
@@ -212,7 +212,7 @@ impl Platform for Mac {
         let d: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
         cb.presentDrawable(d);
         cb.commit();
-        Ok(())
+        Ok(Presented::Drawn)
     }
 
     fn close(&mut self, display: &str) {
