@@ -237,6 +237,7 @@ final class MainWindowTests: XCTestCase {
 
     func testInspectorShowsNoCueSelected() throws {
         let wc = try controller()
+        wc.cueList.outlineView.deselectAll(nil)
         XCTAssertEqual(wc.inspector.emptyLabel.stringValue, "No cue selected")
         XCTAssertFalse(wc.inspector.emptyLabel.isHidden)
     }
@@ -923,6 +924,16 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(
             wc.masthead.standbyField.font?.pointSize,
             MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
+    }
+
+    /// A workspace just opened has its playhead on the first cue; that cue is selected and the inspector shows it,
+    /// not "no cue selected" (the playhead and the selection are locked together).
+    func testAnOpenedWorkspaceSelectsThePlayheadCueAndTheInspectorShowsIt() async throws {
+        let (wc, rig) = try await demoController()
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        let head = try XCTUnwrap(rig.store.playheads[TestSnapshots.mainList], "the playhead is on a cue")
+        await assertEventually("the playhead's cue is selected") { wc.cueList.selectedIDs() == [head] }
+        await assertEventually("the inspector shows a cue") { wc.inspector.emptyLabel.isHidden }
     }
 
     /// The standby line's box is as tall as its text and the room above and below it, in both modes, so the

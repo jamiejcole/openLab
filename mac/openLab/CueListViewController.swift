@@ -1049,6 +1049,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         onSelectionChange?(selectedIDs())
     }
 
+    /// A window opened on a store that already holds the workspace: the selection goes to the playhead's cue.
+    func followPlayheadAtOpen() { followAfterLoad() }
+
     /// This list's playhead may have moved (a runtime change): follow it if it did.
     private func playheadChanged() {
         guard let list = listID else { return }
