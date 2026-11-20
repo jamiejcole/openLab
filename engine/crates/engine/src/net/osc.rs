@@ -2093,15 +2093,31 @@ impl OscServer {
     }
 }
 
+/// Windows' WSAEACCES: a bind refused because another socket holds the port for its exclusive use
+/// (system services bind UDP ports that way) or the port is in a range the system reserves.
+const WSAEACCES: i32 = 10013;
+
+/// Why a bind failed, in words an operator who picked the port can act on. A taken port reads the
+/// same on every platform; `windows` says how to read the raw OS error.
+fn bind_failure(e: &io::Error, windows: bool) -> String {
+    if e.kind() == io::ErrorKind::AddrInUse {
+        "it is already in use".to_owned()
+    } else if windows && e.raw_os_error() == Some(WSAEACCES) {
+        "it is already in use or reserved by the system".to_owned()
+    } else {
+        e.to_string()
+    }
+}
+
 /// Binds `config`'s port and starts the server on a runtime of its own.
 fn open(config: &OscConfig, inbox: &Sender<Inbox>) -> Result<(Live, Tap), String> {
     let bound = bind(config).map_err(|e| {
-        let why = if e.kind() == io::ErrorKind::AddrInUse {
-            "it is already in use".to_owned()
-        } else {
-            e.to_string()
-        };
-        format!("could not listen on {}:{}: {why}", config.bind, config.port)
+        format!(
+            "could not listen on {}:{}: {}",
+            config.bind,
+            config.port,
+            bind_failure(&e, cfg!(windows))
+        )
     })?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -2118,6 +2134,22 @@ fn open(config: &OscConfig, inbox: &Sender<Inbox>) -> Result<(Live, Tap), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_port_taken_for_exclusive_use_on_windows_reads_as_in_use() {
+        let in_use = io::Error::from(io::ErrorKind::AddrInUse);
+        assert_eq!(bind_failure(&in_use, false), "it is already in use");
+        assert_eq!(bind_failure(&in_use, true), "it is already in use");
+        let exclusive = io::Error::from_raw_os_error(WSAEACCES);
+        assert_eq!(
+            bind_failure(&exclusive, true),
+            "it is already in use or reserved by the system"
+        );
+        // Elsewhere the number means something else, so the OS's own words are kept.
+        assert_eq!(bind_failure(&exclusive, false), exclusive.to_string());
+        let other = io::Error::other("no route");
+        assert_eq!(bind_failure(&other, true), "no route");
+    }
 
     #[tokio::test]
     async fn accepted_connections_have_keepalive_on() {

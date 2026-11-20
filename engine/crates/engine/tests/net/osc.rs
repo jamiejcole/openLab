@@ -10,7 +10,7 @@
 //! against a stand-in control thread, plus one run in front of the real control loop. Waits are
 //! on the sockets or on a notification; the timeouts are hang guards only.
 
-use crate::common::{rights, text};
+use crate::common::{rights, test_port, text};
 use crate::show;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -1266,17 +1266,6 @@ async fn the_osc_switch_off_denies_every_message_and_ends_sessions() {
     assert_eq!(body(&f.udp_recv().await)["status"], "denied");
 }
 
-/// A port both a UDP and a TCP socket can take on the loopback.
-fn free_osc_port() -> u16 {
-    loop {
-        let tcp = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = tcp.local_addr().unwrap().port();
-        if std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
-            return port;
-        }
-    }
-}
-
 /// Workspace Settings, OSC: a changed port moves both listeners; the old port stops answering, the
 /// new one reaches control, and the choice is the state the page reads.
 #[tokio::test]
@@ -1285,7 +1274,7 @@ async fn changing_the_osc_port_moves_the_listeners_and_closes_the_old_ones() {
     let osc = f.server.osc_server().unwrap();
     assert!(osc.state().open);
     let old = f.tcp_port;
-    let new = free_osc_port();
+    let new = test_port(false).port;
     let state = osc.set_port(new).unwrap();
     assert_eq!((state.port, state.open, state.error), (new, true, None));
     assert_eq!(
@@ -1336,9 +1325,9 @@ async fn an_osc_port_in_use_is_refused_and_the_old_one_keeps_serving_with_nothin
     let f = fixture(test_workspace()).await;
     let osc = f.server.osc_server().unwrap();
     let old = f.udp_port;
-    // Taken for TCP only: the UDP bind comes first and must be undone.
-    let taken = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let port = taken.local_addr().unwrap().port();
+    // Taken for TCP only (its UDP side known free): the UDP bind comes first and must be undone.
+    let taken = test_port(false);
+    let port = taken.port;
     let why = osc.set_port(port).unwrap_err();
     assert!(why.contains("already in use"), "{why}");
     let state = osc.state();
@@ -1356,7 +1345,7 @@ async fn an_osc_port_in_use_is_refused_and_the_old_one_keeps_serving_with_nothin
         })
         .await;
     // A free port then works and clears the reason.
-    let free = free_osc_port();
+    let free = test_port(false).port;
     let state = osc.set_port(free).unwrap();
     assert_eq!((state.port, state.open, state.error), (free, true, None));
 }

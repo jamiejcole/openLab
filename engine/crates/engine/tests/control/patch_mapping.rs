@@ -5,7 +5,7 @@
 //! machine. Validated against the device list, stored in the machine settings, applied live.
 //! Offline driver, virtual clock, settings in a temp folder.
 
-use crate::common::{Env, env};
+use crate::common::{Env, env, test_port};
 use crate::show::device::{DeviceShow, device, listed};
 use crate::show::*;
 use openlab_core::protocol::{
@@ -822,9 +822,11 @@ fn the_osc_port_is_read_changed_kept_and_refused_when_in_use() {
     assert!(open && error.is_none());
     assert_ne!(port, 0);
 
-    // A port in use is refused with `io`, the old one still serves, and the state says why.
-    let taken = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let busy = taken.local_addr().unwrap().port();
+    // A port in use is refused with `io`, the old one still serves, and the state says why. Both
+    // its sides are held here, so the engine's first bind (UDP) meets this test's own socket and
+    // not whatever else on the machine may hold, or reserve, that number's UDP side.
+    let taken = test_port(true);
+    let busy = taken.port;
     let Outcome::Error(e) = ask(&mut s, Request::SetOscPort { port: busy }) else {
         panic!("a port in use was accepted");
     };
@@ -842,10 +844,7 @@ fn the_osc_port_is_read_changed_kept_and_refused_when_in_use() {
     assert_eq!(e.code, ErrorCode::BadRequest);
 
     // A free port is opened and kept for the next start.
-    let free = {
-        let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        l.local_addr().unwrap().port()
-    };
+    let free = test_port(false).port;
     let (now, open, error) = osc_data(&ask(&mut s, Request::SetOscPort { port: free }));
     assert_eq!((now, open, error), (free, true, None));
     assert_eq!(s.control().machine().osc_port, Some(free));

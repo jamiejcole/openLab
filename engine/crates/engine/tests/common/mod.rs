@@ -223,3 +223,29 @@ impl Drop for Engine {
         let _ = self.child.wait();
     }
 }
+
+/// A loopback port the test holds for TCP, and for UDP too when `hold_udp`. Without it the UDP
+/// side was bound and let go, so it is known free: on Windows a TCP port's UDP twin can be held for
+/// another socket's exclusive use or reserved by the system.
+pub struct TestPort {
+    pub port: u16,
+    pub tcp: std::net::TcpListener,
+    pub udp: Option<std::net::UdpSocket>,
+}
+
+/// See [`TestPort`]. Panics after 100 tries without one.
+pub fn test_port(hold_udp: bool) -> TestPort {
+    let localhost = std::net::Ipv4Addr::LOCALHOST;
+    (0..100)
+        .find_map(|_| {
+            let tcp = std::net::TcpListener::bind((localhost, 0)).ok()?;
+            let port = tcp.local_addr().ok()?.port();
+            let udp = std::net::UdpSocket::bind((localhost, port)).ok()?;
+            Some(TestPort {
+                port,
+                tcp,
+                udp: hold_udp.then_some(udp),
+            })
+        })
+        .expect("a loopback port free for both TCP and UDP within 100 tries")
+}
