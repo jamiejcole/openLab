@@ -1,0 +1,62 @@
+{
+  "about": "Look pass (#775): a running Fade cue's Duration bar at 1, 50 and 99 percent, on a selected and an unselected row, in Show Mode.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
+  "window": {
+    "width": 1400,
+    "height": 1000
+  },
+  "appearance": "dark",
+  "steps": [
+    {
+      "select": "2"
+    },
+    {
+      "click": "go-button"
+    },
+    {
+      "advance": 1.05
+    },
+    {
+      "select": "3"
+    },
+    {
+      "shot": "bar-p01-selected"
+    },
+    {
+      "select": "1"
+    },
+    {
+      "shot": "bar-p01-unselected"
+    },
+    {
+      "advance": 2.45
+    },
+    {
+      "select": "3"
+    },
+    {
+      "shot": "bar-p50-selected"
+    },
+    {
+      "select": "1"
+    },
+    {
+      "shot": "bar-p50-unselected"
+    },
+    {
+      "advance": 2.45
+    },
+    {
+      "select": "3"
+    },
+    {
+      "shot": "bar-p99-selected"
+    },
+    {
+      "select": "1"
+    },
+    {
+      "shot": "bar-p99-unselected"
+    }
+  ]
+}

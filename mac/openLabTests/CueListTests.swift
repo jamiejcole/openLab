@@ -1055,14 +1055,16 @@ final class CueListTests: XCTestCase {
         }
         let bar = ProgressFillView()
         bar.progress = (0.25, .systemGreen)
-        let end = try XCTUnwrap(pixel(bar, x: 118), "the cell's right edge is drawn")
-        XCTAssertGreaterThan(end.alphaComponent, 0.05, "the faint track reaches the end of the cell")
+        let edge = (114...119).compactMap { pixel(bar, x: $0)?.alphaComponent }.max() ?? 0
+        XCTAssertGreaterThan(edge, 0.02, "the faint track reaches the end of the cell")
         let fill = try XCTUnwrap(pixel(bar, x: 10))
-        XCTAssertGreaterThan(fill.alphaComponent, 0.2, "and the fill is part of it")
+        XCTAssertGreaterThan(fill.alphaComponent, 0.15, "and the fill is part of it")
+        XCTAssertLessThan(edge, fill.alphaComponent, "the track is fainter than the fill")
         let inside = try XCTUnwrap(pixel(bar, x: 60))
         XCTAssertEqual(inside.alphaComponent, 0, accuracy: 0.01, "inside the track, past the fill: clear")
         bar.progress = nil
-        XCTAssertEqual(try XCTUnwrap(pixel(bar, x: 118)).alphaComponent, 0, accuracy: 0.01, "no run: nothing drawn")
+        let none = (114...119).compactMap { pixel(bar, x: $0)?.alphaComponent }.max() ?? 1
+        XCTAssertEqual(none, 0, accuracy: 0.01, "no run: nothing drawn")
     }
 
     /// A panicked cue's voice is still reported while it fades out, after the cue itself has ended:
@@ -2924,6 +2926,9 @@ final class PlayheadFlowTests: XCTestCase {
         let chords: @MainActor () -> Set<KeyChord> = { HotkeyRules.menuChords(in: menu) }
         wc.inspector.menuChords = chords
         app.menuChords = chords
+        // A new cue's hotkey is unticked: ticked first, then the key typed.
+        guard case .success = await store.send(command: .setProperty(cues[0], .triggers(hotkey: nil, enabled: true)))
+        else { return XCTFail("tick") }
         XCTAssertTrue(wc.inspector.record(KeyChord("j")), wc.inspector.messageLabel.stringValue)
         await assertEventually("recorded") {
             self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "j"

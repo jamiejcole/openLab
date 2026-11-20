@@ -210,20 +210,20 @@ final class ProgressFillView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSBezierPath.clip(bounds)
         guard let progress, progress.fraction > 0 else { return }
-        let box = bounds.insetBy(dx: 1, dy: 2)
+        let box = bounds.insetBy(dx: 1, dy: 3)
         let rect = NSRect(
             x: box.minX, y: box.minY, width: box.width * CGFloat(min(1, progress.fraction)), height: box.height)
-        // The whole cell is drawn faintly under the fill, so a part-way fill reads as progress along a bar and not
-        // as a box around the first digits.
+        // The whole cell is drawn very faintly under the fill, so a part-way fill reads as progress along a bar
+        // and not as a box round the first digits.
         let track = NSBezierPath(roundedRect: box, xRadius: 3, yRadius: 3)
-        NSColor.tertiaryLabelColor.setStroke()
-        track.lineWidth = 1
+        NSColor.labelColor.withAlphaComponent(0.12).setStroke()
+        track.lineWidth = 0.5
         track.stroke()
         guard rect.width >= 1 else { return }
         let path = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
-        progress.colour.withAlphaComponent(0.3).setFill()
+        progress.colour.withAlphaComponent(0.25).setFill()
         path.fill()
-        progress.colour.setStroke()
+        progress.colour.withAlphaComponent(0.6).setStroke()
         path.lineWidth = 1
         path.stroke()
     }
