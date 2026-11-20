@@ -695,8 +695,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let about = NSTextField(labelWithString: loc("inspector.newTarget.about"))
         about.setAX("inspector-new-target-about")
         about.textColor = .secondaryLabelColor
+        // Truncated only when the tab is narrower than the line (the least window keeps it whole).
         about.lineBreakMode = .byTruncatingTail
-        about.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        about.setContentCompressionResistancePriority(.defaultHigh - 1, for: .horizontal)
         let line = NSStackView(views: [newTargetField, about])
         line.spacing = 12
         let content = column([row(loc("inspector.newTarget"), line)], nil)

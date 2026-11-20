@@ -1,0 +1,447 @@
+{
+ "format_version": 9,
+ "workspace": {
+  "id": "00000781-0000-4000-8000-000000000001",
+  "name": "Target cues",
+  "settings": {
+   "min_go_interval": 0.5,
+   "panic_duration": 3.0,
+   "autosave_interval": 30.0,
+   "osc_access": {
+    "no_passcode": {
+     "view": false,
+     "edit": false,
+     "control": false
+    },
+    "passcodes": [
+     {
+      "passcode": "1234",
+      "rights": {
+       "view": true,
+       "edit": true,
+       "control": true
+      }
+     }
+    ]
+   },
+   "output_max_db": 12.0,
+   "output_min_db": -60.0,
+   "hotkeys": {
+    "go": {
+     "key": "space",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "stop_all": null,
+    "pause_all": null,
+    "resume_all": {
+     "key": "]",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "load_selected": {
+     "key": "l",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "pause_resume_selected": {
+     "key": "p",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "start_selected": null,
+    "stop_selected": null,
+    "reset_selected": null,
+    "preview_selected": {
+     "key": "v",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "panic_selected": {
+     "key": "s",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    }
+   },
+   "auto_number_start": 1.0,
+   "auto_number_increment": 0.5
+  },
+  "patches": [
+   {
+    "id": "00000653-0000-4000-8000-000000000003",
+    "name": "Main PA",
+    "master_db": 0.0,
+    "outputs": [
+     {
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "level_db": -1.5,
+      "mute": false,
+      "polarity_inverted": true
+     }
+    ]
+   }
+  ],
+  "network_patches": [
+   {
+    "id": "00000653-0000-4000-8000-000000000004",
+    "name": "Lighting desk",
+    "host": "127.0.0.1",
+    "port": 53000,
+    "protocol": "udp"
+   }
+  ],
+  "cue_lists": [
+   {
+    "id": "00000653-0000-4000-8000-000000000002",
+    "name": "Main",
+    "cues": [
+     {
+      "id": "00000781-0000-4000-8000-000000000001",
+      "number": "1",
+      "name": "",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "target",
+       "target": null,
+       "new_target": null
+      }
+     },
+     {
+      "id": "00000781-0000-4000-8000-000000000002",
+      "number": "2",
+      "name": "",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "target",
+       "target": "00000781-0000-4000-8000-000000000003",
+       "new_target": "00000781-0000-4000-8000-000000000005"
+      }
+     },
+     {
+      "id": "00000781-0000-4000-8000-000000000003",
+      "number": "3",
+      "name": "",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "start",
+       "target": "00000781-0000-4000-8000-000000000004"
+      }
+     },
+     {
+      "id": "00000781-0000-4000-8000-000000000004",
+      "number": "4",
+      "name": "Thunder",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "audio",
+       "media": "media/a.wav",
+       "patch": "00000653-0000-4000-8000-000000000003",
+       "start_time": 0.0,
+       "end_time": null,
+       "fade_in": {
+        "duration": 0.0,
+        "curve": "s_curve"
+       },
+       "fade_out": {
+        "duration": 0.0,
+        "curve": "equal_power"
+       },
+       "slices": [],
+       "last_slice_play_count": 1,
+       "levels": {
+        "master_db": 0.0,
+        "outputs": [
+         {
+          "db": 0.0,
+          "mute": false
+         },
+         {
+          "db": -3.0,
+          "mute": false
+         }
+        ],
+        "crosspoints": [
+         {
+          "input": 0,
+          "output": 0,
+          "db": 0.0,
+          "mute": false
+         },
+         {
+          "input": 1,
+          "output": 1,
+          "db": 0.0,
+          "mute": false
+         }
+        ],
+        "gangs": []
+       },
+       "preload": false
+      }
+     },
+     {
+      "id": "00000781-0000-4000-8000-000000000005",
+      "number": "5",
+      "name": "Rain",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "audio",
+       "media": "media/a.wav",
+       "patch": "00000653-0000-4000-8000-000000000003",
+       "start_time": 0.0,
+       "end_time": null,
+       "fade_in": {
+        "duration": 0.0,
+        "curve": "s_curve"
+       },
+       "fade_out": {
+        "duration": 0.0,
+        "curve": "equal_power"
+       },
+       "slices": [],
+       "last_slice_play_count": 1,
+       "levels": {
+        "master_db": 0.0,
+        "outputs": [
+         {
+          "db": 0.0,
+          "mute": false
+         },
+         {
+          "db": -3.0,
+          "mute": false
+         }
+        ],
+        "crosspoints": [
+         {
+          "input": 0,
+          "output": 0,
+          "db": 0.0,
+          "mute": false
+         },
+         {
+          "input": 1,
+          "output": 1,
+          "db": 0.0,
+          "mute": false
+         }
+        ],
+        "gangs": []
+       },
+       "preload": false
+      }
+     },
+     {
+      "id": "00000781-0000-4000-8000-000000000006",
+      "number": "6",
+      "name": "",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "target",
+       "target": "00000781-0000-4000-8000-000000000007",
+       "new_target": "00000781-0000-4000-8000-000000000005"
+      }
+     },
+     {
+      "id": "00000781-0000-4000-8000-000000000007",
+      "number": "7",
+      "name": "",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "fade",
+       "target": "00000781-0000-4000-8000-000000000004",
+       "duration": 3.0,
+       "curve": "linear",
+       "levels": {
+        "master_db": -20.0,
+        "output_db": [],
+        "crosspoints": []
+       },
+       "stop_target_when_done": false,
+       "mode": "absolute"
+      }
+     },
+     {
+      "id": "00000781-0000-4000-8000-000000000008",
+      "number": "8",
+      "name": "",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "target",
+       "target": "00000781-0000-4000-8000-000000000003",
+       "new_target": "00000781-0000-4000-8000-000000000009"
+      }
+     },
+     {
+      "id": "00000781-0000-4000-8000-000000000009",
+      "number": null,
+      "name": "Unnumbered note",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000781-0000-4000-8000-00000000000a",
+      "number": "10",
+      "name": "",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "target",
+       "target": "00000781-0000-4000-8000-000000000003",
+       "new_target": "00000781-0000-4000-8000-000000000063"
+      }
+     }
+    ]
+   }
+  ]
+ }
+}
