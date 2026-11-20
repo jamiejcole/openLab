@@ -5589,7 +5589,11 @@ fn a_looping_cue_moved_then_devamped_and_paused_before_the_swap_plays_nothing_ex
         // second up to the pause, then from the resume to the end of the tail.
         let whole: Vec<_> = h.runs.iter().filter(|r| r.1 - r.0 > 3).collect();
         assert_eq!(whole.len(), 3, "{h:?}");
-        assert_eq!((*whole[0], whole[1].0, whole[2].1), ((1, 2000), 1, 4000), "{h:?}");
+        assert_eq!(
+            (*whole[0], whole[1].0, whole[2].1),
+            ((1, 2000), 1, 4000),
+            "{h:?}"
+        );
         let tail_from = h.last.map(|l| l as usize - 1999);
         assert_eq!((h.next, h.next_starts), (tail_from, 1), "{h:?}");
         assert_eq!((h.state, h.live), (CueState::Idle, 0), "{h:?}");
