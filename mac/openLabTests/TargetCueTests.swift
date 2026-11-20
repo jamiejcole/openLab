@@ -251,4 +251,29 @@ final class TargetCueTests: XCTestCase {
         try await go(Self.start)
         await assertEventually("Rain plays") { self.playing(Self.rain) }
     }
+
+    func testWithSeveralTargetCuesSelectedTheNewTargetTabSetsThemAllAsOneUndoStep() async throws {
+        let (first, second) = (Self.retarget, Self.unnumbered)
+        wc.cueList.selectAsUser([first, second])
+        await assertEventually { self.inspector.selection.count == 2 }
+        XCTAssertEqual(tabs, ["basics", "triggers", "newTarget"])
+        inspector.tabView.selectTabViewItem(withIdentifier: "newTarget")
+        // Cue 2's is 5, cue 8's has no number: mixed.
+        XCTAssertEqual(inspector.newTargetField.stringValue, "")
+        XCTAssertEqual(inspector.newTargetField.placeholderString, loc("inspector.mixed"))
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(inspector.newTargetField.isEnabled)
+        XCTAssertTrue(window.makeFirstResponder(inspector.newTargetField))
+        let editor = try XCTUnwrap(inspector.newTargetField.currentEditor() as? NSTextView)
+        editor.insertText("4", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        func new(_ id: ModelID) -> String? { rig.store.model?.cue(id)?.raw["kind"]?["new_target"]?.stringValue }
+        await assertEventually("both set") { new(first) == Self.thunder.raw && new(second) == Self.thunder.raw }
+        await assertEventually { self.shownTip(second) == nil || self.shownState(second) != loc("cue.state.broken") }
+        XCTAssertEqual(inspector.newTargetField.stringValue, "4")
+        await wc.editor.undo()
+        await assertEventually("one undo puts both back") {
+            new(first) == Self.rain.raw && new(second) == Self.id(9).raw
+        }
+    }
 }

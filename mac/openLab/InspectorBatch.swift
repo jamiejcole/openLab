@@ -13,7 +13,7 @@ extension InspectorViewController {
     /// and a Fade's curve and levels (each fades its own target) are edited one cue at a time.
     static let batchKindTabs: [String: [String]] = [
         "audio": ["io", "levels"], "group": ["mode"], "load": ["loadTime"], "devamp": ["devamp"],
-        "network": ["network"], "video": ["io"],
+        "network": ["network"], "video": ["io"], "target": ["newTarget"],
     ]
 
     /// The tabs shown for several selected cues of `kinds`. `allSound`: every one of them has sound,
@@ -80,8 +80,8 @@ extension InspectorViewController {
         }
         postWaitField.isEnabled = modes.contains { $0 != "auto_follow" }
         loadTimeField.isEnabled = kind == "load"
-        // A new target names one cue for one Target cue; its tab is not shown for several.
-        newTargetField.isEnabled = false
+        // Several Target cues take one new target together (QLab 5 shows a kind's tab for a selection of that kind).
+        newTargetField.isEnabled = kind == "target"
         networkMessageField.isEnabled = kind == "network"
         // The others' fields are switched on or off by their boxes before the hints below are judged.
         renderBatchOthers(cues)
