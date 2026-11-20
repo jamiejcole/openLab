@@ -4,6 +4,7 @@
 linked into the shipped binaries (openlab-engine and openlab-stage, both Apple targets).
 
   third-party-notices.py generate   rewrite THIRD-PARTY-NOTICES.txt from `cargo metadata`
+  third-party-notices.py self-test
   third-party-notices.py check [FILE]
         FILE (default: the repo's copy) must list every shipped crate at its locked version. With the
         crate sources available this uses the real dependency graph; without them (a CI job that
@@ -21,7 +22,11 @@ ENGINE = os.path.join(ROOT, "engine")
 OUT = os.path.join(ROOT, "THIRD-PARTY-NOTICES.txt")
 SHIPPED = ["openlab-engine", "openlab-stage"]
 TARGETS = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
-LICENCE_NAME = re.compile(r"^(LICENSE|LICENCE|COPYING|NOTICE|UNLICENSE)([-_.].*)?$", re.I)
+# A real licence file: top level, LICENSE / COPYING / NOTICE / UNLICENSE, optionally with a name suffix
+# (LICENSE-MIT) and .md or .txt. Never a source file such as src/copying.rs.
+LICENCE_NAME = re.compile(r"^(licen[cs]e|copying|notice|unlicense)([-_][A-Za-z0-9_-]+)?(\.(md|txt))?$", re.I)
+TABLE = os.path.join(ROOT, "scripts", "third-party-licences")
+NEEDS = "== Needs upstream licence text =="
 MARK = "== Crates =="
 
 
@@ -64,14 +69,16 @@ def shipped_crates():
 
 def licence_files(pkg):
     d = os.path.dirname(pkg["manifest_path"])
-    names = []
-    for root, dirs, files in os.walk(d):
-        if os.path.relpath(root, d).count(os.sep) >= 1:
-            dirs[:] = []
-        for f in files:
-            if LICENCE_NAME.match(f) and os.path.getsize(os.path.join(root, f)) > 0:
-                names.append(os.path.join(root, f))
-    return sorted(names)
+    return sorted(
+        os.path.join(d, f) for f in os.listdir(d)
+        if LICENCE_NAME.match(f) and os.path.isfile(os.path.join(d, f)) and os.path.getsize(os.path.join(d, f)) > 0
+    )
+
+
+def table_file(name):
+    """Licence text kept in the repo for a crate whose package ships none (copied from its upstream repository)."""
+    f = os.path.join(TABLE, name + ".txt")
+    return [f] if os.path.isfile(f) else []
 
 
 def generate():
@@ -79,12 +86,16 @@ def generate():
     keys = sorted(crates)
     texts = {}  # sha -> (text, [crate labels])
     lines = []
+    needs = []
     for name, ver in keys:
         p = crates[(name, ver)]
         lic = p.get("license") or p.get("license_file") or "see licence text below"
         label = f"{name} {ver}"
         lines.append(f"{label} - {lic}")
-        for f in licence_files(p):
+        files = licence_files(p) or table_file(name)
+        if not files and "Apache-2.0" not in (p.get("license") or ""):
+            needs.append(label)
+        for f in files:
             data = open(f, "rb").read().decode("utf-8", "replace").replace("\r\n", "\n").strip()
             sha = hashlib.sha256(data.encode()).hexdigest()
             texts.setdefault(sha, (data, []))[1].append(label)
@@ -93,9 +104,10 @@ def generate():
         "openLab third-party notices",
         "",
         "openLab is free software under the GNU General Public License, version 3 or (at your option)",
-        "any later version; the full text is in the file LICENSE next to this one. It includes the",
+        "any later version; the full text is in the file LICENSE (LICENSE.txt on the disk image) next to this one. It includes the",
         "third-party Rust crates listed below, each under the licence named beside it. The licence",
-        "texts and copyright notices those licences require follow the list.",
+        "texts and copyright notices those licences require follow the list. Where a crate offers a",
+        "choice of licences, openLab takes the Apache-2.0 option when offered, otherwise the first listed.",
         "",
         "Source code for the MPL-2.0 components (the symphonia crates and any other crate listed",
         "below under MPL-2.0) is available unmodified at https://crates.io/crates/<name>/<version>",
@@ -113,8 +125,11 @@ def generate():
         out += [rule, "Applies to: " + ", ".join(who), rule, "", data, ""]
     missing = [f"{n} {v}" for (n, v) in keys if not any((n + " " + v) in w for _, w in texts.values())]
     if missing:
-        out += [rule, "Crates whose package has no licence file; each is under the licence named in the list above, whose standard text appears in this file:",
-                ", ".join(missing), ""]
+        out += [rule, "Crates whose package has no licence file and that offer the Apache-2.0 licence, which openLab takes for them (its text is above):",
+                ", ".join(m for m in missing if m not in needs), ""]
+    if needs:
+        out += [rule, NEEDS, "These crates ship no licence text and have no entry in scripts/third-party-licences/;",
+                "add the upstream licence file as <crate>.txt and regenerate:", ", ".join(needs), ""]
     with open(OUT, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out))
     print(f"third-party-notices: wrote {len(keys)} crates to {OUT}")
@@ -145,6 +160,10 @@ def locked():
 
 
 def check(path):
+    if NEEDS in open(path, encoding="utf-8").read():
+        print(f"third-party-notices: {path} has crates that still need an upstream licence text "
+              "(see its 'Needs upstream licence text' section)", file=sys.stderr)
+        return 1
     try:
         have = listed(path)
     except (OSError, RuntimeError) as e:
@@ -157,6 +176,8 @@ def check(path):
         # Crate sources not fetched here: the file may not name anything the lock does not have.
         want = None
         mode = "Cargo.lock only"
+        print("third-party-notices: crate sources not available; falling back to checking against Cargo.lock "
+              "(a missing crate is not detected here; `make verify-bundle` checks the full graph)", file=sys.stderr)
     if want is not None:
         missing = sorted(want - have)
         stale = sorted(have - want)
@@ -178,7 +199,21 @@ def check(path):
     return 0
 
 
+def self_test():
+    good = ["LICENSE", "LICENSE-MIT", "LICENSE-APACHE", "LICENSE.md", "COPYING", "LICENCE.txt", "license-mit.txt",
+            "NOTICE", "UNLICENSE", "COPYING-LGPL"]
+    bad = ["copying.rs", "src", "licenses.rs", "LICENSE.rs", "license_check.toml", "NOTICES.json", "Cargo.toml", "unlicensed"]
+    for n in good:
+        assert LICENCE_NAME.match(n), n
+    for n in bad:
+        assert not LICENCE_NAME.match(n), n
+    print("third-party-notices: self-test ok")
+    return 0
+
+
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "self-test":
+        return self_test()
     if len(argv) >= 2 and argv[1] == "generate":
         generate()
         return 0

@@ -867,7 +867,7 @@ notices() {
     fail notices "python3 is needed to check THIRD-PARTY-NOTICES.txt"
     return
   fi
-  if ! out=$(python3 -I scripts/third-party-notices.py check 2>&1); then
+  if ! out=$(python3 -I scripts/third-party-notices.py self-test 2>&1 && python3 -I scripts/third-party-notices.py check 2>&1); then
     fail notices "$out"
   fi
 }

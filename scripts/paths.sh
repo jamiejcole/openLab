@@ -23,4 +23,4 @@ PATHS_MAC_MAIN_RE='^(mac|engine)/'
 PATHS_APP_ENGINE_RE='^(engine/|mac/openLab/Engine/|mac/TestShows/|mac/scripts/build-(engine|stage-host)\.sh$|mac/openLabTests/|mac/openLabUITests/|mac/project\.yml$)'
 # The Release universal build and bundle check (`make mac`, `make verify-bundle`): on main always,
 # on a pull request only when the build itself changes.
-PATHS_BUNDLE_RE='^(mac/(project\.yml|scripts/)|engine/crates/video/|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$)'
+PATHS_BUNDLE_RE='^(mac/(project\.yml|scripts/)|engine/crates/video/|engine/crates/[^/]+/Cargo\.toml$|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$)'

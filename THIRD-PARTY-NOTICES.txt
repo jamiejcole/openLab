@@ -1,9 +1,10 @@
 openLab third-party notices
 
 openLab is free software under the GNU General Public License, version 3 or (at your option)
-any later version; the full text is in the file LICENSE next to this one. It includes the
+any later version; the full text is in the file LICENSE (LICENSE.txt on the disk image) next to this one. It includes the
 third-party Rust crates listed below, each under the licence named beside it. The licence
-texts and copyright notices those licences require follow the list.
+texts and copyright notices those licences require follow the list. Where a crate offers a
+choice of licences, openLab takes the Apache-2.0 option when offered, otherwise the first listed.
 
 Source code for the MPL-2.0 components (the symphonia crates and any other crate listed
 below under MPL-2.0) is available unmodified at https://crates.io/crates/<name>/<version>
@@ -3489,274 +3490,6 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Applies to: objc2-foundation 0.3.2
-==============================================================================
-
-use objc2::extern_protocol;
-use objc2::rc::Retained;
-use objc2::runtime::NSZone;
-use objc2::runtime::ProtocolObject;
-use objc2::Message;
-
-/// A helper type for implementing [`NSCopying`].
-///
-/// `NSCopying` and `NSMutableCopying` do not in their signatures describe the
-/// result type from the copying operation. This is problematic, as it means
-/// that using them ends up falling back to [`AnyObject`], which makes copying
-/// much less useful and ergonomic.
-///
-/// To properly describe this, we need an associated type which describes the
-/// actual result type from a copy. The associated type can't be present
-/// directly on the protocol traits themselves, however, since we want to use
-/// them as e.g. `ProtocolObject<dyn NSCopying>`, so we introduce this helper
-/// trait instead. See [`MutableCopyingHelper`] for the mutable variant.
-///
-/// We might be able to get rid of this hack once [associated type defaults]
-/// are stabilized.
-///
-/// [`AnyObject`]: objc2::runtime::AnyObject
-/// [associated type defaults]: https://github.com/rust-lang/rust/issues/29661
-///
-///
-/// # Safety
-///
-/// The [`Result`] type must be correct.
-///
-/// [`Result`]: Self::Result
-pub unsafe trait CopyingHelper: Message {
-    /// The immutable counterpart of the type, or `Self` if the type has no
-    /// immutable counterpart.
-    ///
-    /// The implementation for `NSString` has itself (`NSString`) here, while
-    /// `NSMutableString` instead has `NSString`.
-    type Result: Message;
-}
-
-/// A helper type for implementing [`NSMutableCopying`].
-///
-/// See [`CopyingHelper`] for the immutable variant, and more details in
-/// general. These traits are split to allow implementing
-/// `MutableCopyingHelper` only when the mutable class is available.
-///
-///
-/// # Safety
-///
-/// The [`Result`] type must be correct.
-///
-/// [`Result`]: Self::Result
-pub unsafe trait MutableCopyingHelper: Message {
-    /// The mutable counterpart of the type, or `Self` if the type has no
-    /// mutable counterpart.
-    ///
-    /// The implementation for `NSString` has `NSMutableString` here, while
-    /// `NSMutableString` has itself (`NSMutableString`).
-    type Result: Message;
-}
-
-// SAFETY: Superclasses are not in general required to implement the same
-// traits as their subclasses, but we're not dealing with normal classes and
-// arbitrary protocols, we're dealing with with immutable/mutable class
-// counterparts, and the `NSCopying`/`NSMutableCopying` protocols, which
-// _will_ be implemented on superclasses.
-unsafe impl<P: ?Sized> CopyingHelper for ProtocolObject<P> {
-    type Result = Self;
-}
-
-// SAFETY: Subclasses are required to always implement the same traits as
-// their superclasses, so a mutable subclass is required to implement the same
-// traits too.
-unsafe impl<P: ?Sized> MutableCopyingHelper for ProtocolObject<P> {
-    type Result = Self;
-}
-
-extern_protocol!(
-    /// A protocol to provide functional copies of objects.
-    ///
-    /// This is similar to Rust's [`Clone`] trait, along with sharing a few
-    /// similarities to the [`std::borrow::ToOwned`] trait with regards to the
-    /// output type.
-    ///
-    /// To allow using this in a meaningful way in Rust, we have to "enrich"
-    /// the implementation by also specifying the resulting type, see
-    /// [`CopyingHelper`] for details.
-    ///
-    /// See also [Apple's documentation][apple-doc].
-    ///
-    /// [apple-doc]: https://developer.apple.com/documentation/foundation/nscopying
-    ///
-    ///
-    /// # Examples
-    ///
-    /// Implement `NSCopying` for an externally defined class.
-    ///
-    /// ```
-    /// use objc2::extern_class;
-    /// use objc2_foundation::{CopyingHelper, NSCopying, NSObject};
-    ///
-    /// extern_class!(
-    ///     #[unsafe(super(NSObject))]
-    ///     # #[name = "NSData"]
-    ///     struct ExampleClass;
-    /// );
-    ///
-    /// unsafe impl NSCopying for ExampleClass {}
-    ///
-    /// // Copying ExampleClass returns another ExampleClass.
-    /// unsafe impl CopyingHelper for ExampleClass {
-    ///     type Result = Self;
-    /// }
-    /// ```
-    ///
-    /// Implement `NSCopying` for a custom class.
-    ///
-    /// ```
-    /// use objc2::{define_class, msg_send, AnyThread, DefinedClass};
-    /// use objc2::rc::Retained;
-    /// use objc2::runtime::NSZone;
-    /// use objc2_foundation::{CopyingHelper, NSCopying, NSObject};
-    ///
-    /// define_class!(
-    ///     #[unsafe(super(NSObject))]
-    ///     struct CustomClass;
-    ///
-    ///     unsafe impl NSCopying for CustomClass {
-    ///         #[unsafe(method_id(copyWithZone:))]
-    ///         fn copyWithZone(&self, _zone: *const NSZone) -> Retained<Self> {
-    ///             // Create new class, and transfer ivars
-    ///             let new = Self::alloc().set_ivars(self.ivars().clone());
-    ///             unsafe { msg_send![super(new), init] }
-    ///         }
-    ///     }
-    /// );
-    ///
-    /// // Copying CustomClass returns another CustomClass.
-    /// unsafe impl CopyingHelper for CustomClass {
-    ///     type Result = Self;
-    /// }
-    /// ```
-    #[allow(clippy::missing_safety_doc)]
-    pub unsafe trait NSCopying {
-        /// Returns a new instance that's a copy of the receiver.
-        ///
-        /// The output type is the immutable counterpart of the object, which
-        /// is usually `Self`, but e.g. `NSMutableString` returns `NSString`.
-        #[unsafe(method(copy))]
-        #[unsafe(method_family = copy)]
-        #[optional]
-        fn copy(&self) -> Retained<Self::Result>
-        where
-            Self: CopyingHelper;
-
-        /// Returns a new instance that's a copy of the receiver.
-        ///
-        /// This is only used when implementing `NSCopying`, call
-        /// [`copy`][NSCopying::copy] instead.
-        ///
-        ///
-        /// # Safety
-        ///
-        /// The zone pointer must be valid or NULL.
-        #[unsafe(method(copyWithZone:))]
-        #[unsafe(method_family = copy)]
-        unsafe fn copyWithZone(&self, zone: *mut NSZone) -> Retained<Self::Result>
-        where
-            Self: CopyingHelper;
-    }
-);
-
-extern_protocol!(
-    /// A protocol to provide mutable copies of objects.
-    ///
-    /// Only classes that have an “immutable vs. mutable” distinction should
-    /// adopt this protocol. Use the [`MutableCopyingHelper`] trait to specify
-    /// the return type after copying.
-    ///
-    /// See [Apple's documentation][apple-doc] for details.
-    ///
-    /// [apple-doc]: https://developer.apple.com/documentation/foundation/nsmutablecopying
-    ///
-    ///
-    /// # Example
-    ///
-    /// Implement [`NSCopying`] and [`NSMutableCopying`] for a class pair like
-    /// `NSString` and `NSMutableString`.
-    ///
-    /// ```ignore
-    /// // Immutable copies return NSString
-    ///
-    /// unsafe impl NSCopying for NSString {}
-    /// unsafe impl CopyingHelper for NSString {
-    ///     type Result = NSString;
-    /// }
-    /// unsafe impl NSCopying for NSMutableString {}
-    /// unsafe impl CopyingHelper for NSMutableString {
-    ///     type Result = NSString;
-    /// }
-    ///
-    /// // Mutable copies return NSMutableString
-    ///
-    /// unsafe impl NSMutableCopying for NSString {}
-    /// unsafe impl MutableCopyingHelper for NSString {
-    ///     type Result = NSMutableString;
-    /// }
-    /// unsafe impl NSMutableCopying for NSMutableString {}
-    /// unsafe impl MutableCopyingHelper for NSMutableString {
-    ///     type Result = NSMutableString;
-    /// }
-    /// ```
-    #[allow(clippy::missing_safety_doc)]
-    pub unsafe trait NSMutableCopying {
-        /// Returns a new instance that's a mutable copy of the receiver.
-        ///
-        /// The output type is the mutable counterpart of the object. E.g. both
-        /// `NSString` and `NSMutableString` return `NSMutableString`.
-        #[unsafe(method(mutableCopy))]
-        #[unsafe(method_family = mutableCopy)]
-        #[optional]
-        fn mutableCopy(&self) -> Retained<Self::Result>
-        where
-            Self: MutableCopyingHelper;
-
-        /// Returns a new instance that's a mutable copy of the receiver.
-        ///
-        /// This is only used when implementing `NSMutableCopying`, call
-        /// [`mutableCopy`][NSMutableCopying::mutableCopy] instead.
-        ///
-        ///
-        /// # Safety
-        ///
-        /// The zone pointer must be valid or NULL.
-        #[unsafe(method(mutableCopyWithZone:))]
-        #[unsafe(method_family = mutableCopy)]
-        unsafe fn mutableCopyWithZone(&self, zone: *mut NSZone) -> Retained<Self::Result>
-        where
-            Self: MutableCopyingHelper;
-    }
-);
-
-==============================================================================
-Applies to: objc2-foundation 0.3.2
-==============================================================================
-
-#![cfg(feature = "NSString")]
-use objc2::{rc::Retained, runtime::ProtocolObject};
-use objc2_foundation::{NSCopying, NSMutableCopying, NSString};
-
-#[test]
-fn copy() {
-    let obj = NSString::new();
-    let protocol_object: &ProtocolObject<dyn NSCopying> = ProtocolObject::from_ref(&*obj);
-    let _: Retained<ProtocolObject<dyn NSCopying>> = protocol_object.copy();
-}
-
-#[test]
-fn copy_mutable() {
-    let obj = NSString::new();
-    let protocol_object: &ProtocolObject<dyn NSMutableCopying> = ProtocolObject::from_ref(&*obj);
-    let _: Retained<ProtocolObject<dyn NSMutableCopying>> = protocol_object.mutableCopy();
-}
-
-==============================================================================
 Applies to: option-ext 0.2.0
 ==============================================================================
 
@@ -5014,6 +4747,32 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+==============================================================================
+Applies to: realfft 3.5.0
+==============================================================================
+
+MIT License
+
+Copyright (c) 2020 Henrik Enquist and RealFFT contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ==============================================================================
 Applies to: rosc 0.11.4
@@ -7143,5 +6902,11 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Crates whose package has no licence file; each is under the licence named in the list above, whose standard text appears in this file:
-block2 0.6.2, dasp_sample 0.11.0, dispatch2 0.3.1, objc2 0.6.5, objc2-audio-toolbox 0.3.2, objc2-core-audio 0.3.2, objc2-core-audio-types 0.3.2, objc2-core-foundation 0.3.2, objc2-encode 4.1.0, realfft 3.5.0
+Crates whose package has no licence file and that offer the Apache-2.0 licence, which openLab takes for them (its text is above):
+dasp_sample 0.11.0, dispatch2 0.3.1, objc2-audio-toolbox 0.3.2, objc2-core-audio 0.3.2, objc2-core-audio-types 0.3.2, objc2-core-foundation 0.3.2
+
+==============================================================================
+== Needs upstream licence text ==
+These crates ship no licence text and have no entry in scripts/third-party-licences/;
+add the upstream licence file as <crate>.txt and regenerate:
+block2 0.6.2, objc2 0.6.5, objc2-encode 4.1.0, objc2-foundation 0.3.2
