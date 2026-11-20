@@ -22,7 +22,7 @@ final class FooterBar: NSView {
     /// the footer says nothing about the audio. Pressing it opens Status > Warnings, where the same
     /// fault is a row.
     let alarmButton = NSButton()
-    /// The footer's own entry to the Warnings tab: shown only while there is something to see, with
+    /// The footer's own entry to the Warnings page: shown only while there is something to see, with
     /// the count. Part of the footer in Show Mode too. Never takes the keys from the cue list.
     let warningsButton = NSButton()
     /// The warnings button or the alarm was used: open the Status window on its Warnings page.

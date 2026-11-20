@@ -68,7 +68,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// Workspace-level notices in force (replaced by each `warnings` message).
     @Published private(set) var warnings: [WireWarning] = []
     /// Notices the app raises itself for this workspace (a key-map key that took a menu command's
-    /// key), listed in the Warnings tab after the engine's. Replaced as a whole.
+    /// key), listed in the Warnings list after the engine's. Replaced as a whole.
     @Published private(set) var appNotices: [String] = []
     /// Warnings that arrived as runtime changes, newest last.
     @Published private(set) var runtimeWarnings: [WireWarning] = []

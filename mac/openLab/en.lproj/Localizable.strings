@@ -664,7 +664,7 @@
 "crash.none" = "There are no crash reports on this Mac.";
 "crash.previousRun" = "The last run did not end cleanly. See the Logs page of Workspace Status; crash reports: Help > Show Crash Reports in Finder.";
 
-/* Sidebar: Warnings tab (DX-01). {name} is replaced by the engine's field of that name. */
+/* Warnings list (DX-01). {name} is replaced by the engine's field of that name. */
 "warnings.none" = "No warnings";
 "warnings.one" = "1 warning";
 "warnings.many" = "%d warnings";

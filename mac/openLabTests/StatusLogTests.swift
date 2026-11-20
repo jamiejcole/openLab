@@ -440,16 +440,11 @@ final class StatusLogTests: XCTestCase {
         wc.window?.close()
         XCTAssertNil(wc.existingStatusWindow, "closing does not make a status window")
         let other = WorkspaceWindowController(store: try Rig.offline().store)
-        other.showLog()
+        other.showStatus(.logs)
         let status = try XCTUnwrap(other.existingStatusWindow)
         XCTAssertTrue(status.window?.isVisible == true)
         XCTAssertEqual(status.page, .logs)
         other.window?.close()
         XCTAssertFalse(status.window?.isVisible == true)
-    }
-
-    func testWindowMenuOpensTheLog() {
-        let window = MainMenu.make().windows
-        XCTAssertTrue(window.items.contains { $0.action == #selector(AppDelegate.showLog(_:)) })
     }
 }

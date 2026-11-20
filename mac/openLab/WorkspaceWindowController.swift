@@ -92,7 +92,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// The workspace status window if it was ever made (closing a workspace must not make one just to
     /// close it).
     var existingStatusWindow: StatusWindowController? { statusController }
-    /// The workspace status window, made on first use: the pre-show check, the log and the workspace's
+    /// The workspace status window, made on first use: the warnings, the log and the workspace's
     /// info as its pages. It closes with this window.
     var statusWindow: StatusWindowController {
         if let statusController { return statusController }

@@ -4,7 +4,7 @@ import XCTest
 
 @testable import openLab
 
-/// DX-01: the Warnings tab, and the words for every problem and warning the engine can send.
+/// DX-01: the Warnings page of the status window (live), and the words for every problem and warning the engine can send.
 @MainActor
 final class WarningsTests: XCTestCase {
     static let second: ModelID = "00000000-0000-0000-0000-000000000002"
@@ -13,9 +13,8 @@ final class WarningsTests: XCTestCase {
 
     private var rig: Rig!
     private var store: WorkspaceStore { rig.store }
-    private let spy = SpyTableView()
     private var wc: WorkspaceWindowController!
-    private var side: SidebarViewController!
+    private var side: WarningsPageController!
 
     override func tearDown() async throws {
         wc?.window?.close()
@@ -40,9 +39,10 @@ final class WarningsTests: XCTestCase {
 
     private func makeWindow() {
         wc = WorkspaceWindowController(store: store)
-        // The sidebar the tests watch: a second one around a spy table.
-        side = SidebarViewController(store: store, warningsTable: spy)
-        side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
+        // The page the tests watch: the status window's Warnings list, as the footer's button opens it.
+        side = wc.warningsPage
+        side.window?.setContentSize(NSSize(width: 520, height: 400))
+        side.window?.contentView?.layoutSubtreeIfNeeded()
     }
 
     private func receive(_ json: String) throws {
@@ -164,16 +164,16 @@ final class WarningsTests: XCTestCase {
 
     func testBrokenCueIsListedWithItsReasonAndNoticesFollow() async throws {
         try await make()
-        let row = try XCTUnwrap(side.warningRows.first { $0.cue == radio })
+        let row = try XCTUnwrap(side.rows.first { $0.cue == radio })
         XCTAssertEqual(row.title, "2.3  Radio")
         XCTAssertEqual(row.detail, loc("broken.device_lost"))
         XCTAssertFalse(row.canRelink)
-        XCTAssertEqual(side.warningsTable.numberOfRows, side.warningRows.count)
+        XCTAssertEqual(side.table.numberOfRows, side.rows.count)
         try receive(
             #"{"type":"warnings","warnings":[{"type":"notice","code":"media_damaged","message":"intro.wav has a damaged tail"}]}"#
         )
-        XCTAssertEqual(side.warningRows.last?.title, "intro.wav has a damaged tail")
-        XCTAssertEqual(side.warningsCount.stringValue, String(format: loc("warnings.many"), side.warningRows.count))
+        XCTAssertEqual(side.rows.last?.title, "intro.wav has a damaged tail")
+        XCTAssertEqual(side.summaryLabel.stringValue, String(format: loc("warnings.many"), side.rows.count))
     }
 
     /// #770: a Video cue whose picture failed while playing is one warning: its own entry, saying
@@ -185,53 +185,51 @@ final class WarningsTests: XCTestCase {
             #"{"type":"cue_state","cue":"\#(rain)","state":"broken","reason":"decode_failed"},"#
                 + #"{"type":"warning","warning":{"type":"notice","code":"video_decode_failed","#
                 + #""message":"\#(why)","cue":"\#(rain)"}}"#)
-        let rows = side.warningRows.filter { $0.cue == rain || $0.detail.contains(why) || $0.title.contains(why) }
-        XCTAssertEqual(rows.count, 1, "\(side.warningRows)")
+        let rows = side.rows.filter { $0.cue == rain || $0.detail.contains(why) || $0.title.contains(why) }
+        XCTAssertEqual(rows.count, 1, "\(side.rows)")
         XCTAssertEqual(rows.first?.cue, rain)
         XCTAssertEqual(rows.first?.detail, why)
         // Reset and playable again: the failure is past, not listed on its own.
         try runtime(#"{"type":"cue_state","cue":"\#(rain)","state":"idle"}"#)
-        XCTAssertFalse(side.warningRows.contains { $0.cue == rain || $0.title.contains(why) }, "\(side.warningRows)")
+        XCTAssertFalse(side.rows.contains { $0.cue == rain || $0.title.contains(why) }, "\(side.rows)")
     }
 
     func testRowsUpdateInPlaceWithoutReloading() async throws {
         try await make()
-        spy.wholeReloads = 0
-        let before = side.warningRows.count
+        let reloads = side.wholeReloads
+        let before = side.rows.count
         try missingMedia(rain)
-        XCTAssertEqual(side.warningRows.count, before + 1)
-        XCTAssertEqual(spy.inserts, 1)
-        XCTAssertEqual(spy.removals, 0)
-        let row = try XCTUnwrap(side.warningRows.first { $0.cue == rain })
+        XCTAssertEqual(side.rows.count, before + 1)
+        XCTAssertEqual(side.table.numberOfRows, before + 1)
+        let row = try XCTUnwrap(side.rows.first { $0.cue == rain })
         XCTAssertTrue(row.canRelink)
         XCTAssertTrue(row.detail.contains("media/r.wav"))
         // Rain precedes Radio in the list, so its row goes before it.
         XCTAssertLessThan(
-            try XCTUnwrap(side.warningRows.firstIndex { $0.cue == rain }),
-            try XCTUnwrap(side.warningRows.firstIndex { $0.cue == radio }))
+            try XCTUnwrap(side.rows.firstIndex { $0.cue == rain }),
+            try XCTUnwrap(side.rows.firstIndex { $0.cue == radio }))
 
         // A different file name changes the text of that one row only.
-        side.clearWarningUpdateLog()
+        side.clearUpdateLog()
         try missingMedia(rain, "media/other.wav")
-        XCTAssertEqual(side.updatedWarningRows, ["c:\(rain.raw)"])
-        XCTAssertEqual(spy.inserts, 1)
-        XCTAssertEqual(spy.removals, 0)
+        XCTAssertEqual(side.updatedRows, ["c:\(rain.raw)"])
+        XCTAssertEqual(side.table.numberOfRows, before + 1)
 
-        // The engine reports it fixed: the row goes.
+        // The engine reports it fixed: the row goes, with nothing pressed.
         try runtime(
             #"{"type":"problems","cue":"\#(rain)","problems":[]},{"type":"cue_state","cue":"\#(rain)","state":"idle"}"#)
-        XCTAssertEqual(side.warningRows.count, before)
-        XCTAssertEqual(spy.removals, 1)
-        XCTAssertEqual(spy.wholeReloads, 0, "no change reloaded the whole table")
+        XCTAssertEqual(side.rows.count, before)
+        XCTAssertEqual(side.table.numberOfRows, before)
+        XCTAssertEqual(side.wholeReloads, reloads, "no change reloaded the whole table")
     }
 
     func testRuntimeStateChangesOfHealthyCuesDoNotRebuildTheList() async throws {
         try await make()
-        let rows = side.warningRows
-        side.clearWarningUpdateLog()
+        let rows = side.rows
+        side.clearUpdateLog()
         try runtime(#"{"type":"cue_state","cue":"\#(TestSnapshots.door)","state":"running"}"#)
-        XCTAssertEqual(side.warningRows, rows)
-        XCTAssertTrue(side.updatedWarningRows.isEmpty)
+        XCTAssertEqual(side.rows, rows)
+        XCTAssertTrue(side.updatedRows.isEmpty)
     }
 
     /// A warned Fade's title carries its default name, which follows its target: renaming the target
@@ -240,59 +238,59 @@ final class WarningsTests: XCTestCase {
         try await make()
         let fade = TestSnapshots.fade
         try missingMedia(fade)
-        XCTAssertTrue(side.warningRows.contains { $0.title.hasSuffix("fade and stop Intro") }, "\(side.warningRows)")
+        XCTAssertTrue(side.rows.contains { $0.title.hasSuffix("fade and stop Intro") }, "\(side.rows)")
         var intro = try XCTUnwrap(store.model?.cue(TestSnapshots.intro)).raw
         intro.set("name", .string("entrance"))
         let upsert = try CueListHarness.upsertJSON(intro, index: 0)
         try receive(
             #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#)
-        XCTAssertTrue(side.warningRows.contains { $0.title.hasSuffix("fade and stop entrance") }, "\(side.warningRows)")
+        XCTAssertTrue(side.rows.contains { $0.title.hasSuffix("fade and stop entrance") }, "\(side.rows)")
     }
 
     func testWorkspaceWarningsAreReplacedAndRuntimeWarningsAppended() async throws {
         try await make()
         try receive(#"{"type":"warnings","warnings":[]}"#)
-        let base = side.warningRows.count
+        let base = side.rows.count
         try receive(
             #"{"type":"warnings","warnings":[{"type":"load_ignored","cue":"\#(rain)"},{"type":"cue_broken","cue":"\#(radio)"}]}"#
         )
         // Radio is broken: the refusal joins its entry, so only Rain's warning adds one.
-        XCTAssertEqual(side.warningRows.count, base + 1)
+        XCTAssertEqual(side.rows.count, base + 1)
         try receive(#"{"type":"warnings","warnings":[{"type":"cue_broken","cue":"\#(radio)"}]}"#)
-        XCTAssertEqual(side.warningRows.count, base)
+        XCTAssertEqual(side.rows.count, base)
         try runtime(#"{"type":"warning","warning":{"type":"late_start","cue":"\#(rain)","late_ms":120}}"#)
-        XCTAssertEqual(side.warningRows.count, base + 1)
+        XCTAssertEqual(side.rows.count, base + 1)
         // A warning about a cue: the cue is the title, what happened the line under it.
-        let late = try XCTUnwrap(side.warningRows.last)
+        let late = try XCTUnwrap(side.rows.last)
         XCTAssertEqual(late.title, "2.2  Rain")
         XCTAssertEqual(late.detail, "Started 120 ms late.")
         XCTAssertEqual(late.cue, rain)
         // A refusal to start the broken Radio is told on Radio's own entry.
-        let radioRow = try XCTUnwrap(side.warningRows.first { $0.cue == radio })
+        let radioRow = try XCTUnwrap(side.rows.first { $0.cue == radio })
         XCTAssertEqual(radioRow.title, "2.3  Radio")
         XCTAssertTrue(radioRow.detail.hasSuffix(loc("warnings.refused.one")), radioRow.detail)
         // The same warning again is the same entry, with its latest words and a count.
         try runtime(#"{"type":"warning","warning":{"type":"late_start","cue":"\#(rain)","late_ms":340}}"#)
-        XCTAssertEqual(side.warningRows.count, base + 1)
+        XCTAssertEqual(side.rows.count, base + 1)
         XCTAssertEqual(
-            side.warningRows.last?.detail, String(format: loc("warnings.repeated"), "Started 340 ms late.", 2))
-        XCTAssertEqual(Set(side.warningRows.map(\.id)).count, side.warningRows.count)
+            side.rows.last?.detail, String(format: loc("warnings.repeated"), "Started 340 ms late.", 2))
+        XCTAssertEqual(Set(side.rows.map(\.id)).count, side.rows.count)
     }
 
     func testSnapshotReplacesTheRows() async throws {
         try await make()
-        XCTAssertTrue(side.warningRows.contains { $0.cue == radio })
+        XCTAssertTrue(side.rows.contains { $0.cue == radio })
         let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
         try receive(#"{"type":"snapshot","snapshot":\#(try base.text())}"#)
-        XCTAssertFalse(side.warningRows.contains { $0.cue == radio })
-        XCTAssertEqual(side.warningRows, WarningRows.make(store: store))
+        XCTAssertFalse(side.rows.contains { $0.cue == radio })
+        XCTAssertEqual(side.rows, WarningRows.make(store: store))
     }
 
     // MARK: Click-through
 
     private func chooseRow(of cue: ModelID) throws {
-        let row = try XCTUnwrap(wc.sidebar.warningRows.firstIndex { $0.cue == cue })
-        wc.sidebar.warningsTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        let row = try XCTUnwrap(side.rows.firstIndex { $0.cue == cue })
+        side.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
     }
 
     func testChoosingAWarningSelectsItsCueAndOpensItsGroup() async throws {
@@ -337,8 +335,8 @@ final class WarningsTests: XCTestCase {
     func testTheEnginesBrokenCueIsListedWithItsReason() async throws {
         rig = try await Rig.open()
         makeWindow()
-        await assertEventually { self.side.warningRows.contains { $0.cue == self.radio } }
-        let row = try XCTUnwrap(side.warningRows.first { $0.cue == radio })
+        await assertEventually { self.side.rows.contains { $0.cue == self.radio } }
+        let row = try XCTUnwrap(side.rows.first { $0.cue == radio })
         XCTAssertEqual(row.title, "2.3  Radio")
         XCTAssertTrue(row.detail.contains("media/o.wav"), row.detail)
         XCTAssertTrue(row.canRelink)
@@ -347,7 +345,7 @@ final class WarningsTests: XCTestCase {
     func testRowChangesFromTheStoreNeverRevealACue() async throws {
         try await make()
         var reveals: [ModelID] = []
-        wc.sidebar.onSelectCue = { reveals.append($0) }
+        side.onInspect = { id, _ in reveals.append(id) }
         try chooseRow(of: radio)
         XCTAssertEqual(reveals, [radio], "once per click")
         wc.cueList.select([TestSnapshots.door])
@@ -362,8 +360,8 @@ final class WarningsTests: XCTestCase {
     func testRowWithoutACueCannotBeSelected() async throws {
         try await make()
         try receive(#"{"type":"warnings","warnings":[{"type":"unknown_list","list":"\#(Self.second)"}]}"#)
-        let row = try XCTUnwrap(wc.sidebar.warningRows.firstIndex { $0.cue == nil })
-        XCTAssertFalse(wc.sidebar.tableView(wc.sidebar.warningsTable, shouldSelectRow: row))
+        let row = try XCTUnwrap(side.rows.firstIndex { $0.cue == nil })
+        XCTAssertFalse(wc.sidebar.tableView(side.table, shouldSelectRow: row))
     }
 
     /// A reason too long for one line (a cue its lost device left paused) wraps, and its row is tall
@@ -371,12 +369,11 @@ final class WarningsTests: XCTestCase {
     func testAReasonThatWrapsGetsARowTallEnoughForAllOfIt() async throws {
         try await make()
         try runtime(#"{"type":"cue_state","cue":"\#(rain)","state":"paused","reason":"device_lost"}"#)
-        let side = try XCTUnwrap(wc.sidebar)
-        let row = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == rain })
-        XCTAssertEqual(side.warningRows[row].detail, loc("paused.device_lost"))
+        let row = try XCTUnwrap(side.rows.firstIndex { $0.cue == rain })
+        XCTAssertEqual(side.rows[row].detail, loc("paused.device_lost"))
         for width in [CGFloat(280), 200] {
-            let height = WarningCell.height(of: side.warningRows[row], width: width)
-            let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: row) as? WarningCell)
+            let height = WarningCell.height(of: side.rows[row], width: width)
+            let cell = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: row) as? WarningCell)
             cell.frame = NSRect(x: 0, y: 0, width: width, height: height)
             cell.layoutSubtreeIfNeeded()
             cell.layoutSubtreeIfNeeded()
@@ -397,12 +394,11 @@ final class WarningsTests: XCTestCase {
     func testAWrappedMissingFileRowHoldsItsButton() async throws {
         try await make()
         try missingMedia(rain, "media/A Long Folder For The Second Act/and-another-folder/rain-bed-take-two.wav")
-        let side = try XCTUnwrap(wc.sidebar)
-        let row = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == rain })
-        XCTAssertTrue(side.warningRows[row].canRelink)
+        let row = try XCTUnwrap(side.rows.firstIndex { $0.cue == rain })
+        XCTAssertTrue(side.rows[row].canRelink)
         for width in [CGFloat(280), 200] {
-            let height = WarningCell.height(of: side.warningRows[row], width: width)
-            let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: row) as? WarningCell)
+            let height = WarningCell.height(of: side.rows[row], width: width)
+            let cell = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: row) as? WarningCell)
             cell.frame = NSRect(x: 0, y: 0, width: width, height: height)
             cell.layoutSubtreeIfNeeded()
             cell.layoutSubtreeIfNeeded()
@@ -419,8 +415,8 @@ final class WarningsTests: XCTestCase {
     /// A selected row's reasons are drawn in the selection's text colour, not the faint grey.
     func testASelectedRowsReasonsTakeTheSelectionsTextColour() async throws {
         try await make()
-        let row = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == radio })
-        let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: row) as? WarningCell)
+        let row = try XCTUnwrap(side.rows.firstIndex { $0.cue == radio })
+        let cell = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: row) as? WarningCell)
         cell.backgroundStyle = .emphasized
         XCTAssertEqual(cell.detail.textColor, .alternateSelectedControlTextColor)
         cell.backgroundStyle = .normal
@@ -431,7 +427,7 @@ final class WarningsTests: XCTestCase {
         try await make()
         var asked = 0
         wc.onRelink = { asked += 1 }
-        wc.sidebar.onRelink?()
+        side.onRelink?()
         XCTAssertEqual(asked, 1)
     }
 
@@ -440,15 +436,13 @@ final class WarningsTests: XCTestCase {
     /// The test's own engine: its virtual output is unplugged and plugged back in.
     private var ownEngine: TestEngine?
 
-    /// The demo show on an engine of the test's own, Rain's number cleared, in a window with the
-    /// sidebar on the Warnings tab.
+    /// The demo show on an engine of the test's own, Rain's number cleared, in a window.
     private func openWithoutRainsNumber() async throws {
         let engine = try await TestEngine.start()
         ownEngine = engine
         rig = try await Rig.open("Demo", on: engine)
         makeWindow()
         wc.window?.setContentSize(NSSize(width: 1200, height: 800))
-        wc.showWarnings()
         wc.window?.contentView?.layoutSubtreeIfNeeded()
         guard case .success = await store.setNumber(rain, nil) else { return XCTFail("number") }
         try await rig.advance()
@@ -473,9 +467,8 @@ final class WarningsTests: XCTestCase {
 
     /// What the window's Warnings list draws: each row's title and reasons, from its cell.
     private func shownRows() throws -> [(title: String, detail: String)] {
-        let side = try XCTUnwrap(wc.sidebar)
-        return try (0..<side.warningsTable.numberOfRows).map { row in
-            let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: row) as? WarningCell)
+        return try (0..<side.table.numberOfRows).map { row in
+            let cell = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: row) as? WarningCell)
             return (cell.title.stringValue, cell.detail.isHidden ? "" : cell.detail.stringValue)
         }
     }
@@ -512,16 +505,15 @@ final class WarningsTests: XCTestCase {
     /// Every text the Warnings list, its count line and the footer button show or speak, tooltips
     /// included, is free of internal ids.
     private func assertListShowsNoID(_ context: String) throws {
-        let side = try XCTUnwrap(wc.sidebar)
-        for row in 0..<side.warningsTable.numberOfRows {
-            let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: row) as? WarningCell)
+        for row in 0..<side.table.numberOfRows {
+            let cell = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: row) as? WarningCell)
             for text in [cell.title.stringValue, cell.detail.stringValue, cell.accessibilityLabel()] {
                 assertNoID(text, context)
             }
             for view in [cell, cell.title, cell.detail, cell.relinkButton] { assertNoID(view.toolTip, context) }
         }
         let button = wc.footer.warningsButton
-        for text in [side.warningsCount.stringValue, button.title, button.toolTip, button.accessibilityLabel()] {
+        for text in [side.summaryLabel.stringValue, button.title, button.toolTip, button.accessibilityLabel()] {
             assertNoID(text, context)
         }
     }
@@ -573,9 +565,9 @@ final class WarningsTests: XCTestCase {
                 try runtime(#"{"type":"problems","cue":"\#(rain)","problems":[\#(try o.text())]}"#)
                 try assertListShowsNoID("\(file) on \(id)")
             }
-            XCTAssertGreaterThan(side.warningRows.count, 10)
+            XCTAssertGreaterThan(side.rows.count, 10)
             try assertListShowsNoID("warnings on \(id)")
-            for row in side.warningRows { assertNoID(row.title + row.detail, "row \(row.id)") }
+            for row in side.rows { assertNoID(row.title + row.detail, "row \(row.id)") }
         }
     }
 
@@ -589,7 +581,7 @@ final class WarningsTests: XCTestCase {
         ])
         let list = try (Self.pathNotices + [repair]).map { try $0.text() }.joined(separator: ",")
         try receive(#"{"type":"warnings","warnings":[\#(list)]}"#)
-        let titles = side.warningRows.map(\.title)
+        let titles = side.rows.map(\.title)
         XCTAssertTrue(titles.contains("\(Self.uuidFile): 2 damaged part(s); they play as silence"), "\(titles)")
         XCTAssertTrue(titles.contains { $0.contains("volume \"\(Self.uuidVolume)\"") }, "\(titles)")
         XCTAssertTrue(
@@ -637,13 +629,12 @@ final class WarningsTests: XCTestCase {
                 XCTAssertFalse((row.title + row.detail).contains("audio device \""), "\(row)")
             }
             // The whole entry is drawn: its cell is as tall as its wrapped title and words.
-            let side = try XCTUnwrap(wc.sidebar)
-            let index = try XCTUnwrap(side.warningRows.firstIndex { $0.title == deviceTitle })
-            let width = side.warningsTable.bounds.width
+            let index = try XCTUnwrap(side.rows.firstIndex { $0.title == deviceTitle })
+            let width = side.table.bounds.width
             XCTAssertGreaterThan(width, 100)
-            let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: index) as? WarningCell)
+            let cell = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: index) as? WarningCell)
             cell.frame = NSRect(
-                x: 0, y: 0, width: width, height: WarningCell.height(of: side.warningRows[index], width: width))
+                x: 0, y: 0, width: width, height: WarningCell.height(of: side.rows[index], width: width))
             cell.layoutSubtreeIfNeeded()
             for field in [cell.title, cell.detail] {
                 let frame = cell.convert(field.bounds, from: field)
@@ -669,7 +660,7 @@ final class WarningsTests: XCTestCase {
         try receive(
             #"{"type":"warnings","warnings":[{"type":"notice","code":"device_lost","message":"x","device":"\#(name)"},"#
                 + #"{"type":"notice","code":"patch_device_missing","message":"y","device":"\#(name)"}]}"#)
-        let rows = side.warningRows.filter { $0.cue == nil }
+        let rows = side.rows.filter { $0.cue == nil }
         XCTAssertEqual(rows.count, 1, "\(rows)")
         let row = try XCTUnwrap(rows.first)
         XCTAssertTrue(row.title.contains("…"), row.title)
@@ -687,16 +678,16 @@ final class WarningsTests: XCTestCase {
             #"{"type":"warnings","warnings":[{"type":"notice","code":"patch_no_system_output","message":"Patch \"Main\" is on the system output"},"#
                 + #"{"type":"notice","code":"patch_no_system_output","message":"Patch \"Side\" is on the system output"}]}"#
         )
-        let rows = side.warningRows.filter { $0.cue == nil }
+        let rows = side.rows.filter { $0.cue == nil }
         XCTAssertEqual(rows.count, 1, "\(rows)")
         let row = try XCTUnwrap(rows.first)
         XCTAssertEqual(row.title, loc("settings.audio.systemOutputNone"))
         XCTAssertEqual(row.detail, loc("warnings.systemOutputNone"))
         XCTAssertFalse(row.title.contains("\""), row.title)
-        let index = try XCTUnwrap(side.warningRows.firstIndex { $0.id == row.id })
-        side.warningsTable.reloadData()
-        let width = side.warningsTable.bounds.width
-        let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: index) as? WarningCell)
+        let index = try XCTUnwrap(side.rows.firstIndex { $0.id == row.id })
+        side.table.reloadData()
+        let width = side.table.bounds.width
+        let cell = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: index) as? WarningCell)
         cell.frame = NSRect(x: 0, y: 0, width: width, height: WarningCell.height(of: row, width: width))
         cell.layoutSubtreeIfNeeded()
         XCTAssertEqual(cell.title.stringValue, row.title)
@@ -734,7 +725,7 @@ final class WarningsTests: XCTestCase {
             let shown = try shownRows().count
             XCTAssertEqual(wc.footer.warningsButton.title, String(shown), context)
             XCTAssertEqual(
-                wc.sidebar.warningsCount.stringValue,
+                side.summaryLabel.stringValue,
                 shown == 1 ? loc("warnings.one") : String(format: loc("warnings.many"), shown), context)
         }
         // Intro, Door slam, Rain and Radio broken, and the device: five entries.

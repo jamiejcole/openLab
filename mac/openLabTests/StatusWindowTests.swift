@@ -4,9 +4,9 @@ import XCTest
 
 @testable import openLab
 
-/// SM-06, DX-01, DX-02: the workspace status window against the real engine: one window for the
-/// pre-show check, the show log and the workspace's info, opened by its shortcut, by Window > Log
-/// and by a click on the footer's warning mark.
+/// DX-01, DX-02: the workspace status window against the real engine: one window for the live
+/// warnings, the show log and the workspace's info, opened by its shortcut or by a click on the
+/// footer's warnings button; the log is one of its pages, there is no separate command for it.
 @MainActor
 final class StatusWindowTests: XCTestCase {
     private let radio = TestSnapshots.radio
@@ -21,7 +21,21 @@ final class StatusWindowTests: XCTestCase {
         return (rig, wc)
     }
 
-    /// Checklist: the status shortcut, and a click on the footer's warning mark → one status window
+    /// Flow: Window menu → no separate log command; the log is reached from the status window's tabs.
+    func testTheWindowMenuHasNoLogCommandAndLogsIsATabOfTheStatusWindow() async throws {
+        let (_, wc) = try await open()
+        let window = MainMenu.make().windows
+        XCTAssertFalse(window.items.contains { $0.title == "Show Log" || $0.title == loc("log.title") })
+        XCTAssertFalse(window.items.contains { $0.action == NSSelectorFromString("showLog:") })
+        await wc.showWorkspaceStatus().value
+        let status = try XCTUnwrap(wc.existingStatusWindow)
+        XCTAssertTrue(status.tabs.tabViewItems.contains { ($0.identifier as? String) == "logs" })
+        status.tabs.selectTabViewItem(withIdentifier: StatusWindowController.Page.logs.rawValue)
+        XCTAssertEqual(status.page, .logs)
+        XCTAssertTrue(status.logs.table.window != nil || status.logs.table.superview != nil, "the page holds the log")
+    }
+
+    /// Flow: the status shortcut, and a click on the footer's warnings button → one status window
     /// with warnings, the log and workspace info.
     func testTheStatusShortcutAndTheFootersWarningMarkOpenOneWindowWithWarningsLogsAndInfo() async throws {
         let (rig, wc) = try await open()
@@ -38,15 +52,14 @@ final class StatusWindowTests: XCTestCase {
         XCTAssertEqual(status.page, .warnings)
         XCTAssertEqual(
             status.tabs.tabViewItems.map(\.label), StatusWindowController.Page.allCases.map { loc($0.titleKey) })
-        XCTAssertNotNil(status.warnings.report, "the page ran the check")
         XCTAssertTrue(status.warnings.rows.contains { $0.cue == radio }, "the missing file's cue is listed")
 
-        // The footer's warning mark opens the same window on Warnings; Window > Log on Logs.
+        // The footer's warnings button opens the same window on Warnings; Logs is a tab of it.
         status.tabs.selectTabViewItem(withIdentifier: StatusWindowController.Page.info.rawValue)
         wc.footer.warningsButton.performClick(nil)
         XCTAssertTrue(wc.existingStatusWindow === status, "one window")
         XCTAssertEqual(status.page, .warnings)
-        await wc.showLog().value
+        await status.present(.logs).value
         XCTAssertTrue(wc.existingStatusWindow === status, "still one window")
         XCTAssertEqual(status.page, .logs)
         XCTAssertTrue(status.logs.isOpen(), "the log page counts as open")
@@ -75,7 +88,7 @@ final class StatusWindowTests: XCTestCase {
         let playheads = rig.store.playheads
         await wc.showWorkspaceStatus().value
         let status = try XCTUnwrap(wc.existingStatusWindow)
-        let row = try XCTUnwrap(status.warnings.rows.firstIndex { $0.cue == radio && $0.section == .brokenCues })
+        let row = try XCTUnwrap(status.warnings.rows.firstIndex { $0.cue == radio })
         XCTAssertTrue(status.warnings.choose(row: row))
         await assertEventually("the cue is selected") { wc.cueList.selectedIDs() == [self.radio] }
         XCTAssertEqual(rig.store.playheads, playheads, "a click in a list of warnings never moves GO")

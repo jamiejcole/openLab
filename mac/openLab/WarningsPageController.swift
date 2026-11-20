@@ -35,8 +35,10 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
     private(set) var all: [WarningRow] = []
     /// The rows listed: `all` less the hidden ones unless they are shown.
     private(set) var rows: [WarningRow] = []
-    /// Ids of rows redrawn in place (tests check that only changed rows were touched).
+    /// Ids of rows redrawn in place, and how often the whole table was reloaded (tests check that a
+    /// change touches only the rows it changes).
     private(set) var updatedRows: [String] = []
+    private(set) var wholeReloads = 0
     /// The row a mouse-down selected: the click's action that follows must not choose it again.
     private var chosenByMouseDown: Int?
     private var reloading = false
@@ -87,17 +89,30 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
         let selected = selectedRow?.id
         let listed = showHidden ? all : all.filter { !isHidden($0) }
         let old = rows
-        rows = listed
         reloading = true
         defer { reloading = false }
-        if old.map(\.id) == listed.map(\.id) {
-            // The same rows: only the ones whose words changed are redrawn.
-            for i in listed.indices where old[i] != listed[i] {
+        let oldIDs = Set(old.map(\.id))
+        let newIDs = Set(listed.map(\.id))
+        let kept = old.filter { newIDs.contains($0.id) }
+        if kept.map(\.id) == listed.filter({ oldIDs.contains($0.id) }).map(\.id) {
+            // The rows that stay keep their order: the ones that went are removed, new ones inserted
+            // where they belong and a row whose words changed is redrawn in place.
+            rows = kept
+            let removed = IndexSet(old.indices.filter { !newIDs.contains(old[$0].id) })
+            if !removed.isEmpty { table.removeRows(at: removed, withAnimation: []) }
+            for (i, row) in listed.enumerated() where !oldIDs.contains(row.id) {
+                rows.insert(row, at: i)
+                table.insertRows(at: IndexSet(integer: i), withAnimation: [])
+            }
+            for i in listed.indices where rows[i] != listed[i] {
+                rows[i] = listed[i]
                 updatedRows.append(listed[i].id)
                 table.reloadData(forRowIndexes: IndexSet(integer: i), columnIndexes: IndexSet(integer: 0))
                 table.noteHeightOfRows(withIndexesChanged: IndexSet(integer: i))
             }
         } else {
+            rows = listed
+            wholeReloads += 1
             table.reloadData()
         }
         if let selected, let i = rows.firstIndex(where: { $0.id == selected }) {
@@ -107,7 +122,8 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
         }
         let count = all.count
         let summary =
-            count == 0 ? loc("warnings.none") : String(format: loc(count == 1 ? "warnings.one" : "warnings.many"), count)
+            count == 0
+            ? loc("warnings.none") : String(format: loc(count == 1 ? "warnings.one" : "warnings.many"), count)
         let hiddenCount = all.filter(isHidden).count
         summaryLabel.stringValue =
             hiddenCount == 0 ? summary : String(format: loc("warnings.summary.hidden"), summary, hiddenCount)
@@ -126,6 +142,10 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
         let key = Self.hideKey(rows[row])
         if !hidden.insert(key).inserted { hidden.remove(key) }
         redraw()
+        // A hidden row that is still listed (Show hidden) is drawn dimmed: redraw it.
+        if rows.indices.contains(row) {
+            table.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+        }
     }
 
     func setShowHidden(_ on: Bool) {
@@ -144,20 +164,13 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
     // MARK: Choosing a row
 
     /// Selects the row's cue in the workspace window. False when nothing was selected: silently for a
-    /// row with no cue (a device or system warning), with a beep when its cue was deleted since.
+    /// row with no cue (a device or system warning). A cue that is gone has no row.
     @discardableResult
     func choose(row: Int) -> Bool {
         guard rows.indices.contains(row), let cue = rows[row].cue else { return false }
-        guard store.model?.cue(cue) != nil else {
-            beep()
-            return false
-        }
         onInspect?(cue, rows[row].inspectorTab)
         return true
     }
-
-    /// The system beep, for a row whose cue was deleted a moment ago; a test counts it.
-    var beep: () -> Void = { NSSound.beep() }
 
     @objc private func rowClicked() {
         let row = table.clickedRow

@@ -1,5 +1,5 @@
 {
-  "about": "Two output devices (#666, #720): the second virtual output plugged in, the Demo patch put on it and Intro played there; the second unplugged under it (Intro paused for the lost device, the Warnings tab, the settings row and the preferences' device list say it is missing); plugged back in, the patch on the system output, the system output moved to the second device, then the patch put back on the first.",
+  "about": "Two output devices (#666, #720): the second virtual output plugged in, the Demo patch put on it and Intro played there; the second unplugged under it (Intro paused for the lost device, the Status window's Warnings page, the settings row and the preferences' device list say it is missing); plugged back in, the patch on the system output, the system output moved to the second device, then the patch put back on the first.",
   "show": "Demo",
   "media": {"media/a.wav": 30},
   "window": {"width": 1300, "height": 850},
@@ -25,8 +25,9 @@
     {"advance": 2},
     {"select": "1"},
     {"shot": "second-unplugged"},
-    {"click": "sidebar-tabs", "at": [0.84, 0.5]},
+    {"focus": "status"},
     {"shot": "second-unplugged-warnings"},
+    {"focus": "workspace"},
     {"focus": "settings"},
     {"shot": "settings-second-unplugged"},
     {"focus": "preferences"},

@@ -101,6 +101,26 @@ final class SidebarTests: XCTestCase {
 
     // MARK: Cue lists
 
+    /// Flow: sidebar shown → two tabs only (cue lists and active cues); no Warnings tab. The footer's
+    /// warnings button leads to the Status window's Warnings page instead.
+    func testTheSidebarHasTwoTabsAndTheFootersWarningsButtonOpensStatus() async throws {
+        let wc = try await make()
+        wc.sidebar.loadViewIfNeeded()
+        XCTAssertEqual(wc.sidebar.tabs.segmentCount, 2)
+        let labels = (0..<2).map { wc.sidebar.tabs.label(forSegment: $0) }
+        XCTAssertTrue(labels[0].contains("Cue List"), labels[0])
+        XCTAssertTrue(labels[1].contains("Active Cue"), labels[1])
+        for tab in 0..<2 {
+            wc.sidebar.showTab(tab)
+            XCTAssertFalse((labels[tab]).localizedCaseInsensitiveContains("warning"))
+        }
+        wc.footer.showWarnings(count: 2)
+        wc.footer.warningsButton.performClick(nil)
+        XCTAssertEqual(wc.existingStatusWindow?.page, .warnings)
+        XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 1, "the sidebar did not change tab")
+        wc.existingStatusWindow?.close()
+    }
+
     /// Each transport icon is drawn inside its button's shape with a margin, at the default and the
     /// minimum sidebar width: the glyph at the size the button sets, against the cell's content
     /// area.

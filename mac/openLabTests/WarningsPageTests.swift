@@ -4,183 +4,81 @@ import XCTest
 
 @testable import openLab
 
-/// SM-06, NFR-07: the pre-show check window, its report rows and the click-through to the cue.
+/// The Warnings page of the status window: live rows (no Check Again, no snapshot), hide and show
+/// hidden, and the click-through to the cue. Real engine; the status window's own tests are in
+/// `StatusWindowTests`.
 @MainActor
-final class PreshowTests: XCTestCase {
+final class WarningsPageTests: XCTestCase {
     private let intro = TestSnapshots.intro
     private let radio = TestSnapshots.radio
 
-    /// No engine: the demo show's model, for what the rows make of a report.
-    private func demoRig() async throws -> Rig { try Rig.offline(TestSnapshots.show()) }
-
-    /// The demo show on the real engine, whose check finds Radio's file missing.
     private func realRig() async throws -> Rig { try await Rig.open() }
 
-    private func report(_ json: String) throws -> PreshowReport {
-        try JSONDecoder().decode(PreshowReport.self, from: Data(json.utf8))
+    // MARK: Live list
+
+    /// Every button title and label on the page.
+    private func words(_ v: NSView) -> [String] {
+        var out: [String] = []
+        if let b = v as? NSButton { out += [b.title, b.accessibilityLabel() ?? ""] }
+        if let t = v as? NSTextField { out.append(t.stringValue) }
+        return out + v.subviews.flatMap(words)
     }
 
-    private func fixtureReport() throws -> PreshowReport {
-        guard
-            case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_preshow_check")),
-            case .preshowCheck(let r)? = ok.data
-        else { throw XCTSkip("fixture does not decode") }
-        return r
-    }
-
-    private static let emptySummary =
-        #""summary":{"broken_cues":0,"media":0,"patches":0,"network":0,"network_unchecked":0,"system":0,"total":0}"#
-
-    // MARK: Report model
-
-    func testRowsComeGroupedInFixedSectionOrderKeepingTheEnginesOrder() async throws {
-        let rig = try await demoRig()
-        let rows = PreshowRows.make(report: try fixtureReport(), model: rig.store.model)
-        XCTAssertEqual(
-            rows.filter(\.isHeading).map(\.section), [.brokenCues, .media, .devices, .network, .system])
-        XCTAssertEqual(rows.first?.title, String(format: loc("preshow.section.brokenCues"), 2))
-        // Every entry follows its own heading.
-        var current: PreshowRow.Section?
-        for r in rows {
-            if r.isHeading { current = r.section } else { XCTAssertEqual(r.section, current, r.title) }
-        }
-        let entries = rows.filter { !$0.isHeading }
-        let broken = entries.filter { $0.section == .brokenCues }
-        // Names come from the app's model: the fade cue has no name, so its kind shows.
-        XCTAssertEqual(broken.map(\.cue), [intro, TestSnapshots.fade])
-        XCTAssertTrue(broken[0].title.contains("Intro"))
-        XCTAssertEqual(broken[0].inspectorTab, "basics")
-        XCTAssertTrue(broken[0].detail.contains("/Shows/storm.wav"))
-        XCTAssertEqual(entries.filter { $0.section == .media }.map(\.title), ["/Shows/rain.mp3", "/Shows/storm.wav"])
-        XCTAssertTrue(entries.first { $0.section == .media }?.detail.contains("unsupported codec") == true)
-
-        let patches = entries.filter { $0.section == .devices }
-        XCTAssertEqual(patches.first?.title, "Main")
-        XCTAssertTrue(patches.first?.detail.contains("Scarlett 2i2") == true)
-        XCTAssertEqual(patches.first?.cue, intro)
-        XCTAssertTrue(patches[1].title.contains("00000000-0000-0000-0000-000000000009"))
-
-        let network = entries.filter { $0.section == .network }
-        // An unchecked destination is information; a missing one is a problem.
-        XCTAssertEqual(network.map(\.isProblem), [false, true])
-        XCTAssertTrue(network[0].detail.contains("10.0.0.5:8000"))
-        // Cues 0c and 0d are not in this workspace: nothing to select.
-        XCTAssertEqual(network.map(\.cue), [nil, nil])
-        XCTAssertEqual(entries.filter { $0.section == .system }.count, 1)
-        XCTAssertEqual(PreshowRows.summary(try fixtureReport()), String(format: loc("preshow.summary.many"), 3))
-    }
-
-    func testAllClearReportHasNoRowsAndSaysSo() throws {
-        let r = try report(
-            #"{"ok":true,\#(Self.emptySummary),"broken_cues":[],"media":[],"patches":[],"network":[],"system":[]}"#)
-        XCTAssertEqual(PreshowRows.make(report: r, model: nil), [])
-        XCTAssertEqual(PreshowRows.summary(r), loc("preshow.summary.ok"))
-    }
-
-    func testCueDeletedSinceTheCheckIsMarkedAndCannotBeChosen() async throws {
-        let rig = try await demoRig()
-        let gone = "00000000-0000-0000-0000-0000000000ff"
-        let r = try report(
-            #"{"ok":false,\#(Self.emptySummary),"broken_cues":[{"cue":"\#(gone)","list":"\#(TestSnapshots.mainList)","number":"9","name":"Thunder","problems":[{"type":"no_media"}]}],"#
-                + #""media":[],"patches":[],"network":[],"system":[]}"#)
-        let pc = WarningsPageController(store: rig.store)
-        var inspected: [ModelID] = []
-        pc.onInspect = { id, _ in inspected.append(id) }
-        pc.show(r)
-        let row = try XCTUnwrap(pc.rows.firstIndex { !$0.isHeading })
-        XCTAssertEqual(pc.rows[row].title, String(format: loc("preshow.cue.deleted"), "9  Thunder"))
-        XCTAssertNil(pc.rows[row].cue)
-        XCTAssertFalse(pc.choose(row: row))
-        XCTAssertFalse(pc.choose(row: 0))  // the heading
-        XCTAssertEqual(inspected, [])
-    }
-
-    func testAnEntryNamesAtMostFiveCues() throws {
-        let ids = (1...8).map { String(format: "\"00000000-0000-0000-0000-%012d\"", $0) }.joined(separator: ",")
-        let r = try report(
-            #"{"ok":false,\#(Self.emptySummary),"broken_cues":[],"media":[{"path":"/a.wav","status":"missing","cues":[\#(ids)]}],"#
-                + #""patches":[],"network":[],"system":[]}"#)
-        let media = try XCTUnwrap(PreshowRows.make(report: r, model: nil).last)
-        XCTAssertTrue(
-            media.detail.hasSuffix(
-                String(format: loc("preshow.usedBy.more"), "", 3).trimmingCharacters(in: .whitespaces)))
-        XCTAssertNil(media.cue)
-    }
-
-    func testPreloadOverBudgetAndSparePatchesAreInformationOnly() throws {
-        let r = try report(
-            #"{"ok":true,\#(Self.emptySummary),"broken_cues":[],"media":[],"#
-                + #""patches":[{"patch":"00000000-0000-0000-0000-000000000001","name":"Spare","mapped":false,"resolution":{"type":"unmapped"},"cues":[]}],"#
-                + #""network":[],"system":[{"type":"notice","code":"preload_over_budget","message":"over"}]}"#)
-        let entries = PreshowRows.make(report: r, model: nil).filter { !$0.isHeading }
-        XCTAssertEqual(entries.map(\.isProblem), [false, false])
-        XCTAssertTrue(entries[0].detail.contains(loc("preshow.patch.unused")))
-    }
-
-    // MARK: Window
-
-    func testDisconnectedEngineGreysTheItemAndClearsTheReport() async throws {
+    /// Flow: Status > Warnings with a missing file → the list shows its cue; the file is fixed, the row
+    /// goes; broken again, it comes back; nothing is pressed, and the page has no Check Again button.
+    func testTheListIsLiveAndHasNoCheckAgainButton() async throws {
         let rig = try await realRig()
         let wc = WorkspaceWindowController(store: rig.store)
-        let pc = wc.preshowWindow
-        await pc.runCheck()
-        XCTAssertFalse(pc.rows.isEmpty)
-        XCTAssertTrue(pc.checkButton.isEnabled)
+        wc.showWindow(nil)
+        addTeardownBlock { @MainActor in wc.window?.close() }
+        await wc.showWorkspaceStatus().value
+        let page = wc.warningsPage
+        XCTAssertTrue(page.rows.contains { $0.cue == radio }, "the missing file's cue is listed")
+        XCTAssertEqual(page.summaryLabel.stringValue, String(format: loc("warnings.one"), 1))
+        let content = try XCTUnwrap(wc.existingStatusWindow?.tabs)
+        XCTAssertFalse(words(content).contains { $0.localizedCaseInsensitiveContains("check again") })
 
-        rig.client.stop()  // the connection to the engine is gone
-        await assertEventually { rig.store.connectionState != .connected }
-        XCTAssertFalse(wc.canRunPreshowCheck)
-        XCTAssertFalse(pc.checkButton.isEnabled)
-        XCTAssertEqual(pc.rows, [])
-        XCTAssertNil(pc.report)
-        XCTAssertEqual(pc.summaryLabel.stringValue, loc("preshow.disconnected"))
-
-        // Asked anyway (the window was open): it says nothing was checked, never "no problems".
-        await pc.runCheck()
-        XCTAssertEqual(pc.rows, [])
-        XCTAssertEqual(pc.summaryLabel.stringValue, loc("preshow.disconnected"))
+        guard case .success = await rig.store.send(command: .setProperty(radio, .media("media/d.wav"))) else {
+            return XCTFail("fix")
+        }
+        await assertEventually("the fixed cue's row goes") {
+            try? await rig.advance()
+            return !page.rows.contains { $0.cue == self.radio }
+        }
+        XCTAssertEqual(page.summaryLabel.stringValue, loc("warnings.none"))
+        XCTAssertEqual(page.table.numberOfRows, 0)
+        guard case .success = await rig.store.send(command: .setProperty(radio, .media("media/gone.wav"))) else {
+            return XCTFail("break")
+        }
+        await assertEventually("a new problem's row appears") {
+            try? await rig.advance()
+            return page.rows.contains { $0.cue == self.radio }
+        }
+        XCTAssertEqual(page.table.numberOfRows, page.rows.count)
     }
 
-    func testAReplyThatDoesNotDecodeShowsAFailureNotAnOldReport() async throws {
-        let rig = try await realRig()
-        let pc = WarningsPageController(store: rig.store)
-        await pc.runCheck()
-        XCTAssertFalse(pc.rows.isEmpty, "Radio's file is missing")
-        rig.wire.garbleResults = true
-        await pc.runCheck()
-        XCTAssertEqual(pc.rows, [])
-        XCTAssertEqual(pc.summaryLabel.stringValue, loc("preshow.failed"))
-    }
-
-    func testAnOlderAnswerDoesNotReplaceANewerCheck() async throws {
-        let rig = try await realRig()
-        let pc = WarningsPageController(store: rig.store)
-        rig.wire.holdResults = true
-        let first = Task { await pc.runCheck() }  // Radio's file is missing
-        await assertEventually { rig.wire.requestCount { $0 == .preshowCheck } == 1 }
-        XCTAssertTrue(pc.checking)
-        XCTAssertFalse(pc.checkButton.isEnabled)
-        // Another client points Radio at a file that is there; the engine takes in its probe.
-        let other = Rig(engine: rig.testEngine, workspace: rig.doc)
-        guard await other.connect() else { return XCTFail("other client") }
-        defer { other.client.stop() }
-        guard case .success = await other.store.send(command: .setProperty(radio, .media("media/a.wav"))) else {
-            return XCTFail("relink Radio")
-        }
-        try await other.advance()
-        let second = Task { await pc.runCheck() }
-        await assertEventually("both answers held") {
-            rig.wire.heldResults { if case .request(_, .preshowCheck) = $0 { return true } else { return false } } == 2
-        }
-        rig.wire.holdResults = false
-        // The newer (no media problem) answer lands first; the older one must not replace it.
-        rig.wire.releaseResults(reversed: true)
-        await first.value
-        await second.value
-        XCTAssertFalse(pc.checking)
-        XCTAssertTrue(pc.checkButton.isEnabled)
-        XCTAssertEqual(pc.report?.summary.media, 0)
-        XCTAssertFalse(pc.rows.contains { $0.section == .media }, "\(pc.rows)")
+    /// Flow: Show Mode, a warning arrives → nothing modal: no sheet, no modal window; the footer's count
+    /// changes and the open Status window lists it.
+    func testAWarningInShowModeRaisesNothingModalAndShowsInTheFooterAndThePage() async throws {
+        let rig = try await Rig.open("Second")
+        let wc = WorkspaceWindowController(store: rig.store)
+        wc.showWindow(nil)
+        addTeardownBlock { @MainActor in wc.window?.close() }
+        wc.setShowMode(true)
+        await assertEventually { wc.isShowMode }
+        await wc.showWorkspaceStatus().value
+        let page = wc.warningsPage
+        XCTAssertTrue(page.rows.isEmpty)
+        XCTAssertTrue(wc.footer.warningsButton.isHidden)
+        let late = #"{"type":"late_start","cue":"\#(TestSnapshots.door)","late_ms":120}"#
+        XCTAssertEqual(
+            rig.store.receive(try ServerMessage.decode(#"{"type":"warnings","warnings":[\#(late)]}"#)), .applied)
+        XCTAssertNil(NSApp.modalWindow)
+        XCTAssertNil(wc.window?.attachedSheet)
+        XCTAssertTrue(wc.isShowMode)
+        XCTAssertEqual(wc.footer.warningsButton.title, "1")
+        XCTAssertEqual(page.rows.count, 1, "the open Status window lists it")
+        XCTAssertEqual(page.summaryLabel.stringValue, String(format: loc("warnings.one"), 1))
     }
 
     func testThePanelClosesWithItsWorkspaceAndNamesIt() async throws {
@@ -197,11 +95,11 @@ final class PreshowTests: XCTestCase {
     }
 
     /// A click on any view that needs its panel to be key (an NSTableView does by default) would
-    /// make the report key, and GO would stop reaching the workspace window.
+    /// make the list key, and GO would stop reaching the workspace window.
     func testNothingInThePanelMakesItKey() async throws {
         let rig = try await realRig()
         let pc = WarningsPageController(store: rig.store)
-        await pc.runCheck()
+        pc.show(WarningRows.make(store: rig.store))
         let panel = try XCTUnwrap(pc.window as? NSPanel)
         XCTAssertTrue(panel.becomesKeyOnlyIfNeeded)
         func walk(_ v: NSView) -> [NSView] { [v] + v.subviews.flatMap(walk) }
@@ -214,34 +112,40 @@ final class PreshowTests: XCTestCase {
         XCTAssertTrue(pc.table is NonKeyTableView)
     }
 
-    func testWindowMenuHasThePreshowCheck() {
-        let item = MainMenu.make().windows.items.first { $0.action == #selector(AppDelegate.showWorkspaceStatus(_:)) }
-        XCTAssertEqual(item?.title, loc("menu.window.status"))
-        XCTAssertEqual(item?.keyEquivalent, "W")
-    }
-
-    func testHidingAnEntryDropsItFromTheListAndSaysSoUntilUnhidden() async throws {
-        let rig = try await demoRig()
+    /// Flow: hide a row → it leaves the list and the summary counts it hidden; Show hidden brings it
+    /// back dimmed; unhide returns it for good. A changed problem on the same cue is a new row.
+    func testHidingARowDropsItFromTheListAndSaysSoUntilUnhidden() async throws {
+        let rig = try await realRig()
         let pc = WarningsPageController(store: rig.store)
-        pc.show(try fixtureReport())
-        let all = pc.rows.filter { !$0.isHeading }.count
-        let row = try XCTUnwrap(pc.rows.firstIndex { !$0.isHeading && $0.section == .media })
-        let hiddenRow = pc.rows[row]
+        pc.show(WarningRows.make(store: rig.store))
+        let count = pc.rows.count
+        XCTAssertGreaterThan(count, 0)
+        let row = try XCTUnwrap(pc.rows.firstIndex { $0.cue == radio })
+        let hidden = pc.rows[row]
         pc.toggleHidden(row: row)
-        XCTAssertEqual(pc.rows.filter { !$0.isHeading }.count, all - 1)
-        XCTAssertFalse(pc.rows.contains { $0.hideKey == hiddenRow.hideKey })
-        XCTAssertEqual(pc.hiddenCount, 1)
-        XCTAssertEqual(
-            pc.summaryLabel.stringValue,
-            String(format: loc("preshow.summary.hidden"), PreshowRows.summary(try fixtureReport()), 1))
-        // Shown again on request, dimmed; unhiding brings it back for good.
+        XCTAssertEqual(pc.rows.count, count - 1)
+        XCTAssertFalse(pc.rows.contains { $0.id == hidden.id })
+        let summary = String(format: loc(count == 1 ? "warnings.one" : "warnings.many"), count)
+        XCTAssertEqual(pc.summaryLabel.stringValue, String(format: loc("warnings.summary.hidden"), summary, 1))
         pc.setShowHidden(true)
-        let back = try XCTUnwrap(pc.rows.firstIndex { $0.hideKey == hiddenRow.hideKey })
-        XCTAssertTrue(pc.rows[back].isHidden)
+        let back = try XCTUnwrap(pc.rows.firstIndex { $0.id == hidden.id })
+        XCTAssertTrue(pc.isHidden(pc.rows[back]))
+        pc.table.selectRowIndexes([back], byExtendingSelection: false)
+        XCTAssertEqual(pc.hideButton.title, loc("warnings.unhide"))
         pc.toggleHidden(row: back)
         pc.setShowHidden(false)
-        XCTAssertEqual(pc.rows.filter { !$0.isHeading }.count, all)
-        XCTAssertEqual(pc.hiddenCount, 0)
+        XCTAssertEqual(pc.rows.count, count)
+        XCTAssertEqual(pc.summaryLabel.stringValue, summary)
+        // A hidden problem that changes is a new one: it is listed again.
+        pc.toggleHidden(row: try XCTUnwrap(pc.rows.firstIndex { $0.id == hidden.id }))
+        XCTAssertFalse(pc.rows.contains { $0.id == hidden.id })
+        var changed = pc.all
+        let i = try XCTUnwrap(changed.firstIndex { $0.id == hidden.id })
+        changed[i] = WarningRow(
+            id: hidden.id, cue: hidden.cue, title: hidden.title, detail: hidden.detail + " (another reason)",
+            canRelink: hidden.canRelink)
+        pc.show(changed)
+        XCTAssertTrue(pc.rows.contains { $0.id == hidden.id }, "the changed problem is not the one that was hidden")
     }
 
     // MARK: Going from a warning to its cue (flows)
@@ -304,7 +208,7 @@ final class PreshowTests: XCTestCase {
     }
 
     private func row(_ pc: WarningsPageController, _ cue: ModelID) throws -> Int {
-        try XCTUnwrap(pc.rows.firstIndex { $0.cue == cue && !$0.isHeading }, "the report has an entry for \(cue)")
+        try XCTUnwrap(pc.rows.firstIndex { $0.cue == cue }, "the list has a row for \(cue)")
     }
 
     /// The cue's row is drawn in full inside the list's visible area.
@@ -328,7 +232,7 @@ final class PreshowTests: XCTestCase {
         let wc = WorkspaceWindowController(store: rig.store)
         wc.window?.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in
-            wc.preshowWindow.close()
+            wc.warningsPage.close()
             wc.window?.close()
         }
         return wc
@@ -338,13 +242,10 @@ final class PreshowTests: XCTestCase {
         let rig = try await flowRig()
         let wc = flowWindow(rig)
         wc.setVisible(.inspector, false)
-        XCTAssertTrue(wc.canRunPreshowCheck)
         await wc.showWorkspaceStatus().value
-        let pc = wc.preshowWindow
-        let report = try XCTUnwrap(pc.report, "the engine answered")
-        XCTAssertFalse(report.ok)
-        XCTAssertEqual(pc.summaryLabel.stringValue, PreshowRows.summary(report))
-        XCTAssertTrue(pc.rows.contains { $0.section == .media && $0.title.contains("gone.wav") }, "the missing file")
+        let pc = wc.warningsPage
+        XCTAssertTrue(
+            pc.rows.contains { $0.cue == Self.missing3 && $0.detail.contains("gone.wav") }, "the missing file")
         XCTAssertFalse(pc.inspectButton.isEnabled, "nothing chosen yet")
         XCTAssertEqual(pc.table.doubleAction, #selector(WarningsPageController.inspectClicked))
         XCTAssertEqual(rig.store.playheads[TestSnapshots.mainList], intro)
@@ -382,7 +283,7 @@ final class PreshowTests: XCTestCase {
         let rig = try await flowRig()
         let wc = flowWindow(rig)
         await wc.showWorkspaceStatus().value
-        let pc = wc.preshowWindow
+        let pc = wc.warningsPage
         let outline = wc.cueList.outlineView
         func open(_ id: ModelID) -> Bool { wc.cueList.node(id).map { outline.isItemExpanded($0) } ?? false }
         // Groups come up open; the operator has shut both.
@@ -412,7 +313,7 @@ final class PreshowTests: XCTestCase {
         let rig = try await flowRig()
         let wc = flowWindow(rig)
         await wc.showWorkspaceStatus().value
-        let pc = wc.preshowWindow
+        let pc = wc.warningsPage
         wc.cueList.selectAsUser([TestSnapshots.fade])
         await assertEventually("the playhead followed the selection") {
             rig.store.playheads[TestSnapshots.mainList] == TestSnapshots.fade
@@ -448,7 +349,7 @@ final class PreshowTests: XCTestCase {
         wc.setShowMode(true)
         await assertEventually("Show Mode is on") { wc.isShowMode }
         await wc.showWorkspaceStatus().value
-        let pc = wc.preshowWindow
+        let pc = wc.warningsPage
         XCTAssertTrue(pc.rows.contains { $0.cue == Self.missing3 }, "warnings are listed in Show Mode")
         pc.table.selectRowIndexes([try row(pc, Self.missing3)], byExtendingSelection: false)
         wc.cueList.selectAsUser([intro])
@@ -462,24 +363,21 @@ final class PreshowTests: XCTestCase {
         await assertEventually("GO fired the playhead cue") { rig.store.progress[intro] != nil }
     }
 
-    func testEntryThatNamesNoCue() async throws {
+    func testRowThatNamesNoCue() async throws {
         let rig = try await flowRig()
         let wc = flowWindow(rig)
         wc.setVisible(.inspector, false)
-        let pc = wc.preshowWindow
-        var beeps = 0
-        pc.beep = { beeps += 1 }
-        pc.show(
-            try report(
-                #"{"ok":false,\#(Self.emptySummary),"broken_cues":[],"media":[],"#
-                    + #""patches":[{"patch":"00000000-0000-0000-0000-0000000000a9","name":"Spare","mapped":false,"resolution":{"type":"unmapped"},"cues":[]}],"#
-                    + #""network":[],"system":[{"type":"notice","code":"preload_over_budget","message":"over"}]}"#))
+        let pc = wc.warningsPage
+        let notices =
+            #"{"type":"notice","code":"patch_no_system_output","message":"x"},"#
+            + #"{"type":"notice","code":"device_lost","message":"y","device":"Interface"}"#
+        XCTAssertEqual(
+            rig.store.receive(try ServerMessage.decode(#"{"type":"warnings","warnings":[\#(notices)]}"#)), .applied)
         wc.cueList.selectAsUser([TestSnapshots.fade])
-        let entries = pc.rows.indices.filter { !pc.rows[$0].isHeading }
-        XCTAssertEqual(entries.count, 2)
+        let entries = pc.rows.indices.filter { pc.rows[$0].cue == nil }
+        XCTAssertGreaterThanOrEqual(entries.count, 2)
         for r in entries {
             pc.table.selectRowIndexes([r], byExtendingSelection: false)
-            XCTAssertNil(pc.rows[r].cue)
             XCTAssertFalse(pc.inspectButton.isEnabled, "no cue to inspect")
             XCTAssertFalse(pc.choose(row: r))
             // A double-click runs the action even with the button disabled: it must do nothing.
@@ -487,7 +385,6 @@ final class PreshowTests: XCTestCase {
             XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.fade])
             XCTAssertFalse(wc.isVisible(.inspector))
         }
-        XCTAssertEqual(beeps, 0, "no beep")
     }
 
     func testListScrolledWindowNarrow() async throws {
@@ -496,7 +393,7 @@ final class PreshowTests: XCTestCase {
         let window = try XCTUnwrap(wc.window)
         window.setFrame(NSRect(x: 0, y: 0, width: window.minSize.width, height: 600), display: true)
         await wc.showWorkspaceStatus().value
-        let pc = wc.preshowWindow
+        let pc = wc.warningsPage
         let outline = wc.cueList.outlineView
         window.layoutIfNeeded()
         outline.scrollRowToVisible(0)
@@ -513,31 +410,21 @@ final class PreshowTests: XCTestCase {
         await assertEventually("GO fired") { rig.store.progress[intro] != nil }
     }
 
-    func testWarningsCueDeletedWhileTheListIsOpen() async throws {
+    /// A cue deleted while the list is open takes its row with it, with no check to run.
+    func testACueDeletedWhileTheListIsOpenLeavesTheList() async throws {
         let rig = try await flowRig()
         let wc = flowWindow(rig)
         await wc.showWorkspaceStatus().value
-        let pc = wc.preshowWindow
-        var beeps = 0
-        pc.beep = { beeps += 1 }
-        let stale = try row(pc, Self.missing3)
+        let pc = wc.warningsPage
+        let count = pc.rows.count
+        pc.table.selectRowIndexes([try row(pc, Self.missing3)], byExtendingSelection: false)
         wc.cueList.selectAsUser([TestSnapshots.fade])
         guard case .success = await rig.store.send(command: .removeCue(Self.missing3)) else {
             return XCTFail("delete")
         }
-        await assertEventually("the app's model dropped the cue") { rig.store.model?.cue(Self.missing3) == nil }
-        pc.table.selectRowIndexes([stale], byExtendingSelection: false)
-        pc.inspectClicked()
-        XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.fade], "nothing is selected for a deleted cue")
-        XCTAssertEqual(beeps, 2, "the click and the button each say nothing happened")
-        // The next check no longer lists it.
-        await pc.runCheck()
-        XCTAssertFalse(pc.rows.contains { $0.cue == Self.missing3 })
-        // A selection on the old report never reaches the rebuilt list.
-        pc.table.selectRowIndexes([try row(pc, Self.missing41)], byExtendingSelection: false)
-        wc.cueList.selectAsUser([TestSnapshots.fade])
-        await pc.runCheck()
-        XCTAssertEqual(pc.table.selectedRow, -1)
-        XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.fade])
+        await assertEventually("the row went") { !pc.rows.contains { $0.cue == Self.missing3 } }
+        XCTAssertEqual(pc.rows.count, count - 1)
+        XCTAssertEqual(pc.table.selectedRow, -1, "a selection on the gone row is dropped")
+        XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.fade], "and no cue was selected for it")
     }
 }

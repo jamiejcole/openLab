@@ -125,7 +125,7 @@ enum ProblemText {
     }
 }
 
-/// One line of the Warnings tab: a broken cue (with every reason it is broken) or a notice.
+/// One line of the Warnings list: a broken cue (with every reason it is broken) or a notice.
 struct WarningRow: Hashable {
     let id: String
     /// The cue to select when the row is chosen.

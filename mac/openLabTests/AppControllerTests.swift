@@ -430,7 +430,7 @@ final class AppControllerTests: XCTestCase {
         editor.showWindow(nil)
         wc.missingFiles.showWindow(nil)
         await wc.showWorkspaceStatus().value
-        await wc.showLog().value
+        await wc.showStatus(.logs).value
         if sheet { wc.showNotice("a refusal") }
         var released = Released()
         released.controller = wc
@@ -1531,14 +1531,14 @@ final class AppControllerTests: XCTestCase {
         String(format: loc("hotkeys.warn.menuLost"), loc(command), chord.display)
     }
 
-    /// What the Warnings tab lists for the window, as the operator reads it.
+    /// What the Warnings list holds for the window, as the operator reads it.
     private func tabTitles(_ doc: ModelID) -> [String] {
-        app.windows[doc]?.sidebar.warningRows.map(\.title) ?? []
+        app.windows[doc]?.warningsPage.all.map(\.title) ?? []
     }
 
     /// A workspace whose file maps Go to Cmd-S, opened: the key runs GO and Save does not run, and the
-    /// Warnings tab says the Save command lost its key, once.
-    func testAFileKeyMapNamingAMenuChordRunsTheMapsCommandAndTheWarningsTabSaysSo() async throws {
+    /// Warnings list says the Save command lost its key, once.
+    func testAFileKeyMapNamingAMenuChordRunsTheMapsCommandAndTheWarningsListSaysSo() async throws {
         let bar = realMenuBar()
         let cmdS = KeyChord("s", [.command])
         let doc = try await openShow(withHotkeys: #"{"go":\#(Self.hotkey("s", ["command"]))}"#)
@@ -1560,7 +1560,7 @@ final class AppControllerTests: XCTestCase {
     /// Cmd-S typed into the Keys page's Edit name field is taken, as QLab takes a shortcut that means
     /// something else (manual p. 102): no reason beside the field, the engine holds it, and the Warnings
     /// tab says Save lost its key in this workspace.
-    func testTheKeysPageTakesAMenuCommandsKeyAndTheWarningsTabSaysTheMenuLostIt() async throws {
+    func testTheKeysPageTakesAMenuCommandsKeyAndTheWarningsListSaysTheMenuLostIt() async throws {
         _ = realMenuBar()
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
@@ -1574,7 +1574,7 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { field.stringValue == cmdS.display }
         XCTAssertTrue(sc.keyReasons[.editName]?.isHidden ?? false, "no reason: the key is taken")
         let text = lostText("keymap.action.edit_name", cmdS)
-        await assertEventually("the Warnings tab says so") {
+        await assertEventually("the Warnings list says so") {
             _ = self.app.frontKeys
             return self.tabTitles("1").filter { $0 == text }.count == 1
         }
@@ -3277,7 +3277,7 @@ final class AppControllerTests: XCTestCase {
     func testTheWarningsRowButtonOpensTheTool() async throws {
         let folder = try mediaFolder([])
         app.pickFolderURL = { folder }
-        demo.onRelink?()
+        demo.warningsPage.onRelink?()
         await assertEventually { self.searchRequests() == [folder.path] }
         await assertEventually { !self.demo.missingFiles.isBusy }
         XCTAssertEqual(
@@ -3625,32 +3625,35 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: View > Warnings and Tools > Jump to Targets
 
-    private func menuItem(_ action: Selector) throws -> NSMenuItem {
+    private func menuItem(_ action: Selector, titled title: String? = nil) throws -> NSMenuItem {
         try XCTUnwrap(
-            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items).first { $0.action == action },
+            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items).first {
+                $0.action == action && (title == nil || $0.title == title)
+            },
             NSStringFromSelector(action))
     }
 
-    /// The sidebar is hidden on Cue Lists: Cmd-B shows it on the Warnings tab with the broken cue
-    /// listed, and it works in Show Mode too.
+    /// Cmd-B opens the status window on its Warnings page with the broken cue listed, in Show Mode too;
+    /// the sidebar is not touched.
     func testWarningsFromTheViewMenu() async throws {
         keyDoc = "1"
         let delegate = AppDelegate()
         delegate.appController = app
         let wc = try XCTUnwrap(app.windows["1"])
-        let item = try menuItem(#selector(AppDelegate.showWarnings(_:)))
+        let item = try menuItem(#selector(AppDelegate.showWorkspaceStatus(_:)), titled: loc("menu.view.warnings"))
         XCTAssertEqual(item.keyEquivalent, "b")
         XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
         for showMode in [false, true] {
             wc.setShowMode(showMode)
+            wc.existingStatusWindow?.close()
             wc.setVisible(.sidebar, false)
-            wc.sidebar.showTab(0)
             XCTAssertTrue(delegate.validateMenuItem(item))
-            delegate.showWarnings(item)
-            XCTAssertTrue(wc.isVisible(.sidebar))
-            XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 2)
-            XCTAssertFalse(wc.sidebar.warningsTable.isHiddenOrHasHiddenAncestor)
-            await assertEventually { !wc.sidebar.warningRows.isEmpty }
+            delegate.showWorkspaceStatus(item)
+            let status = try XCTUnwrap(wc.existingStatusWindow)
+            XCTAssertTrue(status.window?.isVisible == true)
+            XCTAssertEqual(status.page, .warnings)
+            XCTAssertFalse(wc.isVisible(.sidebar), "the sidebar has no Warnings list to open")
+            await assertEventually { !status.warnings.rows.isEmpty }
         }
         keyDoc = nil
         XCTAssertFalse(delegate.validateMenuItem(item), "no workspace in front")

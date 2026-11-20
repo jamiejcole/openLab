@@ -5,7 +5,7 @@ import XCTest
 @testable import openLab
 
 /// The footer's warnings button, on a real engine: it shows only while the workspace has rows for
-/// the Warnings tab, counts them, and opens the sidebar on that tab. The Demo show starts with one
+/// the Warnings list, counts them, and opens the status window on its Warnings page. The Demo show starts with one
 /// broken cue (Radio's file is missing); Second has none.
 @MainActor
 final class FooterWarningsTests: XCTestCase {
@@ -162,6 +162,73 @@ final class FooterWarningsTests: XCTestCase {
         XCTAssertEqual(rig.store.receive(try ServerMessage.decode(runtime)), .applied)
         XCTAssertEqual(rowCount(rig), 2)
         XCTAssertEqual(wc.footer.warningsButton.title, "2")
+    }
+
+    // MARK: The footer without the removed parts
+
+    /// Flow: workspace open, all well → the footer shows the count, the Edit/Show switch and the toggles;
+    /// no engine status mark, no words about CPU, dropouts, load, disk, block size or latency.
+    func testAllWellTheFooterHasTheCountTheSwitchAndTheTogglesAndNoEngineReadouts() async throws {
+        let (rig, wc) = try await open("Second")
+        await assertEventually("the engine's status arrives") {
+            try? await rig.advance(1)
+            return rig.store.status != nil
+        }
+        let footer = wc.footer
+        XCTAssertEqual(footer.countLabel.stringValue, "6 cues in 1 list")
+        XCTAssertFalse(footer.modeSwitch.isHidden)
+        XCTAssertEqual(footer.toggles.count, 3)
+        XCTAssertTrue(footer.alarmButton.isHidden)
+        XCTAssertTrue(footer.warningsButton.isHidden, "no warnings: no button")
+        func words(_ v: NSView) -> [String] {
+            var out: [String] = []
+            if let b = v as? NSButton { out += [b.title, b.toolTip ?? "", b.accessibilityLabel() ?? ""] }
+            if let t = v as? NSTextField { out += [t.stringValue, t.toolTip ?? ""] }
+            return out + v.subviews.flatMap(words)
+        }
+        let all = words(footer).joined(separator: " ").lowercased()
+        for banned in ["cpu", "dropout", "load", "disk", "block", "latency", "audio ok", "engine status"] {
+            XCTAssertFalse(all.contains(banned), "\(banned) in the footer: \(all)")
+        }
+        // No popover opens from anywhere in the footer.
+        for v in footer.subviews.flatMap({ [$0] + $0.subviews }).compactMap({ $0 as? NSButton }) where !v.isHidden {
+            XCTAssertFalse(v.target is NSPopoverDelegate)
+        }
+        XCTAssertNil(footer.subviews.flatMap(\.subviews).first { $0.accessibilityIdentifier() == "status-label" })
+    }
+
+    /// Flow: narrow window, light and dark → the footer and the sidebar lay out whole without the removed
+    /// parts: nothing overlaps or leaves its area, and the sidebar's tabs, lists and buttons are one
+    /// column with the same spacing between them (no gap where the Warnings tab and its count were).
+    func testTheFooterAndSidebarLayOutCleanlyAtTheLeastWidthLightAndDark() async throws {
+        let (_, wc) = try await open("Demo")
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            wc.window?.appearance = NSAppearance(named: name)
+            wc.setVisible(.sidebar, true)
+            _ = try atMinimum(wc)
+            let footer = wc.footer
+            wc.window?.contentView?.layoutSubtreeIfNeeded()
+            let visible =
+                ([footer.modeSwitch, footer.countLabel, footer.warningsButton, footer.settingsButton]
+                + Array(footer.toggles.values)).filter { !$0.isHiddenOrHasHiddenAncestor }
+            let frames = visible.map { footer.convert($0.bounds, from: $0) }
+            for (i, f) in frames.enumerated() {
+                XCTAssertTrue(footer.bounds.contains(f), "\(visible[i]) at \(name.rawValue): \(f) in \(footer.bounds)")
+                for j in frames.indices where j > i {
+                    XCTAssertFalse(f.intersects(frames[j]), "\(visible[i]) overlaps \(visible[j]) at \(name.rawValue)")
+                }
+            }
+            let side = wc.sidebar
+            XCTAssertEqual(side.tabs.segmentCount, 2, "two tabs only")
+            let column = try XCTUnwrap(side.view.subviews.compactMap { $0 as? NSStackView }.first)
+            let shown = column.arrangedSubviews.filter { !$0.isHidden }.sorted { $0.frame.minY > $1.frame.minY }
+            XCTAssertEqual(shown.count, 4, "transport strip, tabs, one list, New List: \(shown)")
+            for pair in zip(shown, shown.dropFirst()) {
+                XCTAssertEqual(
+                    pair.0.frame.minY - pair.1.frame.maxY, column.spacing, accuracy: 0.5, "no gap in the sidebar")
+            }
+            XCTAssertEqual(side.tabs.frame.width, side.view.bounds.width - 20, accuracy: 0.5)
+        }
     }
 
     // MARK: The device alarm
