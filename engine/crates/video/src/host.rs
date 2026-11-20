@@ -381,6 +381,13 @@ pub const ENGINE_SILENCE: std::time::Duration = std::time::Duration::from_secs(4
 /// macOS's one-second drawable timeouts, past a burst of GPU load, while a frozen picture on the
 /// audience's display is still told to the engine and the operator within seconds.
 pub const SKIP_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long after its stages failed for lack of drawables a display is tried again (and again
+/// after each try that finds none): a try with no drawable can hold the stage host up to
+/// macOS's one-second drawable timeout, stalling every other display, so it is not made every
+/// frame; every 3 s holds the others at most a second in four while the display is dead, and
+/// brings a keep-black stage back within a few seconds of drawables returning with nothing
+/// else to draw it.
+pub const SKIP_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// One stage's monitor window as the engine asked for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -438,6 +445,10 @@ pub struct Host<P: Platform> {
     /// Displays whose last frame was skipped, with when the stretch of skips began (warned once
     /// for the stretch).
     skipping: BTreeMap<String, Instant>,
+    /// Displays whose stages failed for lack of drawables ([`SKIP_LIMIT`]), with when they were
+    /// last tried: not presented again until [`SKIP_RETRY`] after that, when the next poll tries
+    /// once (a display change tries at once).
+    starved: BTreeMap<String, Instant>,
     /// When the engine last sent anything.
     heard: Instant,
     /// The engine has been silent past `silence_limit`: the window on the display with the menu
@@ -467,6 +478,7 @@ impl<P: Platform> Host<P> {
             clock: None,
             presented: BTreeSet::new(),
             skipping: BTreeMap::new(),
+            starved: BTreeMap::new(),
             heard: Instant::now(),
             silent: false,
             stand_back: false,
@@ -685,11 +697,15 @@ impl<P: Platform> Host<P> {
     /// Between messages: reports what became of pictures' files (an open that ended, a decode
     /// that failed or fell behind) and the monitor windows the operator closed.
     pub fn poll(&mut self, out: &mut Vec<FromStage>) {
-        self.check_silence(Instant::now(), out);
+        let now = Instant::now();
+        self.check_silence(now, out);
         self.report_failures(out);
         // A picture that failed leaves its display now, whether or not others still play:
-        // nothing else would draw a stage left with none.
-        if self.redraw_due {
+        // nothing else would draw a stage left with none. A display starved of drawables is
+        // tried again when due, likewise.
+        let retry =
+            (self.starved.values()).any(|&t| now.saturating_duration_since(t) >= SKIP_RETRY);
+        if self.redraw_due || retry {
             self.apply(out);
         }
         for stage in self.platform.take_closed_monitors() {
@@ -966,6 +982,8 @@ impl<P: Platform> Host<P> {
     pub fn displays_changed(&mut self, out: &mut Vec<FromStage>) {
         let mut displays = self.platform.displays();
         displays.truncate(openlab_core::stage_link::MAX_DISPLAYS);
+        // The system's displays changed: one starved of drawables is tried again at once.
+        self.starved.clear();
         if displays != self.displays {
             self.displays = displays.clone();
             out.push(FromStage::Displays { displays });
@@ -989,10 +1007,8 @@ impl<P: Platform> Host<P> {
             now
         });
         if now.saturating_duration_since(began) >= SKIP_LIMIT {
-            return Err(format!(
-                "the system gave no picture to draw into for {} s",
-                SKIP_LIMIT.as_secs()
-            ));
+            self.starved.insert(display.to_owned(), now);
+            return Err(starved_reason());
         }
         self.redraw_due = true;
         Ok(())
@@ -1048,8 +1064,10 @@ impl<P: Platform> Host<P> {
         // A window closed since starts a new stretch.
         let presented = &self.presented;
         self.skipping.retain(|d, _| presented.contains(d));
+        let instant = Instant::now();
         for display in self.displays.clone() {
             let Some(mut layers) = on.remove(&display.id) else {
+                self.starved.remove(&display.id);
                 if self.presented.remove(&display.id) {
                     self.platform.close(&display.id);
                 }
@@ -1057,13 +1075,31 @@ impl<P: Platform> Host<P> {
             };
             layers.sort_by_key(|(stack, _)| *stack);
             let layers: Vec<Layer> = layers.into_iter().map(|(_, l)| l).collect();
-            let presented = match self.platform.present(&display, &layers) {
-                Ok(Presented::Drawn) => {
-                    self.skipping.remove(&display.id);
-                    Ok(())
+            let tried = self.starved.get(&display.id).copied();
+            let presented = match tried {
+                // Starved of drawables, not due a try: still failed, nothing presented.
+                Some(t) if instant.saturating_duration_since(t) < SKIP_RETRY => {
+                    Err(starved_reason())
                 }
-                Ok(Presented::Skipped) => self.skipped(&display.id, out),
-                Err(reason) => Err(reason),
+                _ => match self.platform.present(&display, &layers) {
+                    Ok(Presented::Drawn) => {
+                        self.skipping.remove(&display.id);
+                        self.starved.remove(&display.id);
+                        Ok(())
+                    }
+                    // A try that finds none fails it again at once (already said), until the
+                    // next try; the window the try opened closes again.
+                    Ok(Presented::Skipped) if tried.is_some() => {
+                        self.starved.insert(display.id.clone(), instant);
+                        self.platform.close(&display.id);
+                        Err(starved_reason())
+                    }
+                    Ok(Presented::Skipped) => self.skipped(&display.id, out),
+                    Err(reason) => {
+                        self.starved.remove(&display.id);
+                        Err(reason)
+                    }
+                },
             };
             match presented {
                 Ok(()) => {
@@ -1361,6 +1397,14 @@ fn short(reason: String) -> String {
 /// How often the loop looks at pictures between messages.
 pub const POLL_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
 
+/// Why a display's stages failed when it gave no drawable for [`SKIP_LIMIT`].
+fn starved_reason() -> String {
+    format!(
+        "the system gave no picture to draw into for {} s",
+        SKIP_LIMIT.as_secs()
+    )
+}
+
 /// What the reader thread hands the loop: a message, a warning about a line it skipped, or the
 /// end of input.
 enum Incoming {
@@ -1474,6 +1518,8 @@ pub(crate) mod tests {
         fail: bool,
         /// Each frame is skipped (no drawable), the window staying up.
         skip: bool,
+        /// Presents asked for, drawn or not.
+        presents: u32,
         live: bool,
         events: Vec<PictureEvent>,
         /// Each monitor window up: its title and the stage drawn in it last, with its cues.
@@ -1493,10 +1539,13 @@ pub(crate) mod tests {
             self.displays.clone()
         }
         fn present(&mut self, d: &Display, layers: &[Layer]) -> Result<Presented, String> {
+            self.presents += 1;
             if self.fail {
                 return Err("no GPU".into());
             }
             if self.skip {
+                // The window is up (opened if it was not), its last frame kept.
+                self.shown.entry(d.id.clone()).or_default();
                 return Ok(Presented::Skipped);
             }
             self.shown
@@ -2342,6 +2391,122 @@ pub(crate) mod tests {
         assert!(h.platform.shown.contains_key("D1"));
     }
 
+    /// A keep-black stage on display D1, which gives no drawable from now on, failed past
+    /// `SKIP_LIMIT` by the next step (the stretch's start moved back by hand), with what it
+    /// said.
+    fn starved_host() -> (Host<Fake>, Vec<FromStage>) {
+        let mut h = host(&["D1"]);
+        let mut out = Vec::new();
+        let version = LINK_VERSION;
+        send(&mut h, ToStage::Hello { version });
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D1"), true)],
+            },
+        );
+        h.platform.skip = true;
+        h.displays_changed(&mut out);
+        let began = h.skipping.get_mut("D1").expect("a stretch of skips");
+        *began = began.checked_sub(SKIP_LIMIT).expect("an earlier instant");
+        h.step(None, &mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Failed {
+                    reason: "the system gave no picture to draw into for 3 s".into()
+                }
+            )]
+        );
+        assert!(!h.platform.shown.contains_key("D1"), "the window stayed up");
+        (h, out)
+    }
+
+    /// Display D1's last try after starving is moved back by `SKIP_RETRY`: the next poll tries.
+    fn retry_due(h: &mut Host<Fake>) {
+        if let Some(tried) = h.starved.get_mut("D1") {
+            *tried = tried.checked_sub(SKIP_RETRY).expect("an earlier instant");
+        }
+    }
+
+    fn warnings(out: &[FromStage]) -> usize {
+        out.iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    FromStage::Log {
+                        level: LinkLevel::Warn,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// #790 flow: a keep-black stage with nothing playing whose display stopped giving
+    /// drawables past the limit, then gives them again: with no message from the engine, the
+    /// stage shows black again by itself at the next try, `SKIP_RETRY` after it failed.
+    #[test]
+    fn a_keep_black_stage_failed_for_lack_of_drawables_shows_black_again_by_itself() {
+        let (mut h, _) = starved_host();
+        h.platform.skip = false;
+        let mut out = Vec::new();
+        h.step(None, &mut out);
+        assert_eq!(states(&out), vec![], "tried again before its time");
+        assert!(!h.platform.shown.contains_key("D1"));
+        retry_due(&mut h);
+        h.step(None, &mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Shown {
+                    display: "D1".into()
+                }
+            )]
+        );
+        assert_eq!(h.platform.pictures_drawn.get("D1"), Some(&vec![]), "black");
+        assert!(h.starved.is_empty());
+    }
+
+    /// #790 flow: while the display still gives no drawable, it is tried again only every
+    /// `SKIP_RETRY`, not every frame, though a picture plays on its stage and the engine keeps
+    /// talking; a try that finds none leaves the stage failed without a word: the failure
+    /// logged one line.
+    #[test]
+    fn a_retry_after_lack_of_drawables_is_paced_and_logs_one_line_per_failure() {
+        let (mut h, mut out) = starved_host();
+        load(&mut h, 3, 1);
+        play(&mut h, 3, 0);
+        let presents = h.platform.presents;
+        for k in 1..=50 {
+            clock(&mut h, 100 * k);
+            h.step(None, &mut out);
+        }
+        assert_eq!(h.platform.presents, presents, "presented within the pace");
+        let said = out.len();
+        retry_due(&mut h);
+        h.step(None, &mut out);
+        assert_eq!(h.platform.presents, presents + 1, "one try when due");
+        for k in 51..=100 {
+            clock(&mut h, 100 * k);
+            h.step(None, &mut out);
+        }
+        assert_eq!(
+            h.platform.presents,
+            presents + 1,
+            "one try, then paced again"
+        );
+        assert_eq!(
+            states(&out[said..]),
+            vec![],
+            "the failed try said something"
+        );
+        assert!(!h.platform.shown.contains_key("D1"), "the window reopened");
+        assert_eq!(warnings(&out), 1, "{out:?}");
+    }
+
     /// #789: the frame that should take a failed picture down is skipped (no drawable): the
     /// next frame-loop tick draws again, though nothing plays, so its last frame never stays up.
     #[test]
@@ -2481,6 +2646,7 @@ pub(crate) mod tests {
             stood_back: None,
             fail: false,
             skip: false,
+            presents: 0,
             live: false,
             events: Vec::new(),
             monitors: HashMap::new(),
