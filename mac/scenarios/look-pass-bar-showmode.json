@@ -8,6 +8,13 @@
   "appearance": "dark",
   "steps": [
     {
+      "click": "mode-switch",
+      "at": [
+        0.75,
+        0.5
+      ]
+    },
+    {
       "select": "2"
     },
     {
