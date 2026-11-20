@@ -822,9 +822,17 @@ fn the_osc_port_is_read_changed_kept_and_refused_when_in_use() {
     assert!(open && error.is_none());
     assert_ne!(port, 0);
 
-    // A port in use is refused with `io`, the old one still serves, and the state says why.
-    let taken = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let busy = taken.local_addr().unwrap().port();
+    // A port in use is refused with `io`, the old one still serves, and the state says why. Both
+    // its sides are held here, so the engine's first bind (UDP) meets this test's own socket and
+    // not whatever else on the machine may hold, or reserve, that number's UDP side.
+    let (_taken, busy) = (0..100)
+        .find_map(|_| {
+            let tcp = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).ok()?;
+            let port = tcp.local_addr().ok()?.port();
+            let udp = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, port)).ok()?;
+            Some(((tcp, udp), port))
+        })
+        .expect("a port free for both TCP and UDP");
     let Outcome::Error(e) = ask(&mut s, Request::SetOscPort { port: busy }) else {
         panic!("a port in use was accepted");
     };
