@@ -4,6 +4,10 @@
 
 "menu.app" = "openLab";
 "menu.app.about" = "About openLab";
+"about.name" = "openLab";
+"about.version" = "Version %@ (%@)";
+"about.description" = "Show playback for live theatre";
+"about.licence" = "Licensed under the GNU General Public License (GPLv3).";
 "menu.app.hide" = "Hide openLab";
 "menu.app.hideOthers" = "Hide Others";
 "menu.app.showAll" = "Show All";

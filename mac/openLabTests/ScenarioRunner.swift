@@ -405,9 +405,10 @@ final class ScenarioRunner {
             return .findMissingFiles(files, folder: folder)
         case "focus":
             let which = try string("focus")
-            guard ["workspace", "settings", "sheet", "patch-editor", "preferences", "status"].contains(which) else {
+            let known = ["workspace", "settings", "sheet", "patch-editor", "preferences", "status", "about"]
+            guard known.contains(which) else {
                 throw Failure(
-                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\", \"status\" or \"sheet\""
+                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\", \"status\", \"about\" or \"sheet\""
                 )
             }
             return .focus(which)
@@ -550,6 +551,8 @@ final class ScenarioRunner {
 
     private func note(_ line: String) { log.append(line) }
 
+    /// The About window, once a step focused it.
+    private var aboutWindow: AboutWindowController?
     /// The application preferences, once a step focused them.
     private var prefs: PreferencesWindowController?
     /// What new meter views asked before the run (restored when it ends).
@@ -902,6 +905,13 @@ final class ScenarioRunner {
                 w.appearance = wc.window?.appearance
                 await sc.model.refresh()
                 sc.render()
+                focused = w
+            } else if which == "about" {
+                // The About window, drawn off screen
+                let about = AboutWindowController()
+                let w = try XCTUnwrap(about.window)
+                w.appearance = wc.window?.appearance
+                aboutWindow = about
                 focused = w
             } else if which == "status" {
                 // The workspace status window, drawn off screen on its Warnings page.

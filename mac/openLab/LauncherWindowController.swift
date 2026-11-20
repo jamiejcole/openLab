@@ -82,9 +82,7 @@ final class LauncherWindowController: NSWindowController {
     }
 
     /// The app's version as the bundle says it (`dev` for a bundle that says none, as a test's).
-    static var version: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
-    }
+    static var version: String { AboutWindowController.version }
 
     @objc private func newClicked() { onNew?() }
     @objc private func openClicked() { onOpen?() }

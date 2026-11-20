@@ -64,7 +64,7 @@ enum MainMenu {
         return menu(
             "menu.app",
             [
-                item("menu.app.about", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+                item("menu.app.about", #selector(AppDelegate.showAbout(_:))),
                 .separator(),
                 item("menu.app.preferences", #selector(AppDelegate.showPreferences(_:))),
                 .separator(),
