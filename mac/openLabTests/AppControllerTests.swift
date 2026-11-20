@@ -569,6 +569,24 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(alerts.errors.isEmpty)
     }
 
+    /// Checklist: the app menu's About item opens the one About window, with a workspace open or
+    /// not, and choosing it again brings that window back, never a second.
+    func testTheAppMenuAboutItemOpensTheOneAboutWindow() throws {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let item = try XCTUnwrap(MainMenu.make().bar.items.first?.submenu?.items.first)
+        XCTAssertEqual(item.title, loc("menu.app.about"))
+        XCTAssertEqual(item.action, #selector(AppDelegate.showAbout(_:)))
+        delegate.showAbout(item)
+        let about = app.aboutWindow
+        addTeardownBlock { @MainActor in about.window?.close() }
+        XCTAssertTrue(about.window?.isVisible == true)
+        about.window?.orderBack(nil)
+        delegate.showAbout(item)
+        XCTAssertTrue(app.aboutWindow === about)
+        XCTAssertEqual(NSApp.windows.filter { $0.identifier?.rawValue == AX.aboutWindow }.count, 1)
+    }
+
     func testNoRevertInTheMenus() {
         let titles = MainMenu.make().bar.items.flatMap {
             $0.submenu?.items.map(\.title) ?? []

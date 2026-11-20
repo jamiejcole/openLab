@@ -232,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
     @MainActor @objc func showWarnings(_ sender: Any?) { appController.frontController?.showWarnings() }
     @MainActor @objc func jumpToTargets(_ sender: Any?) { appController.frontController?.jumpToTargets() }
+    @MainActor @objc func showAbout(_ sender: Any?) { appController.aboutWindow.showWindow(nil) }
     @MainActor @objc func showPreferences(_ sender: Any?) {
         appController.preferencesWindow.reload()
         appController.preferencesWindow.showWindow(nil)

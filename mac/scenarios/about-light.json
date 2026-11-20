@@ -1,0 +1,11 @@
+{
+  "about": "About window (#772), light: closed, then with Credits open.",
+  "show": "new",
+  "appearance": "light",
+  "steps": [
+    {"focus": "about"},
+    {"shot": "about-light"},
+    {"click": "about-credits-button"},
+    {"shot": "about-credits-light"}
+  ]
+}
