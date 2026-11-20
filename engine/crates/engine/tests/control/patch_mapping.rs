@@ -844,10 +844,7 @@ fn the_osc_port_is_read_changed_kept_and_refused_when_in_use() {
     assert_eq!(e.code, ErrorCode::BadRequest);
 
     // A free port is opened and kept for the next start.
-    let free = {
-        let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        l.local_addr().unwrap().port()
-    };
+    let free = test_port(false).port;
     let (now, open, error) = osc_data(&ask(&mut s, Request::SetOscPort { port: free }));
     assert_eq!((now, open, error), (free, true, None));
     assert_eq!(s.control().machine().osc_port, Some(free));
