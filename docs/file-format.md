@@ -65,6 +65,7 @@ cue, and the cue shows as broken where it cannot run.
 | `second_trigger` is `"play_next"` or `"play_previous"` on a cue that is not a Playlist group | Warning; kept, but a second trigger does nothing until the cue is a Playlist group |
 | An empty `number` (`""`) | Treated as `null`, no warning |
 | A target that does not exist, targets the cue itself, or is the wrong kind of cue | Warning; the target is kept and the cue shows as broken |
+| A Target cue's `new_target` that does not exist, or that its target cannot act on | Warning; it is kept and the cue shows as broken (also without a number or with none set, which load without a warning) |
 | An Audio cue's `patch` or a Network cue's `destination` does not exist | Warning; the cue shows as broken |
 | A play count (§5) that is not a whole number 0 to 4294967295 or `"skip"` | Refused (wrong type) |
 | Every slice of an Audio or Video cue inside its trims has the play count `"skip"` | Loads as it is, no warning; the cue shows as broken (`nothing_plays`) once its file is read |
@@ -104,7 +105,8 @@ cue, and the cue shows as broken where it cannot run.
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
 Valid targets: a Fade cue targets an Audio, Video or Group cue; a Devamp cue targets an Audio cue or a
-Playlist group; every other targeting cue may target any cue except itself.
+Playlist group; a Target cue targets a cue that targets a cue, other than a Fade; every other
+targeting cue may target any cue except itself.
 
 ## 4. The workspace
 

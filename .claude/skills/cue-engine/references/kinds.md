@@ -14,7 +14,7 @@ A control cue is a cue like any other. At its action start `A` (after its own pr
 | Pause | Pause (a paused or idle target is left) |
 | Load | Load to `load_to_time` (active target: `LoadIgnored`; broken: `CueBroken`). Negative: that long before the target's end, its nominal span (pre-wait + action, as a playlist times it, audio from `CueLengths`); an Audio cue that loops forever ends after one pass (`CuePassLengths`); further back than the start or no known end (unprobed audio, an endless group): the start (QLab 5 pp. 680-681, measured 5.6.5, Q351-Q352) |
 | Reset | Reset (clears broken) of the target and its descendants, which also become unplayed (first colour again, `panic-transport.md` "Played"). Does not undo Arm/Disarm |
-| Devamp, GoTo, Arm, Disarm | below |
+| Devamp, GoTo, Target, Arm, Disarm | below |
 | Wait | nothing; action lasts its `duration`. Its post-wait is its duration whatever `post_wait` stores (`Cue::effective_post_wait`; a `PostWait` command on it sets the duration; QLab 5 p. 688, measured 5.6.5, Q350) |
 | Memo | nothing; action completes at once |
 
@@ -23,6 +23,12 @@ A running Wait takes an edited duration (`broken-and-edits.md`); its pending aut
 ## GoTo
 - Moves the playhead of the target's cue list (any list, not only its own) to the target, at any depth.
 - With "and GO" it then GOes on that list dated `A`: the target starts and the playhead moves past its continue chain (or into an armed enter group), as an operator GO, except double-GO protection does not block it and it does not restart the interval.
+
+## Target (CT-18)
+- Its target acts on `new_target` from then on: the engine keeps it in `temp_targets` (runtime only, `temp_target(cue)`), never in the model, so the show is not edited and a reopened show has none. Every control cue reads `acts_on` = its temporary target, else its own, when its action starts; a Fade is never given one.
+- A reset of the target (`reset_tree`: an operator or Reset cue reset, also of a group around it) and Reset All drop it. Setting the saved target again drops the entry.
+- A run already in its action keeps what it acted on (a Devamp's pending devamp stays with its loop); one in its pre-wait takes the new target at its action start (Q712).
+- Run-time checks (stale problems, or the Target cue's own temporary target): new target gone `TargetMissing`, wrong kind `TargetWrongKind`; nothing changes. A temporary target deleted later: the retargeted cue warns `TargetMissing` and does nothing.
 
 ## Arm and Disarm
 - The engine cannot change the `&Workspace`. The cue emits `SetArmed { cue, armed }` and records an override honoured for the rest of that call: a Disarm followed by a trigger of the target in the same chain sees it disarmed (action skipped, Load sends no `LoadVoice`, GO does not enter a disarmed enter group).
