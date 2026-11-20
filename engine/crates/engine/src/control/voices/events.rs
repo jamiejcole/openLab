@@ -37,6 +37,9 @@ impl Voices {
                 }
             }
             Event::DevampScheduled { voice, at } => {
+                if self.moved_devamp_answer(voice, Some(at), fx) {
+                    return;
+                }
                 if let Some((cue, run)) = self.name(voice) {
                     fx.feedback.push(Input::DevampScheduled { cue, run, at });
                     // The voice's end is known again: where it leaves the loop plus what
@@ -53,6 +56,9 @@ impl Voices {
                 }
             }
             Event::DevampIgnored { voice, .. } => {
+                if self.moved_devamp_answer(voice, None, fx) {
+                    return;
+                }
                 if let Some((cue, run)) = self.name(voice) {
                     fx.feedback.push(Input::DevampIgnored { cue, run });
                 }
@@ -91,6 +97,70 @@ impl Voices {
             | Event::SliceEnded { .. }
             | Event::StageFaulted { .. } => {}
         }
+    }
+
+    /// The answer (`at`: where it leaves its loop; `None`: ignored) to a devamp sent to `voice`
+    /// while a move to another device waits to take over its run (`Self::command`): it is the
+    /// moved run's. The move is planned again from where `voice` is on its swap with the cut
+    /// (nothing left by then: given up, so `voice` keeps the run); a move paused since plays on
+    /// from the pause with it. Whether the answer was one; one whose move has gone (stopped,
+    /// given up) is `voice`'s own.
+    fn moved_devamp_answer(
+        &mut self,
+        voice: VoiceId,
+        at: Option<SampleTime>,
+        fx: &mut Effects,
+    ) -> bool {
+        let Some(o) = self.recs.get_mut(&voice).filter(|o| o.devamps_out > 0) else {
+            return false;
+        };
+        o.devamps_out -= 1;
+        if let Some(at) = at {
+            o.note_devamp_cut(at);
+        }
+        let Some(id) = (self.recs.iter())
+            .find(|(_, w)| w.moved_from == Some(voice))
+            .map(|(&id, _)| id)
+        else {
+            return false;
+        };
+        let (Some(o), Some(w)) = (self.recs.get(&voice), self.recs.get(&id)) else {
+            return false;
+        };
+        let (cue, run) = (w.cue, w.run);
+        let Some(at) = at else {
+            fx.feedback.push(Input::DevampIgnored { cue, run });
+            return true;
+        };
+        fx.feedback.push(Input::DevampScheduled { cue, run, at });
+        // The run's length as the old voice now plays it, in the core's count (the moved run
+        // goes on with it), so the end and an auto-follow keep their sample; none while what
+        // follows loops for ever.
+        if let Some(frames) = o.length_after_devamp(at) {
+            fx.feedback.push(Input::ActionLength { cue, run, frames });
+        }
+        let Phase::Waiting {
+            start: Some(swap), ..
+        } = w.phase
+        else {
+            return true;
+        };
+        let plan = move_plan(o, swap);
+        let counted = w.offset.saturating_add(w.delay);
+        let Some(w) = self.recs.get_mut(&id) else {
+            return true;
+        };
+        match plan {
+            Some(plan) => {
+                // Its stream was made from the plan without the cut: made again.
+                if let Phase::Waiting { prepared, .. } = &mut w.phase {
+                    *prepared = None;
+                }
+                w.take_move_plan(plan, counted);
+            }
+            None => w.nothing_left = true,
+        }
+        true
     }
 
     /// The live record an id (current or alias) belongs to, and whether it is the current id.

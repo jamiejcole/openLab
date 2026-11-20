@@ -225,6 +225,15 @@ pub struct VoiceRec {
     retry_at: Option<SampleTime>,
     /// Moves of its run given up so far: each retry waits twice as long as the one before.
     gave_up: u32,
+    /// Made by a move to another device: the voice it moves from (kept when a pause lets that
+    /// one go before the swap, unlike `replaces`), whose devamp answers are this run's.
+    moved_from: Option<VoiceId>,
+    /// Devamps sent to it while a move to another device took over its run, not yet answered:
+    /// the move does not swap until they are ([`Voices::moved_devamp_answer`]).
+    devamps_out: u8,
+    /// A move to another device whose old voice has nothing left to play by the swap since a
+    /// devamp's answer (it leaves its loop, or stops, first): given up on the next tick.
+    nothing_left: bool,
     /// Its table's frames (its device's) against the master clock's.
     scale: Scale,
     /// The time and loops its table was planned from (`None`: not known, a table handed on
@@ -343,6 +352,17 @@ fn move_plan(o: &VoiceRec, swap: SampleTime) -> Option<MovePlan> {
         offset: here,
         shown: o.shown.saturating_add(played),
     })
+}
+
+impl VoiceRec {
+    /// Takes `plan` as what this move to another device plays, the core counting the run
+    /// `counted` frames in on its swap.
+    fn take_move_plan(&mut self, plan: MovePlan, counted: u64) {
+        self.offset = plan.offset;
+        self.rest = Some((plan.table, plan.rate));
+        self.shown = plan.shown;
+        self.delay = counted.saturating_sub(plan.offset);
+    }
 }
 
 /// A stream ready for a voice.
@@ -771,6 +791,9 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         swap_limit: 0,
         retry_at: None,
         gave_up: 0,
+        moved_from: None,
+        devamps_out: 0,
+        nothing_left: false,
         scale: Scale::new(1, 1),
         planned: None,
     }
