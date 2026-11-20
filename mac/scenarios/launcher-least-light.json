@@ -1,0 +1,11 @@
+{
+  "about": "Launcher (#771): its smallest size with a notice and a failed engine, light.",
+  "show": "new",
+  "appearance": "light",
+  "steps": [
+    {"focus": "launcher", "recents": ["Hamlet", "Lear", "!Old Season", "A Midsummer Night's Dream"], "state": "failed", "notice": true, "size": [560, 380]},
+    {"shot": "launcher-least-failed-light"},
+    {"focus": "launcher", "recents": ["Hamlet", "Lear", "!Old Season", "A Midsummer Night's Dream"], "size": [560, 380]},
+    {"shot": "launcher-least-light"}
+  ]
+}

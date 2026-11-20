@@ -83,7 +83,7 @@ final class ScenarioRunner {
         /// the one the next steps and shots use, its `tab` the settings tab (general, audio, osc);
         /// `"workspace"` goes back to the workspace window. `"patch-editor"`: the patch editor last
         /// opened (a click on a row's Edit or the inspector's patch buttons), its `tab` the editor's.
-        case focus(String)
+        case focus(String, launcher: LauncherLook?)
         /// `{"shot": "name"}`: `<OUT>/<n>-<name>.png`, the whole window at 2x. With `"display": "V1"`
         /// (or a list) each named virtual display's composite is shot beside it as
         /// `<n>-<name>-display-<id>.png`: what the stage host draws there, every stage stacked, read
@@ -151,6 +151,16 @@ final class ScenarioRunner {
         /// This machine's settings (`settings.json`) as the engine finds them at start.
         var settings: Data?
         var steps: [Step] = []
+    }
+
+    /// `{"focus": "launcher", ...}`: the launcher window, drawn off screen with its own recents (a
+    /// name starting with "!" is a missing file), `"state"` (ready, starting, failed), a `"size"` for
+    /// its content and `"notice": true` for the notice a missing recent show raises.
+    struct LauncherLook {
+        var recents: [String] = []
+        var state = "ready"
+        var size: CGSize?
+        var notice = false
     }
 
     static let stepKinds = [
@@ -273,6 +283,7 @@ final class ScenarioRunner {
             "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"], "set_media": ["file"],
             "choose": ["item"], "device": ["output"],
             "find_missing_files": ["folder"],
+            "focus": ["recents", "state", "size", "notice"],
         ]
         let allowed = options[kind, default: []].union([kind])
         if let extra = o.keys.first(where: { !allowed.contains($0) }) {
@@ -405,13 +416,39 @@ final class ScenarioRunner {
             return .findMissingFiles(files, folder: folder)
         case "focus":
             let which = try string("focus")
-            let known = ["workspace", "settings", "sheet", "patch-editor", "preferences", "status", "about"]
+            let known = [
+                "workspace", "settings", "sheet", "patch-editor", "preferences", "status", "about", "launcher",
+            ]
             guard known.contains(which) else {
                 throw Failure(
-                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\", \"status\", \"about\" or \"sheet\""
+                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\", \"status\", \"about\", \"launcher\" or \"sheet\""
                 )
             }
-            return .focus(which)
+            guard which == "launcher" else {
+                if let extra = ["recents", "state", "size", "notice"].first(where: { o[$0] != nil }) {
+                    throw Failure("\"\(extra)\" is for {\"focus\": \"launcher\"}")
+                }
+                return .focus(which, launcher: nil)
+            }
+            var look = LauncherLook()
+            if let r = o["recents"] {
+                guard let names = r as? [String], names.count <= 10, names.allSatisfy({ !$0.isEmpty }) else {
+                    throw Failure("\"recents\" must be up to 10 names (\"!\" first: a file that is missing)")
+                }
+                look.recents = names
+            }
+            if let st = o["state"] {
+                guard let st = st as? String, ["ready", "starting", "failed"].contains(st) else {
+                    throw Failure("\"state\" must be \"ready\", \"starting\" or \"failed\"")
+                }
+                look.state = st
+            }
+            if let z = o["size"] {
+                guard let a = z as? [Double], a.count == 2 else { throw Failure("\"size\" must be [width, height]") }
+                look.size = try size(a[0], a[1], "the launcher's")
+            }
+            look.notice = o["notice"] as? Bool ?? false
+            return .focus(which, launcher: look)
         default:
             let name = try string("shot")
             guard name.range(of: #"^[A-Za-z0-9_-]{1,60}$"#, options: .regularExpression) != nil else {
@@ -551,6 +588,8 @@ final class ScenarioRunner {
 
     private func note(_ line: String) { log.append(line) }
 
+    /// The launcher, once a step focused it.
+    private var launcherWindow: LauncherWindowController?
     /// The About window, once a step focused it.
     private var aboutWindow: AboutWindowController?
     /// The application preferences, once a step focused them.
@@ -882,8 +921,33 @@ final class ScenarioRunner {
         case .resize(let size):
             window.setContentSize(size)
             note("resize \(Int(size.width))x\(Int(size.height))")
-        case .focus(let which):
-            if which == "preferences" {
+        case .focus(let which, let look):
+            if which == "launcher", let look {
+                // The launcher, drawn off screen with recents of its own.
+                let launcher = LauncherWindowController()
+                let w = try XCTUnwrap(launcher.window)
+                w.appearance = wc.window?.appearance
+                let urls = look.recents.map { name -> URL in
+                    name.hasPrefix("!")
+                        ? URL(fileURLWithPath: "/Volumes/Backup/\(name.dropFirst()).openlab")
+                        : URL(fileURLWithPath: "/Shows/Season/\(name).openlab")
+                }
+                launcher.reload(recents: urls, missing: Set(urls.filter { $0.path.hasPrefix("/Volumes/") }))
+                switch look.state {
+                case "starting": launcher.apply(state: .starting)
+                case "failed":
+                    launcher.apply(
+                        state: .failed(String(format: loc("launcher.failed.detail"), "No engine program was found.")))
+                default: break
+                }
+                if look.notice, let gone = urls.first(where: { $0.path.hasPrefix("/Volumes/") }) {
+                    launcher.showMissing(gone)
+                }
+                if let size = look.size { w.setContentSize(size) }
+                launcher.window?.contentView?.layoutSubtreeIfNeeded()
+                launcherWindow = launcher
+                focused = w
+            } else if which == "preferences" {
                 // The application preferences on this run's engine, their launch choice kept
                 // apart from the user's.
                 let defaults = UserDefaults(suiteName: "openlab-scenario-prefs-\(UUID().uuidString)")
@@ -1655,7 +1719,7 @@ final class ScenarioRunner {
         case .device(let change, let output): return "device \(change.rawValue) \(output)"
         case .resize(let s): return "resize \(Int(s.width))x\(Int(s.height))"
         case .tab(let t): return "tab \(t)"
-        case .focus(let w): return "focus \(w)"
+        case .focus(let w, _): return "focus \(w)"
         case .shot(let s, _, _): return "shot \(s)"
         case .inside(let id, let of): return "inside \(id) of \(of)"
         case .setMedia(let cue, let file): return "set_media \(cue) \(file)"

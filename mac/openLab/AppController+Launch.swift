@@ -10,9 +10,27 @@ extension AppController {
     /// Called as the app starts, before the engine is up: the launcher shows now unless another
     /// choice is made, which keeps it away until `applyLaunchBehavior` has run.
     func beginLaunch() {
+        launcher.apply(state: .starting)
         launching = launchPreferences.behavior != .launcher
         awaitingLaunch = true
         if !launching { showLauncher() }
+    }
+
+    /// What the launcher says about the engine, from what the supervisor reports: starting until an
+    /// engine answers, then ready; an engine that cannot start or does not answer is said plainly.
+    func bindLauncher(to supervisor: EngineSupervisor) {
+        subs.append(supervisor.ready.sink { [weak self] in self?.launcher.apply(state: .ready) })
+        subs.append(
+            supervisor.alarms.sink { [weak self] alarm in
+                switch alarm {
+                case .cannotStart(let reason):
+                    self?.launcher.apply(state: .failed(String(format: loc("launcher.failed.detail"), reason)))
+                case .notResponding: self?.launcher.apply(state: .failed(loc("launcher.notResponding")))
+                // The supervisor ends the engine or waits for it and tries again by itself.
+                case .engineStopped, .startTimedOut, .newEngineNotAnswering, .stillStopping:
+                    self?.launcher.apply(state: .starting)
+                }
+            })
     }
 
     /// Carries out the choice once the engine is up and its recovery check has been asked.

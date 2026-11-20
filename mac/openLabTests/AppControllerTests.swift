@@ -2308,7 +2308,7 @@ final class AppControllerTests: XCTestCase {
         let root = try XCTUnwrap(app.launcher.window?.contentView)
         XCTAssertNotNil(find(root, AX.launcherNew))
         XCTAssertNotNil(find(root, AX.launcherOpen))
-        XCTAssertNotNil(find(root, AX.launcherRecentPrefix + "0"))
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Hamlet"])
     }
 
     func testReopenWithNoWindowsShowsLauncherAndWithWindowsDoesNot() async throws {
@@ -2332,6 +2332,177 @@ final class AppControllerTests: XCTestCase {
         controller.closeAllWindows()
     }
 
+    // MARK: Launcher flows
+
+    private func click(_ id: String) throws {
+        let root = try XCTUnwrap(app.launcher.window?.contentView)
+        let button = try XCTUnwrap(find(root, id) as? NSButton, id)
+        button.performClick(nil)
+    }
+
+    /// Makes the recents seams behave like the system's list: newest first, one forgotten at a time.
+    private func newestFirstRecents() {
+        app.noteRecent = { [unowned self] url in
+            recents.removeAll { $0 == url }
+            recents.insert(url, at: 0)
+        }
+        app.forgetRecents = { [unowned self] in recents = [] }
+    }
+
+    /// Checklist: Launcher showing → double-click (or select and press Return on) a recent show → it
+    /// opens in a workspace window and the launcher closes; the recents list now has that show first.
+    func testDoubleClickOrReturnOnARecentShowOpensItAndMovesItToTheTopOfTheList() async throws {
+        newestFirstRecents()
+        let a = try showFile("Alpha")
+        let b = try showFile("Beta")
+        recents = [a, b]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Alpha", "Beta"])
+        XCTAssertEqual(app.launcher.selectedRow, 0, "the newest is selected, so Return opens it")
+        // Return in the list, as typed.
+        let table = app.launcher.recentsTable
+        app.launcher.select(row: 1)
+        let ret = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        table.keyDown(with: ret)
+        await assertEventually { app.windows.values.contains { $0.window?.title.hasPrefix("Beta") == true } }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        XCTAssertEqual(recents.first, b, "Beta is now first")
+        // A double-click on a row: the table's own action.
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Beta", "Alpha"])
+        let before = app.windows.count
+        app.launcher.select(row: 1)
+        let action = try XCTUnwrap(table.doubleAction)
+        _ = table.target?.perform(action)
+        // clickedRow is -1 without a real click: nothing opens on a stray action.
+        await settle()
+        XCTAssertEqual(app.windows.count, before)
+        app.launcher.openSelected()
+        await assertEventually { app.windows.count == before + 1 }
+        XCTAssertEqual(recents.first, a)
+    }
+
+    /// Checklist: Launcher showing → click New → an untitled workspace opens and the launcher closes;
+    /// click Open → the standard open panel appears, choosing a show opens it, Cancel leaves the
+    /// launcher as it was.
+    func testNewOpensAnUntitledWorkspaceAndOpenAsksForAFileAndCancelLeavesTheLauncher() async throws {
+        let a = try showFile("Opened")
+        let before = app.windows.count
+        app.showLauncher()
+        // Open: Cancel leaves the launcher as it was.
+        openURL = nil
+        var panels = 0
+        app.pickOpenURL = { [unowned self] in
+            panels += 1
+            return openURL
+        }
+        try click(AX.launcherOpen)
+        await settle()
+        XCTAssertEqual(panels, 1)
+        XCTAssertEqual(app.launcher.window?.isVisible, true)
+        XCTAssertEqual(app.windows.count, before)
+        // Open: a show chosen opens it.
+        openURL = a
+        try click(AX.launcherOpen)
+        await assertEventually { app.windows.count == before + 1 }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        // New: an untitled workspace.
+        app.showLauncher()
+        try click(AX.launcherNew)
+        await assertEventually { app.windows.count == before + 2 }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        XCTAssertTrue(app.session.workspaces.contains { $0.path == nil })
+    }
+
+    /// Checklist: A recent show whose file was moved or deleted → click it → the launcher stays, a
+    /// plain notice names the show and says it could not be found, and offers to remove it from the
+    /// list; the other recents still open.
+    func testAMissingRecentShowSaysSoOffersRemovalAndTheOthersStillOpen() async throws {
+        newestFirstRecents()
+        let good = try showFile("Present")
+        let gone = URL(fileURLWithPath: "/Shows/Moved Away.openlab")
+        let other = try showFile("Other")
+        recents = [gone, good, other]
+        app.recentExists = { $0 != gone }
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [true, false, false])
+        let before = app.windows.count
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
+        await settle()
+        XCTAssertEqual(app.launcher.window?.isVisible, true, "the launcher stays")
+        XCTAssertEqual(app.windows.count, before)
+        XCTAssertFalse(app.launcher.noticeLabel.isHidden)
+        XCTAssertEqual(app.launcher.noticeLabel.stringValue, String(format: loc("launcher.missing"), "Moved Away"))
+        let root = try XCTUnwrap(app.launcher.window?.contentView)
+        XCTAssertEqual((find(root, AX.launcherRemove) as? NSButton)?.isHidden, false)
+        // Remove from List: gone from the list, the others kept in order.
+        try click(AX.launcherRemove)
+        XCTAssertEqual(recents, [good, other])
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Present", "Other"])
+        XCTAssertTrue(app.launcher.noticeLabel.isHidden)
+        // The others open.
+        app.launcher.select(row: 1)
+        app.launcher.openSelected()
+        await assertEventually { app.windows.count == before + 1 }
+        XCTAssertEqual(recents.first, other)
+    }
+
+    /// Checklist: A show is already open, then the launcher is brought back from the Window menu →
+    /// opening a second show from it opens a second workspace window beside the first; the first
+    /// keeps its state (a playing cue keeps playing).
+    func testASecondShowOpenedFromTheLauncherBesideAPlayingOneLeavesItPlaying() async throws {
+        let store = try XCTUnwrap(app.session.stores["1"])
+        XCTAssertEqual(store.cueStates[intro]?.state, .running)
+        let second = try showFile("Second Show")
+        recents = [second]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.window?.isVisible, true)
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
+        await assertEventually { app.windows.count == 2 }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        XCTAssertNotNil(app.windows["1"], "the first workspace's window is still there")
+        XCTAssertEqual(store.cueStates[intro]?.state, .running, "its cue keeps playing")
+        XCTAssertEqual(store.document?.dirty, true, "its unsaved edits are kept")
+    }
+
+    /// Checklist: Launcher showing, a show is opened elsewhere (Finder double-click) → the launcher
+    /// closes without a stray empty window.
+    func testAShowOpenedFromFinderWhileTheLauncherIsShowingClosesItWithNoStrayWindow() async throws {
+        let url = try showFile("From Finder")
+        app.launchApplied = true
+        let before = app.windows.count
+        app.showLauncher()
+        app.openFiles([url])
+        await assertEventually { app.windows.count == before + 1 }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        await settle()
+        XCTAssertEqual(app.windows.count, before + 1, "no second, empty window")
+    }
+
+    /// Checklist: App just started, engine still starting → …a click made while starting is not lost
+    /// or doubled. A New that gets through while the launch is still being applied waits for it and
+    /// opens exactly one workspace.
+    func testANewClickDuringLaunchWaitsAndOpensExactlyOneWorkspace() async throws {
+        app.awaitingLaunch = true
+        app.showLauncher()
+        let before = app.windows.count
+        try click(AX.launcherNew)
+        await settle()
+        XCTAssertEqual(app.windows.count, before, "held until the launch has been applied")
+        app.awaitingLaunch = false
+        let waiting = app.launchWaiters
+        app.launchWaiters = []
+        for waiter in waiting { waiter.resume() }
+        await assertEventually { app.windows.count == before + 1 }
+        await settle()
+        XCTAssertEqual(app.windows.count, before + 1, "once")
+    }
+
     func testLauncherButtonsDriveNewOpenAndRecent() async throws {
         let url = try showFile("Lear")
         recents = [url]
@@ -2339,7 +2510,8 @@ final class AppControllerTests: XCTestCase {
         let root = try XCTUnwrap(app.launcher.window?.contentView)
         (find(root, AX.launcherNew) as? NSButton)?.performClick(nil)
         await assertEventually { app.windows.count == 2 }
-        (find(root, AX.launcherRecentPrefix + "0") as? NSButton)?.performClick(nil)
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
         await assertEventually { app.windows.count == 3 }
         await assertEventually { recents.count == 2 }
         // The engine answers `open` before it lists the new doc, so the list may still be on its way.
@@ -2841,8 +3013,8 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { app.windows.count == 2 }
         recents = [url]
         app.showLauncher()
-        let root = try XCTUnwrap(app.launcher.window?.contentView)
-        (find(root, AX.launcherRecentPrefix + "0") as? NSButton)?.performClick(nil)
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
         // The launcher closes once the engine has answered the open, which a fixed settle() can miss.
         await assertEventually { !(app.launcher.window?.isVisible ?? true) }
         XCTAssertEqual(app.windows.count, 2)

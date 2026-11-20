@@ -12,6 +12,19 @@ final class LaunchTests: XCTestCase {
         XCTAssertTrue(app.buttons["launcher-open"].exists)
     }
 
+    /// Launcher flow: a real click on New opens an untitled workspace in its own window and the
+    /// launcher goes away.
+    func testClickingNewOnTheLauncherOpensAWorkspaceAndClosesTheLauncher() {
+        let app = launchApp(opening: [])
+        let launcher = app.windows["launcher-window"]
+        XCTAssertTrue(launcher.waitForExistence(timeout: 10))
+        let new = app.buttons["launcher-new"]
+        XCTAssertTrue(waitFor("isEnabled == true", new, timeout: 20), "usable once the engine is ready")
+        new.click()
+        XCTAssertTrue(app.windows.matching(identifier: "main-window").element(boundBy: 0).waitForExistence(timeout: 10))
+        XCTAssertTrue(waitFor("exists == false", launcher, timeout: 10), "the launcher closes")
+    }
+
     /// The app starts its engine, which has two shows open: one window each, no launcher.
     func testLaunchShowsOneWindowPerWorkspace() {
         let app = launchApp()

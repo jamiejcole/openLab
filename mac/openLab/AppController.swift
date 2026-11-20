@@ -124,7 +124,7 @@ final class AppController {
     /// is left, since the release may then go to another app.
     var goKeysDown: Set<UInt16> = []
 
-    private var subs: [AnyCancellable] = []
+    var subs: [AnyCancellable] = []
     private var keyMonitor: Any?
     /// How many monitors `installKeyMonitor` has registered (tests: exactly one).
     private(set) var keyMonitorInstalls = 0
@@ -190,7 +190,16 @@ final class AppController {
         }
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
         launcher.onOpen = { [weak self] in Task { await self?.openWorkspace() } }
-        launcher.onOpenRecent = { [weak self] url in Task { await self?.openWorkspace(url: url) } }
+        launcher.onOpenRecent = { [weak self] url in
+            guard let self else { return }
+            // The file may have gone since the list was drawn: say so, and leave the launcher up.
+            if !recentExists(url) {
+                launcher.showMissing(url)
+                return
+            }
+            Task { await self.openWorkspace(url: url) }
+        }
+        launcher.onForgetRecent = { [weak self] url in self?.forgetRecent(url) }
         subs.append(session.storesChanged.sink { [weak self] in self?.sync() })
         // $workspaces publishes before the property changes: use the delivered value.
         subs.append(session.$workspaces.sink { [weak self] in self?.updateTitles($0) })

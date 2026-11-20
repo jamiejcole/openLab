@@ -288,7 +288,21 @@ extension AppController {
 
     func clearRecents() {
         forgetRecents()
-        launcher.reload(recents: existingRecentURLs())
+        reloadLauncher()
+    }
+
+    /// Takes one workspace off the recents list, keeping the others in order.
+    func forgetRecent(_ url: URL) {
+        let keep = recentURLs().filter { $0 != url }
+        forgetRecents()
+        for kept in keep.reversed() { noteRecent(kept) }
+        reloadLauncher()
+    }
+
+    /// The launcher lists every recent workspace, one whose file is gone marked as missing.
+    func reloadLauncher() {
+        let all = recentURLs()
+        launcher.reload(recents: all, missing: Set(all.filter { !recentExists($0) }))
     }
 
     private func save(_ store: WorkspaceStore, name: String, asNew: Bool = false) async -> Bool {
