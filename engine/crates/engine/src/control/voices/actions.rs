@@ -1212,6 +1212,22 @@ impl Voices {
         }
         self.drop_aliases(&r);
         self.freed |= !r.preview;
+        // A voice a move to another device is taking over, gone (its device lost, a fault)
+        // before it answered a devamp sent to it: the moved voice carries the devamp out
+        // instead and answers it, so the run still leaves its loop.
+        if r.devamps_out > 0
+            && let Some(w) = (self.recs.values_mut())
+                .find(|w| w.moved_from == Some(id) && matches!(w.phase, Phase::Waiting { .. }))
+            && let Phase::Waiting { queue, .. } = &mut w.phase
+        {
+            queue.push((
+                0,
+                Queued::Devamp {
+                    stop: r.devamp_stop,
+                },
+            ));
+            w.moved_from = None;
+        }
         if self.gone.len() >= GONE_LIMIT {
             self.gone.remove(0);
         }

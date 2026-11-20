@@ -5614,6 +5614,76 @@ fn a_looping_cue_moved_then_devamped_and_panicked_before_the_swap_plays_nothing_
     }
 }
 
+/// #788 review: cue 1 of [`devamped_move`] on patch B ("Fake 2", not the clock's device) moved
+/// to "Fake 1" 1,300 frames into its second pass and devamped 64 frames later, then "Fake 2"
+/// lost before its mixer can answer the devamp: the moved voice still carries the devamp out
+/// (the swap comes after the end of the pass the devamp came in, so it leaves at the end of the
+/// pass under way then, as a devamp held for the moved voice always did; never loops for
+/// ever), the Devamp cue's next cue starts once as the loop is left, and nothing is left.
+#[test]
+fn a_devamp_whose_old_device_is_lost_before_it_answers_is_carried_out_by_the_moved_voice() {
+    let a = wav(&ramp(4000));
+    let b = wav(&dc(200, 0.5));
+    let mut looping = audio_b(1, &a, 0);
+    if let CueKind::Audio {
+        slices,
+        last_slice_play_count,
+        ..
+    } = &mut looping.kind
+    {
+        *slices = vec![openlab_core::SliceMarker {
+            time: 0.25,
+            play_count: 0.into(),
+        }];
+        *last_slice_play_count = 1.into();
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = two_device_show(vec![looping, devamp, audio(2, &b, 1)]);
+    let started = start(&mut s, 1) as usize;
+    let t0 = s.rendered() as usize;
+    s.run((started + 3300 - t0) as u64);
+    map_patch(&mut s, patch_b(), DEV_NAME);
+    s.run(64);
+    start(&mut s, 3);
+    unplug(&mut s, DEV2);
+    let mut msgs = Vec::new();
+    for _ in 0..300 {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    let one = s.channel(0);
+    let unit = 1.0 / 1_048_576.0;
+    let seq: Vec<u32> = (one.iter())
+        .map(|&x| (x / unit).round() as u32)
+        .filter(|&v| v != 0)
+        .collect();
+    let runs = runs_of(&seq);
+    let starts = states(&msgs, id(2))
+        .iter()
+        .filter(|(st, _)| *st == WireCueState::Running)
+        .count();
+    // Heard on "Fake 1" from the swap (its fade-in aside) to the end of the tail, once: the
+    // loop left at the end of the pass under way, never played again.
+    let whole: Vec<_> = runs.iter().filter(|r| r.1 - r.0 > 3).collect();
+    assert_eq!(whole.len(), 1, "{runs:?}");
+    assert_eq!(whole[0].1, 4000, "{runs:?}");
+    let next = s.channel(1).iter().position(|&v| v != 0.0);
+    let tail = one.iter().position(|&v| v == 2001.0 * unit);
+    assert!(tail.is_some());
+    assert_eq!(next, tail, "cue 2 starts as the loop is left");
+    assert_eq!(starts, 1, "{msgs:?}");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
 /// Fix check 1: a new stream still not ready 0.25 s after the first planned swap (a disk far
 /// too slow): the move is given up and the cue plays on, in step, on its old device (until a
 /// later patch sync moves it again); nothing is played twice and nothing is left behind.
