@@ -279,7 +279,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         labels: [loc("sidebar.tab.cueLists"), loc("sidebar.tab.activeCues"), loc("sidebar.tab.warnings")],
         trackingMode: .selectOne, target: nil, action: nil)
     let newListButton = NSButton(title: loc("sidebar.newList"), target: nil, action: nil)
-    let newCartButton = NSButton(title: loc("sidebar.newCart"), target: nil, action: nil)
     let listTable = NSTableView()
     let activeTable: NSTableView
     let warningsTable: NSTableView
@@ -331,7 +330,19 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     var shownProvider: () -> ModelID? = { nil }
     var shownList: ModelID? { shownProvider() }
     /// Active cues in the order they started; a snapshot starts them in list order.
-    private(set) var activeCues: [ModelID] = [] { didSet { updateTabTitles() } }
+    private(set) var activeCues: [ModelID] = [] {
+        didSet {
+            updateTabTitles()
+            updateActiveEmptyNote()
+        }
+    }
+    /// Shown over the Active Cues tab while nothing plays.
+    let activeEmptyNote = NSTextField(labelWithString: loc("sidebar.active.empty"))
+
+    private func updateActiveEmptyNote() {
+        guard isViewLoaded else { return }
+        activeEmptyNote.isHidden = activeScroll.isHidden || !activeCues.isEmpty
+    }
     /// Rows redrawn in place by updates, oldest first (tests check that only the rows that
     /// changed were touched).
     private(set) var updatedActiveRows: [ModelID] = []
@@ -428,12 +439,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         updateWarningsCount()
 
         newListButton.setAX(AX.newListButton)
-        newCartButton.setAX(AX.newCartButton)
-        for b in [newListButton, newCartButton] { b.bezelStyle = .rounded }
+        newListButton.bezelStyle = .rounded
         newListButton.target = self
         newListButton.action = #selector(newListClicked)
-        newCartButton.isEnabled = false  // carts are not in v0.0.1 (CL-05)
-        let bottom = NSStackView(views: [newListButton, newCartButton])
+        // Carts are not built, so there is no New Cart button.
+        let bottom = NSStackView(views: [newListButton])
         bottom.distribution = .fillEqually
 
         let column = NSStackView(views: [strip, tabs, warningsCount, listScroll, activeScroll, warningsScroll, bottom])
@@ -452,7 +462,17 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         for v in [strip, tabs, warningsCount, listScroll, activeScroll, warningsScroll, bottom] {
             v.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -20).isActive = true
         }
+        activeEmptyNote.setAX("sidebar-active-empty")
+        activeEmptyNote.textColor = .secondaryLabelColor
+        activeEmptyNote.alignment = .center
+        activeEmptyNote.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(activeEmptyNote)
+        NSLayoutConstraint.activate([
+            activeEmptyNote.centerXAnchor.constraint(equalTo: activeScroll.centerXAnchor),
+            activeEmptyNote.centerYAnchor.constraint(equalTo: activeScroll.centerYAnchor),
+        ])
         view = root
+        updateActiveEmptyNote()
         listTable.reloadData()
         activeTable.reloadData()
         warningsTable.reloadData()
@@ -620,6 +640,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         activeScroll.isHidden = index != 1
         warningsScroll.isHidden = index != 2
         warningsCount.isHidden = index != 2
+        updateActiveEmptyNote()
     }
 
     // MARK: Cue lists

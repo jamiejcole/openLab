@@ -528,6 +528,8 @@ fn fixtures() -> Vec<(String, Sample)> {
     // Swift test compares): no number, the file, one cue output per patch output and file
     // channel n on cue output n at 0 dB. The engine's real-audio tests play this message.
     let mut dropped = cue(13, audio());
+    // The app's new cues store the hotkey switch off (an unticked box beside an empty field).
+    dropped.triggers.hotkey_enabled = false;
     if let CueKind::Audio { media, levels, .. } = &mut dropped.kind {
         *media = Some(MediaRef::new("/Volumes/Show/thunder.wav"));
         levels.crosspoints = (0..2)
@@ -568,6 +570,7 @@ fn fixtures() -> Vec<(String, Sample)> {
         },
     );
     network.number = None;
+    network.triggers.hotkey_enabled = false;
     add(
         "command_add_new_network_cue",
         client(ClientMessage::Command {
@@ -611,6 +614,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             sound: Default::default(),
         },
     );
+    video.triggers.hotkey_enabled = false;
     video.number = None;
     add(
         "command_add_new_video_cue",

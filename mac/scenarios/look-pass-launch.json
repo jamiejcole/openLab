@@ -1,0 +1,8 @@
+{
+  "about": "Look pass 1 (#775): the window just after launch: the playhead's cue is the selected one and the inspector shows it.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
+  "window": {"width": 1400, "height": 1000},
+  "steps": [
+    {"shot": "launch"}
+  ]
+}

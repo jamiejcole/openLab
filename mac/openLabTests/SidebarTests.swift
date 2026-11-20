@@ -236,13 +236,15 @@ final class SidebarTests: XCTestCase {
     }
 
     /// CL-01: New List asks the engine for an empty list after the last one and shows it once the
-    /// engine has accepted; New Cart stays off (CL-05).
+    /// engine has accepted; there is no New Cart button.
     func testNewListAddsAnEmptyListAtTheEndAndShowsIt() async throws {
         let wired = try await Rig.open()
         side = SidebarViewController(store: wired.store, activeTable: spy)
         side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
         XCTAssertTrue(side.newListButton.isEnabled)
-        XCTAssertFalse(side.newCartButton.isEnabled)
+        func buttons(_ v: NSView) -> [NSButton] { (v as? NSButton).map { [$0] } ?? v.subviews.flatMap(buttons) }
+        let carts = buttons(side.view).map(\.title).filter { $0.contains("Cart") }
+        XCTAssertEqual(carts, [], "no New Cart button: carts are not built")
         var picked: ModelID?
         side.onSelectList = { picked = $0 }
         side.newListButton.performClick(nil)
@@ -272,7 +274,6 @@ final class SidebarTests: XCTestCase {
         wc.setShowMode(true)
         await assertEventually { side.listEditLocked }
         XCTAssertFalse(side.newListButton.isEnabled)
-        XCTAssertFalse(side.newCartButton.isEnabled)
         side.newListButton.performClick(nil)
         side.addList()
         try await wired.advance(0.2)
@@ -324,6 +325,23 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(sent("rename_cue_list"), 1, "nothing is sent in Show Mode")
         XCTAssertEqual(sent("remove_cue_list"), 1)
         XCTAssertEqual(wired.store.model?.cueLists.first?.name, "Front of House")
+    }
+
+    /// An Active Cues tab with nothing playing says so; the note goes when a cue plays and on any other tab.
+    func testActiveCuesTabSaysNothingIsPlayingWhenItIsEmpty() async throws {
+        _ = try await make()
+        side.showTab(1)
+        XCTAssertTrue(side.activeEmptyNote.isHidden, "two cues are active: no note")
+        try state(Self.intro, "idle")
+        try state(Self.rain, "idle")
+        XCTAssertEqual(side.activeCues, [])
+        XCTAssertFalse(side.activeEmptyNote.isHidden)
+        XCTAssertEqual(side.activeEmptyNote.stringValue, loc("sidebar.active.empty"))
+        side.showTab(0)
+        XCTAssertTrue(side.activeEmptyNote.isHidden, "not over the other tabs")
+        side.showTab(1)
+        try state(Self.door, "running")
+        XCTAssertTrue(side.activeEmptyNote.isHidden)
     }
 
     func testCuesAppearAndDisappearWithRuntimeChangesWithoutAFullReload() async throws {

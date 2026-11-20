@@ -276,6 +276,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             Task { await self?.editor.add(kind, after: cues) }
         }
         window.contentView = buildContent()
+        // The model is already in the store: no reset will come to move the selection to the playhead's cue.
+        cueList.followPlayheadAtOpen()
         window.initialFirstResponder = cueList.outlineView
         // A screen smaller than the default size (a small laptop, a scaled display) gets the largest
         // window that fits, before centring.
