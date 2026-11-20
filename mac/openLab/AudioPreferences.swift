@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Combine
 import Foundation
 
 /// The audio part of the application preferences (UI-01, AUD-21): this machine's output devices,
@@ -20,8 +21,21 @@ final class AudioPreferencesModel {
     private(set) var loaded = false
     /// The last refusal or failure, in words; cleared by the next success.
     var message: String?
+    /// The last refusal of a backup count, in words; cleared by the next success.
+    var backupMessage: String?
 
     init(client: EngineClient) { self.client = client }
+
+    /// The connection to the engine, as it changes: the window reads again once it is up.
+    var connectionStates: AnyPublisher<ConnectionState, Never> { client.$state.eraseToAnyPublisher() }
+
+    /// Nothing was read yet and the engine has not refused the connection for good: it is still
+    /// starting (or reconnecting), so the window waits instead of showing an error.
+    var isStarting: Bool {
+        if loaded { return false }
+        if case .failed = client.state { return false }
+        return client.state != .connected
+    }
 
     /// How many backups of each workspace this machine keeps (nil: not read yet).
     private(set) var backupKeep: UInt32?
@@ -42,7 +56,7 @@ final class AudioPreferencesModel {
     func setBackupKeep(_ text: String) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard let count = UInt32(trimmed), Self.backupKeepRange.contains(count) else {
-            message = String(
+            backupMessage = String(
                 format: loc("prefs.general.backups.range"), Int(Self.backupKeepRange.lowerBound),
                 Int(Self.backupKeepRange.upperBound))
             return false
@@ -51,10 +65,10 @@ final class AudioPreferencesModel {
         await refreshBackups()
         switch result {
         case .success:
-            message = nil
+            backupMessage = nil
             return true
         case .failure(let e):
-            message = e.detailText
+            backupMessage = e.detailText
             return false
         }
     }

@@ -1,0 +1,24 @@
+{
+  "about": "Backups kept set to 0 says backups are off; a bad entry is refused (#773).",
+  "show": "Demo",
+  "appearance": "dark",
+  "steps": [
+    {
+      "focus": "preferences"
+    },
+    {
+      "type": "preferences-backup-field",
+      "text": "0"
+    },
+    {
+      "shot": "zero"
+    },
+    {
+      "type": "preferences-backup-field",
+      "text": "many"
+    },
+    {
+      "shot": "refused"
+    }
+  ]
+}
