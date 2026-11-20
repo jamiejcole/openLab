@@ -133,9 +133,11 @@ final class TargetCueTests: XCTestCase {
         await select(Self.retarget)
         XCTAssertNotEqual(try mark(Self.retarget).accessibilityLabel(), loc("cue.state.broken"))
         XCTAssertEqual(rig.store.problems[Self.retarget] ?? [], [])
-        XCTAssertEqual(try XCTUnwrap(cell("status", Self.retarget)).images[4].accessibilityLabel(), loc("cue.type.target"))
+        XCTAssertEqual(
+            try XCTUnwrap(cell("status", Self.retarget)).images[4].accessibilityLabel(), loc("cue.type.target"))
         // Named after what it acts on, as the other cues that act on a cue are; its target in the list.
-        XCTAssertEqual(cell("name", Self.retarget)?.label.stringValue, "\(loc("cue.type.target").lowercased()) start Thunder")
+        XCTAssertEqual(
+            cell("name", Self.retarget)?.label.stringValue, "\(loc("cue.type.target").lowercased()) start Thunder")
         XCTAssertEqual(cell("target", Self.retarget)?.label.stringValue, "3")
         inspector.tabView.selectTabViewItem(withIdentifier: "newTarget")
         XCTAssertEqual(inspector.newTargetField.stringValue, "5")
@@ -208,7 +210,8 @@ final class TargetCueTests: XCTestCase {
         let fadeRetarget = Self.id(6)
         await select(fadeRetarget)
         XCTAssertEqual(
-            InspectorEdit.targetRejection(of: try XCTUnwrap(rig.store.model?.cue(fadeRetarget)),
+            InspectorEdit.targetRejection(
+                of: try XCTUnwrap(rig.store.model?.cue(fadeRetarget)),
                 target: try XCTUnwrap(rig.store.model?.cue(Self.id(7)))), .wrongTargetKind)
     }
 

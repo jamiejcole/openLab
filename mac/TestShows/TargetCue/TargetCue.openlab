@@ -4,7 +4,7 @@
   "id": "00000781-0000-4000-8000-000000000001",
   "name": "Target cues",
   "settings": {
-   "min_go_interval": 0.5,
+   "min_go_interval": 0.0,
    "panic_duration": 3.0,
    "autosave_interval": 30.0,
    "osc_access": {

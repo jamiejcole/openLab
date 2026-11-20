@@ -257,7 +257,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             (numberField, AX.inspectorNumber), (nameField, AX.inspectorName), (preWaitField, AX.inspectorPreWait),
             (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget),
             (durationField, AX.inspectorDuration), (loadTimeField, AX.inspectorLoadTime),
-            (networkMessageField, "inspector-network-message"), (newTargetField, AX.inspectorNewTarget), (fadeOthersTimeField, "inspector-fade-others-time"),
+            (networkMessageField, "inspector-network-message"), (newTargetField, AX.inspectorNewTarget),
+            (fadeOthersTimeField, "inspector-fade-others-time"),
             (duckDbField, "inspector-duck-others-db"), (duckTimeField, "inspector-duck-others-time"),
         ] {
             f.setAX(id)
@@ -1036,7 +1037,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var lockedControls: [NSControl] {
         groupModeRadios + [
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, newTargetField,
-            targetField, hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
+            targetField, hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck,
+            devampStopCheck,
             devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
             networkSendButton, videoIO.stagePopup, videoIO.chooseButton, videoIO.trackPopup,
             secondTriggerPopup, onReleaseCheck, groupLoopCheck, groupShuffleCheck, colourPopup,
