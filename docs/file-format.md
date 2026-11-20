@@ -302,6 +302,7 @@ Option on macOS).
 | `go_to` | `target`, `then_go` (bool) | Moves the playhead to the target; `then_go` also fires GO. |
 | `arm` | `target` | Arms the target. |
 | `disarm` | `target` | Disarms the target. |
+| `target` | `target`, `new_target` (cue id or `null`) | Gives the target a temporary target, `new_target`, until the target is reset, Reset All or the show is reopened; never written to the file. `target` must be a cue that acts on a cue, other than a `fade`; `new_target` must have a number and be a cue the target can act on (not the target itself). Otherwise it loads and shows broken (`no_new_target`, `new_target_missing`, `new_target_unnumbered`, `new_target_wrong_kind`, docs/protocol.md). |
 
 **`wait`** — `duration` (seconds). Does nothing for that long.
 
