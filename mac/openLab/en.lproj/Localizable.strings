@@ -191,6 +191,7 @@
 "cue.type.reset" = "Reset";
 "cue.type.devamp" = "Devamp";
 "cue.type.goto" = "Go To";
+"cue.type.target" = "Target";
 "cue.type.arm" = "Arm";
 "cue.type.disarm" = "Disarm";
 "cue.type.network" = "Network";
@@ -308,6 +309,9 @@
 "inspector.tab.mode" = "Mode";
 "inspector.tab.loadTime" = "Load Time";
 "inspector.loadTime" = "Load target to time";
+"inspector.tab.newTarget" = "New Target";
+"inspector.newTarget" = "New target cue number";
+"inspector.newTarget.about" = "When this cue runs, its target acts on that cue instead, until it is reset.";
 "inspector.groupMode" = "Group mode";
 "inspector.groupMode.intro" = "How starting this group starts the cues inside it.";
 "inspector.groupMode.timeline" = "Timeline";
@@ -398,6 +402,8 @@
 "inspector.invalid.noMessage" = "Only a Network cue has a message.";
 "inspector.invalid.networkMessage" = "The arguments cannot be read: put text with spaces in double quotes, and use \\T or \\F for true or false.";
 "inspector.invalid.level" = "Enter a level in dB, from -inf to +12.";
+"inspector.invalid.noNewTarget" = "Only a Target cue has a new target.";
+"inspector.invalid.newTargetIsTarget" = "The new target cannot be the cue this cue retargets.";
 "inspector.refused" = "The change was refused: %@";
 "inspector.failed" = "The change could not be sent.";
 
@@ -708,6 +714,10 @@
 "problem.network_message_invalid" = "The OSC message cannot be sent: {reason}.";
 "problem.slices_unplayable" = "Its slices and loops cannot be played with this file: {reason}.";
 "problem.nothing_plays" = "Every slice is skipped, so no part of the file plays. Give at least one slice a play count above 0.";
+"problem.no_new_target" = "No new target is set: type a cue number in its New Target tab.";
+"problem.new_target_missing" = "Its new target, {target}, does not exist.";
+"problem.new_target_wrong_kind" = "Its target cannot act on its new target, {target}.";
+"problem.new_target_unnumbered" = "Its new target, {target}, has no cue number.";
 "problem.no_stage" = "No stage is chosen.";
 "problem.no_patch" = "Its file has sound and no output patch is chosen.";
 "problem.stage_missing" = "Its stage does not exist.";

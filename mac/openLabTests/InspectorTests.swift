@@ -2415,8 +2415,8 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertEqual(
             CueToolbarView.kinds.flatMap { $0 },
             [
-                .group, .audio, .video, .fade, .network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm,
-                .disarm, .wait, .memo,
+                .group, .audio, .video, .fade, .network, .start, .stop, .pause, .load, .reset, .devamp, .goto,
+                .target, .arm, .disarm, .wait, .memo,
             ])
     }
 

@@ -5,7 +5,8 @@ import Foundation
 /// The cue kinds the toolbar and Cues menu can add (the model's kinds that need no choice first;
 /// Audio takes the first audio patch and Network the first network patch).
 enum NewCueKind: String, CaseIterable, Sendable {
-    case audio, video, group, memo, wait, fade, start, stop, pause, load, reset, devamp, goto, arm, disarm, network
+    case audio, video, group, memo, wait, fade, start, stop, pause, load, reset, devamp, goto, target, arm, disarm
+    case network
 
     var titleKey: String { "cue.type.\(rawValue)" }
 
@@ -58,6 +59,8 @@ enum NewCueKind: String, CaseIterable, Sendable {
                 "devamp_mode": .string("current_slice"),
             ]) { a, _ in a }
         case .goto: fields.merge(["target": .null, "then_go": .bool(false)]) { a, _ in a }
+        // The cue it retargets and the cue that becomes that cue's target (QLab 5, manual p. 686).
+        case .target: fields.merge(["target": .null, "new_target": .null]) { a, _ in a }
         case .network:
             // No address yet: core keeps a Network cue without a valid message and shows it broken
             // until it is edited, so nothing is sent by accident.

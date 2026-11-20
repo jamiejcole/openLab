@@ -84,6 +84,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The Load Time tab's one field, in the tab view only while a Load cue is selected (CT-14).
     let loadTimeField = NSTextField()
     var loadTimeItem: NSTabViewItem?
+    /// A Target cue's New Target tab: the number of the cue its target acts on once it runs (CT-18).
+    let newTargetField = NSTextField()
     /// The Network cue's Settings tab: its patch, message and Send. The pop-up's items follow the
     /// workspace's network patches; `networkPatchIDs[i]` is item i's patch (nil: separator, no patch).
     let networkPatchPopup = NSPopUpButton()
@@ -235,6 +237,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .duration: return durationField
         case .loadTime: return loadTimeField
         case .message: return networkMessageField
+        case .newTarget: return newTargetField
         case .fadeOthersTime: return fadeOthersTimeField
         case .duckDb: return duckDbField
         case .duckTime: return duckTimeField
@@ -254,7 +257,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             (numberField, AX.inspectorNumber), (nameField, AX.inspectorName), (preWaitField, AX.inspectorPreWait),
             (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget),
             (durationField, AX.inspectorDuration), (loadTimeField, AX.inspectorLoadTime),
-            (networkMessageField, "inspector-network-message"), (fadeOthersTimeField, "inspector-fade-others-time"),
+            (networkMessageField, "inspector-network-message"), (newTargetField, AX.inspectorNewTarget),
+            (fadeOthersTimeField, "inspector-fade-others-time"),
             (duckDbField, "inspector-duck-others-db"), (duckTimeField, "inspector-duck-others-time"),
         ] {
             f.setAX(id)
@@ -344,6 +348,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             f.widthAnchor.constraint(equalToConstant: 80).isActive = true
         }
         loadTimeField.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        newTargetField.widthAnchor.constraint(equalToConstant: 80).isActive = true
         kindIcon.widthAnchor.constraint(equalToConstant: 20).isActive = true
         let nameRow = NSStackView(views: [kindIcon, nameField])
         nameRow.spacing = 4
@@ -468,6 +473,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let triggers = triggersTab(row: row, column: column)
         modeItem = modeTab(row: row, column: column)
         loadTimeItem = loadTimeTab(row: row, column: column)
+        let newTarget = newTargetTab(row: row, column: column)
         let devamp = devampTab(row: row, column: column)
         let network = networkTab(row: row, column: column)
         let io = ioTab(row: row, column: column)
@@ -475,7 +481,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let fadeGeometryItem = fadeGeometryTab()
         buildLevelsTabs()
         buildTimeLoopsTab()
-        for i in [item, triggers, devamp, network, io, geometryItem, fadeGeometryItem]
+        for i in [item, triggers, devamp, network, io, geometryItem, fadeGeometryItem, newTarget]
             + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 })
         {
             if let id = i.identifier as? String { tabItems[id] = i }
@@ -678,6 +684,27 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         content.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         let item = NSTabViewItem(identifier: "loadTime")
         item.label = loc("inspector.tab.loadTime")
+        item.view = content
+        return item
+    }
+
+    /// A Target cue's New Target tab (QLab 5, manual p. 686): the number of the cue its target acts
+    /// on after it runs, with a line saying so.
+    private func newTargetTab(
+        row: (String, NSView) -> NSView, column: ([NSView], CGFloat?) -> NSStackView
+    ) -> NSTabViewItem {
+        let about = NSTextField(labelWithString: loc("inspector.newTarget.about"))
+        about.setAX("inspector-new-target-about")
+        about.textColor = .secondaryLabelColor
+        // Truncated only when the tab is narrower than the line (the least window keeps it whole).
+        about.lineBreakMode = .byTruncatingTail
+        about.setContentCompressionResistancePriority(.defaultHigh - 1, for: .horizontal)
+        let line = NSStackView(views: [newTargetField, about])
+        line.spacing = 12
+        let content = column([row(loc("inspector.newTarget"), line)], nil)
+        content.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        let item = NSTabViewItem(identifier: "newTarget")
+        item.label = loc("inspector.tab.newTarget")
         item.view = content
         return item
     }
@@ -1009,8 +1036,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     private var lockedControls: [NSControl] {
         groupModeRadios + [
-            numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField,
-            hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
+            numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, newTargetField,
+            targetField, hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck,
+            devampStopCheck,
             devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
             networkSendButton, videoIO.stagePopup, videoIO.chooseButton, videoIO.trackPopup,
             secondTriggerPopup, onReleaseCheck, groupLoopCheck, groupShuffleCheck, colourPopup,

@@ -1047,6 +1047,7 @@ impl Checker {
             | CueKind::GoTo { .. }
             | CueKind::Arm { .. }
             | CueKind::Disarm { .. }
+            | CueKind::Target { .. }
             | CueKind::Memo => {}
         }
     }
@@ -1339,6 +1340,23 @@ impl Checker {
                         Some(_) => {}
                     }
                 }
+                if let CueKind::Target {
+                    target,
+                    new_target: Some(new),
+                } = &cue.kind
+                {
+                    match by_id.get(new) {
+                        None => self.warn(id, IssueKind::TargetMissing { target: *new }),
+                        Some(n) => {
+                            if let Some(t) = target.and_then(|t| by_id.get(&t))
+                                && can_target(&cue.kind, &t.kind)
+                                && retarget_problem(t, n) == Some(Retarget::WrongKind)
+                            {
+                                self.warn(id, IssueKind::TargetWrongKind { target: *new });
+                            }
+                        }
+                    }
+                }
                 if cue.second_trigger.effective(&cue.kind) != cue.second_trigger {
                     self.warn(id, IssueKind::SecondTriggerNeedsPlaylist);
                 }
@@ -1497,8 +1515,8 @@ fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
 }
 
 /// Fades act on audio levels (a Group fades its children); Devamp needs slices (an Audio or
-/// Video cue's) or a playlist (which it lets finish its current child). Other control cues
-/// accept any target.
+/// Video cue's) or a playlist (which it lets finish its current child); a Target cue needs a
+/// cue that acts on a cue, other than a Fade. Other control cues accept any target.
 pub(crate) fn can_target(source: &CueKind, target: &CueKind) -> bool {
     match source {
         CueKind::Fade { .. } => matches!(
@@ -1514,7 +1532,30 @@ pub(crate) fn can_target(source: &CueKind, target: &CueKind) -> bool {
                     ..
                 }
         ),
+        // A Target cue retargets a cue that acts on a cue; a Fade's link to its target cannot
+        // be swapped while it runs (QLab 5 manual p. 686).
+        CueKind::Target { .. } => target.has_target() && !matches!(target, CueKind::Fade { .. }),
         _ => true,
+    }
+}
+
+/// Why a Target cue aimed at `target` may not hand it `new` as its temporary target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retarget {
+    /// `target` cannot act on `new`, or `new` is `target` itself.
+    WrongKind,
+    /// `new` has no number (QLab 5 manual p. 686: the new target is named by its number).
+    Unnumbered,
+}
+
+/// [`Retarget`] for `target` and `new`, or `None` when `new` may be its temporary target.
+pub fn retarget_problem(target: &Cue, new: &Cue) -> Option<Retarget> {
+    if new.id == target.id || !can_target(&target.kind, &new.kind) {
+        Some(Retarget::WrongKind)
+    } else if new.number.is_none() {
+        Some(Retarget::Unnumbered)
+    } else {
+        None
     }
 }
 

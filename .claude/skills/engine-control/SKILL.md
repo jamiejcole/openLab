@@ -129,6 +129,7 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 
 ## Priming and preload
 - After every playhead change, model change, probe answer, landed preload and freed show voice, the loop keeps primed (stream prepared and filling): the next `PRIME_CUES` from each playhead, their targets (a group primes its audio cues), and every cue whose hotkey trigger is on (`Triggers::active_hotkey`); only armed Audio cues with media and no run, at most `MAX_PRIMES`.
+- A target there is what the cue acts on now (`CueEngine::acts_on`: a Target cue's temporary target, else its own); a change of temporary targets (`temp_target_changes`: a Target cue ran, a reset or Reset All dropped one) dirties the primes, so GO never finds the old target primed and the new one cold.
   - Video cues with a file and a patch for their sound are primed too (the stream of the audio track they play); one whose file is known to have no sound is left out of the set.
   - The same pass opens the pictures of the first Video cues near the playheads on the stage host (`prime_pictures`, a set of its own: any Video cue with a file and a stage; skill `video`).
 - A voice start can be held with a Video cue sequence (`Voices::apply_gated`): it stays waiting (stops, pauses, resumes and level changes act on it as on any waiting start) until `open_gate` lets it start at its sequence date plus the hold, counted into `ActionLength` (skill `video`).

@@ -631,7 +631,7 @@ final class CueEditingTests: XCTestCase {
         var asked: [NewCueKind] = []
         toolbar.onAdd = { asked.append($0) }
         toolbar.add(group: 1, segment: 0)
-        toolbar.add(group: 5, segment: 10)
+        toolbar.add(group: 5, segment: 11)
         toolbar.add(group: 4, segment: 0)
         toolbar.add(group: 2, segment: 0)
         XCTAssertEqual(asked, [.audio, .memo, .network, .video])

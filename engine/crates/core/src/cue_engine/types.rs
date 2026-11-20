@@ -352,6 +352,20 @@ pub enum CueProblem {
     TargetWrongKind {
         target: CueId,
     },
+    /// A Target cue with no new target set (QLab 5 manual p. 686).
+    NoNewTarget,
+    /// A Target cue's new target is not in the workspace.
+    NewTargetMissing {
+        target: CueId,
+    },
+    /// A Target cue's new target is one its target cannot act on, or its target itself.
+    NewTargetWrongKind {
+        target: CueId,
+    },
+    /// A Target cue's new target has no number (it is named by its number).
+    NewTargetUnnumbered {
+        target: CueId,
+    },
     /// A Fade cue that sets no level to fade (QLab: "No parameters set to fade").
     NothingToFade,
     /// An Audio or Video cue with no media file.
@@ -437,6 +451,14 @@ impl fmt::Display for CueProblem {
             Self::TargetSelf => write!(f, "targets itself"),
             Self::TargetWrongKind { target } => {
                 write!(f, "target {target} is the wrong kind of cue")
+            }
+            Self::NoNewTarget => write!(f, "no new target set"),
+            Self::NewTargetMissing { target } => write!(f, "new target {target} does not exist"),
+            Self::NewTargetWrongKind { target } => {
+                write!(f, "its target cannot act on new target {target}")
+            }
+            Self::NewTargetUnnumbered { target } => {
+                write!(f, "new target {target} has no number")
             }
             Self::NothingToFade => write!(f, "no levels or picture values set to fade"),
             Self::NoMedia => write!(f, "no media file"),
