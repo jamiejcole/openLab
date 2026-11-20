@@ -199,7 +199,12 @@ fn running_a_target_cue_changes_what_its_target_acts_on_and_edits_nothing() {
             target: Some(id(3)),
         },
     );
-    let ws = workspace(vec![retarget, start_cue, audio(3, &path, 0), audio(5, &path, 0)]);
+    let ws = workspace(vec![
+        retarget,
+        start_cue,
+        audio(3, &path, 0),
+        audio(5, &path, 0),
+    ]);
     let mut s = show(ws.clone());
     let mut mirror = Mirror::new(&s);
     let revision = s.control().revision();

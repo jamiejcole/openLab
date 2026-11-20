@@ -1196,6 +1196,46 @@ fn kind_fields_keep_the_kind_fields_not_named() {
     assert_clean(&ws);
 }
 
+#[test]
+fn a_target_cues_new_target_is_set_and_cleared_by_its_kind_field_and_undone() {
+    let mut ws = workspace(vec![
+        cue(
+            1,
+            CueKind::Target {
+                target: None,
+                new_target: None,
+            },
+        ),
+        numbered(2, "2", CueKind::Memo),
+    ]);
+    let before = ws.clone();
+    let inverse = ws
+        .apply(set(
+            1,
+            fields(serde_json::json!({ "new_target": cue_id(2) })),
+        ))
+        .unwrap();
+    assert_eq!(kind_of(&ws, 1).new_target(), Some(cue_id(2)));
+    ws.apply(set(1, fields(serde_json::json!({ "new_target": null }))))
+        .unwrap();
+    assert_eq!(kind_of(&ws, 1).new_target(), None);
+    ws.apply(set(
+        1,
+        fields(serde_json::json!({ "new_target": cue_id(2) })),
+    ))
+    .unwrap();
+    ws.apply(inverse).unwrap();
+    assert_eq!(ws, before, "undo restores it");
+    // Not a field of another kind.
+    assert!(
+        ws.apply(set(
+            2,
+            fields(serde_json::json!({ "new_target": cue_id(1) }))
+        ))
+        .is_err()
+    );
+}
+
 /// A play count set by an edit of the kind's fields (what the app's count field sends) is a
 /// count, until devamped or skipped; a value that is none of them is refused and the cue keeps
 /// what it had. Every slice skipped is accepted: the cue is then broken, not the edit.

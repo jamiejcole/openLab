@@ -98,11 +98,14 @@ final class TargetCueTests: XCTestCase {
     /// The row's state mark: its label and its tooltip (a broken cue's reasons).
     private func mark(_ id: ModelID) throws -> NSImageView { try XCTUnwrap(cell("status", id)).images[1] }
 
-    private func playing(_ id: ModelID) -> Bool {
-        (try? mark(id).accessibilityLabel()) == loc("cue.state.running")
-    }
+    private func playing(_ id: ModelID) -> Bool { shownState(id) == loc("cue.state.running") }
 
     private func tip(_ id: ModelID) throws -> String { try XCTUnwrap(try mark(id).toolTip) }
+
+    /// The mark's tooltip while it is drawn, for waiting on it (nothing recorded while it is not yet).
+    private func shownTip(_ id: ModelID) -> String? { cell("status", id)?.images[1].toolTip }
+
+    private func shownState(_ id: ModelID) -> String? { cell("status", id)?.images[1].accessibilityLabel() }
 
     private func text(_ key: String, target: ModelID) -> String {
         let name = WarningRows.labeler(rig.store.model)(target)
@@ -121,7 +124,7 @@ final class TargetCueTests: XCTestCase {
         let made = try XCTUnwrap(added)
         await select(made)
         XCTAssertEqual(tabs, ["basics", "triggers", "newTarget"])
-        await assertEventually { (try? self.mark(made).accessibilityLabel()) == loc("cue.state.broken") }
+        await assertEventually { self.shownState(made) == loc("cue.state.broken") }
         let shown = try tip(made)
         XCTAssertTrue(shown.contains(loc("problem.no_target")), shown)
         XCTAssertTrue(shown.contains(loc("problem.no_new_target")), shown)
@@ -141,6 +144,15 @@ final class TargetCueTests: XCTestCase {
         XCTAssertEqual(cell("target", Self.retarget)?.label.stringValue, "3")
         inspector.tabView.selectTabViewItem(withIdentifier: "newTarget")
         XCTAssertEqual(inspector.newTargetField.stringValue, "5")
+        // Typing another cue's number sets it; emptying the field clears it (and the cue shows broken).
+        try typeNewTarget("4")
+        await assertEventually("the engine's echo") {
+            self.rig.store.model?.cue(Self.retarget)?.raw["kind"]?["new_target"]?.stringValue == Self.thunder.raw
+        }
+        XCTAssertEqual(inspector.newTargetField.stringValue, "4")
+        XCTAssertEqual(inspector.messageLabel.stringValue, "")
+        try typeNewTarget("")
+        await assertEventually { self.shownTip(Self.retarget)?.contains(loc("problem.no_new_target")) == true }
     }
 
     func testRunningTheTargetCueMakesTheStartCuePlayCueFiveAndDoesNotEditTheWorkspace() async throws {
@@ -187,7 +199,7 @@ final class TargetCueTests: XCTestCase {
     }
 
     func testATargetCueAimedAtAFadeAMissingOrAnUnnumberedCueIsBrokenWithAReasonOrRefused() async throws {
-        await assertEventually { (try? self.tip(Self.atFade)) != nil }
+        await assertEventually { self.shownTip(Self.atFade) != nil }
         XCTAssertTrue(try tip(Self.atFade).contains(text("problem.target_wrong_kind", target: Self.id(7))))
         XCTAssertTrue(try tip(Self.unnumbered).contains(text("problem.new_target_unnumbered", target: Self.id(9))))
         XCTAssertTrue(try tip(Self.gone).contains(loc("problem.new_target_missing").components(separatedBy: "{")[0]))
