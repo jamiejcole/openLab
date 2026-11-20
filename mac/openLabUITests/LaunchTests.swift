@@ -40,7 +40,8 @@ final class LaunchTests: XCTestCase {
     /// launcher closes.
     func testDoubleClickingARecentShowOnTheLauncherOpensItAndClosesTheLauncher() {
         let app = launcherWithADemoRecent()
-        app.tables["launcher-recents"].tableRows.firstMatch.doubleClick()
+        app.tables["launcher-recents"].tableRows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .doubleClick()
         XCTAssertTrue(app.windows.matching(identifier: "main-window").element(boundBy: 0).waitForExistence(timeout: 10))
         XCTAssertTrue(waitFor("exists == false", app.windows["launcher-window"], timeout: 10), "the launcher closes")
     }
