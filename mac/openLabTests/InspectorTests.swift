@@ -1276,7 +1276,10 @@ final class CueTargetFlowTests: XCTestCase {
         return plan
     }
 
+    /// A cue added with nothing selected: at the end of the list and with no target (a window opens with the
+    /// playhead's cue selected, and a cue added then goes after it and a Start or Stop cue takes it as target).
     private func add(_ kind: NewCueKind) async throws -> ModelID {
+        wc.cueList.outlineView.deselectAll(nil)
         let added = await wc.editor.add(kind)
         let id = try XCTUnwrap(added)
         await assertEventually { self.wc.cueList.node(id) != nil }

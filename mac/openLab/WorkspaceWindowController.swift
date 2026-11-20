@@ -168,8 +168,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// width with the sidebar shown).
     static let minCueListHeight: CGFloat = 56 + sidewaysScrollerHeight
     /// The least window height: the list's extra room comes out of the inspector's, which at this size keeps
-    /// its existing room (over 240 points) and not its 180 least.
-    static let minWindowHeight: CGFloat = 500 + sidewaysScrollerHeight
+    /// its existing room (over 240 points) and not its 180 least. The masthead's standby box (its text and the
+    /// room above and below it) is counted in the 500 as it was before it gained that room: the extra is added.
+    static let minWindowHeight: CGFloat = 500 + 2 * standbyFieldInset + sidewaysScrollerHeight
     /// The least the inspector may be: enough for the Time & Loops tab's left column (Start, End,
     /// play count, Loop) below the tab strip. The smallest window leaves this much.
     /// The inspector's height until the operator drags it: room for the level faders and the notes.
