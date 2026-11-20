@@ -358,12 +358,7 @@ struct MovePlan {
 fn move_plan(o: &VoiceRec, swap: SampleTime) -> Option<MovePlan> {
     let here = o.position(swap.max(o.start_at)).unwrap_or(o.offset);
     let played = here.saturating_sub(o.offset);
-    let table = rest_of_table(
-        &o.table,
-        &o.cuts,
-        o.devamp_stop,
-        o.scale.local(o.heard(played)),
-    )?;
+    let table = rest_of_table(&o.table, &o.cuts, o.devamp_stop, o.table_point(played))?;
     Some(MovePlan {
         table,
         rate: o.scale.local,
@@ -386,13 +381,14 @@ impl VoiceRec {
         self.carried_drift = plan.carried_drift;
     }
 
-    /// Master frames into its table its sound has reached once its position is `played`
-    /// frames past its start: its device's drift on, its underruns back. A move to another
-    /// device goes on from there, not from the master clock's count, or it would replay (or
-    /// skip) the difference.
-    fn heard(&self, played: u64) -> u64 {
+    /// The frame of its table (its device's frames) its sound has reached once its position
+    /// is `played` master frames past its start: its device's drift on, its underruns back.
+    /// Everything compared with its table (its devamp cuts, a move's plan, the file position,
+    /// the rest after a loop) is counted so, or a move would replay (or skip) the difference.
+    fn table_point(&self, played: u64) -> u64 {
         let heard = i128::from(played) + i128::from(self.drift) - i128::from(self.late);
-        u64::try_from(heard.max(0)).unwrap_or(u64::MAX)
+        self.scale
+            .local(u64::try_from(heard.max(0)).unwrap_or(u64::MAX))
     }
 }
 
@@ -517,7 +513,6 @@ impl Voices {
         Self::default()
     }
 
-    /// The voice of run `run` while it plays.
     /// Each playing voice takes its device's drift now, `drift(id)` in master frames (where a
     /// move to another device plans from).
     pub fn note_drifts(&mut self, drift: impl Fn(VoiceId) -> f64) {
@@ -535,6 +530,7 @@ impl Voices {
         self.recs.get(&voice).map_or(0, |r| r.carried_drift)
     }
 
+    /// The voice of run `run` while it plays.
     pub fn playing(&self, run: RunId) -> Option<VoiceId> {
         let id = *self.by_run.get(&run)?;
         let r = self.recs.get(&id)?;
@@ -601,7 +597,7 @@ impl VoiceRec {
         let Some(played) = at.checked_sub(self.start_at) else {
             return;
         };
-        let played = self.scale.local(played.saturating_sub(self.paused_frames));
+        let played = self.table_point(played.saturating_sub(self.paused_frames));
         if self.cuts.last().is_none_or(|&c| played > c) && self.cuts.len() < MAX_SLICES {
             self.cuts.push(played);
         }
@@ -611,7 +607,7 @@ impl VoiceRec {
     /// table starts at the action offset), in frames of the file at the master rate; `None`
     /// without a table or past its end.
     fn file_frame(&self, pos: u64) -> Option<u64> {
-        let played = self.scale.local(pos.saturating_sub(self.offset));
+        let played = self.table_point(pos.saturating_sub(self.offset));
         // A devamp stop ends the voice on the loop's boundary: nothing is played after it.
         if self.devamp_stop && self.cuts.last().is_some_and(|&c| c <= played) {
             return None;
@@ -629,7 +625,7 @@ impl VoiceRec {
         let rest = if self.devamp_stop {
             0
         } else {
-            let left = self.scale.local(played);
+            let left = self.table_point(played);
             let rest = rest_after_loop(&self.table, left)?;
             // Counted as one stretch from the voice's start, so the rounding never adds up.
             self.scale
@@ -1214,6 +1210,40 @@ mod tests {
         assert_eq!(file_frame(&t, &[500, 700], 750), None);
         assert_eq!(file_frame(&t[3..], &[10], 20), None);
         assert_eq!(file_frame(&[], &[], 0), None);
+    }
+
+    /// A looping voice that underran 300 frames is devamped out of its loop (it leaves on
+    /// master sample 2300, table frame 2000), then moved with the swap on master 2400: its
+    /// sound is 100 frames into the slice after the loop, and the move plays on from there,
+    /// not the loop again. Likewise on a device whose clock ran 300 frames slow.
+    #[test]
+    fn a_move_after_a_devamp_cut_counts_the_cut_and_the_sound_in_the_same_frames() {
+        let s = |index, start, frames, plays| Slice {
+            index,
+            start,
+            frames,
+            plays,
+        };
+        let table = vec![
+            s(0, 0, 1000, Plays::Infinite),
+            s(1, 1000, 500, Plays::Times(1)),
+        ];
+        for (late, drift) in [(300, 0), (0, -300)] {
+            let mut o = rec(CueId(uuid::Uuid::from_u128(1)), RunId(1), false);
+            o.table = table.clone();
+            o.late = late;
+            o.drift = drift;
+            o.note_devamp_cut(2300);
+            assert_eq!(o.cuts, vec![2000], "late {late}, drift {drift}");
+            let plan = move_plan(&o, 2400).expect("something left");
+            assert_eq!(
+                plan.table,
+                vec![s(1, 1100, 400, Plays::Times(1))],
+                "late {late}, drift {drift}"
+            );
+            // The file position shown follows the sound too.
+            assert_eq!(o.file_frame(2400), Some(1100), "late {late}, drift {drift}");
+        }
     }
 
     /// What a voice still has to play, for a move to another device: the rest of its pass, the

@@ -161,7 +161,7 @@ impl VoiceRec {
     fn length_from(&self, t: SampleTime) -> Option<u64> {
         let pos = self.position(t.max(self.start_at))?;
         let played = pos.saturating_sub(self.offset);
-        let left = self.scale.local(played);
+        let left = self.table_point(played);
         let rest = match rest_of_table(&self.table, &self.cuts, self.devamp_stop, left) {
             Some(rest) => total_frames(&rest)?,
             None => 0,
