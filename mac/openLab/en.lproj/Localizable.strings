@@ -94,10 +94,13 @@
 "overrides.network" = "Network output";
 "overrides.note" = "For every open workspace. Off: Network cues run but send nothing.";
 "overrides.noWorkspace" = "Open a workspace to change the overrides.";
-"footer.override.badge" = "NETWORK OUTPUT OFF";
 "footer.warnings.tooltip" = "Show the Warnings list";
-"footer.override.tooltip" = "Network cues run but send nothing. Turn it back on in Window > Output Overrides.";
-"status.detail.networkOff" = "Network output is disabled: Network cues run but send nothing.";
+"footer.alarm" = "ALARM:";
+"footer.alarm.deviceLost" = "Audio device lost";
+"footer.alarm.deviceFailed" = "Audio device failed";
+"footer.alarm.outputLost" = "Audio device lost: %@";
+"footer.alarm.outputFailed" = "Audio device failed: %@";
+"footer.alarm.tooltip" = "Show the Warnings list";
 "menu.transport.stopSelected" = "Stop Selected";
 "menu.transport.resetSelected" = "Reset Selected";
 
@@ -583,12 +586,8 @@
 "settings.osc.addresses" = "This Mac's addresses: %@";
 "settings.osc.noAddresses" = "This Mac has no network address.";
 "settings.general.outOfRange" = "Enter a number from %g to %g.";
-"settings.audio.device" = "Audio output device";
 "settings.audio.systemDefault" = "System Default";
 "settings.audio.notAvailable" = "%@ (not available)";
-"settings.audio.playingOn" = "Playing on: %1$@ (%2$@)";
-"settings.audio.noStatus" = "The engine has not reported its audio device.";
-"settings.audio.deviceProblem" = "The audio device is not working. Cues that play through it are silent until it is back.";
 "settings.audio.chosenMissing" = "%@ is not connected. openLab will use the system default device the next time it starts.";
 "settings.audio.restartNeeded" = "The clock device changes the next time openLab starts. Quit and reopen openLab to use it.";
 "settings.audio.patches" = "Output patches";
@@ -749,40 +748,6 @@
 "warning.go_ignored.unknown_list" = "GO was ignored: the cue list does not exist.";
 
 /* Footer status (DX-03) */
-"status.waiting" = "Waiting for engine status";
-"status.ok" = "Audio OK";
-"status.cpu" = "CPU %.0f%%";
-"status.alarm" = "ALARM:";
-"status.warning" = "Warning:";
-"status.tooltip" = "Engine status. Click for details.";
-"status.device.lost" = "Audio device lost";
-"status.device.failed" = "Audio device failed";
-"status.output.lost" = "Audio device lost: %@";
-"status.output.failed" = "Audio device failed: %@";
-"status.device.absent" = "No audio device";
-"status.device.other" = "Audio device state: %@";
-"status.disk.unhealthy" = "Disk reads are falling behind";
-"status.disk.healthy" = "healthy";
-"status.load.high" = "Audio engine load is high";
-"status.xruns" = "%d audio dropout(s)";
-"status.state.ok" = "OK";
-"status.state.lost" = "lost";
-"status.state.failed" = "failed";
-"status.state.absent" = "none";
-"status.state.up" = "OK";
-"status.state.opening" = "opening";
-"status.state.reconfiguring" = "reconfiguring";
-"status.state.closed" = "closed";
-"status.detail.none" = "none";
-"status.detail.device" = "Output device: %@ (%@)";
-"status.detail.format" = "%d Hz, %d channels";
-"status.detail.block" = "block %d frames";
-"status.detail.latency" = "latency %.1f ms";
-"status.detail.disk" = "Disk: %d streams, %d frames late, %@";
-"status.detail.cpu" = "CPU: %@";
-"status.detail.load" = "Audio engine load: %@";
-"status.detail.xruns" = "Dropouts since start: %d";
-"status.detail.logDropped" = "Log records dropped: %d";
 
 /* Log window (DX-02) */
 "menu.window.log" = "Show Log";
@@ -845,9 +810,6 @@
 "relink.panel.message" = "Choose the folder that holds the missing media. Sub-folders are searched.";
 "relink.panel.prompt" = "Search";
 
-"status.offline" = "Engine offline";
-"status.offline.detail" = "The engine is not connected. Status is unknown until it reconnects.";
-"status.dropouts" = "Dropouts %d";
 
 "window.main.title.list" = "%@ — %@";
 "window.main.title.showMode" = "%@ (Show Mode)";

@@ -1089,7 +1089,7 @@ final class NetworkInspectorTests: XCTestCase {
         app.overrides.networkSwitch.performClick(nil)
         await assertEventually("network output is off") {
             try? await self.engine.advance(seconds: 0.3)
-            return !self.wc.footer.overrideBadge.isHidden
+            return self.store.status?.networkOutputDisabled == true
         }
         inspector.networkSendButton.performClick(nil)
         let silent = try await quiet()
@@ -1097,7 +1097,7 @@ final class NetworkInspectorTests: XCTestCase {
         app.overrides.networkSwitch.performClick(nil)
         await assertEventually("network output is back on") {
             try? await self.engine.advance(seconds: 0.3)
-            return self.wc.footer.overrideBadge.isHidden
+            return self.store.status?.networkOutputDisabled == false
         }
         inspector.networkSendButton.performClick(nil)
         let got = await received(one)

@@ -411,12 +411,11 @@ final class AppControllerTests: XCTestCase {
         weak var preshow: NSWindow?
         weak var log: NSWindow?
         weak var sheet: NSWindow?
-        weak var popover: NSPopover?
         var held: [String] {
             [
                 ("controller", controller as AnyObject?), ("window", window), ("settings", settings),
                 ("patch editor", patchEditor), ("Find Missing Files", missingFiles), ("pre-show check", preshow),
-                ("log", log), ("sheet", sheet), ("status popover", popover),
+                ("log", log), ("sheet", sheet),
             ].filter { $0.1 != nil }.map(\.0)
         }
     }
@@ -432,8 +431,6 @@ final class AppControllerTests: XCTestCase {
         wc.missingFiles.showWindow(nil)
         await wc.showPreshowCheck().value
         await wc.showLog().value
-        wc.footer.showStatusDetails()
-        XCTAssertEqual(wc.footer.popover?.isShown, true)
         if sheet { wc.showNotice("a refusal") }
         var released = Released()
         released.controller = wc
@@ -444,8 +441,7 @@ final class AppControllerTests: XCTestCase {
         released.preshow = wc.existingStatusWindow?.window
         released.log = wc.existingLogWindow?.window
         released.sheet = wc.window?.attachedSheet
-        released.popover = wc.footer.popover
-        XCTAssertEqual(released.held.count, sheet ? 9 : 8, "every window is up")
+        XCTAssertEqual(released.held.count, sheet ? 8 : 7, "every window is up")
         return released
     }
 
@@ -474,7 +470,7 @@ final class AppControllerTests: XCTestCase {
 
     /// A workspace closed the way the operator closes it (the window's close button) gives up its
     /// window, its controller and every window it owns (settings, a patch editor, Find Missing Files,
-    /// the pre-show check, the log, the status popover; a sheet the third time, closed by File > Close),
+    /// the pre-show check, the log; a sheet the third time, closed by File > Close),
     /// again and again:
     /// each one kept would hold its window-server surface for the rest of the session (#716). The
     /// app's window count comes back to where it was.

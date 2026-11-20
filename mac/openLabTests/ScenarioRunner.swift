@@ -615,8 +615,8 @@ final class ScenarioRunner {
         // The window is never ordered on screen: the run takes no focus.
         window.makeFirstResponder(wc.cueList.outlineView)
         guard await eventually({ self.wc.cueList.listID != nil }) else { throw Failure("the cue list never showed") }
-        // The footer's engine status comes with the engine's status report (one a second of device
-        // time), not with the snapshot: device time moves on, with nothing playing, until one comes.
+        // The footer's device alarm follows the engine's status report (one a second of device
+        // time), which does not come with the snapshot: device time moves on, with nothing playing, until one comes.
         var waited = 0.0
         while rig.store.status == nil {
             guard waited < 3 else { throw Failure("the engine sent no status in 3 s of device time") }
@@ -1025,7 +1025,8 @@ final class ScenarioRunner {
             let url = out.appendingPathComponent(String(format: "%02d-%@.png", shots, name))
             try shot(to: url)
             written.append(url)
-            note("shot \(url.lastPathComponent) (footer: \(wc.footer.presentation.summary))\(rows)")
+            let alarm = wc.footer.alarmButton.isHidden ? "none" : wc.footer.alarmButton.title
+            note("shot \(url.lastPathComponent) (alarm: \(alarm))\(rows)")
             for display in displays {
                 let beside = out.appendingPathComponent(String(format: "%02d-%@-display-%@.png", shots, name, display))
                 try await displayShot(display, to: beside)
@@ -1806,10 +1807,9 @@ final class ScenarioShotTests: XCTestCase {
         }
         let log = try String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)
         XCTAssertTrue(log.contains("key space"), log)
-        // The first shot already shows the engine's status in the footer, not the wait for it.
+        // The first shot is taken once the engine's status has come, with all well: no alarm.
         let first = try XCTUnwrap(log.split(separator: "\n").first { $0.hasPrefix("shot 01-start.png") }, log)
-        XCTAssertFalse(first.contains(loc("status.waiting")), String(first))
-        XCTAssertTrue(first.contains("(footer: ") && !first.hasSuffix("(footer: )"), String(first))
+        XCTAssertTrue(first.contains("(alarm: none)"), String(first))
         XCTAssertTrue(log.hasSuffix("done: 2 shot(s) in \(out.path)\n"), log)
         if let pid = runner.enginePid { XCTAssertEqual(kill(pid, 0), -1, "the engine ended") }
     }
@@ -2054,7 +2054,7 @@ final class ScenarioShotTests: XCTestCase {
             XCTAssertTrue(log.contains(line), "\(line)\n\(log)")
         }
         // Drawn offscreen, the settings window is read again before a shot: the device has opened.
-        XCTAssertTrue(log.contains("01-opened.png (footer: Audio OK  Dropouts 0) (patch rows: \"\")"), log)
+        XCTAssertTrue(log.contains("01-opened.png (alarm: none) (patch rows: \"\")"), log)
         XCTAssertEqual(runner.written.count, 2, log)
     }
 

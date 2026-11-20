@@ -151,7 +151,7 @@ final class MainWindowTests: XCTestCase {
         for id in [
             AX.masthead, AX.goButton, AX.standbyField, AX.standbyNotes, AX.cueToolbar, AX.cueList,
             AX.inspector, AX.sidebar, AX.sidebarTabs, AX.transportReset, AX.transportPause,
-            AX.transportResume, AX.transportPanic, AX.footer, AX.modeSwitch, AX.statusLabel,
+            AX.transportResume, AX.transportPanic, AX.footer, AX.modeSwitch,
             AX.settingsButton, AX.toggleMasthead, AX.toggleInspector, AX.toggleSidebar,
         ] {
             XCTAssertNotNil(ax(root, id), id)
@@ -302,13 +302,13 @@ final class MainWindowTests: XCTestCase {
             .continueFollow: "continue-follow", .transportReset: "transport-reset", .transportPause: "transport-pause",
             .transportResume: "transport-resume", .activeCuePanic: "active-cue-panic",
             .layoutMasthead: "layout-masthead", .layoutInspector: "layout-inspector", .layoutSidebar: "layout-sidebar",
-            .settings: "settings", .statusNormal: "status-normal", .statusWaiting: "status-waiting",
+            .settings: "settings",
             .statusWarning: "status-warning", .statusAlarm: "status-alarm", .playhead: "playhead",
             .timeToggle: "time-toggle", .timeToggleUp: "time-toggle-up", .targetFile: "target-file",
             .fieldClear: "field-clear", .fieldChoose: "field-choose", .fieldJump: "field-jump",
             .reservedPopOut: "reserved-pop-out",
         ]
-        XCTAssertEqual(approved.count, 33)
+        XCTAssertEqual(approved.count, 31)
         for (icon, name) in approved {
             XCTAssertEqual(icon.drawing, name, "\(icon)")
             XCTAssertNil(icon.symbol, "\(icon) keeps a symbol")
@@ -357,8 +357,6 @@ final class MainWindowTests: XCTestCase {
             XCTAssertEqual(IconLookup.drawingName(of: footer.toggles[area]?.image), name, "\(area)")
         }
         XCTAssertEqual(IconLookup.drawingName(of: footer.settingsButton.image), "settings")
-        footer.show(status: nil, connected: true)
-        XCTAssertEqual(IconLookup.drawingName(of: footer.statusButton.image), "status-waiting")
         footer.showWarnings(count: 2)
         XCTAssertEqual(IconLookup.drawingName(of: footer.warningsButton.image), "status-warning")
         XCTAssertEqual(footer.warningsButton.contentTintColor, MarkColour.caution, "yellow, as in the list")
@@ -2042,9 +2040,9 @@ extension MainWindowTests {
         // The openLab-only audio line and wall clock are gone while all is well.
         await assertEventually("the engine's status arrives") {
             try? await rig.advance(1)
-            return footer.presentation.summary.hasPrefix(loc("status.ok"))
+            return rig.store.status != nil
         }
-        XCTAssertEqual(footer.statusButton.title, "", "no audio words, only the mark that opens the details")
+        XCTAssertTrue(footer.alarmButton.isHidden, "all well: the footer says nothing about the audio")
         XCTAssertFalse(
             footer.subviews.flatMap(\.subviews).contains {
                 $0 is NSTextField && $0.accessibilityIdentifier() == "wall-clock"
