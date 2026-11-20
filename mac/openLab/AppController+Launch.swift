@@ -24,7 +24,7 @@ extension AppController {
             supervisor.alarms.sink { [weak self] alarm in
                 switch alarm {
                 case .cannotStart(let reason):
-                    self?.launcher.apply(state: .failed(String(format: loc("launcher.failed.detail"), reason)))
+                    self?.launcher.apply(state: .failed(reason))
                 case .notResponding: self?.launcher.apply(state: .failed(loc("launcher.notResponding")))
                 // The supervisor ends the engine or waits for it and tries again by itself.
                 case .engineStopped, .startTimedOut, .newEngineNotAnswering, .stillStopping:

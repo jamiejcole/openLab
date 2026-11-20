@@ -1979,15 +1979,26 @@ final class EngineCrashFlowTests: XCTestCase {
         let supervisor = try XCTUnwrap(supervisor)
         let launcher = app.launcher
         let root = try XCTUnwrap(launcher.window?.contentView)
-        supervisor.alarms.send(.cannotStart("No engine program was found."))
-        let shown = launcherTexts(root)
-        XCTAssertTrue(shown.contains(loc("launcher.failed")))
-        XCTAssertTrue(
-            shown.contains { $0.contains("No engine program was found.") && $0.contains("Quit openLab") }, "\(shown)")
-        for id in [AX.launcherNew, AX.launcherOpen] {
-            XCTAssertEqual((view(id, in: root) as? NSButton)?.isEnabled, false, id)
+        // Each reason is shown as the supervisor words it, with no advice added on top: the
+        // crash-loop text says openLab tries again, the unkillable one says to restart the
+        // computer, and a spawn error says to quit and reopen.
+        let reasons = [
+            loc("engine.alarm.crashLoop"), loc("engine.alarm.unkillable"),
+            String(format: loc("engine.alarm.spawnFailed"), "2"),
+        ]
+        for reason in reasons {
+            supervisor.alarms.send(.cannotStart(reason))
+            let shown = launcherTexts(root)
+            XCTAssertTrue(shown.contains(loc("launcher.failed")))
+            XCTAssertTrue(shown.contains(reason), "\(shown)")
+            let advice = loc("engine.alarm.spawnFailed").components(separatedBy: ". ").last ?? "-"
+            XCTAssertEqual(
+                shown.contains { $0.contains(advice) }, reason.contains(advice), "advice only where it fits: \(reason)")
+            for id in [AX.launcherNew, AX.launcherOpen] {
+                XCTAssertEqual((view(id, in: root) as? NSButton)?.isEnabled, false, id)
+            }
+            XCTAssertFalse(launcher.recentsTable.isEnabled)
         }
-        XCTAssertFalse(launcher.recentsTable.isEnabled)
         // An engine that is being replaced reads as starting; one that answers, as ready.
         supervisor.alarms.send(.startTimedOut)
         XCTAssertEqual(launcher.engineState, .starting)

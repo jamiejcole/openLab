@@ -72,6 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return launch.terminate()
         }
         // The launcher shows until the engine reports a workspace.
+        #if DEBUG
+            if let recents = EngineMode.testRecents() { appController.recentURLs = { recents } }
+        #endif
         appController.beginLaunch()
         appController.bindLauncher(to: engine.1)
         appController.installKeyMonitor()

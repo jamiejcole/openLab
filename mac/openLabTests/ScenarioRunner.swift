@@ -928,7 +928,12 @@ final class ScenarioRunner {
                 let w = try XCTUnwrap(launcher.window)
                 w.appearance = wc.window?.appearance
                 let urls = look.recents.map { name -> URL in
-                    name.hasPrefix("!")
+                    // "Name@/some/folder": a show in that folder.
+                    if let at = name.firstIndex(of: "@") {
+                        return URL(fileURLWithPath: String(name[name.index(after: at)...]))
+                            .appendingPathComponent("\(name[..<at]).openlab")
+                    }
+                    return name.hasPrefix("!")
                         ? URL(fileURLWithPath: "/Volumes/Backup/\(name.dropFirst()).openlab")
                         : URL(fileURLWithPath: "/Shows/Season/\(name).openlab")
                 }
@@ -937,7 +942,7 @@ final class ScenarioRunner {
                 case "starting": launcher.apply(state: .starting)
                 case "failed":
                     launcher.apply(
-                        state: .failed(String(format: loc("launcher.failed.detail"), "No engine program was found.")))
+                        state: .failed(String(format: loc("engine.alarm.spawnFailed"), "2")))
                 default: break
                 }
                 if look.notice, let gone = urls.first(where: { $0.path.hasPrefix("/Volumes/") }) {

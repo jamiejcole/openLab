@@ -149,6 +149,16 @@ final class AppController {
     /// The real app is starting: `applyLaunchBehavior` has not finished. Commands that need the engine
     /// (`afterLaunch`) wait while it is true.
     var awaitingLaunch = false
+    /// The recents the launcher last listed, kept with `launchDefaults`: the system list drops a
+    /// deleted file, and the launcher keeps it (marked missing) until the operator removes it.
+    var rememberedRecents: [URL] {
+        get { launchDefaults?.stringArray(forKey: "launcher-recents")?.map { URL(fileURLWithPath: $0) } ?? memory }
+        set {
+            memory = newValue
+            launchDefaults?.set(newValue.map(\.path), forKey: "launcher-recents")
+        }
+    }
+    private var memory: [URL] = []
     var launchWaiters: [CheckedContinuation<Void, Never>] = []
     /// Show files asked for before `launchApplied`.
     var filesToOpen: [URL] = []

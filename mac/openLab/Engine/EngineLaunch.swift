@@ -44,6 +44,17 @@ enum EngineMode: Equatable {
     }
 
     #if DEBUG
+        /// The recent workspaces a test gives the launcher (`-OpenLabRecent <path>`, repeatable), read
+        /// only under the test engine; the system's list is the user's and a test must not fill it.
+        static func testRecents(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> [URL]? {
+            guard !isUnitTestHost(), value(of: "-OpenLabEngine", in: arguments) == "test" else { return nil }
+            var out: [URL] = []
+            for (i, a) in arguments.enumerated() where a == "-OpenLabRecent" && i + 1 < arguments.count {
+                out.append(URL(fileURLWithPath: arguments[i + 1]))
+            }
+            return out.isEmpty ? nil : out
+        }
+
         /// The size a test asks for the workspace window (`-OpenLabWindowSize WxH`, in points, or `least`
         /// for the window's least size), read only under the test engine: a small screen's window fills
         /// the screen, where a corner drag cannot resize it, so a test that needs a size starts there.

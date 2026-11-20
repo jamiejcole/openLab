@@ -288,6 +288,7 @@ extension AppController {
 
     func clearRecents() {
         forgetRecents()
+        rememberedRecents = []
         reloadLauncher()
     }
 
@@ -296,12 +297,17 @@ extension AppController {
         let keep = recentURLs().filter { $0 != url }
         forgetRecents()
         for kept in keep.reversed() { noteRecent(kept) }
+        rememberedRecents = rememberedRecents.filter { $0 != url }
         reloadLauncher()
     }
 
-    /// The launcher lists every recent workspace, one whose file is gone marked as missing.
+    /// The launcher lists the system's recent workspaces, then the ones it listed before whose file
+    /// has gone (the system forgets those), marked as missing.
     func reloadLauncher() {
-        let all = recentURLs()
+        let system = recentURLs()
+        let gone = rememberedRecents.filter { !system.contains($0) && !recentExists($0) }
+        let all = Array((system + gone).prefix(10))
+        rememberedRecents = all
         launcher.reload(recents: all, missing: Set(all.filter { !recentExists($0) }))
     }
 

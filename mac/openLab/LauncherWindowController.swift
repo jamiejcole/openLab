@@ -44,7 +44,7 @@ private final class RecentCell: NSTableCellView {
         name.font = .systemFont(ofSize: 13, weight: .medium)
         name.lineBreakMode = .byTruncatingTail
         folder.font = .systemFont(ofSize: 11)
-        folder.lineBreakMode = .byTruncatingHead
+        folder.lineBreakMode = .byTruncatingMiddle
         icon.imageScaling = .scaleProportionallyDown
         let texts = NSStackView(views: [name, folder])
         texts.orientation = .vertical
@@ -143,8 +143,9 @@ private final class LauncherActionButton: NSButton {
     }
 
     private func refresh() {
-        let main: NSColor = isEnabled ? .labelColor : .disabledControlTextColor
-        let sub: NSColor = isEnabled ? .secondaryLabelColor : .disabledControlTextColor
+        // Half strength: dimmed but still legible in light mode.
+        let main: NSColor = isEnabled ? .labelColor : NSColor.labelColor.withAlphaComponent(0.5)
+        let sub: NSColor = isEnabled ? .secondaryLabelColor : NSColor.secondaryLabelColor.withAlphaComponent(0.5)
         let text = NSMutableAttributedString(
             string: heading + "\n", attributes: [.font: NSFont.systemFont(ofSize: 15), .foregroundColor: main])
         text.append(
@@ -155,12 +156,12 @@ private final class LauncherActionButton: NSButton {
         style.lineBreakMode = .byTruncatingTail
         text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: text.length))
         attributedTitle = text
-        contentTintColor = isEnabled ? .secondaryLabelColor : .disabledControlTextColor
+        contentTintColor = isEnabled ? .secondaryLabelColor : NSColor.secondaryLabelColor.withAlphaComponent(0.5)
     }
 }
 
 /// Shown when no workspace is open, and from the Window menu: New, Open and the recent workspaces,
-/// and whether the engine is ready for them. (The Connect and Templates tabs wait for their backends.)
+/// and whether the engine is ready for them.
 @MainActor
 final class LauncherWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     var onNew: (() -> Void)?
@@ -171,6 +172,11 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
 
     private let table = RecentsTable()
     private let scroll = NSScrollView()
+    private var nameLabel: NSTextField?
+    private var recentHeading: NSTextField?
+    private var listHeight = NSLayoutConstraint()
+    /// Where the list starts: below the app name's line, level with the bottom of the icon.
+    private static let listTop: CGFloat = 92
     private let emptyView = NSStackView()
     private let newButton = LauncherActionButton(
         symbol: "doc.badge.plus", title: loc("launcher.new"), detail: loc("launcher.new.detail"))
@@ -232,6 +238,10 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
             right.trailingAnchor.constraint(equalTo: content.trailingAnchor),
         ])
         window.contentView = content
+        // The list's heading sits on the app name's line.
+        if let name = nameLabel, let heading = recentHeading {
+            heading.firstBaselineAnchor.constraint(equalTo: name.firstBaselineAnchor).isActive = true
+        }
         window.initialFirstResponder = table
         window.center()
         reload(recents: [])
@@ -257,6 +267,7 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         icon.imageScaling = .scaleProportionallyUpOrDown
         let name = NSTextField(labelWithString: loc("launcher.title"))
         name.font = .systemFont(ofSize: 24, weight: .semibold)
+        nameLabel = name
         let version = NSTextField(labelWithString: String(format: loc("launcher.version"), Self.version))
         version.font = .systemFont(ofSize: 11)
         version.textColor = .secondaryLabelColor
@@ -374,31 +385,6 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         emptyView.spacing = 4
         emptyView.setAX(AX.launcherEmpty)
 
-        let list = NSView()
-        let listBackground = NSBox()
-        listBackground.boxType = .custom
-        listBackground.borderWidth = 0
-        listBackground.fillColor = .controlBackgroundColor
-        listBackground.contentViewMargins = .zero
-        for v in [listBackground, scroll, emptyView] {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            list.addSubview(v)
-        }
-        NSLayoutConstraint.activate([
-            listBackground.topAnchor.constraint(equalTo: list.topAnchor),
-            listBackground.bottomAnchor.constraint(equalTo: list.bottomAnchor),
-            listBackground.leadingAnchor.constraint(equalTo: list.leadingAnchor),
-            listBackground.trailingAnchor.constraint(equalTo: list.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: list.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: list.bottomAnchor),
-            scroll.leadingAnchor.constraint(equalTo: list.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: list.trailingAnchor),
-            emptyView.centerXAnchor.constraint(equalTo: list.centerXAnchor),
-            emptyView.centerYAnchor.constraint(equalTo: list.centerYAnchor),
-            emptyView.leadingAnchor.constraint(greaterThanOrEqualTo: list.leadingAnchor, constant: 16),
-            emptyView.trailingAnchor.constraint(lessThanOrEqualTo: list.trailingAnchor, constant: -16),
-        ])
-
         noticeLabel.font = .systemFont(ofSize: 12)
         noticeLabel.setAX(AX.launcherNotice)
         noticeLabel.isHidden = true
@@ -428,24 +414,43 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         noticeBox.isHidden = true
         noticeLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let column = NSStackView()
-        column.orientation = .vertical
-        column.alignment = .leading
-        column.spacing = 0
-        let headingRow = NSView()
-        headingRow.translatesAutoresizingMaskIntoConstraints = false
-        heading.translatesAutoresizingMaskIntoConstraints = false
-        headingRow.addSubview(heading)
+        // The list takes the room its rows need (never more than there is), and the notice sits
+        // directly under it: near the row it is about.
+        let column = NSView()
+        let background = NSBox()
+        background.boxType = .custom
+        background.borderWidth = 0
+        background.fillColor = .controlBackgroundColor
+        for v in [background, heading, scroll, emptyView, noticeBox] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            column.addSubview(v)
+        }
+        recentHeading = heading
+        listHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
+        listHeight.priority = .defaultHigh
+        let noticeGap = noticeBox.topAnchor.constraint(equalTo: scroll.bottomAnchor)
+        noticeGap.priority = .defaultLow
         NSLayoutConstraint.activate([
-            heading.leadingAnchor.constraint(equalTo: headingRow.leadingAnchor, constant: 12),
-            heading.centerYAnchor.constraint(equalTo: headingRow.centerYAnchor),
-            headingRow.heightAnchor.constraint(equalToConstant: 32),
+            column.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
+            background.topAnchor.constraint(equalTo: column.topAnchor),
+            background.bottomAnchor.constraint(equalTo: column.bottomAnchor),
+            background.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            background.trailingAnchor.constraint(equalTo: column.trailingAnchor),
+            heading.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 12),
+            scroll.topAnchor.constraint(equalTo: column.topAnchor, constant: Self.listTop),
+            scroll.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: column.trailingAnchor),
+            listHeight,
+            noticeBox.topAnchor.constraint(greaterThanOrEqualTo: scroll.bottomAnchor),
+            noticeGap,
+            noticeBox.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            noticeBox.trailingAnchor.constraint(equalTo: column.trailingAnchor),
+            noticeBox.bottomAnchor.constraint(lessThanOrEqualTo: column.bottomAnchor),
+            emptyView.centerXAnchor.constraint(equalTo: column.centerXAnchor),
+            emptyView.centerYAnchor.constraint(equalTo: column.centerYAnchor, constant: Self.listTop / 2),
+            emptyView.leadingAnchor.constraint(greaterThanOrEqualTo: column.leadingAnchor, constant: 16),
+            emptyView.trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor, constant: -16),
         ])
-        column.setViews([headingRow, list, noticeBox], in: .leading)
-        for v in [headingRow, list, noticeBox] { v.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        column.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        list.setContentHuggingPriority(.defaultLow, for: .vertical)
-        column.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
         return column
     }
 
@@ -457,6 +462,7 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         let ready = state == .ready
         for b in [newButton, openButton] { b.isEnabled = ready }
         table.isEnabled = ready
+        table.selectionHighlightStyle = ready ? .regular : .none
         scroll.alphaValue = ready ? 1 : 0.5
         statusBox.isHidden = ready
         switch state {
@@ -492,7 +498,10 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
     }
 
     func reload(recents urls: [URL], missing: Set<URL> = []) {
+        // A missing-file notice is about the list as it was.
+        if missingURL != nil { showNotice(nil) }
         recents = urls.prefix(10).map { LauncherRecent(url: $0, missing: missing.contains($0)) }
+        listHeight.constant = CGFloat(recents.count) * table.rowHeight
         table.reloadData()
         let any = !recents.isEmpty
         scroll.isHidden = !any
@@ -532,8 +541,6 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         showNotice(nil)
     }
 
-    /// The table view's own row view for row `row`, for tests and drawing checks.
-    func rowView(_ row: Int) -> NSTableRowView? { table.rowView(atRow: row, makeIfNecessary: false) }
     var recentsTable: NSTableView { table }
 
     // MARK: Table

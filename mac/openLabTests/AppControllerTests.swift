@@ -2451,6 +2451,50 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(recents.first, other)
     }
 
+    /// The system's recent list forgets a deleted file, so the launcher keeps what it listed: the
+    /// deleted show stays, marked missing, after the others until it is removed.
+    func testARecentShowWhoseFileWasDeletedStaysListedAsMissingUntilRemoved() async throws {
+        newestFirstRecents()
+        let a = try showFile("Kept")
+        let b = URL(fileURLWithPath: "/Shows/Deleted.openlab")
+        recents = [a, b]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, false])
+        // The file is deleted: the system list no longer has it.
+        recents = [a]
+        app.recentExists = { $0 != b }
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept", "Deleted"])
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, true])
+        app.launcher.select(row: 1)
+        app.launcher.openSelected()
+        try click(AX.launcherRemove)
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept"], "removed for good")
+    }
+
+    /// A missing-file notice is about the list it was raised on: showing the launcher again, or
+    /// opening another recent, clears it.
+    func testTheMissingFileNoticeGoesWhenTheLauncherIsShownAgainOrARecentOpens() async throws {
+        newestFirstRecents()
+        let good = try showFile("Fine")
+        let gone = URL(fileURLWithPath: "/Shows/Gone.openlab")
+        recents = [gone, good]
+        app.recentExists = { $0 != gone }
+        app.showLauncher()
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
+        XCTAssertFalse(app.launcher.noticeLabel.isHidden)
+        app.showLauncher()
+        XCTAssertTrue(app.launcher.noticeLabel.isHidden, "shown again")
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
+        XCTAssertFalse(app.launcher.noticeLabel.isHidden)
+        app.launcher.select(row: 1)
+        app.launcher.openSelected()
+        await assertEventually { app.launcher.noticeLabel.isHidden }
+    }
+
     /// Checklist: A show is already open, then the launcher is brought back from the Window menu →
     /// opening a second show from it opens a second workspace window beside the first; the first
     /// keeps its state (a playing cue keeps playing).

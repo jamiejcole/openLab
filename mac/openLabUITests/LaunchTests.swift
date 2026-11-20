@@ -25,6 +25,33 @@ final class LaunchTests: XCTestCase {
         XCTAssertTrue(waitFor("exists == false", launcher, timeout: 10), "the launcher closes")
     }
 
+    /// The launcher with Demo listed as the one recent show.
+    private func launcherWithADemoRecent() -> XCUIApplication {
+        let app = launchApp(opening: [], recent: ["Demo"])
+        XCTAssertTrue(app.windows["launcher-window"].waitForExistence(timeout: 10))
+        XCTAssertTrue(
+            app.tables["launcher-recents"].tableRows.firstMatch.waitForExistence(timeout: 10), "Demo is listed")
+        return app
+    }
+
+    /// Launcher flow: a double-click on a recent show opens it in a workspace window and the
+    /// launcher closes.
+    func testDoubleClickingARecentShowOnTheLauncherOpensItAndClosesTheLauncher() {
+        let app = launcherWithADemoRecent()
+        app.tables["launcher-recents"].tableRows.firstMatch.doubleClick()
+        XCTAssertTrue(app.windows.matching(identifier: "main-window").element(boundBy: 0).waitForExistence(timeout: 10))
+        XCTAssertTrue(waitFor("exists == false", app.windows["launcher-window"], timeout: 10), "the launcher closes")
+    }
+
+    /// Launcher flow: select a recent show and press Return: it opens and the launcher closes.
+    func testReturnOnTheSelectedRecentShowOpensItAndClosesTheLauncher() {
+        let app = launcherWithADemoRecent()
+        app.tables["launcher-recents"].tableRows.firstMatch.click()
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.windows.matching(identifier: "main-window").element(boundBy: 0).waitForExistence(timeout: 10))
+        XCTAssertTrue(waitFor("exists == false", app.windows["launcher-window"], timeout: 10), "the launcher closes")
+    }
+
     /// The app starts its engine, which has two shows open: one window each, no launcher.
     func testLaunchShowsOneWindowPerWorkspace() {
         let app = launchApp()
