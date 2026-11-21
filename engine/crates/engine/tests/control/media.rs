@@ -59,22 +59,62 @@ fn an_unplayable_file_breaks_its_cue_with_the_reason() {
     ));
 }
 
+/// Only damage the operator hears is listed (owner decision 2026-11-22): an MP3 with parts that
+/// play as silence is; a WAV cut short of its header, which plays to its real end, is not; nor is an
+/// MP3 whose header counts one frame more than it holds (as whole libraries of good files do).
 #[test]
-fn damaged_media_plays_and_is_listed_as_a_warning() {
+fn only_audible_damage_is_listed_as_a_warning() {
     // A WAV whose header promises 2000 frames but holds 1000: it plays to its real end.
     let full = std::fs::read(wav(&dc(2000, 0.5))).unwrap();
     let cut = file("wav", &full[..44 + 1000 * 4]);
-    let mut s = show(workspace(vec![audio(1, &cut, 0)]));
+    let tone = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../audio/tests/fixtures/tone.mp3"
+    ))
+    .unwrap();
+    let mut damaged = tone.clone();
+    for x in &mut damaged[3_000..6_000] {
+        *x ^= 0x5a;
+    }
+    let damaged = file("mp3", &damaged);
+    let mut counted = tone;
+    let at = counted.windows(4).position(|w| w == b"Info").unwrap() + 8;
+    let n = u32::from_be_bytes(counted[at..at + 4].try_into().unwrap());
+    counted[at..at + 4].copy_from_slice(&(n + 1).to_be_bytes());
+    let counted = file("mp3", &counted);
+    let mut s = show(workspace(vec![
+        audio(1, &cut, 0),
+        audio(2, &damaged, 0),
+        audio(3, &counted, 0),
+    ]));
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     let msgs = s.take_outbound();
-    let listed = msgs.iter().any(|m| {
-        matches!(m, ServerMessage::Warnings { warnings } if warnings.iter().any(|w| matches!(
-            w, WireWarning::Notice { code, .. } if code == "damaged_media")))
-    });
-    assert!(listed, "{msgs:?}");
+    let listed: Vec<String> = msgs
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::Warnings { warnings } => Some(warnings),
+            _ => None,
+        })
+        .next_back()
+        .into_iter()
+        .flatten()
+        .filter_map(|w| match w {
+            WireWarning::Notice { code, message, .. } if code == "damaged_media" => {
+                Some(message.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let name = |p: &std::path::Path| p.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert!(listed[0].contains(&name(&damaged)), "{listed:?}");
     let at = go(&mut s) as usize;
     s.run(3000);
-    assert_eq!(last_nonzero(&s.channel(0)), Some(at + 999));
+    assert_eq!(
+        last_nonzero(&s.channel(0)),
+        Some(at + 999),
+        "the cut WAV plays to its real end"
+    );
 }
 
 #[test]
