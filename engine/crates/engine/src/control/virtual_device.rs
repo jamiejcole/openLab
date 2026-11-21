@@ -95,6 +95,8 @@ struct Port {
     /// device started; `done` follows it.
     granted: AtomicU64,
     done: AtomicU64,
+    /// Dropouts (`drop_out`) the stream reports at its next block.
+    xruns_due: AtomicU64,
     /// The open stream's render thread, to wake it.
     render_thread: Mutex<Option<Thread>>,
 }
@@ -109,6 +111,7 @@ impl Port {
             rendering: AtomicBool::new(false),
             granted: AtomicU64::new(0),
             done: AtomicU64::new(0),
+            xruns_due: AtomicU64::new(0),
             render_thread: Mutex::new(None),
         }
     }
@@ -494,6 +497,11 @@ impl Render {
         let mut next = Instant::now();
         let mut reported = false;
         while !self.stop.load(Ordering::Acquire) {
+            // Dropouts a test asked for, reported as a host reports them: atomics only.
+            let due = self.port.xruns_due.swap(0, Ordering::AcqRel);
+            for _ in 0..due {
+                self.reporter.report(HostError::Xrun);
+            }
             if reported || self.port.lost.load(Ordering::Acquire) {
                 // Lost: reported once, then silent for good, as a device that went away.
                 if !reported {
@@ -641,6 +649,39 @@ impl Control {
             return no_such_device(id, device, to);
         };
         VirtualDevice::restore(port);
+        reply(to, ok(id, None));
+        Flow::Continue
+    }
+
+    /// `drop_out` (either virtual mode): the device's stream reports `count` dropouts at its
+    /// next block (stepped: once an `advance` renders one), as a host reports xruns.
+    pub(super) fn drop_out(
+        &mut self,
+        id: RequestId,
+        device: Option<&str>,
+        count: u32,
+        to: &ReplyTx,
+    ) -> Flow {
+        let Some(vd) = self.virtual_device() else {
+            return not_virtual(id, "drop_out", to);
+        };
+        let Some(port) = vd.port(device) else {
+            return no_such_device(id, device, to);
+        };
+        // The decoder refuses a count out of range; the cap also holds for a caller in process.
+        if !(1..=openlab_core::protocol::MAX_DROP_OUTS).contains(&count) {
+            fail(
+                to,
+                id,
+                ErrorCode::BadRequest,
+                format!(
+                    "count must be 1 to {}",
+                    openlab_core::protocol::MAX_DROP_OUTS
+                ),
+            );
+            return Flow::Continue;
+        }
+        port.xruns_due.fetch_add(u64::from(count), Ordering::AcqRel);
         reply(to, ok(id, None));
         Flow::Continue
     }
@@ -1073,6 +1114,52 @@ mod tests {
         assert_eq!(code(&o), None, "{o:?}");
         assert!(!r.control.device_down());
         assert!(r.control.mixer().samples_rendered() > 512);
+    }
+
+    /// `drop_out`: the stream reports the dropouts at its next block, the engine counts them
+    /// as xruns and logs them; a count out of range is refused; an unknown device is
+    /// `not_found`.
+    #[test]
+    fn a_drop_out_is_reported_at_the_next_block_and_logged() {
+        let mut r = rig(VirtualMode::Stepped);
+        let (_, o) = ask(&mut r, Request::Advance { frames: 512 });
+        assert_eq!(code(&o), None, "{o:?}");
+        let (_, o) = ask(
+            &mut r,
+            Request::DropOut {
+                device: None,
+                count: 3,
+            },
+        );
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(r.control.mixer().xruns(), 0, "not before a block");
+        let (_, o) = ask(&mut r, Request::Advance { frames: 512 });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(r.control.mixer().xruns(), 3);
+        let log = r.control.show_log().tail(100);
+        assert!(
+            log.iter()
+                .any(|e| e.message.contains("dropped out 3 time(s)")),
+            "{log:#?}"
+        );
+        for count in [0, openlab_core::protocol::MAX_DROP_OUTS + 1] {
+            let (_, o) = ask(
+                &mut r,
+                Request::DropOut {
+                    device: None,
+                    count,
+                },
+            );
+            assert_eq!(code(&o), Some(ErrorCode::BadRequest), "{count}");
+        }
+        let (_, o) = ask(
+            &mut r,
+            Request::DropOut {
+                device: Some("nope".into()),
+                count: 1,
+            },
+        );
+        assert_eq!(code(&o), Some(ErrorCode::NotFound));
     }
 
     /// The devices listed, as `(id, is_default)`.

@@ -284,7 +284,7 @@ pub struct ControlConfig {
     #[cfg(feature = "test-support")]
     pub picture_probe_limit: Duration,
     /// The virtual devices the backend's streams run on (`--virtual-device`): they answer the
-    /// test-only `advance`, `lose_device`, `restore_device` and `set_default_device` requests.
+    /// test-only `advance`, `lose_device`, `restore_device`, `set_default_device` and `drop_out` requests.
     #[cfg(feature = "test-support")]
     pub virtual_device: Option<virtual_device::VirtualDevice>,
 }
@@ -1500,6 +1500,8 @@ fn request_name(r: &Request) -> &'static str {
         Request::LoseDevice { .. } => "lose_device",
         #[cfg(feature = "test-support")]
         Request::RestoreDevice { .. } => "restore_device",
+        #[cfg(feature = "test-support")]
+        Request::DropOut { .. } => "drop_out",
         #[cfg(feature = "test-support")]
         Request::SetDefaultDevice { .. } => "set_default_device",
     }

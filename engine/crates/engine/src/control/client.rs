@@ -397,6 +397,10 @@ impl Control {
                     return Ok(self.restore_device(id, device.as_deref(), to));
                 }
                 #[cfg(feature = "test-support")]
+                Request::DropOut { device, count } => {
+                    return Ok(self.drop_out(id, device.as_deref(), count, to));
+                }
+                #[cfg(feature = "test-support")]
                 Request::SetDefaultDevice { device } => {
                     return Ok(self.set_default_device(id, &device, to));
                 }

@@ -235,6 +235,8 @@ enum Request: Hashable, Sendable, Codable {
         case loseDevice(device: String? = nil)
         case restoreDevice(device: String? = nil)
         case setDefaultDevice(device: String)
+        /// Test support only: the virtual device's stream reports `count` dropouts at its next block.
+        case dropOut(device: String? = nil, count: UInt32)
         /// Test support only: the stage host draws its test card for `frame` on `stage`, and
         /// `stageProbe` reads the stage's colours at points (fractions of the stage).
         case stageTestCard(stage: ModelID, frame: UInt16)
@@ -323,6 +325,10 @@ enum Request: Hashable, Sendable, Codable {
                 opt(&f, "device", device)
                 return ("restore_device", f)
             case .setDefaultDevice(let device): return ("set_default_device", [("device", device)])
+            case .dropOut(let device, let count):
+                opt(&f, "device", device)
+                f.append(("count", count))
+                return ("drop_out", f)
             case .stageTestCard(let stage, let frame): return ("stage_test_card", [("stage", stage), ("frame", frame)])
             case .stageProbe(let stage, let points): return ("stage_probe", [("stage", stage), ("points", points)])
             case .displayProbe(let display, let points):
@@ -406,6 +412,10 @@ enum Request: Hashable, Sendable, Codable {
             case "restore_device":
                 self = .restoreDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
             case "set_default_device": self = .setDefaultDevice(device: try c.decode(String.self, forKey: "device"))
+            case "drop_out":
+                self = .dropOut(
+                    device: try c.decodeIfPresent(String.self, forKey: "device"),
+                    count: try c.decode(UInt32.self, forKey: "count"))
             case "stage_test_card":
                 self = .stageTestCard(
                     stage: try c.decode(ModelID.self, forKey: "stage"),

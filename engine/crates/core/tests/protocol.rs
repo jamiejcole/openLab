@@ -421,6 +421,13 @@ fn request_variants() -> Vec<(&'static str, Request)> {
         ("osc_state", Request::OscState),
         ("set_osc_port", Request::SetOscPort { port: 53100 }),
         ("set_stand_back", Request::SetStandBack { on: true }),
+        (
+            "drop_out",
+            Request::DropOut {
+                device: None,
+                count: 3,
+            },
+        ),
     ]
 }
 
@@ -2556,6 +2563,29 @@ fn an_advance_beyond_the_limit_is_bad_request() {
     );
     assert!(advance(MAX_ADVANCE_FRAMES).is_ok());
     assert!(advance(0).is_ok());
+}
+
+/// Test support: a `drop_out` of none or of more than `MAX_DROP_OUTS` is refused at decode.
+#[test]
+fn a_drop_out_count_outside_the_limit_is_bad_request() {
+    let drop_out = |count: u32| {
+        let text = serde_json::to_string(&ClientMessage::Request {
+            id: rid(1),
+            request: Request::DropOut {
+                device: None,
+                count,
+            },
+        })
+        .unwrap();
+        decode_client(&text)
+    };
+    let refused = Err(ProtocolError::OutOfRange {
+        field: "request.count",
+    });
+    assert_eq!(drop_out(0), refused);
+    assert_eq!(drop_out(MAX_DROP_OUTS + 1), refused);
+    assert!(drop_out(1).is_ok());
+    assert!(drop_out(MAX_DROP_OUTS).is_ok());
 }
 
 #[test]
@@ -4823,6 +4853,8 @@ fn arb_request() -> impl Strategy<Value = Request> {
         (0..=MAX_ADVANCE_FRAMES).prop_map(|frames| Request::Advance { frames }),
         proptest::option::of(arb_text()).prop_map(|device| Request::LoseDevice { device }),
         proptest::option::of(arb_text()).prop_map(|device| Request::RestoreDevice { device }),
+        (proptest::option::of(arb_text()), 1..=MAX_DROP_OUTS)
+            .prop_map(|(device, count)| Request::DropOut { device, count }),
         arb_text().prop_map(|device| Request::SetDefaultDevice { device }),
     ]
 }
