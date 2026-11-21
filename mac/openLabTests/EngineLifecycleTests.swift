@@ -2395,6 +2395,61 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(
             app.preferencesWindow.launchPopup.titleOfSelectedItem, loc(LaunchBehavior.newBlank.titleKey))
     }
+
+    /// Flow "Choose Preferences with or without a workspace open": one window with its sections; choosing
+    /// it again brings that same window forward.
+    func testPreferencesOpenWithOrWithoutAWorkspaceAndAgainBringsTheSameWindowForward() async throws {
+        makePrefs()
+        try await startApp()
+        XCTAssertTrue(app.allWindows.isEmpty)
+        delegate?.showPreferences(nil)
+        let window = try XCTUnwrap(app.preferencesWindow.window)
+        XCTAssertTrue(window.isVisible, "opens with no workspace open")
+        XCTAssertEqual(
+            app.preferencesWindow.tabs.tabViewItems.map(\.label), [loc("prefs.general"), loc("prefs.audio")])
+        await app.openWorkspace(url: URL(fileURLWithPath: try runs.show("Demo", named: "A")))
+        await assertEventually { self.openNames() == ["A"] }
+        window.orderBack(nil)
+        delegate?.showPreferences(nil)
+        XCTAssertTrue(app.preferencesWindow.window === window, "the same window")
+        XCTAssertEqual(NSApp.windows.filter { $0.identifier?.rawValue == AX.preferencesWindow }.count, 1)
+        XCTAssertTrue(window.isVisible)
+        XCTAssertTrue(window.isKeyWindow || NSApp.keyWindow == nil, "brought forward")
+    }
+
+    /// Flow "General: change At launch to each option, quit and relaunch": the app does what was chosen.
+    func testEachLaunchChoiceMadeInTheWindowIsWhatTheNextLaunchDoes() async throws {
+        makePrefs()
+        try await startApp()
+        func choose(_ behavior: LaunchBehavior) {
+            delegate?.showPreferences(nil)
+            let popup = app.preferencesWindow.launchPopup
+            popup.selectItem(withTitle: loc(behavior.titleKey))
+            _ = popup.sendAction(popup.action, to: popup.target)
+        }
+        choose(.restore)
+        try await quit()
+        try await startApp()
+        XCTAssertTrue(app.allWindows.isEmpty)
+        XCTAssertTrue(launcherShown, "reopen with nothing to reopen shows the launcher")
+        choose(.newBlank)
+        try await quit()
+        try await startApp()
+        await assertEventually("a new blank workspace") { self.app.allWindows.count == 1 }
+        XCTAssertFalse(launcherShown)
+        choose(.nothing)
+        alerts.saveChoices = [.dontSave]  // each launch has its own alerts: the blank workspace is not kept
+        try await quit()
+        try await startApp()
+        await settle()
+        XCTAssertTrue(app.allWindows.isEmpty)
+        XCTAssertFalse(launcherShown, "nothing at all")
+        choose(.launcher)
+        try await quit()
+        try await startApp()
+        XCTAssertTrue(launcherShown)
+        XCTAssertTrue(app.allWindows.isEmpty)
+    }
 }
 
 /// Which autosaves are offered (#332), on the scan data alone.

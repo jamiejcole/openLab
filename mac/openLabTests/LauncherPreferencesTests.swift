@@ -145,4 +145,42 @@ final class LauncherPreferencesTests: XCTestCase {
         let still = await engineCount(engine)
         XCTAssertEqual(still, 0, "a count above the limit changes nothing")
     }
+
+    /// Flow "General: backups kept 0, then out of range or not a number": 0 turns backups off and says
+    /// so; an invalid entry is refused with the allowed range and the field returns to what it held; a
+    /// valid value is kept for the next launch.
+    func testBackupsKeptZeroSaysSoARefusedEntryNamesTheRangeAndAValueSurvivesARelaunch() async throws {
+        // Started with a settings file, as the relaunch below is: both runs take the same start path.
+        let seed = Data(#"{"settings_version": 1, "backup_keep": 4}"#.utf8)
+        let engine = try await TestEngine.start(settings: seed)
+        self.engine = engine
+        let prefs = try await preferences(engine)
+        XCTAssertTrue(prefs.backupOffNote.isHidden)
+        await commit(prefs, "0")
+        XCTAssertFalse(prefs.backupOffNote.isHidden, "0 says backups are off")
+        XCTAssertEqual(prefs.backupOffNote.stringValue, loc("prefs.general.backups.off"))
+        XCTAssertTrue(prefs.generalMessage.isHidden)
+
+        await commit(prefs, "7")
+        XCTAssertTrue(prefs.backupOffNote.isHidden)
+        for bad in ["-1", "1001", "2.5", ""] {
+            await commit(prefs, bad)
+            XCTAssertEqual(
+                prefs.generalMessage.stringValue, String(format: loc("prefs.general.backups.range"), 0, 1000), bad)
+            XCTAssertFalse(prefs.generalMessage.isHidden)
+            XCTAssertEqual(prefs.backupField.stringValue, "7", "the field returns to its previous value")
+        }
+        XCTAssertTrue(prefs.audio?.message == nil, "a backup refusal is not the audio page's message")
+        XCTAssertTrue(prefs.audioMessage.isHidden)
+        await commit(prefs, "12")
+        XCTAssertTrue(prefs.generalMessage.isHidden, "a valid entry clears the refusal")
+
+        let saved = await engine.savedSettings(containing: "\"backup_keep\": 12")
+        let kept = try XCTUnwrap(saved, "the engine wrote the count to this machine's settings")
+        engine.stop()
+        let again = try await TestEngine.start(settings: kept)
+        self.engine = again
+        let relaunched = try await preferences(again)
+        XCTAssertEqual(relaunched.backupField.stringValue, "12", "kept across a relaunch")
+    }
 }

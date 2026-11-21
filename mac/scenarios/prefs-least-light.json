@@ -1,0 +1,25 @@
+{
+  "about": "Preferences at the least size, both tabs (#773).",
+  "show": "Demo",
+  "appearance": "light",
+  "steps": [
+    {
+      "focus": "preferences"
+    },
+    {
+      "resize": [
+        500,
+        330
+      ]
+    },
+    {
+      "shot": "general-least"
+    },
+    {
+      "tab": "audio"
+    },
+    {
+      "shot": "audio-least"
+    }
+  ]
+}
