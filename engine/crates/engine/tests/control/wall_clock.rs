@@ -8,6 +8,7 @@
 use crate::show::*;
 use openlab_core::protocol::{
     ClientMessage, LogEntry, LogKind, LogLevel, Outcome, Request, ServerMessage, TransportAction,
+    WireWarning,
 };
 use openlab_core::{
     Command, CueKind, CueProperty, CueState, Triggers, WallClockTrigger, Weekday, Weekdays,
@@ -335,6 +336,9 @@ fn a_trigger_missed_while_asleep_or_held_up_does_not_fire_later() {
             .any(|e| e.cue == Some(id(1)) && e.level == LogLevel::Warn),
         "{log:?}"
     );
+    // The operator sees it: a notice naming each cue the hour passed over.
+    let missed = notices(&mut s, "wall_clock_missed");
+    assert_eq!(missed, vec![Some(id(1)), Some(id(2))]);
     // Held up for three seconds over 09:00:10 the next day: missed too.
     let next = now + DAY + 10;
     at(&mut s, &clock, next - 1, 0);
@@ -421,4 +425,143 @@ fn a_wall_clock_time_out_of_range_is_refused_over_the_protocol() {
         .triggers
         .wall_clock;
     assert_eq!(*trigger, WallClockTrigger::default());
+}
+
+/// The notices of `code` sent since the last call, by cue.
+fn notices(s: &mut OfflineShow, code: &str) -> Vec<Option<openlab_core::CueId>> {
+    warnings(&s.take_outbound())
+        .into_iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice { code: c, cue, .. } if c == code => Some(cue),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Daylight saving starts (Sydney: 01:59:59 to 03:00:00 in one real second): the cue at
+/// 03:00:00 starts on that second, the one in the skipped hour is reported missed and does
+/// not start later.
+#[test]
+fn clock_changes_daylight_saving_start_fires_03_00_00_and_misses_the_skipped_hour() {
+    let path = tone();
+    let mut skipped = audio(1, &path, 0);
+    skipped.triggers.wall_clock = clocked(2, 30, 0);
+    let mut first = audio(2, &path, 1);
+    first.triggers.wall_clock = clocked(3, 0, 0);
+    // +10 h until the UTC instant that is 02:00 local, +11 h after.
+    let change_utc = hms(MONDAY, 2, 0, 0) - 10 * 3600;
+    let zone = LocalZone::new(move |utc| {
+        Some(if utc < change_utc {
+            10 * 3600
+        } else {
+            11 * 3600
+        })
+    });
+    let start_local = hms(MONDAY, 1, 59, 58);
+    let (mut s, clock) = zone_show(
+        workspace(vec![skipped, first]),
+        start_local,
+        zone,
+        10 * 3600,
+    );
+    let mut utc = utc_ms(start_local, 10 * 3600, 0);
+    for _ in 0..4 {
+        utc += 500;
+        clock.set(utc);
+        s.run(BLOCK);
+    }
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(notices(&mut s, "wall_clock_missed"), vec![Some(id(1))]);
+    for _ in 0..7200 {
+        utc += 500;
+        clock.set(utc);
+        s.run(BLOCK);
+    }
+    s.run(BLOCK * 4);
+    assert!(
+        s.channel(0).iter().all(|&v| v == 0.0),
+        "the skipped cue never played"
+    );
+}
+
+/// The zone cannot be read (its thread did not start, or the first lookup has not answered):
+/// nothing fires, and a workspace with a trigger on raises one notice once it has lasted two
+/// seconds. The first time known after is a fresh start: a time crossed as it becomes known
+/// does not fire, the next one does.
+#[test]
+fn an_unknown_local_time_fires_nothing_raises_one_notice_and_starts_afresh() {
+    let path = tone();
+    let mut a = audio(1, &path, 0);
+    a.triggers.wall_clock = clocked(9, 0, 0);
+    let mut b = audio(2, &path, 1);
+    b.triggers.wall_clock = clocked(9, 0, 5);
+    let known = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let k = std::sync::Arc::clone(&known);
+    let zone = LocalZone::new(move |_| k.load(std::sync::atomic::Ordering::SeqCst).then_some(ZONE));
+    let now = hms(MONDAY, 8, 59, 58);
+    let (mut s, clock) = zone_show(workspace(vec![a, b]), now, zone, ZONE);
+    at(&mut s, &clock, now + 1, 0);
+    assert!(
+        notices(&mut s, "wall_clock_unknown").is_empty(),
+        "not after one second"
+    );
+    for t in 2..=6 {
+        at(&mut s, &clock, now + t, 0);
+    }
+    assert_eq!(
+        s.control().engine().state(id(1)),
+        CueState::Idle,
+        "09:00:00 passed unknown"
+    );
+    assert_eq!(
+        notices(&mut s, "wall_clock_unknown"),
+        vec![None],
+        "one notice"
+    );
+    let log = wall_clock_log(&s);
+    assert!(log.iter().any(|e| e.level == LogLevel::Error), "{log:?}");
+    // Known again on 09:00:05: that second is the fresh start and does not fire; nothing
+    // passed before it is caught up.
+    known.store(true, std::sync::atomic::Ordering::SeqCst);
+    at(&mut s, &clock, now + 7, 0);
+    at(&mut s, &clock, now + 8, 0);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert!(notices(&mut s, "wall_clock_unknown").is_empty());
+    // The next day both fire on time.
+    let next = now + 86_400;
+    for t in [
+        next,
+        next + 1,
+        next + 2,
+        next + 3,
+        next + 4,
+        next + 5,
+        next + 6,
+        next + 7,
+    ] {
+        at(&mut s, &clock, t, 0);
+    }
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+}
+
+/// A zone that can never be read (`LocalZone::unknown`, what the host uses when the zone's
+/// thread cannot start) and no trigger on: no notice, nothing logged.
+#[test]
+fn an_unknown_local_time_with_no_trigger_on_is_quiet() {
+    let path = tone();
+    let now = hms(MONDAY, 8, 0, 0);
+    let (mut s, clock) = zone_show(
+        workspace(vec![audio(1, &path, 0)]),
+        now,
+        LocalZone::unknown(),
+        ZONE,
+    );
+    for t in 1..10 {
+        at(&mut s, &clock, now + t, 0);
+    }
+    assert!(notices(&mut s, "wall_clock_unknown").is_empty());
+    assert!(wall_clock_log(&s).is_empty());
 }

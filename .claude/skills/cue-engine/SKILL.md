@@ -63,8 +63,9 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - A cue acting while its own action is under way ignores a trigger back to itself (`TriggerIgnored`).
 
 ## Wall-clock triggers (single home)
-- `WallClockWatch::advance(ws, local)` (`wall_clock.rs`) takes the local time as whole seconds since 1970-01-01 local (UTC plus the zone's offset) and returns the cues to start (workspace order, children included) and any step it fired nothing over. The binary starts them with `Input::Start`, so rule 1 and the playhead rules of a hotkey apply.
-- The first look only notes the time. A step of 1 to `MAX_GAP_SECS` (2) fires every enabled time on a chosen day in `(last, now]`; a longer step or one back fires nothing and reports the step (forward: the cues passed over). A cue never fires twice for one local instant (`fired`), so the hour daylight saving repeats does not fire again.
+- `WallClockWatch::advance(ws, WallTime { utc, local })` (`wall_clock.rs`) takes whole seconds of real (UTC) and local time (UTC plus the zone's offset) and returns the cues to start (workspace order, children included), the cues passed over (`missed`) and any step where local time did not move with real time (`jump`). The binary starts them with `Input::Start`, so rule 1 and the playhead rules of a hotkey apply.
+- The first look only notes the time. Real time decides whether a step counts: 0 to `MAX_GAP_SECS` (2) real seconds; longer or back fires nothing and reports what local time passed (sleep, a held-up loop, the clock set by hand).
+- Local time decides what fires in a counting step: only its last `real` local seconds (daylight saving starting or a zone change fires the first second after the skip and reports the skipped times missed); local time going back fires nothing. A cue never fires twice for one local instant (`fired`), so the hour daylight saving repeats fires once.
 - A trigger whose time is out of range or with no day never fires; validation switches it off and commands refuse it.
 
 ## Reviewer checklist

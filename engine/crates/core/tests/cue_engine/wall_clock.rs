@@ -32,9 +32,29 @@ fn only_on(mut c: Cue, days: &[Weekday]) -> Cue {
     c
 }
 
-/// Looks at each time in turn; the cues started at each.
+/// The zone of these tests: eleven hours ahead of UTC.
+const ZONE: i64 = 11 * 3600;
+
+/// Local second `local` in [`ZONE`]: real and local time move together (a clock set by hand or
+/// a sleep moves both).
+fn wt(local: i64) -> WallTime {
+    WallTime {
+        utc: local - ZONE,
+        local,
+    }
+}
+
+/// Real second `utc` read as local second `local` (the zone's offset changed).
+fn real(utc: i64, local: i64) -> WallTime {
+    WallTime { utc, local }
+}
+
+/// Looks at each local time in turn (in [`ZONE`]); the cues started at each.
 fn looks(watch: &mut WallClockWatch, ws: &Workspace, times: &[i64]) -> Vec<Vec<CueId>> {
-    times.iter().map(|t| watch.advance(ws, *t).start).collect()
+    times
+        .iter()
+        .map(|t| watch.advance(ws, wt(*t)).start)
+        .collect()
 }
 
 #[test]
@@ -77,7 +97,7 @@ fn the_trigger_starts_the_cue_as_a_hotkey_does_and_a_running_cue_is_not_restarte
     let mut w = WallClockWatch::new();
     let t = at(MONDAY, 10, 30, 59);
     let mut fire = |rig: &mut Rig, wall: i64, now: SampleTime| {
-        let cues = w.advance(&rig.ws.clone(), wall).start;
+        let cues = w.advance(&rig.ws.clone(), wt(wall)).start;
         cues.into_iter()
             .flat_map(|c| rig.at(now, Input::Start { cue: c }))
             .collect::<Vec<_>>()
@@ -115,8 +135,8 @@ fn the_first_look_on_the_very_second_does_not_fire() {
     let ws = workspace(vec![clocked(memo(1), 10, 30, 0)]);
     let mut w = WallClockWatch::new();
     let t = at(MONDAY, 10, 30, 0);
-    assert!(w.advance(&ws, t).start.is_empty());
-    assert!(w.advance(&ws, t + 1).start.is_empty());
+    assert!(w.advance(&ws, wt(t)).start.is_empty());
+    assert!(w.advance(&ws, wt(t + 1)).start.is_empty());
 }
 
 #[test]
@@ -174,18 +194,19 @@ fn a_step_of_up_to_two_seconds_fires_what_it_crossed_and_a_longer_one_fires_noth
     );
     // Three seconds: the control thread was held up, or the clock was set: missed, reported.
     let mut w = WallClockWatch::new();
-    w.advance(&ws, t - 1);
-    let step = w.advance(&ws, t + 2);
+    w.advance(&ws, wt(t - 1));
+    let step = w.advance(&ws, wt(t + 2));
     assert!(step.start.is_empty());
+    assert_eq!(step.missed, vec![id(1)]);
     assert_eq!(
         step.jump,
         Some(WallClockJump {
             from: t - 1,
             to: t + 2,
-            missed: vec![id(1)],
+            real: 3,
         })
     );
-    assert!(w.advance(&ws, t + 3).start.is_empty());
+    assert!(w.advance(&ws, wt(t + 3)).start.is_empty());
 }
 
 #[test]
@@ -196,12 +217,12 @@ fn a_trigger_missed_while_asleep_does_not_fire_later() {
     ]);
     let mut w = WallClockWatch::new();
     let before = at(MONDAY, 10, 0, 0);
-    w.advance(&ws, before);
+    w.advance(&ws, wt(before));
     // Asleep from 10:00 to 11:00; the look on waking reports cue 1 missed, cue 2 not yet.
     let woke = at(MONDAY, 11, 0, 0);
-    let step = w.advance(&ws, woke);
+    let step = w.advance(&ws, wt(woke));
     assert!(step.start.is_empty());
-    assert_eq!(step.jump.unwrap().missed, vec![id(1)]);
+    assert_eq!(step.missed, vec![id(1)]);
     let got = looks(&mut w, &ws, &[woke + 1, woke + 2]);
     assert!(got.iter().all(Vec::is_empty));
     // Cue 2 still fires at its time.
@@ -216,44 +237,166 @@ fn a_trigger_missed_while_asleep_does_not_fire_later() {
 fn a_sleep_of_days_reports_each_missed_cue_once() {
     let ws = workspace(vec![clocked(memo(1), 10, 30, 0), memo(2)]);
     let mut w = WallClockWatch::new();
-    w.advance(&ws, MONDAY);
-    let step = w.advance(&ws, MONDAY + 30 * DAY);
+    w.advance(&ws, wt(MONDAY));
+    let step = w.advance(&ws, wt(MONDAY + 30 * DAY));
     assert!(step.start.is_empty());
-    assert_eq!(step.jump.unwrap().missed, vec![id(1)]);
+    assert_eq!(step.missed, vec![id(1)]);
 }
 
 #[test]
 fn daylight_saving_end_repeats_the_hour_but_the_cue_fires_once() {
-    // Local clock: 02:59:59 then back to 02:00:00 (the hour is lived twice).
-    let ws = workspace(vec![clocked(memo(1), 2, 30, 0)]);
+    // Real time goes on a second at a time; the local clock goes from 02:59:59 back to 02:00:00
+    // (the hour is lived twice).
+    let ws = workspace(vec![clocked(memo(1), 2, 30, 0), clocked(memo(2), 2, 0, 0)]);
     let mut w = WallClockWatch::new();
-    let t = at(MONDAY, 2, 30, 0);
-    assert_eq!(looks(&mut w, &ws, &[t - 1, t]), vec![vec![], vec![id(1)]]);
-    let late = at(MONDAY, 2, 59, 59);
-    w.advance(&ws, late - 1);
-    w.advance(&ws, late);
-    let back = w.advance(&ws, at(MONDAY, 2, 0, 0));
-    assert!(back.start.is_empty());
-    assert_eq!(back.jump.unwrap().to, at(MONDAY, 2, 0, 0));
-    // The repeated 02:30:00 does not fire again.
-    let got = looks(&mut w, &ws, &[t - 1, t, t + 1]);
-    assert!(got.iter().all(Vec::is_empty), "{got:?}");
-    // The next day it does.
-    let next = t + DAY;
+    let start = at(MONDAY, 1, 59, 59);
+    let mut got = Vec::new();
+    let mut utc = start - ZONE;
+    // First pass: 01:59:59 to 02:59:59 at +11 h.
+    for local in start..=at(MONDAY, 2, 59, 59) {
+        got.push((local, w.advance(&ws, real(utc, local))));
+        utc += 1;
+    }
+    // Then the offset drops an hour: 02:00:00 again, to 03:00:00.
+    for local in at(MONDAY, 2, 0, 0)..=at(MONDAY, 3, 0, 0) {
+        got.push((local, w.advance(&ws, real(utc, local))));
+        utc += 1;
+    }
+    let fired: Vec<(i64, Vec<CueId>)> = got
+        .iter()
+        .filter(|(_, s)| !s.start.is_empty())
+        .map(|(t, s)| (*t, s.start.clone()))
+        .collect();
+    assert_eq!(
+        fired,
+        vec![
+            (at(MONDAY, 2, 0, 0), vec![id(2)]),
+            (at(MONDAY, 2, 30, 0), vec![id(1)])
+        ],
+        "each fires on its first pass only"
+    );
+    let back: Vec<_> = got.iter().filter_map(|(_, s)| s.jump).collect();
+    assert_eq!(
+        back,
+        vec![WallClockJump {
+            from: at(MONDAY, 2, 59, 59),
+            to: at(MONDAY, 2, 0, 0),
+            real: 1,
+        }]
+    );
+    assert!(got.iter().all(|(_, s)| s.missed.is_empty()));
+    // The next day both fire again.
+    let next = at(MONDAY + DAY, 2, 0, 0);
     let mut w2 = w.clone();
-    w2.advance(&ws, next - 1);
-    assert_eq!(w2.advance(&ws, next).start, vec![id(1)]);
+    w2.advance(&ws, real(utc + DAY - 3600, next - 1));
+    assert_eq!(
+        w2.advance(&ws, real(utc + DAY - 3599, next)).start,
+        vec![id(2)]
+    );
 }
 
+/// Daylight saving starts at 02:00 (Sydney: the clock goes from 01:59:59 to 03:00:00 in one
+/// real second): a cue in the skipped hour is missed and reported; one at 03:00:00, the first
+/// real second after, fires on that second.
 #[test]
-fn daylight_saving_start_skips_the_hour_and_its_cue_is_missed_not_fired_late() {
-    let ws = workspace(vec![clocked(memo(1), 2, 30, 0), clocked(memo(2), 3, 0, 1)]);
+fn daylight_saving_start_fires_the_first_second_after_the_skip_and_misses_the_skipped_hour() {
+    let ws = workspace(vec![
+        clocked(memo(1), 2, 30, 0),
+        clocked(memo(2), 3, 0, 0),
+        clocked(memo(3), 3, 0, 1),
+        clocked(memo(4), 2, 59, 59),
+    ]);
     let mut w = WallClockWatch::new();
-    w.advance(&ws, at(MONDAY, 1, 59, 59));
-    let step = w.advance(&ws, at(MONDAY, 3, 0, 0));
+    let utc = at(MONDAY, 1, 59, 59) - 10 * 3600;
+    w.advance(&ws, real(utc, at(MONDAY, 1, 59, 59)));
+    let step = w.advance(&ws, real(utc + 1, at(MONDAY, 3, 0, 0)));
+    assert_eq!(step.start, vec![id(2)]);
+    assert_eq!(step.missed, vec![id(1), id(4)]);
+    assert_eq!(step.jump.map(|j| j.real), Some(1));
+    let next = w.advance(&ws, real(utc + 2, at(MONDAY, 3, 0, 1)));
+    assert_eq!(next.start, vec![id(3)]);
+    assert!(next.jump.is_none() && next.missed.is_empty());
+}
+
+/// Zones that change at midnight: 23:59:59 to 01:00:00. A cue at 01:00:00 fires; one at 00:30
+/// is missed; one at midnight (never lived that day) is missed too.
+#[test]
+fn a_change_at_midnight_fires_01_00_00_and_misses_the_skipped_hour() {
+    let ws = workspace(vec![
+        clocked(memo(1), 0, 30, 0),
+        clocked(memo(2), 1, 0, 0),
+        clocked(memo(3), 0, 0, 0),
+    ]);
+    let mut w = WallClockWatch::new();
+    let utc = 1_000_000;
+    w.advance(&ws, real(utc, MONDAY + DAY - 1));
+    let step = w.advance(&ws, real(utc + 1, at(MONDAY + DAY, 1, 0, 0)));
+    assert_eq!(step.start, vec![id(2)]);
+    assert_eq!(step.missed, vec![id(1), id(3)]);
+}
+
+/// The operator changes the computer's zone while the show runs: five hours on fires only the
+/// new local second (15:00:00 here); the hours skipped are missed. Five hours back fires nothing on the
+/// way back, nothing already fired again, and a time not yet reached that day fires when the
+/// clock reaches it again.
+#[test]
+fn a_zone_changed_while_running_fires_only_the_seconds_lived() {
+    let ws = workspace(vec![
+        clocked(memo(1), 12, 0, 0),
+        clocked(memo(2), 15, 0, 0),
+        clocked(memo(3), 10, 0, 1),
+    ]);
+    let mut w = WallClockWatch::new();
+    let utc = 5_000_000;
+    let ten = at(MONDAY, 10, 0, 0);
+    w.advance(&ws, real(utc, ten - 1));
+    w.advance(&ws, real(utc + 1, ten));
+    let on = w.advance(&ws, real(utc + 2, ten + 5 * 3600));
+    assert_eq!(on.start, vec![id(2)], "15:00:00 is the second lived");
+    assert_eq!(on.missed, vec![id(1), id(3)]);
+    let back = w.advance(&ws, real(utc + 3, ten + 1));
+    assert!(back.start.is_empty() && back.missed.is_empty());
+    assert!(back.jump.is_some());
+    // 10:00:01 again: cue 3 was passed over, never fired, so it fires now as the clock lives it.
+    let again = w.advance(&ws, real(utc + 4, ten + 2));
+    assert!(
+        again.start.is_empty(),
+        "10:00:01 was the second before: already behind"
+    );
+    let mut w = WallClockWatch::new();
+    w.advance(&ws, real(utc, ten - 1));
+    w.advance(&ws, real(utc + 1, ten + 5 * 3600));
+    assert_eq!(
+        w.advance(&ws, real(utc + 2, ten)).start,
+        Vec::<CueId>::new()
+    );
+    assert_eq!(w.advance(&ws, real(utc + 3, ten + 1)).start, vec![id(3)]);
+}
+
+/// The control thread held up for three real seconds while the local clock moved three: the
+/// step does not count, even at a daylight-saving start (real time decides).
+#[test]
+fn a_held_up_look_over_a_daylight_saving_start_fires_nothing() {
+    let ws = workspace(vec![clocked(memo(1), 3, 0, 1)]);
+    let mut w = WallClockWatch::new();
+    let utc = 7_000_000;
+    w.advance(&ws, real(utc, at(MONDAY, 1, 59, 59)));
+    let step = w.advance(&ws, real(utc + 3, at(MONDAY, 3, 0, 2)));
     assert!(step.start.is_empty());
-    assert_eq!(step.jump.unwrap().missed, vec![id(1)]);
-    assert_eq!(w.advance(&ws, at(MONDAY, 3, 0, 1)).start, vec![id(2)]);
+    assert_eq!(step.missed, vec![id(1)]);
+}
+
+/// The clock set forward by hand an hour (real time and local time jump together): nothing
+/// fires, the cue passed over is reported.
+#[test]
+fn the_clock_set_forward_by_hand_fires_nothing_and_reports_the_cue() {
+    let ws = workspace(vec![clocked(memo(1), 10, 30, 0)]);
+    let mut w = WallClockWatch::new();
+    let t = at(MONDAY, 10, 0, 0);
+    w.advance(&ws, wt(t));
+    let step = w.advance(&ws, wt(t + 3600));
+    assert!(step.start.is_empty());
+    assert_eq!(step.missed, vec![id(1)]);
 }
 
 #[test]
@@ -336,6 +479,52 @@ fn extreme_clock_values_are_total() {
         i64::MIN,
         0,
     ] {
-        let _ = w.advance(&ws, t);
+        for utc in [i64::MIN, 0, i64::MAX] {
+            let _ = w.advance(&ws, real(utc, t));
+        }
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(prop_cases(256)))]
+
+    /// Any run of looks (real steps from back to a long sleep, local steps from an hour back to
+    /// a zone change on): a cue starts only on a counting step whose local clock moved on, at
+    /// a time in the last real seconds of it, and never twice for one local instant.
+    #[test]
+    fn any_clock_never_fires_a_cue_twice_or_outside_a_counting_step(
+        steps in proptest::collection::vec((-3i64..6, -4000i64..4000), 1..200),
+    ) {
+        let ws = workspace(vec![
+            clocked(memo(1), 10, 0, 0),
+            clocked(memo(2), 10, 0, 1),
+            only_on(clocked(memo(3), 10, 30, 0), &[Weekday::Monday]),
+        ]);
+        let sod = |n: u128| match n {
+            1 => 36_000,
+            2 => 36_001,
+            _ => 37_800,
+        };
+        let mut w = WallClockWatch::new();
+        let mut now = real(1_000_000, at(MONDAY, 9, 59, 50));
+        w.advance(&ws, now);
+        let mut seen = std::collections::HashSet::new();
+        for (real_step, extra) in steps {
+            // Mostly the local clock moves with real time; sometimes the offset changes.
+            let local_step = if extra.abs() < 3000 { real_step } else { real_step + extra };
+            let next = real(now.utc + real_step, now.local + local_step);
+            let step = w.advance(&ws, next);
+            let moved = next.local - now.local;
+            if !step.start.is_empty() {
+                proptest::prop_assert!((0..=MAX_GAP_SECS).contains(&real_step) && moved > 0);
+            }
+            for cue in &step.start {
+                let n = cue.0.as_u128();
+                let at = next.local - (next.local - sod(n)).rem_euclid(DAY);
+                proptest::prop_assert!(next.local - at < real_step.max(1), "fired late: {n}");
+                proptest::prop_assert!(seen.insert((n, at)), "fired twice: {n} at {at}");
+            }
+            now = next;
+        }
     }
 }

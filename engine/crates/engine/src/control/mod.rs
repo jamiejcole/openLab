@@ -610,6 +610,9 @@ struct Doc {
     /// The wall-clock triggers' look at the clock (TRG-05): new with the doc, so a time passed
     /// before it opened does not fire.
     wall_clock: openlab_core::WallClockWatch,
+    /// Since when (UTC second) the local time has been unknown, and whether the operator was
+    /// told; `None` while it is known.
+    wall_clock_unknown: Option<(i64, bool)>,
 }
 
 /// Counters already reported, so each increase is reported once.
@@ -1246,6 +1249,7 @@ impl Doc {
             waveforms: waveforms::Waveforms::default(),
             show_mode: false,
             wall_clock: openlab_core::WallClockWatch::new(),
+            wall_clock_unknown: None,
         }
     }
 

@@ -9,10 +9,10 @@
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use openlab_core::protocol::{LogKind, LogLevel, TransportAction};
-use openlab_core::{CueId, SampleTime, WallClockJump};
+use openlab_core::protocol::{LogKind, LogLevel, RuntimeChange, TransportAction};
+use openlab_core::{CueId, SampleTime, WallClockJump, WallClockWatch, WallTime};
 
-use super::{DocCx, Engine};
+use super::{DocCx, Engine, notice};
 
 /// Seconds ahead of the moment it is worked out that the system zone's offset is known: a
 /// daylight-saving change is met on its very second although the offset is worked out off the
@@ -20,8 +20,13 @@ use super::{DocCx, Engine};
 const AHEAD_SECS: i64 = 4;
 /// How often the system zone's offsets are worked out again.
 const REFRESH: Duration = Duration::from_millis(250);
-/// Most cues a passed-over step names one by one in the log (the rest are counted).
+/// Most cues a passed-over step names one by one in the log and notices (the rest are counted).
 const MISSED_LOGGED: usize = 20;
+/// How long the local time may be unknown before a doc with a trigger on raises a notice (the
+/// zone's first lookup takes a moment at start).
+const UNKNOWN_NOTICE_SECS: i64 = 2;
+/// The `source` of the wall-clock triggers' log records.
+const SOURCE: &str = "wall clock";
 
 /// Offsets of the next few UTC seconds: `offsets[i]` is the offset at `from + i`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -53,6 +58,12 @@ impl OffsetTable {
 pub struct LocalZone(Arc<dyn Fn(i64) -> Option<i64> + Send + Sync>);
 
 impl LocalZone {
+    /// No zone: the local time is never known, so no wall-clock trigger fires (the zone's
+    /// thread could not start).
+    pub fn unknown() -> Self {
+        Self(Arc::new(|_| None))
+    }
+
     /// A zone this many seconds ahead of UTC, all year.
     pub fn fixed(offset: i64) -> Self {
         Self(Arc::new(move |_| Some(offset)))
@@ -133,21 +144,100 @@ impl Engine {
 
 impl DocCx<'_> {
     /// The cues whose wall-clock time this wake reached start; what the clock passed over is
-    /// logged.
+    /// logged and raised as a notice for each cue missed. While the local time is not known no
+    /// trigger fires, the first time known after is a fresh start (nothing caught up), and a
+    /// doc with a trigger on raises a notice once the time has been unknown
+    /// [`UNKNOWN_NOTICE_SECS`].
     pub(super) fn wall_clock_triggers(&mut self, now: SampleTime) {
-        let Some(local) = self.eng.local_time.1 else {
+        let (utc, local) = self.eng.local_time;
+        let Some(utc) = utc else { return };
+        let Some(local) = local else {
+            self.wall_clock_unknown(utc);
             return;
         };
+        if self
+            .doc
+            .wall_clock_unknown
+            .take()
+            .is_some_and(|(_, noted)| noted)
+        {
+            self.record(
+                LogKind::Trigger,
+                LogLevel::Info,
+                "the computer's local time is known again: time-of-day triggers are on".to_owned(),
+                None,
+                Some(SOURCE.to_owned()),
+            );
+        }
         let step = {
             let ws = self.doc.model.ws();
-            self.doc.wall_clock.advance(ws, local)
+            self.doc.wall_clock.advance(ws, WallTime { utc, local })
         };
         if let Some(jump) = step.jump {
-            self.log_jump(&jump);
+            self.log_jump(&jump, step.missed.len());
+        }
+        for &cue in step.missed.iter().take(MISSED_LOGGED) {
+            self.wall_clock_missed(cue);
         }
         for cue in step.start {
             self.wall_clock_start(cue, local, now);
         }
+    }
+
+    /// No local time this wake: the watch starts afresh when one comes, and a doc with a
+    /// trigger on hears of it once it has lasted.
+    fn wall_clock_unknown(&mut self, utc: i64) {
+        self.doc.wall_clock = WallClockWatch::new();
+        let (since, noted) = *self.doc.wall_clock_unknown.get_or_insert((utc, false));
+        let lasted = utc.saturating_sub(since) >= UNKNOWN_NOTICE_SECS;
+        let any_on = || {
+            self.doc
+                .model
+                .ws()
+                .cues()
+                .any(|c| c.triggers.wall_clock.enabled)
+        };
+        if noted || !lasted || !any_on() {
+            return;
+        }
+        self.doc.wall_clock_unknown = Some((since, true));
+        let message = "the computer's local time cannot be read: time-of-day triggers are off \
+                       until it can"
+            .to_owned();
+        self.record(
+            LogKind::Trigger,
+            LogLevel::Error,
+            message.clone(),
+            None,
+            Some(SOURCE.to_owned()),
+        );
+        let changes = vec![RuntimeChange::Warning {
+            warning: notice("wall_clock_unknown", message, None),
+        }];
+        self.observe_changes(&changes);
+        self.runtime(changes);
+    }
+
+    /// A cue whose time the clock passed over: a warning in the log and a notice the operator
+    /// sees.
+    fn wall_clock_missed(&mut self, cue: CueId) {
+        let label = self.cue_label(cue);
+        let message = format!(
+            "time of day: {label} was not started: its time passed while the clock was not \
+             followed (asleep, held up, set, or skipped by a time change)"
+        );
+        self.record(
+            LogKind::Trigger,
+            LogLevel::Warn,
+            message.clone(),
+            Some(cue),
+            Some(SOURCE.to_owned()),
+        );
+        let changes = vec![RuntimeChange::Warning {
+            warning: notice("wall_clock_missed", message, Some(cue)),
+        }];
+        self.observe_changes(&changes);
+        self.runtime(changes);
     }
 
     fn wall_clock_start(&mut self, cue: CueId, local: i64, now: SampleTime) {
@@ -178,16 +268,17 @@ impl DocCx<'_> {
             level,
             message,
             Some(cue),
-            Some("wall clock".to_owned()),
+            Some(SOURCE.to_owned()),
         );
         self.transport(TransportAction::Start { cue }, now);
     }
 
-    /// A step the watch fired nothing over, logged only when the workspace has a wall-clock
-    /// trigger on (a computer waking from sleep is no news otherwise).
-    fn log_jump(&mut self, jump: &WallClockJump) {
-        let any_on = !jump.missed.is_empty()
-            || (self.doc.model.ws().cues()).any(|c| c.triggers.wall_clock.enabled);
+    /// A step in which the local clock did not move with real time, logged only when the
+    /// workspace has a wall-clock trigger on (a computer waking from sleep is no news
+    /// otherwise).
+    fn log_jump(&mut self, jump: &WallClockJump, missed: usize) {
+        let any_on =
+            missed > 0 || (self.doc.model.ws().cues()).any(|c| c.triggers.wall_clock.enabled);
         if !any_on {
             return;
         }
@@ -197,7 +288,7 @@ impl DocCx<'_> {
         } else {
             "moved on"
         };
-        let level = if jump.missed.is_empty() {
+        let level = if missed == 0 {
             LogLevel::Info
         } else {
             LogLevel::Warn
@@ -206,23 +297,13 @@ impl DocCx<'_> {
             LogKind::Trigger,
             level,
             format!(
-                "the computer's clock {what} from {from} to {to} between two looks; {} \
-                 wall-clock trigger(s) passed over are not started late",
-                jump.missed.len()
+                "the computer's clock {what} from {from} to {to} in {} real second(s); {missed} \
+                 time-of-day trigger(s) passed over are not started late",
+                jump.real
             ),
             None,
-            Some("wall clock".to_owned()),
+            Some(SOURCE.to_owned()),
         );
-        for &cue in jump.missed.iter().take(MISSED_LOGGED) {
-            let label = self.cue_label(cue);
-            self.record(
-                LogKind::Trigger,
-                LogLevel::Warn,
-                format!("wall clock: {label} was not started: its time passed while the clock was not followed"),
-                Some(cue),
-                Some("wall clock".to_owned()),
-            );
-        }
     }
 }
 

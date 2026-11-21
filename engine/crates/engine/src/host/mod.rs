@@ -473,10 +473,13 @@ fn run_with(
     match crate::control::wall_clock::LocalZone::system() {
         Ok(zone) => config.local_zone = zone,
         Err(e) => {
+            // Never UTC in its place: a trigger would fire hours off its time. With no zone no
+            // trigger fires, and a workspace with one on raises a notice.
+            config.local_zone = crate::control::wall_clock::LocalZone::unknown();
             let _ = inbox_tx.send(Inbox::Log {
                 level: LogLevel::Error,
                 message: format!(
-                    "wall-clock triggers run on UTC: the time zone thread did not start: {e}"
+                    "time-of-day triggers are off: the time zone thread did not start: {e}"
                 ),
             });
         }
