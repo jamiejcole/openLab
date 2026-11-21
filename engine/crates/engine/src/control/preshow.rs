@@ -24,11 +24,12 @@ const INFO_CODE: &str = "preload_over_budget";
 
 /// The notices about a whole audio device rather than one patch: they count in the check only
 /// while some cue's patch is on that device.
-const DEVICE_CODES: [&str; 4] = [
+const DEVICE_CODES: [&str; 5] = [
     "device_lost",
     "device_stalled",
     "device_unrecoverable",
     "outputs_dropped",
+    "audio_dropouts",
 ];
 
 /// The clock device's notices that stop its clock, which every timed cue runs on (waits, fades,

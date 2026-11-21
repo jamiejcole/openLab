@@ -1,6 +1,6 @@
 ---
 name: engine-lifecycle
-description: "Load when changing or reviewing engine start/shutdown, engine.json, instance lock, signals, run marker, crash capture, show log and status, sleep prevention, app relaunch, Pre-Show Check window (Preshow*.swift), EngineAlarm.swift, mac supervisor (engine/crates/engine/src/host/, diag/, platform/)."
+description: "Load when changing or reviewing engine start/shutdown, engine.json, instance lock, signals, run marker, crash capture, show log and status, sleep prevention, app relaunch, Warnings page (WarningsPage*.swift), EngineAlarm.swift, mac supervisor (engine/crates/engine/src/host/, diag/, platform/)."
 ---
 
 # Engine process lifecycle
@@ -94,4 +94,4 @@ Shutdown lets it go; the OS drops it if the process dies. Not on Windows yet (a 
 ## References
 
 - `references/diagnostics.md`: read when changing the show log (`control/observe.rs`, `diag/`), `log_tail`/`log_entry` pushes, `status`, the crash hook, or log rotation.
-- `references/mac-supervision.md`: read when changing the app's engine start, attach, reattach, quit or alarm (`mac/openLab/Engine/`, `AppLaunch.swift`) or the Pre-Show Check window.
+- `references/mac-supervision.md`: read when changing the app's engine start, attach, reattach, quit or alarm (`mac/openLab/Engine/`, `AppLaunch.swift`) or the Warnings page of the status window.

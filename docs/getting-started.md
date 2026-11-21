@@ -51,7 +51,7 @@ Select a cue and use the inspector under the list.
 - A Fade does nothing until one of its levels is switched on, on its Levels tab.
 
 A red triangle in the list marks a cue that cannot run as it stands: a missing file, no target, nothing to fade.
-The Warnings tab of the sidebar says why, and **Tools > Find Missing Files…** (or the button on a missing file's warning) searches a folder for files
+The Warnings page of the Status window (**Window > Workspace Status**, or the warning button in the footer) says why, and **Tools > Find Missing Files…** (or the button on a missing file's warning) searches a folder for files
 that have moved.
 
 Undo and Redo cover every edit.
@@ -75,12 +75,11 @@ back.
 
 ## Show-day checklist
 
-1. **Window > Pre-Show Check**: lists broken cues, media files that are missing or cannot be played, audio patches
-   with no device, network destinations and engine warnings. It should say no problems were found.
-2. Check the footer: it shows the audio device state and a dropout count, which should read zero.
+1. **Window > Workspace Status**, Warnings page: lists broken cues and engine warnings as they happen. It should say there are no warnings.
+2. Check the footer: it shows no alarm. A lost or failed audio device shows there in red.
 3. Run a cue to each output and listen.
 4. Save, then enter Show Mode.
-5. During the show, **Window > Show Log** has the record of every GO and every warning.
+5. During the show, the Logs page of **Window > Workspace Status** has the record of every GO and every warning.
 
 ## Controlling openLab from other software
 

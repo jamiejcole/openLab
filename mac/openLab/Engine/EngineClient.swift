@@ -476,7 +476,7 @@ extension ClientMessage {
             #if DEBUG
                 // A stepped engine waits for its background work (up to 30 s) before it answers these.
                 case .advance, .loseDevice: return false
-                case .restoreDevice, .setDefaultDevice, .stageTestCard: return true
+                case .restoreDevice, .setDefaultDevice, .dropOut, .stageTestCard: return true
                 // Answered when the stage host has drawn and read back the stage.
                 case .stageProbe, .displayProbe, .monitorProbe: return false
             #endif

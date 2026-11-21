@@ -155,7 +155,7 @@ final class VideoCueTests: XCTestCase {
         return cell.images[1].accessibilityLabel()
     }
 
-    /// The broken mark's tooltip: the reasons, as the Warnings tab reads them.
+    /// The broken mark's tooltip: the reasons, as the Warnings list reads them.
     func brokenTip(_ id: ModelID) -> String? {
         guard status(id) == loc("cue.state.broken") else { return nil }
         return cueCell(id, "status")?.images[1].toolTip

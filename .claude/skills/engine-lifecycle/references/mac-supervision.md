@@ -63,10 +63,9 @@ This holds at launch and for a replacement after a crash. Nothing plays on it, s
 
 The app's tests run the real engine as the Debug-only test engine (`-OpenLabEngine test`, `EngineLaunch.swift`): on the virtual device (skill `devices`), with an Application Support folder of its own, ending with the app (`--watch-stdin`), never relaunching it. Tests: `mac/openLabTests/EngineLifecycleTests.swift`, `EngineSessionTests.swift`, `openLabUITests/EngineAlarmUITests.swift`.
 
-## Pre-Show Check window (app half; engine half is `preshow_check`, skill `engine-control`)
+## Warnings page of the status window (app half; the engine's `preshow_check` is not used by the app)
 
-- Window > Workspace Status (Shift-Cmd-W), enabled while the workspace's engine connection is up, opens the workspace status window on its Warnings page, which holds the check (`PreshowReport.swift`, `PreshowWindowController.swift`'s content; its own window is never shown); the status window never takes the keys from the workspace window.
-- Entries are grouped as broken cues, media files, patches without a device, network destinations and engine warnings. Empty groups are left out, the engine's order is kept, information-only entries are dimmed.
-- Choosing an entry makes its workspace window key (so the next GO goes there, not to another open workspace) and selects its cue without moving the playhead; in Edit Mode it shows the inspector (Basics tab for file and target problems).
-- A cue deleted since the check is marked and cannot be chosen. Check Again reruns it; a lost connection or failed request clears the list rather than leave an old report standing.
-- Tests: `PreshowTests`, `PreshowUITests`.
+- Window > Workspace Status (Shift-Cmd-W) and View > Warnings (Cmd-B) open the workspace status window on its Warnings page (`WarningsPageController.swift`; its own window is never shown); the status window never takes the keys from the workspace window.
+- The list is live: the workspace window hands it `WarningRows` whenever the footer's count is recomputed. Choosing a row makes its workspace window key and selects its cue without moving the playhead; in Edit Mode it shows the inspector (Basics tab for file and target problems).
+- A lost or failed audio device is the footer alarm and a row here; both clear when it is back.
+- Tests: `WarningsPageTests`, `StatusWindowTests`, `FooterWarningsTests`, `WarningsPageUITests`.

@@ -28,6 +28,7 @@ A build without the feature has no such option: a usage error, exit 2. Test-only
 
 - `lose_device { device? }` (the id; absent: the first): the device leaves the list and its open stream reports `HostError::Lost` once and never calls back; the policy stops the cues on it, closes the stream, and reopens fail (`not_found`) while it is gone. The other device plays on. Stepped, the request returns once that is done.
 - `restore_device { device? }`: the device is listed (again); the next list read opens it at once.
+- `drop_out { device?, count }`: the device's stream reports `count` dropouts (`HostError::Xrun`) at the top of its next block (stepped: the next `advance`), from an atomic the render thread swaps; the engine counts them as xruns and raises its dropout warning.
 - `set_default_device { device }`: the list marks that device as the system's output from the next list read. An unknown id is `not_found`.
 
 ## Differences from a show engine (on purpose)

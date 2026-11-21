@@ -5,7 +5,7 @@ import XCTest
 @testable import openLab
 
 /// The footer's warnings button, on a real engine: it shows only while the workspace has rows for
-/// the Warnings tab, counts them, and opens the sidebar on that tab. The Demo show starts with one
+/// the Warnings list, counts them, and opens the status window on its Warnings page. The Demo show starts with one
 /// broken cue (Radio's file is missing); Second has none.
 @MainActor
 final class FooterWarningsTests: XCTestCase {
@@ -55,7 +55,7 @@ final class FooterWarningsTests: XCTestCase {
         XCTAssertTrue(footer.bounds.contains(frame), "\(frame) in \(footer.bounds)")
         let others: [NSView] =
             [
-                footer.modeSwitch, footer.overrideBadge, footer.statusButton,
+                footer.modeSwitch, footer.alarmButton,
                 footer.noticeLabel, footer.countLabel, footer.settingsButton,
             ] + Array(footer.toggles.values)
         for other in others where !other.isHiddenOrHasHiddenAncestor {
@@ -124,7 +124,7 @@ final class FooterWarningsTests: XCTestCase {
         return window.frame.size
     }
 
-    func testTheButtonDoesNotOverlapTheBadgeOrOtherControlsOrWidenTheWindowAtTheMinimumWidth() async throws {
+    func testTheButtonDoesNotOverlapTheAlarmOrOtherControlsOrWidenTheWindowAtTheMinimumWidth() async throws {
         let (_, wc) = try await open()
         // The window's size at its minimum, with the button shown and without it: showing it
         // must not widen the window.
@@ -140,10 +140,9 @@ final class FooterWarningsTests: XCTestCase {
         await wc.requestShowMode(true)
         await assertEventually { wc.isShowMode }
         try compare("Show Mode")
-        wc.footer.overrideBadge.isHidden = false  // the widest footer: Show Mode and the override badge
-        // The footer alone is wider than the minimum here (the badge, the mode label and the right
-        // controls cannot shrink), so the window is already wider; only overlap is checked.
-        try compare("Show Mode with the override badge", widens: true)
+        // The widest footer: Show Mode with a device alarm in the centre.
+        wc.footer.show(status: try alarmStatus(), connected: true)
+        try compare("Show Mode with the device alarm", widens: true)
     }
 
     /// A workspace warning (a `warnings` message) and a runtime warning each reach the footer.
@@ -165,16 +164,149 @@ final class FooterWarningsTests: XCTestCase {
         XCTAssertEqual(wc.footer.warningsButton.title, "2")
     }
 
-    // MARK: The footer names a lost second device (#753)
+    // MARK: The footer without the removed parts
 
-    /// Two devices, a patch on the second: it is unplugged → the footer says so, naming it, and the
-    /// status window lists it; plugged back in → the footer is OK again.
-    func testTheFooterNamesASecondDeviceThatIsLostAndReturnsToOkWhenItIsBack() async throws {
+    /// Flow: workspace open, all well → the footer shows the count, the Edit/Show switch and the toggles;
+    /// no engine status mark, no words about CPU, dropouts, load, disk, block size or latency.
+    func testAllWellTheFooterHasTheCountTheSwitchAndTheTogglesAndNoEngineReadouts() async throws {
+        let (rig, wc) = try await open("Second")
+        await assertEventually("the engine's status arrives") {
+            try? await rig.advance(1)
+            return rig.store.status != nil
+        }
+        let footer = wc.footer
+        XCTAssertEqual(
+            footer.countLabel.stringValue,
+            FooterBar.countText(cues: rig.store.model?.cueCount ?? -1, lists: rig.store.model?.cueLists.count ?? -1))
+        XCTAssertFalse(footer.modeSwitch.isHidden)
+        XCTAssertEqual(footer.toggles.count, 3)
+        XCTAssertTrue(footer.alarmButton.isHidden)
+        XCTAssertTrue(footer.warningsButton.isHidden, "no warnings: no button")
+        func words(_ v: NSView) -> [String] {
+            var out: [String] = []
+            if let b = v as? NSButton { out += [b.title, b.toolTip ?? "", b.accessibilityLabel() ?? ""] }
+            if let t = v as? NSTextField { out += [t.stringValue, t.toolTip ?? ""] }
+            return out + v.subviews.flatMap(words)
+        }
+        let all = words(footer).joined(separator: " ").lowercased()
+        for banned in ["cpu", "dropout", "load", "disk", "block", "latency", "audio ok", "engine status"] {
+            XCTAssertFalse(all.contains(banned), "\(banned) in the footer: \(all)")
+        }
+        // No popover opens from anywhere in the footer.
+        for v in footer.subviews.flatMap({ [$0] + $0.subviews }).compactMap({ $0 as? NSButton }) where !v.isHidden {
+            XCTAssertFalse(v.target is NSPopoverDelegate)
+        }
+        XCTAssertNil(footer.subviews.flatMap(\.subviews).first { $0.accessibilityIdentifier() == "status-label" })
+    }
+
+    /// Flow: narrow window, light and dark → the footer and the sidebar lay out whole without the removed
+    /// parts: nothing overlaps or leaves its area, and the sidebar's tabs, lists and buttons are one
+    /// column with the same spacing between them (no gap where the Warnings tab and its count were).
+    func testTheFooterAndSidebarLayOutCleanlyAtTheLeastWidthLightAndDark() async throws {
+        let (_, wc) = try await open("Demo")
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            wc.window?.appearance = NSAppearance(named: name)
+            wc.setVisible(.sidebar, true)
+            _ = try atMinimum(wc)
+            let footer = wc.footer
+            wc.window?.contentView?.layoutSubtreeIfNeeded()
+            let visible =
+                ([footer.modeSwitch, footer.countLabel, footer.warningsButton, footer.settingsButton]
+                + Array(footer.toggles.values)).filter { !$0.isHiddenOrHasHiddenAncestor }
+            let frames = visible.map { footer.convert($0.bounds, from: $0) }
+            for (i, f) in frames.enumerated() {
+                XCTAssertTrue(footer.bounds.contains(f), "\(visible[i]) at \(name.rawValue): \(f) in \(footer.bounds)")
+                for j in frames.indices where j > i {
+                    XCTAssertFalse(f.intersects(frames[j]), "\(visible[i]) overlaps \(visible[j]) at \(name.rawValue)")
+                }
+            }
+            let side = wc.sidebar
+            XCTAssertEqual(side.tabs.segmentCount, 2, "two tabs only")
+            let column = try XCTUnwrap(side.view.subviews.compactMap { $0 as? NSStackView }.first)
+            let shown = column.arrangedSubviews.filter { !$0.isHidden }.sorted { $0.frame.minY > $1.frame.minY }
+            XCTAssertEqual(shown.count, 4, "transport strip, tabs, one list, New List: \(shown)")
+            for pair in zip(shown, shown.dropFirst()) {
+                XCTAssertEqual(
+                    pair.0.frame.minY - pair.1.frame.maxY, column.spacing, accuracy: 0.5, "no gap in the sidebar")
+            }
+            XCTAssertEqual(side.tabs.frame.width, side.view.bounds.width - 20, accuracy: 0.5)
+        }
+    }
+
+    /// A device with a very long name: the alarm is cut in the middle, the window keeps its size and no
+    /// other footer control is pushed out or overlapped, at the least width, light and dark.
+    func testALongDeviceNameInTheAlarmIsCutAndPushesNothingOutAtTheLeastWidth() async throws {
+        let (_, wc) = try await open("Demo")
+        let name = String(repeating: "Front of House Main Interface ", count: 4) + "(USB)"
+        var json = try JSONValue.parse(Fixtures.text("server", "status"))?["status"] ?? .null
+        json.set(
+            "outputs",
+            .array([
+                .object([
+                    "name": .string(name), "state": .string("lost"), "primary": .bool(false),
+                    "sample_rate": .int(48000), "channels": .int(2),
+                ])
+            ]))
+        let status = try JSONDecoder().decode(SystemStatus.self, from: Data(try json.text().utf8))
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            wc.window?.appearance = NSAppearance(named: appearance)
+            for mode in [false, true] {
+                await wc.requestShowMode(mode)
+                await assertEventually { wc.isShowMode == mode }
+                wc.footer.show(status: nil, connected: true)
+                let without = try atMinimum(wc)
+                wc.footer.show(status: status, connected: true)
+                let with = try atMinimum(wc)
+                XCTAssertEqual(with, without, "the alarm widens the window (\(appearance.rawValue), show \(mode))")
+                let footer = wc.footer
+                XCTAssertEqual(
+                    footer.alarmButton.title,
+                    loc("footer.alarm") + " " + String(format: loc("footer.alarm.outputLost"), name))
+                let controls =
+                    ([
+                        footer.alarmButton, footer.modeSwitch, footer.countLabel, footer.warningsButton,
+                        footer.settingsButton,
+                    ]
+                    + Array(footer.toggles.values)).filter { !$0.isHiddenOrHasHiddenAncestor }
+                let frames = controls.map { footer.convert($0.bounds, from: $0) }
+                for (i, f) in frames.enumerated() {
+                    XCTAssertTrue(
+                        footer.bounds.contains(f), "\(controls[i]) outside the footer: \(f) in \(footer.bounds)")
+                    for j in frames.indices where j > i {
+                        XCTAssertFalse(f.intersects(frames[j]), "\(controls[i]) overlaps \(controls[j])")
+                    }
+                }
+                XCTAssertLessThan(frames[0].width, footer.bounds.width / 2 + 1, "the alarm is cut, not stretched")
+            }
+        }
+        wc.footer.show(status: nil, connected: true)
+    }
+
+    // MARK: The device alarm
+
+    private func alarmStatus() throws -> SystemStatus {
+        guard case .status(let s) = try ServerMessage.decode(try Fixtures.text("server", "status_device_lost"))
+        else { throw XCTSkip("not a status") }
+        return s
+    }
+
+    /// The titles the Warnings page draws, read from its cells.
+    private func drawnTitles(_ wc: WorkspaceWindowController) -> [String] {
+        let table = wc.warningsPage.table
+        return (0..<table.numberOfRows).compactMap {
+            (table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? WarningCell)?.title.stringValue
+        }
+    }
+
+    /// Two devices, a patch on the second: it is unplugged → the footer's alarm names it at once and
+    /// Status > Warnings lists it; plugged back in → the alarm and the row are gone.
+    func testASecondDeviceThatIsLostIsAnAlarmAndARowInStatusWarnings() async throws {
         let engine = try await TestEngine.start()
         let rig = try await Rig.open("Demo", on: engine)
         let wc = WorkspaceWindowController(store: rig.store)
         let second = TestEngine.deviceNames[1]
-        let lostSecond = loc("status.alarm") + " " + String(format: loc("status.output.lost"), second)
+        let lostSecond =
+            loc("footer.alarm") + " " + String(format: loc("footer.alarm.outputLost"), second)
         guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
             return XCTFail("plug in")
         }
@@ -183,54 +315,122 @@ final class FooterWarningsTests: XCTestCase {
         guard case .success = await rig.store.setPatchMapping(patch, PatchMapping(device: second, channels: [0, 1]))
         else { return XCTFail("map") }
         try await rig.advance(1)
-        await assertEventually("the footer is OK with the second device up") {
+        await assertEventually("a status came with the second device up") {
             try? await rig.advance(1)
-            return wc.footer.presentation.summary.hasPrefix(loc("status.ok"))
+            return rig.store.status?.outputs.contains { $0.name == second && $0.state == .up } == true
         }
+        XCTAssertTrue(wc.footer.alarmButton.isHidden, "all well: no alarm, no engine mark")
 
         guard case .success = await engine.request(.loseDevice(device: TestEngine.deviceIDs[1])) else {
             return XCTFail("unplug")
         }
         await assertEventually("the footer names the lost device") {
             try? await rig.advance(1)
-            return wc.footer.statusButton.title == lostSecond
+            return wc.footer.alarmButton.title == lostSecond
         }
-        XCTAssertEqual(wc.footer.presentation.icon, .statusAlarm)
-        XCTAssertFalse(wc.footer.statusButton.isHidden, "a lost device's alarm is always in view")
-        // The status details the operator opens from the footer list it.
-        wc.footer.showStatusDetails()
-        addTeardownBlock { @MainActor in wc.footer.popover?.close() }
-        let shown = try XCTUnwrap(
-            wc.footer.popover?.contentViewController?.view.subviews
-                .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField,
-            "the status details are open")
-        let lines = shown.stringValue.components(separatedBy: "\n")
-        XCTAssertTrue(lines.contains(String(format: loc("status.output.lost"), second)), "\(lines)")
-        let line = String(format: loc("status.detail.device"), second, loc("status.state.lost"))
-        XCTAssertTrue(lines.contains(line), "\(lines)")
-        wc.footer.popover?.close()
+        XCTAssertFalse(wc.footer.alarmButton.isHidden, "a lost device's alarm is always in view")
+        let row = String(format: loc("warnings.device"), second)
+        // The alarm opens the Warnings page, and the page draws the device's row.
+        wc.footer.alarmButton.performClick(nil)
+        XCTAssertEqual(wc.existingStatusWindow?.page, .warnings)
+        await assertEventually("Status > Warnings draws the device's row") {
+            try? await rig.advance(1)
+            return self.drawnTitles(wc).contains(row)
+        }
 
         guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
             return XCTFail("plug back in")
         }
-        await assertEventually("the footer is OK again") {
+        await assertEventually("the alarm clears") {
             try? await rig.advance(1)
-            return wc.footer.presentation.summary.hasPrefix(loc("status.ok"))
+            return wc.footer.alarmButton.isHidden
         }
-        XCTAssertEqual(wc.footer.presentation.icon, .statusNormal)
-        XCTAssertEqual(wc.footer.statusButton.title, "", "with all well the footer says nothing about the audio")
+        await assertEventually("the drawn row goes") {
+            try? await rig.advance(1)
+            return !self.drawnTitles(wc).contains(row)
+        }
+        wc.existingStatusWindow?.close()
     }
 
-    /// Only the first device, unplugged → as before: the alarm names the audio device, not a second one.
-    func testOnlyTheFirstDeviceUnpluggedIsTheSameAlarmAsBefore() async throws {
+    /// Only the first device, unplugged: the alarm names the audio device, and the fault is a row.
+    func testTheFirstDeviceUnpluggedIsAnAlarmAndARowInStatusWarnings() async throws {
         let engine = try await TestEngine.start()
         let rig = try await Rig.open("Demo", on: engine)
         let wc = WorkspaceWindowController(store: rig.store)
         guard case .success = await engine.request(.loseDevice()) else { return XCTFail("unplug") }
         await assertEventually("the footer says the device is lost") {
             try? await rig.advance(1)
-            return wc.footer.statusButton.title == loc("status.alarm") + " " + loc("status.device.lost")
+            return wc.footer.alarmButton.title == loc("footer.alarm") + " " + loc("footer.alarm.deviceLost")
         }
-        XCTAssertFalse(wc.footer.statusButton.isHidden, "the primary device's alarm is always in view")
+        XCTAssertFalse(wc.footer.alarmButton.isHidden, "the primary device's alarm is always in view")
+        wc.footer.alarmButton.performClick(nil)
+        let row = String(format: loc("warnings.device"), "openLab Virtual Output")
+        await assertEventually("Status > Warnings draws the device's row") {
+            try? await rig.advance(1)
+            return self.drawnTitles(wc).contains(row)
+        }
+        let table = wc.warningsPage.table
+        let at = try XCTUnwrap(drawnTitles(wc).firstIndex(of: row))
+        let cell = try XCTUnwrap(table.view(atColumn: 0, row: at, makeIfNecessary: true) as? WarningCell)
+        XCTAssertEqual(cell.detail.stringValue, loc("warnings.device.device_lost"))
+        guard case .success = await engine.request(.restoreDevice()) else { return XCTFail("plug back in") }
+        await assertEventually("the alarm clears") {
+            try? await rig.advance(2)
+            return wc.footer.alarmButton.isHidden
+        }
+        await assertEventually("the drawn row goes") {
+            try? await rig.advance(1)
+            return !self.drawnTitles(wc).contains(row)
+        }
+        wc.existingStatusWindow?.close()
+    }
+
+    /// Flow: audio drops out or disk reads fall behind during a show → a row in Status > Warnings
+    /// and the footer count; nothing modal; gone when it recovers. The virtual device reports
+    /// dropouts in Show Mode: the device's row is drawn with how many, the footer counts it, no sheet
+    /// or modal window comes, and ten seconds without a dropout take the row and the count away.
+    func testAudioDropsOutDuringAShowIsARowInStatusWarningsAndTheFooterCountAndGoesWhenItRecovers()
+        async throws
+    {
+        let engine = try await TestEngine.start()
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        try await rig.advance(1)
+        await wc.requestShowMode(true)
+        await assertEventually { wc.isShowMode }
+        // The Demo show's one broken cue.
+        XCTAssertEqual(wc.footer.warningsButton.title, "1")
+        wc.footer.warningsButton.performClick(nil)
+        XCTAssertEqual(wc.existingStatusWindow?.page, .warnings)
+        let row = String(format: loc("warnings.device"), TestEngine.deviceNames[0])
+        XCTAssertFalse(drawnTitles(wc).contains(row))
+
+        guard case .success = await engine.request(.dropOut(count: 3)) else { return XCTFail("drop out") }
+        await assertEventually("Status > Warnings draws the device's dropouts") {
+            try? await rig.advance(0.1)
+            return self.drawnTitles(wc).contains(row)
+        }
+        let table = wc.warningsPage.table
+        let at = try XCTUnwrap(drawnTitles(wc).firstIndex(of: row))
+        let cell = try XCTUnwrap(table.view(atColumn: 0, row: at, makeIfNecessary: true) as? WarningCell)
+        XCTAssertEqual(
+            cell.detail.stringValue,
+            loc("warnings.device.audio_dropouts").replacingOccurrences(of: "{count}", with: "3"))
+        XCTAssertEqual(wc.footer.warningsButton.title, "2", "the footer counts the row")
+        XCTAssertNil(NSApp.modalWindow, "nothing modal")
+        XCTAssertNil(wc.window?.attachedSheet, "no sheet")
+        XCTAssertTrue(wc.isShowMode)
+
+        // Ten seconds without one: the row and the count go.
+        try await rig.advance(5)
+        XCTAssertTrue(drawnTitles(wc).contains(row), "still dropping out recently")
+        try await rig.advance(6)
+        await assertEventually("the row goes once it has played clean for ten seconds") {
+            try? await rig.advance(0.5)
+            return !self.drawnTitles(wc).contains(row)
+        }
+        XCTAssertEqual(wc.footer.warningsButton.title, "1")
+        await wc.requestShowMode(false)
+        wc.existingStatusWindow?.close()
     }
 }

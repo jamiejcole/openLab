@@ -61,7 +61,7 @@ Everything here runs on disk, opener or I/O threads, never on the audio thread. 
 - **Resampling** (`resample.rs`): rubato's synchronous FFT resampler when file rate differs from device rate, pass-through otherwise. Device frame `p` is the signal at `p / device rate` whether reached by reading or by seeking (a seek restarts the resampler on a chunk boundary one chunk early and discards its delay). Length is exactly `round(frames * device rate / file rate)` (`MediaInfo::frames_at`).
 - Preloaded media goes through the same resampler and ring, so it plays exactly as streaming does.
 - Loops are unrolled into the ring ahead of time, so a loop's own seam never waits on the disk. Trims and start offsets are seeks.
-- **Underrun** from a slow disk gives the mixer's underrun behaviour (silence, counted, resumes where it left off).
+- **Underrun** from a slow disk gives the mixer's underrun behaviour (silence, counted, resumes where it left off). The operator sees an `underrun` notice on the cue and a `disk_behind` workspace warning (skill `engine-lifecycle`, diagnostics).
 - **Failures.** A stream that cannot continue (read error, file shorter than or no longer matching its probe, worker panic) sets `StreamHandle::error` and lets go of its ring. Publication order is the invariant (see Must not break).
 - Dropping the `DiskStreamer` tells workers and openers to stop and does not wait, so a worker or opener blocked on a stalled disk cannot hang the caller.
 

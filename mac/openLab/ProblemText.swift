@@ -77,6 +77,12 @@ enum ProblemText {
         return fill(template, fields, label)
     }
 
+    /// The strings file's text for `key` with `fields` filled in (`{name}` placeholders); nil when
+    /// it has no entry. For notices that quote no item ids.
+    static func text(for key: String, filling fields: JSONValue) -> String? {
+        text(for: key).map { fill($0, fields, { _ in loc("warnings.unknownItem") }) }
+    }
+
     /// nil when the strings file has no entry (NSLocalizedString would hand back the key).
     static func text(for key: String) -> String? {
         let missing = "\u{1}"
@@ -125,7 +131,7 @@ enum ProblemText {
     }
 }
 
-/// One line of the Warnings tab: a broken cue (with every reason it is broken) or a notice.
+/// One line of the Warnings list: a broken cue (with every reason it is broken) or a notice.
 struct WarningRow: Hashable {
     let id: String
     /// The cue to select when the row is chosen.
@@ -134,6 +140,8 @@ struct WarningRow: Hashable {
     let detail: String
     /// The cue is broken by media that cannot be found: the row offers Find Missing Files.
     let canRelink: Bool
+    /// The inspector tab that holds what to fix (`basics`: the file and the target are chosen there).
+    var inspectorTab: String?
 }
 
 enum WarningRows {
@@ -149,6 +157,12 @@ enum WarningRows {
     /// The most of a device's name a warning row's title shows.
     static let deviceNameLength = 48
 
+    /// Problems fixed on the Basics tab: the file and the target are chosen there.
+    private static let basicsProblems: Set<String> = [
+        "no_target", "target_missing", "target_self", "target_wrong_kind", "no_media", "media_missing",
+        "media_unsupported",
+    ]
+
     /// Broken cues in list order first, then workspace warnings, then runtime warnings (oldest
     /// first). Groups that are only flagged for a broken child are not listed: the child is.
     ///
@@ -157,7 +171,8 @@ enum WarningRows {
     /// is told on that cue's own entry, with how often it happened, and goes once the cue is
     /// playable again. A warning that comes again is one entry with its latest words and a count.
     /// A device's notices are one entry per device and problem, worded here from the notice's
-    /// code; the one sent at each loss is not listed, as the entry in force says the same.
+    /// code; the one sent at each loss is not listed, as the entry in force says the same. A notice
+    /// that carries a `count` (a cue's underruns since its previous notice) adds it to the entry's.
     @MainActor
     static func make(store: WorkspaceStore) -> [WarningRow] {
         let model = store.model
@@ -196,7 +211,8 @@ enum WarningRows {
                             id: "c:\(cue.id.raw)", cue: cue.id,
                             title: cueTitle(cue, name: model?.listName(cue) ?? CueKindStyle.kindLabel(cue.kindType)),
                             detail: reasons.joined(separator: "\n"),
-                            canRelink: problems.contains { $0.type == "media_missing" }))
+                            canRelink: problems.contains { $0.type == "media_missing" },
+                            inspectorTab: problems.contains { basicsProblems.contains($0.type) } ? "basics" : nil))
                 }
                 walk(cue.children)
             }
@@ -205,7 +221,7 @@ enum WarningRows {
         // Entries by key in the order each first came, with the latest warning and how many came.
         var order: [String] = []
         var latest: [String: (warning: WireWarning, count: Int)] = [:]
-        var devices: [String: (name: String, codes: [String])] = [:]
+        var devices: [String: (name: String, codes: [String], fields: [String: JSONValue])] = [:]
         // A patch routing past its device: one entry per device and patch, naming both.
         var beyond: [String: (device: String, patch: String)] = [:]
         for (prefix, w) in notices {
@@ -238,23 +254,30 @@ enum WarningRows {
                 if prefix == "r", code == "device_lost" { continue }
                 let key = "d:\(deviceFamily(code)):\(device)"
                 if devices[key] == nil { order.append(key) }
-                devices[key, default: (device, [])].codes.append(code)
+                devices[key, default: (device, [], [:])].codes.append(code)
+                // The latest of each code fills the row's text (the dropouts so far).
+                devices[key]?.fields[code] = w.json
                 continue
             }
             var fields = w.json
             // A late start is the same warning however late it was: the latest lateness shows.
             fields.set("late_ms", .null)
+            // A repeat told with how many times it happened since: the same entry, counted up.
+            fields.set("count", .null)
+            // Bounded before the conversion: a number out of Int's range would trap.
+            let raw = w.json["count"]?.doubleValue ?? 1
+            let times = raw.isFinite ? Int(min(max(raw, 1), 1_000_000)) : 1
             let key = prefix + ((try? fields.text()) ?? w.type)
             if let seen = latest[key] {
-                latest[key] = (w, seen.count + 1)
+                latest[key] = (w, seen.count + times)
             } else {
                 order.append(key)
-                latest[key] = (w, 1)
+                latest[key] = (w, times)
             }
         }
         for key in order {
             if let device = devices[key] {
-                rows.append(deviceRow(key: key, name: device.name, codes: device.codes))
+                rows.append(deviceRow(key: key, name: device.name, codes: device.codes, fields: device.fields))
             } else if let b = beyond[key] {
                 rows.append(
                     WarningRow(
@@ -300,14 +323,17 @@ enum WarningRows {
 
     /// One device's entry: its name as the title, what is wrong and what to do under it.
     @MainActor
-    private static func deviceRow(key: String, name: String, codes: [String]) -> WarningRow {
+    private static func deviceRow(
+        key: String, name: String, codes: [String], fields: [String: JSONValue]
+    ) -> WarningRow {
         // A lost device says more than a patch's device not being there.
         let code = codes.contains("device_lost") ? "device_lost" : codes.first ?? ""
         return WarningRow(
             id: key, cue: nil,
             title: String(
                 format: loc("warnings.device"), WorkspaceSettingsModel.middleCut(name, limit: deviceNameLength)),
-            detail: ProblemText.text(for: "warnings.device.\(code)") ?? loc("warnings.device.other"),
+            detail: ProblemText.text(for: "warnings.device.\(code)", filling: fields[code] ?? .object([:]))
+                ?? loc("warnings.device.other"),
             canRelink: false)
     }
 

@@ -3,7 +3,7 @@
 //! The control thread's side of the show log and the status message (DX-02, DX-03): turns what the loop does into log records, and gathers the counters for
 //! `status`. The decisions about files, rotation, cadence and crash reports are in `diag`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use openlab_core::protocol::{
@@ -12,7 +12,9 @@ use openlab_core::protocol::{
 };
 use openlab_core::{CueId, CueListId};
 
+use super::devices::OutputKey;
 use super::{Control, ControlConfig, DocCx, DocId, Engine};
+use crate::diag::health::{DiskWatch, DropoutChange, Dropouts, LoadWatch};
 use crate::diag::{Counters, Peek, StatusReporter, outputs_fingerprint};
 
 /// Entries `log_tail` returns when the request names no limit: the whole ring.
@@ -60,6 +62,20 @@ pub(super) struct Observe {
     /// The newest `log_entry` not delivered (over the budget, or the channel was too full);
     /// offered again each tick until a newer one goes out.
     unsent: Option<ServerMessage>,
+    pub(super) sound: SoundHealth,
+}
+
+/// What the operator is told about the sound going wrong while it plays: each output device's
+/// dropouts and the disk falling behind (workspace warnings and the show log), high engine
+/// load (the show log). Read every tick from counters the audio thread already keeps.
+#[derive(Default)]
+pub(super) struct SoundHealth {
+    /// Per output device, from the first tick it was seen.
+    pub(super) dropouts: BTreeMap<OutputKey, Dropouts>,
+    disk: DiskWatch,
+    /// Disk reads are falling behind: a voice underran less than ten seconds ago.
+    pub(super) disk_behind: bool,
+    load: LoadWatch,
 }
 
 impl Observe {
@@ -73,6 +89,7 @@ impl Observe {
             paths: Vec::new(),
             push_window: None,
             unsent: None,
+            sound: SoundHealth::default(),
         }
     }
 
@@ -295,6 +312,8 @@ impl Engine {
             let status = reporter.poll(now, &self.status_peek(), || self.status_counters());
             self.observe.status = Some(reporter);
             if let Some(status) = status {
+                // The load it carried was the worst since the previous status.
+                self.observe.sound.load.take_status_peak();
                 let mut message = ServerMessage::Status {
                     status: Box::new(status),
                 };
@@ -313,6 +332,7 @@ impl Engine {
         Peek {
             xruns: self.xruns(),
             underrun_frames: self.underrun_frames(),
+            disk_healthy: !self.observe.sound.disk_behind,
             device_name,
             device_state,
             outputs: outputs_fingerprint(self.outputs.iter().map(|(_, o)| o.state())),
@@ -386,6 +406,7 @@ impl Engine {
         Counters {
             xruns: self.xruns(),
             underrun_frames: self.underrun_frames(),
+            disk_healthy: !self.observe.sound.disk_behind,
             streams: u32::try_from(self.streamer.open_streams()).unwrap_or(u32::MAX),
             log_dropped: self.config.show_log.dropped(),
             log_seq: self.config.show_log.seq(),
@@ -393,16 +414,104 @@ impl Engine {
             device,
             outputs: self.output_statuses(),
             cpu_seconds: (self.config.cpu_probe)(),
-            // Worst callback since the previous status (read-and-reset; this is its only
-            // reader). Offline there is no audio callback to time.
-            engine_load: self
-                .outputs
-                .iter()
-                .filter_map(|(_, o)| o.backend.device())
-                .filter_map(|d| d.info().monitor.take_engine_load())
-                .filter(|l| l.is_finite())
-                .reduce(f64::max),
+            // Worst callback since the previous status, as the health check read it each tick.
+            // Offline there is no audio callback to time.
+            engine_load: self.observe.sound.load.status_peak(),
         }
+    }
+
+    /// Once per tick: each output device's dropouts, the disk's health and the engine load,
+    /// logged as they begin, go on (at most once per ten seconds, with a count) and end.
+    /// Returns whether a workspace warning came or went.
+    pub(super) fn sound_health(&mut self) -> bool {
+        let now = self.config.clock.now_ms();
+        let mut changed = false;
+        let mut lines: Vec<(LogKind, LogLevel, String)> = Vec::new();
+        let sound = &mut self.observe.sound;
+        for (key, o) in self.outputs.iter() {
+            let xruns = o.mixer.xruns();
+            let watch = sound
+                .dropouts
+                .entry(key)
+                .or_insert_with(|| Dropouts::new(xruns));
+            let Some(change) = watch.update(now, xruns) else {
+                continue;
+            };
+            changed = true;
+            let name = &o.name;
+            let (level, message) = match change {
+                DropoutChange::Raised { count } => (
+                    LogLevel::Warn,
+                    format!(
+                        "audio device \"{name}\" dropped out {count} time(s): gaps in its sound"
+                    ),
+                ),
+                DropoutChange::More { more, count } => (
+                    LogLevel::Warn,
+                    format!(
+                        "audio device \"{name}\" dropped out {more} more time(s) ({count} since the \
+                         dropouts began)"
+                    ),
+                ),
+                DropoutChange::Cleared { count } => (
+                    LogLevel::Info,
+                    format!("audio device \"{name}\": no dropouts for 10 s ({count} in all)"),
+                ),
+            };
+            lines.push((LogKind::Device, level, message));
+        }
+        let underruns: u64 = self
+            .outputs
+            .iter()
+            .map(|(_, o)| o.mixer.underrun_frames())
+            .sum();
+        let behind = !sound.disk.update(now, underruns);
+        if behind != sound.disk_behind {
+            sound.disk_behind = behind;
+            changed = true;
+            lines.push(if behind {
+                (
+                    LogKind::Engine,
+                    LogLevel::Warn,
+                    "disk reads are falling behind: cues streaming from disk drop out and play \
+                     late"
+                        .to_owned(),
+                )
+            } else {
+                (
+                    LogKind::Engine,
+                    LogLevel::Info,
+                    "disk reads keep up again: no underrun for 10 s".to_owned(),
+                )
+            });
+        }
+        // The callback's worst load since the previous tick; this is the meter's only reader.
+        let load = self
+            .outputs
+            .iter()
+            .filter_map(|(_, o)| o.backend.device())
+            .filter_map(|d| d.info().monitor.take_engine_load())
+            .filter(|l| l.is_finite())
+            .reduce(f64::max);
+        if let Some(high) = sound.load.update(now, load) {
+            let more = if high.crossings > 1 {
+                format!(" ({} times since the last notice)", high.crossings)
+            } else {
+                String::new()
+            };
+            lines.push((
+                LogKind::Engine,
+                LogLevel::Warn,
+                format!(
+                    "audio engine load reached {:.0}% of the block time{more}: dropouts are near",
+                    high.peak * 100.0
+                ),
+            ));
+        }
+        for (kind, level, message) in lines {
+            self.log_kind(kind, level, message);
+        }
+        changed
     }
 
     /// Xruns of every output device's mixer.

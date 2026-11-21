@@ -310,6 +310,11 @@ pub const MOVE_LEAD: f64 = 0.1;
 /// tried again; doubled after each give-up of the same run, at most 16 times this.
 pub const MOVE_RETRY: f64 = SEEK_PRIME_WAIT;
 
+/// The notice code of a cue whose voice ran out of audio from the disk.
+pub const UNDERRUN: &str = "underrun";
+/// Its English text (the same every time, so a client counts the repeats as one entry).
+pub const UNDERRUN_TEXT: &str = "the disk could not keep up with a cue; it plays late from here";
+
 /// Where a voice's stream starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum StartAt {

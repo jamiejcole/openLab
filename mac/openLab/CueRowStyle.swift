@@ -32,7 +32,7 @@ struct CueStateStyle: Equatable {
 
     /// Why a cue is broken, for the tooltip: a run-time reason, else its static problems, else a
     /// group's warning about a descendant.
-    /// Problems read as the Warnings tab words them, fields filled in (`label` names ids).
+    /// Problems read as the Warnings list words them, fields filled in (`label` names ids).
     static func brokenDetail(
         reason: WireBrokenReason?, problems: [WireProblem], groupWarning: Bool, label: ProblemText.Label
     ) -> String? {

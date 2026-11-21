@@ -4,7 +4,7 @@ import XCTest
 
 @testable import openLab
 
-/// DX-03 (status in the footer) and DX-02 (the log window).
+/// The footer's device alarm and DX-02 (the log window).
 @MainActor
 final class StatusLogTests: XCTestCase {
     private func status(_ fixture: String) throws -> SystemStatus {
@@ -26,70 +26,54 @@ final class StatusLogTests: XCTestCase {
                 """#.utf8))
     }
 
-    // MARK: Status mapping
+    // MARK: Device alarm
 
-    func testNoStatusYetIsNeutral() {
-        let p = StatusPresentation.make(nil)
-        XCTAssertEqual(p.level, .normal)
-        XCTAssertEqual(p.summary, loc("status.waiting"))
+    private func outputs(_ json: String) throws -> SystemStatus {
+        var base = try JSONValue.parse(Fixtures.text("server", "status"))?["status"] ?? .null
+        base.set("xruns", .int(0))
+        let extra = try XCTUnwrap(JSONValue.parse(json))
+        base.set("outputs", extra)
+        return try JSONDecoder().decode(SystemStatus.self, from: Data(try base.text().utf8))
     }
 
-    func testHealthyStatusIsNormalWithCPU() throws {
-        let p = StatusPresentation.make(try healthy())
-        XCTAssertEqual(p.level, .normal)
-        XCTAssertEqual(p.summary, "Audio OK  CPU 8%  Dropouts 0")
-        XCTAssertEqual(p.icon, .statusNormal)
-        XCTAssertTrue(p.details.contains("Output device: Built-in (OK)"))
-    }
-
-    func testLostDeviceIsAnAlarmShownByWordAndSymbolNotColourOnly() throws {
-        let p = StatusPresentation.make(try status("status_device_lost"))
-        XCTAssertEqual(p.level, .alarm)
-        XCTAssertEqual(p.icon, .statusAlarm)
-        XCTAssertTrue(p.summary.hasPrefix(loc("status.alarm")), p.summary)
-        XCTAssertTrue(p.summary.contains(loc("status.device.lost")))
-        // The disk fault and the dropout are in the details, not lost.
-        XCTAssertTrue(p.details.contains(loc("status.disk.unhealthy")))
-        XCTAssertTrue(p.details.contains { $0.contains("lost") })
-        XCTAssertNotEqual(p.icon, StatusPresentation.make(try healthy()).icon)
-    }
-
-    func testUnhealthyDiskAloneIsAnAlarm() throws {
+    func testOnlyALostOrFailedDeviceIsAnAlarm() throws {
+        XCTAssertNil(FooterBar.alarmText(nil))
+        XCTAssertNil(FooterBar.alarmText(try healthy()), "all well: nothing about the audio")
+        // Dropouts, a slow disk and a high engine load have no footer word any more.
+        XCTAssertNil(FooterBar.alarmText(try status("status")))
         var json = try JSONValue.parse(Fixtures.text("server", "status"))?["status"] ?? .null
+        json.set("xruns", .int(9))
+        json.set("engine_load", .double(0.95))
         json["disk"]?.set("healthy", .bool(false))
-        let s = try JSONDecoder().decode(SystemStatus.self, from: Data(try json.text().utf8))
-        let p = StatusPresentation.make(s)
-        XCTAssertEqual(p.level, .alarm)
-        XCTAssertTrue(p.summary.contains(loc("status.disk.unhealthy")))
+        json["device"]?.set("state", .string("sleeping"))
+        XCTAssertNil(FooterBar.alarmText(try JSONDecoder().decode(SystemStatus.self, from: Data(try json.text().utf8))))
+        XCTAssertEqual(
+            FooterBar.alarmText(try status("status_device_lost")),
+            loc("footer.alarm") + " " + loc("footer.alarm.deviceLost"))
+        json["device"]?.set("state", .string("failed"))
+        XCTAssertEqual(
+            FooterBar.alarmText(try JSONDecoder().decode(SystemStatus.self, from: Data(try json.text().utf8))),
+            loc("footer.alarm") + " " + loc("footer.alarm.deviceFailed"))
     }
 
-    func testDropoutsAndHighLoadAreWarnings() throws {
-        // The fixture is a healthy device with one dropout.
-        let p = StatusPresentation.make(try status("status"))
-        XCTAssertEqual(p.level, .warning)
-        XCTAssertEqual(p.icon, .statusWarning)
-        XCTAssertTrue(p.summary.hasPrefix(loc("status.warning")))
-        var json = try JSONValue.parse(Fixtures.text("server", "status"))?["status"] ?? .null
-        json.set("xruns", .int(0))
-        json.set("engine_load", .double(0.92))
-        let s = try JSONDecoder().decode(SystemStatus.self, from: Data(try json.text().utf8))
-        XCTAssertTrue(StatusPresentation.make(s).summary.contains(loc("status.load.high")))
+    func testASecondaryDeviceThatIsLostOrFailedIsNamed() throws {
+        func output(_ state: String) throws -> SystemStatus {
+            try outputs(
+                #"[{"name":"Interface","state":"\#(state)","primary":false,"sample_rate":48000,"channels":2}]"#)
+        }
+        XCTAssertEqual(
+            FooterBar.alarmText(try output("lost")),
+            loc("footer.alarm") + " " + String(format: loc("footer.alarm.outputLost"), "Interface"))
+        XCTAssertEqual(
+            FooterBar.alarmText(try output("failed")),
+            loc("footer.alarm") + " " + String(format: loc("footer.alarm.outputFailed"), "Interface"))
+        XCTAssertNil(FooterBar.alarmText(try output("up")))
     }
 
     func testLogSeqIsDecodedAndDefaultsToZeroWhenAbsent() throws {
         XCTAssertEqual(try status("status").logSeq, 42)
         // `healthy()` is a status from before the field.
         XCTAssertEqual(try healthy().logSeq, 0)
-    }
-
-    func testAnUnknownDeviceStateIsAWarningNamingIt() throws {
-        var json = try JSONValue.parse(Fixtures.text("server", "status"))?["status"] ?? .null
-        json.set("xruns", .int(0))
-        json["device"]?.set("state", .string("sleeping"))
-        let s = try JSONDecoder().decode(SystemStatus.self, from: Data(try json.text().utf8))
-        let p = StatusPresentation.make(s)
-        XCTAssertEqual(p.level, .warning)
-        XCTAssertTrue(p.summary.contains("sleeping"))
     }
 
     private func send(_ store: WorkspaceStore, xruns: Int) throws {
@@ -105,166 +89,41 @@ final class StatusLogTests: XCTestCase {
         _ = store.engineClient(store.client, didReceive: message)
     }
 
-    func testFooterFollowsTheStoresStatus() async throws {
+    /// Flow: all well, the footer has no alarm; the device is lost, the alarm is there at once, in words
+    /// and a symbol; the device is back, it clears.
+    func testTheFooterAlarmFollowsTheStoresStatus() async throws {
         let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
-        XCTAssertEqual(wc.footer.presentation.summary, loc("status.waiting"))
-        try send(rig.store, xruns: 1)
-        XCTAssertEqual(wc.footer.presentation.level, .normal, "the first status is the baseline")
-        XCTAssertFalse(wc.footer.statusButton.isHidden, "the mark that opens the details is there")
-        XCTAssertEqual(wc.footer.statusButton.title, "", "but no words while all is well")
-        try send(rig.store, xruns: 2)
-        XCTAssertEqual(wc.footer.presentation.level, .warning, "a new dropout warns")
-        try send(rig.store, xruns: 2)
-        XCTAssertEqual(wc.footer.presentation.level, .warning, "the warning stays until the details are seen")
+        XCTAssertTrue(wc.footer.alarmButton.isHidden)
+        try send(rig.store, xruns: 5)
+        XCTAssertTrue(wc.footer.alarmButton.isHidden, "dropouts are not an alarm")
         rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "status_device_lost")))
-        let button = wc.footer.statusButton
-        XCTAssertEqual(wc.footer.presentation.level, .alarm)
-        XCTAssertTrue(button.title.hasPrefix(loc("status.alarm")))
+        let button = wc.footer.alarmButton
+        XCTAssertFalse(button.isHidden)
+        XCTAssertEqual(button.title, loc("footer.alarm") + " " + loc("footer.alarm.deviceLost"))
         XCTAssertEqual(button.accessibilityLabel(), button.title)
         XCTAssertNotNil(button.image)
         try send(rig.store, xruns: 1)
-        XCTAssertEqual(wc.footer.presentation.level, .normal, "recovers when the device is back")
+        XCTAssertTrue(button.isHidden, "gone when the device is back")
     }
 
-    /// DX-03: dropouts since the operator last looked keep the warning in the footer, however many
-    /// statuses later; opening the details (which list the total) and closing them is seeing them.
-    func testNewDropoutsWarnUntilTheDetailsAreSeen() async throws {
+    func testAnOfflineEngineLeavesNoStaleAlarm() async throws {
         let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
-        addTeardownBlock { @MainActor in
-            wc.footer.popover?.close()
-            wc.window?.close()
-        }
-        wc.showWindow(nil)
-        try send(rig.store, xruns: 0)
-        try send(rig.store, xruns: 3)
-        for _ in 0..<5 { try send(rig.store, xruns: 3) }
-        let footer = wc.footer
-        XCTAssertEqual(footer.presentation.level, .warning)
-        XCTAssertEqual(footer.statusButton.title, loc("status.warning") + " " + String(format: loc("status.xruns"), 3))
-        footer.statusButton.performClick(nil)
-        XCTAssertEqual(footer.popover?.isShown, true)
-        let details = try XCTUnwrap(
-            footer.popover?.contentViewController?.view.subviews
-                .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField)
-        XCTAssertTrue(details.stringValue.contains(String(format: loc("status.detail.xruns"), 3)), details.stringValue)
-        XCTAssertEqual(footer.presentation.level, .warning, "still warning while the details are open")
-        footer.popover?.close()
-        await assertEventually("seen") { footer.presentation.level == .normal }
-        XCTAssertEqual(footer.statusButton.title, "")
-        try send(rig.store, xruns: 3)
-        XCTAssertEqual(footer.presentation.level, .normal, "seen dropouts do not warn again")
-        try send(rig.store, xruns: 4)
-        XCTAssertEqual(footer.presentation.level, .warning, "a later one does")
-        // An engine that started again counts from zero: its total is the new baseline.
-        try send(rig.store, xruns: 0)
-        XCTAssertEqual(footer.presentation.level, .normal)
-        try send(rig.store, xruns: 1)
-        XCTAssertEqual(footer.presentation.level, .warning)
-    }
-
-    /// #759: the details open across an engine relaunch, then closed after the new engine counted
-    /// dropouts: the warning for those stays.
-    func testDetailsOpenAcrossARelaunchDoNotHideTheNewEnginesDropouts() async throws {
-        let rig = try await Rig.open()
-        let wc = WorkspaceWindowController(store: rig.store)
-        addTeardownBlock { @MainActor in
-            wc.footer.popover?.close()
-            wc.window?.close()
-        }
-        wc.showWindow(nil)
-        let footer = wc.footer
-        try send(rig.store, xruns: 50)
-        footer.statusButton.performClick(nil)
-        XCTAssertEqual(footer.popover?.isShown, true)
-        footer.show(status: nil, connected: false)
-        footer.show(status: try healthy(), connected: true)
-        try send(rig.store, xruns: 3)
-        XCTAssertEqual(footer.presentation.level, .warning, "3 new dropouts warn")
-        footer.popover?.close()
-        await assertEventually("closed") { footer.popover?.isShown != true }
-        try send(rig.store, xruns: 3)
-        XCTAssertEqual(footer.presentation.level, .warning, "unseen dropouts still warn after the close")
-        XCTAssertEqual(footer.statusButton.title, loc("status.warning") + " " + String(format: loc("status.xruns"), 3))
-    }
-
-    /// DX-03 with all well: the footer shows no audio words, and its status mark opens the details with
-    /// the CPU, engine load, dropout total and the device's format (the real engine's own status).
-    func testWithAllWellTheStatusMarkOpensTheDetails() async throws {
-        let rig = try await Rig.open()
-        let wc = WorkspaceWindowController(store: rig.store)
-        addTeardownBlock { @MainActor in
-            wc.footer.popover?.close()
-            wc.window?.close()
-        }
-        wc.showWindow(nil)
-        await assertEventually("a status came") {
-            try? await rig.advance(1)
-            return rig.store.status != nil
-        }
-        let footer = wc.footer
-        let status = try XCTUnwrap(rig.store.status)
-        XCTAssertEqual(footer.presentation.level, .normal)
-        XCTAssertEqual(footer.statusButton.title, "", "no audio words while all is well")
-        XCTAssertFalse(footer.statusButton.isHiddenOrHasHiddenAncestor)
-        wc.window?.contentView?.layoutSubtreeIfNeeded()
-        let mark = footer.convert(footer.statusButton.bounds, from: footer.statusButton)
-        XCTAssertTrue(footer.bounds.contains(mark), "\(mark) in \(footer.bounds)")
-        XCTAssertGreaterThan(mark.width, 10, "a mark the operator can press")
-        footer.statusButton.performClick(nil)
-        XCTAssertEqual(footer.popover?.isShown, true)
-        XCTAssertTrue(footer.popover?.contentViewController?.view.window != nil)
-        let details = try XCTUnwrap(
-            footer.popover?.contentViewController?.view.subviews
-                .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField)
-        let lines = details.stringValue.components(separatedBy: "\n")
-        let device = status.device
-        let format = String(format: loc("status.detail.format"), Int(device.sampleRate), Int(device.channels))
-        XCTAssertTrue(lines.contains { $0.hasPrefix(format) }, "\(lines)")
-        XCTAssertTrue(lines.contains(String(format: loc("status.detail.xruns"), Int(status.xruns))), "\(lines)")
-        let cpu = String(format: loc("status.detail.cpu"), "")
-        let load = String(format: loc("status.detail.load"), "")
-        XCTAssertTrue(lines.contains { $0.hasPrefix(cpu) }, "\(lines)")
-        XCTAssertTrue(lines.contains { $0.hasPrefix(load) }, "\(lines)")
-    }
-
-    /// The real engine's own status (about once a second of device time): its device, healthy.
-    func testTheEnginesStatusShowsInTheFooter() async throws {
-        let rig = try await Rig.open()
-        let wc = WorkspaceWindowController(store: rig.store)
-        try await rig.advance(1.5)
-        await assertEventually("a status came") { rig.store.status != nil }
-        XCTAssertEqual(rig.store.status?.device.name, "openLab Virtual Output")
-        XCTAssertEqual(wc.footer.presentation.level, .normal)
-    }
-
-    func testOfflineEngineShowsAnAlarmAndNoStaleStatus() async throws {
-        let rig = try await Rig.open()
+        rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "status_device_lost")))
+        XCTAssertFalse(wc.footer.alarmButton.isHidden)
         rig.client.stop()
-        await assertEventually { rig.client.state != .connected }
-        let wc = WorkspaceWindowController(store: rig.store)
-        XCTAssertEqual(wc.footer.presentation, StatusPresentation.offline(), "not connected")
-        XCTAssertTrue(wc.footer.statusButton.title.hasPrefix(loc("status.alarm")))
-        XCTAssertTrue(wc.footer.statusButton.title.contains(loc("status.offline")))
-        rig.client.start()
-        await assertEventually { rig.client.state == .connected }
-        await assertEventually { wc.footer.presentation.summary == loc("status.waiting") }
-        try send(rig.store, xruns: 0)
-        XCTAssertEqual(wc.footer.presentation.level, .normal)
-        rig.client.stop()
-        await assertEventually { wc.footer.presentation == StatusPresentation.offline() }
-        XCTAssertNotEqual(wc.footer.presentation.icon, .statusNormal)
+        await assertEventually { wc.footer.alarmButton.isHidden }
     }
 
     func testNewSnapshotClearsTheStatusUntilTheNextPush() async throws {
         let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
-        try send(rig.store, xruns: 0)
+        rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "status_device_lost")))
         XCTAssertNotNil(rig.store.status)
         rig.client.requestSnapshot()  // the engine's snapshot
         await assertEventually { rig.store.status == nil }
-        XCTAssertEqual(wc.footer.presentation.summary, loc("status.waiting"))
+        XCTAssertTrue(wc.footer.alarmButton.isHidden)
     }
 
     // MARK: Log window
@@ -581,16 +440,11 @@ final class StatusLogTests: XCTestCase {
         wc.window?.close()
         XCTAssertNil(wc.existingStatusWindow, "closing does not make a status window")
         let other = WorkspaceWindowController(store: try Rig.offline().store)
-        other.showLog()
+        other.showStatus(.logs)
         let status = try XCTUnwrap(other.existingStatusWindow)
         XCTAssertTrue(status.window?.isVisible == true)
         XCTAssertEqual(status.page, .logs)
         other.window?.close()
         XCTAssertFalse(status.window?.isVisible == true)
-    }
-
-    func testWindowMenuOpensTheLog() {
-        let window = MainMenu.make().windows
-        XCTAssertTrue(window.items.contains { $0.action == #selector(AppDelegate.showLog(_:)) })
     }
 }

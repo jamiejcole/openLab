@@ -114,6 +114,7 @@ fn snapshot() -> Snapshot {
             message: "intro.wav has a damaged tail".into(),
             cue: Some(cue_id(10)),
             device: None,
+            count: None,
         }],
         media_durations: vec![CueMediaDuration {
             cue: cue_id(10),
@@ -420,6 +421,13 @@ fn request_variants() -> Vec<(&'static str, Request)> {
         ("osc_state", Request::OscState),
         ("set_osc_port", Request::SetOscPort { port: 53100 }),
         ("set_stand_back", Request::SetStandBack { on: true }),
+        (
+            "drop_out",
+            Request::DropOut {
+                device: None,
+                count: 3,
+            },
+        ),
     ]
 }
 
@@ -1472,6 +1480,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     message: "duplicate cue number 3 was cleared".into(),
                     cue: None,
                     device: None,
+                    count: None,
                 },
                 WireWarning::LateStart {
                     cue: cue_id(10),
@@ -1484,6 +1493,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                         .into(),
                     cue: None,
                     device: Some("Out".into()),
+                    count: None,
                 },
             ],
         }),
@@ -2555,6 +2565,29 @@ fn an_advance_beyond_the_limit_is_bad_request() {
     assert!(advance(0).is_ok());
 }
 
+/// Test support: a `drop_out` of none or of more than `MAX_DROP_OUTS` is refused at decode.
+#[test]
+fn a_drop_out_count_outside_the_limit_is_bad_request() {
+    let drop_out = |count: u32| {
+        let text = serde_json::to_string(&ClientMessage::Request {
+            id: rid(1),
+            request: Request::DropOut {
+                device: None,
+                count,
+            },
+        })
+        .unwrap();
+        decode_client(&text)
+    };
+    let refused = Err(ProtocolError::OutOfRange {
+        field: "request.count",
+    });
+    assert_eq!(drop_out(0), refused);
+    assert_eq!(drop_out(MAX_DROP_OUTS + 1), refused);
+    assert!(drop_out(1).is_ok());
+    assert!(drop_out(MAX_DROP_OUTS).is_ok());
+}
+
 #[test]
 fn a_batch_is_refused_whole_unless_well_formed() {
     let batch = |actions: Vec<TransportAction>| {
@@ -3441,6 +3474,7 @@ fn all_warnings() -> Vec<WireWarning> {
         message: "intro.wav has a damaged tail".into(),
         cue: Some(c),
         device: None,
+        count: None,
     });
     all
 }
@@ -3808,6 +3842,7 @@ fn preshow_report_sample() -> PreshowReport {
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
             device: Some("Scarlett 2i2".into()),
+            count: None,
         }],
     }
 }
@@ -3912,6 +3947,20 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
             device: Some("Scarlett 2i2".into()),
+            count: None,
+        }),
+    );
+    // A repeating notice says how often (an output device's dropouts so far).
+    add(
+        "warnings_notice_audio_dropouts",
+        warnings(WireWarning::Notice {
+            patch: None,
+            code: "audio_dropouts".into(),
+            message: "audio device \"Scarlett 2i2\" dropped out 3 time(s): gaps in its sound"
+                .into(),
+            cue: None,
+            device: Some("Scarlett 2i2".into()),
+            count: Some(3),
         }),
     );
     for (_, r) in go_table() {
@@ -4825,6 +4874,8 @@ fn arb_request() -> impl Strategy<Value = Request> {
         (0..=MAX_ADVANCE_FRAMES).prop_map(|frames| Request::Advance { frames }),
         proptest::option::of(arb_text()).prop_map(|device| Request::LoseDevice { device }),
         proptest::option::of(arb_text()).prop_map(|device| Request::RestoreDevice { device }),
+        (proptest::option::of(arb_text()), 1..=MAX_DROP_OUTS)
+            .prop_map(|(device, count)| Request::DropOut { device, count }),
         arb_text().prop_map(|device| Request::SetDefaultDevice { device }),
     ]
 }

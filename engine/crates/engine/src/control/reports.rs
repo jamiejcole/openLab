@@ -507,6 +507,14 @@ impl DocCx<'_> {
             ));
         }
         self.device_warnings(&mut list);
+        if self.eng.observe.sound.disk_behind {
+            list.push(notice(
+                "disk_behind",
+                "disk reads are falling behind: cues streaming from disk drop out and play late"
+                    .to_owned(),
+                None,
+            ));
+        }
         self.eng.watch.watch().notices(&mut list);
         if self.eng.seen.alloc_violations > 0 {
             list.push(notice(

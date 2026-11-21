@@ -94,10 +94,13 @@
 "overrides.network" = "Network output";
 "overrides.note" = "For every open workspace. Off: Network cues run but send nothing.";
 "overrides.noWorkspace" = "Open a workspace to change the overrides.";
-"footer.override.badge" = "NETWORK OUTPUT OFF";
 "footer.warnings.tooltip" = "Show the Warnings list";
-"footer.override.tooltip" = "Network cues run but send nothing. Turn it back on in Window > Output Overrides.";
-"status.detail.networkOff" = "Network output is disabled: Network cues run but send nothing.";
+"footer.alarm" = "ALARM:";
+"footer.alarm.deviceLost" = "Audio device lost";
+"footer.alarm.deviceFailed" = "Audio device failed";
+"footer.alarm.outputLost" = "Audio device lost: %@";
+"footer.alarm.outputFailed" = "Audio device failed: %@";
+"footer.alarm.tooltip" = "Show the Warnings list";
 "menu.transport.stopSelected" = "Stop Selected";
 "menu.transport.resetSelected" = "Reset Selected";
 
@@ -514,11 +517,14 @@
 "warnings.device.patch_device_missing" = "Not connected, so the cues routed to it cannot play. Connect it, or choose another device for its patch in Workspace Settings, Audio.";
 "warnings.device.device_unrecoverable" = "Failed and cannot recover. Restart openLab to hear it again.";
 "warnings.device.device_stalled" = "Has stopped responding. If it stays silent, it is treated as disconnected.";
+"warnings.device.audio_dropouts" = "Its sound is dropping out: {count} short gaps so far. This goes once it has played ten seconds without one.";
 "warnings.device.outputs_dropped" = "Has fewer outputs than this show uses, so some are not heard. Check its patches in Workspace Settings, Audio.";
 "warnings.patchRoutingBeyond" = "Has fewer outputs than patch “%@” routes to. That routing is kept with the show and is not heard here; see the patch in Workspace Settings, Audio.";
 "warnings.device.patch_device_unusable" = "Listed, but openLab cannot use it, so the cues routed to it cannot play. Workspace Settings, Audio says why.";
 "warnings.systemOutputNone" = "The Mac has no output device selected, so the cues on patches set to the system output cannot play. Choose an output in the Mac’s Sound settings, or another device for those patches in Workspace Settings, Audio.";
 "warning.notice.audio_track_missing" = "The audio track chosen for it is not in its file; the file’s first track plays.";
+"warning.notice.underrun" = "The disk could not keep up, so it went silent for a moment and plays on late from there.";
+"warning.notice.disk_behind" = "Disk reads are falling behind: cues playing from disk may drop out or play late.";
 "warning.notice.move_delayed" = "Its audio file could not be read in time to move it to its patch’s new audio device. It plays on where it was; the move is tried again.";
 "warnings.device.other" = "Has a problem. Workspace Settings, Audio says more.";
 "warnings.refused.one" = "Asked to start while broken, so it did not play.";
@@ -587,6 +593,11 @@
 "status.info.notSaved" = "Not saved yet";
 "status.info.idNote" = "The workspace ID can be used in OSC addresses that act on this workspace.";
 "menu.window.status" = "Workspace Status";
+"warnings.inspect" = "Inspect Cue";
+"warnings.hide" = "Hide";
+"warnings.unhide" = "Unhide";
+"warnings.showHidden" = "Show hidden";
+"warnings.summary.hidden" = "%@ (%d hidden)";
 "settings.osc.enabled" = "Allow OSC control of this workspace";
 "settings.osc.port" = "Listening port";
 "settings.osc.offOpen" = "OSC control is off: every message to this workspace is refused. Port %d is still bound.";
@@ -599,12 +610,8 @@
 "settings.osc.addresses" = "This Mac's addresses: %@";
 "settings.osc.noAddresses" = "This Mac has no network address.";
 "settings.general.outOfRange" = "Enter a number from %g to %g.";
-"settings.audio.device" = "Audio output device";
 "settings.audio.systemDefault" = "System Default";
 "settings.audio.notAvailable" = "%@ (not available)";
-"settings.audio.playingOn" = "Playing on: %1$@ (%2$@)";
-"settings.audio.noStatus" = "The engine has not reported its audio device.";
-"settings.audio.deviceProblem" = "The audio device is not working. Cues that play through it are silent until it is back.";
 "settings.audio.chosenMissing" = "%@ is not connected. openLab will use the system default device the next time it starts.";
 "settings.audio.restartNeeded" = "The clock device changes the next time openLab starts. Quit and reopen openLab to use it.";
 "settings.audio.patches" = "Output patches";
@@ -674,11 +681,9 @@
 "menu.help.openLabHelp" = "openLab Help";
 "menu.help.crashReports" = "Show Crash Reports in Finder";
 "crash.none" = "There are no crash reports on this Mac.";
-"crash.previousRun" = "The last run did not end cleanly. See Show Log; crash reports: Help > Show Crash Reports in Finder.";
+"crash.previousRun" = "The last run did not end cleanly. See the Logs page of Workspace Status; crash reports: Help > Show Crash Reports in Finder.";
 
-/* Sidebar: Warnings tab (DX-01). {name} is replaced by the engine's field of that name. */
-"sidebar.tab.warnings" = "Warnings";
-"sidebar.warnings.label" = "Warnings";
+/* Warnings list (DX-01). {name} is replaced by the engine's field of that name. */
 "warnings.none" = "No warnings";
 "warnings.one" = "1 warning";
 "warnings.many" = "%d warnings";
@@ -769,44 +774,9 @@
 "warning.go_ignored.unknown_list" = "GO was ignored: the cue list does not exist.";
 
 /* Footer status (DX-03) */
-"status.waiting" = "Waiting for engine status";
-"status.ok" = "Audio OK";
-"status.cpu" = "CPU %.0f%%";
-"status.alarm" = "ALARM:";
-"status.warning" = "Warning:";
-"status.tooltip" = "Engine status. Click for details.";
-"status.device.lost" = "Audio device lost";
-"status.device.failed" = "Audio device failed";
-"status.output.lost" = "Audio device lost: %@";
-"status.output.failed" = "Audio device failed: %@";
-"status.device.absent" = "No audio device";
-"status.device.other" = "Audio device state: %@";
-"status.disk.unhealthy" = "Disk reads are falling behind";
-"status.disk.healthy" = "healthy";
-"status.load.high" = "Audio engine load is high";
-"status.xruns" = "%d audio dropout(s)";
-"status.state.ok" = "OK";
-"status.state.lost" = "lost";
-"status.state.failed" = "failed";
-"status.state.absent" = "none";
-"status.state.up" = "OK";
-"status.state.opening" = "opening";
-"status.state.reconfiguring" = "reconfiguring";
-"status.state.closed" = "closed";
-"status.detail.none" = "none";
-"status.detail.device" = "Output device: %@ (%@)";
-"status.detail.format" = "%d Hz, %d channels";
-"status.detail.block" = "block %d frames";
-"status.detail.latency" = "latency %.1f ms";
-"status.detail.disk" = "Disk: %d streams, %d frames late, %@";
-"status.detail.cpu" = "CPU: %@";
-"status.detail.load" = "Audio engine load: %@";
-"status.detail.xruns" = "Dropouts since start: %d";
-"status.detail.logDropped" = "Log records dropped: %d";
 
 /* Log window (DX-02) */
-"menu.window.log" = "Show Log";
-"log.title" = "Show Log";
+"log.title" = "Logs";
 "log.refresh" = "Refresh";
 "log.filter.label" = "Show";
 "log.filter.all" = "All records";
@@ -823,39 +793,6 @@
 "log.column.message" = "Message";
 "log.tailFailed" = "The engine's log history could not be loaded.";
 "log.dropped" = "%d records were dropped by the engine.";
-"menu.window.preshowCheck" = "Workspace Status";
-"preshow.title" = "Pre-Show Check";
-"preshow.title.workspace" = "Pre-Show Check: %@";
-"preshow.checkAgain" = "Check Again";
-"preshow.inspect" = "Inspect Cue";
-"preshow.hide" = "Hide";
-"preshow.unhide" = "Unhide";
-"preshow.showHidden" = "Show hidden";
-"preshow.summary.hidden" = "%@ (%d hidden)";
-"preshow.checking" = "Checking…";
-"preshow.failed" = "The check could not be run. Try again.";
-"preshow.disconnected" = "The engine is not connected: nothing has been checked.";
-"preshow.summary.ok" = "No problems found.";
-"preshow.summary.one" = "1 problem found.";
-"preshow.summary.many" = "%d problems found.";
-"preshow.summary.problems" = "Problems found.";
-"preshow.section.brokenCues" = "Broken cues (%d)";
-"preshow.section.media" = "Media files (%d)";
-"preshow.section.devices" = "Audio patches without a device (%d)";
-"preshow.section.network" = "Network destinations (%d)";
-"preshow.section.system" = "Engine warnings (%d)";
-"preshow.cue.deleted" = "%@ (deleted)";
-"preshow.usedBy" = "Used by: %@";
-"preshow.usedBy.more" = "%@ and %d more";
-"preshow.media.missing" = "File not found.";
-"preshow.media.unsupported" = "Cannot be played: %@";
-"preshow.patch.unknown" = "Patch %@";
-"preshow.patch.missing" = "Cues use this patch, but the workspace does not have it.";
-"preshow.patch.noDevice" = "No audio device to play on.";
-"preshow.patch.unused" = "No cue uses this patch.";
-"preshow.network.unknown" = "Network patch %@";
-"preshow.network.missing" = "Cues use this destination, but the workspace does not have it.";
-"preshow.network.notChecked" = "%@: not checked (reachability is not tested).";
 
 /* Recover autosaves; Find Missing Files folder panel (WS-03) */
 "menu.file.recover" = "Recover Autosaves…";
@@ -865,9 +802,6 @@
 "relink.panel.message" = "Choose the folder that holds the missing media. Sub-folders are searched.";
 "relink.panel.prompt" = "Search";
 
-"status.offline" = "Engine offline";
-"status.offline.detail" = "The engine is not connected. Status is unknown until it reconnects.";
-"status.dropouts" = "Dropouts %d";
 
 "window.main.title.list" = "%@ — %@";
 "window.main.title.showMode" = "%@ (Show Mode)";

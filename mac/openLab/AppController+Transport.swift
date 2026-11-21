@@ -268,11 +268,6 @@ extension AppController {
         if opening { await tool.chooseFolderAndSearch() }
     }
 
-    /// Opens the log window of the key workspace (the first one when none is key).
-    func showLog() {
-        (frontController ?? allWindows.first)?.showLog()
-    }
-
     @discardableResult
     func go(_ store: WorkspaceStore) async -> Result<OkBody, EngineError>? {
         guard let list = controllers[ObjectIdentifier(store)]?.cueList.listID else { return nil }

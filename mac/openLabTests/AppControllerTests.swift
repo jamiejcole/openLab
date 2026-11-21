@@ -411,12 +411,11 @@ final class AppControllerTests: XCTestCase {
         weak var preshow: NSWindow?
         weak var log: NSWindow?
         weak var sheet: NSWindow?
-        weak var popover: NSPopover?
         var held: [String] {
             [
                 ("controller", controller as AnyObject?), ("window", window), ("settings", settings),
                 ("patch editor", patchEditor), ("Find Missing Files", missingFiles), ("pre-show check", preshow),
-                ("log", log), ("sheet", sheet), ("status popover", popover),
+                ("log", log), ("sheet", sheet),
             ].filter { $0.1 != nil }.map(\.0)
         }
     }
@@ -430,10 +429,8 @@ final class AppControllerTests: XCTestCase {
         let editor = try XCTUnwrap(wc.editPatch(patch))
         editor.showWindow(nil)
         wc.missingFiles.showWindow(nil)
-        await wc.showPreshowCheck().value
-        await wc.showLog().value
-        wc.footer.showStatusDetails()
-        XCTAssertEqual(wc.footer.popover?.isShown, true)
+        await wc.showWorkspaceStatus().value
+        await wc.showStatus(.logs).value
         if sheet { wc.showNotice("a refusal") }
         var released = Released()
         released.controller = wc
@@ -444,8 +441,7 @@ final class AppControllerTests: XCTestCase {
         released.preshow = wc.existingStatusWindow?.window
         released.log = wc.existingLogWindow?.window
         released.sheet = wc.window?.attachedSheet
-        released.popover = wc.footer.popover
-        XCTAssertEqual(released.held.count, sheet ? 9 : 8, "every window is up")
+        XCTAssertEqual(released.held.count, sheet ? 8 : 7, "every window is up")
         return released
     }
 
@@ -474,7 +470,7 @@ final class AppControllerTests: XCTestCase {
 
     /// A workspace closed the way the operator closes it (the window's close button) gives up its
     /// window, its controller and every window it owns (settings, a patch editor, Find Missing Files,
-    /// the pre-show check, the log, the status popover; a sheet the third time, closed by File > Close),
+    /// the pre-show check, the log; a sheet the third time, closed by File > Close),
     /// again and again:
     /// each one kept would hold its window-server surface for the rest of the session (#716). The
     /// app's window count comes back to where it was.
@@ -503,8 +499,8 @@ final class AppControllerTests: XCTestCase {
     }
 
     /// Closing a workspace whose cue is playing (the operator confirms), with an edit from its window
-    /// and its pre-show check still unanswered: the engine closes the doc, which stops its cues, and the
-    /// window goes with everything it owns once the answers come, which find nothing to call back into.
+    /// and its status window open: the engine closes the doc, which stops its cues, and the window goes
+    /// with everything it owns once the answer comes, which finds nothing to call back into.
     /// The engine and the app go on.
     func testAWorkspaceClosedWhileACuePlaysWithRequestsPendingIsReleased() throws {
         var released = Released()
@@ -519,16 +515,12 @@ final class AppControllerTests: XCTestCase {
             engine.holdResults = true
             let wc = try XCTUnwrap(app.windows[doc])
             wc.masthead.onCommitNotes?(fade, "pending")
-            _ = wc.showPreshowCheck()
-            // Both wait on their answers. Others may be held beside them: a read the owned windows started
+            _ = wc.showWorkspaceStatus()
+            // The edit waits on its answer. Others may be held beside it: a read the owned windows started
             // before the hold (the patch editor's mappings, sent once its device list came back) can be
             // answered after it on a slow machine.
             await assertEventually {
-                let edit = self.engine.heldResults { if case .command = $0 { return true } else { return false } }
-                let check = self.engine.heldResults {
-                    if case .request(_, .preshowCheck) = $0 { return true } else { return false }
-                }
-                return edit == 1 && check == 1
+                self.engine.heldResults { if case .command = $0 { return true } else { return false } } == 1
             }
             engine.holdResults = false
             alerts.saveChoices = [.dontSave]
@@ -1535,14 +1527,14 @@ final class AppControllerTests: XCTestCase {
         String(format: loc("hotkeys.warn.menuLost"), loc(command), chord.display)
     }
 
-    /// What the Warnings tab lists for the window, as the operator reads it.
+    /// What the Warnings list holds for the window, as the operator reads it.
     private func tabTitles(_ doc: ModelID) -> [String] {
-        app.windows[doc]?.sidebar.warningRows.map(\.title) ?? []
+        app.windows[doc]?.warningsPage.all.map(\.title) ?? []
     }
 
     /// A workspace whose file maps Go to Cmd-S, opened: the key runs GO and Save does not run, and the
-    /// Warnings tab says the Save command lost its key, once.
-    func testAFileKeyMapNamingAMenuChordRunsTheMapsCommandAndTheWarningsTabSaysSo() async throws {
+    /// Warnings list says the Save command lost its key, once.
+    func testAFileKeyMapNamingAMenuChordRunsTheMapsCommandAndTheWarningsListSaysSo() async throws {
         let bar = realMenuBar()
         let cmdS = KeyChord("s", [.command])
         let doc = try await openShow(withHotkeys: #"{"go":\#(Self.hotkey("s", ["command"]))}"#)
@@ -1564,7 +1556,7 @@ final class AppControllerTests: XCTestCase {
     /// Cmd-S typed into the Keys page's Edit name field is taken, as QLab takes a shortcut that means
     /// something else (manual p. 102): no reason beside the field, the engine holds it, and the Warnings
     /// tab says Save lost its key in this workspace.
-    func testTheKeysPageTakesAMenuCommandsKeyAndTheWarningsTabSaysTheMenuLostIt() async throws {
+    func testTheKeysPageTakesAMenuCommandsKeyAndTheWarningsListSaysTheMenuLostIt() async throws {
         _ = realMenuBar()
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
@@ -1578,7 +1570,7 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { field.stringValue == cmdS.display }
         XCTAssertTrue(sc.keyReasons[.editName]?.isHidden ?? false, "no reason: the key is taken")
         let text = lostText("keymap.action.edit_name", cmdS)
-        await assertEventually("the Warnings tab says so") {
+        await assertEventually("the Warnings list says so") {
             _ = self.app.frontKeys
             return self.tabTitles("1").filter { $0 == text }.count == 1
         }
@@ -3564,7 +3556,7 @@ final class AppControllerTests: XCTestCase {
     func testTheWarningsRowButtonOpensTheTool() async throws {
         let folder = try mediaFolder([])
         app.pickFolderURL = { folder }
-        demo.onRelink?()
+        demo.warningsPage.onRelink?()
         await assertEventually { self.searchRequests() == [folder.path] }
         await assertEventually { !self.demo.missingFiles.isBusy }
         XCTAssertEqual(
@@ -3912,32 +3904,35 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: View > Warnings and Tools > Jump to Targets
 
-    private func menuItem(_ action: Selector) throws -> NSMenuItem {
+    private func menuItem(_ action: Selector, titled title: String? = nil) throws -> NSMenuItem {
         try XCTUnwrap(
-            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items).first { $0.action == action },
+            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items).first {
+                $0.action == action && (title == nil || $0.title == title)
+            },
             NSStringFromSelector(action))
     }
 
-    /// The sidebar is hidden on Cue Lists: Cmd-B shows it on the Warnings tab with the broken cue
-    /// listed, and it works in Show Mode too.
+    /// Cmd-B opens the status window on its Warnings page with the broken cue listed, in Show Mode too;
+    /// the sidebar is not touched.
     func testWarningsFromTheViewMenu() async throws {
         keyDoc = "1"
         let delegate = AppDelegate()
         delegate.appController = app
         let wc = try XCTUnwrap(app.windows["1"])
-        let item = try menuItem(#selector(AppDelegate.showWarnings(_:)))
+        let item = try menuItem(#selector(AppDelegate.showWorkspaceStatus(_:)), titled: loc("menu.view.warnings"))
         XCTAssertEqual(item.keyEquivalent, "b")
         XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
         for showMode in [false, true] {
             wc.setShowMode(showMode)
+            wc.existingStatusWindow?.close()
             wc.setVisible(.sidebar, false)
-            wc.sidebar.showTab(0)
             XCTAssertTrue(delegate.validateMenuItem(item))
-            delegate.showWarnings(item)
-            XCTAssertTrue(wc.isVisible(.sidebar))
-            XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 2)
-            XCTAssertFalse(wc.sidebar.warningsTable.isHiddenOrHasHiddenAncestor)
-            await assertEventually { !wc.sidebar.warningRows.isEmpty }
+            delegate.showWorkspaceStatus(item)
+            let status = try XCTUnwrap(wc.existingStatusWindow)
+            XCTAssertTrue(status.window?.isVisible == true)
+            XCTAssertEqual(status.page, .warnings)
+            XCTAssertFalse(wc.isVisible(.sidebar), "the sidebar has no Warnings list to open")
+            await assertEventually { !status.warnings.rows.isEmpty }
         }
         keyDoc = nil
         XCTAssertFalse(delegate.validateMenuItem(item), "no workspace in front")

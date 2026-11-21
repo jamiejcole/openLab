@@ -24,7 +24,7 @@ Behaviour, ordering and limits are in `docs/protocol.md` (read the sections for 
 - Hostile or oversized frames: checked by byte length before parsing; decode never panics. Add the case to the protocol fuzz body when you add a decoder path.
 - `model_changed` for revision N precedes the `result` reporting N; deletes apply before upserts; revisions step by 1.
 - A numeric field that can be NaN or infinite on output is sanitised to 0 by the encoder.
-- Test-only requests (`advance`, `lose_device`, `restore_device`) never exist in a release build; `mac/scripts/verify-bundle.sh` checks.
+- Test-only requests (`advance`, `lose_device`, `restore_device`, `set_default_device`, `drop_out`) never exist in a release build; `mac/scripts/verify-bundle.sh` checks.
 - Touching `engine/fixtures/protocol/` or `engine/crates/core/src/protocol` triggers the mac PR checks and the real-engine app tests (`scripts/paths.sh`).
 
 ## Related

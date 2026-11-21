@@ -5,7 +5,7 @@ import XCTest
 
 @testable import openLab
 
-/// PB-10: the output override panel, its footer badge and details line, the red mark on Network
+/// PB-10: the output override panel, the red mark on Network
 /// cues, and what the real engine sends while the override is on. Each flow is one test, run on a
 /// real engine through the app's own controller.
 @MainActor
@@ -109,15 +109,11 @@ final class OutputOverrideTests: XCTestCase {
     }
 
     private func overrideShown(_ wc: WorkspaceWindowController) -> Bool {
-        !wc.footer.overrideBadge.isHidden
-            && wc.footer.presentation.details.first == loc("status.detail.networkOff")
-            && overrideMark(net, in: wc) == loc("cue.outputOverridden")
+        overrideMark(net, in: wc) == loc("cue.outputOverridden")
     }
 
     private func overrideCleared(_ wc: WorkspaceWindowController) -> Bool {
-        wc.footer.overrideBadge.isHidden
-            && !wc.footer.presentation.details.contains(loc("status.detail.networkOff"))
-            && overrideMark(net, in: wc) == nil
+        overrideMark(net, in: wc) == nil
     }
 
     /// Turns the panel's switch (a click on the checkbox) and lets the engine's next status come.
@@ -165,8 +161,6 @@ final class OutputOverrideTests: XCTestCase {
         XCTAssertEqual(app.overrides.networkSwitch.title, loc("overrides.network"))
         XCTAssertEqual(app.overrides.networkSwitch.state, .on)
         XCTAssertTrue(app.overrides.networkSwitch.isEnabled)
-        XCTAssertTrue(wc.footer.overrideBadge.isHidden)
-        XCTAssertFalse(wc.footer.presentation.details.contains(loc("status.detail.networkOff")))
         XCTAssertNil(overrideMark(net, in: wc))
         // Not modal: the workspace still takes GO.
         XCTAssertNil(NSApp.modalWindow)
@@ -182,27 +176,12 @@ final class OutputOverrideTests: XCTestCase {
 
         XCTAssertTrue(wc.isShowMode, "the override changes no mode")
         XCTAssertFalse(wc.footer.isHidden)
-        XCTAssertEqual(
-            wc.footer.overrideBadge.attributedTitle.string.trimmingCharacters(in: .whitespaces),
-            loc("footer.override.badge"))
         XCTAssertEqual(app.overrides.networkSwitch.state, .off)
         XCTAssertNil(NSApp.modalWindow)
-        // The details open from the badge, in Show Mode too.
-        wc.footer.overrideBadge.performClick(nil)
-        let shown =
-            wc.footer.popover?.contentViewController?.view.subviews
-            .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField
-        XCTAssertEqual(shown?.stringValue.components(separatedBy: "\n").first, loc("status.detail.networkOff"))
-        XCTAssertEqual(wc.footer.popover?.isShown, true)
-        try assertPopoverPoints(at: wc.footer.overrideBadge, not: wc.footer.statusButton, in: wc)
-        // The status mark beside it opens the same details, pointing at the mark, not the badge.
-        wc.footer.popover?.close()
-        wc.footer.statusButton.performClick(nil)
-        XCTAssertEqual(wc.footer.popover?.isShown, true)
-        try assertPopoverPoints(at: wc.footer.statusButton, not: wc.footer.overrideBadge, in: wc)
-        wc.footer.popover?.close()
-        try assertBadgeOnScreen(wc)
-        XCTAssertEqual(wc.footer.overrideBadge.layer?.backgroundColor, NSColor.systemRed.cgColor)
+        // Flow: the override puts nothing in the footer, Show Mode included; the red mark on the Network
+        // cue is what says it.
+        XCTAssertEqual(footerWords(wc.footer).filter { $0.localizedCaseInsensitiveContains("network") }, [])
+        XCTAssertTrue(wc.footer.alarmButton.isHidden)
         // A focused selection draws its marks white, so the colour is read on a row that is not selected.
         let outline = wc.cueList.outlineView
         let row = outline.row(forItem: wc.cueList.node(net))
@@ -231,37 +210,13 @@ final class OutputOverrideTests: XCTestCase {
         return red > 0 && other == 0
     }
 
-    /// The open details sit over `anchor` (what was pressed), nearer it than `other`.
-    private func assertPopoverPoints(at anchor: NSView, not other: NSView, in wc: WorkspaceWindowController) throws {
-        let window = try XCTUnwrap(wc.window)
-        let popover = try XCTUnwrap(wc.footer.popover?.contentViewController?.view.window?.frame)
-        func midX(_ view: NSView) -> CGFloat { window.convertToScreen(view.convert(view.bounds, to: nil)).midX }
-        XCTAssertLessThan(
-            abs(popover.midX - midX(anchor)), abs(popover.midX - midX(other)),
-            "the details point at \(anchor), not \(other)")
-    }
-
-    /// The badge is really in the footer: in the window, with a frame inside the footer that no other
-    /// control of the footer overlaps.
-    private func assertBadgeOnScreen(_ wc: WorkspaceWindowController) throws {
-        let footer = wc.footer
-        let badge = footer.overrideBadge
-        wc.window?.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertNotNil(badge.window)
-        XCTAssertFalse(badge.isHiddenOrHasHiddenAncestor)
-        let frame = footer.convert(badge.bounds, from: badge)
-        XCTAssertGreaterThan(frame.width, 10)
-        XCTAssertGreaterThan(frame.height, 5)
-        XCTAssertTrue(footer.bounds.contains(frame), "\(frame) in \(footer.bounds)")
-        let others: [NSView] =
-            [
-                footer.modeSwitch, footer.statusButton, footer.noticeLabel, footer.countLabel,
-                footer.settingsButton,
-            ] + Array(footer.toggles.values)
-        for other in others where !other.isHiddenOrHasHiddenAncestor {
-            let r = footer.convert(other.bounds, from: other)
-            XCTAssertFalse(r.intersects(frame), "\(other) overlaps the badge")
-        }
+    /// Every word the footer shows: button titles, labels and their tips.
+    private func footerWords(_ view: NSView) -> [String] {
+        var out: [String] = []
+        if let b = view as? NSButton { out += [b.title, b.attributedTitle.string, b.toolTip ?? ""] }
+        if let t = view as? NSTextField { out += [t.stringValue, t.toolTip ?? ""] }
+        for sub in view.subviews { out += footerWords(sub) }
+        return out.filter { !$0.isEmpty }
     }
 
     func testAFailedSendPutsTheSwitchBackBeepsAndLogs() async throws {
@@ -276,7 +231,6 @@ final class OutputOverrideTests: XCTestCase {
         await assertEventually("switch back on") { self.app.overrides.networkSwitch.state == .on }
         XCTAssertEqual(beeps, 1)
         XCTAssertTrue(wc.store.logEntries.contains { $0.level == .error })
-        XCTAssertTrue(wc.footer.overrideBadge.isHidden)
     }
 
     func testWithNoWorkspaceTheSwitchIsDisabledAndTheNoteSaysSo() async throws {
@@ -390,8 +344,6 @@ final class OutputOverrideTests: XCTestCase {
             return again.store.status != nil
         }
         app.showOverrideControls()
-        await assertEventually { self.app.overrides.networkSwitch.state == .on && again.footer.overrideBadge.isHidden }
-        XCTAssertTrue(again.footer.overrideBadge.isHidden)
-        XCTAssertFalse(again.footer.presentation.details.contains(loc("status.detail.networkOff")))
+        await assertEventually { self.app.overrides.networkSwitch.state == .on }
     }
 }

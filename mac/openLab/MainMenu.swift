@@ -31,8 +31,7 @@ enum MainMenu {
                 .separator(),
                 launcherItem(),
                 .separator(),
-                logItem(),
-                preshowItem(),
+                statusItem(),
                 item("menu.window.overrides", #selector(AppDelegate.showOverrideControls(_:)), "O"),
                 item("menu.window.bringAllToFront", #selector(NSApplication.arrangeInFront(_:))),
             ]
@@ -269,7 +268,7 @@ enum MainMenu {
                 area("menu.view.masthead", .masthead),
                 area("menu.view.sidebar", .sidebar, "l"),
                 chord(item("menu.view.sidebarTab", #selector(AppDelegate.toggleSidebarTab(_:)), "l"), shiftCmd),
-                item("menu.view.warnings", #selector(AppDelegate.showWarnings(_:)), "b"),
+                item("menu.view.warnings", #selector(AppDelegate.showWorkspaceStatus(_:)), "b"),
                 .separator(),
                 chord(item("menu.view.selectCue", #selector(AppDelegate.selectCue(_:)), "j"), cmd),
                 chord(item("menu.view.selectNext", #selector(AppDelegate.selectNextCue(_:)), down), cmd),
@@ -375,16 +374,9 @@ enum MainMenu {
         return launcher
     }
 
-    private static func logItem() -> NSMenuItem {
-        let log = item("menu.window.log", #selector(AppDelegate.showLog(_:)), "l")
-        log.keyEquivalentModifierMask = [.command, .option]
-        return log
-    }
-
-    /// QLab keeps its warnings in Workspace Status (Window menu, shift-cmd-W); the pre-show check
-    /// takes that place and key.
-    private static func preshowItem() -> NSMenuItem {
-        item("menu.window.preshowCheck", #selector(AppDelegate.showPreshowCheck(_:)), "W")
+    /// QLab's workspace status window (Window menu, shift-cmd-W): Warnings, Logs and Info.
+    private static func statusItem() -> NSMenuItem {
+        item("menu.window.status", #selector(AppDelegate.showWorkspaceStatus(_:)), "W")
     }
 
     private static func menu(_ key: String, _ items: [NSMenuItem]) -> NSMenu {

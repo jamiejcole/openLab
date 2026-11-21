@@ -2,22 +2,22 @@
 
 import XCTest
 
-/// SM-06: Window > Workspace Status opens on its Warnings page, which runs the engine's check on the demo show (whose "Radio" cue is
-/// broken by a missing file) and lists it; clicking the entry selects Radio in the cue list while
-/// the workspace window keeps the keys (GO still works).
+/// Window > Workspace Status opens on its Warnings page, which lists the demo show's broken cue (its
+/// "Radio" cue has a missing file); clicking the entry selects Radio in the cue list while the
+/// workspace window keeps the keys (GO still works).
 @MainActor
-final class PreshowUITests: XCTestCase {
-    func testMenuRunsTheCheckAndClickingAnEntrySelectsTheCue() {
+final class WarningsPageUITests: XCTestCase {
+    func testTheMenuOpensTheListAndClickingAnEntrySelectsTheCue() {
         let app = launchDemo()
 
         app.menuBars.menuBarItems["Window"].click()
         app.menuBars.menuItems["Workspace Status"].click()
 
-        let report = app.descendants(matching: .any).matching(identifier: "preshow-table").firstMatch
-        XCTAssertTrue(report.waitForExistence(timeout: 10), "the report opens")
-        let summary = app.staticTexts.matching(identifier: "preshow-summary").firstMatch
-        XCTAssertTrue(waitFor("value == '1 problem found.'", summary), "the summary counts the one problem")
-        let radio = report.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2.3  Radio'")).firstMatch
+        let report = app.descendants(matching: .any).matching(identifier: "warnings-table").firstMatch
+        XCTAssertTrue(report.waitForExistence(timeout: 10), "the list opens")
+        let summary = app.staticTexts.matching(identifier: "warnings-summary").firstMatch
+        XCTAssertTrue(waitFor("value == '1 warning'", summary), "the summary counts the one warning")
+        let radio = report.staticTexts["2.3  Radio"]
         XCTAssertTrue(radio.waitForExistence(timeout: 10), "the broken cue is listed")
 
         radio.click()
@@ -30,6 +30,17 @@ final class PreshowUITests: XCTestCase {
         report.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)).click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
         XCTAssertTrue(cueStates("Running", in: app).firstMatch.waitForExistence(timeout: 10), "GO ran")
+    }
+
+    /// The footer's warnings button opens the same page, and the Logs page is one of its tabs.
+    func testTheFooterButtonOpensTheWarningsPageAndLogsIsATab() {
+        let app = launchDemo()
+        app.buttons["footer-warnings"].click()
+        let list = app.descendants(matching: .any).matching(identifier: "warnings-table").firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 10), "the Warnings page opens")
+        tabButton("Logs", in: app).click()
+        let log = app.tables.matching(identifier: "log-table").firstMatch
+        XCTAssertTrue(log.waitForExistence(timeout: 10), "the Logs page is a tab of the same window")
     }
 
     /// Two workspaces: with "Second" holding the keys, choosing an entry in the demo workspace's
@@ -47,9 +58,9 @@ final class PreshowUITests: XCTestCase {
         app.menuBars.menuItems.matching(demoTitle).firstMatch.click()
         app.menuBars.menuBarItems["Window"].click()
         app.menuBars.menuItems["Workspace Status"].click()
-        let report = app.descendants(matching: .any).matching(identifier: "preshow-table").firstMatch
+        let report = app.descendants(matching: .any).matching(identifier: "warnings-table").firstMatch
         XCTAssertTrue(report.waitForExistence(timeout: 10))
-        let radio = report.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2.3  Radio'")).firstMatch
+        let radio = report.staticTexts["2.3  Radio"]
         XCTAssertTrue(radio.waitForExistence(timeout: 10))
 
         app.menuBars.menuBarItems["Window"].click()

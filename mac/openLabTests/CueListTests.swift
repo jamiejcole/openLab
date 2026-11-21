@@ -598,7 +598,7 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(try icon(H.radio).toolTip, "\(loc("cue.state.broken")): \(loc("broken.device_lost"))")
         // Static problems break a cue even without a state entry (the fixture's fade cue).
         XCTAssertEqual(try icon(H.fade).accessibilityLabel(), loc("cue.state.broken"))
-        // The tooltip reads as the Warnings tab does: fields filled in, never a raw `{target}`.
+        // The tooltip reads as the Warnings list does: fields filled in, never a raw `{target}`.
         let tip = try XCTUnwrap(try icon(H.fade).toolTip)
         XCTAssertFalse(tip.contains("{"), tip)
         // Its target is in no workspace, so it has no name: words stand in, never the internal id.
@@ -5241,12 +5241,12 @@ final class CueListDrawingTests: XCTestCase {
         }
         XCTAssertEqual(try drawnMark(h, net, 2)?.colour, .systemRed, "output-overridden is red")
         // A warning is yellow in the Warnings list: the mark drawn on Radio's row (the engine reports it broken).
-        let side = SidebarViewController(store: h.store)
-        side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
-        side.view.layoutSubtreeIfNeeded()
-        let warning = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == H.radio }, "Radio is in the Warnings list")
+        let page = WarningsPageController(store: h.store)
+        page.show(WarningRows.make(store: h.store))
+        page.window?.contentView?.layoutSubtreeIfNeeded()
+        let warning = try XCTUnwrap(page.rows.firstIndex { $0.cue == H.radio }, "Radio is in the Warnings list")
         let cell = try XCTUnwrap(
-            side.warningsTable.view(atColumn: 0, row: warning, makeIfNecessary: true) as? WarningCell)
+            page.table.view(atColumn: 0, row: warning, makeIfNecessary: true) as? WarningCell)
         let marker = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSImageView }.first, "the row has its mark")
         XCTAssertFalse(marker.isHidden)
         XCTAssertNotNil(marker.image)

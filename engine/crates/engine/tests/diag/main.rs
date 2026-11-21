@@ -8,4 +8,5 @@ mod common;
 mod show;
 
 mod log;
+mod sound;
 mod status;

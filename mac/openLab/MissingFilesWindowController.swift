@@ -15,7 +15,7 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
     /// set by the operator's pick).
     struct Row: Equatable {
         let cue: ModelID
-        /// Number and name, as the Warnings tab titles a cue.
+        /// Number and name, as the Warnings list titles a cue.
         let title: String
         /// The reference the cue had when the search answered: the cue is relinked only if it
         /// still has it (an edit made meanwhile wins).

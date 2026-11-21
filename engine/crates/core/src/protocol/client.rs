@@ -515,6 +515,15 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
     },
+    /// Test support only: a virtual output device's stream reports `count` dropouts (xruns, 1 to
+    /// [`MAX_DROP_OUTS`]) as a host does, at its next block (stepped: the next `advance`).
+    /// `device` as for `LoseDevice`. App-scope.
+    #[cfg(feature = "test-support")]
+    DropOut {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+        count: u32,
+    },
     /// Test support only: the device list marks `device` (a virtual device's id) as the system's
     /// output, as the operator changing the computer's sound output does. App-scope.
     #[cfg(feature = "test-support")]
@@ -559,6 +568,10 @@ pub enum Request {
 /// Most frames one `advance` may move device time by: ten minutes at 192 kHz.
 #[cfg(feature = "test-support")]
 pub const MAX_ADVANCE_FRAMES: u64 = 192_000 * 600;
+
+/// Most dropouts one `drop_out` may report.
+#[cfg(feature = "test-support")]
+pub const MAX_DROP_OUTS: u32 = 10_000;
 
 /// Most buckets one `waveform` request may ask for: more than any screen is wide.
 pub const MAX_WAVEFORM_BUCKETS: u32 = 8192;
@@ -694,6 +707,13 @@ impl ClientMessage {
                 ..
             } if *frames > MAX_ADVANCE_FRAMES => Err(ProtocolError::OutOfRange {
                 field: "request.frames",
+            }),
+            #[cfg(feature = "test-support")]
+            Self::Request {
+                request: Request::DropOut { count, .. },
+                ..
+            } if !(1..=MAX_DROP_OUTS).contains(count) => Err(ProtocolError::OutOfRange {
+                field: "request.count",
             }),
             Self::Hotkey { key, .. } if key.is_empty() || key.len() > MAX_HOTKEY_KEY => {
                 Err(ProtocolError::OutOfRange {

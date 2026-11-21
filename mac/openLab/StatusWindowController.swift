@@ -4,10 +4,10 @@ import AppKit
 import Combine
 
 /// The workspace status window (QLab 5's Workspace Status, manual pp. 164-165; UI map `status.*`):
-/// one window with a Warnings page (the pre-show check: what keeps the show from running, a row
-/// selecting its cue), a Logs page (the show log) and an Info page (this workspace's name, id and
-/// file). Window > Workspace Status (Shift-Command-W), Window > Log and a click on the footer's
-/// warning mark all open it, each on its page. Like the log window it never takes the keyboard:
+/// one window with a Warnings page (what is wrong now, live, a row selecting its cue), a Logs page
+/// (the show log) and an Info page (this workspace's name, id and file). Window > Workspace Status
+/// (Shift-Command-W), View > Warnings and a click on the footer's warnings button or device alarm
+/// open it, the last two on the Warnings page. Like the log window it never takes the keyboard:
 /// GO and the transport keys keep reaching the workspace window.
 @MainActor
 final class StatusWindowController: NSWindowController {
@@ -18,7 +18,7 @@ final class StatusWindowController: NSWindowController {
     }
 
     let store: WorkspaceStore
-    let warnings: PreshowWindowController
+    let warnings: WarningsPageController
     let logs: LogWindowController
     let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
     let nameValue = NSTextField(labelWithString: "")
@@ -29,7 +29,7 @@ final class StatusWindowController: NSWindowController {
     var pasteboard = NSPasteboard.general
     private var subs: [AnyCancellable] = []
 
-    init(store: WorkspaceStore, warnings: PreshowWindowController, logs: LogWindowController) {
+    init(store: WorkspaceStore, warnings: WarningsPageController, logs: LogWindowController) {
         self.store = store
         self.warnings = warnings
         self.logs = logs
@@ -44,7 +44,7 @@ final class StatusWindowController: NSWindowController {
         panel.isReleasedWhenClosed = false
         panel.minSize = NSSize(width: 520, height: 300)
         super.init(window: panel)
-        // The pages keep their own controllers (their lists, filters and checks) but not their
+        // The pages keep their own controllers (their lists and filters) but not their
         // windows: their content is taken in here, and the log reads "open" from this window.
         for (page, controller) in [(Page.warnings, warnings as NSWindowController), (.logs, logs)] {
             let item = NSTabViewItem(identifier: page.rawValue)
@@ -80,17 +80,16 @@ final class StatusWindowController: NSWindowController {
         tabs.selectedTabViewItem.flatMap { ($0.identifier as? String).flatMap(Page.init) }
     }
 
-    /// Shows the window on `page` without taking the keyboard, and reads what the page shows: the
-    /// pre-show check runs, the log reads the engine's tail. The task's value tells tests it is done.
+    /// Shows the window on `page` without taking the keyboard, and reads what the page shows: the log
+    /// reads the engine's tail. The task's value tells tests it is done.
     @discardableResult
     func present(_ page: Page) -> Task<Void, Never> {
         tabs.selectTabViewItem(withIdentifier: page.rawValue)
         window?.orderFront(nil)
         return Task {
             switch page {
-            case .warnings: await warnings.runCheck()
             case .logs: await logs.refresh()
-            case .info: break
+            case .warnings, .info: break
             }
         }
     }

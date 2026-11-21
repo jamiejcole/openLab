@@ -19,7 +19,7 @@ extension WorkspaceSettingsModel {
     /// Puts `chord` on `key`. False, with `keyRefusal` naming why, when the chord is reserved, has
     /// no show-file name, or is another action's key or a cue's hotkey; nothing is sent then. A menu
     /// command's key is taken (QLab allows it, manual p. 102): the menu command loses its key in this
-    /// workspace and the Warnings tab says so. The chord `key` already has sends nothing.
+    /// workspace and the Warnings list says so. The chord `key` already has sends nothing.
     @discardableResult
     func assignKey(_ key: WorkspaceKey, _ chord: KeyChord) async -> Bool {
         let map = keyMap

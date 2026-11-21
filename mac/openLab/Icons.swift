@@ -26,7 +26,7 @@ enum Icon: CaseIterable {
     // Footer.
     case layoutMasthead, layoutInspector, layoutSidebar, settings
     // Engine status levels.
-    case statusWaiting, statusNormal, statusWarning, statusAlarm
+    case statusWarning, statusAlarm
     // Cue list markers.
     case playhead, preview, outputOverridden, flagged, flaggedInside, warningMarker, engineAlarm
     // Time column header toggle (elapsed / remaining).
@@ -79,8 +79,6 @@ enum Icon: CaseIterable {
         case .layoutInspector: return "layout-inspector"
         case .layoutSidebar: return "layout-sidebar"
         case .settings: return "settings"
-        case .statusWaiting: return "status-waiting"
-        case .statusNormal: return "status-normal"
         case .statusWarning: return "status-warning"
         case .statusAlarm: return "status-alarm"
         case .playhead: return "playhead"
