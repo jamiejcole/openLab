@@ -235,6 +235,11 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
+        // The table's own frame does not always change when the page gets its width (the column
+        // gives the table its width), so the visible area is watched too.
+        scroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(tableResized), name: NSView.frameDidChangeNotification, object: scroll.contentView)
 
         let root = NSStackView(views: [summaryLabel, scroll, actions])
         root.orientation = .vertical
@@ -247,17 +252,31 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
         return root
     }
 
+    /// The column width the rows' heights were last worked out for.
+    private var fittedWidth: CGFloat = 0
+
     @objc private func tableResized() {
         guard let column = table.tableColumns.first else { return }
         let visible = table.enclosingScrollView?.contentView.bounds.width ?? table.bounds.width
         // A page that is not shown has no width to fit; it is fitted when it shows.
         guard visible > 40 else { return }
         let width = max(column.minWidth, visible - table.intercellSpacing.width)
-        guard abs(column.width - width) > 0.5 else { return }
+        // The column may already be this wide (it follows the table) while the rows' heights were
+        // worked out for the width before: they are fitted once for every width.
+        guard abs(column.width - width) > 0.5 || abs(fittedWidth - width) > 0.5 else { return }
         column.width = width
-        if table.numberOfRows > 0 {
-            table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<table.numberOfRows))
-        }
+        fittedWidth = width
+        refitRows()
+    }
+
+    /// Works the rows' heights out again at once: animated, a page that just got its width would
+    /// open with its rows still shrinking from the heights of the narrow page before it.
+    private func refitRows() {
+        guard table.numberOfRows > 0 else { return }
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<table.numberOfRows))
+        NSAnimationContext.endGrouping()
     }
 
     // MARK: Table
@@ -268,13 +287,13 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard rows.indices.contains(row) else { return tableView.rowHeight }
-        return WarningCell.height(of: rows[row], width: tableView.frameOfCell(atColumn: 0, row: row).width)
+        let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
+        return WarningCell.height(of: rows[row], width: width)
     }
 
     /// A narrower or wider page wraps the reasons differently.
     func tableViewColumnDidResize(_ notification: Notification) {
-        guard table.numberOfRows > 0 else { return }
-        table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<table.numberOfRows))
+        refitRows()
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
