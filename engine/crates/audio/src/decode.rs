@@ -170,6 +170,16 @@ pub struct MediaWarning {
     pub frames: u64,
 }
 
+impl MediaWarning {
+    /// Whether the operator hears it: audio that plays as silence, or a file that stops before
+    /// its readable end. Everything else (a header that miscounts, frames dropped at a repeat,
+    /// slow seeks, priming kept) plays as the file is and is not reported (owner decision
+    /// 2026-11-22: only files that are really damaged are reported).
+    pub fn is_audible(&self) -> bool {
+        matches!(self.kind, WarningKind::Missing | WarningKind::Unreadable)
+    }
+}
+
 /// A playable file's probe: its format and exact length, any damage found on the way, and how
 /// seeks reach its frames (pass it on in [`StreamRequest`](crate::StreamRequest)).
 #[derive(Clone, Debug, PartialEq, Eq)]
