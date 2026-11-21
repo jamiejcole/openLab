@@ -130,7 +130,7 @@ struct Case {
 
 fn spec() -> impl Strategy<Value = Spec> {
     (
-        (0u8..34, 0u8..3, 0u8..3, 0u8..3, any::<bool>()),
+        (0u8..41, 0u8..3, 0u8..3, 0u8..3, any::<bool>()),
         (
             prop::bool::weighted(0.04),
             0u8..4,
@@ -164,10 +164,11 @@ fn spec() -> impl Strategy<Value = Spec> {
 
 /// The operations a step can be, with repeats for the ones that matter most: most of the show is
 /// GO and Start, with stops, pauses and resumes in between.
-const OPS: [u8; 64] = [
+const OPS: [u8; 80] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 7, 8, 9, 10, 11, 12, 12,
     13, 14, 15, 16, 17, 18, 19, 20, 21, 21, 22, 22, 23, 24, 25, 25, 26, 27, 28, 20, 4, 5, 29, 29,
-    30, 31, 31, 31, 31, 31, 33, 32, 32, 32,
+    30, 31, 31, 31, 31, 31, 33, 32, 32, 32, 34, 34, 35, 35, 35, 36, 36, 36, 37, 38, 39, 40, 31, 31,
+    36, 36,
 ];
 
 fn step() -> impl Strategy<Value = Step> {
@@ -273,7 +274,8 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                 .map(|(j, _)| j as u128 + 1)
                 .collect()
         };
-        let audio_specs = of_kind(&[2, 3, 14, 15, 16, 17, 19, 20, 21]);
+        // (Video cues too: a Fade, Devamp or Stop acts on a picture as on a sound.)
+        let audio_specs = of_kind(&[2, 3, 14, 15, 16, 17, 19, 20, 21, 32, 34, 35, 36]);
         let group_specs = of_kind(&[4, 18, 22]);
         let t = usize::from(s.target);
         let picked = match t % 4 {
@@ -293,6 +295,16 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
             2 | 3 | 14..=17 | 19..=21 => audio(),
             // A picture: a voice to the cue engine, played by the stage host.
             32 => video(),
+            // Pictures with timing of their own (VID-07): held on their last frame until
+            // stopped, looping until devamped, or with an end time and counted loops.
+            34 => timed_video(VideoShape::Held, true, s.flag),
+            35 => timed_video(VideoShape::Loops, s.flag, s.armed),
+            36 => timed_video(VideoShape::Counted, s.flag && s.armed, s.armed),
+            // A Load cue counting back from its target's end (one pass of a loop).
+            37 => CueKind::Load {
+                target,
+                load_to_time: -(f64::from(s.post) * 0.4 + 0.1),
+            },
             // Static problems of its own (no media file), for the auto-follow rule below.
             31 => {
                 let mut k = audio();
@@ -369,17 +381,18 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         };
         // Kinds 27..=30 are a looping sound followed by a cue that acts on it, the way shows use
         // them (devamp the loop, fade it out, stop it with a fade, pause it): the sound
-        // continues into that cue after a short post-wait.
-        let pair = (27..=30).contains(&s.kind).then(|| {
+        // continues into that cue after a short post-wait. Kinds 38..=40 are the same with a
+        // looping movie (held on its last frame or not) for the sound.
+        let pair = matches!(s.kind, 27..=30 | 38..=40).then(|| {
             let sound = 2000 + 6 * i as u128;
             let acts = match s.kind {
-                27 => CueKind::Devamp {
+                27 | 38 => CueKind::Devamp {
                     target: Some(cue_id(sound)),
                     start_next_cue: s.flag,
                     stop_target_when_slice_ends: s.armed,
                     devamp_mode: DevampMode::CurrentSlice,
                 },
-                28 => CueKind::Fade {
+                28 | 39 => CueKind::Fade {
                     target: Some(cue_id(sound)),
                     duration: f64::from(s.post) * 0.3,
                     curve: FadeCurve::EqualPower,
@@ -392,7 +405,7 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                     mode: Default::default(),
                     geometry: Default::default(),
                 },
-                29 => CueKind::Stop {
+                29 | 40 => CueKind::Stop {
                     target: Some(cue_id(sound)),
                     fade_out: FadeSpec {
                         duration: f64::from(s.pre) * 0.2,
@@ -406,6 +419,9 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
             (sound, cue(sound + 1, acts))
         });
         let mut c = match &pair {
+            Some((sound, _)) if s.kind >= 38 => {
+                cue(*sound, timed_video(VideoShape::Loops, s.flag, true))
+            }
             Some((sound, _)) => cue(*sound, audio()),
             None => cue(n, kind),
         };
@@ -466,6 +482,46 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         attach(&mut open, &mut top, g);
     }
     top
+}
+
+/// The timing a generated Video cue has besides holding at its end.
+#[derive(Clone, Copy)]
+enum VideoShape {
+    Held,
+    /// Its last slice loops until devamped.
+    Loops,
+    /// An end time, and a slice played three times.
+    Counted,
+}
+
+/// A Video cue with timing of its own, and its sound on patch 1 (`patched`) or on none (it
+/// then breaks when the binary says its file has sound).
+fn timed_video(shape: VideoShape, hold: bool, patched: bool) -> CueKind {
+    let mut kind = video();
+    if let CueKind::Video { timing, sound, .. } = &mut kind {
+        timing.hold_at_end = hold || matches!(shape, VideoShape::Held);
+        match shape {
+            VideoShape::Held => {}
+            VideoShape::Loops => {
+                timing.slices = vec![SliceMarker {
+                    time: 1.0,
+                    play_count: 2.into(),
+                }];
+                timing.last_slice_play_count = PlayCount::Endless;
+            }
+            VideoShape::Counted => {
+                timing.end_time = Some(3.0);
+                timing.slices = vec![SliceMarker {
+                    time: 1.0,
+                    play_count: 3.into(),
+                }];
+            }
+        }
+        if patched {
+            sound.patch = Some(patch_id(1));
+        }
+    }
+    kind
 }
 
 fn each(cues: &[Cue], f: &mut impl FnMut(&Cue)) {
@@ -543,6 +599,18 @@ fn find_mut(cues: &mut [Cue], id: CueId) -> Option<&mut Cue> {
         }
     }
     None
+}
+
+/// A probe's answer, mostly playable: a show that is broken from the start covers little.
+fn media_status(n: u8) -> MediaStatus {
+    match n % 8 {
+        0 => MediaStatus::Unknown,
+        1 => MediaStatus::Missing,
+        2 => MediaStatus::Unsupported {
+            reason: "codec".into(),
+        },
+        _ => MediaStatus::Available,
+    }
 }
 
 fn pick(ws: &Workspace, a: u8) -> CueId {
@@ -635,15 +703,33 @@ struct Voice {
     dead: bool,
     /// The engine was told the action's length (`ActionLength`).
     told: bool,
+    /// A Video cue held on its last frame: it has no end of its own (nor a length to tell)
+    /// until a devamp with stop gives it one.
+    hold: bool,
+}
+
+/// What the binary plays a Video cue's picture as, from its model at the start.
+#[derive(Clone, Copy, Debug, Default)]
+struct Picture {
+    hold: bool,
+    /// A slice that loops until devamped.
+    loops: bool,
 }
 
 impl Voice {
-    fn new(cue: CueId, run: RunId, preview: bool) -> Self {
+    fn new(cue: CueId, run: RunId, preview: bool, picture: Option<Picture>) -> Self {
+        // A movie loops only where its slices say so; any other one ends, some only after
+        // many steps, so an edit of its end time can find it playing.
+        let flavor = match (picture, flavor(cue)) {
+            (Some(p), _) if p.loops => Flavor::Loop,
+            (Some(_), Flavor::Loop) => Flavor::Finite(20_000),
+            (_, f) => f,
+        };
         Self {
             cue,
             run,
             preview,
-            flavor: flavor(cue),
+            flavor,
             started: false,
             playing: false,
             pos: 0,
@@ -655,6 +741,7 @@ impl Voice {
             cmds: Vec::new(),
             dead: false,
             told: false,
+            hold: picture.is_some_and(|p| p.hold),
         }
     }
 
@@ -837,6 +924,9 @@ impl Voice {
                         return;
                     }
                 }
+                if self.hold {
+                    self.end_pos = None;
+                }
                 // Half the voices tell the engine their length ahead (`ActionLength`, as the
                 // binary does for a finite table), half leave the end to the voice's report.
                 if let Some(frames) = self.end_pos
@@ -934,6 +1024,9 @@ impl Voice {
                     Flavor::Finite(len) | Flavor::FailsAfter { len, .. } => Some(len),
                     Flavor::FailsAtOpen => self.end_pos,
                 };
+                if self.hold {
+                    self.end_pos = None;
+                }
                 if let Some(frames) = self.end_pos
                     && self.announces()
                 {
@@ -954,7 +1047,10 @@ impl Voice {
                     (Flavor::Loop, None) if self.started => {
                         let leave = pos + 100;
                         self.leave = Some(leave);
-                        self.end_pos = Some(leave + if stop { 0 } else { 200 });
+                        // A held picture leaves its loop for its last frame and stays there,
+                        // unless the devamp stops it.
+                        self.end_pos =
+                            (stop || !self.hold).then_some(leave + if stop { 0 } else { 200 });
                         Some(leave)
                     }
                     (Flavor::Loop, Some(leave)) if pos < leave => Some(leave),
@@ -1061,8 +1157,9 @@ struct Sim {
     seq: u64,
     errors: Vec<String>,
     /// The cues the engine finds as Video cues (the first cue of a duplicated id, as the
-    /// workspace stands now): a seek's position is a point in their action, not of their file.
-    videos: BTreeSet<CueId>,
+    /// workspace stands now), with how their pictures play: a seek's position is a point in
+    /// their action, not of their file.
+    videos: BTreeMap<CueId, Picture>,
 }
 
 impl Sim {
@@ -1131,7 +1228,7 @@ impl Sim {
                     position,
                 } => {
                     self.known.insert(*run);
-                    let into = self.videos.contains(cue).then_some(*position);
+                    let into = self.videos.contains_key(cue).then_some(*position);
                     self.queue(*from, *at, Cmd::Seek { run: *run, into });
                     // What comes next for the fresh id goes to the same voice (as a resume).
                     if let Some(v) = self.voices.remove(from) {
@@ -1224,7 +1321,9 @@ impl Sim {
             return;
         }
         self.known.insert(run);
-        self.voices.insert(run, Voice::new(cue, run, preview));
+        let picture = self.videos.get(&cue).copied();
+        self.voices
+            .insert(run, Voice::new(cue, run, preview, picture));
         self.queue(run, at, Cmd::Start { offset });
     }
 
@@ -1315,6 +1414,8 @@ struct Outcome {
     /// What each `DeviceLost` of the run found: a running group, a paused run, a broken run
     /// with its continue pending.
     lost: Vec<&'static str>,
+    /// What else the run got to (`Run::reached`).
+    reached: BTreeSet<&'static str>,
 }
 
 struct Run {
@@ -1369,6 +1470,21 @@ struct Run {
     /// Playlists whose mode was edited from shuffled: a pass begun shuffled keeps its order to
     /// its end, so list order does not tell which child comes next.
     edited_from_shuffled: BTreeSet<CueId>,
+    /// Cues' own panics under way (`PanicCue`): when their fade ends, the cues they fade out (the
+    /// cue and those inside it), and which of those have been started again since.
+    cue_panics: Vec<CuePanic>,
+    /// A cue's own panic has been pressed in this run, so a stopping cue may be fading in one.
+    own_panics: bool,
+    /// What the run got to that the coverage test asks for (beside `lost`).
+    reached: BTreeSet<&'static str>,
+    /// A Video cue started for its end time to be edited at the next step, and that time.
+    end_edit: Option<(CueId, Option<f64>)>,
+}
+
+struct CuePanic {
+    end: SampleTime,
+    tree: BTreeSet<CueId>,
+    restarted: BTreeSet<CueId>,
 }
 
 fn preview_action(a: &Action) -> bool {
@@ -1424,6 +1540,10 @@ impl Run {
             held_in_playlist: BTreeSet::new(),
             moved_out_of: Vec::new(),
             edited_from_shuffled: BTreeSet::new(),
+            cue_panics: Vec::new(),
+            own_panics: false,
+            reached: BTreeSet::new(),
+            end_edit: None,
         }
     }
 
@@ -1480,6 +1600,11 @@ impl Run {
         let now = self.now;
         let is_panic = input == Input::Panic;
         let is_reset_all = input == Input::ResetAll;
+        let is_stop_all = input == Input::StopAll;
+        let cue_panic = match input {
+            Input::PanicCue { cue } | Input::PanicCueInBatch { cue } => Some(cue),
+            _ => None,
+        };
         let actions = handle_as_binary(&mut self.engine, &self.ws, &mut self.last, input, now);
         // Reset All: the workspace as just opened (only static problems remain).
         if is_reset_all {
@@ -1747,21 +1872,107 @@ impl Run {
         }
         if actions
             .iter()
-            .any(|a| matches!(a, Action::SeekVoice { .. }))
+            .any(|a| matches!(a, Action::SeekVoice { .. } | Action::StartVoice { .. }))
         {
             let ws = &self.ws;
             self.sim.videos = (ws.cues())
-                .filter(|c| {
-                    matches!(
-                        ws.find_cue(c.id).map(|f| &f.kind),
-                        Some(CueKind::Video { .. })
-                    )
+                .filter_map(|c| match ws.find_cue(c.id).map(|f| &f.kind) {
+                    Some(CueKind::Video { timing, .. }) => Some((
+                        c.id,
+                        Picture {
+                            hold: timing.hold_at_end,
+                            loops: timing.last_slice_play_count == PlayCount::Endless
+                                || timing
+                                    .slices
+                                    .iter()
+                                    .any(|m| m.play_count == PlayCount::Endless),
+                        },
+                    )),
+                    _ => None,
                 })
-                .map(|c| c.id)
                 .collect();
+        }
+        for action in &actions {
+            let picture = match action {
+                Action::DevampVoice { cue, .. }
+                | Action::StopVoice { cue, .. }
+                | Action::StateChanged { cue, .. } => self.sim.videos.get(cue),
+                _ => None,
+            };
+            let Some(picture) = picture else {
+                continue;
+            };
+            match action {
+                Action::DevampVoice { .. } if picture.hold => {
+                    self.reached.insert("devamp of a held picture");
+                }
+                Action::DevampVoice { .. } => {
+                    self.reached.insert("devamp of a picture");
+                }
+                Action::StateChanged {
+                    state: CueState::Fading,
+                    ..
+                } => {
+                    self.reached.insert("picture faded");
+                }
+                Action::StopVoice { .. } if picture.hold => {
+                    self.reached.insert("held picture stopped");
+                }
+                _ => {}
+            }
         }
         self.sim.apply(&actions);
         prop_assert!(self.sim.errors.is_empty(), "{:?}", self.sim.errors);
+        // No call runs away (a cycle is cut by the chain bound).
+        prop_assert!(
+            actions.len() <= 5000,
+            "{} actions in one call",
+            actions.len()
+        );
+        // Nothing due is left for later: no deadline at or before `now`, nor anywhere in the
+        // window the call committed (Deadlines, lookahead).
+        prop_assert!(
+            self.engine.next_deadline().is_none_or(|d| d > horizon),
+            "a deadline at {:?} is left after the call at {} ({:?})",
+            self.engine.next_deadline(),
+            now,
+            self.input
+        );
+        self.check_own_panics(&actions, cue_panic)?;
+        // Stop All: nothing active, loaded or pending, no panic window, no preview, and every
+        // voice of the show has its stop on its way (Stop All).
+        if is_stop_all {
+            self.reached.insert("Stop All");
+            prop_assert!(
+                self.engine.next_deadline().is_none(),
+                "a deadline survived Stop All"
+            );
+            prop_assert!(self.engine.panic_end().is_none());
+            prop_assert!(self.engine.previewing().next().is_none());
+            for (id, state) in self.engine.cue_states() {
+                prop_assert!(
+                    !state.is_active() && state != CueState::Loaded,
+                    "cue {} {:?} after Stop All",
+                    id,
+                    state
+                );
+            }
+            prop_assert!(
+                self.sim.loaded.is_empty(),
+                "streams left after Stop All: {:?}",
+                self.sim.loaded
+            );
+            for v in self.sim.voices.values().filter(|v| !v.preview) {
+                prop_assert!(
+                    v.has_pending_stop()
+                        || v.stop_end.is_some_and(|e| e <= horizon)
+                        || (v.told && v.over_by(horizon)),
+                    "voice {:?} of {} survived Stop All",
+                    v.run,
+                    v.cue
+                );
+            }
+        }
         // The sleep-prevention query agrees with the reported states.
         prop_assert_eq!(
             self.engine.has_active_cues(),
@@ -1899,6 +2110,67 @@ impl Run {
             }
         }
         self.check_playlist_marks()
+    }
+
+    /// A cue's own panic (Stop All and a cue's own panic): the cue and everything in it fade out
+    /// or stop at once, no voice of theirs starts afterwards unless the cue is started again,
+    /// and [`Run::settle`] finds them all inactive once the fade is over. Other cues go on.
+    fn check_own_panics(&mut self, actions: &[Action], pressed: Option<CueId>) -> Check {
+        for action in actions {
+            for watch in &mut self.cue_panics {
+                match action {
+                    // Started again (a group adopted by a child started on its own goes from
+                    // idle to running).
+                    Action::StateChanged {
+                        cue,
+                        state: CueState::PreWaiting | CueState::Running,
+                        ..
+                    } if watch.tree.contains(cue) => {
+                        watch.restarted.insert(*cue);
+                    }
+                    Action::StartVoice { cue, .. } => prop_assert!(
+                        !watch.tree.contains(cue) || watch.restarted.contains(cue),
+                        "{} started a voice after its panic ({:?})",
+                        cue,
+                        self.input
+                    ),
+                    _ => {}
+                }
+            }
+        }
+        let Some(cue) = pressed else {
+            return Ok(());
+        };
+        self.own_panics = true;
+        self.reached.insert(match self.input {
+            Input::PanicCueInBatch { .. } => "own panic in a batch",
+            _ => "own panic",
+        });
+        // (A duplicate id shares one runtime between cues.)
+        if !self.unique_ids() {
+            return Ok(());
+        }
+        let mut tree = vec![cue];
+        if let Some(c) = self.ws.find_cue(cue) {
+            flatten(c.children(), &mut tree);
+        }
+        for id in &tree {
+            let state = self.engine.state(*id);
+            prop_assert!(
+                state == CueState::Stopping || !state.is_active(),
+                "{} {:?} after the panic of {}",
+                id,
+                state,
+                cue
+            );
+        }
+        let frames = (self.ws.settings.panic_duration * 1000.0).round() as u64;
+        self.cue_panics.push(CuePanic {
+            end: self.now + frames,
+            tree: tree.into_iter().collect(),
+            restarted: BTreeSet::new(),
+        });
+        Ok(())
     }
 
     /// Oracle for the cue list's mark: for every Playlist group not running, the child the
@@ -2134,6 +2406,24 @@ impl Run {
         // Everything due has been done.
         prop_assert!(self.engine.next_deadline().is_none_or(|d| d > horizon));
         prop_assert!(!self.engine.is_due(now));
+        // A cue's own panic is over by its end: nothing it faded out is still active, unless it
+        // was started again since.
+        let (over, going): (Vec<CuePanic>, Vec<CuePanic>) = std::mem::take(&mut self.cue_panics)
+            .into_iter()
+            .partition(|w| w.end <= now);
+        self.cue_panics = going;
+        for watch in over {
+            for id in watch.tree.difference(&watch.restarted) {
+                let state = self.engine.state(*id);
+                prop_assert!(
+                    !state.is_active(),
+                    "{} {:?} after its panic ended at {}",
+                    id,
+                    state,
+                    watch.end
+                );
+            }
+        }
         // Static problems and the broken state agree: an idle cue with problems is broken.
         for (id, problems) in self.engine.broken_cues() {
             prop_assert!(!problems.is_empty());
@@ -2338,6 +2628,23 @@ impl Run {
                 );
             }
         }
+        // A picture held on its last frame keeps its cue active until it is stopped: the engine
+        // never ends it by itself (VID-07).
+        for (key, v) in self.sim.voices.iter().filter(|(_, v)| v.hold && !v.preview) {
+            let held =
+                v.started && v.end_pos.is_none() && !v.has_pending_stop() && v.stop_end.is_none();
+            if held {
+                self.reached.insert("held picture checked");
+                prop_assert_eq!(self.engine.run_of(v.cue), Some(*key));
+                prop_assert!(
+                    self.engine.state(v.cue).is_active(),
+                    "held picture of {} is {:?} ({:?})",
+                    v.cue,
+                    self.engine.state(v.cue),
+                    self.input
+                );
+            }
+        }
         // No voice leaks: every voice the mixer holds is the run the engine reports (unless a
         // stop for it is still ahead, or a fade-out ends inside the window).
         for (key, v) in self.sim.voices.iter().filter(|(_, v)| !v.preview) {
@@ -2381,9 +2688,50 @@ impl Run {
         })
     }
 
+    /// Edits a Video cue's end time (`None`: the end of its file), and returns what the binary
+    /// then tells the engine: a playing movie's plan is cut there and its run told its new
+    /// length, never shorter than where the picture is; a held one is told none, and one past a
+    /// devamp, in a loop or stopping keeps its plan.
+    fn edit_end_time(&mut self, cue: CueId, end: Option<f64>) -> Input {
+        if let Some(CueKind::Video { timing, .. }) =
+            find_mut(&mut self.ws.cue_lists[0].cues, cue).map(|c| &mut c.kind)
+        {
+            timing.end_time = end;
+        }
+        let now = self.now;
+        let run = self
+            .engine
+            .run_of(cue)
+            .filter(|r| self.engine.runs_action(cue, *r));
+        if let Some(run) = run
+            && let Some(v) = self.sim.voices.get_mut(&run)
+            && v.cue == cue
+            && v.started
+            && v.playing
+            && !v.hold
+            && v.leave.is_none()
+            && v.stop_end.is_none()
+            && v.cmds.is_empty()
+            && v.end_pos.is_some()
+            && let Some(end) = end
+        {
+            let reached = v.pos + now.saturating_sub(v.since);
+            let frames = ((end * 1000.0) as u64).max(reached);
+            v.end_pos = Some(frames);
+            v.told = true;
+            self.reached.insert("end time edited while playing");
+            return Input::ActionLength { cue, run, frames };
+        }
+        Input::Tick
+    }
+
     /// Applies a step's input and checks the rules that depend on what it was.
     fn step(&mut self, s: &Step) -> Check {
         self.move_to(self.now + s.dt)?;
+        if let Some((cue, end)) = self.end_edit.take() {
+            let input = self.edit_end_time(cue, end);
+            self.call(input, Kind::Operator { trigger: false })?;
+        }
         let list = self.list;
         // Half the time the target is a cue that is doing something (operations on idle cues
         // are mostly no-ops).
@@ -2502,15 +2850,7 @@ impl Run {
             22 => Input::ResumeAll,
             23 => Input::MediaStatus {
                 media: MediaRef::new("media/a.wav"),
-                // Mostly playable: a show that is broken from the start covers little.
-                status: match s.b % 8 {
-                    0 => MediaStatus::Unknown,
-                    1 => MediaStatus::Missing,
-                    2 => MediaStatus::Unsupported {
-                        reason: "codec".into(),
-                    },
-                    _ => MediaStatus::Available,
-                },
+                status: media_status(s.b),
             },
             24 => Input::PatchStatus {
                 patch: patch_id(1),
@@ -2682,6 +3022,100 @@ impl Run {
                     run: RunId(u64::from(s.b)),
                 },
             },
+            34 => Input::StopAll,
+            // A cue's own panic (OSC), alone or in a batch with a cue inside or around it, which
+            // the binary sends as the batch's later item.
+            35 => {
+                let cues = &self.ws.cue_lists[0].cues;
+                let inside = self.ws.find_cue(target).map(Cue::children).unwrap_or(&[]);
+                let other = match s.b % 4 {
+                    0 | 1 => None,
+                    2 if !inside.is_empty() => Some(inside[usize::from(s.b / 4) % inside.len()].id),
+                    2 => groups_around(cues, target).last().copied(),
+                    _ => Some(pick(&self.ws, s.b / 4)),
+                };
+                match other {
+                    Some(other) => {
+                        self.call(
+                            Input::PanicCue { cue: target },
+                            Kind::Operator { trigger: false },
+                        )?;
+                        Input::PanicCueInBatch { cue: other }
+                    }
+                    None => Input::PanicCue { cue: target },
+                }
+            }
+            // Model edit: a Video cue's end time, mostly of one that plays to an end. With none
+            // playing, one is started and the next step edits it.
+            36 => {
+                let mut videos = Vec::new();
+                each(&self.ws.cue_lists[0].cues, &mut |c| {
+                    if matches!(c.kind, CueKind::Video { .. }) {
+                        videos.push(c.id);
+                    }
+                });
+                let ends = |c: CueId| {
+                    let voice = self.engine.run_of(c).and_then(|r| self.sim.voices.get(&r));
+                    self.engine.state(c) == CueState::Running
+                        && voice.is_some_and(|v| v.end_pos.is_some())
+                };
+                let playing: Vec<CueId> = videos.iter().copied().filter(|c| ends(*c)).collect();
+                let end = (s.b != u8::MAX).then(|| f64::from(s.b) / 40.0);
+                let any = |v: &[CueId]| v.get(usize::from(s.a) % v.len().max(1)).copied();
+                match (any(&playing), any(&videos)) {
+                    (Some(cue), _) if s.a % 4 != 0 => self.edit_end_time(cue, end),
+                    (_, Some(cue)) if s.b % 4 != 0 => {
+                        self.end_edit = Some((cue, end));
+                        kind = Kind::Operator { trigger: true };
+                        Input::Start { cue }
+                    }
+                    (_, Some(cue)) => self.edit_end_time(cue, end),
+                    (_, None) => Input::Tick,
+                }
+            }
+            // Lengths told again (an edit, a probe answer), or of a cue that went away.
+            37 => {
+                let length = (!s.b.is_multiple_of(4)).then(|| u64::from(s.b) * 20);
+                let lengths = vec![(target, length)];
+                if s.b.is_multiple_of(2) {
+                    Input::CueLengths { lengths }
+                } else {
+                    Input::CuePassLengths { lengths }
+                }
+            }
+            38 => Input::SliceProblems {
+                cues: vec![(
+                    target,
+                    match s.b % 3 {
+                        0 => None,
+                        1 => Some(SliceProblem::NothingPlays),
+                        _ => Some(SliceProblem::Unplayable {
+                            reason: "slice too short".into(),
+                        }),
+                    },
+                )],
+            },
+            // Whether the movie has sound: the Video cues with no patch then break.
+            39 => Input::MediaSound {
+                media: vec![(MediaRef::new("media/v.mov"), s.b.is_multiple_of(4))],
+            },
+            40 => Input::Availability {
+                media: vec![
+                    (MediaRef::new("media/a.wav"), media_status(s.b)),
+                    (MediaRef::new("media/v.mov"), media_status(s.b / 8)),
+                ],
+                patches: vec![(
+                    patch_id(1),
+                    if s.b % 5 == 0 {
+                        PatchResolution::DeviceMissing { device: "D".into() }
+                    } else {
+                        PatchResolution::Mapped {
+                            device: "D".into(),
+                            channels: vec![0, 1],
+                        }
+                    },
+                )],
+            },
             _ => {
                 // Model edit: change a cue's timing and continue mode.
                 if let Some(c) = find_mut(&mut self.ws.cue_lists[0].cues, target) {
@@ -2714,7 +3148,7 @@ impl Run {
                     | CueState::Stopping
             );
             active
-                && !(state == CueState::Stopping && any_panic_option)
+                && !(state == CueState::Stopping && (any_panic_option || self.own_panics))
                 && self.unique_ids()
                 && self.engine.panic_end().is_none()
                 && self
@@ -3146,6 +3580,7 @@ impl Run {
             raw: self.raw,
             shown: self.shown,
             lost: self.lost,
+            reached: self.reached,
         }
     }
 }
@@ -3157,20 +3592,38 @@ fn run(case: &Case, previews: bool) -> Result<Outcome, TestCaseError> {
 fn run_with(case: &Case, previews: bool, follow_rule: bool) -> Result<Outcome, TestCaseError> {
     let mut run = Run::new(case, previews);
     run.follow_rule = follow_rule;
-    // The binary tells the nominal length of every Audio cue whose plan ends (`CueLengths`), so
-    // a playlist halted by a child failing while it plays can time its follow (QLab check Q2).
+    // The binary tells the nominal length of every Audio and Video cue whose plan ends
+    // (`CueLengths`), so a playlist halted by a child failing while it plays can time its
+    // follow (QLab check Q2), and one pass of each (`CuePassLengths`), which a Load cue's
+    // negative time counts back from on a cue that loops for ever.
     let mut lengths = Vec::new();
+    let mut passes = Vec::new();
     each(&run.ws.cue_lists[0].cues, &mut |c| {
-        if matches!(c.kind, CueKind::Audio { .. }) {
-            let length = match flavor(c.id) {
-                Flavor::Finite(len) | Flavor::FailsAfter { len, .. } => Some(len),
-                Flavor::Loop | Flavor::FailsAtOpen => None,
-            };
+        let looping_picture = match &c.kind {
+            CueKind::Audio { .. } => false,
+            CueKind::Video { timing, .. } => {
+                timing.last_slice_play_count == PlayCount::Endless || timing.hold_at_end
+            }
+            _ => return,
+        };
+        let length = match flavor(c.id) {
+            _ if looping_picture => None,
+            Flavor::Finite(len) | Flavor::FailsAfter { len, .. } => Some(len),
+            Flavor::Loop | Flavor::FailsAtOpen => None,
+        };
+        // (Audio cues are told as before this was added, so the cases found then keep their
+        // shape.)
+        if matches!(c.kind, CueKind::Audio { .. }) || length.is_some() {
             lengths.push((c.id, length));
         }
+        passes.push((c.id, Some(length.unwrap_or(400))));
     });
     run.call(
         Input::CueLengths { lengths },
+        Kind::Operator { trigger: false },
+    )?;
+    run.call(
+        Input::CuePassLengths { lengths: passes },
         Kind::Operator { trigger: false },
     )?;
     for s in &case.steps {
@@ -4093,12 +4546,16 @@ fn the_generator_reaches_what_the_rules_are_about() {
     let mut runner = TestRunner::deterministic();
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
     let mut lost: Vec<&'static str> = Vec::new();
+    let mut reached: BTreeMap<&'static str, u32> = BTreeMap::new();
     let strategy = case();
-    // (600 cases: chain-limit cuts are rare and need a cycle in the generated show.)
-    for _ in 0..600 {
+    // (1000 cases: chain-limit cuts are rare and need a cycle in the generated show.)
+    for _ in 0..1000 {
         let case = strategy.new_tree(&mut runner).unwrap().current();
         let out = run(&case, true).unwrap_or_else(|e| panic!("{e}"));
         lost.extend(out.lost.iter().copied());
+        for what in out.reached {
+            *reached.entry(what).or_default() += 1;
+        }
         for a in &out.raw {
             let name = match a {
                 Action::StateChanged { state, .. } => format!("state {state:?}"),
@@ -4124,6 +4581,22 @@ fn the_generator_reaches_what_the_rules_are_about() {
     for what in ["group", "paused", "broken run", "left paused"] {
         let n = lost.iter().filter(|l| **l == what).count();
         assert!(n >= 10, "DeviceLost found {what} only {n} times");
+    }
+    // Stop All, a cue's own panic (alone and in a batch), and Video cues held on their last
+    // frame, devamped, faded and with their end time edited while they play: each in some cases.
+    for what in [
+        "Stop All",
+        "own panic",
+        "own panic in a batch",
+        "held picture checked",
+        "held picture stopped",
+        "devamp of a picture",
+        "devamp of a held picture",
+        "picture faded",
+        "end time edited while playing",
+    ] {
+        let n = reached.get(what).copied().unwrap_or(0);
+        assert!(n >= 5, "{what} reached in only {n} cases: {reached:?}");
     }
     let wanted = [
         "StartVoice",
