@@ -92,8 +92,7 @@ enum MainMenu {
                 item("menu.file.recover", #selector(AppDelegate.recoverAutosaves(_:))),
                 .separator(),
                 workspaceSettingsItem(),
-                item("menu.file.showInFinder", #selector(AppDelegate.showWorkspaceInFinder(_:))),
-                item("menu.file.copyMedia", #selector(AppDelegate.copyMediaIntoShowFolder(_:))),
+                showFilesItem(),
                 .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
                 closeAllItem(),
@@ -102,6 +101,18 @@ enum MainMenu {
             ]
         )
         return (file, recent)
+    }
+
+    /// File > Show Files, where QLab 5 keeps its workspace-files commands (manual p. 101): copy the
+    /// media the cues target into the show folder (WS-04), then show the show file in Finder.
+    private static func showFilesItem() -> NSMenuItem {
+        let submenu = NSMenu(title: localized("menu.file.showFiles"))
+        submenu.addItem(item("menu.file.copyMedia", #selector(AppDelegate.copyMediaIntoShowFolder(_:))))
+        submenu.addItem(.separator())
+        submenu.addItem(item("menu.file.showInFinder", #selector(AppDelegate.showWorkspaceInFinder(_:))))
+        let top = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+        top.submenu = submenu
+        return top
     }
 
     /// File > Workspace Settings: the settings window (Command-comma), then each category with its

@@ -79,6 +79,14 @@ final class CopyMediaTests: XCTestCase {
         return wc
     }
 
+    /// The workspace closed as its window's close button closes it (answered: nothing unsaved).
+    private func close(_ wc: WorkspaceWindowController) async {
+        guard let doc = app.windows.first(where: { $0.value === wc })?.key else { return XCTFail("no window") }
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed)
+        await assertEventually { self.app.windows[doc] == nil }
+    }
+
     /// A WAV tone of `seconds` in the library (its length makes its content differ).
     private func libFile(_ path: String, seconds: Double) throws -> URL {
         let url = lib.appendingPathComponent(path)
@@ -140,10 +148,13 @@ final class CopyMediaTests: XCTestCase {
     private func menuItem() throws -> (AppDelegate, NSMenuItem) {
         let delegate = AppDelegate()
         delegate.appController = app
+        // File > Show Files > Copy Media into Show Folder, where QLab keeps its copy command.
+        let file = try XCTUnwrap(MainMenu.make().bar.items[1].submenu)
+        let files = try XCTUnwrap(file.items.first { $0.title == loc("menu.file.showFiles") }?.submenu)
         let item = try XCTUnwrap(
-            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items)
-                .first { $0.action == #selector(AppDelegate.copyMediaIntoShowFolder(_:)) },
-            "File > Copy Media into Show Folder")
+            files.items.first { $0.action == #selector(AppDelegate.copyMediaIntoShowFolder(_:)) },
+            "File > Show Files > Copy Media into Show Folder")
+        XCTAssertNotNil(files.items.first { $0.action == #selector(AppDelegate.showWorkspaceInFinder(_:)) })
         return (delegate, item)
     }
 
@@ -175,7 +186,8 @@ final class CopyMediaTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: copy), original)
         XCTAssertEqual(try Data(contentsOf: chosen), original, "the original is untouched")
         await assertEventually { self.target(wc, self.intro).tip.contains("audio/thunder.wav") }
-        XCTAssertEqual(target(wc, intro).label, loc("inspector.target.choose"))
+        // The copying mark goes with the copy's end, which the engine sends after the retarget.
+        await assertEventually { self.target(wc, self.intro).label == loc("inspector.target.choose") }
         XCTAssertEqual(notice(wc).text, "", "a copy made as a file is added says nothing")
     }
 
@@ -434,7 +446,8 @@ final class CopyMediaTests: XCTestCase {
         await assertEventually { wc.store.document?.path == showFolder.appendingPathComponent("Opening.openlab").path }
         await advanceUntil("the cue targets its copy") { self.media(wc, cue) == "audio/first.wav" }
         XCTAssertTrue(FileManager.default.fileExists(atPath: showFolder.appendingPathComponent("audio/first.wav").path))
-        XCTAssertTrue(try commandEnabled(wc))
+        // On again once the copy's end (sent after the retarget) is in.
+        await assertEventually { (try? self.commandEnabled(wc)) == true }
     }
 
     /// The new show folder's name is taken → the next numbered one; the file-only choice copies
@@ -484,7 +497,7 @@ final class CopyMediaTests: XCTestCase {
     func testAShowMovedWithItsFolderFindsEveryFileAndACuePlays() async throws {
         let (wc, folder) = try await openDemo(copies: false)
         let a = try libFile("m1.wav", seconds: 0.5)
-        let b = try libFile("m2.wav", seconds: 0.5)
+        let b = try libFile("m2.wav", seconds: 0.7)
         try choose(a, for: intro, in: wc)
         try choose(b, for: rain, in: wc)
         await advanceUntil("set") { self.media(wc, self.rain) == b.path }
@@ -493,8 +506,7 @@ final class CopyMediaTests: XCTestCase {
         let didSave = await app.saveWorkspace(wc.store)
         XCTAssertTrue(didSave)
         await assertEventually { wc.store.document?.dirty == false }
-        app.closeAllWindows()
-        await assertEventually { self.app.windows.isEmpty }
+        await close(wc)
         let moved = engine.folder.appendingPathComponent("Moved-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.moveItem(at: folder, to: moved)
         try FileManager.default.removeItem(at: lib)
@@ -524,8 +536,8 @@ final class CopyMediaTests: XCTestCase {
         settings.close()
         let didSave = await app.saveWorkspace(wc.store)
         XCTAssertTrue(didSave)
-        app.closeAllWindows()
-        await assertEventually { self.app.windows.isEmpty }
+        await assertEventually { wc.store.document?.dirty == false }
+        await close(wc)
         let again = try await open(folder.appendingPathComponent("Demo.openlab"))
         let reopened = WorkspaceSettingsWindowController(store: again.store)
         addTeardownBlock { @MainActor in reopened.close() }

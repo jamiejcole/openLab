@@ -6883,7 +6883,13 @@ private final class ToolbarDrag: NSObject, @MainActor NSDraggingInfo {
 }
 
 extension PlayheadFlowTests {
-    private var listMenuItems: [NSMenuItem] { MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items) }
+    /// Every item of the menu bar's menus and their submenus (File > Show Files holds Show in Finder).
+    private var listMenuItems: [NSMenuItem] {
+        func all(_ items: [NSMenuItem]) -> [NSMenuItem] {
+            items + items.compactMap(\.submenu).flatMap { all($0.items) }
+        }
+        return all(MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items))
+    }
 
     private func menuItem(_ action: Selector) throws -> NSMenuItem {
         try XCTUnwrap(listMenuItems.first { $0.action == action }, "\(action)")

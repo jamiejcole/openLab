@@ -900,6 +900,7 @@
 "menu.view.nextSequence" = "Move Playhead to Next Sequence";
 "menu.view.previousSequence" = "Move Playhead to Previous Sequence";
 "menu.file.showInFinder" = "Show Workspace in Finder";
+"menu.file.showFiles" = "Show Files";
 "menu.file.copyMedia" = "Copy Media into Show Folder";
 "save.choice.label" = "Save as:";
 "save.choice.folder" = "Show and media in a new show folder";

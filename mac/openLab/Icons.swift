@@ -93,12 +93,13 @@ enum Icon: CaseIterable {
         case .timeToggle: return "time-toggle"
         case .timeToggleUp: return "time-toggle-up"
         case .targetFile: return "target-file"
+        // A file being copied into the show folder (WS-04).
+        case .targetFileCopying: return "target-file-copying"
         case .fieldClear: return "field-clear"
         case .fieldChoose: return "field-choose"
         case .fieldJump: return "field-jump"
         case .reservedPopOut: return "reserved-pop-out"
-        case .transportPanic, .activeCuePause, .activeCueResume, .engineAlarm, .targetFileMissing, .targetFileCopying:
-            return nil
+        case .transportPanic, .activeCuePause, .activeCueResume, .engineAlarm, .targetFileMissing: return nil
         }
     }
 
@@ -109,8 +110,6 @@ enum Icon: CaseIterable {
         case .activeCueResume: return "play.fill"
         case .engineAlarm: return "exclamationmark.triangle.fill"
         case .targetFileMissing: return "trash"
-        // A file being copied into the show folder (WS-04).
-        case .targetFileCopying: return "doc.on.doc"
         default: return nil
         }
     }

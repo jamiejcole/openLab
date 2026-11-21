@@ -305,10 +305,11 @@ final class MainWindowTests: XCTestCase {
             .settings: "settings", .statusNormal: "status-normal", .statusWaiting: "status-waiting",
             .statusWarning: "status-warning", .statusAlarm: "status-alarm", .playhead: "playhead",
             .timeToggle: "time-toggle", .timeToggleUp: "time-toggle-up", .targetFile: "target-file",
+            .targetFileCopying: "target-file-copying",
             .fieldClear: "field-clear", .fieldChoose: "field-choose", .fieldJump: "field-jump",
             .reservedPopOut: "reserved-pop-out",
         ]
-        XCTAssertEqual(approved.count, 33)
+        XCTAssertEqual(approved.count, 34)
         for (icon, name) in approved {
             XCTAssertEqual(icon.drawing, name, "\(icon)")
             XCTAssertNil(icon.symbol, "\(icon) keeps a symbol")
