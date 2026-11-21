@@ -97,12 +97,14 @@ impl Control {
             Inbox::Log { level, message } => self.eng.log(level, message),
             Inbox::Trigger { source, detail } => self.eng.observe_trigger(source, detail),
             Inbox::Stage(event) => self.stage_event(event),
+            Inbox::AppConnected { pid } => self.eng.set_app(true, pid),
             Inbox::AppsGone => {
                 self.close_monitors();
                 // No app is left to take a question down: the stage covers its display again.
                 if self.eng.stages.stand_back {
                     self.eng.set_stand_back(false);
                 }
+                self.eng.set_app(false, None);
             }
             Inbox::Shutdown => return Flow::Shutdown,
         }

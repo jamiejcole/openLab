@@ -101,6 +101,57 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertEqual(BackstopPlan.covers(workspaces: [(off, o), (off, o)], displays: Self.virtual), [:])
     }
 
+    /// #795 S1: the pointer is hidden over a display a stage covers (shown there: its picture or its
+    /// black) or the app holds black, never over another, nor over the display with the menu bar
+    /// while the stage there stands back under the app's windows.
+    func testThePointerIsHiddenOverEveryDisplayAStageCoversNotOverTheAppStandingBack() {
+        let displays =
+            Self.virtual + [
+                BackstopDisplay(id: "V3", frame: NSRect(x: 0, y: 0, width: 10, height: 10), hasMenuBar: false)
+            ]
+        let o = outputs([("a", "V1", "shown"), ("b", "V2", "shown"), ("c", "V3", "hidden")])
+        XCTAssertEqual(
+            BlackBackstop.pointerFrames(displays: displays, backstops: [], outputs: [o], standingBack: false),
+            [Self.v1Frame, Self.v2Frame])
+        XCTAssertEqual(
+            BlackBackstop.pointerFrames(displays: displays, backstops: [], outputs: [o], standingBack: true),
+            [Self.v1Frame], "the menu bar's display while the app's question is up")
+        XCTAssertEqual(
+            BlackBackstop.pointerFrames(displays: displays, backstops: ["V3"], outputs: [], standingBack: false),
+            [displays[2].frame], "the app's black between stage hosts")
+        XCTAssertEqual(
+            BlackBackstop.pointerFrames(displays: displays, backstops: [], outputs: [], standingBack: false), [])
+    }
+
+    /// #795 S1: the pointer over a covered display is hidden while the app is active and shown as soon
+    /// as it leaves it or the app is not; every hide is matched by one unhide.
+    func testThePointerHidesOnlyWhileOverACoveredDisplayWithTheAppActive() {
+        let pointer = StagePointer()
+        var calls: [String] = []
+        var at = NSPoint(x: Self.v1Frame.midX, y: Self.v1Frame.midY)
+        var active = true
+        pointer.hide = { calls.append("hide") }
+        pointer.unhide = { calls.append("unhide") }
+        pointer.location = { at }
+        pointer.isActive = { active }
+        pointer.frames = [Self.v1Frame]
+        XCTAssertEqual(calls, ["hide"], "over the stage, the app active")
+        pointer.update()
+        XCTAssertEqual(calls, ["hide"], "hidden once")
+        at = NSPoint(x: Self.v2Frame.midX, y: Self.v2Frame.midY)
+        pointer.update()
+        XCTAssertEqual(calls, ["hide", "unhide"], "off the stage")
+        at = NSPoint(x: Self.v1Frame.midX, y: Self.v1Frame.midY)
+        active = false
+        pointer.update()
+        XCTAssertEqual(calls, ["hide", "unhide"], "another app active: shown")
+        active = true
+        pointer.update()
+        pointer.frames = []
+        XCTAssertEqual(calls, ["hide", "unhide", "hide", "unhide"], "the stage gone: shown")
+        XCTAssertFalse(pointer.hidden)
+    }
+
     /// This Mac's displays as the backstop reads them: ColorSync's UUIDs (the stage host's display
     /// ids), each screen's frame, and the menu bar on the first screen only.
     func testThisMacsDisplaysAreNamedAsTheStageHostNamesThem() throws {
@@ -196,7 +247,8 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertEqual(window.frame, Self.v1Frame, file: file, line: line)
         XCTAssertEqual(window.level.rawValue, NSWindow.Level.screenSaver.rawValue - 1, file: file, line: line)
         XCTAssertFalse(window.canBecomeKey || window.canBecomeMain || window.isKeyWindow, file: file, line: line)
-        XCTAssertTrue(window.ignoresMouseEvents, file: file, line: line)
+        // #795: a click on it never reaches an app behind; the first one counts too.
+        XCTAssertFalse(window.ignoresMouseEvents, file: file, line: line)
         XCTAssertFalse(window.canHide, "Hide openLab leaves it up", file: file, line: line)
         XCTAssertTrue(window.isExcludedFromWindowsMenu, file: file, line: line)
         XCTAssertTrue(window.styleMask == .borderless, file: file, line: line)
@@ -204,6 +256,8 @@ final class BlackBackstopTests: XCTestCase {
             window.collectionBehavior, [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary],
             file: file, line: line)
         let view = try XCTUnwrap(window.contentView, file: file, line: line)
+        XCTAssertTrue(view.acceptsFirstMouse(for: nil), file: file, line: line)
+        XCTAssertTrue(view.hitTest(NSPoint(x: view.bounds.midX, y: view.bounds.midY)) === view, file: file, line: line)
         let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds), file: file, line: line)
         view.cacheDisplay(in: view.bounds, to: rep)
         for (x, y) in [(0, 0), (rep.pixelsWide / 2, rep.pixelsHigh / 2), (rep.pixelsWide - 1, rep.pixelsHigh - 1)] {
@@ -287,7 +341,7 @@ final class BlackBackstopTests: XCTestCase {
         let window = try XCTUnwrap(app.backstop.windows["V2"])
         XCTAssertEqual(window.frame, Self.v2Frame)
         XCTAssertFalse(window.canBecomeKey || window.canBecomeMain || window.isKeyWindow)
-        XCTAssertTrue(window.ignoresMouseEvents)
+        XCTAssertFalse(window.ignoresMouseEvents, "a click stays with it (#795)")
         try await killStageHostAndWaitForBlack(store, stage2, on: "V2")
         XCTAssertTrue(NSApp.keyWindow === key, "the key window is unchanged")
         XCTAssertTrue(workspaceWindow.firstResponder === responder, "the focus is unchanged")
@@ -489,6 +543,22 @@ final class BlackBackstopTests: XCTestCase {
         await pushed { self.v1 != nil }
         try assertHoldsV1Black()
         XCTAssertEqual(Set(app.backstop.windows.keys), ["V1", "V2"])
+        // #795 S2/S3: a click on it stays with it and brings the app forward; the app's own
+        // handler is wired.
+        XCTAssertNotNil(app.backstop.onClick)
+        var clicks = 0
+        let wired = app.backstop.onClick
+        app.backstop.onClick = { clicks += 1 }
+        let clickView = try XCTUnwrap(v1?.contentView)
+        let down = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown, location: NSPoint(x: 10, y: 10), modifierFlags: [], timestamp: 0,
+                windowNumber: v1?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        clickView.mouseDown(with: down)
+        clickView.rightMouseDown(with: down)
+        XCTAssertEqual(clicks, 2)
+        app.backstop.onClick = wired
+        XCTAssertFalse(app.backstop.pointer.frames.isEmpty, "the pointer is hidden over the covered displays")
         XCTAssertTrue(NSApp.keyWindow === key, "the key window is unchanged")
         XCTAssertTrue(workspaceWindow.firstResponder === responder, "the focus is unchanged")
 

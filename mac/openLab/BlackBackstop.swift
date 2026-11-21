@@ -62,9 +62,11 @@ enum BackstopPlan {
 /// window on each display a keep-black stage is shown on, one level under the stage host's windows
 /// there, so the audience sees black in those gaps. Like the stage, it covers the display with the
 /// menu bar too; Esc takes it down at once (`dismiss`), whether or not an engine answers. It never
-/// takes key or main, so the operator's keys stay with the app, lets every click through, and
-/// follows the workspaces' models and the display choices they last heard (kept while the engine
-/// is gone), and this Mac's displays.
+/// takes key or main, so the operator's keys stay with the app; like the stage it stands for, it
+/// takes every click on it (none reaches an app behind) and a click brings the app forward
+/// (`onClick`). It follows the workspaces' models and the display choices they last heard (kept
+/// while the engine is gone), and this Mac's displays. It also keeps `pointer` told which displays
+/// a stage covers, so the pointer is hidden over them.
 @MainActor
 final class BlackBackstop {
     /// One under the stage host's output windows (screen-saver level): over every app's windows,
@@ -166,6 +168,11 @@ final class BlackBackstop {
     }
     /// Told when a window of its own starts or stops covering the display with the menu bar.
     var menuBarCoverChanged: (@MainActor (Bool) -> Void)?
+    /// A click on one of its windows: the app comes forward with the keys, as a click on a stage
+    /// brings it (the stage host hands them over).
+    var onClick: (@MainActor () -> Void)?
+    /// Hides the pointer over every display a stage covers while the app is active.
+    let pointer = StagePointer()
     private var coveredMenuBar = false
 
     /// Its black on the display with the menu bar stands back under the app's windows, just under
@@ -226,7 +233,7 @@ final class BlackBackstop {
         }
         let back = asking || engineSilent
         for (id, frame) in plan {
-            let window = windows[id] ?? Self.makeWindow(frame: frame)
+            let window = windows[id] ?? makeWindow(frame: frame)
             windows[id] = window
             // Also puts back a window the system moved (its display went away).
             if window.frame != frame { window.setFrame(frame, display: false) }
@@ -240,16 +247,32 @@ final class BlackBackstop {
             coveredMenuBar.toggle()
             menuBarCoverChanged?(coveredMenuBar)
         }
+        pointer.frames = Self.pointerFrames(
+            displays: displays, backstops: Set(windows.keys), outputs: stores.map(\.videoOutputs), standingBack: back)
+    }
+
+    /// The displays the pointer is hidden over: each a stage is shown on (its picture or its black)
+    /// or the app holds black, but not the display with the menu bar while the stage and the black
+    /// there stand back under the app's windows (the operator works in the app there).
+    static func pointerFrames(
+        displays: [BackstopDisplay], backstops: Set<String>, outputs: [VideoOutputs], standingBack: Bool
+    ) -> [NSRect] {
+        var covered = backstops
+        for entry in outputs.flatMap(\.stages) where entry.state?.state == "shown" {
+            if let display = entry.state?.display { covered.insert(display) }
+        }
+        return displays.filter { covered.contains($0.id) && !(standingBack && $0.hasMenuBar) }.map(\.frame)
     }
 
     /// A borderless black window over `frame`, not yet ordered front.
-    private static func makeWindow(frame: NSRect) -> NSWindow {
+    private func makeWindow(frame: NSRect) -> NSWindow {
         let window = BackstopWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.level = level
+        window.level = Self.level
         // On every Space and over another app's full screen, out of Mission Control and cycling.
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
-        window.ignoresMouseEvents = true
+        // Clicks on it never reach an app behind; one brings the app forward.
+        window.ignoresMouseEvents = false
         window.hasShadow = false
         window.isOpaque = true
         window.backgroundColor = .black
@@ -257,7 +280,9 @@ final class BlackBackstop {
         window.canHide = false
         window.isExcludedFromWindowsMenu = true
         window.animationBehavior = .none
-        window.contentView = BlackView(frame: NSRect(origin: .zero, size: frame.size))
+        let view = BlackView(frame: NSRect(origin: .zero, size: frame.size))
+        view.onClick = { [weak self] in self?.onClick?() }
+        window.contentView = view
         return window
     }
 
@@ -281,11 +306,80 @@ private final class BackstopWindow: NSWindow {
     override var canBecomeMain: Bool { false }
 }
 
-/// Black over its whole bounds.
+/// Black over its whole bounds; takes every click, the first one too, and says so.
 private final class BlackView: NSView {
+    var onClick: (@MainActor () -> Void)?
     override var isOpaque: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { onClick?() }
+    override func rightMouseDown(with event: NSEvent) { onClick?() }
+    override func otherMouseDown(with event: NSEvent) { onClick?() }
+    override func scrollWheel(with event: NSEvent) {}
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.setFill()
         dirtyRect.fill()
+    }
+}
+
+/// #795: the pointer is hidden while it is over a display a stage covers (its picture or its black)
+/// and the app is active, so it neither shows over the audience's picture nor takes the shape an
+/// app behind the stage would give it. The stage host cannot hide it (macOS lets only the active
+/// app hide the pointer); a click on a stage makes the app active (the stage host hands it the
+/// keys). Shown again as soon as it leaves those displays or the app is not active.
+@MainActor
+final class StagePointer {
+    /// Seams: tests count instead of hiding the machine's pointer, and give its place.
+    var hide: @MainActor () -> Void = { NSCursor.hide() }
+    var unhide: @MainActor () -> Void = { NSCursor.unhide() }
+    var isActive: @MainActor () -> Bool = { NSApp.isActive }
+    var location: @MainActor () -> NSPoint = { NSEvent.mouseLocation }
+    /// The pointer is hidden by us now (each hide is matched by one unhide).
+    private(set) var hidden = false
+    /// The covered displays' frames, in screen coordinates.
+    var frames: [NSRect] = [] {
+        didSet { if frames != oldValue { update() } }
+    }
+    private nonisolated(unsafe) var monitors: [Any] = []
+    private nonisolated(unsafe) var observers: [NSObjectProtocol] = []
+
+    init() {
+        // Moves over another app's window (a stage's: the stage host's) come to the global
+        // monitor, moves over the app's own windows to the local one.
+        let moves: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        if let m = NSEvent.addGlobalMonitorForEvents(
+            matching: moves, handler: { [weak self] _ in MainActor.assumeIsolated { self?.update() } })
+        {
+            monitors.append(m)
+        }
+        if let m = NSEvent.addLocalMonitorForEvents(
+            matching: moves,
+            handler: { [weak self] event in
+                MainActor.assumeIsolated { self?.update() }
+                return event
+            })
+        {
+            monitors.append(m)
+        }
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+            observers.append(
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.update() }
+                })
+        }
+    }
+
+    deinit {
+        for m in monitors { NSEvent.removeMonitor(m) }
+        for o in observers { NotificationCenter.default.removeObserver(o) }
+    }
+
+    /// Hides or shows the pointer for where it is now.
+    func update() {
+        let at = location()
+        let over = frames.contains { NSMouseInRect(at, $0, false) }
+        let want = over && isActive()
+        guard want != hidden else { return }
+        hidden = want
+        if want { hide() } else { unhide() }
     }
 }

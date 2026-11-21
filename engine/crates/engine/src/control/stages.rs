@@ -79,6 +79,10 @@ pub(super) struct Stages {
     /// The app asked the stage on the display with the menu bar to stand back
     /// (`set_stand_back`): an alert, sheet or panel of its own is up.
     pub(super) stand_back: bool,
+    /// The operator's app as last heard (`set_app`): connected or not, and its process id.
+    /// `None` until an app first connects or goes, so an engine started without one (tests, the
+    /// offline driver) shows its stages as before.
+    app: Option<(bool, Option<u32>)>,
     /// Something a `video_outputs` push carries changed since the last one went out.
     push_due: bool,
     /// When the last `video_outputs` went out (control clock, ms).
@@ -210,6 +214,34 @@ impl Engine {
         if let Some(host) = &self.stages.host {
             host.picture(openlab_core::stage_link::ToStage::StandBack { on });
         }
+    }
+
+    /// An app connected (`connected`, with its process id if it gave one) or the last one went:
+    /// told to the stage host supervisor, which tells the stage host now and each one that starts
+    /// (before its stages). While no app is connected every stage's window is down (the cues play
+    /// on unseen), so no stage outlives the app.
+    pub(super) fn set_app(&mut self, connected: bool, pid: Option<u32>) {
+        let was = self.stages.app.replace((connected, pid));
+        if was.map(|(c, _)| c) != Some(connected) {
+            self.log(
+                LogLevel::Info,
+                if connected {
+                    "the app is connected: the stages are shown".to_owned()
+                } else {
+                    "the app is gone: the stages are taken down until it is back; cues play on"
+                        .to_owned()
+                },
+            );
+        }
+        self.start_stage_host();
+        if let Some(host) = &self.stages.host {
+            host.set_app(connected, pid);
+        }
+    }
+
+    /// Whether the stages are down for want of an app (`set_app`).
+    fn app_gone(&self) -> bool {
+        self.stages.app.is_some_and(|(connected, _)| !connected)
     }
 
     /// Each tick: tells the supervisor the control thread runs, at most every
@@ -604,6 +636,10 @@ impl Control {
             StageState::Shown { display } => (
                 LogLevel::Info,
                 format!("stage '{name}' is shown on {}", display_name(display)),
+            ),
+            StageState::Hidden if self.eng.app_gone() => (
+                LogLevel::Info,
+                format!("stage '{name}' is down while the app is gone"),
             ),
             StageState::Hidden => (
                 LogLevel::Info,

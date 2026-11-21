@@ -172,6 +172,9 @@ pub struct StageHost {
 
 enum Order {
     Stages(Vec<StageOutput>),
+    /// The operator's app (`ToStage::App`): kept, and given to each stage host that starts
+    /// before its stages, so a stage host started while the app is gone never puts a window up.
+    App(ToStage),
     /// A picture message or the clock: written as it is to the running stage host.
     Picture(ToStage),
     /// A routine clock: dropped when the stage host's queue is half full (the next replaces
@@ -201,6 +204,14 @@ impl StageHost {
     /// Sets the stages the stage host shows (every open workspace's), replacing the last set.
     pub fn set_stages(&self, stages: Vec<StageOutput>) {
         let _ = self.commands.send(Order::Stages(stages));
+    }
+
+    /// The operator's app connected (with its process id, if known) or gone: told to the
+    /// running stage host and to every one started after, ahead of its stages.
+    pub fn set_app(&self, connected: bool, pid: Option<u32>) {
+        let _ = self
+            .commands
+            .send(Order::App(ToStage::App { connected, pid }));
     }
 
     /// Sends a Video cue picture message or the clock (`load`, `play`, `pause`, `stop`,
@@ -306,6 +317,8 @@ struct Supervisor {
     commands: Receiver<Order>,
     events: EventSink,
     stages: Option<Vec<StageOutput>>,
+    /// The last `ToStage::App`, given to each stage host before its stages.
+    app: Option<ToStage>,
     running: Option<Running>,
     starts: VecDeque<Instant>,
     paused_until: Option<Instant>,
@@ -323,6 +336,7 @@ impl Supervisor {
             commands,
             events,
             stages: None,
+            app: None,
             running: None,
             starts: VecDeque::new(),
             paused_until: None,
@@ -358,6 +372,12 @@ impl Supervisor {
                             self.write(&ToStage::Stages { stages: stages.clone() });
                         }
                         self.stages = Some(stages);
+                    }
+                    Ok(Order::App(message)) => {
+                        if self.running.as_ref().is_some_and(|r| r.hello) {
+                            self.write(&message);
+                        }
+                        self.app = Some(message);
                     }
                     #[cfg(feature = "test-support")]
                     Ok(Order::Send(message)) => self.write(&message),
@@ -521,6 +541,9 @@ impl Supervisor {
                 }
                 r.hello = true;
                 (self.events)(StageEvent::Started { pid, video });
+                if let Some(app) = self.app.clone() {
+                    self.write(&app);
+                }
                 if let Some(stages) = self.stages.clone() {
                     self.write(&ToStage::Stages { stages });
                 }

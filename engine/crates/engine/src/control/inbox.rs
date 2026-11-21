@@ -70,8 +70,13 @@ pub enum Inbox {
     Trigger { source: String, detail: String },
     /// The stage host supervisor's report (video output).
     Stage(crate::stage::StageEvent),
-    /// The last app connection (one bound to no workspace) ended, by a quit or a crash: the
-    /// operator's monitor windows go with the app; the stages' output plays on.
+    /// An app connection (one bound to no workspace) said `hello`, naming its process `pid` if it
+    /// gave one: the stages are up again if they were down for want of an app, and a click on a
+    /// stage brings that app forward.
+    AppConnected { pid: Option<u32> },
+    /// The last app connection ended, by a quit or a crash: the operator's monitor windows go
+    /// with the app, and every stage's window comes down until an app connects again (cues play
+    /// on unseen).
     AppsGone,
     /// Stop the control loop.
     Shutdown,

@@ -2,11 +2,13 @@
 
 //! macOS: AppKit output windows drawn with Metal.
 //!
-//! The process is an accessory app (no Dock icon, no menu bar) that never activates: its
-//! windows come up with `orderFrontRegardless`, are borderless, ignore the mouse and cannot
-//! become key, so the operator's keys stay with the openLab app. A stage's window covers its
-//! display's whole frame, joins every Space and stays out of Mission Control and window
-//! cycling. It is at screen-saver level, over everything, on every display; on the one with the
+//! The process is an accessory app (no Dock icon, no menu bar) that never keeps the keys: its
+//! windows come up with `orderFrontRegardless`, are borderless and cannot become key, and if
+//! anything makes it the active app (a click on a stage) it hands the keys to the openLab app at
+//! once (`stage_view`). A stage's window takes every click and the pointer over it, so nothing
+//! behind it sees either: the pointer is blank there, and a click brings the openLab app forward.
+//! A stage's window covers its display's whole frame, joins every Space and stays out of
+//! Mission Control and window cycling. It is at screen-saver level, over everything, on every display; on the one with the
 //! menu bar (the operator's, a laptop's only one) it stands back just under every app's windows
 //! while the app has a question up or the engine has gone silent, so the operator can see the
 //! app. System full-screen mode is never used: it would need activation and a Space of its own.
@@ -22,6 +24,7 @@ mod gpu;
 mod media;
 mod monitor;
 mod probe;
+mod stage_view;
 #[cfg(feature = "test-support")]
 mod testmedia;
 
@@ -43,7 +46,7 @@ use objc2_core_graphics::{
     CGDirectDisplayID, CGDisplayChangeSummaryFlags, CGDisplayRegisterReconfigurationCallback,
     CGMainDisplayID,
 };
-use objc2_foundation::{NSNumber, NSRect, NSString};
+use objc2_foundation::{NSNumber, NSPoint, NSRect, NSString};
 use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use openlab_core::StageId;
@@ -367,6 +370,16 @@ impl Platform for Mac {
         self.standing_back = display.map(str::to_owned);
     }
 
+    fn set_operator(&mut self, pid: Option<u32>) {
+        stage_view::set_operator(pid);
+    }
+
+    fn keep_keys_with_operator(&mut self) {
+        if let Some(windows) = &self.windows {
+            stage_view::keep_keys_with_operator(windows.mtm);
+        }
+    }
+
     fn menu_bar_display(&self) -> Option<String> {
         #[cfg(feature = "test-support")]
         if self.virtual_displays.is_some() {
@@ -472,7 +485,8 @@ fn output_behaviour() -> NSWindowCollectionBehavior {
 }
 
 /// An output window covering `frame`, not yet ordered front: borderless (so it can never
-/// become key or main), at screen-saver level, ignoring the mouse, without a shadow, black.
+/// become key or main), at screen-saver level, without a shadow, black. Its content is a
+/// [`stage_view::StageView`]: every click and the pointer over it stay with it.
 fn output_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
     // SAFETY: AppKit on the main thread (the marker proves it); a borderless buffered window.
     let window = unsafe {
@@ -488,9 +502,12 @@ fn output_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
     unsafe { window.setReleasedWhenClosed(false) };
     window.setLevel(NSScreenSaverWindowLevel);
     window.setCollectionBehavior(output_behaviour());
-    window.setIgnoresMouseEvents(true);
+    // Clicks on a stage never reach an app behind it.
+    window.setIgnoresMouseEvents(false);
     window.setHasShadow(false);
     window.setBackgroundColor(Some(&NSColor::blackColor()));
+    let view = stage_view::StageView::new(mtm, NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
+    window.setContentView(Some(&view));
     window
 }
 
@@ -580,6 +597,13 @@ pub struct WindowReport {
     pub menu_bar_level: isize,
     pub behaviour_as_built: bool,
     pub ignores_mouse: bool,
+    /// Its content takes a click even while the stage host is not active.
+    pub accepts_first_mouse: bool,
+    /// Clicks (left, right, other button) sent to it through AppKit, each landing on the stage
+    /// and handing the keys to the operator's app (counted; no app is really activated).
+    pub clicks_handed_over: u32,
+    /// The point clicked is the stage's own view, not something behind.
+    pub click_lands_on_stage: bool,
     pub can_become_key: bool,
     pub can_become_main: bool,
     pub has_shadow: bool,
@@ -626,6 +650,17 @@ pub fn window_report() -> Option<WindowReport> {
         menu_bar_level: objc2_app_kit::NSMainMenuWindowLevel,
         behaviour_as_built: window.collectionBehavior() == output_behaviour(),
         ignores_mouse: window.ignoresMouseEvents(),
+        accepts_first_mouse: window
+            .contentView()
+            .is_some_and(|v| v.acceptsFirstMouse(None)),
+        click_lands_on_stage: window.contentView().is_some_and(|v| {
+            let hit = v.hitTest(NSPoint::new(
+                frame.size.width / 2.0,
+                frame.size.height / 2.0,
+            ));
+            hit.is_some_and(|h| std::ptr::eq(&*h, &*v))
+        }),
+        clicks_handed_over: clicks_handed_over(&window),
         can_become_key: window.canBecomeKeyWindow(),
         can_become_main: window.canBecomeMainWindow(),
         has_shadow: window.hasShadow(),
@@ -639,6 +674,45 @@ pub fn window_report() -> Option<WindowReport> {
     };
     window.close();
     Some(report)
+}
+
+/// Test support: a left, a right and an other-button click at the middle of `window`, each given
+/// to the view AppKit's hit test finds there (a window never ordered front takes no events from
+/// `sendEvent`): how many handed the keys to the operator's app (counted only: nothing is
+/// activated).
+#[cfg(feature = "test-support")]
+fn clicks_handed_over(window: &NSWindow) -> u32 {
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+    stage_view::take_handovers(true);
+    let size = window.frame().size;
+    let at = NSPoint::new(size.width / 2.0, size.height / 2.0);
+    let Some(hit) = window.contentView().and_then(|v| v.hitTest(at)) else {
+        return stage_view::take_handovers(false);
+    };
+    for kind in [
+        NSEventType::LeftMouseDown,
+        NSEventType::RightMouseDown,
+        NSEventType::OtherMouseDown,
+    ] {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            at,
+            NSEventModifierFlags::empty(),
+            0.0,
+            window.windowNumber(),
+            None,
+            0,
+            1,
+            1.0,
+        );
+        match (kind, event) {
+            (NSEventType::LeftMouseDown, Some(e)) => hit.mouseDown(&e),
+            (NSEventType::RightMouseDown, Some(e)) => hit.rightMouseDown(&e),
+            (_, Some(e)) => hit.otherMouseDown(&e),
+            (_, None) => {}
+        }
+    }
+    stage_view::take_handovers(false)
 }
 
 /// Test support: a monitor window built as the stage host builds one, read back, never
