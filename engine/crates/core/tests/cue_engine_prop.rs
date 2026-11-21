@@ -2711,8 +2711,8 @@ impl Run {
     /// length, never shorter than where the picture is; a held one is told none, and one past a
     /// devamp, in a loop or stopping keeps its plan.
     fn edit_end_time(&mut self, cue: CueId, end: Option<f64>) -> Result<Input, TestCaseError> {
-        // The binary's engine has carried out what was due by now (it ticks every block) when
-        // the edit comes, so an end already committed inside the window is left to the engine.
+        // The binary feeds a tick at the edit's `now` before it follows the end, so an end the
+        // tick commits inside the window is left to the engine.
         self.call(Input::Tick, Kind::Operator { trigger: false })?;
         if let Some(CueKind::Video { timing, .. }) =
             find_mut(&mut self.ws.cue_lists[0].cues, cue).map(|c| &mut c.kind)
@@ -5033,12 +5033,12 @@ fn a_disarmed_playlist_ending_broken_marks_no_child() {
     }
 }
 
-/// Found by the first sweep with end-time edits (a generator error, fixed): a movie told 300
-/// frames plays to 284 with nothing ticking the engine meanwhile, and its end time is then
-/// edited to 525. The engine's end on 300 lies inside the window of the next call, which carries
-/// it out before the new length, so the run ends on 300 while the simulated picture plays on.
-/// The binary's engine has ticked up to the edit (every block), so the binary finds that end
-/// committed and leaves the picture to it; the simulation now ticks first as well.
+/// Found by the first sweep with end-time edits: a movie told 300 frames plays to 284 with
+/// nothing ticking the engine meanwhile, and its end time is then edited to 525. The engine's
+/// end on 300 lies inside the window of the next call, which carries it out before the new
+/// length, so the run ends on 300 while the picture plays on. The binary had the same fault (a
+/// message is handled before its block's tick); it now ticks before following the end, and so
+/// does the simulation, which leaves the picture to that end.
 #[test]
 fn an_end_time_edit_inside_the_window_of_the_old_end_is_left_to_that_end() {
     let spec = |kind: u8, armed: bool| Spec {

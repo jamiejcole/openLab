@@ -1383,6 +1383,33 @@ fn an_end_moved_later_after_the_action_ended_leaves_the_old_end() {
     assert_eq!(s.stalls(), 0);
 }
 
+/// An end moved, later or earlier, while the old end is already inside the window the next
+/// tick commits and the control thread has not ticked since the last block (the edit is
+/// handled before the block's tick): the old end is the cue engine's, so the sound ends there
+/// too and the next cue follows on that sample, once. The sound never plays on past an action
+/// that has ended (where a stop no longer reaches it) nor stops before it.
+#[test]
+fn an_end_moved_while_the_old_end_is_due_in_the_window_leaves_the_old_end() {
+    for new_end in [0.45, 1.5] {
+        let mut s = end_show(Some(0.5), ONCE);
+        let at = go_app(&mut s);
+        s.run(92 * B);
+        s.render_only(B);
+        assert_eq!(
+            state(&s, 10),
+            CueState::Running,
+            "{new_end}: before the edit"
+        );
+        set_end(&mut s, 10, Some(new_end));
+        s.run(3 * u64::from(R48));
+        let what = format!("end moved to {new_end}");
+        assert_plays(&s, at, std::slice::from_ref(&(0..24_000)), &what);
+        followed_once_at(&s, at + 24_000, &what);
+        assert_eq!(state(&s, 10), CueState::Idle);
+        assert_eq!(s.stalls(), 0);
+    }
+}
+
 /// Flow: playing Audio cue, end time moved to a point the playhead has already passed → the
 /// cue's action ends at once: its sound stops on the edit's sample and its auto-follow starts
 /// the next cue there.

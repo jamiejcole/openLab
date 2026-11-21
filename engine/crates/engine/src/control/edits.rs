@@ -19,6 +19,11 @@ impl DocCx<'_> {
         for input in inputs {
             self.feed(input, now);
         }
+        // The cue engine first carries out what is due by now and commits its window: a message
+        // is handled before the block's tick, so an end it already counts as committed would
+        // otherwise look still ahead, and the voice would be moved past an action the engine
+        // then ends on its old end.
+        self.feed(Input::Tick, now);
         self.follow_end_times(now, footprint);
         // Follow the edit at once: a deleted running cue stops now, not at the next deadline.
         self.feed(Input::Tick, now);
