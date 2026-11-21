@@ -20,10 +20,12 @@ extension XCTestCase {
 
     /// The app with `shows` open (one window each, the last in front) on a new engine. `displays`
     /// (`"V1:1920x1080,..."`) gives the engine's stage host those virtual displays, drawn offscreen;
+    /// `recent` lists copies of those shows as the launcher's recents (the system's list is left alone);
     /// `prepare` is handed the folder of the shows' copies before the app starts (to write media
     /// or move files).
     @MainActor func launchApp(
-        opening shows: [String] = ["Demo", "Second"], displays: String? = nil, windowSize: String? = nil,
+        opening shows: [String] = ["Demo", "Second"], recent: [String] = [], displays: String? = nil,
+        windowSize: String? = nil,
         prepare: ((URL) throws -> Void)? = nil
     ) -> XCUIApplication {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -48,6 +50,9 @@ extension XCTestCase {
         if let windowSize { app.launchArguments += ["-OpenLabWindowSize", windowSize] }
         for show in shows {
             app.launchArguments += ["-OpenLabOpen", copies.appendingPathComponent("\(show)/\(show).openlab").path]
+        }
+        for show in recent {
+            app.launchArguments += ["-OpenLabRecent", copies.appendingPathComponent("\(show)/\(show).openlab").path]
         }
         engineSupport = support
         addTeardownBlock { @MainActor [weak self] in

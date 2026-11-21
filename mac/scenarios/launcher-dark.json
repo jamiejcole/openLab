@@ -1,0 +1,11 @@
+{
+  "about": "Launcher (#771): several recents, one missing, dark, then the notice.",
+  "show": "new",
+  "appearance": "dark",
+  "steps": [
+    {"focus": "launcher", "recents": ["Hamlet", "Lear", "!Old Season", "A Midsummer Night's Dream"]},
+    {"shot": "launcher-dark"},
+    {"focus": "launcher", "recents": ["Hamlet", "Lear", "!Old Season", "A Midsummer Night's Dream"], "notice": true},
+    {"shot": "launcher-dark-missing-notice"}
+  ]
+}

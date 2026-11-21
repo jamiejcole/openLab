@@ -1276,7 +1276,10 @@ final class CueTargetFlowTests: XCTestCase {
         return plan
     }
 
+    /// A cue added with nothing selected: at the end of the list and with no target (a window opens with the
+    /// playhead's cue selected, and a cue added then goes after it and a Start or Stop cue takes it as target).
     private func add(_ kind: NewCueKind) async throws -> ModelID {
+        wc.cueList.outlineView.deselectAll(nil)
         let added = await wc.editor.add(kind)
         let id = try XCTUnwrap(added)
         await assertEventually { self.wc.cueList.node(id) != nil }
@@ -2116,6 +2119,31 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertEqual(inspector.targetField.placeholderString, loc("inspector.target.noFile"))
     }
 
+    /// A long path in a narrow Target row keeps the home folder and the file and gives the middle folders up
+    /// for one ellipsis; no folder's name is ever cut in the middle (every title shown is a whole name).
+    func testALongTargetPathGivesUpItsMiddleFoldersWholeAndKeepsTheFile() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let names = ["openLab", ".claude", "worktrees", "integration", "mac", "scenarios", "cue-kind-icons", "media"]
+        let url = names.reduce(home) { $0.appendingPathComponent($1) }.appendingPathComponent("a.wav")
+        let control = TargetPathControl(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
+        control.controlSize = .small
+        control.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        control.url = url
+        control.setFullItems(InspectorViewController.shownPathItems(control.pathItems, of: url))
+        let all = Set(control.pathItems.map(\.title))
+        control.layoutSubtreeIfNeeded()
+        let titles = control.pathItems.map(\.title)
+        XCTAssertEqual(titles.first, home.lastPathComponent, "the home folder starts it")
+        XCTAssertEqual(titles.last, "a.wav", "the file ends it")
+        XCTAssertTrue(titles.contains("\u{2026}"), "the middle gives way to an ellipsis")
+        XCTAssertLessThan(titles.count, all.count)
+        XCTAssertTrue(titles.allSatisfy { $0 == "\u{2026}" || all.contains($0) }, "only whole names")
+        control.setFullItems(control.pathItems.filter { $0.title != "\u{2026}" })
+        control.frame.size.width = 2000
+        control.layoutSubtreeIfNeeded()
+        XCTAssertFalse(control.pathItems.map(\.title).contains("\u{2026}"), "all of it, given the room")
+    }
+
     func testAFileInTheHomeFolderIsShownFromTheHomeFolderDown() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let url = home.appendingPathComponent("Shows/media/a.wav")
@@ -2387,8 +2415,8 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertEqual(
             CueToolbarView.kinds.flatMap { $0 },
             [
-                .group, .audio, .video, .fade, .network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm,
-                .disarm, .wait, .memo,
+                .group, .audio, .video, .fade, .network, .start, .stop, .pause, .load, .reset, .devamp, .goto,
+                .target, .arm, .disarm, .wait, .memo,
             ])
     }
 

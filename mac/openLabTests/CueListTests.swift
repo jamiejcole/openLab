@@ -1043,6 +1043,30 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
+    /// A running cue's Duration cell shows its whole length as a faint bar under the green fill: the right end of
+    /// the cell (past the fill) is drawn, so a part-way fill is not a box round the first digits; with no run
+    /// nothing is drawn.
+    func testDurationCellOfARunningCueDrawsItsWholeBarUnderTheFill() throws {
+        func pixel(_ view: ProgressFillView, x: Int) -> NSColor? {
+            view.frame = NSRect(x: 0, y: 0, width: 120, height: 24)
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            return rep.colorAt(x: x, y: 12)
+        }
+        let bar = ProgressFillView()
+        bar.progress = (0.25, .systemGreen)
+        let edge = (114...119).compactMap { pixel(bar, x: $0)?.alphaComponent }.max() ?? 0
+        XCTAssertGreaterThan(edge, 0.02, "the faint track reaches the end of the cell")
+        let fill = try XCTUnwrap(pixel(bar, x: 10))
+        XCTAssertGreaterThan(fill.alphaComponent, 0.15, "and the fill is part of it")
+        XCTAssertLessThan(edge, fill.alphaComponent, "the track is fainter than the fill")
+        let inside = try XCTUnwrap(pixel(bar, x: 60))
+        XCTAssertEqual(inside.alphaComponent, 0, accuracy: 0.01, "inside the track, past the fill: clear")
+        bar.progress = nil
+        let none = (114...119).compactMap { pixel(bar, x: $0)?.alphaComponent }.max() ?? 1
+        XCTAssertEqual(none, 0, accuracy: 0.01, "no run: nothing drawn")
+    }
+
     /// A panicked cue's voice is still reported while it fades out, after the cue itself has ended:
     /// the cell must read the duration again, not stay on the last time counted.
     func testProgressReportedForACueThatHasEndedIsNotShown() async throws {
@@ -2902,6 +2926,9 @@ final class PlayheadFlowTests: XCTestCase {
         let chords: @MainActor () -> Set<KeyChord> = { HotkeyRules.menuChords(in: menu) }
         wc.inspector.menuChords = chords
         app.menuChords = chords
+        // A new cue's hotkey is unticked: ticked first, then the key typed.
+        guard case .success = await store.send(command: .setProperty(cues[0], .triggers(hotkey: nil, enabled: true)))
+        else { return XCTFail("tick") }
         XCTAssertTrue(wc.inspector.record(KeyChord("j")), wc.inspector.messageLabel.stringValue)
         await assertEventually("recorded") {
             self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "j"

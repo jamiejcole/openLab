@@ -4,6 +4,19 @@ import XCTest
 
 @testable import openLab
 
+/// The text of every field on screen under `view` (hidden ones left out).
+@MainActor
+func launcherTexts(_ view: NSView) -> [String] {
+    var out: [String] = []
+    func walk(_ v: NSView) {
+        if let field = v as? NSTextField, !field.isHidden { out.append(field.stringValue) }
+        if let button = v as? NSButton, !button.isHidden, !button.title.isEmpty { out.append(button.title) }
+        for sub in v.subviews where !sub.isHidden { walk(sub) }
+    }
+    walk(view)
+    return out
+}
+
 /// UI-01, WS-08, NFR-06: the launcher's version and help link, and the application preferences'
 /// General tab: how many backups of each workspace this machine keeps, kept by the engine.
 @MainActor
@@ -26,6 +39,54 @@ final class LauncherPreferencesTests: XCTestCase {
         let version = try XCTUnwrap(label(AX.launcherVersion, in: launcher.window?.contentView) as? NSTextField)
         XCTAssertEqual(version.stringValue, String(format: loc("launcher.version"), LauncherWindowController.version))
         XCTAssertFalse(LauncherWindowController.version.isEmpty)
+    }
+
+    private func lines(_ launcher: LauncherWindowController) -> [String] {
+        launcherTexts(launcher.window?.contentView ?? NSView())
+    }
+
+    /// Checklist: No recent shows (first launch) → the list area shows a short empty-state line, not
+    /// a blank gap; the window works in light and dark mode and does not clip at its smallest size.
+    func testNoRecentShowsShowsAnEmptyStateAndDoesNotClipAtItsSmallestSizeInLightAndDark() throws {
+        let launcher = LauncherWindowController()
+        let window = try XCTUnwrap(launcher.window)
+        launcher.reload(recents: [])
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            window.appearance = NSAppearance(named: name)
+            window.setContentSize(LauncherWindowController.leastSize)
+            XCTAssertEqual(window.contentLayoutRect.size.width, LauncherWindowController.leastSize.width)
+            let content = try XCTUnwrap(window.contentView)
+            content.layoutSubtreeIfNeeded()
+            let shown = lines(launcher)
+            XCTAssertTrue(shown.contains(loc("launcher.recent.none")), "\(name.rawValue): \(shown)")
+            XCTAssertTrue(shown.contains(loc("launcher.recent.none.detail")))
+            XCTAssertTrue(launcher.recentsTable.enclosingScrollView?.isHidden ?? false, "no empty list drawn")
+            for state in [LauncherEngineState.ready, .starting, .failed(loc("launcher.notResponding"))] {
+                launcher.apply(state: state)
+                launcher.showNotice(
+                    String(format: loc("launcher.missing"), "A long show name that wraps"),
+                    removing: URL(fileURLWithPath: "/x"))
+                content.layoutSubtreeIfNeeded()
+                try assertInside(content, name: "\(name.rawValue) \(state)")
+                launcher.showNotice(nil)
+            }
+        }
+        XCTAssertEqual(window.contentMinSize, LauncherWindowController.leastSize)
+    }
+
+    /// Every visible control's frame lies inside `root`: nothing is clipped at the window's edge.
+    private func assertInside(_ root: NSView, name: String) throws {
+        func walk(_ v: NSView) {
+            guard !v.isHidden, v !== root, !(v is NSScrollView) else { return }
+            let frame = root.convert(v.bounds, from: v)
+            if v is NSTextField || v is NSButton || v is NSImageView {
+                XCTAssertTrue(
+                    root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame),
+                    "\(name): \(v) at \(frame) leaves \(root.bounds)")
+            }
+            for sub in v.subviews { walk(sub) }
+        }
+        walk(root)
     }
 
     private func preferences(_ engine: TestEngine) async throws -> PreferencesWindowController {

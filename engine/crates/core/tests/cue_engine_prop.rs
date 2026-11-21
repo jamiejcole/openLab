@@ -130,7 +130,7 @@ struct Case {
 
 fn spec() -> impl Strategy<Value = Spec> {
     (
-        (0u8..33, 0u8..3, 0u8..3, 0u8..3, any::<bool>()),
+        (0u8..34, 0u8..3, 0u8..3, 0u8..3, any::<bool>()),
         (
             prop::bool::weighted(0.04),
             0u8..4,
@@ -331,6 +331,11 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
             },
             12 if s.flag => CueKind::Arm { target },
             12 => CueKind::Disarm { target },
+            // A Target cue: its new target picked as the target is (CT-18).
+            33 => CueKind::Target {
+                target,
+                new_target: Some(cue_id(u128::from(s.second) % (specs.len() as u128 + 2) + 1)),
+            },
             13 | 25 | 26 => CueKind::Fade {
                 target,
                 duration: f64::from(s.post) * 0.6,

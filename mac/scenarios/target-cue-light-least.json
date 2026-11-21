@@ -1,0 +1,24 @@
+{
+  "about": "#781 Target cue in light appearance at the least window: the New Target tab and the broken rows unclipped; Show Mode locks the field and GO still runs the Target cue.",
+  "show": "TargetCue",
+  "appearance": "light",
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"select": "2"},
+    {"tab": "newTarget"},
+    {"shot": "light-least-new-target-tab"},
+    {"select": "1"},
+    {"shot": "light-least-broken"},
+    {"click": "mode-switch", "at": [0.75, 0.5]},
+    {"advance": 0.2},
+    {"select": "2"},
+    {"tab": "newTarget"},
+    {"shot": "show-mode-field-locked"},
+    {"click": "go-button"},
+    {"advance": 0.3},
+    {"select": "3"},
+    {"click": "go-button"},
+    {"advance": 0.5},
+    {"shot": "show-mode-go-runs-it"}
+  ]
+}

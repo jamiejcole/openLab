@@ -731,8 +731,8 @@ fn refuse(issues: Vec<ValidationIssue>) -> Result<(), CommandError> {
 /// different workspace from the one it was copied in (ED-05). `new_id` supplies a fresh id for
 /// every cue, children included; core cannot make ids itself.
 ///
-/// - Targets inside the copied set follow to the copies; other targets are kept if the cue
-///   exists in `workspace` and cleared if not.
+/// - Targets (and a Target cue's new target) inside the copied set follow to the copies; other
+///   targets are kept if the cue exists in `workspace` and cleared if not.
 /// - Numbers already used in `workspace` (or earlier in the copy) are cleared.
 /// - An Audio cue's patch or a Network cue's destination missing from `workspace` becomes the
 ///   workspace's first one, if it has any. A Network cue with no patch (the nil id) keeps none.
@@ -782,6 +782,14 @@ pub fn prepare_paste(
                 .copied()
                 .or_else(|| existing.contains(&target).then_some(target));
             cue.kind.set_target(kept);
+        }
+        if let CueKind::Target { new_target, .. } = &mut cue.kind
+            && let Some(new) = *new_target
+        {
+            *new_target = renamed
+                .get(&new)
+                .copied()
+                .or_else(|| existing.contains(&new).then_some(new));
         }
         match &mut cue.kind {
             CueKind::Audio { patch, .. } if !patches.contains(patch) => {

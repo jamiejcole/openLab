@@ -65,6 +65,7 @@ cue, and the cue shows as broken where it cannot run.
 | `second_trigger` is `"play_next"` or `"play_previous"` on a cue that is not a Playlist group | Warning; kept, but a second trigger does nothing until the cue is a Playlist group |
 | An empty `number` (`""`) | Treated as `null`, no warning |
 | A target that does not exist, targets the cue itself, or is the wrong kind of cue | Warning; the target is kept and the cue shows as broken |
+| A Target cue's `new_target` that does not exist, or that its target cannot act on | Warning; it is kept and the cue shows as broken (also without a number or with none set, which load without a warning) |
 | An Audio cue's `patch` or a Network cue's `destination` does not exist | Warning; the cue shows as broken |
 | A play count (§5) that is not a whole number 0 to 4294967295 or `"skip"` | Refused (wrong type) |
 | Every slice of an Audio or Video cue inside its trims has the play count `"skip"` | Loads as it is, no warning; the cue shows as broken (`nothing_plays`) once its file is read |
@@ -104,7 +105,8 @@ cue, and the cue shows as broken where it cannot run.
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
 Valid targets: a Fade cue targets an Audio, Video or Group cue; a Devamp cue targets an Audio cue or a
-Playlist group; every other targeting cue may target any cue except itself.
+Playlist group; a Target cue targets a cue that targets a cue, other than a Fade; every other
+targeting cue may target any cue except itself.
 
 ## 4. The workspace
 
@@ -228,7 +230,7 @@ At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyS
 | `pre_wait` | seconds | Delay between the cue being triggered and its action starting. |
 | `post_wait` | seconds | Delay used by `auto_continue` before the next cue, counted from the start of the action. Ignored otherwise, and on a Wait cue, whose post-wait is its `duration`. |
 | `continue_mode` | `"do_not_continue"` \| `"auto_continue"` \| `"auto_follow"` | `auto_continue`: start the next cue `post_wait` after this one's action starts (after its pre-wait). `auto_follow`: start the next cue when this one's action finishes. Semantics: skill `cue-engine`. |
-| `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `hotkey_enabled` (bool, optional, absent: `true`): whether the hotkey starts the cue; off keeps the key. A cue has no OSC address of its own (OSC starts it by number or id); an `osc` key from an older file is ignored. |
+| `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `hotkey_enabled` (bool, optional, absent: `true`): whether the hotkey starts the cue; off keeps the key. A cue the app creates stores `false` with no key, as QLab's hotkey box starts unticked: the operator ticks it, then types the key. A cue has no OSC address of its own (OSC starts it by number or id); an `osc` key from an older file is ignored. |
 | `second_trigger` | `"nothing"` \| `"panic"` \| `"stop"` \| `"hard_stop"` \| `"hard_stop_and_restart"` \| `"devamp"` \| `"play_next"` \| `"play_previous"` | What a trigger does while the cue is already active; semantics in skill `cue-engine`. `play_next`/`play_previous` are for Playlist groups only. |
 | `second_trigger_on_release` | bool | Releasing the hotkey or MIDI key that triggers the cue counts as a second trigger. |
 | `fade_and_stop_others` | object | Optional (absent: off, `peers`, 1 s). `{"enabled": bool, "scope": "peers" \| "list" \| "all", "duration": seconds}`: when the cue's action starts, the other active cues of its level (each with what is inside it), of its list, or of the workspace fade out over `duration` and stop. Kept while off. A bad `duration` is put in range with `InvalidTime`. Semantics: skill `cue-engine`. |
@@ -302,6 +304,7 @@ Option on macOS).
 | `go_to` | `target`, `then_go` (bool) | Moves the playhead to the target; `then_go` also fires GO. |
 | `arm` | `target` | Arms the target. |
 | `disarm` | `target` | Disarms the target. |
+| `target` | `target`, `new_target` (cue id or `null`) | Gives the target a temporary target, `new_target`, until the target is reset, Reset All or the show is reopened; never written to the file. `target` must be a cue that acts on a cue, other than a `fade`; `new_target` must have a number and be a cue the target can act on (not the target itself). Otherwise it loads and shows broken (`no_new_target`, `new_target_missing`, `new_target_unnumbered`, `new_target_wrong_kind`, docs/protocol.md). |
 
 **`wait`** — `duration` (seconds). Does nothing for that long.
 

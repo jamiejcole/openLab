@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Control cues (CT-11..CT-17, CT-19): Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm and
-//! Disarm act on their target as the operator would, at their action start.
+//! Control cues (CT-11..CT-19): Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm and Disarm
+//! act on their target as the operator would, at their action start; a Target cue gives its
+//! target a temporary target.
 
 use crate::cue::{Cue, CueKind, DevampMode, GroupMode};
 use crate::model::{CueId, CueListId};
@@ -36,7 +37,7 @@ impl CueEngine {
         // act when the static problems are out of date: a model change the binary did not
         // signal (`model_changed`) inside a cue or group. They are also how the types say "no
         // target". Tested in `tests.rs`.
-        let Some(target) = model.kind.target() else {
+        let Some(target) = self.acts_on(model) else {
             return cx.warn(EngineWarning::NoTarget { cue });
         };
         if ws.find_cue(target).is_none() {
@@ -74,6 +75,7 @@ impl CueEngine {
             CueKind::GoTo { then_go, .. } => self.go_to(target, *then_go, at, cx),
             CueKind::Arm { .. } => self.set_armed(target, true, cx),
             CueKind::Disarm { .. } => self.set_armed(target, false, cx),
+            CueKind::Target { new_target, .. } => self.retarget(cue, target, *new_target, cx),
             CueKind::Audio { .. }
             | CueKind::Fade { .. }
             | CueKind::Group { .. }
@@ -81,6 +83,66 @@ impl CueEngine {
             | CueKind::Memo
             | CueKind::Network { .. }
             | CueKind::Video { .. } => {}
+        }
+    }
+
+    /// The cue a control cue acts on now: the temporary target a Target cue gave it, else its
+    /// own. A Fade is never given one (`can_target`), so its own is read where it starts. The one
+    /// rule for every reader (the binary's priming looks ahead with it too).
+    pub fn acts_on(&self, cue: &Cue) -> Option<CueId> {
+        self.temp_targets
+            .get(&cue.id)
+            .copied()
+            .or_else(|| cue.kind.target())
+    }
+
+    /// The temporary target of `cue` set by a Target cue, if it has one (QLab's OSC
+    /// `tempCueTargetID`).
+    pub fn temp_target(&self, cue: CueId) -> Option<CueId> {
+        self.temp_targets.get(&cue).copied()
+    }
+
+    /// How many times the temporary targets have changed (set, dropped by a reset, cleared by
+    /// Reset All): a change means what the binary loads ahead for a cue's target may be stale.
+    pub fn temp_target_changes(&self) -> u64 {
+        self.temp_target_changes
+    }
+
+    /// Drops `cue`'s temporary target, counting the change.
+    pub(super) fn drop_temp_target(&mut self, cue: CueId) {
+        if self.temp_targets.remove(&cue).is_some() {
+            self.temp_target_changes = self.temp_target_changes.wrapping_add(1);
+        }
+    }
+
+    /// A Target cue `by`: `target` acts on `new` from now on, until it is reset (QLab 5 manual
+    /// p. 686). The model is not changed, so the show is not edited. A cue already running
+    /// read its target when its action started and keeps acting on that one. As for the other
+    /// control cues, these checks act only on out-of-date static problems or on a temporary
+    /// target of the Target cue itself.
+    fn retarget(&mut self, by: CueId, target: CueId, new: Option<CueId>, cx: &mut Ctx) {
+        let ws = cx.ws;
+        let Some(new) = new else {
+            return cx.warn(EngineWarning::NoTarget { cue: by });
+        };
+        let (Some(by_model), Some(target_model)) = (ws.find_cue(by), ws.find_cue(target)) else {
+            return;
+        };
+        let Some(new_model) = ws.find_cue(new) else {
+            return cx.warn(EngineWarning::TargetMissing {
+                cue: by,
+                target: new,
+            });
+        };
+        if !crate::validate::can_target(&by_model.kind, &target_model.kind)
+            || crate::validate::retarget_problem(target_model, new_model).is_some()
+        {
+            return cx.warn(EngineWarning::TargetWrongKind { cue: by, target });
+        }
+        if target_model.kind.target() == Some(new) {
+            self.drop_temp_target(target);
+        } else if self.temp_targets.insert(target, new) != Some(new) {
+            self.temp_target_changes = self.temp_target_changes.wrapping_add(1);
         }
     }
 

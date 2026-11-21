@@ -403,6 +403,47 @@ fn references_are_not_checked_so_undo_can_restore_broken_states() {
 }
 
 #[test]
+fn a_target_cues_missing_or_unusable_new_target_is_a_warning_and_still_saves() {
+    let retarget = |n: u128, new: u128| {
+        cue(
+            n,
+            CueKind::Target {
+                target: Some(cue_id(1)),
+                new_target: Some(cue_id(new)),
+            },
+        )
+    };
+    let mut ws = workspace(vec![
+        numbered(
+            1,
+            "1",
+            CueKind::Devamp {
+                target: None,
+                start_next_cue: false,
+                stop_target_when_slice_ends: false,
+                devamp_mode: DevampMode::CurrentSlice,
+            },
+        ),
+        numbered(2, "2", CueKind::Memo),
+    ]);
+    round_trip(&mut ws, add(pos(None, 2), retarget(10, 99)));
+    round_trip(&mut ws, add(pos(None, 3), retarget(11, 2)));
+    let issues = validate(&ws);
+    let kinds: Vec<_> = issues.iter().map(|i| (i.cue_id, i.kind.clone())).collect();
+    assert!(kinds.contains(&(
+        Some(cue_id(10)),
+        IssueKind::TargetMissing { target: cue_id(99) }
+    )));
+    // A Devamp cannot act on a Memo.
+    assert!(kinds.contains(&(
+        Some(cue_id(11)),
+        IssueKind::TargetWrongKind { target: cue_id(2) }
+    )));
+    assert!(issues.iter().all(|i| i.severity == Severity::Warning));
+    save_show(&ws).unwrap();
+}
+
+#[test]
 fn undoing_a_transaction_that_removed_a_target_and_its_fade_restores_both() {
     let mut ws = workspace(vec![cue(1, audio()), cue(2, fade(1))]);
     let before = ws.clone();
@@ -1155,6 +1196,46 @@ fn kind_fields_keep_the_kind_fields_not_named() {
     assert_clean(&ws);
 }
 
+#[test]
+fn a_target_cues_new_target_is_set_and_cleared_by_its_kind_field_and_undone() {
+    let mut ws = workspace(vec![
+        cue(
+            1,
+            CueKind::Target {
+                target: None,
+                new_target: None,
+            },
+        ),
+        numbered(2, "2", CueKind::Memo),
+    ]);
+    let before = ws.clone();
+    let inverse = ws
+        .apply(set(
+            1,
+            fields(serde_json::json!({ "new_target": cue_id(2) })),
+        ))
+        .unwrap();
+    assert_eq!(kind_of(&ws, 1).new_target(), Some(cue_id(2)));
+    ws.apply(set(1, fields(serde_json::json!({ "new_target": null }))))
+        .unwrap();
+    assert_eq!(kind_of(&ws, 1).new_target(), None);
+    ws.apply(set(
+        1,
+        fields(serde_json::json!({ "new_target": cue_id(2) })),
+    ))
+    .unwrap();
+    ws.apply(inverse).unwrap();
+    assert_eq!(ws, before, "undo restores it");
+    // Not a field of another kind.
+    assert!(
+        ws.apply(set(
+            2,
+            fields(serde_json::json!({ "new_target": cue_id(1) }))
+        ))
+        .is_err()
+    );
+}
+
 /// A play count set by an edit of the kind's fields (what the app's count field sends) is a
 /// count, until devamped or skipped; a value that is none of them is refused and the cue keeps
 /// what it had. Every slice skipped is accepted: the cue is then broken, not the edit.
@@ -1841,6 +1922,36 @@ fn paste_points_copied_targets_at_the_copies_and_clears_numbers_in_use() {
         },
     );
     assert_clean(&ws);
+}
+
+#[test]
+fn paste_points_a_target_cues_new_target_at_the_copy_or_keeps_or_clears_it() {
+    let ws = workspace(vec![
+        numbered(1, "1", CueKind::Start { target: None }),
+        numbered(2, "2", CueKind::Memo),
+    ]);
+    let retarget = |new: u128| {
+        cue(
+            10,
+            CueKind::Target {
+                target: Some(cue_id(1)),
+                new_target: Some(cue_id(new)),
+            },
+        )
+    };
+    // Copied with it: the copy; in the workspace: kept; neither: cleared.
+    let copy = prepare_paste(
+        &ws,
+        &[retarget(11), numbered(11, "9", CueKind::Memo)],
+        fresh_ids(1000),
+    )
+    .unwrap();
+    assert_eq!(copy[0].kind.new_target(), Some(cue_id(1002)));
+    let copy = prepare_paste(&ws, &[retarget(2)], fresh_ids(2000)).unwrap();
+    assert_eq!(copy[0].kind.new_target(), Some(cue_id(2)));
+    let copy = prepare_paste(&ws, &[retarget(99)], fresh_ids(3000)).unwrap();
+    assert_eq!(copy[0].kind.new_target(), None);
+    assert_eq!(copy[0].kind.target(), Some(cue_id(1)));
 }
 
 #[test]

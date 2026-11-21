@@ -117,6 +117,10 @@ struct Live {
     /// Its action's length in seconds (a video's, a still's typed duration), if it ends.
     length: Option<f64>,
     still: bool,
+    /// A still's start delay (held by its probe or its open): how far its own time runs behind
+    /// its action's, as a movie's plan keeps `late`, so a resume tells the cue its whole
+    /// duration and progress counts from where it is.
+    still_late: SampleTime,
     /// A movie's plan as its last play sent it, for its position, pause and devamp.
     plan: Option<RunPlan>,
     /// How many stage host crashes it was decoding at (or still opening) within
@@ -158,6 +162,14 @@ struct RunPlan {
 }
 
 impl Live {
+    /// How far its own time runs behind its action's (negative: ahead).
+    fn late(&self) -> i64 {
+        match &self.plan {
+            Some(p) => p.late,
+            None => i64::try_from(self.still_late).unwrap_or(i64::MAX),
+        }
+    }
+
     /// What a new stage host is sent for it: its load, first play, last play or pause, and
     /// stop.
     fn messages(&self) -> Vec<ToStage> {
@@ -1060,13 +1072,7 @@ impl DocCx<'_> {
                         return;
                     }
                     // A movie holds where its plan is then; a still has no position.
-                    let late = self
-                        .eng
-                        .pictures
-                        .live
-                        .get(&id)
-                        .and_then(|l| l.plan.as_ref())
-                        .map_or(0, |p| p.late);
+                    let late = self.eng.pictures.live.get(&id).map_or(0, Live::late);
                     // The picture's own time: the action's less its lateness.
                     let own = seconds(less_late(offset, late), rate);
                     let at_file = self.eng.pictures.live.get(&id).map_or(own, |l| {
@@ -1204,6 +1210,7 @@ impl DocCx<'_> {
             p.late = 0;
             p.followed = 0;
         }
+        live.still_late = 0;
         let own = seconds(position, rate);
         if paused {
             let file = live
@@ -1647,6 +1654,7 @@ impl DocCx<'_> {
                 motion: None,
                 length,
                 still,
+                still_late: 0,
                 plan: None,
             },
         );
@@ -1815,6 +1823,18 @@ impl DocCx<'_> {
             Err(Refused::Failed(why)) => return self.picture_refused(cue, run, why, fresh, fx),
         };
         let action = seconds(offset, rate).min(openlab_core::MAX_TIME);
+        // A still keeps its start's delay for a resume, as a movie's plan does: its own time
+        // runs that far behind the action's.
+        let still_late = if fresh {
+            late
+        } else {
+            self.eng.pictures.live.get(&id).map_or(0, |l| l.still_late)
+        };
+        let still_own = if fresh {
+            action
+        } else {
+            seconds(offset.saturating_sub(still_late), rate).min(openlab_core::MAX_TIME)
+        };
         // (the file position then, the plan, the fades, the action's end in the picture's time
         // if it ends, and whether the cue is told that end)
         let (position, plan, fades, length, ends) = match &plays.movie {
@@ -1878,10 +1898,10 @@ impl DocCx<'_> {
                 let ends = !timing.hold_at_end;
                 (position, Some(plan), fades, end, ends)
             }
-            None => (action, None, PictureFades::NONE, plays.length, true),
+            None => (still_own, None, PictureFades::NONE, plays.length, true),
         };
-        // The picture's own time at `at` (a still has no plan: its action time).
-        let into = plan.as_ref().map_or(action, |p| seconds(p.into, rate));
+        // The picture's own time at `at` (a still has no plan: its action time less its delay).
+        let into = plan.as_ref().map_or(still_own, |p| seconds(p.into, rate));
         let message = ToStage::Play {
             picture: id,
             at,
@@ -1893,13 +1913,14 @@ impl DocCx<'_> {
         };
         let late = plan
             .as_ref()
-            .map_or(i64::try_from(late).unwrap_or(i64::MAX), |p| p.late);
+            .map_or(i64::try_from(still_late).unwrap_or(i64::MAX), |p| p.late);
         let plan_start = plan.as_ref().map(|p| p.into);
         let mut first = false;
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
             l.now = Some(message.clone());
             l.motion = Some((Some(at), into));
             l.length = length.filter(|_| ends);
+            l.still_late = if plan.is_none() { still_late } else { 0 };
             l.plan = plan;
             if l.first.is_none() {
                 l.first = Some(message.clone());
@@ -2230,7 +2251,8 @@ impl DocCx<'_> {
     /// clock counts as that device's clock drifts from the master's, so once the drift its
     /// picture has not followed reaches [`DRIFT_STEP_US`] the picture is put on (or back) by it
     /// from `now`, as for a sound the disk made late. A picture whose sound moved to another
-    /// device since follows that one, giving back all it followed of the first in one move. Dated
+    /// device since follows that one from where the first one's drift had taken it (the moved
+    /// sound goes on from there). Dated
     /// `now` (a lookahead ahead): an underrun reported in the block after is counted back from it.
     pub(super) fn follow_sound_clocks(&mut self, now: SampleTime, fx: &mut Effects) {
         let step = (u64::from(self.eng.rate.get()) * DRIFT_STEP_US / 1_000_000).max(1);
@@ -2244,7 +2266,8 @@ impl DocCx<'_> {
                 continue;
             };
             // Saturating: no clock drifts this far, and the step stays far below the limit.
-            let drift = self.eng.outputs.drift(voice).round() as i64;
+            let drift = (self.eng.outputs.drift(voice).round() as i64)
+                .saturating_add(self.doc.voices.carried_drift(voice));
             let ahead = drift.saturating_sub(plan.followed);
             if ahead.unsigned_abs() < step {
                 continue;

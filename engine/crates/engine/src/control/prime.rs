@@ -201,7 +201,8 @@ fn prime_set(
             let Some(id) = at else { break };
             if let Some(cue) = index.locate(ws, id) {
                 wanted.add(cue, engine);
-                if let Some(t) = cue.kind.target() {
+                // What it acts on now: a Target cue may have given it a temporary target.
+                if let Some(t) = engine.acts_on(cue) {
                     targets.push(t);
                 }
             }
@@ -235,7 +236,7 @@ fn prime_set_walk(ws: &Workspace, engine: &CueEngine, per_list: usize) -> Vec<Cu
         for &id in positions.iter().skip(from).take(per_list) {
             if let Some(cue) = ws.find_cue(id) {
                 wanted.add(cue, engine);
-                if let Some(t) = cue.kind.target() {
+                if let Some(t) = engine.acts_on(cue) {
                     targets.push(t);
                 }
             }

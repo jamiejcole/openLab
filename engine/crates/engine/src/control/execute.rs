@@ -140,6 +140,13 @@ impl DocCx<'_> {
                     format!("cue engine saw {unsignalled} model change(s) nobody signalled"),
                 );
             }
+            // A Target cue ran, or a reset dropped what one set: the cue a retargeted cue
+            // will act on is primed instead of the one it acted on before.
+            let retargets = self.doc.model.engine().temp_target_changes();
+            if retargets != self.doc.seen_temp_targets {
+                self.doc.seen_temp_targets = retargets;
+                self.doc.primes_dirty = true;
+            }
             queue.extend(self.execute(&actions, now));
         }
     }

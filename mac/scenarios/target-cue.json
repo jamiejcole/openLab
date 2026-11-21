@@ -1,0 +1,125 @@
+{
+  "about": "#781 Target cue: a new one broken with what is missing; one aimed at a Start cue and a numbered cue ready, its New Target tab; GO on it, then GO on the Start cue plays the new target (Rain), not Thunder; aimed at a Fade, at an unnumbered cue and at a cue that is gone, each broken with its reason; typing the number of the cue it retargets or an unknown number in the New Target field is refused with a message. Two Target cues selected show the New Target tab, mixed.",
+  "show": "TargetCue",
+  "window": {
+    "width": 1200,
+    "height": 800
+  },
+  "steps": [
+    {
+      "select": "1"
+    },
+    {
+      "shot": "new-target-cue-broken"
+    },
+    {
+      "tab": "newTarget"
+    },
+    {
+      "shot": "new-target-cue-new-target-tab"
+    },
+    {
+      "hover": "cue-list",
+      "row": "1",
+      "at": [
+        0.02,
+        0.5
+      ]
+    },
+    {
+      "shot": "new-target-cue-broken-reason"
+    },
+    {
+      "select": "2"
+    },
+    {
+      "tab": "basics"
+    },
+    {
+      "shot": "ready-basics"
+    },
+    {
+      "tab": "newTarget"
+    },
+    {
+      "shot": "ready-new-target-tab"
+    },
+    {
+      "click": "go-button"
+    },
+    {
+      "advance": 0.1
+    },
+    {
+      "shot": "after-go-on-target-cue"
+    },
+    {
+      "select": "3"
+    },
+    {
+      "click": "go-button"
+    },
+    {
+      "advance": 0.1
+    },
+    {
+      "select": "3"
+    },
+    {
+      "shot": "start-cue-plays-the-new-target"
+    },
+    {
+      "select": "6"
+    },
+    {
+      "tab": "basics"
+    },
+    {
+      "shot": "aimed-at-a-fade-broken"
+    },
+    {
+      "select": "8"
+    },
+    {
+      "shot": "new-target-unnumbered-broken"
+    },
+    {
+      "select": "10"
+    },
+    {
+      "shot": "new-target-missing-broken"
+    },
+    {
+      "select": "2"
+    },
+    {
+      "tab": "newTarget"
+    },
+    {
+      "type": "inspector-new-target",
+      "text": "3"
+    },
+    {
+      "shot": "its-own-target-refused"
+    },
+    {
+      "type": "inspector-new-target",
+      "text": "42"
+    },
+    {
+      "shot": "unknown-number-refused"
+    },
+    {
+      "select": [
+        "2",
+        "8"
+      ]
+    },
+    {
+      "tab": "newTarget"
+    },
+    {
+      "shot": "two-target-cues-new-target-tab-mixed"
+    }
+  ]
+}

@@ -235,7 +235,7 @@ fn blank_cue(id: CueId) -> Cue {
         continue_mode: ContinueMode::DoNotContinue,
         triggers: Triggers {
             hotkey: None,
-            hotkey_enabled: true,
+            hotkey_enabled: false,
         },
         second_trigger: SecondTrigger::Nothing,
         second_trigger_on_release: false,

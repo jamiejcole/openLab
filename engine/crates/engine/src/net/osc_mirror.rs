@@ -532,6 +532,7 @@ fn action_length(cue: &Cue, lengths: &HashMap<CueId, f64>) -> Option<f64> {
         | CueKind::GoTo { .. }
         | CueKind::Arm { .. }
         | CueKind::Disarm { .. }
+        | CueKind::Target { .. }
         | CueKind::Network { .. } => Some(0.0),
     }
 }
@@ -552,6 +553,7 @@ fn kind_name(kind: &CueKind) -> &'static str {
         CueKind::GoTo { .. } => "GoTo",
         CueKind::Arm { .. } => "Arm",
         CueKind::Disarm { .. } => "Disarm",
+        CueKind::Target { .. } => "Target",
         CueKind::Wait { .. } => "Wait",
         CueKind::Memo => "Memo",
         CueKind::Network { .. } => "Network",

@@ -528,6 +528,8 @@ fn fixtures() -> Vec<(String, Sample)> {
     // Swift test compares): no number, the file, one cue output per patch output and file
     // channel n on cue output n at 0 dB. The engine's real-audio tests play this message.
     let mut dropped = cue(13, audio());
+    // The app's new cues store the hotkey switch off (an unticked box beside an empty field).
+    dropped.triggers.hotkey_enabled = false;
     if let CueKind::Audio { media, levels, .. } = &mut dropped.kind {
         *media = Some(MediaRef::new("/Volumes/Show/thunder.wav"));
         levels.crosspoints = (0..2)
@@ -568,6 +570,7 @@ fn fixtures() -> Vec<(String, Sample)> {
         },
     );
     network.number = None;
+    network.triggers.hotkey_enabled = false;
     add(
         "command_add_new_network_cue",
         client(ClientMessage::Command {
@@ -611,6 +614,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             sound: Default::default(),
         },
     );
+    video.triggers.hotkey_enabled = false;
     video.number = None;
     add(
         "command_add_new_video_cue",
@@ -3162,7 +3166,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 19;
+const ENGINE_PROBLEM_COUNT: usize = 23;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -3184,6 +3188,10 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::StageMissing { .. } => 16,
         CueProblem::NoPatch => 17,
         CueProblem::NothingPlays => 18,
+        CueProblem::NoNewTarget => 19,
+        CueProblem::NewTargetMissing { .. } => 20,
+        CueProblem::NewTargetWrongKind { .. } => 21,
+        CueProblem::NewTargetUnnumbered { .. } => 22,
     }
 }
 
@@ -3208,6 +3216,10 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::StageMissing { .. } => 16,
         WireProblem::NoPatch => 17,
         WireProblem::NothingPlays => 18,
+        WireProblem::NoNewTarget => 19,
+        WireProblem::NewTargetMissing { .. } => 20,
+        WireProblem::NewTargetWrongKind { .. } => 21,
+        WireProblem::NewTargetUnnumbered { .. } => 22,
     }
 }
 
@@ -3499,6 +3511,19 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
             WireProblem::TargetWrongKind { target: t },
         ),
         (CueProblem::NothingToFade, WireProblem::NothingToFade),
+        (CueProblem::NoNewTarget, WireProblem::NoNewTarget),
+        (
+            CueProblem::NewTargetMissing { target: t },
+            WireProblem::NewTargetMissing { target: t },
+        ),
+        (
+            CueProblem::NewTargetWrongKind { target: t },
+            WireProblem::NewTargetWrongKind { target: t },
+        ),
+        (
+            CueProblem::NewTargetUnnumbered { target: t },
+            WireProblem::NewTargetUnnumbered { target: t },
+        ),
         (CueProblem::NoMedia, WireProblem::NoMedia),
         (
             CueProblem::MediaMissing { media: media() },

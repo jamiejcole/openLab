@@ -753,6 +753,15 @@ pub enum CueKind {
     Disarm {
         target: Option<CueId>,
     },
+    /// Gives its target (a cue that acts on a cue, not a Fade) a temporary target when it runs
+    /// (CT-18; QLab 5 manual p. 686): `new_target`, until that cue is reset, Reset All or the
+    /// show is reopened. Never changes the model.
+    Target {
+        target: Option<CueId>,
+        /// The cue the target acts on after this cue ran; `None` = not set (broken). Set by its
+        /// number, which it must have.
+        new_target: Option<CueId>,
+    },
     Wait {
         duration: f64,
     },
@@ -844,7 +853,8 @@ impl CueKind {
             | Self::Devamp { target, .. }
             | Self::GoTo { target, .. }
             | Self::Arm { target }
-            | Self::Disarm { target } => {
+            | Self::Disarm { target }
+            | Self::Target { target, .. } => {
                 *target = new;
                 true
             }
@@ -882,13 +892,22 @@ impl CueKind {
             | Self::Devamp { target, .. }
             | Self::GoTo { target, .. }
             | Self::Arm { target }
-            | Self::Disarm { target } => *target,
+            | Self::Disarm { target }
+            | Self::Target { target, .. } => *target,
             Self::Audio { .. }
             | Self::Group { .. }
             | Self::Wait { .. }
             | Self::Memo
             | Self::Network { .. }
             | Self::Video { .. } => None,
+        }
+    }
+
+    /// A Target cue's new target, if one is set.
+    pub fn new_target(&self) -> Option<CueId> {
+        match self {
+            Self::Target { new_target, .. } => *new_target,
+            _ => None,
         }
     }
 }

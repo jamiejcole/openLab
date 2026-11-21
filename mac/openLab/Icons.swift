@@ -11,7 +11,7 @@ import os
 enum Icon: CaseIterable {
     // Cue kinds (the toolbar and the cue list's type column).
     case kindAudio, kindGroup, kindMemo, kindWait, kindFade, kindStart, kindStop, kindPause, kindLoad
-    case kindReset, kindDevamp, kindGoTo, kindArm, kindDisarm, kindNetwork, kindVideo
+    case kindReset, kindDevamp, kindGoTo, kindTarget, kindArm, kindDisarm, kindNetwork, kindVideo
     // A Group cue's icon follows its mode (the timeline mode uses `kindGroup`).
     case kindGroupPlaylist, kindGroupEnter, kindGroupNext, kindGroupRandom
     // Cue states (UI-04: each state the list marks has its own shape; a wait shows the running mark, as QLab).
@@ -51,6 +51,7 @@ enum Icon: CaseIterable {
         case .kindReset: return "kind-reset"
         case .kindDevamp: return "kind-devamp"
         case .kindGoTo: return "kind-go-to"
+        case .kindTarget: return "kind-target"
         case .kindArm: return "kind-arm"
         case .kindDisarm: return "kind-disarm"
         case .kindNetwork: return "kind-network"

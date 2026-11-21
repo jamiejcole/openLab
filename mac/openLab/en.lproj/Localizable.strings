@@ -106,9 +106,19 @@
 "menu.window.zoom" = "Zoom";
 "launcher.title" = "openLab";
 "launcher.new" = "New Workspace";
-"launcher.open" = "Open…";
+"launcher.new.detail" = "Start with an empty cue list";
+"launcher.open" = "Open Workspace";
+"launcher.open.detail" = "Choose a saved file";
 "launcher.recent" = "Recent Workspaces";
 "launcher.recent.none" = "No recent workspaces";
+"launcher.recent.none.detail" = "Workspaces you open or save will be listed here.";
+"launcher.recent.missing" = "Not found in %@";
+"launcher.remove" = "Remove from List";
+"launcher.missing" = "“%@” could not be found. It may have been moved or deleted.";
+"launcher.starting" = "Starting the engine…";
+"launcher.starting.detail" = "New, Open and the recent workspaces are ready in a moment.";
+"launcher.failed" = "The engine did not start";
+"launcher.notResponding" = "An engine is running but has not answered. Wait a moment; if it stays stuck, quit openlab-engine in Activity Monitor and open openLab again.";
 "prefs.title" = "Preferences";
 "prefs.general" = "General";
 "prefs.launch.label" = "At launch:";
@@ -194,6 +204,7 @@
 "cue.type.reset" = "Reset";
 "cue.type.devamp" = "Devamp";
 "cue.type.goto" = "Go To";
+"cue.type.target" = "Target";
 "cue.type.arm" = "Arm";
 "cue.type.disarm" = "Disarm";
 "cue.type.network" = "Network";
@@ -311,6 +322,9 @@
 "inspector.tab.mode" = "Mode";
 "inspector.tab.loadTime" = "Load Time";
 "inspector.loadTime" = "Load target to time";
+"inspector.tab.newTarget" = "New Target";
+"inspector.newTarget" = "New target cue number";
+"inspector.newTarget.about" = "When this cue runs, its target acts on that cue instead, until it is reset.";
 "inspector.groupMode" = "Group mode";
 "inspector.groupMode.intro" = "How starting this group starts the cues inside it.";
 "inspector.groupMode.timeline" = "Timeline";
@@ -401,6 +415,8 @@
 "inspector.invalid.noMessage" = "Only a Network cue has a message.";
 "inspector.invalid.networkMessage" = "The arguments cannot be read: put text with spaces in double quotes, and use \\T or \\F for true or false.";
 "inspector.invalid.level" = "Enter a level in dB, from -inf to +12.";
+"inspector.invalid.noNewTarget" = "Only a Target cue has a new target.";
+"inspector.invalid.newTargetIsTarget" = "The new target cannot be the cue this cue retargets.";
 "inspector.refused" = "The change was refused: %@";
 "inspector.failed" = "The change could not be sent.";
 
@@ -418,6 +434,7 @@
 "sidebar.tab.activeCues" = "Active Cues";
 "sidebar.list.label" = "Cue lists";
 "sidebar.active.label" = "Active cues";
+"sidebar.active.empty" = "Nothing is playing";
 "activeCue.pause" = "Pause";
 "activeCue.resume" = "Resume";
 "activeCue.panic" = "Panic this cue";
@@ -426,7 +443,6 @@
 "sidebar.list.delete" = "Delete List";
 "sidebar.list.rename.prompt" = "Name for this cue list";
 "sidebar.list.rename.ok" = "Rename";
-"sidebar.newCart" = "New Cart";
 "sidebar.newList.name" = "Cue List %d";
 
 "footer.mode.label" = "Mode";
@@ -572,7 +588,7 @@
 "prefs.general.backups.off" = "Backups are off: saving over a workspace keeps no earlier copy.";
 "prefs.general.backups.note" = "A backup of the workspace is made whenever it is saved over; the oldest go first. 0 turns backups off.";
 "prefs.general.backups.range" = "Enter a whole number from %d to %d.";
-"launcher.version" = "openLab %@";
+"launcher.version" = "Version %@";
 "settings.general.autosave" = "Autosave a changed workspace every";
 "settings.general.autosave.note" = "5 seconds to 1 hour. An autosave is a recovery copy: it never replaces the workspace file.";
 "status.title" = "Workspace Status";
@@ -714,6 +730,10 @@
 "problem.network_message_invalid" = "The OSC message cannot be sent: {reason}.";
 "problem.slices_unplayable" = "Its slices and loops cannot be played with this file: {reason}.";
 "problem.nothing_plays" = "Every slice is skipped, so no part of the file plays. Give at least one slice a play count above 0.";
+"problem.no_new_target" = "No new target is set: type a cue number in its New Target tab.";
+"problem.new_target_missing" = "Its new target, {target}, does not exist.";
+"problem.new_target_wrong_kind" = "Its target cannot act on its new target, {target}.";
+"problem.new_target_unnumbered" = "Its new target, {target}, has no cue number.";
 "problem.no_stage" = "No stage is chosen.";
 "problem.no_patch" = "Its file has sound and no output patch is chosen.";
 "problem.stage_missing" = "Its stage does not exist.";
@@ -1149,7 +1169,7 @@
 "engine.alarm.unkillable" = "An engine that does not answer could not be ended. Restart the computer.";
 "engine.alarm.startTimeout" = "The engine did not start in time. openLab is ending it and trying again.";
 "engine.alarm.missing" = "The engine program is missing: %@. Reinstall openLab.";
-"engine.alarm.spawnFailed" = "The engine program could not be started (error %@).";
+"engine.alarm.spawnFailed" = "The engine program could not be started (error %@). Quit openLab and open it again.";
 "engine.reattach.reopened" = "The engine was restarted: this workspace was reopened from its file.";
 "engine.reattach.restored" = "The engine was restarted: this workspace was reopened from its autosave. Edits after the last autosave are lost.";
 "engine.reattach.editsLost" = "The engine was restarted: this workspace was reopened from its file. Its unsaved edits were not in that file. An earlier autosave of it, if one was kept, is offered by the engine alarm and in File > Recover Autosaves.";

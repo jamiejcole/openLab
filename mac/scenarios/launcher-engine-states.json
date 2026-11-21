@@ -1,0 +1,11 @@
+{
+  "about": "Launcher (#771): the engine starting, then not started, dark.",
+  "show": "new",
+  "appearance": "dark",
+  "steps": [
+    {"focus": "launcher", "recents": ["Hamlet", "Lear", "!Old Season", "A Midsummer Night's Dream"], "state": "starting"},
+    {"shot": "launcher-starting-dark"},
+    {"focus": "launcher", "recents": ["Hamlet", "Lear", "!Old Season", "A Midsummer Night's Dream"], "state": "failed"},
+    {"shot": "launcher-failed-dark"}
+  ]
+}

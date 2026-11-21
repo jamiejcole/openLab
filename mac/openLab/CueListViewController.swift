@@ -198,8 +198,8 @@ final class CueOutlineView: NSOutlineView {
     }
 }
 
-/// A running cue's progress behind its Duration text: the cell filled and outlined from the left up
-/// to `fraction` of its width (nothing drawn when nil).
+/// A running cue's progress behind its Duration text: the cell faintly outlined, filled and outlined in
+/// the colour from the left up to `fraction` of its width (nothing drawn when nil).
 final class ProgressFillView: NSView {
     var progress: (fraction: Double, colour: NSColor)? {
         didSet {
@@ -210,14 +210,20 @@ final class ProgressFillView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSBezierPath.clip(bounds)
         guard let progress, progress.fraction > 0 else { return }
-        let box = bounds.insetBy(dx: 1, dy: 2)
+        let box = bounds.insetBy(dx: 1, dy: 3)
         let rect = NSRect(
             x: box.minX, y: box.minY, width: box.width * CGFloat(min(1, progress.fraction)), height: box.height)
+        // The whole cell is drawn very faintly under the fill, so a part-way fill reads as progress along a bar
+        // and not as a box round the first digits.
+        let track = NSBezierPath(roundedRect: box, xRadius: 3, yRadius: 3)
+        NSColor.labelColor.withAlphaComponent(0.12).setStroke()
+        track.lineWidth = 0.5
+        track.stroke()
         guard rect.width >= 1 else { return }
         let path = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
-        progress.colour.withAlphaComponent(0.3).setFill()
+        progress.colour.withAlphaComponent(0.25).setFill()
         path.fill()
-        progress.colour.setStroke()
+        progress.colour.withAlphaComponent(0.6).setStroke()
         path.lineWidth = 1
         path.stroke()
     }
@@ -1042,6 +1048,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if playheadSends > 0 { headMovedWhileSending = true } else { followPlayhead(force: true) }
         onSelectionChange?(selectedIDs())
     }
+
+    /// A window opened on a store that already holds the workspace: the selection goes to the playhead's cue.
+    func followPlayheadAtOpen() { followAfterLoad() }
 
     /// This list's playhead may have moved (a runtime change): follow it if it did.
     private func playheadChanged() {

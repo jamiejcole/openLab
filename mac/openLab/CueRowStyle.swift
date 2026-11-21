@@ -81,7 +81,8 @@ enum CueKindStyle {
         "stop": (.kindStop, "cue.type.stop"), "pause": (.kindPause, "cue.type.pause"),
         "load": (.kindLoad, "cue.type.load"), "reset": (.kindReset, "cue.type.reset"),
         "devamp": (.kindDevamp, "cue.type.devamp"), "go_to": (.kindGoTo, "cue.type.goto"),
-        "arm": (.kindArm, "cue.type.arm"), "disarm": (.kindDisarm, "cue.type.disarm"),
+        "target": (.kindTarget, "cue.type.target"), "arm": (.kindArm, "cue.type.arm"),
+        "disarm": (.kindDisarm, "cue.type.disarm"),
         "network": (.kindNetwork, "cue.type.network"), "video": (.kindVideo, "cue.type.video"),
     ]
 

@@ -224,8 +224,13 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
                 geometry: Default::default(),
             }
         }
-        5 => CueKind::Arm {
+        5 if p.d.is_multiple_of(2) => CueKind::Arm {
             target: choose(&ids, p.b),
+        },
+        // A Target cue: its problems depend on its new target's kind and number too.
+        5 => CueKind::Target {
+            target: choose(&ids, p.b),
+            new_target: choose(&ids, p.c),
         },
         // Files shared with the Audio cues, stages that exist and that do not, and valid and
         // hostile still durations.

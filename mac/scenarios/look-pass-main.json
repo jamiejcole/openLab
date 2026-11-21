@@ -1,0 +1,21 @@
+{
+  "about": "Look pass 1 (#775): a playing cue's Duration bar over its whole cell, the masthead's standby line with its descenders, a long file path in the Target row at the least window, a Video cue's hotkey box with no key, the Cue Lists tab with no New Cart button and the Active Cues tab with nothing playing.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
+  "window": {"width": 1400, "height": 1000},
+  "steps": [
+    {"select": "2"},
+    {"click": "go-button"},
+    {"advance": 2},
+    {"select": "2"},
+    {"shot": "playing-bar"},
+    {"resize": [1024, 700]},
+    {"shot": "playing-least"},
+    {"click": "toggle-sidebar"},
+    {"shot": "sidebar-lists"},
+    {"click": "sidebar-tabs"},
+    {"shot": "sidebar-tab-next"},
+    {"key": "escape"},
+    {"advance": 1},
+    {"shot": "active-cues-nothing-playing"}
+  ]
+}
