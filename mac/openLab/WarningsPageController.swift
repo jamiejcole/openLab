@@ -239,7 +239,8 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
         // gives the table its width), so the visible area is watched too.
         scroll.contentView.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(
-            self, selector: #selector(tableResized), name: NSView.frameDidChangeNotification, object: scroll.contentView)
+            self, selector: #selector(tableResized), name: NSView.frameDidChangeNotification,
+            object: scroll.contentView)
 
         let root = NSStackView(views: [summaryLabel, scroll, actions])
         root.orientation = .vertical
