@@ -14,15 +14,21 @@
 //! targets (so Start/GoTo cycles, self-targets and missing targets), duplicate ids (more
 //! cycles), and random input sequences: every operation, model edits (deletes, moves out of
 //! groups, reorders, mode and timing changes), Arm/Disarm changes applied to the model as the
-//! binary does, Panic, Reset All, Pause All / Resume All, random media and device availability
-//! (static broken cues), device loss, previews, and faults of the simulated mixer (a voice that
-//! ends early or fails).
+//! binary does, Panic, Stop All, a cue's own panic (alone and as a batch's later item), Reset
+//! All, Pause All / Resume All, random media and device availability one by one and in batches,
+//! media sound, slice problems, nominal and pass lengths (static broken cues, Load cues counting
+//! back from an end), device loss, previews, and faults of the simulated mixer (a voice that
+//! ends early or fails). Video cues come plain, held on their last frame, looping until
+//! devamped, or with an end time and counted loops, and as the target of Fade, Devamp, Stop and
+//! the other control cues; their end time is edited while they play.
 //!
 //! **Simulated mixer.** [`Sim`] answers the engine's voice actions like the real mixer would,
 //! on virtual time: a voice ends after its length (end reports are delivered late, at the next
 //! call, with the true end sample), a looping voice plays until it is devamped or stopped, a
 //! devamp is answered with the sample the loop is left on, one kind of voice fails part-way,
-//! stops (with or without a fade) end the voice and are reported, paused voices stay put. It
+//! stops (with or without a fade) end the voice and are reported, paused voices stay put; a
+//! picture held at its end has no end (nor length) until a devamp with stop gives it one, and a
+//! movie whose end time is edited while it plays is told its new length. It
 //! also checks the actions against what a mixer needs: commands name voices it knows, pause and
 //! resume carry the position the voice has really reached, a voice is started once.
 //!
@@ -47,7 +53,14 @@
 //!   and the chain bound).
 //! - Commands for one voice never go backwards in time, and none is dated outside the call's
 //!   window `now ..= now + lookahead - 1` (Deadlines, lookahead and late ticks).
-//! - Everything due has been done after each call (`is_due`).
+//! - Everything due has been done after each call (`is_due`): no deadline at or before `now`,
+//!   nor inside the window the call committed; no call gives more than 5000 actions.
+//! - After Stop All nothing is active, loaded or pending, there is no panic window or preview,
+//!   and every show voice has its stop on its way (Stop All).
+//! - A cue's own panic leaves the cue and everything in it stopping or stopped, starts no voice
+//!   of theirs unless one is started again, and once its fade is over none of them is active
+//!   (Stop All and a cue's own panic).
+//! - A picture held at its end keeps its cue active, with that run, until it is stopped.
 //! - A second trigger on an active cue does what its option says (Second trigger): `nothing`
 //!   never restarts it (rule 1 / GO and double-GO), stop leaves it inactive, panic fades it out,
 //!   restart starts it again (or is cut at the chain limit), devamp and play next/previous do
@@ -1482,6 +1495,7 @@ struct Run {
 }
 
 struct CuePanic {
+    start: SampleTime,
     end: SampleTime,
     tree: BTreeSet<CueId>,
     restarted: BTreeSet<CueId>,
@@ -2166,6 +2180,7 @@ impl Run {
         }
         let frames = (self.ws.settings.panic_duration * 1000.0).round() as u64;
         self.cue_panics.push(CuePanic {
+            start: self.now,
             end: self.now + frames,
             tree: tree.into_iter().collect(),
             restarted: BTreeSet::new(),
@@ -2413,6 +2428,9 @@ impl Run {
             .partition(|w| w.end <= now);
         self.cue_panics = going;
         for watch in over {
+            if watch.end > watch.start {
+                self.reached.insert("own panic faded out");
+            }
             for id in watch.tree.difference(&watch.restarted) {
                 let state = self.engine.state(*id);
                 prop_assert!(
@@ -2692,7 +2710,10 @@ impl Run {
     /// then tells the engine: a playing movie's plan is cut there and its run told its new
     /// length, never shorter than where the picture is; a held one is told none, and one past a
     /// devamp, in a loop or stopping keeps its plan.
-    fn edit_end_time(&mut self, cue: CueId, end: Option<f64>) -> Input {
+    fn edit_end_time(&mut self, cue: CueId, end: Option<f64>) -> Result<Input, TestCaseError> {
+        // The binary's engine has carried out what was due by now (it ticks every block) when
+        // the edit comes, so an end already committed inside the window is left to the engine.
+        self.call(Input::Tick, Kind::Operator { trigger: false })?;
         if let Some(CueKind::Video { timing, .. }) =
             find_mut(&mut self.ws.cue_lists[0].cues, cue).map(|c| &mut c.kind)
         {
@@ -2720,16 +2741,16 @@ impl Run {
             v.end_pos = Some(frames);
             v.told = true;
             self.reached.insert("end time edited while playing");
-            return Input::ActionLength { cue, run, frames };
+            return Ok(Input::ActionLength { cue, run, frames });
         }
-        Input::Tick
+        Ok(Input::Tick)
     }
 
     /// Applies a step's input and checks the rules that depend on what it was.
     fn step(&mut self, s: &Step) -> Check {
         self.move_to(self.now + s.dt)?;
         if let Some((cue, end)) = self.end_edit.take() {
-            let input = self.edit_end_time(cue, end);
+            let input = self.edit_end_time(cue, end)?;
             self.call(input, Kind::Operator { trigger: false })?;
         }
         let list = self.list;
@@ -3063,13 +3084,13 @@ impl Run {
                 let end = (s.b != u8::MAX).then(|| f64::from(s.b) / 40.0);
                 let any = |v: &[CueId]| v.get(usize::from(s.a) % v.len().max(1)).copied();
                 match (any(&playing), any(&videos)) {
-                    (Some(cue), _) if s.a % 4 != 0 => self.edit_end_time(cue, end),
+                    (Some(cue), _) if s.a % 4 != 0 => self.edit_end_time(cue, end)?,
                     (_, Some(cue)) if s.b % 4 != 0 => {
                         self.end_edit = Some((cue, end));
                         kind = Kind::Operator { trigger: true };
                         Input::Start { cue }
                     }
-                    (_, Some(cue)) => self.edit_end_time(cue, end),
+                    (_, Some(cue)) => self.edit_end_time(cue, end)?,
                     (_, None) => Input::Tick,
                 }
             }
@@ -3132,7 +3153,14 @@ impl Run {
         // cue or a group around it).
         let (trigger_on, release) = match &input {
             Input::Start { cue } => (Some(*cue), false),
-            Input::Go { .. } => (self.engine.playhead(list), false),
+            // A GO on a cue skipped for being disarmed only moves the playhead on (Playhead,
+            // "Skip if disarmed"): it is no trigger of that cue.
+            Input::Go { .. } => (
+                self.engine
+                    .playhead(list)
+                    .filter(|p| !self.ws.find_cue(*p).is_some_and(|c| c.skipped(c.armed))),
+                false,
+            ),
             Input::TriggerReleased { cue } => (Some(*cue), true),
             _ => (None, false),
         };
@@ -4588,6 +4616,7 @@ fn the_generator_reaches_what_the_rules_are_about() {
         "Stop All",
         "own panic",
         "own panic in a batch",
+        "own panic faded out",
         "held picture checked",
         "held picture stopped",
         "devamp of a picture",
@@ -5002,4 +5031,95 @@ fn a_disarmed_playlist_ending_broken_marks_no_child() {
     if let Err(e) = invariants(&case) {
         panic!("{e}");
     }
+}
+
+/// Found by the first sweep with end-time edits (a generator error, fixed): a movie told 300
+/// frames plays to 284 with nothing ticking the engine meanwhile, and its end time is then
+/// edited to 525. The engine's end on 300 lies inside the window of the next call, which carries
+/// it out before the new length, so the run ends on 300 while the simulated picture plays on.
+/// The binary's engine has ticked up to the edit (every block), so the binary finds that end
+/// committed and leaves the picture to it; the simulation now ticks first as well.
+#[test]
+fn an_end_time_edit_inside_the_window_of_the_old_end_is_left_to_that_end() {
+    let spec = |kind: u8, armed: bool| Spec {
+        kind,
+        pre: 0,
+        post: 0,
+        mode: 0,
+        armed,
+        dup: false,
+        level: 0,
+        group_mode: 0,
+        target: 0,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    let mut specs = vec![spec(0, false); 9];
+    specs[1] = spec(27, false);
+    specs[5] = spec(27, false);
+    specs[6] = spec(32, true);
+    let step = |dt: u64, op: u8, a: u8, b: u8| Step { dt, op, a, b };
+    let case = Case {
+        specs,
+        steps: vec![step(0, 6, 158, 0), step(0, 36, 0, 21), step(284, 1, 0, 0)],
+        lookahead: 17,
+        min_go: 0,
+        panic: 0,
+    };
+    let out = run(&case, false).unwrap_or_else(|e| panic!("{e}"));
+    // The movie (cue 7) ends on the end it was told first.
+    assert!(out.raw.iter().any(|a| matches!(
+        a,
+        Action::StateChanged { cue, state: CueState::Idle, at: 300 } if *cue == cue_id(7)
+    )));
+}
+
+/// Found by the wider generator (an oracle error, fixed): a sound with the Panic second trigger
+/// plays, a Disarm cue disarms it (it passes over when disarmed) and the playhead stands on it.
+/// The GO there starts nothing and only moves the playhead on (Playhead, "Skip if disarmed"),
+/// so the sound plays on: that GO is no second trigger of it.
+#[test]
+fn a_go_on_a_playing_cue_skipped_since_is_no_second_trigger() {
+    let spec = |kind: u8, post: u8, mode: u8, armed: bool, target: u8, second: u8| Spec {
+        kind,
+        pre: 0,
+        post,
+        mode,
+        armed,
+        dup: false,
+        level: 0,
+        group_mode: 0,
+        target,
+        flag: false,
+        second,
+        release: false,
+    };
+    let memo = spec(0, 0, 0, false, 0, 0);
+    let step = |op: u8, a: u8| Step { dt: 0, op, a, b: 0 };
+    let case = Case {
+        specs: vec![
+            spec(2, 0, 0, false, 0, 0),
+            // Disarms cue 4.
+            spec(12, 1, 0, true, 56, 0),
+            spec(14, 0, 0, false, 0, 0),
+            // The sound: auto-follow, passes over when disarmed, Panic as its second trigger.
+            spec(2, 0, 2, true, 21, 8),
+            memo.clone(),
+            memo.clone(),
+            memo.clone(),
+            spec(27, 0, 0, false, 0, 0),
+            memo,
+        ],
+        // Playhead to the Disarm cue, start the sound, GO the Disarm cue, GO on the sound.
+        steps: vec![step(8, 0), step(2, 66), step(1, 0), step(1, 0)],
+        lookahead: 0,
+        min_go: 0,
+        panic: 0,
+    };
+    let out = run(&case, false).unwrap_or_else(|e| panic!("{e}"));
+    assert!(out.raw.iter().any(|a| matches!(
+        a,
+        Action::SetArmed { cue, armed: false } if *cue == cue_id(4)
+    )));
 }
