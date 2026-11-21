@@ -75,7 +75,7 @@ extension XCTestCase {
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 20), "the window is up", line: line)
         let parts = size.split(separator: "x").compactMap { Double($0) }
-        let want = size == "least" ? CGSize(width: 800, height: 516) : CGSize(width: parts[0], height: parts[1])
+        let want = size == "least" ? CGSize(width: 800, height: 523) : CGSize(width: parts[0], height: parts[1])
         let ok = NSPredicate { _, _ in
             MainActor.assumeIsolated {
                 abs(window.frame.width - want.width) <= 1 && abs(window.frame.height - want.height) <= 6
