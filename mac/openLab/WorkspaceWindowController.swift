@@ -90,6 +90,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var showModeSub: AnyCancellable?
     private var goProtectionSub: AnyCancellable?
     private var goBlockedSub: AnyCancellable?
+    private var mediaCopySub: AnyCancellable?
     private var statusController: StatusWindowController?
     /// The workspace status window if it was ever made (closing a workspace must not make one just to
     /// close it).
@@ -335,6 +336,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         goBlockedSub = store.$goBlockedCount.dropFirst().sink { [weak self] _ in
             MainActor.assumeIsolated { self?.masthead.flashGo() }
         }
+        mediaCopySub = watchMediaCopies()
         footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         footer.onSettings = { [weak self] in self?.showSettings() }

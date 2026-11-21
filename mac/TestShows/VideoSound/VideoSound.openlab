@@ -4,6 +4,7 @@
     "id": "00000000-0000-0000-0000-0000000005d0",
     "name": "VideoSound",
     "settings": {
+      "copy_media_on_add": false,
       "min_go_interval": 0.5,
       "panic_duration": 3.0,
       "autosave_interval": 30.0,

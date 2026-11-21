@@ -132,6 +132,7 @@ enum WorkspaceSwitch: String, CaseIterable, Sendable {
     case lockPlayhead = "lock_playhead"
     case goNeedsKeyUp = "go_needs_key_up"
     case oscEnabled = "osc_enabled"
+    case copyMediaOnAdd = "copy_media_on_add"
 
     var fallback: Bool { self != .goNeedsKeyUp }
 }

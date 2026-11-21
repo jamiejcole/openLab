@@ -1,0 +1,15 @@
+{
+  "about": "#779: with the copy setting on, a file set on Intro is copied into the show folder's audio folder (a file already inside: a numbered second copy, QLab measured) and the cue's Target cell keeps its file glyph; steps.log gives the target.",
+  "show": "Demo",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "general"},
+    {"click": "settings-copy-media"},
+    {"advance": 0.1},
+    {"focus": "workspace"},
+    {"set_media": "1", "file": "media/d.wav"},
+    {"advance": 0.5},
+    {"select": "1"},
+    {"shot": "intro-on-its-copy"}
+  ]
+}

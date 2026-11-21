@@ -32,7 +32,7 @@ enum Icon: CaseIterable {
     // Time column header toggle (elapsed / remaining).
     case timeToggle, timeToggleUp
     // The Target column's button for a file cue (present and missing), and the Target field's clear, choose and jump glyphs.
-    case targetFile, targetFileMissing, fieldClear, fieldChoose, fieldJump
+    case targetFile, targetFileMissing, targetFileCopying, fieldClear, fieldChoose, fieldJump
     // Reserved for a screen that does not exist yet; it resolves and is tested already.
     case reservedPopOut
 
@@ -97,7 +97,8 @@ enum Icon: CaseIterable {
         case .fieldChoose: return "field-choose"
         case .fieldJump: return "field-jump"
         case .reservedPopOut: return "reserved-pop-out"
-        case .transportPanic, .activeCuePause, .activeCueResume, .engineAlarm, .targetFileMissing: return nil
+        case .transportPanic, .activeCuePause, .activeCueResume, .engineAlarm, .targetFileMissing, .targetFileCopying:
+            return nil
         }
     }
 
@@ -108,6 +109,8 @@ enum Icon: CaseIterable {
         case .activeCueResume: return "play.fill"
         case .engineAlarm: return "exclamationmark.triangle.fill"
         case .targetFileMissing: return "trash"
+        // A file being copied into the show folder (WS-04).
+        case .targetFileCopying: return "doc.on.doc"
         default: return nil
         }
     }

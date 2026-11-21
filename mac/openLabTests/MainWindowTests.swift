@@ -1672,7 +1672,7 @@ final class WindowLayoutTests: XCTestCase {
         let (doc, wc) = try await open(old)
         let oldFrame = frame(wc)
         wc.window?.setFrame(oldFrame, display: true)
-        app.pickSaveURL = { _ in new }
+        app.pickSaveURL = { _, _ in SaveTarget(url: new) }
         let saved = await app.saveWorkspace(wc.store, asNew: true)
         XCTAssertTrue(saved)
         await assertEventually { self.app.session.workspaces.first { $0.doc == doc }?.path == new.path }
@@ -1696,7 +1696,7 @@ final class WindowLayoutTests: XCTestCase {
         wc.window?.setFrame(arranged, display: true)
         try toggle(.inspector, in: wc)
         let url = engine.folder.appendingPathComponent("first-\(UUID().uuidString).openlab")
-        app.pickSaveURL = { _ in url }
+        app.pickSaveURL = { _, _ in SaveTarget(url: url) }
         let saved = await app.saveWorkspace(wc.store)
         XCTAssertTrue(saved)
         await assertEventually { self.app.session.workspaces.first { $0.doc == doc }?.path == url.path }
@@ -1839,7 +1839,7 @@ final class WindowLayoutTests: XCTestCase {
         wc.verticalSplit.setPosition(room - tall, ofDividerAt: 0)
         settle(wc)
         try toggle(.inspector, in: wc)
-        app.pickSaveURL = { _ in new }
+        app.pickSaveURL = { _, _ in SaveTarget(url: new) }
         let saved = await app.saveWorkspace(wc.store, asNew: true)
         XCTAssertTrue(saved)
         await assertEventually { self.app.session.workspaces.first { $0.doc == doc }?.path == new.path }

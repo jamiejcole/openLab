@@ -7365,7 +7365,7 @@ extension PlayheadFlowTests {
         XCTAssertFalse(delegate.validateMenuItem(item), "an unsaved workspace has no file")
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).openlab")
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
-        app.pickSaveURL = { _ in url }
+        app.pickSaveURL = { _, _ in SaveTarget(url: url) }
         let saved = await app.saveWorkspace(store, asNew: true)
         XCTAssertTrue(saved)
         await assertEventually("the engine knows the path") { self.store.document?.path != nil }

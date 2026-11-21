@@ -209,7 +209,7 @@ final class AppControllerTests: XCTestCase {
         app.recentURLs = { [unowned self] in recents }
         app.recentExists = { _ in true }
         app.keyWindow = { [unowned self] in keyDoc.flatMap { app.windows[$0]?.window } }
-        app.pickSaveURL = { [unowned self] _ in saveURL }
+        app.pickSaveURL = { [unowned self] _, _ in saveURL.map { SaveTarget(url: $0) } }
         app.pickOpenURL = { [unowned self] in openURL }
         session.start()
         await assertEventually { app.windows.count == 1 && session.stores.values.allSatisfy { $0.model != nil } }

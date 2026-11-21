@@ -231,6 +231,7 @@ final class WorkspaceSettingsModel: ObservableObject {
         var switches: [WorkspaceSwitch: Bool]
         var autoNumberStep: Double?
         var autosaveInterval: Double?
+        var showMode: Bool
     }
 
     var displayState: DisplayState {
@@ -240,7 +241,7 @@ final class WorkspaceSettingsModel: ObservableObject {
             keyRefusal: keyRefusal, oscListening: oscListening, addresses: addresses, newCuesAutoLoad: newCuesAutoLoad,
             switches: Dictionary(
                 uniqueKeysWithValues: WorkspaceSwitch.allCases.compactMap { item in isOn(item).map { (item, $0) } }),
-            autoNumberStep: autoNumberStep, autosaveInterval: autosaveInterval)
+            autoNumberStep: autoNumberStep, autosaveInterval: autosaveInterval, showMode: store.showMode)
     }
 
     /// What keeps the patch from playing now, as the engine resolves it (or, from an engine that

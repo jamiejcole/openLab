@@ -93,6 +93,7 @@ enum MainMenu {
                 .separator(),
                 workspaceSettingsItem(),
                 item("menu.file.showInFinder", #selector(AppDelegate.showWorkspaceInFinder(_:))),
+                item("menu.file.copyMedia", #selector(AppDelegate.copyMediaIntoShowFolder(_:))),
                 .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
                 closeAllItem(),

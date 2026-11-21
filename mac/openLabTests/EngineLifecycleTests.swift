@@ -2243,7 +2243,7 @@ final class EngineCrashFlowTests: XCTestCase {
         _ = await store.send(command: .renameWorkspace("Edited"))
         await assertEventually { store.document?.dirty == true }
         let target = URL(fileURLWithPath: runs.folder.appendingPathComponent("Saved At Quit.openlab").path)
-        app.pickSaveURL = { _ in target }
+        app.pickSaveURL = { _, _ in SaveTarget(url: target) }
         alerts.saveChoices = [.save]
         // The save's reply can overtake the message that gives the store its path: hold it so it always does.
         tap.holdDocument = true

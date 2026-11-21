@@ -357,14 +357,18 @@ final class CueCell: NSTableCellView {
     @objc private func chooseClicked() { onChoose?() }
 
     /// Shows the Target cell's button.
-    func showChoose(missing: Bool, onChoose: @escaping () -> Void) {
-        let label = loc(missing ? "cuelist.target.fileMissing" : "inspector.target.choose")
-        let image = (missing ? Icon.targetFileMissing : Icon.targetFile).image(label, compact: true)
+    /// `file`: the cue's file as the show holds it, its tooltip under the label. `copying`: the file is
+    /// being copied into the show folder (WS-04), drawn as such until the cue switches to the copy.
+    func showChoose(missing: Bool, copying: Bool = false, file: String? = nil, onChoose: @escaping () -> Void) {
+        let label = loc(
+            copying ? "cuelist.target.copying" : missing ? "cuelist.target.fileMissing" : "inspector.target.choose")
+        let icon: Icon = copying ? .targetFileCopying : missing ? .targetFileMissing : .targetFile
+        let image = icon.image(label, compact: true)
         // Plain, not a template, for the same reason as `setImage`.
         chooseButton.image = TimeHeaderCell.tinted(
-            image, .secondaryLabelColor, size: image.size, description: label)
+            image, copying ? MarkColour.caution : .secondaryLabelColor, size: image.size, description: label)
         chooseButton.setAccessibilityLabel(label)
-        chooseButton.toolTip = label
+        chooseButton.toolTip = file.map { "\(label)\n\($0)" } ?? label
         chooseButton.isHidden = false
         self.onChoose = onChoose
     }
@@ -2111,7 +2115,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         // Drawn in Show Mode too, so the column does not change with the mode; the click does nothing there.
         // A file that is gone shows a trash can until it is back (the engine re-checks, so it clears itself).
         let missing = (store.problems[id] ?? []).contains { $0.type == "media_missing" }
-        cell.showChoose(missing: missing) { [weak self] in
+        let file = cue.raw["kind"]?["media"]?.stringValue
+        cell.showChoose(missing: missing, copying: store.copyingMedia.contains(id), file: file) { [weak self] in
             guard let self, !self.isEditLocked else { return }
             self.onChooseFile?(id)
         }

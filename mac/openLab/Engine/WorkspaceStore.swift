@@ -65,6 +65,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// The displays and where each stage is (VID-01), replaced by each `video_outputs` push or
     /// list answer; views observe it as a published property.
     @Published private(set) var videoOutputs = VideoOutputs()
+    /// WS-04: the cues whose files are being copied into the show folder now (empty: none).
+    @Published private(set) var copyingMedia: Set<ModelID> = []
+    /// WS-04: the on-demand copy is running (the command is off meanwhile).
+    @Published private(set) var copyOnDemandRunning = false
+    /// WS-04: each copy's end, as the engine reports it (the window shows the notice).
+    let mediaCopied = PassthroughSubject<MediaCopyReport, Never>()
     /// Workspace-level notices in force (replaced by each `warnings` message).
     @Published private(set) var warnings: [WireWarning] = []
     /// Notices the app raises itself for this workspace (a key-map key that took a menu command's
@@ -131,6 +137,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// The engine closed this workspace (`closed` on its connection): its window goes at once.
     var onClosed: (() -> Void)?
 
+    /// Marks the cues being copied; their rows draw again.
+    private func setCopying(_ cues: Set<ModelID>, onDemand: Bool) {
+        let touched = copyingMedia.symmetricDifference(cues)
+        copyingMedia = cues
+        if copyOnDemandRunning != onDemand { copyOnDemandRunning = onDemand }
+        if !touched.isEmpty { changes.send(.runtime(cues: touched, playheads: [])) }
+    }
+
     init(client: EngineClient) {
         self.client = client
         client.delegate = self
@@ -140,6 +154,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             if state != .connected {
                 self?.clearPreviewing()
                 self?.meters.reset()
+                // A copy does not outlive its engine connection's view of it.
+                self?.setCopying([], onDemand: false)
             }
         }
     }
@@ -234,6 +250,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// (`relink` with `preview`).
     func searchMissingFiles(in folder: String) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .relink(folder: folder, preview: true)) }
+    }
+    /// WS-04: copies every file the cues target that is not in the show folder into it. Answered as
+    /// the copy starts; `copyingMedia` and `mediaCopied` follow it (the engine refuses a second
+    /// while one runs).
+    func copyMediaIntoShowFolder() async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .copyMedia) }
     }
     /// The newest show-log entries the engine holds (oldest first); `max` nil: all of them.
     func logTail(max: UInt32? = nil) async -> Result<
@@ -450,6 +472,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             meters.ingest(outputs: outputs, cues: cues)
         case .videoOutputs(let v):
             setVideoOutputs(v)
+        case .mediaCopyProgress(let p):
+            setCopying(Set(p.cues), onDemand: p.onDemand)
+        case .mediaCopied(let report):
+            setCopying([], onDemand: false)
+            mediaCopied.send(report)
         case .result, .error, .appWelcome, .workspaces, .unknown:
             // These belong to the client or session.
             break

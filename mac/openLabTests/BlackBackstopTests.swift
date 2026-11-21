@@ -441,7 +441,7 @@ final class BlackBackstopTests: XCTestCase {
         let (store, cue) = try await coveredWhileACuePlays()
         let alerts = ScriptedAlerts()
         app.alerts = alerts
-        app.pickSaveURL = { _ in URL(fileURLWithPath: "/nonexistent-openlab-folder/show.openlab") }
+        app.pickSaveURL = { _, _ in SaveTarget(url: URL(fileURLWithPath: "/nonexistent-openlab-folder/show.openlab")) }
         var whenAsked: (asking: Bool, back: Bool?)?
         alerts.onAsk = { whenAsked = (StandBack.shared.isAsking, self.menuBarBlackStandsBack) }
         let saved = await app.saveWorkspace(store)
