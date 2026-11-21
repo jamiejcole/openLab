@@ -123,7 +123,9 @@ impl Dropouts {
                 }
                 Some((_, last)) => *last = now,
             }
-            self.throttle.hit(now, new);
+            // Only added here: the report below takes them, so one that falls due in this
+            // tick includes them.
+            self.throttle.pending = self.throttle.pending.saturating_add(new);
         }
         let (count, last) = self.raised.as_mut()?;
         if passed(now, *last, DROPOUT_CLEAR_MS) {
@@ -285,6 +287,38 @@ mod tests {
         assert_eq!(
             d.update(40_000, 21),
             Some(DropoutChange::Raised { count: 1 })
+        );
+    }
+
+    #[test]
+    fn a_dropout_in_the_tick_a_report_falls_due_is_in_that_report() {
+        let mut d = Dropouts::new(0);
+        assert_eq!(d.update(0, 1), Some(DropoutChange::Raised { count: 1 }));
+        assert_eq!(
+            d.update(10_000, 3),
+            Some(DropoutChange::More { more: 2, count: 3 })
+        );
+    }
+
+    #[test]
+    fn dropouts_in_every_tick_are_all_counted() {
+        let mut d = Dropouts::new(0);
+        let mut told = Vec::new();
+        for i in 0..600u64 {
+            told.extend(d.update((i * 100) as i64, i + 1));
+        }
+        assert_eq!(told.len(), 6, "the first, then one every ten seconds");
+        assert_eq!(told[0], DropoutChange::Raised { count: 1 });
+        assert_eq!(
+            told[5],
+            DropoutChange::More {
+                more: 100,
+                count: 501
+            }
+        );
+        assert_eq!(
+            d.update(69_900, 600),
+            Some(DropoutChange::Cleared { count: 600 })
         );
     }
 
