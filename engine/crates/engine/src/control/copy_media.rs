@@ -236,8 +236,9 @@ impl Copies {
     /// answer then reports the copy stopped and retargets nothing.
     pub(super) fn stop_doc(&mut self, doc: DocId) {
         self.queue.retain(|j| j.doc != doc);
-        // Pointing cues at copies already made is an edit of a few wakes: it finishes, unless the
-        // doc is gone ([`Control::copy_tick`] drops it then).
+        // Pointing cues at copies already made is an edit of a few wakes: it finishes (at once,
+        // when the caller flushes it: [`Control::flush_retargets`]), unless the doc is gone
+        // ([`Control::copy_tick`] drops it then).
         if let Some(r) = self.running.as_ref().filter(|r| r.doc == doc) {
             r.progress.cancel();
         }
@@ -575,6 +576,28 @@ impl Control {
             self.send_report(applying.doc, applying.report);
         } else {
             self.eng.copies.applying = Some(applying);
+        }
+    }
+
+    /// Points every cue of `doc`'s finished copy still waiting at its copy now, so the copy is
+    /// one whole undo step before a user's undo, redo, edit or Show Mode acts on the doc. Only
+    /// those user-driven wakes apply more than a part: a copy nobody interrupts still trickles.
+    pub(super) fn flush_retargets(&mut self, doc: DocId) {
+        if self
+            .eng
+            .copies
+            .applying
+            .as_ref()
+            .is_none_or(|a| a.doc != doc)
+        {
+            return;
+        }
+        let Some(mut applying) = self.eng.copies.applying.take() else {
+            return;
+        };
+        if let Some(mut cx) = self.cx_of(doc) {
+            cx.apply_chunk(&mut applying, usize::MAX);
+            self.send_report(doc, applying.report);
         }
     }
 

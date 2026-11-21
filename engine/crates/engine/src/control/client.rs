@@ -122,6 +122,22 @@ impl Control {
             Ok(flow) => return flow,
             Err(message) => message,
         };
+        if let Addr::Doc(Some(doc)) = from
+            && matches!(
+                message,
+                ClientMessage::Command { .. }
+                    | ClientMessage::Undo { .. }
+                    | ClientMessage::Redo { .. }
+                    | ClientMessage::Request {
+                        request: Request::SetShowMode { on: true },
+                        ..
+                    }
+            )
+        {
+            // A copy still pointing cues at their copies finishes first: it is one undo step,
+            // and the show is never left half retargeted.
+            self.flush_retargets(doc);
+        }
         match from {
             Addr::Doc(Some(doc)) => match message {
                 // Saves look at the other docs' show files: the engine's, not the doc's.

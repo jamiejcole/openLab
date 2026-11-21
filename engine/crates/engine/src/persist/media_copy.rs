@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use openlab_core::{MAX_COPY_NUMBER, copy_name_ok, numbered_name};
 
-use super::atomic::{create_tmp_beside, rename_no_replace, split_tmp_name, sync_parent};
+use super::atomic::{
+    STALE_TMP_AGE, create_tmp_beside, rename_no_replace, split_tmp_name, sync_parent,
+};
 
 /// Bytes read and written per step. Also the copy's whole memory: one buffer, halved for a
 /// comparison.
@@ -263,8 +265,9 @@ impl FolderIndex {
             if let Some((_, pid)) = split_tmp_name(&name) {
                 // A copy this engine left when it crashed: never finished, never pointed at, and
                 // possibly gigabytes. One of this process's own is a copy under way (another doc's
-                // could share the folder) and is left alone. Best effort.
-                if pid != std::process::id() {
+                // could share the folder) is left alone, and so is another process's written to within
+                // `STALE_TMP_AGE` (another instance may be copying). Best effort.
+                if pid != std::process::id() && is_stale(&entry) {
                     let _ = fs::remove_file(entry.path());
                 }
                 continue;
@@ -278,6 +281,17 @@ impl FolderIndex {
             entries,
         })
     }
+}
+
+/// Whether a temp file was last written more than [`STALE_TMP_AGE`] ago (as the show-file
+/// cleanup judges it; an unreadable time counts as fresh).
+fn is_stale(entry: &fs::DirEntry) -> bool {
+    entry
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+        .is_some_and(|age| age >= STALE_TMP_AGE)
 }
 
 /// The indexes of the destination folders one job writes into.
@@ -775,12 +789,25 @@ mod tests {
         let other = std::process::id().wrapping_add(1);
         let crashed = audio.join(format!("big.wav.{other}-3.tmp"));
         let live = audio.join(format!("big.wav.{}-9.tmp", std::process::id()));
+        let fresh = audio.join(format!("big.wav.{other}-4.tmp"));
         fs::write(&crashed, b"half").unwrap();
         fs::write(&live, b"half").unwrap();
+        fs::write(&fresh, b"half").unwrap();
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(86_400);
+        fs::File::options()
+            .write(true)
+            .open(&crashed)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
         let src = r.file("kick.wav", b"x");
         r.copy(&src, false).unwrap();
         assert!(!crashed.exists(), "the crashed copy is gone");
         assert!(live.exists(), "a copy under way is left alone");
+        assert!(
+            fresh.exists(),
+            "another process's fresh temp file is left alone"
+        );
     }
 
     #[test]

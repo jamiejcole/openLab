@@ -905,3 +905,93 @@ fn cues_pointed_at_their_copies_over_several_wakes_are_one_undo_step() {
     r.redo();
     assert_eq!(r.media(3), "audio/c.wav");
 }
+
+/// A copy of three cues at one cue per wake, stopped after its first wake of retargeting.
+fn halfway() -> (Rig, (String, String, String)) {
+    let mut r = rig_with(
+        &[
+            (1, "a.wav", 400, 0.1),
+            (2, "b.wav", 500, 0.2),
+            (3, "c.wav", 600, 0.3),
+        ],
+        true,
+        |c| c.copy.apply_per_wake = 1,
+    );
+    let before = (r.media(1), r.media(2), r.media(3));
+    assert!(ok(&r.copy_media()));
+    let first = before.0.clone();
+    assert!(r.s.wait_for(|c| {
+        c.workspace()
+            .find_cue(id(1))
+            .and_then(|q| q.kind.media())
+            .is_some_and(|m| m.as_str() != first)
+    }));
+    assert_eq!(
+        (r.media(1), r.media(2), r.media(3)),
+        ("audio/a.wav".into(), before.1.clone(), before.2.clone()),
+        "one cue retargeted, two waiting"
+    );
+    (r, before)
+}
+
+/// Review #779 M1: an Undo reaching a copy that still has cues to retarget finishes the copy
+/// first, so the Undo reverts all of it and the show is not left half retargeted.
+#[test]
+fn an_undo_while_a_copy_is_retargeting_undoes_the_whole_copy_in_one_step() {
+    let (mut r, before) = halfway();
+    r.undo();
+    assert_eq!((r.media(1), r.media(2), r.media(3)), before);
+    r.report();
+    assert_eq!(
+        (r.media(1), r.media(2), r.media(3)),
+        before,
+        "nothing retargets after the undo"
+    );
+}
+
+/// Review #779 M1: an edit made mid-copy lands after every cue is on its copy, and one Undo of
+/// the copy restores all of them.
+#[test]
+fn an_edit_while_a_copy_is_retargeting_leaves_every_cue_on_its_copy_and_one_undo_restores_them() {
+    let (mut r, before) = halfway();
+    r.command(Command::SetCueProperty {
+        id: id(1),
+        property: CueProperty::Name {
+            value: "renamed".into(),
+        },
+    });
+    assert_eq!(
+        (r.media(1), r.media(2), r.media(3)),
+        (
+            "audio/a.wav".into(),
+            "audio/b.wav".into(),
+            "audio/c.wav".into()
+        )
+    );
+    r.report();
+    r.undo();
+    r.undo();
+    assert_eq!((r.media(1), r.media(2), r.media(3)), before);
+}
+
+/// Review #779 M2: Show Mode turning on mid-copy finishes retargeting at once, not over later
+/// wakes in Show Mode.
+#[test]
+fn show_mode_while_a_copy_is_retargeting_retargets_the_rest_at_once() {
+    let (mut r, _) = halfway();
+    let sid = r.s.request_id();
+    assert!(ok(&r.s.send(ClientMessage::Request {
+        id: sid,
+        request: Request::SetShowMode { on: true },
+    })));
+    assert_eq!(
+        (r.media(1), r.media(2), r.media(3)),
+        (
+            "audio/a.wav".into(),
+            "audio/b.wav".into(),
+            "audio/c.wav".into()
+        ),
+        "everything retargeted before Show Mode began"
+    );
+    assert_eq!(r.report().copied, 3);
+}
