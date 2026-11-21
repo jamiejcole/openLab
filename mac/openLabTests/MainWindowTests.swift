@@ -1797,9 +1797,8 @@ final class WindowLayoutTests: XCTestCase {
         wc.window?.setFrame(frame(wc), display: true)
         settle(wc)
         let split = wc.verticalSplit
-        // AppKit's divider tracking follows the real pointer, so the test plays the split's part: a drag
-        // event is made the current event (as it is during a drag) and the split's proposed positions are
-        // handed to its delegate, then the drag ends.
+        // The test plays the split's part of a drag: a drag event is made the current event (as it is
+        // while the split tracks one) and the positions it would propose are handed to its delegate.
         func drag(toInspectorHeight height: CGFloat) throws {
             let window = try XCTUnwrap(wc.window)
             let event = try XCTUnwrap(

@@ -1896,6 +1896,25 @@ extension PlayheadFlowTests {
         XCTAssertEqual(rowMark(id), runningMark)
     }
 
+    /// A fast second click along the bottom of the waves but away from a slice's drawn count is a
+    /// click like the first: it moves the line and does not open the count for typing.
+    func testAFastClickBesideASlicesCountMovesTheLine() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        clickWave(at: 10)
+        try keyM()
+        await assertEventually("a marker at 10 s") { self.waveView.sliceMarks == [10] }
+        let count = waveView.countRect(0)
+        let (x, y) = (waveX(1), count.midY)
+        XCTAssertFalse(count.contains(NSPoint(x: x, y: y)), "the click is beside the count")
+        for n in [1, 2] {
+            pressWave(x: x, y: y, clicks: n)
+            waveView.mouseUp(with: waveMouse(.leftMouseUp, x: x, y: y, clicks: n))
+        }
+        XCTAssertTrue(loops.sliceCountField.isHidden, "the count is not opened")
+        XCTAssertEqual(waveView.insertion ?? -1, 1, accuracy: 0.05, "the line moved to the click")
+    }
+
     func testSlicedCueClickInsideACountThreeSlicePlaysThatPassThenTwoMore() async throws {
         let id = try await waveTones(1)[0]
         await showWaveform(id)

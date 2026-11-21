@@ -444,7 +444,7 @@ class WaveformView: NSView {
     /// Whether it was on a count: a fast second click anywhere else is a click like the first.
     @discardableResult
     func doubleClick(atX x: CGFloat, y: CGFloat) -> Bool {
-        guard !isLocked, y >= waveRect.maxY - Self.countBand, let i = slice(at: scale.seconds(x)) else {
+        guard !isLocked, let i = slice(at: scale.seconds(x)), countRect(i).contains(NSPoint(x: x, y: y)) else {
             return false
         }
         onEditCount?(i)
