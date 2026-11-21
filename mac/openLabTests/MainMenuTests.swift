@@ -13,6 +13,24 @@ final class MainMenuTests: XCTestCase {
         XCTAssertEqual(titles, ["openLab", "File", "Edit", "Cues", "Tools", "View", "Transport", "Window", "Help"])
     }
 
+    /// QLab's order: the workspace's files and settings after Save As; Jump to Targets with the
+    /// numbering tools; the system's Services in the app menu.
+    func testFileAndToolsFollowQLabsOrderAndTheAppMenuHasServices() throws {
+        let menus = MainMenu.make()
+        let file = try XCTUnwrap(menus.bar.items[1].submenu).items.map { $0.isSeparatorItem ? "-" : $0.title }
+        XCTAssertEqual(
+            Array(file.suffix(4)),
+            [loc("menu.file.saveAs"), "-", loc("menu.file.showFiles"), loc("menu.file.workspaceSettings")])
+        XCTAssertEqual(
+            menus.tools.items.prefix(5).map { $0.isSeparatorItem ? "-" : $0.title },
+            [
+                loc("menu.tools.loadToTime"), loc("menu.cues.renumber"), loc("menu.cues.deleteNumbers"),
+                loc("menu.tools.jumpToTargets"), "-",
+            ])
+        let app = try XCTUnwrap(menus.bar.items[0].submenu)
+        XCTAssertTrue(app.items.contains { $0.submenu === menus.services })
+    }
+
     private func allItems(_ menu: NSMenu) -> [NSMenuItem] {
         menu.items.flatMap { [$0] + ($0.submenu.map(allItems) ?? []) }
     }

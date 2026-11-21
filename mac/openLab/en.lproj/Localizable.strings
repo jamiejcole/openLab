@@ -11,6 +11,7 @@
 "menu.app.hide" = "Hide openLab";
 "menu.app.hideOthers" = "Hide Others";
 "menu.app.showAll" = "Show All";
+"menu.app.services" = "Services";
 "menu.app.quit" = "Quit openLab";
 
 "menu.file" = "File";

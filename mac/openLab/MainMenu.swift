@@ -15,6 +15,8 @@ enum MainMenu {
         let transport: NSMenu
         let windows: NSMenu
         let help: NSMenu
+        /// The app menu's Services submenu, which the system fills (`NSApp.servicesMenu`).
+        let services: NSMenu
     }
 
     static func make(keys: TransportKeys = TransportKeys(settings: nil)) -> Menus {
@@ -45,27 +47,32 @@ enum MainMenu {
             ])
         let transport = transportMenu(keys)
         let bar = NSMenu()
-        for submenu in [appMenu(), file, edit, cues, tools, view, transport, windows, help] {
+        let services = NSMenu(title: localized("menu.app.services"))
+        for submenu in [appMenu(services), file, edit, cues, tools, view, transport, windows, help] {
             let holder = NSMenuItem()
             holder.submenu = submenu
             bar.addItem(holder)
         }
         return Menus(
             bar: bar, edit: edit, openRecent: openRecent, cues: cues, tools: tools, view: view, transport: transport,
-            windows: windows, help: help
+            windows: windows, help: help, services: services
         )
     }
 
-    private static func appMenu() -> NSMenu {
+    private static func appMenu(_ services: NSMenu) -> NSMenu {
         let hideOthers = item(
             "menu.app.hideOthers", #selector(NSApplication.hideOtherApplications(_:)), "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
+        let servicesItem = NSMenuItem(title: services.title, action: nil, keyEquivalent: "")
+        servicesItem.submenu = services
         return menu(
             "menu.app",
             [
                 item("menu.app.about", #selector(AppDelegate.showAbout(_:))),
                 .separator(),
                 item("menu.app.preferences", #selector(AppDelegate.showPreferences(_:))),
+                .separator(),
+                servicesItem,
                 .separator(),
                 item("menu.app.hide", #selector(NSApplication.hide(_:)), "h"),
                 hideOthers,
@@ -76,7 +83,8 @@ enum MainMenu {
         )
     }
 
-    /// QLab's File menu order: New, Open, Open Recent, Close, Save, Save As. The Open Recent
+    /// QLab's File menu order: New, Open, Open Recent, Close, Save, Save As, then the workspace's
+    /// files and settings. The Open Recent
     /// submenu is filled when it opens (`AppDelegate.menuNeedsUpdate`).
     private static func fileMenu() -> (file: NSMenu, openRecent: NSMenu) {
         let recent = NSMenu(title: localized("menu.file.openRecent"))
@@ -90,13 +98,13 @@ enum MainMenu {
                 recentItem,
                 item("menu.file.recover", #selector(AppDelegate.recoverAutosaves(_:))),
                 .separator(),
-                workspaceSettingsItem(),
-                showFilesItem(),
-                .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
                 closeAllItem(),
                 item("menu.file.save", #selector(AppDelegate.saveWorkspace(_:)), "s"),
                 item("menu.file.saveAs", #selector(AppDelegate.saveWorkspaceAs(_:)), "S"),
+                .separator(),
+                showFilesItem(),
+                workspaceSettingsItem(),
             ]
         )
         return (file, recent)
@@ -229,7 +237,7 @@ enum MainMenu {
     }
 
     /// QLab's Tools menu, the parts openLab has: Load to Time (Cmd-T), Renumber (Cmd-R), Delete
-    /// Numbers (Cmd-D), Reveal Target File in Finder, Find Missing Files (after Reveal, as QLab
+    /// Numbers (Cmd-D), Jump to Targets (Opt-Cmd-J), Reveal Target File in Finder, Find Missing Files (after Reveal, as QLab
     /// places its file search).
     private static func toolsMenu() -> NSMenu {
         menu(
@@ -238,11 +246,11 @@ enum MainMenu {
                 item("menu.tools.loadToTime", #selector(AppDelegate.loadToTime(_:)), "t"),
                 item("menu.cues.renumber", #selector(AppDelegate.renumberCues(_:)), "r"),
                 item("menu.cues.deleteNumbers", #selector(AppDelegate.deleteNumbers(_:)), "d"),
+                jumpToTargetsItem(),
                 .separator(),
                 item("menu.tools.revealTarget", #selector(AppDelegate.revealTargetFile(_:))),
                 item("menu.tools.findMissingFiles", #selector(AppDelegate.findMissingFiles(_:))),
                 item("menu.tools.pasteLevels", #selector(AppDelegate.pasteLevels(_:))),
-                jumpToTargetsItem(),
             ])
     }
 
