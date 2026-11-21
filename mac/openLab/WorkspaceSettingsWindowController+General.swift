@@ -34,7 +34,6 @@ extension WorkspaceSettingsWindowController {
             note("settings.general.keyUp.note"), keyUpCheck,
             row(loc("settings.general.panic"), panicField, loc("settings.seconds")),
             row(loc("settings.general.autosave"), autosaveField, loc("settings.seconds")),
-            note("settings.general.autosave.note"),
             NSStackView(views: [autoNumberCheck, autoNumberField]), note("settings.general.autoNumber.note"),
             autoLoadCheck,
             lockPlayheadCheck, note("settings.general.lockPlayhead.note"),
