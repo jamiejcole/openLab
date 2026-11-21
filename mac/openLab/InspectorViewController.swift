@@ -607,6 +607,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let item = NSTabViewItem(identifier: "triggers")
         item.label = loc("inspector.tab.triggers")
         item.view = columns
+        // Tab goes down the left side, then down the right, and round again, so every trigger's
+        // field is reached from the keyboard (the hotkey box lets Tab pass when Tab brought the
+        // focus to it). Controls that cannot take the focus (off, or without the system's full
+        // keyboard access) are passed over.
+        let order: [NSView] = [
+            hotkeyEnableCheck, hotkeyField, hotkeyClear, onReleaseCheck, wallClockCheck, wallClockField,
+            wallClockFormatPopup, wallClockDaysPopup, fadeOthersCheck, fadeOthersScopePopup, fadeOthersTimeField,
+            duckCheck, duckDbField, duckTimeField, secondTriggerPopup,
+        ]
+        for (view, next) in zip(order, order.dropFirst() + order.prefix(1)) { view.nextKeyView = next }
+        item.initialFirstResponder = hotkeyEnableCheck
         return item
     }
 
