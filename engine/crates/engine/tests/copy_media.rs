@@ -228,6 +228,29 @@ fn reports(msgs: &[ServerMessage]) -> Vec<MediaCopyReport> {
 
 /// A saved show (`<env>/show/My Show.openlab`, written) with cues `cues` (all on files in the
 /// library folder made by `files`), copying unpaced. `tweak` changes the config.
+/// A path as a show stores it: forward slashes on every platform.
+fn portable(path: &Path) -> String {
+    openlab_core::to_portable(path.to_str().unwrap(), openlab_core::PathStyle::host())
+}
+
+/// Moves a folder. Windows refuses to rename one that holds an open file (the show is still open
+/// in the engine), so there its files are copied to the new place.
+fn move_dir(from: &Path, to: &Path) {
+    if fs::rename(from, to).is_ok() {
+        return;
+    }
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let dest = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            move_dir(&entry.path(), &dest);
+        } else {
+            fs::copy(entry.path(), &dest).unwrap();
+        }
+    }
+}
+
 fn rig_with(
     files: &[(u128, &str, usize, f32)],
     saved: bool,
@@ -417,7 +440,7 @@ fn setting_off_the_cue_targets_the_file_where_it_is_and_nothing_is_copied() {
     let chosen = r.lib_file("Sounds/rain.wav", 300, 0.2);
     r.set_media(1, &chosen);
     assert!(r.reports().is_empty());
-    assert_eq!(r.media(1), chosen.to_str().unwrap());
+    assert_eq!(r.media(1), portable(&chosen));
     assert!(!r.audio_dir().exists());
 }
 
@@ -483,7 +506,7 @@ fn after_a_copy_undo_returns_the_cues_to_their_previous_targets_in_one_step_and_
     r.report();
     assert_eq!(r.media(1), "audio/c.wav");
     r.undo();
-    assert_eq!(r.media(1), chosen.to_str().unwrap());
+    assert_eq!(r.media(1), portable(&chosen));
     assert!(r.reports().is_empty());
 }
 
@@ -627,7 +650,7 @@ fn setting_on_a_show_not_yet_saved_copies_nothing_then_saved_into_a_new_folder_e
     let chosen = r.lib_file("b.wav", 300, 0.2);
     r.add_cues(&[(2, &chosen)]);
     assert!(r.reports().is_empty());
-    assert_eq!(r.media(2), chosen.to_str().unwrap());
+    assert_eq!(r.media(2), portable(&chosen));
     // The app's folder choice: a new show folder, the show saved in it, then the copy.
     let folder = r.env.root.path().join("New Show");
     fs::create_dir_all(&folder).unwrap();
@@ -699,7 +722,7 @@ fn a_show_moved_with_its_folder_finds_every_file_and_a_cue_plays() {
         request: Request::Save,
     })));
     let moved = r.env.root.path().join("Elsewhere");
-    fs::rename(r.show_dir(), &moved).unwrap();
+    move_dir(&r.show_dir(), &moved);
     fs::remove_dir_all(&r.lib).unwrap();
     let doc =
         r.s.open_doc(DocSource::Open {
