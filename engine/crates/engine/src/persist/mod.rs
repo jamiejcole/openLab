@@ -10,6 +10,7 @@
 mod atomic;
 mod backup;
 mod files;
+mod media_copy;
 mod recovery;
 mod recovery_scan;
 mod relink;
@@ -28,6 +29,10 @@ pub use atomic::{Stage, write_atomic, write_atomic_with};
 pub use backup::backup_existing;
 pub use files::{modified_ms, read_text, unique_sibling};
 pub(crate) use files::{path_key, remove_if_present};
+pub use media_copy::{
+    COPY_CHUNK, COPY_PAUSE, Copied, CopyError, CopyFailure, CopyHooks, CopyPacing, CopyProgress,
+    CopyWork, FolderIndexes, MAX_INDEX_ENTRIES, copy_into,
+};
 pub use recovery::{
     RecoveryCheck, RecoveryOffer, RecoveryReport, check_recovery, discard_recovery, write_recovery,
 };

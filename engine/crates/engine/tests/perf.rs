@@ -559,6 +559,55 @@ fn performance_budgets() {
     );
     watch_budget();
     two_doc_budgets(&path);
+    copy_budget(&path);
+}
+
+/// WS-04: copying every file of a 2,000-cue show into its show folder (on demand) costs the
+/// control thread no more than an edit per wake: the wakes while the files are copied, the one
+/// that takes the copy's answer and points every cue at its copy in one undo step, and the next,
+/// which takes up the new files.
+fn copy_budget(path: &std::path::Path) {
+    let edit_limit = EDIT_LIMIT * 3 / 4;
+    let mut while_copying = Duration::MAX;
+    let mut applying = Duration::MAX;
+    for _ in 0..RUNS {
+        let text = read_text(path, MAX_SHOW_FILE_BYTES).unwrap();
+        let ws = load_show(&text).unwrap().workspace;
+        let mut c = config(&ws);
+        c.show_path = Some(path.to_path_buf());
+        c.copy.pacing.pause = Duration::ZERO;
+        let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+        s.settle_media();
+        let id = s.request_id();
+        s.send(ClientMessage::Request {
+            id,
+            request: openlab_core::protocol::Request::CopyMedia,
+        });
+        let mut longest = Duration::ZERO;
+        for _ in 0..10 {
+            let t = Instant::now();
+            s.tick();
+            longest = longest.max(t.elapsed());
+        }
+        while_copying = while_copying.min(longest);
+        let answer = s.next_copy_answer().expect("the copy answers");
+        let t = Instant::now();
+        s.deliver(answer);
+        let delivered = t.elapsed();
+        // The wake after it takes up the new files (keys, probes): a wake of its own.
+        let t = Instant::now();
+        s.tick();
+        applying = applying.min(delivered.max(t.elapsed()));
+        assert_eq!(s.control().copies_busy(), 0);
+    }
+    eprintln!(
+        "copy media of a 2,000-cue show: wake while copying {while_copying:?}, applying {applying:?} (limit {edit_limit:?})"
+    );
+    assert!(
+        while_copying < edit_limit / 4,
+        "wake while copying {while_copying:?}"
+    );
+    assert!(applying < edit_limit, "applying the copy {applying:?}");
 }
 
 /// Runs of ten passes, the best taken: the shared Intel runner measured 78 ms, 179 ms and

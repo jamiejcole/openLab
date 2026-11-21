@@ -324,6 +324,22 @@ pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// A fresh temp file beside `path` named after it ([`create_tmp`]'s rule), for a writer that
+/// fills it itself and renames it into place (a media copy).
+pub(crate) fn create_tmp_beside(path: &Path) -> io::Result<(PathBuf, File)> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let Some(name) = path.file_name() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path has no file name",
+        ));
+    };
+    create_tmp(path, name, &COUNTER).map_err(|e| match e {
+        PersistError::Io { source, .. } => source,
+        other => io::Error::other(other.to_string()),
+    })
+}
+
 /// How many temp names one write tries before giving up.
 const TMP_NAME_TRIES: u32 = 16;
 
@@ -357,7 +373,7 @@ fn create_tmp(
 
 /// Makes the rename itself durable. Best effort: the data is already safe, and not every
 /// platform or file system lets a folder be opened and synced (Windows does not).
-fn sync_parent(path: &Path) {
+pub(crate) fn sync_parent(path: &Path) {
     #[cfg(unix)]
     if let Some(parent) = path.parent() {
         let parent = if parent.as_os_str().is_empty() {

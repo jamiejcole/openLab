@@ -471,7 +471,7 @@ extension ClientMessage {
                 .listPatchMappings, .preshowCheck, .logTail,
                 .setOutputOverrides,
                 .setShowMode, .setPatchMapping, .listDisplays, .listStageMappings, .setStageMapping,
-                .setStageMonitor, .sequenceSpan, .snapshot:
+                .setStageMonitor, .sequenceSpan, .snapshot, .copyMedia:
                 return true
             #if DEBUG
                 // A stepped engine waits for its background work (up to 30 s) before it answers these.

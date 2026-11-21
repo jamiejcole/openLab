@@ -139,7 +139,8 @@ impl Hub {
             | ServerMessage::Meters { .. }
             | ServerMessage::Log { .. }
             | ServerMessage::LogEntry { .. }
-            | ServerMessage::Status { .. } => Kind::Lossy,
+            | ServerMessage::Status { .. }
+            | ServerMessage::MediaCopyProgress { .. } => Kind::Lossy,
             _ => Kind::State,
         };
         // Encoded before the lock: a multi-MiB message must not hold up `register`/`unregister`.
@@ -324,6 +325,43 @@ mod tests {
             !r.lagged.load(Ordering::Acquire),
             "a lost push is not a lag"
         );
+    }
+
+    /// A copy's progress is dropped for a slow client like `progress`, never making it lag; the
+    /// copy's end is state, kept.
+    #[test]
+    fn media_copy_progress_is_lossy_and_its_end_is_not() {
+        let hub = Hub::default();
+        let mut r = hub.register(None);
+        for n in 0..CLIENT_QUEUE / 2 {
+            hub.deliver(&Outgoing::all(state(n)));
+        }
+        hub.deliver(&Outgoing::all(ServerMessage::MediaCopyProgress {
+            cues: Vec::new(),
+            files_done: 0,
+            files_total: 1,
+            bytes_done: 0,
+            bytes_total: 0,
+            on_demand: true,
+        }));
+        hub.deliver(&Outgoing::all(ServerMessage::MediaCopied {
+            report: Box::new(openlab_core::protocol::MediaCopyReport {
+                on_demand: true,
+                copied: 1,
+                reused: 0,
+                in_folder: 0,
+                failed: Vec::new(),
+                failed_count: 0,
+                cancelled: false,
+            }),
+        }));
+        let kinds = drain(&mut r.rx);
+        assert_eq!(
+            kinds.len(),
+            CLIENT_QUEUE / 2 + 1,
+            "the progress dropped, the end kept"
+        );
+        assert!(!r.lagged.load(Ordering::Acquire));
     }
 
     /// A burst of `log` notices fills no queue past half and marks no client lagged.

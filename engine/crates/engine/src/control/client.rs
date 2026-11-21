@@ -89,6 +89,7 @@ impl Control {
                 }
             }
             Inbox::Doc(answer) => self.doc_answer(answer),
+            Inbox::Copy(answer) => self.copy_answer(answer),
             Inbox::Watch(WatchAnswer::Batch(batch)) => self.eng.watch_batches.push(batch),
             Inbox::Watch(WatchAnswer::BucketAnswered { bucket, healthy }) => {
                 self.eng.watch.watch_mut().answered(&bucket, healthy);
@@ -134,6 +135,14 @@ impl Control {
                     request: Request::Relink { folder, preview },
                 } if self.cx_of(doc).is_some() => {
                     self.relink(doc, id, folder, preview, to);
+                    Flow::Continue
+                }
+                // One copy runs engine-wide.
+                ClientMessage::Request {
+                    id,
+                    request: Request::CopyMedia,
+                } => {
+                    self.copy_media(doc, id, to);
                     Flow::Continue
                 }
                 // The mapping is the machine's: every doc resolves its patches again.
@@ -525,6 +534,7 @@ impl DocCx<'_> {
                     return Flow::Continue;
                 }
                 let footprint = command.footprint();
+                let sets_media = openlab_core::media_set_by(&command);
                 let mut edit = self.doc.model.edit();
                 let result =
                     self.doc
@@ -538,6 +548,7 @@ impl DocCx<'_> {
                         // `model_changed`, not dirty.
                         if changed {
                             self.edited(now, &footprint);
+                            self.copy_on_add(sets_media);
                         }
                         reply(to, ok(id, Some(self.doc.revision)));
                     }
@@ -600,6 +611,10 @@ impl DocCx<'_> {
                 Request::SetShowMode { on } => {
                     if self.doc.show_mode != on {
                         self.doc.show_mode = on;
+                        // Nothing is copied while the show runs.
+                        if on {
+                            self.eng.copies.stop_doc(self.doc.id);
+                        }
                         self.document();
                     }
                     reply(to, ok(id, None));

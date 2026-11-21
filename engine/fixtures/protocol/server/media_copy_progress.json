@@ -1,0 +1,12 @@
+{
+  "type": "media_copy_progress",
+  "cues": [
+    "00000000-0000-0000-0000-000000000001",
+    "00000000-0000-0000-0000-000000000002"
+  ],
+  "files_done": 1,
+  "files_total": 2,
+  "bytes_done": 1048576,
+  "bytes_total": 3145728,
+  "on_demand": true
+}

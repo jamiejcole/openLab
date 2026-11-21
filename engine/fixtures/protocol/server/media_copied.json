@@ -1,0 +1,19 @@
+{
+  "type": "media_copied",
+  "report": {
+    "on_demand": true,
+    "copied": 3,
+    "reused": 1,
+    "in_folder": 2,
+    "failed": [
+      {
+        "cue": "00000000-0000-0000-0000-000000000004",
+        "file": "/Volumes/Library/Thunder.wav",
+        "reason": "missing",
+        "message": "could not read the file: No such file or directory"
+      }
+    ],
+    "failed_count": 1,
+    "cancelled": false
+  }
+}

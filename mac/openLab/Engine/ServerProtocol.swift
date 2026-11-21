@@ -273,6 +273,54 @@ struct StageState: Hashable, Sendable, Decodable {
     let reason: String?
 }
 
+/// WS-04: a copy of media into the show folder under way (`media_copy_progress`).
+struct MediaCopyProgress: Hashable, Sendable, Decodable {
+    let cues: [ModelID]
+    let filesDone: UInt64
+    let filesTotal: UInt64
+    let bytesDone: UInt64
+    let bytesTotal: UInt64
+    let onDemand: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case cues
+        case filesDone = "files_done"
+        case filesTotal = "files_total"
+        case bytesDone = "bytes_done"
+        case bytesTotal = "bytes_total"
+        case onDemand = "on_demand"
+    }
+}
+
+/// WS-04: how a copy of media into the show folder ended (`media_copied`).
+struct MediaCopyReport: Hashable, Sendable, Decodable {
+    let onDemand: Bool
+    let copied: UInt64
+    let reused: UInt64
+    let inFolder: UInt64
+    let failed: [MediaCopyFailure]
+    let failedCount: UInt64
+    let cancelled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case onDemand = "on_demand"
+        case copied, reused
+        case inFolder = "in_folder"
+        case failed
+        case failedCount = "failed_count"
+        case cancelled
+    }
+}
+
+struct MediaCopyFailure: Hashable, Sendable, Decodable {
+    let cue: ModelID
+    /// The file as the cue holds it.
+    let file: String
+    /// `missing`, `unreadable`, `disk_full`, `read_only`, `not_responding`, `bad_name`, `other`.
+    let reason: String
+    let message: String
+}
+
 /// VID-01: what `video_outputs` carries (and `list_displays` with `list_stage_mappings`): the
 /// displays, whether this machine has video output (nil: the stage host has not said), and each
 /// stage's display choice and state.
@@ -799,6 +847,10 @@ enum ServerMessage: Sendable, Decodable {
     case closed(doc: ModelID)
     /// VID-01: the displays and where each of the workspace's stages is, whenever that changes.
     case videoOutputs(VideoOutputs)
+    /// WS-04: media is being copied into the show folder.
+    case mediaCopyProgress(MediaCopyProgress)
+    /// WS-04: the copy ended.
+    case mediaCopied(MediaCopyReport)
     /// A `type` this client does not know: logged and dropped by the client.
     case unknown(type: String)
 
@@ -841,6 +893,8 @@ enum ServerMessage: Sendable, Decodable {
                 VideoOutputs(
                     displays: try d("displays"), video: try c.decodeIfPresent(Bool.self, forKey: "video"),
                     stages: try d("stages")))
+        case "media_copy_progress": self = .mediaCopyProgress(try MediaCopyProgress(from: decoder))
+        case "media_copied": self = .mediaCopied(try d("report"))
         default: self = .unknown(type: type)
         }
     }

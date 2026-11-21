@@ -21,6 +21,7 @@
 
 mod checks;
 mod client;
+mod copy_media;
 mod device_events;
 pub mod devices;
 mod docs;
@@ -80,6 +81,7 @@ use openlab_core::{
     Input, MachineSettings, MediaStatus, SampleTime, Workspace,
 };
 
+pub use copy_media::{COPY_PROGRESS_EVERY, CopyConfig};
 pub use docs::{
     DocAnswer, DocHook, DocSource, EpochClock, FinalWrites, Loaded, ManualClock, SaveHook,
 };
@@ -229,6 +231,8 @@ pub struct ControlConfig {
     pub doc_timeout: Duration,
     /// Bounds on a `relink` folder walk (WS-03); tests shrink them.
     pub relink_limits: crate::persist::ScanLimits,
+    /// How copies of media into the show folder are paced (tests drop the pause and add holds).
+    pub copy: copy_media::CopyConfig,
     /// Test support (feature `test-support`, not in the shipping engine): the `relink` folder
     /// walk's thread fails to start, as when the process is out of threads.
     #[cfg(any(test, feature = "test-support"))]
@@ -308,6 +312,7 @@ impl ControlConfig {
             doc_hook: None,
             doc_timeout: DOC_TIMEOUT,
             relink_limits: crate::persist::ScanLimits::default(),
+            copy: copy_media::CopyConfig::default(),
             #[cfg(any(test, feature = "test-support"))]
             fail_relink_spawn: false,
             shutdown_wait: SHUTDOWN_WAIT,
@@ -439,6 +444,8 @@ struct Engine {
     out: Outbound,
     /// The document worker (one read at a time, engine-wide) and the save writer.
     docs: Docs,
+    /// Copies of media into show folders (one at a time, engine-wide).
+    copies: copy_media::Copies,
     config: ControlConfig,
     rate: NonZeroU32,
     /// Frames per device block: the lookahead and the `now` offset. It follows the open
@@ -705,6 +712,7 @@ impl Control {
         // Only a doc has a show path ([`Self::new`]).
         config.show_path = None;
         let docs = Docs::new(&config, inbox.clone())?;
+        let copies = copy_media::Copies::new(inbox.clone());
         let watch = WatchShare::new(MediaWatch::new(&config.watch, inbox.clone())?);
         let waveform_reader = waveform_reader::WaveformReader::new(
             inbox.clone(),
@@ -785,6 +793,7 @@ impl Control {
             unwritable_warned: false,
             out: Outbound::new(outbound),
             docs,
+            copies,
             config,
             rate,
             block,
@@ -1380,6 +1389,7 @@ impl Control {
     /// [`ControlConfig::shutdown_wait`]. With no doc open, only the
     /// mixer's queue is pumped.
     pub fn shutdown(&mut self) -> FinalWrites {
+        self.eng.copies.stop_all();
         self.each_doc(|cx| {
             let now = cx.now();
             // A second panic within the fade is a hard stop.
@@ -1461,6 +1471,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::Save => "save",
         Request::SaveAs { .. } => "save_as",
         Request::Relink { .. } => "relink",
+        Request::CopyMedia => "copy_media",
         Request::ListDevices => "list_devices",
         Request::SetOutputDevice { .. } => "set_output_device",
         Request::BackupKeep => "backup_keep",

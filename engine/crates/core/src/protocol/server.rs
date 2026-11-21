@@ -35,6 +35,8 @@ pub const SERVER_TYPES: &[&str] = &[
     "workspaces",
     "closed",
     "video_outputs",
+    "media_copy_progress",
+    "media_copied",
     "result",
     "error",
 ];
@@ -127,6 +129,24 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         video: Option<bool>,
         stages: Vec<StageMappingEntry>,
+    },
+    /// To the connections bound to a workspace: a copy of media into its show folder is under
+    /// way (WS-04). Sent when it starts and at most about four times a second; lossy like
+    /// `progress`. `cues`: the cues whose files are being copied.
+    MediaCopyProgress {
+        cues: Vec<CueId>,
+        files_done: u64,
+        files_total: u64,
+        bytes_done: u64,
+        bytes_total: u64,
+        /// The on-demand command (`copy_media`), not a copy made as files were added.
+        on_demand: bool,
+    },
+    /// To the connections bound to a workspace: a copy of media into its show folder ended and
+    /// the cues copied were pointed at their copies (one undo step, its `model_changed` first).
+    /// Boxed: it lists failures.
+    MediaCopied {
+        report: Box<MediaCopyReport>,
     },
     /// Answer to a `command`, `transport`, `undo`, `redo`, `request`, `close`, `panic` or
     /// `hotkey`.
@@ -629,6 +649,57 @@ pub struct DeviceEntry {
     pub primary: bool,
 }
 
+/// How a copy of media into the show folder ended (`media_copied`). Counts are of files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaCopyReport {
+    pub on_demand: bool,
+    /// New files written into the show folder.
+    pub copied: u64,
+    /// Files the folder already held with the same content, used instead of a copy.
+    pub reused: u64,
+    /// Files already inside the show folder, left where they are (on demand).
+    pub in_folder: u64,
+    /// Cues whose file could not be copied (they keep their file), in cue-list order, at most
+    /// [`MAX_COPY_FAILURES_LISTED`]; `failed_count` counts them all.
+    pub failed: Vec<MediaCopyFailure>,
+    pub failed_count: u64,
+    /// The copy was stopped (the workspace went into Show Mode, or the engine gave up on a
+    /// volume that stopped answering): nothing was retargeted.
+    pub cancelled: bool,
+}
+
+/// Most failures a `media_copied` lists.
+pub const MAX_COPY_FAILURES_LISTED: usize = 200;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaCopyFailure {
+    pub cue: CueId,
+    /// The file as the cue holds it.
+    pub file: String,
+    pub reason: MediaCopyReason,
+    /// The engine's words, for the log and a tooltip.
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaCopyReason {
+    /// The file is not there.
+    Missing,
+    /// The file could not be read.
+    Unreadable,
+    /// The show folder's disk is full.
+    DiskFull,
+    /// The show folder cannot be written.
+    ReadOnly,
+    /// The file's volume, or the show folder's, stopped answering.
+    NotResponding,
+    /// The file's name cannot be used in the show folder.
+    BadName,
+    /// Anything else (`message` says what).
+    Other,
+}
+
 /// A missing file that matched several; the operator picks (a `set_cue_property` command).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmbiguousMatch {
@@ -972,6 +1043,8 @@ impl ServerMessage {
             Self::Workspaces { .. } => "workspaces",
             Self::Closed { .. } => "closed",
             Self::VideoOutputs { .. } => "video_outputs",
+            Self::MediaCopyProgress { .. } => "media_copy_progress",
+            Self::MediaCopied { .. } => "media_copied",
             Self::Result { .. } => "result",
             Self::Error { .. } => "error",
         }

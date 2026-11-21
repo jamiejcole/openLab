@@ -181,6 +181,9 @@ enum Request: Hashable, Sendable, Codable {
     case saveAs(path: String)
     /// `preview`: walk and list the matches, change nothing.
     case relink(folder: String, preview: Bool = false)
+    /// WS-04: copies every file the workspace's cues target that is not in its show folder into
+    /// it; answered as it starts (`mediaCopyProgress`, `mediaCopied` follow).
+    case copyMedia
     case listDevices
     /// Chooses the primary output device the engine opens at its next start (nil: the system
     /// default). App-scope; the engine keeps its primary device for its whole run.
@@ -283,6 +286,7 @@ enum Request: Hashable, Sendable, Codable {
             f.append(("folder", folder))
             if preview { f.append(("preview", true)) }
             return ("relink", f)
+        case .copyMedia: return ("copy_media", [])
         case .listDevices: return ("list_devices", [])
         case .setOutputDevice(let device):
             opt(&f, "device", device)
@@ -363,6 +367,7 @@ enum Request: Hashable, Sendable, Codable {
             self = .relink(
                 folder: try c.decode(String.self, forKey: "folder"),
                 preview: try c.decodeIfPresent(Bool.self, forKey: "preview") ?? false)
+        case "copy_media": self = .copyMedia
         case "list_devices": self = .listDevices
         case "set_output_device":
             self = .setOutputDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
