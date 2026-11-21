@@ -712,7 +712,7 @@ impl Control {
         // Only a doc has a show path ([`Self::new`]).
         config.show_path = None;
         let docs = Docs::new(&config, inbox.clone())?;
-        let copies = copy_media::Copies::new(inbox.clone());
+        let copies = copy_media::Copies::new(inbox.clone(), config.copy.apply_per_wake);
         let watch = WatchShare::new(MediaWatch::new(&config.watch, inbox.clone())?);
         let waveform_reader = waveform_reader::WaveformReader::new(
             inbox.clone(),

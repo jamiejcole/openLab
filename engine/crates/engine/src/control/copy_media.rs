@@ -29,14 +29,30 @@ use crate::persist::{
     copy_into, media_path,
 };
 
+/// Cues pointed at their copies per control wake: each wake is an edit of this many cues, so a
+/// copy of thousands of files never makes one long wake.
+pub const APPLY_PER_WAKE: usize = 32;
+
 /// Least time between two `media_copy_progress` messages of a copy.
 pub const COPY_PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 /// How the copies run (the engine's defaults; tests pace them as they need).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct CopyConfig {
     pub pacing: CopyPacing,
     pub hooks: CopyHooks,
+    /// Cues pointed at their copies per wake ([`APPLY_PER_WAKE`]).
+    pub apply_per_wake: usize,
+}
+
+impl Default for CopyConfig {
+    fn default() -> Self {
+        Self {
+            pacing: CopyPacing::default(),
+            hooks: CopyHooks::default(),
+            apply_per_wake: APPLY_PER_WAKE,
+        }
+    }
 }
 
 /// A copy asked for and not started yet.
@@ -159,10 +175,14 @@ pub(super) struct Copies {
     stuck: Arc<AtomicUsize>,
     /// `media_copied` reports that did not fit the outbound channel: sent at a later wake.
     unsent: Vec<(DocId, ServerMessage)>,
+    /// A copy whose cues are being pointed at their copies.
+    applying: Option<Applying>,
+    /// Cues pointed at their copies per wake.
+    per_wake: usize,
 }
 
 impl Copies {
-    pub(super) fn new(inbox: Sender<Inbox>) -> Self {
+    pub(super) fn new(inbox: Sender<Inbox>, per_wake: usize) -> Self {
         Self {
             inbox,
             running: None,
@@ -170,6 +190,8 @@ impl Copies {
             ticket: 0,
             stuck: Arc::new(AtomicUsize::new(0)),
             unsent: Vec::new(),
+            applying: None,
+            per_wake,
         }
     }
 
@@ -214,6 +236,8 @@ impl Copies {
     /// answer then reports the copy stopped and retargets nothing.
     pub(super) fn stop_doc(&mut self, doc: DocId) {
         self.queue.retain(|j| j.doc != doc);
+        // Pointing cues at copies already made is an edit of a few wakes: it finishes, unless the
+        // doc is gone ([`Control::copy_tick`] drops it then).
         if let Some(r) = self.running.as_ref().filter(|r| r.doc == doc) {
             r.progress.cancel();
         }
@@ -221,7 +245,9 @@ impl Copies {
 
     /// Copies running or waiting (tests wait until it is zero).
     pub(super) fn busy(&self) -> usize {
-        usize::from(self.running.is_some()) + self.queue.len()
+        usize::from(self.running.is_some())
+            + usize::from(self.applying.is_some())
+            + self.queue.len()
     }
 
     /// Copy threads given up on and still stuck.
@@ -279,7 +305,8 @@ impl Control {
         if self.eng.copies.running.is_some() {
             self.watch_copy();
         }
-        while self.eng.copies.running.is_none() {
+        self.apply_some();
+        while self.eng.copies.running.is_none() && self.eng.copies.applying.is_none() {
             let Some(job) = self.eng.copies.queue.pop_front() else {
                 break;
             };
@@ -448,8 +475,8 @@ impl Control {
             // A copy given up on: its late answer changes nothing.
             return;
         };
+        // The cues are pointed at their copies from the next wake's `copy_tick` on.
         self.finish_copy(running, answer.results, None);
-        self.copy_tick();
     }
 
     /// Reports `running` and, unless it was stopped, retargets its cues as one undo step.
@@ -461,6 +488,7 @@ impl Control {
         abandoned_after: Option<u64>,
     ) {
         let Running {
+            ticket,
             doc,
             mode,
             show_dir,
@@ -518,8 +546,36 @@ impl Control {
         if cx.doc.show_mode {
             cancelled = true;
         }
-        let report = cx.apply_copies(mode, &show_dir, &items, &settled, cancelled);
-        self.send_report(doc, report);
+        let (report, retargets) = cx.plan_retargets(mode, &show_dir, &items, &settled, cancelled);
+        if retargets.is_empty() {
+            self.send_report(doc, report);
+            return;
+        }
+        // Applied from the next wake on (`copy_tick`), a part per wake.
+        self.eng.copies.applying = Some(Applying {
+            doc,
+            key: format!("copy-media:{ticket}"),
+            retargets,
+            report,
+        });
+    }
+
+    /// The next part of pointing a finished copy's cues at their copies; its report once the last
+    /// cue is done. A closed doc's is dropped.
+    fn apply_some(&mut self) {
+        let Some(mut applying) = self.eng.copies.applying.take() else {
+            return;
+        };
+        let per_wake = self.eng.copies.per_wake.max(1);
+        match self.cx_of(applying.doc) {
+            Some(mut cx) => cx.apply_chunk(&mut applying, per_wake),
+            None => return,
+        }
+        if applying.retargets.is_empty() {
+            self.send_report(applying.doc, applying.report);
+        } else {
+            self.eng.copies.applying = Some(applying);
+        }
     }
 
     fn send_report(&mut self, doc: DocId, report: MediaCopyReport) {
@@ -549,25 +605,20 @@ impl DocCx<'_> {
     /// Points the cues whose file was copied or found at their copies, as one undo step, and
     /// counts the files. A cue whose file changed since the copy was planned keeps the new one
     /// (the edit wins). A stopped copy retargets nothing.
-    fn apply_copies(
+    fn plan_retargets(
         &mut self,
         mode: CopyMode,
         job_dir: &Path,
         items: &[CopyItem],
         settled: &[(usize, Outcome)],
         cancelled: bool,
-    ) -> MediaCopyReport {
+    ) -> (MediaCopyReport, VecDeque<Retarget>) {
         let show_dir = self.doc.show_path.as_deref().and_then(Path::parent);
         // A Save As into another folder since the copy began: the stored forms the thread worked
         // out are for the old folder, and are worked out again here.
         let moved = show_dir != Some(job_dir);
         let show_dir = show_dir.and_then(Path::to_str).map(str::to_owned);
-        // Each cue's file now, from one walk of the show (a copy may name thousands of cues).
-        let current: std::collections::HashMap<CueId, MediaRef> =
-            openlab_core::media_of_cues(self.doc.model.ws())
-                .into_iter()
-                .collect();
-        let mut retargets: Vec<(CueId, MediaRef)> = Vec::new();
+        let mut retargets = VecDeque::new();
         let mut copied = 0u64;
         let mut reused: std::collections::HashSet<&Path> = std::collections::HashSet::new();
         let mut in_folder: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -606,7 +657,7 @@ impl DocCx<'_> {
             let Some((path, stored)) = target else {
                 continue;
             };
-            if current.get(&item.cue) != Some(&item.media) {
+            if cancelled {
                 continue;
             }
             let stored = match stored {
@@ -616,26 +667,11 @@ impl DocCx<'_> {
                     .map(|p| portable_ref(p, show_dir.as_deref(), PathStyle::host())),
             };
             if let Some(stored) = stored {
-                retargets.push((item.cue, stored));
-            }
-        }
-        if !cancelled && !retargets.is_empty() {
-            let now = self.now();
-            let command = retarget_command(self.doc.model.ws(), &retargets);
-            let footprint = command.footprint();
-            let mut edit = self.doc.model.edit();
-            let result = self.doc.history.execute(&mut edit, command);
-            edit.ended(&footprint, &result);
-            match result {
-                Ok(true) => self.edited(now, &footprint),
-                Ok(false) => {}
-                Err(e) => {
-                    self.partly_changed(now, &e);
-                    self.log(
-                        LogLevel::Error,
-                        format!("pointing cues at their copies failed: {e}"),
-                    );
-                }
+                retargets.push_back(Retarget {
+                    cue: item.cue,
+                    from: item.media.clone(),
+                    to: stored,
+                });
             }
         }
         let report = MediaCopyReport {
@@ -662,8 +698,66 @@ impl DocCx<'_> {
                 if cancelled { " (stopped)" } else { "" }
             ),
         );
-        report
+        (report, retargets)
     }
+
+    /// Points the next `per_wake` cues of `applying` at their copies, joined to the copy's one undo
+    /// step by its coalesce key. A cue whose file changed since the copy was planned keeps the new
+    /// one (the edit wins).
+    fn apply_chunk(&mut self, applying: &mut Applying, per_wake: usize) {
+        let take = per_wake.min(applying.retargets.len());
+        let chunk: Vec<Retarget> = applying.retargets.drain(..take).collect();
+        // Each cue's file now, from one walk of the show (not one per cue).
+        let current: std::collections::HashMap<CueId, MediaRef> =
+            openlab_core::media_of_cues(self.doc.model.ws())
+                .into_iter()
+                .collect();
+        let retargets: Vec<(CueId, MediaRef)> = chunk
+            .into_iter()
+            .filter(|r| current.get(&r.cue) == Some(&r.from))
+            .map(|r| (r.cue, r.to))
+            .collect();
+        if retargets.is_empty() {
+            return;
+        }
+        let now = self.now();
+        let command = retarget_command(self.doc.model.ws(), &retargets);
+        let footprint = command.footprint();
+        let mut edit = self.doc.model.edit();
+        let result =
+            self.doc
+                .history
+                .execute_coalescing(&mut edit, command, Some(applying.key.as_str()));
+        edit.ended(&footprint, &result);
+        match result {
+            Ok(true) => self.edited(now, &footprint),
+            Ok(false) => {}
+            Err(e) => {
+                self.partly_changed(now, &e);
+                self.log(
+                    LogLevel::Error,
+                    format!("pointing cues at their copies failed: {e}"),
+                );
+            }
+        }
+    }
+}
+
+/// One cue to point at its copy.
+struct Retarget {
+    cue: CueId,
+    /// The file the cue had when the copy was planned.
+    from: MediaRef,
+    to: MediaRef,
+}
+
+/// A copy whose files are done, its cues being pointed at their copies a few hundred a wake
+/// (each wake an edit of that many cues, all one undo step).
+struct Applying {
+    doc: DocId,
+    key: String,
+    retargets: VecDeque<Retarget>,
+    report: MediaCopyReport,
 }
 
 fn progress_message(r: &Running) -> ServerMessage {

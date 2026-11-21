@@ -875,3 +875,33 @@ fn a_whole_kind_edit_copies_only_when_it_names_another_file() {
     assert_eq!(r.report().copied, 1);
     assert_eq!(r.media(1), "audio/b.wav");
 }
+
+/// Review #779 M2: a copy's cues are pointed at their copies a part per wake, and it is still one
+/// undo step.
+#[test]
+fn cues_pointed_at_their_copies_over_several_wakes_are_one_undo_step() {
+    let mut r = rig_with(
+        &[
+            (1, "a.wav", 400, 0.1),
+            (2, "b.wav", 500, 0.2),
+            (3, "c.wav", 600, 0.3),
+        ],
+        true,
+        |c| c.copy.apply_per_wake = 1,
+    );
+    let before = (r.media(1), r.media(2), r.media(3));
+    assert!(ok(&r.copy_media()));
+    assert_eq!(r.report().copied, 3);
+    assert_eq!(
+        (r.media(1), r.media(2), r.media(3)),
+        (
+            "audio/a.wav".into(),
+            "audio/b.wav".into(),
+            "audio/c.wav".into()
+        )
+    );
+    r.undo();
+    assert_eq!((r.media(1), r.media(2), r.media(3)), before, "one step");
+    r.redo();
+    assert_eq!(r.media(3), "audio/c.wav");
+}
