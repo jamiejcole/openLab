@@ -1,0 +1,21 @@
+{
+  "about": "Time-of-day trigger (#784), light: the Triggers tab with the trigger on at 7:25:00 PM on weekdays, at 1200x800 then at the least window (800x500), and two cues selected at the least window.",
+  "show": "Demo",
+  "appearance": "light",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "triggers"},
+    {"click": "inspector-wall-clock"},
+    {"type": "inspector-wall-clock-time", "text": "19:25:00"},
+    {"choose": "inspector-wall-clock-format", "item": "PM"},
+    {"choose": "inspector-wall-clock-days", "item": "Saturday"},
+    {"choose": "inspector-wall-clock-days", "item": "Sunday"},
+    {"shot": "light"},
+    {"resize": [800, 500]},
+    {"shot": "light-least"},
+    {"select": ["1", "2.1"]},
+    {"tab": "triggers"},
+    {"shot": "light-least-several"}
+  ]
+}

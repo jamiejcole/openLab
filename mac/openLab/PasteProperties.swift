@@ -9,7 +9,7 @@ import Foundation
 enum PasteProperty: String, CaseIterable {
     case name, notes, preWait, postWait, duration, continueMode, colour, secondColour, flagged, autoLoad, armed
     case skipIfDisarmed
-    case fadeAndStopOthers, duckOthers, secondTrigger, secondTriggerOnRelease
+    case fadeAndStopOthers, duckOthers, secondTrigger, secondTriggerOnRelease, wallClock
     case outputPatch, stage
     case levels
     case fadeCurve, fadeMode, fadeStopTarget
@@ -30,7 +30,7 @@ enum PasteProperty: String, CaseIterable {
         case .name, .notes, .preWait, .postWait, .duration, .continueMode, .colour, .secondColour, .flagged,
             .autoLoad, .armed, .skipIfDisarmed:
             return .basics
-        case .fadeAndStopOthers, .duckOthers, .secondTrigger, .secondTriggerOnRelease: return .triggers
+        case .fadeAndStopOthers, .duckOthers, .secondTrigger, .secondTriggerOnRelease, .wallClock: return .triggers
         case .outputPatch, .stage: return .io
         case .levels: return .levels
         case .fadeCurve, .fadeMode, .fadeStopTarget: return .fade
@@ -167,6 +167,9 @@ enum PasteProperty: String, CaseIterable {
         case .secondTrigger: return set(.secondTrigger(raw["second_trigger"]?.stringValue ?? "nothing"))
         case .secondTriggerOnRelease:
             return set(.secondTriggerOnRelease(raw["second_trigger_on_release"] == .bool(true)))
+        case .wallClock:
+            // The time-of-day trigger alone: the cue keeps its own hotkey.
+            return [InspectorEdit.setTriggers(cue, wallClock: WallClockTrigger(json: raw["triggers"]?["wall_clock"]))]
         case .outputPatch: return set(.kindFields(["patch": kind["patch"] ?? .null]))
         case .stage: return set(.stage(kind["stage"]?.stringValue.map { ModelID($0) }))
         case .levels:

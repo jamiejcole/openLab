@@ -1,0 +1,26 @@
+{
+  "about": "Time-of-day trigger (#784), dark: the Triggers tab of a new cue (box off, 00:00:00 faint, 24-hour, every day); ticked with 10:30 typed (read as 00:10:30); PM chosen; the days menu open; then 2.2 set to fire at 00:00:05 on Thursdays (the stepped clock's day) and the clock played past it, 2.2 running; then 2.1 and 2.2 selected together (box and clock mixed).",
+  "show": "Demo",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "triggers"},
+    {"shot": "off"},
+    {"click": "inspector-wall-clock"},
+    {"type": "inspector-wall-clock-time", "text": "10:30"},
+    {"shot": "on-1030"},
+    {"choose": "inspector-wall-clock-format", "item": "PM"},
+    {"shot": "pm"},
+    {"open_menu": "inspector-wall-clock-days"},
+    {"shot": "days-menu"},
+    {"select": "2.2"},
+    {"tab": "triggers"},
+    {"click": "inspector-wall-clock"},
+    {"type": "inspector-wall-clock-time", "text": "5"},
+    {"advance": 6},
+    {"shot": "fired-running"},
+    {"select": ["2.1", "2.2"]},
+    {"tab": "triggers"},
+    {"shot": "several-mixed"}
+  ]
+}

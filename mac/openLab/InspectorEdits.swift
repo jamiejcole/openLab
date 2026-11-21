@@ -6,7 +6,7 @@ import Foundation
 /// cues, the Load Time tab's time, the Network cue's message and a Target cue's new target.
 enum InspectorField: Hashable, CaseIterable {
     case number, name, notes, preWait, postWait, target, duration, loadTime, message, newTarget
-    case fadeOthersTime, duckDb, duckTime
+    case fadeOthersTime, duckDb, duckTime, wallClock
 
     /// The fields that hold a time, shown as stored (`90` becomes `01:30.00`) once committed.
     static let times: Set<InspectorField> = [.preWait, .postWait, .duration, .loadTime, .fadeOthersTime, .duckTime]
@@ -40,6 +40,8 @@ enum InspectorEdit {
         case noNewTarget
         /// A Target cue's new target names the cue it retargets (that cue would target itself).
         case newTargetIsTarget
+        /// Not a time of day: hours, minutes and seconds (0 to 23, or 1 to 12 with AM or PM).
+        case invalidWallClock
 
         /// The `Localizable.strings` key of the message shown for it.
         var messageKey: String {
@@ -59,6 +61,7 @@ enum InspectorEdit {
             case .invalidLevel: return "inspector.invalid.level"
             case .noNewTarget: return "inspector.invalid.noNewTarget"
             case .newTargetIsTarget: return "inspector.invalid.newTargetIsTarget"
+            case .invalidWallClock: return "inspector.invalid.wallClock"
             }
         }
     }
@@ -133,6 +136,7 @@ enum InspectorEdit {
         case .fadeOthersTime: return shown(fadeOthers(cue).duration)
         case .duckDb: return OthersLevel.format(duckOthers(cue).db)
         case .duckTime: return shown(duckOthers(cue).duration)
+        case .wallClock: return WallClockTrigger(json: cue.raw["triggers"]?["wall_clock"]).display
         }
     }
 
@@ -190,6 +194,7 @@ enum InspectorEdit {
         case .message: return messageCommand(text: text, cue: cue)
         case .newTarget: return newTargetCommand(text: text, cue: cue, model: model)
         case .fadeOthersTime, .duckDb, .duckTime: return othersCommand(field, text: text, cue: cue)
+        case .wallClock: return wallClockCommand(text: text, cue: cue)
         case .target:
             guard targetKinds.contains(cue.kindType) else { return .failure(.notApplicable) }
             let n = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -313,11 +318,38 @@ extension InspectorEdit {
 
     /// `triggers` with the hotkey replaced (`.some(nil)` clears it) and/or the hotkey trigger
     /// switched, whatever is not named kept as the cue has it (a show without the switch has it on).
-    static func setTriggers(_ cue: Cue, hotkey: JSONValue?? = nil, enabled: Bool? = nil) -> Command {
+    static func setTriggers(
+        _ cue: Cue, hotkey: JSONValue?? = nil, enabled: Bool? = nil, wallClock: WallClockTrigger? = nil
+    ) -> Command {
         let current = cue.raw["triggers"]
         let kept: JSONValue? = current?["hotkey"].flatMap { $0 == .null ? nil : $0 }
         let on = enabled ?? (current?["hotkey_enabled"] != .bool(false))
-        return .setProperty(cue.id, .triggers(hotkey: hotkey ?? kept, enabled: on))
+        // The wall-clock trigger rides along unchanged unless this edit is of it.
+        let clock = wallClock.map(\.json) ?? current?["wall_clock"].flatMap { $0 == .null ? nil : $0 }
+        return .setProperty(cue.id, .triggers(hotkey: hotkey ?? kept, enabled: on, wallClock: clock))
+    }
+
+    /// A time typed in the wall-clock field, read on the cue's own clock (12-hour: its AM or PM
+    /// half). The switch and the days are kept.
+    static func wallClockCommand(text: String, cue: Cue) -> Result<Command?, Rejection> {
+        let now = WallClockTrigger(json: cue.raw["triggers"]?["wall_clock"])
+        guard let t = WallClockTrigger.parse(text, twelveHour: now.twelveHour, pm: now.isPM) else {
+            return .failure(.invalidWallClock)
+        }
+        return .success(
+            setWallClock(cue) {
+                $0.hours = t.hours
+                $0.minutes = t.minutes
+                $0.seconds = t.seconds
+            })
+    }
+
+    /// The cue's wall-clock trigger with `change` made to it, or nil when that changes nothing.
+    static func setWallClock(_ cue: Cue, _ change: (inout WallClockTrigger) -> Void) -> Command? {
+        let old = WallClockTrigger(json: cue.raw["triggers"]?["wall_clock"])
+        var new = old
+        change(&new)
+        return new == old ? nil : setTriggers(cue, wallClock: new)
     }
 }
 

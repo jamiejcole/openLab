@@ -107,6 +107,7 @@ extension InspectorViewController {
         showTicks(hotkeyEnableCheck, cues.map { $0.raw["triggers"]?["hotkey_enabled"] != .bool(false) })
         hotkeyEnableCheck.isEnabled = !isLocked
         hotkeyField.textColor = .controlTextColor
+        renderBatchWallClock(cues)
         showChoice(continuePopup, Self.continueModes, modes)
         showChoice(
             secondTriggerPopup, Self.secondTriggers, cues.map { $0.raw["second_trigger"]?.stringValue ?? "nothing" })
@@ -317,6 +318,7 @@ extension InspectorViewController {
         for c in [
             flaggedCheck, armedCheck, onReleaseCheck, groupLoopCheck, groupShuffleCheck, devampStartNextCheck,
             devampStopCheck, autoLoadCheck, skipCheck, secondColourCheck, fadeOthersCheck, duckCheck, hotkeyEnableCheck,
+            wallClockCheck,
         ] {
             c.allowsMixedState = false
         }

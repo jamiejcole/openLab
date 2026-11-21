@@ -121,6 +121,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let skipCheck = NSButton(checkboxWithTitle: loc("inspector.skipIfDisarmed"), target: nil, action: nil)
     /// The Triggers tab's switch of the hotkey trigger: off keeps the key and starts nothing.
     let hotkeyEnableCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    /// The Triggers tab's wall-clock trigger (TRG-05): its box, the time, the clock it is shown on
+    /// (24-hour, AM, PM) and the days it fires on.
+    let wallClockCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let wallClockField = NSTextField()
+    let wallClockFormatPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let wallClockDaysPopup = NSPopUpButton(frame: .zero, pullsDown: true)
     /// What the cue does to other cues as its action starts (the Triggers tab's right side).
     let fadeOthersCheck = NSButton(checkboxWithTitle: loc("inspector.fadeOthers"), target: nil, action: nil)
     let fadeOthersScopePopup = NSPopUpButton()
@@ -241,6 +247,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .fadeOthersTime: return fadeOthersTimeField
         case .duckDb: return duckDbField
         case .duckTime: return duckTimeField
+        case .wallClock: return wallClockField
         case .notes: return nil
         }
     }
@@ -260,6 +267,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             (networkMessageField, "inspector-network-message"), (newTargetField, AX.inspectorNewTarget),
             (fadeOthersTimeField, "inspector-fade-others-time"),
             (duckDbField, "inspector-duck-others-db"), (duckTimeField, "inspector-duck-others-time"),
+            (wallClockField, AX.inspectorWallClockTime),
         ] {
             f.setAX(id)
             f.delegate = self
@@ -586,7 +594,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         hotkeyRow.spacing = 6
         let left = column(
             [
-                row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck,
+                row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck, wallClockRow(row: row),
             ], nil)
         let right = othersColumn(row: row)
         left.addArrangedSubview(Self.columnFiller())
@@ -990,6 +998,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         hotkeyEnableCheck.state = hotkeyOn ? .on : .off
         hotkeyEnableCheck.isEnabled = !isLocked
         hotkeyField.textColor = hotkeyOn ? .controlTextColor : .disabledControlTextColor
+        renderWallClock(cueForEdit ?? cue)
         renderOthers(cueForEdit ?? cue)
         onReleaseCheck.state = cue.raw["second_trigger_on_release"] == .bool(true) ? .on : .off
         let secondTrigger = cue.raw["second_trigger"]?.stringValue ?? "nothing"
@@ -1044,7 +1053,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             secondTriggerPopup, onReleaseCheck, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck, secondColourCheck, secondColourPopup, autoLoadCheck, skipCheck,
             hotkeyEnableCheck, fadeOthersCheck, fadeOthersScopePopup, fadeOthersTimeField, duckCheck, duckDbField,
-            duckTimeField,
+            duckTimeField, wallClockCheck, wallClockField, wallClockFormatPopup, wallClockDaysPopup,
         ]
     }
 
@@ -1100,10 +1109,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .success(let command?):
             messageLabel.stringValue = ""
             send(command, cue: cue.id, key: "\(f)", revert: [f])
-            // Show what will be stored (`90` becomes `01:30.00`) until the model answers.
+            // Show what will be stored (`90` becomes `01:30.00`, `10:30` 00:10:30) until the model
+            // answers.
             if InspectorField.times.contains(f), let s = CueTime.parse(text) {
                 field(f)?.stringValue = CueTime.precise(s)
             }
+            if f == .wallClock, let shown = Self.wallClockShown(command) { field(f)?.stringValue = shown }
         }
         return true
     }

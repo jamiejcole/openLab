@@ -18,9 +18,11 @@ enum CueProperty: Hashable, Sendable {
     case postWait(Double)
     case continueMode(String)
     case target(ModelID?)
-    /// `triggers { hotkey, hotkey_enabled }`; the hotkey is a show-file hotkey object
-    /// (`KeyChord.hotkeyJSON`). With `enabled` false the key is kept but starts nothing.
-    case triggers(hotkey: JSONValue?, enabled: Bool)
+    /// `triggers { hotkey, hotkey_enabled, wall_clock }`; the hotkey is a show-file hotkey object
+    /// (`KeyChord.hotkeyJSON`). With `enabled` false the key is kept but starts nothing. The triggers
+    /// are replaced whole: `wallClock` nil sends none, which is a new cue's (off), so an edit of the
+    /// hotkey passes the cue's own on (`InspectorEdit.setTriggers`).
+    case triggers(hotkey: JSONValue?, enabled: Bool, wallClock: JSONValue? = nil)
     case secondTrigger(String)
     case secondTriggerOnRelease(Bool)
     /// "Fade and stop others": on, `scope` (`peers`, `list`, `all`) and the fade time in seconds
@@ -69,8 +71,10 @@ enum CueProperty: Hashable, Sendable {
         case .postWait(let v): return p("post_wait", .double(v))
         case .continueMode(let v): return p("continue_mode", .string(v))
         case .target(let v): return p("target", v.map { .string($0.raw) } ?? .null)
-        case .triggers(let hotkey, let enabled):
-            return p("triggers", .object(["hotkey": hotkey ?? .null, "hotkey_enabled": .bool(enabled)]))
+        case .triggers(let hotkey, let enabled, let wallClock):
+            var value: [String: JSONValue] = ["hotkey": hotkey ?? .null, "hotkey_enabled": .bool(enabled)]
+            if let wallClock { value["wall_clock"] = wallClock }
+            return p("triggers", .object(value))
         case .secondTrigger(let v): return p("second_trigger", .string(v))
         case .secondTriggerOnRelease(let v): return p("second_trigger_on_release", .bool(v))
         case .fadeAndStopOthers(let enabled, let scope, let duration):

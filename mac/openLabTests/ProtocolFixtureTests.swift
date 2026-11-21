@@ -454,7 +454,17 @@ final class ProtocolFixtureTests: XCTestCase {
             (.autoLoad(true), "command_set_cue_auto_load"),
             (.skipIfDisarmed(true), "command_set_cue_skip_if_disarmed"),
             (
-                .triggers(hotkey: KeyChord("j", []).hotkeyJSON, enabled: false),
+                .triggers(
+                    hotkey: KeyChord("j", []).hotkeyJSON, enabled: false,
+                    wallClock: {
+                        var t = WallClockTrigger()
+                        t.enabled = true
+                        t.hours = 19
+                        t.minutes = 25
+                        t.days = Set(1...6)
+                        t.twelveHour = true
+                        return t.json
+                    }()),
                 "command_set_cue_triggers"
             ),
         ]
