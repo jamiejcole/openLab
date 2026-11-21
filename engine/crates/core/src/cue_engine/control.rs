@@ -266,7 +266,10 @@ impl CueEngine {
         };
         // A GO standing on a skipped cue starts nothing: the playhead moves on to the next cue
         // that is there, which this GO does not start (QLab 5.6.5, measured). With none left the
-        // GO is ignored as past the end of the list.
+        // GO is ignored as past the end of the list. So in every state of the cue: one still
+        // playing (or paused) from before it was disarmed takes no second trigger (or resume)
+        // from this GO, which is a move of the playhead only; a trigger aimed at the cue itself
+        // (`start_path`) still is its second trigger.
         if self.is_skipped(cue) {
             let Some(next) = playhead::first_present(path, |c| self.is_armed(c)) else {
                 return Err(GoIgnoredReason::NoCue);

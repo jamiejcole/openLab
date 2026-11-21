@@ -5626,6 +5626,46 @@ fn the_same_end_time_edits_on_a_video_cues_sound_and_picture() {
     }
 }
 
+/// An end time moved, later or earlier, while the old end is already inside the window the
+/// next tick commits and the control thread has not ticked since the last block (the edit is
+/// handled before the block's tick): the old end is the cue engine's, so picture and sound end
+/// there with the action. Neither plays on under a cue that shows idle, nor stops before it.
+#[test]
+fn an_end_moved_while_the_old_end_is_due_in_the_window_keeps_picture_and_sound_on_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    for new_end in [1.4, 0.55] {
+        let what = format!("end moved to {new_end}");
+        let mut s = video_show(vec![timed_sounding_cue(1, &movie, |t| {
+            t.end_time = Some(0.605)
+        })]);
+        let at = go(&mut s);
+        // (Off a block boundary, so it falls inside a window, not on its edge.)
+        let ends = at + samples(0.605);
+        // The last tick commits up to a block ahead; the next block renders with no tick, so
+        // the old end lies in the window of the tick the edit now comes before.
+        while s.now() + 2 * BLOCK <= ends {
+            s.run(BLOCK);
+        }
+        s.render_only(BLOCK);
+        expect_state(&s, 1, CueState::Running, &what);
+        set_geometry(&mut s, 1, serde_json::json!({ "end_time": new_end }));
+        run_to(&mut s, ends + 2 * BLOCK);
+        expect_state(&s, 1, CueState::Idle, &what);
+        assert_eq!(shown(&mut s), None, "{what}: the picture is gone");
+        s.run(samples(0.1));
+        let last = (at..s.rendered())
+            .rev()
+            .find(|&k| sound_at(&s, k).is_some())
+            .unwrap_or_else(|| panic!("{what}: never heard"));
+        assert!(
+            last < ends && last + 2 * BLOCK >= ends,
+            "{what}: the sound's last sample {last}, the old end {ends}"
+        );
+        assert_eq!(s.stalls(), 0, "{what}");
+    }
+}
+
 /// A pause while a devamp that stops the cue is pending, kept past the pass's planned end:
 /// picture and sound both hold, both play the rest of the pass after the resume, and both end
 /// on the pass's moved end.

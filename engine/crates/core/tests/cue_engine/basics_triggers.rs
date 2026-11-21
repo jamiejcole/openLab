@@ -498,6 +498,41 @@ fn a_running_cue_disarmed_and_skipped_still_takes_its_second_trigger() {
     assert_eq!(rig.state(1), CueState::Running);
 }
 
+/// A cue disarmed with "skip if disarmed" while it plays (second trigger: stop). A GO with the
+/// playhead on it only moves the playhead on, whatever the cue is doing: playing, it plays on;
+/// paused, it stays paused. A trigger aimed at the cue itself (a Start cue, a hotkey, OSC, all
+/// `Input::Start`) is its second trigger and stops it.
+#[test]
+fn a_go_on_a_playing_skipped_cue_moves_the_playhead_while_its_own_trigger_takes_the_second() {
+    for paused in [false, true] {
+        let mut one = wait(1, 5.0);
+        one.second_trigger = SecondTrigger::Stop;
+        let mut rig = Rig::new(vec![one, memo(2), memo(3)]);
+        rig.start(0, 1);
+        if paused {
+            rig.at(5, Input::Pause { cue: id(1) });
+        }
+        let one = rig.find_mut(1);
+        one.armed = false;
+        one.skip_if_disarmed = true;
+        rig.engine.model_changed();
+        rig.set_playhead(10, 1);
+        let state = rig.state(1);
+        let out = rig.go(20);
+        assert!(started(&out).is_empty(), "paused {paused}: {out:?}");
+        assert_eq!(
+            rig.state(1),
+            state,
+            "paused {paused}: the GO passes it over"
+        );
+        assert_eq!(rig.playhead(), Some(id(2)));
+        if !paused {
+            rig.start(30, 1);
+            assert_eq!(rig.state(1), CueState::Idle, "its own trigger stops it");
+        }
+    }
+}
+
 // ----- second colour: played until reset -----
 
 #[test]
