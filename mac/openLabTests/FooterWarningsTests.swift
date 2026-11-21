@@ -384,4 +384,53 @@ final class FooterWarningsTests: XCTestCase {
         }
         wc.existingStatusWindow?.close()
     }
+
+    /// Flow: audio drops out or disk reads fall behind during a show → a row in Status > Warnings
+    /// and the footer count; nothing modal; gone when it recovers. The virtual device reports
+    /// dropouts in Show Mode: the device's row is drawn with how many, the footer counts it, no sheet
+    /// or modal window comes, and ten seconds without a dropout take the row and the count away.
+    func testAudioDropsOutDuringAShowIsARowInStatusWarningsAndTheFooterCountAndGoesWhenItRecovers()
+        async throws
+    {
+        let engine = try await TestEngine.start()
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        try await rig.advance(1)
+        await wc.requestShowMode(true)
+        await assertEventually { wc.isShowMode }
+        // The Demo show's one broken cue.
+        XCTAssertEqual(wc.footer.warningsButton.title, "1")
+        wc.footer.warningsButton.performClick(nil)
+        XCTAssertEqual(wc.existingStatusWindow?.page, .warnings)
+        let row = String(format: loc("warnings.device"), TestEngine.deviceNames[0])
+        XCTAssertFalse(drawnTitles(wc).contains(row))
+
+        guard case .success = await engine.request(.dropOut(count: 3)) else { return XCTFail("drop out") }
+        await assertEventually("Status > Warnings draws the device's dropouts") {
+            try? await rig.advance(0.1)
+            return self.drawnTitles(wc).contains(row)
+        }
+        let table = wc.warningsPage.table
+        let at = try XCTUnwrap(drawnTitles(wc).firstIndex(of: row))
+        let cell = try XCTUnwrap(table.view(atColumn: 0, row: at, makeIfNecessary: true) as? WarningCell)
+        XCTAssertEqual(
+            cell.detail.stringValue,
+            loc("warnings.device.audio_dropouts").replacingOccurrences(of: "{count}", with: "3"))
+        XCTAssertEqual(wc.footer.warningsButton.title, "2", "the footer counts the row")
+        XCTAssertNil(NSApp.modalWindow, "nothing modal")
+        XCTAssertNil(wc.window?.attachedSheet, "no sheet")
+        XCTAssertTrue(wc.isShowMode)
+
+        // Ten seconds without one: the row and the count go.
+        try await rig.advance(5)
+        XCTAssertTrue(drawnTitles(wc).contains(row), "still dropping out recently")
+        try await rig.advance(6)
+        await assertEventually("the row goes once it has played clean for ten seconds") {
+            try? await rig.advance(0.5)
+            return !self.drawnTitles(wc).contains(row)
+        }
+        XCTAssertEqual(wc.footer.warningsButton.title, "1")
+        await wc.requestShowMode(false)
+        wc.existingStatusWindow?.close()
+    }
 }

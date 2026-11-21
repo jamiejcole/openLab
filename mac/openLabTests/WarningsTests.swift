@@ -726,6 +726,44 @@ final class WarningsTests: XCTestCase {
         XCTAssertEqual(ProblemText.warningDetail(w, label: { $0.raw }), loc("warning.notice.move_delayed"))
     }
 
+    /// A cue starved by the disk is one entry on the cue, counted up by each notice's count (the
+    /// engine tells repeats at most every ten seconds with how many since); a device's dropouts are
+    /// one entry for the device saying how many so far; a slow disk is one entry of its own. A
+    /// count no engine sends (huge, negative) is bounded, never a trap.
+    func testUnderrunsAddUpOnTheCuesEntryAndDropoutsAndASlowDiskAreEntriesInOurWords() async throws {
+        try await make()
+        try receive(#"{"type":"warnings","warnings":[]}"#)
+        let base = side.rows.count
+        func underrun(_ count: String) throws {
+            try runtime(
+                #"{"type":"warning","warning":{"type":"notice","code":"underrun","message":"engine words","cue":"\#(rain)","count":\#(count)}}"#
+            )
+        }
+        try underrun("1")
+        try underrun("4")
+        XCTAssertEqual(side.rows.count, base + 1)
+        let starved = try XCTUnwrap(side.rows.last)
+        XCTAssertEqual(starved.cue, rain)
+        XCTAssertEqual(starved.detail, String(format: loc("warnings.repeated"), loc("warning.notice.underrun"), 5))
+        try underrun("1e300")
+        try underrun("-3")
+        XCTAssertEqual(side.rows.count, base + 1)
+        XCTAssertEqual(
+            side.rows.last?.detail, String(format: loc("warnings.repeated"), loc("warning.notice.underrun"), 1_000_006))
+
+        try receive(
+            #"{"type":"warnings","warnings":[{"type":"notice","code":"audio_dropouts","message":"engine words","device":"Out","count":7},{"type":"notice","code":"disk_behind","message":"engine words"}]}"#
+        )
+        let device = try XCTUnwrap(side.rows.first { $0.title == String(format: loc("warnings.device"), "Out") })
+        XCTAssertEqual(
+            device.detail, loc("warnings.device.audio_dropouts").replacingOccurrences(of: "{count}", with: "7"))
+        XCTAssertTrue(side.rows.contains { $0.title == loc("warning.notice.disk_behind") })
+        XCTAssertFalse(side.rows.contains { ($0.title + $0.detail).contains("engine words") })
+        // Recovered: the engine's list no longer has them, and the entries go.
+        try receive(#"{"type":"warnings","warnings":[]}"#)
+        XCTAssertFalse(side.rows.contains { $0.title.contains("Out") || $0.title == loc("warning.notice.disk_behind") })
+    }
+
     func testTheCountInTheFooterMatchesTheEntriesShown() async throws {
         try await openWithoutRainsNumber()
         try await device(lose: true)
