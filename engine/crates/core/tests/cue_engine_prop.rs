@@ -5075,10 +5075,10 @@ fn an_end_time_edit_inside_the_window_of_the_old_end_is_left_to_that_end() {
     )));
 }
 
-/// Found by the wider generator (an oracle error, fixed): a sound with the Panic second trigger
-/// plays, a Disarm cue disarms it (it passes over when disarmed) and the playhead stands on it.
-/// The GO there starts nothing and only moves the playhead on (Playhead, "Skip if disarmed"),
-/// so the sound plays on: that GO is no second trigger of it.
+/// Found by the wider generator: a sound with the Panic second trigger plays, a Disarm cue
+/// disarms it (it passes over when disarmed) and the playhead stands on it. The GO there only
+/// moves the playhead on, in every state of the cue (Playhead, "Skip if disarmed"), so the sound
+/// plays on: that GO is no second trigger of it, while a trigger aimed at the cue would be.
 #[test]
 fn a_go_on_a_playing_cue_skipped_since_is_no_second_trigger() {
     let spec = |kind: u8, post: u8, mode: u8, armed: bool, target: u8, second: u8| Spec {

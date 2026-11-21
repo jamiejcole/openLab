@@ -78,9 +78,10 @@ Starting a cue inside a group (`Start`, GO on a child, a Start cue, a hotkey) do
 
 ## Skip if disarmed
 A cue is skipped when it is disarmed (`is_armed`, an Arm/Disarm cue's change in the call included) and has `skip_if_disarmed` (`Cue::skipped`, `CueEngine::is_skipped`). It is passed over as if absent (QLab 5, manual p. 128); armed, the flag does nothing.
-- A trigger (GO, Start cue, hotkey, OSC, continue) on it starts nothing: no run, no `pre-waiting`, no warning, no chain budget; its own continue never fires. A run it already had (disarmed since) keeps rule 1. Load of it does nothing (an auto-load passes over it).
+- A trigger (Start cue, hotkey, OSC, continue) on it starts nothing: no run, no `pre-waiting`, no warning, no chain budget; its own continue never fires. A run it already had (disarmed since) keeps rule 1: such a trigger is its second trigger (paused: it resumes). Load of it does nothing (an auto-load passes over it).
 - A continue starts the next sibling that is there (`next_sibling`); with none, nothing. A chain `chain_end` walks the cues that are there; the playhead goes to the next position that is there at that level (a skipped group with its children), else up a level, else past the end.
 - The playhead may rest on a skipped cue (navigation, the first cue on open or after Reset All, a cue disarmed while standing by). A GO there starts nothing: `go_on` moves the playhead to `first_present` of its path (further along its level, else after the group around it, outwards) and starts nothing; the next GO starts that cue. With no cue left it is `GoIgnored { no_cue }` (measured in QLab 5.6.5; skill `qlab-behaviour` Q295).
+  - That holds in every state of the cue: one still playing or paused from before it was disarmed takes no second trigger and no resume from that GO (Q760).
 - A cue fading out in a panic and skipped since is not restarted by a trigger (its fade goes on).
 - Groups: timeline never starts it; start-first modes start the first child that is there (the playhead enters after its chain); a playlist passes over it at once (no timing kept); a random group never picks it, also when nothing else is playable. Its nominal span is 0. A group's Load loads the first children that are there.
 - Navigation (`PlayheadNext`/`Previous`, `SetPlayhead`) can still stand on it, so it can be selected and armed again.
