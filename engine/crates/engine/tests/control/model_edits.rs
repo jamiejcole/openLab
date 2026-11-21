@@ -110,6 +110,8 @@ fn refusal(replies: &[ServerMessage]) -> Option<String> {
 
 fn patch(n: u128) -> OutputPatch {
     OutputPatch {
+        crosspoints: Vec::new(),
+        device_outputs: Vec::new(),
         id: PatchId(uuid::Uuid::from_u128(n)),
         name: format!("Patch {n}"),
         master_db: 0.0,
@@ -279,6 +281,7 @@ fn roomy_playing_show(mixer_patches: usize) -> OfflineShow {
                 PatchMapping {
                     device: "Offline".into(),
                     channels,
+                    system: false,
                 },
             )
             .unwrap();
@@ -725,6 +728,7 @@ fn fade_of_steady(
             },
             stop_target_when_done,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }

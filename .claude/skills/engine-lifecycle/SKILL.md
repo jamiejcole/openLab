@@ -1,6 +1,6 @@
 ---
 name: engine-lifecycle
-description: "Load when changing or reviewing engine start/shutdown, engine.json, instance lock, signals, run marker, crash capture, show log and status, sleep prevention, app relaunch, Pre-Show Check window (Preshow*.swift), EngineAlarm.swift, mac supervisor (engine/crates/engine/src/host/, diag/, platform/)."
+description: "Load when changing or reviewing engine start/shutdown, engine.json, instance lock, signals, run marker, crash capture, show log and status, sleep prevention, app relaunch, Warnings page (WarningsPage*.swift), EngineAlarm.swift, mac supervisor (engine/crates/engine/src/host/, diag/, platform/)."
 ---
 
 # Engine process lifecycle
@@ -18,6 +18,9 @@ description: "Load when changing or reviewing engine start/shutdown, engine.json
 - **No signal handler for crashes**, ever (below).
 - **Nothing is sent off the machine** by crash or log code; there is no network code for it.
 - Nothing in diagnostics runs on the audio thread or waits for a disk, except the panic hook (writes a file after a caught audio-thread panic) and `LogWriter::finish`'s bounded flush.
+
+## OSC port and backups (machine settings)
+- `osc_port` (machine `settings.json`) is the port OSC listens on (UDP and TCP; default 53000); the host reads it before `WsServer::start`, and a test engine on the virtual device runs OSC only when it names one (then on the loopback). `set_osc_port` and `osc_state` go through `OscServer` (skill `osc`); `set_backup_keep` and `backup_keep` read and write `backup_keep`. Both refuse when the settings file cannot be kept (`require_saveable`) and change nothing on a refusal.
 
 ## Start order
 
@@ -91,4 +94,4 @@ Shutdown lets it go; the OS drops it if the process dies. Not on Windows yet (a 
 ## References
 
 - `references/diagnostics.md`: read when changing the show log (`control/observe.rs`, `diag/`), `log_tail`/`log_entry` pushes, `status`, the crash hook, or log rotation.
-- `references/mac-supervision.md`: read when changing the app's engine start, attach, reattach, quit or alarm (`mac/openLab/Engine/`, `AppLaunch.swift`) or the Pre-Show Check window.
+- `references/mac-supervision.md`: read when changing the app's engine start, attach, reattach, quit or alarm (`mac/openLab/Engine/`, `AppLaunch.swift`) or the Warnings page of the status window.

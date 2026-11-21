@@ -35,6 +35,8 @@ pub const SERVER_TYPES: &[&str] = &[
     "workspaces",
     "closed",
     "video_outputs",
+    "media_copy_progress",
+    "media_copied",
     "result",
     "error",
 ];
@@ -127,6 +129,24 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         video: Option<bool>,
         stages: Vec<StageMappingEntry>,
+    },
+    /// To the connections bound to a workspace: a copy of media into its show folder is under
+    /// way (WS-04). Sent when it starts and at most about four times a second; lossy like
+    /// `progress`. `cues`: the cues whose files are being copied.
+    MediaCopyProgress {
+        cues: Vec<CueId>,
+        files_done: u64,
+        files_total: u64,
+        bytes_done: u64,
+        bytes_total: u64,
+        /// The on-demand command (`copy_media`), not a copy made as files were added.
+        on_demand: bool,
+    },
+    /// To the connections bound to a workspace: a copy of media into its show folder ended and
+    /// the cues copied were pointed at their copies (one undo step, its `model_changed` first).
+    /// Boxed: it lists failures.
+    MediaCopied {
+        report: Box<MediaCopyReport>,
     },
     /// Answer to a `command`, `transport`, `undo`, `redo`, `request`, `close`, `panic` or
     /// `hotkey`.
@@ -224,6 +244,23 @@ pub enum ResultData {
     PreshowCheck(Box<PreshowReport>),
     /// Answer to `waveform` (AUD-14). Boxed, as the report is.
     Waveform(Box<WaveformData>),
+    /// Answer to `sequence_span`: seconds; absent when the end is unknown (audio not probed,
+    /// a loop or group with no end) or the cue is unknown.
+    SequenceSpan {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        span: Option<f64>,
+    },
+    /// Answer to `backup_keep` and `set_backup_keep`: how many backups of each workspace are kept.
+    BackupKeep { count: u32 },
+    /// Answer to `osc_state` and `set_osc_port`: the port OSC listens on (the one in use while
+    /// `open`, else the one asked for), whether its sockets are open, and why the last start or
+    /// change failed (absent: no failure).
+    Osc {
+        port: u16,
+        open: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Answer to `list_patch_mappings`: every patch of the workspace, in workspace order.
     PatchMappings { patches: Vec<PatchMappingEntry> },
     /// Answer to `list_displays`. `video` is false where this machine's openLab has no video
@@ -254,6 +291,14 @@ pub struct StageMappingEntry {
     pub mapping: Option<crate::settings::StageMapping>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<crate::stage_link::StageState>,
+    /// A stage keeping black whose black a panic took down (QLab 5 manual p. 227): it is hidden
+    /// between cues, as a stage not keeping black is, until a cue plays on it again. Absent:
+    /// `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub panicked: bool,
+    /// The stage's monitor window is open (`set_stage_monitor`). Absent: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub monitor: bool,
 }
 
 /// One patch's mapping on this machine; `mapping` is absent for a patch that has none (never
@@ -316,8 +361,10 @@ pub struct PreshowReport {
     /// does not have, by id.
     pub network: Vec<PreshowTarget>,
     /// The workspace-level warnings in force (device lost or stalled, damaged media, cues whose
-    /// slices cannot play, ...), as in the `warnings` message; by `code`, then cue, then message.
-    /// `preload_over_budget` is information: listed, not counted, never a failure.
+    /// slices cannot play, ...), as in the `warnings` message, less the notices about a patch no
+    /// cue uses and a device's own notices while no cue's patch is on that device (the clock
+    /// device's loss, stall or failure counts while there is any cue); by `code`, then cue, then message. `preload_over_budget` is information:
+    /// listed, not counted, never a failure.
     pub system: Vec<WireWarning>,
 }
 
@@ -602,6 +649,57 @@ pub struct DeviceEntry {
     pub primary: bool,
 }
 
+/// How a copy of media into the show folder ended (`media_copied`). Counts are of files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaCopyReport {
+    pub on_demand: bool,
+    /// New files written into the show folder.
+    pub copied: u64,
+    /// Files the folder already held with the same content, used instead of a copy.
+    pub reused: u64,
+    /// Files already inside the show folder, left where they are (on demand).
+    pub in_folder: u64,
+    /// Cues whose file could not be copied (they keep their file), in cue-list order, at most
+    /// [`MAX_COPY_FAILURES_LISTED`]; `failed_count` counts them all.
+    pub failed: Vec<MediaCopyFailure>,
+    pub failed_count: u64,
+    /// The copy was stopped (the workspace went into Show Mode, or the engine gave up on a
+    /// volume that stopped answering): nothing was retargeted.
+    pub cancelled: bool,
+}
+
+/// Most failures a `media_copied` lists.
+pub const MAX_COPY_FAILURES_LISTED: usize = 200;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaCopyFailure {
+    pub cue: CueId,
+    /// The file as the cue holds it.
+    pub file: String,
+    pub reason: MediaCopyReason,
+    /// The engine's words, for the log and a tooltip.
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaCopyReason {
+    /// The file is not there.
+    Missing,
+    /// The file could not be read.
+    Unreadable,
+    /// The show folder's disk is full.
+    DiskFull,
+    /// The show folder cannot be written.
+    ReadOnly,
+    /// The file's volume, or the show folder's, stopped answering.
+    NotResponding,
+    /// The file's name cannot be used in the show folder.
+    BadName,
+    /// Anything else (`message` says what).
+    Other,
+}
+
 /// A missing file that matched several; the operator picks (a `set_cue_property` command).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmbiguousMatch {
@@ -789,6 +887,10 @@ pub struct Snapshot {
     /// one); later changes come as `played` runtime changes. Absent: none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub played: Vec<CueId>,
+    /// Each Playlist group with a child it plays next; later changes come as `playlist_next`
+    /// runtime changes. Absent: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub playlist_next: Vec<PlaylistNextEntry>,
     /// As in `warnings`.
     pub warnings: Vec<WireWarning>,
     /// The media lengths of the audio cues whose file is probed and playable, by cue id;
@@ -809,6 +911,12 @@ pub struct CueStateEntry {
 pub struct CueProblems {
     pub cue: CueId,
     pub problems: Vec<WireProblem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistNextEntry {
+    pub group: CueId,
+    pub cue: CueId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -852,7 +960,13 @@ pub enum WireWait {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutputMeter {
     pub patch: PatchId,
+    /// One per cue output of the patch: the device output this machine maps it to.
     pub peaks: Vec<f32>,
+    /// One per cue output of the patch: that cue output itself, as the cues send it after its
+    /// level and mute in the patch, before the patch's crosspoints and device outputs (what the
+    /// patch editor's rows meter). Absent from an engine that predates it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cue_outputs: Vec<f32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -891,7 +1005,7 @@ impl ServerMessage {
             Self::Meters { outputs, cues } => {
                 let peaks = outputs
                     .iter_mut()
-                    .flat_map(|m| m.peaks.iter_mut())
+                    .flat_map(|m| m.peaks.iter_mut().chain(m.cue_outputs.iter_mut()))
                     .chain(cues.iter_mut().flat_map(|m| m.peaks.iter_mut()));
                 for peak in peaks {
                     *peak = clean(f64::from(*peak)) as f32;
@@ -929,6 +1043,8 @@ impl ServerMessage {
             Self::Workspaces { .. } => "workspaces",
             Self::Closed { .. } => "closed",
             Self::VideoOutputs { .. } => "video_outputs",
+            Self::MediaCopyProgress { .. } => "media_copy_progress",
+            Self::MediaCopied { .. } => "media_copied",
             Self::Result { .. } => "result",
             Self::Error { .. } => "error",
         }

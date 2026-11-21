@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Control cues (CT-11..CT-17, CT-19): Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm and
-//! Disarm act on their target as the operator would, at their action start.
+//! Control cues (CT-11..CT-19): Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm and Disarm
+//! act on their target as the operator would, at their action start; a Target cue gives its
+//! target a temporary target.
 
 use crate::cue::{Cue, CueKind, DevampMode, GroupMode};
 use crate::model::{CueId, CueListId};
@@ -36,7 +37,7 @@ impl CueEngine {
         // act when the static problems are out of date: a model change the binary did not
         // signal (`model_changed`) inside a cue or group. They are also how the types say "no
         // target". Tested in `tests.rs`.
-        let Some(target) = model.kind.target() else {
+        let Some(target) = self.acts_on(model) else {
             return cx.warn(EngineWarning::NoTarget { cue });
         };
         if ws.find_cue(target).is_none() {
@@ -52,7 +53,7 @@ impl CueEngine {
             CueKind::Pause { .. } => self.as_of(at, cx, |e, cx| e.pause_tree(target, cx)),
             CueKind::Load { load_to_time, .. } => {
                 let time = self.load_time(target, *load_to_time, cx);
-                self.as_of(at, cx, |e, cx| e.load_tree(target, time, cx));
+                self.as_of(at, cx, |e, cx| e.load_tree(target, time, true, cx));
             }
             CueKind::Reset { .. } => self.as_of(at, cx, |e, cx| e.reset_tree(target, cx)),
             CueKind::Devamp {
@@ -74,6 +75,7 @@ impl CueEngine {
             CueKind::GoTo { then_go, .. } => self.go_to(target, *then_go, at, cx),
             CueKind::Arm { .. } => self.set_armed(target, true, cx),
             CueKind::Disarm { .. } => self.set_armed(target, false, cx),
+            CueKind::Target { new_target, .. } => self.retarget(cue, target, *new_target, cx),
             CueKind::Audio { .. }
             | CueKind::Fade { .. }
             | CueKind::Group { .. }
@@ -84,32 +86,80 @@ impl CueEngine {
         }
     }
 
-    /// The time a Load cue loads `target` to. A negative time counts back from the target's
-    /// end (pre-wait and action, as a playlist would time it) as in QLab 5 (manual pp. 680-681;
-    /// measured in 5.6.5): further back than the start, or with no known end (audio not probed
-    /// yet, an endless group), it loads to the start. An Audio cue that loops forever ends, for
-    /// this, after one pass (QLab 5.6.5 measured).
-    fn load_time(&self, target: CueId, time: f64, cx: &Ctx) -> f64 {
+    /// The cue a control cue acts on now: the temporary target a Target cue gave it, else its
+    /// own. A Fade is never given one (`can_target`), so its own is read where it starts. The one
+    /// rule for every reader (the binary's priming looks ahead with it too).
+    pub fn acts_on(&self, cue: &Cue) -> Option<CueId> {
+        self.temp_targets
+            .get(&cue.id)
+            .copied()
+            .or_else(|| cue.kind.target())
+    }
+
+    /// The temporary target of `cue` set by a Target cue, if it has one (QLab's OSC
+    /// `tempCueTargetID`).
+    pub fn temp_target(&self, cue: CueId) -> Option<CueId> {
+        self.temp_targets.get(&cue).copied()
+    }
+
+    /// How many times the temporary targets have changed (set, dropped by a reset, cleared by
+    /// Reset All): a change means what the binary loads ahead for a cue's target may be stale.
+    pub fn temp_target_changes(&self) -> u64 {
+        self.temp_target_changes
+    }
+
+    /// Drops `cue`'s temporary target, counting the change.
+    pub(super) fn drop_temp_target(&mut self, cue: CueId) {
+        if self.temp_targets.remove(&cue).is_some() {
+            self.temp_target_changes = self.temp_target_changes.wrapping_add(1);
+        }
+    }
+
+    /// A Target cue `by`: `target` acts on `new` from now on, until it is reset (QLab 5 manual
+    /// p. 686). The model is not changed, so the show is not edited. A cue already running
+    /// read its target when its action started and keeps acting on that one. As for the other
+    /// control cues, these checks act only on out-of-date static problems or on a temporary
+    /// target of the Target cue itself.
+    fn retarget(&mut self, by: CueId, target: CueId, new: Option<CueId>, cx: &mut Ctx) {
+        let ws = cx.ws;
+        let Some(new) = new else {
+            return cx.warn(EngineWarning::NoTarget { cue: by });
+        };
+        let (Some(by_model), Some(target_model)) = (ws.find_cue(by), ws.find_cue(target)) else {
+            return;
+        };
+        let Some(new_model) = ws.find_cue(new) else {
+            return cx.warn(EngineWarning::TargetMissing {
+                cue: by,
+                target: new,
+            });
+        };
+        if !crate::validate::can_target(&by_model.kind, &target_model.kind)
+            || crate::validate::retarget_problem(target_model, new_model).is_some()
+        {
+            return cx.warn(EngineWarning::TargetWrongKind { cue: by, target });
+        }
+        if target_model.kind.target() == Some(new) {
+            self.drop_temp_target(target);
+        } else if self.temp_targets.insert(target, new) != Some(new) {
+            self.temp_target_changes = self.temp_target_changes.wrapping_add(1);
+        }
+    }
+
+    /// The time a Load cue (or the `load` transport action) loads `target` to. A negative time
+    /// counts back from the end of the target's whole sequence (its auto-continue and
+    /// auto-follow chain, pre-waits and actions as a run would time them) as in QLab 5 (manual
+    /// pp. 149, 680-681; measured in 5.6.5): further back than the start, or with no known end
+    /// (audio not probed yet, an endless group), it loads to the start. An Audio cue that loops
+    /// forever ends, for this, after one pass (QLab 5.6.5 measured).
+    pub(super) fn load_time(&self, target: CueId, time: f64, cx: &Ctx) -> f64 {
         if time >= 0.0 {
             return time;
         }
-        let Some(model) = cx.ws.find_cue(target) else {
+        let Some(span) = self.sequence(target, cx).end else {
             return 0.0;
         };
-        // An Audio cue that loops forever has no end; QLab counts back from one pass.
-        let span = self.nominal_span(model, 0, cx).or_else(|| {
-            matches!(model.kind, CueKind::Audio { .. })
-                .then(|| self.pass_lengths.get(&target).copied())
-                .flatten()
-                .map(|pass| cx.secs(model.pre_wait, &self.config).saturating_add(pass))
-        });
-        let Some(span) = span else { return 0.0 };
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a span is at most a day of samples, far below 2^52"
-        )]
-        let span = span as f64 / f64::from(self.config.sample_rate().get());
-        (span + time).max(0.0)
+        (self.seconds(span) + time).max(0.0)
     }
 
     /// Carries out an operation as if it came on sample `at` (never earlier than `now`): a
@@ -216,7 +266,10 @@ impl CueEngine {
         };
         // A GO standing on a skipped cue starts nothing: the playhead moves on to the next cue
         // that is there, which this GO does not start (QLab 5.6.5, measured). With none left the
-        // GO is ignored as past the end of the list.
+        // GO is ignored as past the end of the list. So in every state of the cue: one still
+        // playing (or paused) from before it was disarmed takes no second trigger (or resume)
+        // from this GO, which is a move of the playhead only; a trigger aimed at the cue itself
+        // (`start_path`) still is its second trigger.
         if self.is_skipped(cue) {
             let Some(next) = playhead::first_present(path, |c| self.is_armed(c)) else {
                 return Err(GoIgnoredReason::NoCue);
@@ -305,8 +358,16 @@ impl CueEngine {
             target,
         });
         let by = by.unwrap_or(target);
+        let slices = match &model.kind {
+            CueKind::Audio { slices, .. } => Some(slices),
+            // A Video cue's loops are planned as an Audio cue's (QLab 5 manual p. 214), so it
+            // devamps the same way; the binary works out where the picture leaves its loop.
+            CueKind::Video { timing, .. } => Some(&timing.slices),
+            _ => None,
+        };
         match &model.kind {
-            CueKind::Audio { slices, .. } => {
+            CueKind::Audio { .. } | CueKind::Video { .. } => {
+                let slices = slices.map_or(&[][..], Vec::as_slice);
                 let now = cx.now;
                 let Some(Slot::Active(run)) = self.slots.get_mut(&target) else {
                     return cx.warn(not_running);
@@ -378,13 +439,20 @@ impl CueEngine {
     }
 
     /// Feedback: the devamp of this run's voice leaves the loop on `at`.
-    pub(super) fn devamp_scheduled(&mut self, cue: CueId, run_id: RunId, at: SampleTime) {
+    pub(super) fn devamp_scheduled(
+        &mut self,
+        cue: CueId,
+        run_id: RunId,
+        at: SampleTime,
+        cx: &mut Ctx,
+    ) {
         if let Some(Slot::Active(run)) = self.slots.get_mut(&cue)
             && run.run == run_id
             && let Some(d) = run.devamp.as_mut()
             && d.at.is_none()
         {
             d.at = Some(at);
+            self.move_held(cue, cx);
         }
     }
 
@@ -398,6 +466,7 @@ impl CueEngine {
             && run.devamp.take().is_some()
         {
             cx.warn(EngineWarning::DevampIgnored { cue });
+            self.move_held(cue, cx);
         }
     }
 }

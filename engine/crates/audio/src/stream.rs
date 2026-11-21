@@ -111,6 +111,11 @@ pub struct StreamerConfig {
     /// support only: not in a shipped build.
     #[cfg(any(test, feature = "test-support"))]
     pub before_open: fn(&Path),
+    /// Called by a fill worker after it published a stream's failure and before it lets go of
+    /// the stream's ring: tests hold the worker there, so a voice can meet the failure at the
+    /// slowest point. Test support only: not in a shipped build.
+    #[cfg(any(test, feature = "test-support"))]
+    pub after_failure: fn(),
 }
 
 impl StreamerConfig {
@@ -130,6 +135,8 @@ impl StreamerConfig {
             exit_budget_bytes: DEFAULT_EXIT_BUDGET_BYTES,
             #[cfg(any(test, feature = "test-support"))]
             before_open: |_| {},
+            #[cfg(any(test, feature = "test-support"))]
+            after_failure: || {},
         }
     }
 }
@@ -183,10 +190,15 @@ struct Status {
     warnings: Vec<MediaWarning>,
     /// Ring position where the latest devamp's continuation starts.
     resume: Option<u64>,
+    /// Ring position minus voice frame for what is written from here on: 0 until a devamp cut,
+    /// which leaves stale loop frames in the ring that the voice skips.
+    offset: i64,
     /// Bytes held by the loop cache and the exit buffers built so far.
     cache_bytes: usize,
     /// Frames written to the ring from the loop cache.
     cached_frames: u64,
+    /// A new end for the table (`StreamHandle::set_end`) the worker has not taken yet.
+    end: Option<(usize, u64)>,
 }
 
 #[derive(Debug, Default)]
@@ -194,6 +206,8 @@ struct Shared {
     status: Mutex<Status>,
     changed: Condvar,
     cancelled: AtomicBool,
+    /// `Status::end` is set: the worker looks without taking the lock on every step.
+    end_asked: AtomicBool,
 }
 
 impl Shared {
@@ -221,13 +235,30 @@ impl StreamHandle {
         self.shared.lock().primed
     }
 
-    /// Every frame of the plan is in the ring.
+    /// Every frame of the plan is in the ring (a new end the worker has not taken yet counts as
+    /// more to come).
     pub fn is_finished(&self) -> bool {
-        self.shared.lock().finished
+        let s = self.shared.lock();
+        s.finished && s.end.is_none()
     }
 
-    /// Why the stream failed. Once this is set the stream has let go of its ring, so the voice
-    /// plays what was written and then ends with `FinishReason::EndOfStream`.
+    /// The plan's table ends with entry `entry`, `frames` long, from now on, as its voice is
+    /// told with `CommandKind::EndAt` (its cue's end time moved while it plays): later entries
+    /// are not written, and a last entry played once that grows is written on from what the
+    /// ring holds of it. `frames` 0 writes nothing more. Taken on the worker's next step.
+    /// Only an entry played once changes length, only the last one grows, and it grows only
+    /// while the stream has written no entry after it and stays inside the file; the caller
+    /// sends the voice only changes the stream can make.
+    pub fn set_end(&self, entry: usize, frames: u64) {
+        self.shared.update(|s| s.end = Some((entry, frames)));
+        self.shared.end_asked.store(true, Ordering::Release);
+        // A worker that has gone already needs no wake-up.
+        let _ = self.wake.send(Msg::Wake);
+    }
+
+    /// Why the stream failed. Set before the stream lets go of its ring, so a voice's
+    /// `FinishReason::EndOfStream` is never seen without it: the voice plays what was written
+    /// and then ends.
     pub fn error(&self) -> Option<MediaError> {
         self.shared.lock().error.clone()
     }
@@ -294,7 +325,22 @@ impl StreamHandle {
 
     /// Blocks until at least `frames` are written (or the stream finished).
     pub fn wait_written(&self, frames: u64, timeout: Duration) -> Result<bool, MediaError> {
-        self.wait(timeout, |s| s.written >= frames || s.finished)
+        self.wait(timeout, |s| {
+            s.written >= frames || (s.finished && s.end.is_none())
+        })
+    }
+
+    /// Blocks until the voice can play its first `frames` voice frames (frames of the plan
+    /// played since it started) without waiting for the disk, or the stream finished. After a
+    /// devamp cut the ring also holds the stale loop frames the voice skips, so the count of
+    /// frames written runs ahead of the voice by those: a driver that renders faster than real
+    /// time waits with this, not [`Self::wait_written`].
+    pub fn wait_fed(&self, frames: u64, timeout: Duration) -> Result<bool, MediaError> {
+        let frames = i64::try_from(frames).unwrap_or(i64::MAX);
+        self.wait(timeout, |s| {
+            i64::try_from(s.written).unwrap_or(i64::MAX) >= frames.saturating_add(s.offset)
+                || (s.finished && s.end.is_none())
+        })
     }
 
     fn wait(&self, timeout: Duration, done: impl Fn(&Status) -> bool) -> Result<bool, MediaError> {
@@ -434,9 +480,17 @@ impl DiskStreamer {
             }
             for i in 0..config.workers {
                 let (tx, rx) = mpsc::channel();
+                #[cfg(any(test, feature = "test-support"))]
+                let after_failure = config.after_failure;
                 std::thread::Builder::new()
                     .name(format!("openlab-disk-{i}"))
-                    .spawn(move || run_worker(rx))?;
+                    .spawn(move || {
+                        run_worker(
+                            rx,
+                            #[cfg(any(test, feature = "test-support"))]
+                            after_failure,
+                        );
+                    })?;
                 workers.push(Worker { tx });
             }
             Ok::<(), std::io::Error>(())
@@ -481,13 +535,27 @@ impl DiskStreamer {
     /// Creates the stream's ring and hands the stream to a worker. Does no I/O here; checks the
     /// slice table against `info` and the stream limit.
     pub fn prepare(&mut self, req: StreamRequest) -> Result<PreparedStream, MediaError> {
+        self.prepare_at(req, self.config.device_rate)
+    }
+
+    /// [`Self::prepare`] for a voice on a device running at `device_rate` rather than
+    /// [`StreamerConfig::device_rate`]: the file is resampled to that rate and `req.slices` are
+    /// frames at it.
+    pub fn prepare_at(
+        &mut self,
+        req: StreamRequest,
+        device_rate: u32,
+    ) -> Result<PreparedStream, MediaError> {
+        if device_rate == 0 {
+            return Err(MediaError::Worker);
+        }
         let worker = self
             .workers
             .get(self.next % self.workers.len())
             .ok_or(MediaError::Worker)?;
         self.next = self.next.wrapping_add(1);
         let wake = worker.tx.clone();
-        let (task, prepared) = self.task(req, wake)?;
+        let (task, prepared) = self.task_at(req, device_rate, wake)?;
         worker
             .tx
             .send(Msg::Add(task))
@@ -495,10 +563,21 @@ impl DiskStreamer {
         Ok(prepared)
     }
 
-    /// The task a worker runs for `req`, and the stream it fills.
+    /// [`Self::task_at`] at the configured device rate.
+    #[cfg(test)]
     fn task(
         &self,
         req: StreamRequest,
+        wake: Sender<Msg>,
+    ) -> Result<(Box<Task>, PreparedStream), MediaError> {
+        self.task_at(req, self.config.device_rate, wake)
+    }
+
+    /// The task a worker runs for `req` at `device_rate`, and the stream it fills.
+    fn task_at(
+        &self,
+        req: StreamRequest,
+        device_rate: u32,
         wake: Sender<Msg>,
     ) -> Result<(Box<Task>, PreparedStream), MediaError> {
         let StreamRequest {
@@ -507,7 +586,7 @@ impl DiskStreamer {
             seeking,
             slices,
         } = req;
-        let total = info.frames_at(self.config.device_rate);
+        let total = info.frames_at(device_rate);
         let fits = |s: &Slice| {
             s.frames > 0 && s.plays != Plays::Times(0) && s.start.saturating_add(s.frames) <= total
         };
@@ -523,8 +602,7 @@ impl DiskStreamer {
         let permit = Permit(Arc::clone(&self.open));
 
         let ch = usize::from(info.channels).max(1);
-        let ring_frames = (u64::from(self.config.device_rate) * u64::from(self.config.buffer_ms)
-            / 1000)
+        let ring_frames = (u64::from(device_rate) * u64::from(self.config.buffer_ms) / 1000)
             .max(CHUNK_FRAMES as u64);
         let ring_frames = usize::try_from(ring_frames).unwrap_or(CHUNK_FRAMES);
         let (producer, source) = RingBuffer::new(ring_frames * ch);
@@ -538,6 +616,7 @@ impl DiskStreamer {
                 let (reply, rx) = mpsc::channel();
                 let volume = match (&media, self.config.volume_of) {
                     (Media::Path(path), Some(volume_of)) => Some(volume_of(path)),
+                    (Media::Track(t), Some(volume_of)) => Some(volume_of(&t.path)),
                     _ => None,
                 };
                 self.opener
@@ -546,7 +625,7 @@ impl DiskStreamer {
                         media,
                         seeking: seeking.clone(),
                         info,
-                        device_rate: self.config.device_rate,
+                        device_rate,
                         shared: Arc::clone(&shared),
                         reply,
                         wake: wake.clone(),
@@ -564,7 +643,7 @@ impl DiskStreamer {
             opening,
             seeking,
             info,
-            device_rate: self.config.device_rate,
+            device_rate,
             slices: slices.clone(),
             pipe: None,
             entry: 0,
@@ -574,7 +653,7 @@ impl DiskStreamer {
             origin: (0, 0),
             offset: 0,
             exit_frames: usize::try_from(
-                u64::from(self.config.device_rate) * u64::from(self.config.exit_ms) / 1000,
+                u64::from(device_rate) * u64::from(self.config.exit_ms) / 1000,
             )
             .unwrap_or(0),
             exit_state: vec![ExitState::Unknown; entries],
@@ -594,6 +673,8 @@ impl DiskStreamer {
             step_frames: self.config.step_frames.max(1),
             handled_cut: None,
             cut: None,
+            last_written: None,
+            sealed: false,
             scratch: vec![0.0; CHUNK_FRAMES * ch],
             _permit: permit,
         });
@@ -837,8 +918,10 @@ fn run_opener(queue: &Arc<OpenQueue>, extra: bool) {
     // The queue's lock is held only while choosing a job, never during an open.
     while let Some(job) = queue.take(extra) {
         #[cfg(any(test, feature = "test-support"))]
-        if let Media::Path(path) = &job.media {
-            (job.before_open)(path);
+        match &job.media {
+            Media::Path(path) => (job.before_open)(path),
+            Media::Track(t) => (job.before_open)(&t.path),
+            Media::Reader(..) | Media::Preloaded(_) => {}
         }
         let OpenJob {
             volume,
@@ -882,7 +965,7 @@ enum Opening {
     Done,
 }
 
-fn run_worker(rx: Receiver<Msg>) {
+fn run_worker(rx: Receiver<Msg>, #[cfg(any(test, feature = "test-support"))] after_failure: fn()) {
     let mut tasks: Vec<Box<Task>> = Vec::new();
     loop {
         loop {
@@ -904,12 +987,17 @@ fn run_worker(rx: Receiver<Msg>) {
                 Progress::Idle => i += 1,
                 Progress::Done => drop(tasks.swap_remove(i)),
                 Progress::Failed(e) => {
+                    // Published before the task (and its ring producer) is dropped: the voice
+                    // ends as soon as the producer is gone and the ring empty, and control must
+                    // never see that end without the error already readable (it would take the
+                    // end for a clean one and never probe the file again). The task wrote
+                    // nothing since its step failed, so the voice still ends after the frames
+                    // already written; until the drop (right below) it merely waits for more.
                     let shared = Arc::clone(&t.shared);
-                    drop(tasks.swap_remove(i));
-                    // Published right after the task (and its ring producer) is dropped, before
-                    // any other stream's step can block: once a caller sees the error, the voice
-                    // is certain to end after the frames already written.
                     shared.update(|s| s.error = Some(e));
+                    #[cfg(any(test, feature = "test-support"))]
+                    after_failure();
+                    drop(tasks.swap_remove(i));
                 }
             }
         }
@@ -1032,6 +1120,11 @@ struct Task {
     step_frames: u64,
     handled_cut: Option<u64>,
     cut: Option<Cut>,
+    /// Frames of the last entry already in the ring when a new end put the cursor past it:
+    /// where it is written on from if that entry grows again.
+    last_written: Option<u64>,
+    /// A new end dropped entries the ring may already hold: the last entry can no longer grow.
+    sealed: bool,
     scratch: Vec<f32>,
     _permit: Permit,
 }
@@ -1039,12 +1132,19 @@ struct Task {
 impl Task {
     fn step(&mut self) -> Progress {
         if self.shared.cancelled.load(Ordering::Acquire) || self.producer.is_abandoned() {
+            // A new end not taken yet will never be: nothing is to come.
+            if self.shared.end_asked.swap(false, Ordering::AcqRel) {
+                self.shared.update(|s| s.end = None);
+            }
             return Progress::Done;
         }
         contain(|| self.fill()).unwrap_or_else(Progress::Failed)
     }
 
     fn fill(&mut self) -> Result<Progress, MediaError> {
+        if self.shared.end_asked.load(Ordering::Acquire) {
+            self.take_end();
+        }
         if self.pipe.is_none() {
             let pipe = match std::mem::replace(&mut self.opening, Opening::Done) {
                 Opening::Here(media) => {
@@ -1156,6 +1256,88 @@ impl Task {
         self.advance_cursor(s, n as u64);
         self.after_write();
         Ok(Progress::Worked)
+    }
+
+    /// Takes a new end for the table (`StreamHandle::set_end`) as the voice takes it, and moves
+    /// the write cursor to match. Cleared in the same update that says the stream has frames to
+    /// write again, so a driver waiting for it never sees it finished in between.
+    fn take_end(&mut self) {
+        self.shared.end_asked.store(false, Ordering::Release);
+        let Some(end) = self.shared.lock().end else {
+            return;
+        };
+        let more = self.apply_end(end.0, end.1);
+        let done = self.entry >= self.slices.len();
+        let asked = &self.shared.end_asked;
+        self.shared.update(|s| {
+            if s.end == Some(end) {
+                s.end = None;
+            } else {
+                // A newer one came meanwhile: the next step takes it.
+                asked.store(true, Ordering::Release);
+            }
+            if more {
+                s.finished = false;
+            } else if done {
+                // Past the new end: every frame of the plan is in the ring now.
+                s.finished = true;
+                s.primed = true;
+            }
+        });
+    }
+
+    /// Entry `k` becomes the table's last, `frames` long (0: nothing more is written). Returns
+    /// whether the cursor, which had passed the old end, has frames to write again.
+    fn apply_end(&mut self, k: usize, frames: u64) -> bool {
+        let len = self.slices.len();
+        let Some(cur) = self.slices.get(k).copied() else {
+            return false;
+        };
+        let grows = frames > cur.frames;
+        let inside = cur.start.saturating_add(frames) <= self.info.frames_at(self.device_rate);
+        if (frames != cur.frames && cur.plays != Plays::Times(1))
+            || (grows && (k + 1 != len || self.sealed))
+            || !inside
+        {
+            return false;
+        }
+        if frames == 0 {
+            self.sealed = true;
+            (self.entry, self.play, self.off) = (len, 0, 0);
+            return false;
+        }
+        if k + 1 < len {
+            self.sealed = true;
+        }
+        // What the ring holds of entry `k` once the cursor has passed it.
+        let held = if self.entry > k {
+            self.last_written.unwrap_or(cur.frames)
+        } else {
+            self.off
+        };
+        self.slices.truncate(k + 1);
+        if let Some(e) = self.slices.get_mut(k) {
+            e.frames = frames;
+        }
+        if let Some(w) = self.exit_wip.as_mut()
+            && (w.entry > k || (w.entry == k && w.off >= frames))
+        {
+            (w.entry, w.play, w.off) = (k + 1, 0, 0);
+        }
+        let past = self.entry > k || self.off >= frames;
+        if self.entry < k || !past {
+            return false;
+        }
+        if grows && held < frames {
+            // The last entry grew past what the ring holds of it: written on from there.
+            self.last_written = None;
+            (self.entry, self.play, self.off) = (k, 0, held);
+            return true;
+        }
+        // Past the new end: what the ring holds of the entry is kept, in case it grows again.
+        self.last_written = Some(held);
+        (self.entry, self.play, self.off) = (k + 1, 0, 0);
+        false
     }
 
     /// Records the `n` frames just written from `scratch` into the loop cache: a play of a loop
@@ -1392,9 +1574,10 @@ impl Task {
         self.closure_from = self.closure_from.max(target);
         self.direct_from = self.direct_from.max(target);
         self.link.resume(vpos, self.written);
-        let written = self.written;
+        let (written, offset) = (self.written, self.offset);
         self.shared.update(|s| {
             s.resume = Some(written);
+            s.offset = offset;
             s.cuts += 1;
             s.finished = false;
         });
@@ -2143,6 +2326,53 @@ mod tests {
         assert!(matches!(t.step(), Progress::Worked));
         assert_eq!(h.wait_cut_seen(none), Ok(true));
         assert_eq!(h.cuts(), 1);
+    }
+
+    /// After a devamp cut the ring still holds the loop frames written ahead, which the voice
+    /// skips: the frames written run ahead of the voice by those. A driver that waited for the
+    /// count of frames written rendered on with the continuation still to come, and the voice
+    /// ran dry part-way through the next slice; `wait_fed` waits for the continuation itself.
+    #[test]
+    fn a_driver_waits_for_the_frames_after_a_cut_not_the_stale_ones_before_it() {
+        let pre =
+            crate::decode::Preloaded::from_samples(1, 48_000, (0..60_000).map(mark).collect());
+        let plays = [Plays::Infinite, Plays::Times(1)];
+        let slices = crate::plan(0..60_000, &[1_000], &plays, 0).unwrap();
+        let (_d, mut t, p) = hand_task(StreamerConfig::new(48_000), pre, slices);
+        let link = Arc::clone(&p.link);
+        // The loop is written far ahead of the voice, as a disk worker does.
+        while t.written < 30_000 {
+            assert!(matches!(t.step(), Progress::Worked));
+        }
+        let (mut ctl, mut r) = mixer();
+        let h = play(&mut ctl, p);
+        let none = Duration::ZERO;
+        let mut out = Vec::new();
+        render_to(&mut r, &mut out, 100, None);
+        devamp(&mut ctl, 100);
+        render_to(&mut r, &mut out, 164, None);
+        assert!(matches!(t.step(), Progress::Worked));
+        assert_eq!(h.cuts(), 1);
+        let resume = h.last_resume().unwrap();
+        assert!(resume >= 30_000, "{resume}");
+        // The voice leaves the loop on frame 1000, plays the exit buffer if it said it would,
+        // and then the continuation from the ring: 10000 frames of that.
+        let (cut, uses_exit) = link.cut_requested().unwrap();
+        let exit = if uses_exit {
+            link.exit(1).unwrap().frames as u64
+        } else {
+            0
+        };
+        let need = cut + exit + 10_000;
+        // The stale loop frames alone are more than that.
+        assert_eq!(h.wait_written(need, none), Ok(true));
+        while t.written < resume + 10_000 {
+            assert_eq!(h.wait_fed(need, none), Ok(false), "{} written", t.written);
+            assert!(matches!(t.step(), Progress::Worked));
+        }
+        assert_eq!(h.wait_fed(need, none), Ok(true));
+        // Before any cut the two agree.
+        assert_eq!(h.wait_fed(cut, none), Ok(true));
     }
 
     /// L-R5: a devamp while the voice still waits for the disk's answer to the previous cut (it

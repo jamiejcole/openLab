@@ -163,7 +163,8 @@ impl CueEngine {
             | CueKind::Devamp { .. }
             | CueKind::GoTo { .. }
             | CueKind::Arm { .. }
-            | CueKind::Disarm { .. } => Act::Control,
+            | CueKind::Disarm { .. }
+            | CueKind::Target { .. } => Act::Control,
             CueKind::Network { .. } => Act::Send,
         };
         // QLab: a Devamp cue's "start next cue" is its continue, fired when the loop is left
@@ -191,6 +192,18 @@ impl CueEngine {
                         late_by: now - at,
                     });
                 }
+                // Loaded or moved by a seek: the stream starts at that point of the file. One
+                // loaded there already is used; otherwise (not loaded, or disarmed when it was)
+                // it is loaded now.
+                if let Some(position) = run.seek.take()
+                    && run.voice != Voice::Loaded
+                {
+                    cx.out.push(Action::LoadVoiceAt {
+                        cue,
+                        run: run.run,
+                        position,
+                    });
+                }
                 cx.out.push(Action::StartVoice {
                     cue,
                     run: run.run,
@@ -203,7 +216,7 @@ impl CueEngine {
                     first: voice_at,
                 };
                 // The binary starts the voice with the model's levels as they are now.
-                if let CueKind::Audio { levels, .. } = &model.kind {
+                if let Some(levels) = model.kind.levels() {
                     run.given = Some(run::Given {
                         model: levels.clone(),
                         played: level::played(levels),

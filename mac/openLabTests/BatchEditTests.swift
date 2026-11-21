@@ -117,6 +117,17 @@ final class PastePropertiesRuleTests: XCTestCase {
         let result = wide.taking(.level(.output(5)), from: shown, limits: VolumeLimits())
         XCTAssertEqual(result.outputs.map(\.db), [0, 0, 0, 0, 0, -6, 0, 0])
         XCTAssertEqual(narrow.taking(.level(.output(5)), from: shown, limits: VolumeLimits()), narrow)
+        // A cue whose patch has the output takes it though its levels do not name it yet.
+        let onWidePatch = narrow.taking(.level(.output(5)), from: shown, limits: VolumeLimits(), outputs: 8)
+        XCTAssertEqual(onWidePatch.outputs.map(\.db), [0, 0, -120, -120, -120, -6])
+        XCTAssertEqual(narrow.taking(.level(.output(5)), from: shown, limits: VolumeLimits(), outputs: 5), narrow)
+        // A mute there is kept the same way (#758); unmuting an output not listed changes nothing.
+        var mutedShown = shown
+        mutedShown.setMute(.output(5), true)
+        let muted = narrow.taking(.mute(.output(5)), from: mutedShown, limits: VolumeLimits(), outputs: 8)
+        XCTAssertEqual(muted.outputs.map(\.mute), [false, false, false, false, false, true])
+        XCTAssertEqual(muted.outputs[5].db, -120, "muting keeps the level")
+        XCTAssertEqual(narrow.taking(.mute(.output(5)), from: narrow, limits: VolumeLimits(), outputs: 8), narrow)
     }
 
     /// A ganged output moved on several cues moves each cue's own gang: a cue without that gang has
@@ -272,7 +283,7 @@ extension PlayheadFlowTests {
         XCTAssertEqual(inspector.nameField.placeholderString, loc("inspector.mixed"), "intro and the file name")
         XCTAssertEqual(inspector.preWaitField.stringValue, "")
         XCTAssertEqual(inspector.preWaitField.placeholderString, loc("inspector.mixed"))
-        XCTAssertEqual(inspector.postWaitField.stringValue, CueTime.format(0), "the same on both")
+        XCTAssertEqual(inspector.postWaitField.stringValue, CueTime.precise(0), "the same on both")
         XCTAssertEqual(inspector.colourPopup.titleOfSelectedItem, loc("inspector.mixed"))
         XCTAssertEqual(inspector.continuePopup.titleOfSelectedItem, loc("inspector.continue.do_not_continue"))
         XCTAssertEqual(inspector.flaggedCheck.state, .mixed)
@@ -296,7 +307,7 @@ extension PlayheadFlowTests {
         XCTAssertFalse(levels.faders[1].isMixed, "output 1 is the same on both")
         // One cue again: everything is that cue's.
         await selectAll([cues[1]])
-        XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.format(1.5))
+        XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.precise(1.5))
         XCTAssertTrue(inspector.numberField.isEnabled)
         XCTAssertEqual(inspector.numberField.alphaValue, 1)
         XCTAssertEqual(levels.matrix.mixed, [])
@@ -323,7 +334,7 @@ extension PlayheadFlowTests {
         await assertEventually("both wait") {
             [self.cues[0], self.cues[1]].allSatisfy { self.raw($0, "pre_wait")?.doubleValue == 2 }
         }
-        XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.format(2))
+        XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.precise(2))
         await wc.editor.undo()
         await assertEventually("one undo takes both back") {
             [self.cues[0], self.cues[1]].allSatisfy { (self.raw($0, "pre_wait")?.doubleValue ?? 0) == 0 }
@@ -374,6 +385,32 @@ extension PlayheadFlowTests {
         await assertEventually("one undo") { self.outputs(self.cues[1]) == Array(repeating: 0, count: 8) }
     }
 
+    /// Several cues on a 128-output patch selected → the Levels tab shows its 128 columns, as for one
+    /// of them, though their own levels name 2; a level typed on output 100 is set on each.
+    func testSeveralCuesOnA128OutputPatchSelectedTheLevelsTabShows128Columns() async throws {
+        try await pasteWorkspace()
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        // The count the patch editor sends.
+        await send(.setPatchOutputCount(patch, 128))
+        await assertEventually("the patch has 128 outputs") {
+            self.store.model?.patches.first?.raw["outputs"]?.arrayValue?.count == 128
+        }
+        XCTAssertEqual(outputs(cues[0]).count, 2, "the cue's own levels name 2 outputs")
+        await selectAll([cues[0], cues[1]])
+        inspector.tabView.selectTabViewItem(withIdentifier: "levels")
+        let p = inspector.audioLevels
+        XCTAssertEqual(p.matrix.outputCount, 128)
+        XCTAssertEqual(p.faders.count, 129, "the main fader and one per output")
+        XCTAssertEqual(p.matrix.columnLabel(127), "128")
+        try typeLevel(.output(99), "20")
+        await assertEventually("output 100 of each cue is at -20") {
+            self.cues.prefix(2).allSatisfy { self.outputs($0).count == 100 && self.outputs($0)[99] == -20 }
+        }
+        XCTAssertEqual(p.levelField.stringValue, "-20.0", "the box shows the level")
+        await wc.editor.undo()
+        await assertEventually("one undo") { self.cues.prefix(2).allSatisfy { self.outputs($0).count == 2 } }
+    }
+
     /// Cues ganged differently: no gang is drawn or can be set, and a ganged output moved moves each
     /// cue's own gang only.
     func testGangsThatDifferAreNotDrawnAndAMovedOutputMovesEachCuesOwnGang() async throws {
@@ -391,7 +428,7 @@ extension PlayheadFlowTests {
         XCTAssertTrue(levels.matrix.hidesGangs)
         inspector.tabView.selectTabViewItem(withIdentifier: "levels")
         levels.select(.output(0))
-        XCTAssertFalse(levels.gangField.isEnabled, "a gang cannot be set while they differ")
+        XCTAssertFalse(levels.gangsButton.isEnabled, "a gang cannot be set while they differ")
         try typeLevel(.output(0), "5")
         await assertEventually("both outputs 1 at -5") {
             self.outputs(self.cues[0]).first == -5 && self.outputs(self.cues[1]).first == -5
@@ -403,7 +440,7 @@ extension PlayheadFlowTests {
         try await setLevels(cues[1]) { $0.gangs = [[0, 1]] }
         await assertEventually("ganged alike") { !levels.matrix.hidesGangs }
         levels.select(.output(0))
-        XCTAssertTrue(levels.gangField.isEnabled)
+        XCTAssertTrue(levels.gangsButton.isEnabled)
     }
 
     /// Notes typed with several cues selected and refused (over the engine's bound) are offered back,
@@ -621,7 +658,7 @@ extension PlayheadFlowTests {
         XCTAssertEqual(s.ticked, [.name], "a click on a box ticks it")
         try click(try XCTUnwrap(s.categoryChecks[.triggers]))
         XCTAssertEqual(
-            s.ticked, [.name, .fadeAndStopOthers, .duckOthers, .secondTrigger, .secondTriggerOnRelease],
+            s.ticked, [.name, .fadeAndStopOthers, .duckOthers, .secondTrigger, .secondTriggerOnRelease, .wallClock],
             "a category box ticks its category")
         try click(s.cancelButton)
         await assertEventually("Cancel closed it") { self.wc.window?.attachedSheet == nil }

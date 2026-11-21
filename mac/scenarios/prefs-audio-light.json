@@ -1,0 +1,16 @@
+{
+  "about": "Application preferences, Audio tab (#773).",
+  "show": "Demo",
+  "appearance": "light",
+  "steps": [
+    {
+      "focus": "preferences"
+    },
+    {
+      "tab": "audio"
+    },
+    {
+      "shot": "audio"
+    }
+  ]
+}

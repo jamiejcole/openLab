@@ -169,9 +169,11 @@ impl ProbePool {
     }
 
     /// A doc closed: its waiting jobs go, its folder is no longer exempt. Its jobs already
-    /// taken run to their end; their answers find no doc.
-    pub fn leave(&self, doc: DocId) {
-        lock(&self.gate).leave(doc);
+    /// taken run to their end; their answers find no doc. What came off the gate is returned
+    /// for the caller to drop off the control thread.
+    pub fn leave(&self, doc: DocId) -> Box<dyn Send> {
+        let claims = lock(&self.gate).leave(doc);
+        Box::new(claims)
     }
 
     fn spawn(&mut self) -> std::io::Result<()> {
@@ -384,13 +386,29 @@ pub(super) fn worker(
                 picture: true,
                 ..
             } => {
-                let result = picture(&path).map(|p| (path, p));
+                let result = picture(&path);
+                // A movie's sound is the audio decoder's to read (the stage host plays only its
+                // picture): each of its sound tracks is probed as an audio file is. A movie that
+                // cannot be read for its sound at all counts as one track that cannot play.
+                let sound = match &result {
+                    Ok(openlab_core::video_probe::ProbeReport::Video { .. }) => {
+                        openlab_audio::probe_movie(&path).unwrap_or_else(|e| {
+                            vec![openlab_audio::MovieSound {
+                                codec: String::new(),
+                                probed: Err(e),
+                            }]
+                        })
+                    }
+                    _ => Vec::new(),
+                };
+                let result = result.map(|p| (path, p));
                 let answered = result.as_ref().err().is_none_or(volume_answered);
                 (
                     ProbeAnswer::Pictured {
                         result,
                         key,
                         ticket,
+                        sound,
                     },
                     answered,
                 )

@@ -40,6 +40,9 @@ enum TransportAction: Hashable, Sendable, Codable {
     case pause(cue: ModelID)
     case resume(cue: ModelID)
     case load(cue: ModelID, at: Double)
+    /// Moves an Audio cue to `position` seconds into its media file (a click in its waveform): an idle
+    /// or loaded cue loads there, a playing or previewing one jumps there, a paused one moves there.
+    case seek(cue: ModelID, position: Double)
     case reset(cue: ModelID)
     case triggerReleased(cue: ModelID)
     case preview(cue: ModelID)
@@ -72,6 +75,7 @@ enum TransportAction: Hashable, Sendable, Codable {
         case .pause(let c): return ("pause", [("cue", c)])
         case .resume(let c): return ("resume", [("cue", c)])
         case .load(let c, let at): return ("load", [("cue", c), ("at", at)])
+        case .seek(let c, let p): return ("seek", [("cue", c), ("position", p)])
         case .reset(let c): return ("reset", [("cue", c)])
         case .triggerReleased(let c): return ("trigger_released", [("cue", c)])
         case .preview(let c): return ("preview", [("cue", c)])
@@ -108,6 +112,7 @@ enum TransportAction: Hashable, Sendable, Codable {
         case "pause": self = .pause(cue: try cue())
         case "resume": self = .resume(cue: try cue())
         case "load": self = .load(cue: try cue(), at: try c.decode(Double.self, forKey: "at"))
+        case "seek": self = .seek(cue: try cue(), position: try c.decode(Double.self, forKey: "position"))
         case "reset": self = .reset(cue: try cue())
         case "trigger_released": self = .triggerReleased(cue: try cue())
         case "preview": self = .preview(cue: try cue())
@@ -124,11 +129,41 @@ enum TransportAction: Hashable, Sendable, Codable {
     }
 }
 
-/// Where one patch plays on this machine (WS-07): the device's name as `list_devices` gives it and
-/// a 0-based device channel for each output of the patch, in order.
+/// Where a patch plays on this machine: a named device, or (`system`) the system output, the Mac's
+/// default output device whichever it is (then `device` is empty).
 struct PatchMapping: Hashable, Sendable, Codable {
     var device: String
     var channels: [UInt32]
+    var system: Bool = false
+
+    init(device: String, channels: [UInt32]) {
+        self.device = device
+        self.channels = channels
+    }
+
+    /// On the system output, output i on channel `channels[i]`.
+    static func systemOutput(channels: [UInt32]) -> PatchMapping {
+        var m = PatchMapping(device: "", channels: channels)
+        m.system = true
+        return m
+    }
+
+    private enum CodingKeys: String, CodingKey { case device, channels, system }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        device = try c.decode(String.self, forKey: .device)
+        channels = try c.decode([UInt32].self, forKey: .channels)
+        system = try c.decodeIfPresent(Bool.self, forKey: .system) ?? false
+    }
+
+    /// `system` is sent only when set, as the engine writes it.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(device, forKey: .device)
+        try c.encode(channels, forKey: .channels)
+        if system { try c.encode(true, forKey: .system) }
+    }
 }
 
 enum RecoveryChoice: String, Hashable, Sendable, Codable { case restore, ignore }
@@ -146,10 +181,24 @@ enum Request: Hashable, Sendable, Codable {
     case saveAs(path: String)
     /// `preview`: walk and list the matches, change nothing.
     case relink(folder: String, preview: Bool = false)
+    /// WS-04: copies every file the workspace's cues target that is not in its show folder into
+    /// it; answered as it starts (`mediaCopyProgress`, `mediaCopied` follow).
+    case copyMedia
     case listDevices
     /// Chooses the primary output device the engine opens at its next start (nil: the system
     /// default). App-scope; the engine keeps its primary device for its whole run.
     case setOutputDevice(device: String?)
+    /// How many backups of each workspace this machine keeps. App-scope.
+    case backupKeep
+    /// Keeps this many backups of each workspace (0: none are made). App-scope.
+    case setBackupKeep(count: UInt32)
+    /// The port OSC listens on and whether it is open. App-scope.
+    case oscState
+    /// Listens for OSC on this port from now on (1 to 65535). The engine opens it first and closes the
+    /// old one after; one that cannot be opened is refused and the old one stays. App-scope.
+    case setOscPort(port: UInt16)
+    /// The stage on the display with the menu bar stands back under the app's windows while `on`.
+    case setStandBack(on: Bool)
     /// AUD-21: frames per callback asked of an output device on this machine, 16 to 1024. A
     /// device the engine plays on reopens at that size. App-scope.
     case setBufferSize(device: String, frames: UInt32)
@@ -174,13 +223,23 @@ enum Request: Hashable, Sendable, Codable {
     /// VID-01: shows the workspace's stage on a display (`listDisplays` id) on this machine; nil
     /// leaves it on none. Kept in the engine's machine settings, not the show file.
     case setStageMapping(stage: ModelID, display: String?)
+    /// Opens (or brings to the front) or closes the workspace's stage's monitor window: a live
+    /// copy of the stage the stage host draws in a window of its own.
+    case setStageMonitor(stage: ModelID, open: Bool)
+    /// How long the sequence that starts at `cue` lasts (its auto-continue and auto-follow chain),
+    /// for the Load to Time slider.
+    case sequenceSpan(cue: ModelID)
     #if DEBUG
         /// Test support only: an engine built with test-support on its virtual device
         /// (docs/protocol.md "Test support"). `advance` moves a stepped engine's device time by
-        /// `frames`; `loseDevice` / `restoreDevice` take the virtual device away and bring it back.
+        /// `frames`; `loseDevice` / `restoreDevice` take a virtual device away and plug it in (its id
+        /// as `listDevices` gives it; nil: the first); `setDefaultDevice` makes one the system's output.
         case advance(frames: UInt64)
-        case loseDevice
-        case restoreDevice
+        case loseDevice(device: String? = nil)
+        case restoreDevice(device: String? = nil)
+        case setDefaultDevice(device: String)
+        /// Test support only: the virtual device's stream reports `count` dropouts at its next block.
+        case dropOut(device: String? = nil, count: UInt32)
         /// Test support only: the stage host draws its test card for `frame` on `stage`, and
         /// `stageProbe` reads the stage's colours at points (fractions of the stage).
         case stageTestCard(stage: ModelID, frame: UInt16)
@@ -188,6 +247,10 @@ enum Request: Hashable, Sendable, Codable {
         /// Test support only: what a virtual display shows at points (fractions of the display),
         /// all its stages composited.
         case displayProbe(display: String, points: [[Double]])
+        /// Test support only: what the stage's monitor window shows at a content size of
+        /// `width` x `height` pixels, at points (fractions of the window); no colours when the
+        /// stage host has no monitor window open for it.
+        case monitorProbe(stage: ModelID, width: UInt32, height: UInt32, points: [[Double]])
     #endif
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
@@ -225,10 +288,16 @@ enum Request: Hashable, Sendable, Codable {
             f.append(("folder", folder))
             if preview { f.append(("preview", true)) }
             return ("relink", f)
+        case .copyMedia: return ("copy_media", [])
         case .listDevices: return ("list_devices", [])
         case .setOutputDevice(let device):
             opt(&f, "device", device)
             return ("set_output_device", f)
+        case .backupKeep: return ("backup_keep", [])
+        case .setBackupKeep(let count): return ("set_backup_keep", [("count", Int(count))])
+        case .oscState: return ("osc_state", [])
+        case .setOscPort(let port): return ("set_osc_port", [("port", Int(port))])
+        case .setStandBack(let on): return ("set_stand_back", [("on", on)])
         case .listPatchMappings: return ("list_patch_mappings", [])
         case .preshowCheck: return ("preshow_check", [])
         case .logTail(let max):
@@ -249,14 +318,30 @@ enum Request: Hashable, Sendable, Codable {
             f.append(("stage", stage))
             opt(&f, "display", display)
             return ("set_stage_mapping", f)
+        case .setStageMonitor(let stage, let open): return ("set_stage_monitor", [("stage", stage), ("open", open)])
+        case .sequenceSpan(let cue): return ("sequence_span", [("cue", cue)])
         #if DEBUG
             case .advance(let frames): return ("advance", [("frames", frames)])
-            case .loseDevice: return ("lose_device", [])
-            case .restoreDevice: return ("restore_device", [])
+            case .loseDevice(let device):
+                opt(&f, "device", device)
+                return ("lose_device", f)
+            case .restoreDevice(let device):
+                opt(&f, "device", device)
+                return ("restore_device", f)
+            case .setDefaultDevice(let device): return ("set_default_device", [("device", device)])
+            case .dropOut(let device, let count):
+                opt(&f, "device", device)
+                f.append(("count", count))
+                return ("drop_out", f)
             case .stageTestCard(let stage, let frame): return ("stage_test_card", [("stage", stage), ("frame", frame)])
             case .stageProbe(let stage, let points): return ("stage_probe", [("stage", stage), ("points", points)])
             case .displayProbe(let display, let points):
                 return ("display_probe", [("display", display), ("points", points)])
+            case .monitorProbe(let stage, let width, let height, let points):
+                return (
+                    "monitor_probe",
+                    [("stage", stage), ("width", width), ("height", height), ("points", points)]
+                )
         #endif
         }
     }
@@ -288,9 +373,15 @@ enum Request: Hashable, Sendable, Codable {
             self = .relink(
                 folder: try c.decode(String.self, forKey: "folder"),
                 preview: try c.decodeIfPresent(Bool.self, forKey: "preview") ?? false)
+        case "copy_media": self = .copyMedia
         case "list_devices": self = .listDevices
         case "set_output_device":
             self = .setOutputDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
+        case "backup_keep": self = .backupKeep
+        case "set_backup_keep": self = .setBackupKeep(count: try c.decode(UInt32.self, forKey: "count"))
+        case "osc_state": self = .oscState
+        case "set_osc_port": self = .setOscPort(port: try c.decode(UInt16.self, forKey: "port"))
+        case "set_stand_back": self = .setStandBack(on: try c.decode(Bool.self, forKey: "on"))
         case "list_patch_mappings": self = .listPatchMappings
         case "preshow_check": self = .preshowCheck
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))
@@ -316,10 +407,20 @@ enum Request: Hashable, Sendable, Codable {
             self = .setStageMapping(
                 stage: try c.decode(ModelID.self, forKey: "stage"),
                 display: try c.decodeIfPresent(String.self, forKey: "display"))
+        case "set_stage_monitor":
+            self = .setStageMonitor(
+                stage: try c.decode(ModelID.self, forKey: "stage"), open: try c.decode(Bool.self, forKey: "open"))
+        case "sequence_span": self = .sequenceSpan(cue: try c.decode(ModelID.self, forKey: "cue"))
         #if DEBUG
             case "advance": self = .advance(frames: try c.decode(UInt64.self, forKey: "frames"))
-            case "lose_device": self = .loseDevice
-            case "restore_device": self = .restoreDevice
+            case "lose_device": self = .loseDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
+            case "restore_device":
+                self = .restoreDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
+            case "set_default_device": self = .setDefaultDevice(device: try c.decode(String.self, forKey: "device"))
+            case "drop_out":
+                self = .dropOut(
+                    device: try c.decodeIfPresent(String.self, forKey: "device"),
+                    count: try c.decode(UInt32.self, forKey: "count"))
             case "stage_test_card":
                 self = .stageTestCard(
                     stage: try c.decode(ModelID.self, forKey: "stage"),
@@ -331,6 +432,12 @@ enum Request: Hashable, Sendable, Codable {
             case "display_probe":
                 self = .displayProbe(
                     display: try c.decode(String.self, forKey: "display"),
+                    points: try c.decode([[Double]].self, forKey: "points"))
+            case "monitor_probe":
+                self = .monitorProbe(
+                    stage: try c.decode(ModelID.self, forKey: "stage"),
+                    width: try c.decode(UInt32.self, forKey: "width"),
+                    height: try c.decode(UInt32.self, forKey: "height"),
                     points: try c.decode([[Double]].self, forKey: "points"))
         #endif
         case let other:

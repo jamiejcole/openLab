@@ -29,18 +29,28 @@ const V2_EXAMPLE: &str = include_str!("../../../fixtures/show/v2-example.openlab
 const V1_EXAMPLE: &str = include_str!("../../../fixtures/show/v1-example.openlab");
 const V0_EXAMPLE: &str = include_str!("../../../fixtures/show/v0-example.openlab");
 
-/// The current example as an older fixture migrates to: the same show without its stages and
-/// Video cues and with every cue output unnamed, which only the current version's example has
-/// (optional keys and a new cue kind; no migration adds them).
+/// The current example as an older fixture migrates to: the same show without its stages,
+/// Video cues and Target cue, with every cue output unnamed and no patch crosspoints or device-output levels,
+/// which only the current version's example has (optional keys and a new cue kind; no migration
+/// adds them).
 fn example_older() -> Workspace {
     let mut ws = load_show(EXAMPLE).unwrap().workspace;
     ws.stages.clear();
     for list in &mut ws.cue_lists {
         list.cues
-            .retain(|c| !matches!(c.kind, CueKind::Video { .. }));
+            .retain(|c| !matches!(c.kind, CueKind::Video { .. } | CueKind::Target { .. }));
     }
     for output in ws.patches.iter_mut().flat_map(|p| p.outputs.iter_mut()) {
         output.name.clear();
+    }
+    for patch in &mut ws.patches {
+        patch.crosspoints.clear();
+        patch.device_outputs.clear();
+    }
+    for list in &mut ws.cue_lists {
+        for cue in &mut list.cues {
+            cue.triggers.wall_clock = WallClockTrigger::default();
+        }
     }
     ws
 }
@@ -59,6 +69,7 @@ fn kind_name(kind: &CueKind) -> &'static str {
         CueKind::GoTo { .. } => "go_to",
         CueKind::Arm { .. } => "arm",
         CueKind::Disarm { .. } => "disarm",
+        CueKind::Target { .. } => "target",
         CueKind::Wait { .. } => "wait",
         CueKind::Memo => "memo",
         CueKind::Network { .. } => "network",
@@ -87,7 +98,7 @@ fn golden_fixture_loads_cleanly_and_covers_every_cue_kind_and_group_mode() {
             }
         });
     }
-    assert_eq!(kinds.len(), 16, "{kinds:?}");
+    assert_eq!(kinds.len(), 17, "{kinds:?}");
     modes.sort_by_key(|d| format!("{d:?}"));
     modes.dedup();
     assert_eq!(modes.len(), 5);
@@ -714,6 +725,69 @@ fn v1_migration_overrides_hand_edited_second_trigger_keys() {
     ));
 }
 
+/// A slice's play count is stored as a number (0: until devamped) or `"skip"`, the two apart;
+/// the example holds all three and saves back to the same text. Anything else is refused as a
+/// model error, never taken for one of them.
+#[test]
+fn play_counts_are_stored_as_a_number_or_skip_and_anything_else_is_refused() {
+    for (text, value) in [
+        ("3", PlayCount::from_stored(3)),
+        ("1", PlayCount::ONCE),
+        ("0", PlayCount::Endless),
+        ("4294967295", PlayCount::from_stored(u32::MAX)),
+        ("\"skip\"", PlayCount::Skip),
+    ] {
+        assert_eq!(serde_json::to_string(&value).unwrap(), text);
+        assert_eq!(serde_json::from_str::<PlayCount>(text).unwrap(), value);
+    }
+    let loaded = load_show(EXAMPLE).unwrap().workspace;
+    let mut counts = Vec::new();
+    for list in &loaded.cue_lists {
+        walk(&list.cues, &mut |cue| match &cue.kind {
+            CueKind::Audio { slices, .. } => counts.extend(slices.iter().map(|m| m.play_count)),
+            CueKind::Video { timing, .. } => {
+                counts.extend(timing.slices.iter().map(|m| m.play_count));
+            }
+            _ => {}
+        });
+    }
+    for state in [PlayCount::ONCE, PlayCount::Endless, PlayCount::Skip] {
+        assert!(counts.contains(&state), "{state:?} in the example");
+    }
+    let skipped = "\"play_count\": \"skip\"";
+    assert!(EXAMPLE.contains(skipped));
+    assert!(save_show(&loaded).unwrap().contains(skipped));
+    for bad in [
+        "-1",
+        "1.5",
+        "1e3",
+        "4294967296",
+        "\"loop\"",
+        "\"Skip\"",
+        "\"\"",
+        "null",
+        "true",
+        "[]",
+        "{}",
+    ] {
+        assert!(serde_json::from_str::<PlayCount>(bad).is_err(), "{bad}");
+        let text = EXAMPLE.replacen(skipped, &format!("\"play_count\": {bad}"), 1);
+        assert!(
+            matches!(load_show(&text), Err(LoadError::Model(_))),
+            "{bad}"
+        );
+        let text = EXAMPLE.replacen(
+            "\"last_slice_play_count\": 1",
+            &format!("\"last_slice_play_count\": {bad}"),
+            1,
+        );
+        assert!(
+            matches!(load_show(&text), Err(LoadError::Model(_))),
+            "{bad}"
+        );
+    }
+}
+
 #[test]
 fn second_trigger_values_are_snake_case_and_unknown_ones_refused() {
     for (name, value) in [
@@ -977,6 +1051,14 @@ fn crosspoint() -> impl Strategy<Value = Crosspoint> {
     })
 }
 
+/// Any play count: a number of plays (0: until devamped) or a skipped slice.
+fn play_count() -> impl Strategy<Value = PlayCount> {
+    prop_oneof![
+        3 => any::<u32>().prop_map(PlayCount::from_stored),
+        1 => Just(PlayCount::Skip),
+    ]
+}
+
 fn audio_kind() -> impl Strategy<Value = CueKind> {
     let outputs = vec(
         (level(), any::<bool>()).prop_map(|(db, mute)| CueOutput { db, mute }),
@@ -995,7 +1077,7 @@ fn audio_kind() -> impl Strategy<Value = CueKind> {
             gangs,
         });
     let slices = vec(
-        (time(), any::<u32>()).prop_map(|(time, play_count)| SliceMarker { time, play_count }),
+        (time(), play_count()).prop_map(|(time, play_count)| SliceMarker { time, play_count }),
         0..4,
     );
     (
@@ -1005,7 +1087,7 @@ fn audio_kind() -> impl Strategy<Value = CueKind> {
         option::of(time()),
         (fade_spec(), fade_spec()),
         slices,
-        any::<u32>(),
+        play_count(),
         levels,
         any::<bool>(),
     )
@@ -1060,21 +1142,51 @@ fn fade_kind() -> impl Strategy<Value = CueKind> {
         levels,
         any::<bool>(),
         any::<bool>(),
+        fade_geometry(),
     )
         .prop_map(
-            |(target, duration, curve, levels, stop_target_when_done, relative)| CueKind::Fade {
-                target,
-                duration,
-                curve,
-                levels,
-                stop_target_when_done,
-                mode: if relative {
-                    openlab_core::FadeMode::Relative
-                } else {
-                    openlab_core::FadeMode::Absolute
-                },
+            |(target, duration, curve, levels, stop_target_when_done, relative, geometry)| {
+                CueKind::Fade {
+                    target,
+                    duration,
+                    curve,
+                    levels,
+                    stop_target_when_done,
+                    mode: if relative {
+                        openlab_core::FadeMode::Relative
+                    } else {
+                        openlab_core::FadeMode::Absolute
+                    },
+                    geometry,
+                }
             },
         )
+}
+
+/// A Fade cue's picture values within their ranges, any ticked.
+fn fade_geometry() -> impl Strategy<Value = openlab_core::FadeGeometry> {
+    use openlab_core::Pair;
+    let pair = |r: f64| (-r..=r, -r..=r).prop_map(|(x, y)| Pair { x, y });
+    (
+        vec(any::<bool>(), 5),
+        0.0..=1.0f64,
+        pair(65_536.0),
+        pair(100.0),
+        -360.0..=360.0f64,
+    )
+        .prop_map(|(ticks, opacity, translation, scale, rotation)| {
+            openlab_core::FadeGeometry {
+                fade_opacity: ticks[0],
+                opacity,
+                fade_translation: ticks[1],
+                translation,
+                fade_scale: ticks[2],
+                scale,
+                scale_locked: ticks[3],
+                fade_rotation: ticks[4],
+                rotation,
+            }
+        })
 }
 
 fn osc_arg() -> impl Strategy<Value = OscArg> {
@@ -1163,10 +1275,41 @@ fn hotkey() -> impl Strategy<Value = Hotkey> {
 }
 
 fn triggers() -> impl Strategy<Value = Triggers> {
-    (option::of(hotkey()), any::<bool>()).prop_map(|(hotkey, hotkey_enabled)| Triggers {
-        hotkey,
-        hotkey_enabled,
-    })
+    (option::of(hotkey()), any::<bool>(), wall_clock()).prop_map(
+        |(hotkey, hotkey_enabled, wall_clock)| Triggers {
+            hotkey,
+            hotkey_enabled,
+            wall_clock,
+        },
+    )
+}
+
+/// In range: what a saved show holds (out-of-range times are the validation tests').
+fn wall_clock() -> impl Strategy<Value = WallClockTrigger> {
+    (
+        any::<bool>(),
+        0u8..24,
+        0u8..60,
+        0u8..60,
+        1u8..128,
+        any::<bool>(),
+    )
+        .prop_map(|(enabled, hours, minutes, seconds, days, twelve_hour)| {
+            let days = Weekday::ALL
+                .into_iter()
+                .enumerate()
+                .fold(Weekdays::NONE, |set, (i, d)| {
+                    set.with(d, days & (1 << i) != 0)
+                });
+            WallClockTrigger {
+                enabled,
+                hours,
+                minutes,
+                seconds,
+                days,
+                twelve_hour,
+            }
+        })
 }
 
 /// A cue with id and number left for [`assign_ids`]; `number` is `Some` when it should get one.
@@ -1352,14 +1495,36 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
         (num(0.0..=10.0), num(0.0..=60.0), num(5.0..=3600.0)),
         any_access(),
         hotkeys,
-        (num(0.0..=100.0), num(0.1..=10.0), any::<bool>()),
+        (
+            num(0.0..=100.0),
+            num(0.1..=10.0),
+            (
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+            ),
+        ),
     )
         .prop_map(
             |(
                 (min_go_interval, panic_duration, autosave_interval),
                 osc_access,
                 hotkeys,
-                (start, step, new_cues_auto_load),
+                (
+                    start,
+                    step,
+                    (
+                        new_cues_auto_load,
+                        auto_number_new_cues,
+                        lock_playhead,
+                        go_needs_key_up,
+                        osc_enabled,
+                        copy_media_on_add,
+                    ),
+                ),
             )| {
                 WorkspaceSettings {
                     min_go_interval,
@@ -1373,12 +1538,27 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                     auto_number_start: start,
                     auto_number_increment: step,
                     new_cues_auto_load,
+                    auto_number_new_cues,
+                    lock_playhead,
+                    go_needs_key_up,
+                    osc_enabled,
+                    copy_media_on_add,
                 }
             },
         )
 }
 
-fn any_patch() -> impl Strategy<Value = (String, f64, Vec<PatchOutput>)> {
+type AnyPatch = (
+    String,
+    f64,
+    Vec<PatchOutput>,
+    Vec<PatchCrosspoint>,
+    Vec<DeviceOutputLevel>,
+);
+
+/// Any patch, with crosspoints and device outputs in any order, repeated, and naming cue and
+/// device outputs past what a patch can have (repair removes those).
+fn any_patch() -> impl Strategy<Value = AnyPatch> {
     let output = (text(), level(), any::<bool>(), any::<bool>()).prop_map(
         |(name, level_db, mute, polarity_inverted)| PatchOutput {
             name,
@@ -1387,7 +1567,27 @@ fn any_patch() -> impl Strategy<Value = (String, f64, Vec<PatchOutput>)> {
             polarity_inverted,
         },
     );
-    (text(), level(), vec(output, 0..5))
+    let crosspoint =
+        (0u32..130, 0u32..66, level()).prop_map(|(output, device_output, db)| PatchCrosspoint {
+            output,
+            device_output,
+            db,
+        });
+    let device_output =
+        (0u32..66, level(), any::<bool>()).prop_map(|(device_output, level_db, mute)| {
+            DeviceOutputLevel {
+                device_output,
+                level_db,
+                mute,
+            }
+        });
+    (
+        text(),
+        level(),
+        vec(output, 0..5),
+        vec(crosspoint, 0..8),
+        vec(device_output, 0..4),
+    )
 }
 
 fn any_workspace() -> impl Strategy<Value = Workspace> {
@@ -1420,12 +1620,16 @@ fn any_workspace() -> impl Strategy<Value = Workspace> {
             ws.patches = patches
                 .into_iter()
                 .enumerate()
-                .map(|(i, (name, master_db, outputs))| OutputPatch {
-                    id: patch_id(i as u128),
-                    name,
-                    master_db,
-                    outputs,
-                })
+                .map(
+                    |(i, (name, master_db, outputs, crosspoints, device_outputs))| OutputPatch {
+                        crosspoints,
+                        device_outputs,
+                        id: patch_id(i as u128),
+                        name,
+                        master_db,
+                        outputs,
+                    },
+                )
                 .collect();
             ws.network_patches = network_patches
                 .into_iter()
@@ -1618,7 +1822,7 @@ fn a_show_with_too_many_slice_markers_loads_with_the_extras_removed() {
         *slices = (1..=MAX_SLICE_MARKERS + 1)
             .map(|i| SliceMarker {
                 time: i as f64,
-                play_count: 1,
+                play_count: 1.into(),
             })
             .collect();
     }
@@ -1992,11 +2196,20 @@ fn a_file_without_the_basics_and_triggers_keys_loads_with_their_defaults() {
     let triggers = cue["triggers"].as_object_mut().unwrap();
     triggers.remove("hotkey_enabled").unwrap();
     triggers.insert("osc".into(), "/lights/blackout".into());
-    doc["workspace"]["settings"]
-        .as_object_mut()
-        .unwrap()
-        .remove("new_cues_auto_load")
-        .unwrap();
+    for key in [
+        "new_cues_auto_load",
+        "auto_number_new_cues",
+        "lock_playhead",
+        "go_needs_key_up",
+        "osc_enabled",
+        "copy_media_on_add",
+    ] {
+        doc["workspace"]["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove(key)
+            .unwrap();
+    }
     let loaded = load_show(&doc.to_string()).unwrap();
     assert_eq!(loaded.warnings, vec![]);
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
@@ -2005,6 +2218,12 @@ fn a_file_without_the_basics_and_triggers_keys_loads_with_their_defaults() {
     assert!(!first.auto_load && !first.skip_if_disarmed);
     assert!(first.triggers.hotkey_enabled);
     assert!(!loaded.workspace.settings.new_cues_auto_load);
+    // Auto-numbering, the playhead lock, OSC access and copying media into the show folder
+    // are on in a file that never said.
+    let settings = &loaded.workspace.settings;
+    assert!(settings.auto_number_new_cues && settings.lock_playhead && settings.osc_enabled);
+    assert!(settings.copy_media_on_add);
+    assert!(!settings.go_needs_key_up);
 }
 
 /// A value that is not one of the colours (or not a boolean) is refused like any wrongly typed
@@ -2029,4 +2248,61 @@ fn a_bad_basics_value_refuses_the_file() {
         load_show(&doc.to_string()),
         Err(LoadError::Model(_))
     ));
+}
+
+/// TRG-05 flow "Save, close, reopen": the wall-clock trigger comes back as saved; a cue whose
+/// trigger is a new cue's writes no key and loads off.
+#[test]
+fn save_close_reopen_the_wall_clock_trigger_remains_set() {
+    let loaded = load_show(EXAMPLE).unwrap();
+    let cues = &loaded.workspace.cue_lists[0].cues;
+    let preshow = &cues[1].triggers.wall_clock;
+    assert!(preshow.enabled && preshow.twelve_hour);
+    assert_eq!(preshow.second_of_day(), Some(19 * 3600 + 25 * 60));
+    assert!(!preshow.days.contains(Weekday::Sunday) && !preshow.days.contains(Weekday::Monday));
+    assert!(preshow.days.contains(Weekday::Saturday));
+    assert_eq!(cues[0].triggers.wall_clock, WallClockTrigger::default());
+    let text = save_show(&loaded.workspace).unwrap();
+    assert_eq!(load_show(&text).unwrap().workspace, loaded.workspace);
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        doc["workspace"]["cue_lists"][0]["cues"][0]["triggers"]
+            .get("wall_clock")
+            .is_none()
+    );
+}
+
+/// A wall-clock value of the wrong type or past what the field holds is refused like any other
+/// wrongly typed field: the file does not load, nothing panics. Repeated days count once.
+#[test]
+fn a_bad_wall_clock_value_refuses_the_file_and_repeated_days_count_once() {
+    for (key, bad) in [
+        ("hours", serde_json::json!(300)),
+        ("minutes", serde_json::json!(-1)),
+        ("seconds", serde_json::json!(1.5)),
+        ("enabled", serde_json::json!("yes")),
+        ("days", serde_json::json!(["funday"])),
+        ("days", serde_json::json!("monday")),
+        ("twelve_hour", serde_json::json!(null)),
+    ] {
+        let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+        doc["workspace"]["cue_lists"][0]["cues"][1]["triggers"]["wall_clock"][key] = bad;
+        assert!(
+            matches!(load_show(&doc.to_string()), Err(LoadError::Model(_))),
+            "{key}"
+        );
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["cue_lists"][0]["cues"][1]["triggers"]["wall_clock"]["days"] =
+        serde_json::json!(["friday", "monday", "friday"]);
+    let loaded = load_show(&doc.to_string()).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    let days = loaded.workspace.cue_lists[0].cues[1]
+        .triggers
+        .wall_clock
+        .days;
+    assert_eq!(
+        Vec::<Weekday>::from(days),
+        vec![Weekday::Monday, Weekday::Friday]
+    );
 }

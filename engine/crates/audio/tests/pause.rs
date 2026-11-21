@@ -80,6 +80,7 @@ fn event_at(e: &Event) -> u64 {
     match *e {
         Event::VoiceFinished { at, .. }
         | Event::Underrun { at, .. }
+        | Event::UnderrunEnded { at, .. }
         | Event::VoiceRejected { at, .. }
         | Event::PendingFull { at }
         | Event::LoopReached { at, .. }
@@ -377,12 +378,12 @@ fn resume_onto_a_live_id_is_rejected_and_the_voice_stays_paused() {
 }
 
 #[test]
-fn stop_while_paused_finishes_at_once_with_or_without_fade() {
+fn stop_after_the_pause_tail_finishes_at_once_with_or_without_fade() {
     for (at, fade) in [
         (1000, Fade::NONE),
         (1000, Fade::new(5000, Curve::Linear)),
-        // During the declick fade-out.
-        (310, Fade::new(100, Curve::Linear)),
+        // On the first sample after the declick fade-out.
+        (300 + D, Fade::new(100, Curve::Linear)),
     ] {
         let (mut ctl, mut r) = setup(config(1));
         start(&mut ctl, 0, 1, source(&vec![0.25; 30_000]), 1);
@@ -1012,4 +1013,234 @@ fn short_tail_reaches_silence_on_the_last_peekable_frame() {
     }
     assert!(out[1100..].iter().all(|&s| s == 0.0));
     assert_eq!(events(&mut ctl), vec![]);
+}
+
+// --- A second transport command inside the declick tail ------------------------------------
+
+/// The largest sample-to-sample step of `out` and where.
+fn worst_step(out: &[f32]) -> (f32, usize) {
+    let steps = out.windows(2).enumerate();
+    steps.fold((0.0, 0), |w, (i, s)| {
+        let d = (s[1] - s[0]).abs();
+        if d > w.0 { (d, i + 1) } else { w }
+    })
+}
+
+/// A steady full-scale voice with a linear integrated fade-in of `fade_in` frames (at least 1,
+/// so the start is no step), and the commands `cmds` gives. Rendered in one device block and in
+/// small uneven ones: the output and the events are the same. Returns them.
+fn steady_voice(
+    fade_in: u64,
+    cmds: impl Fn() -> Vec<(u64, CommandKind)>,
+) -> (Vec<f32>, Vec<Event>) {
+    let run = |blocks: &[usize]| {
+        let (mut ctl, mut r) = setup(config(1));
+        let mut v = voice(&ctl, 1, source(&vec![1.0; 20_000]), 1);
+        v.fade_in = Fade::new(fade_in, Curve::Linear);
+        send_start(&mut ctl, 0, v);
+        for (at, kind) in cmds() {
+            ctl.send(at, kind);
+        }
+        let out = render(&mut r, 6000, blocks);
+        assert_eq!(ctl.faults(), 0);
+        (out, events(&mut ctl), ctl.collect_returns())
+    };
+    let (out, ev, returned) = run(&[6000]);
+    for blocks in [BLOCKS, OTHER_BLOCKS, &[1, 255, 2, 3, 97, 5][..]] {
+        let (o, e, n) = run(blocks);
+        assert!(o == out, "output differs with blocks {blocks:?}");
+        assert_eq!(e, ev, "events differ with blocks {blocks:?}");
+        assert_eq!(n, returned);
+    }
+    let ended = ev
+        .iter()
+        .filter(|e| matches!(e, Event::VoiceFinished { .. }))
+        .count();
+    assert_eq!(
+        returned, ended,
+        "the start comes back once, when the voice ends"
+    );
+    (out, ev)
+}
+
+/// The integrated fade-in of the steady voices below: long before the commands, and a slope far
+/// under the declick's.
+const LEAD_IN: u64 = 480;
+
+/// What a pause and a resume a long way apart step by: the slope of the declick ramp.
+fn reference_step() -> f32 {
+    let (out, _) = steady_voice(LEAD_IN, || vec![(1000, pause(1)), (2000, resume(1, 2))]);
+    let (step, _) = worst_step(&out);
+    assert!(close(step, 1.0 / D as f32), "reference step {step}");
+    step
+}
+
+/// A stop of a voice still fading out after a pause, with or without a fade of its own (Panic
+/// sends a faded one), does not cut the tail: the voice ends when the tail does, and is
+/// reported finished on the first sample after it.
+#[test]
+fn a_stop_inside_the_pause_tail_ends_the_voice_when_the_tail_does() {
+    let reference = reference_step();
+    let faded = Fade::new(480, Curve::Linear);
+    for (at, fade) in [(1010, faded), (1010, Fade::NONE), (1000, faded)] {
+        // The resume after the stop is ignored: the voice is stopped.
+        let cmds = || {
+            vec![
+                (1000, pause(1)),
+                (at, stop(1, fade)),
+                (at + 5, resume(1, 2)),
+            ]
+        };
+        let (out, ev) = steady_voice(LEAD_IN, cmds);
+        let (step, i) = worst_step(&out);
+        assert!(
+            step <= reference + 1e-6,
+            "step {step} at {i} (stop at {at})"
+        );
+        assert!(out[1100] > 0.5, "the tail plays on after the stop");
+        assert!(out[1000 + D as usize - 1..].iter().all(|&s| s == 0.0));
+        assert_eq!(ev, vec![finished(1, 1000 + D, FinishReason::Stopped)]);
+    }
+}
+
+/// Pause, resume, pause within one tail: the first tail fades on under the second pause.
+#[test]
+fn a_second_pause_inside_the_tail_keeps_the_first_tail_fading() {
+    let reference = reference_step();
+    let cmds = || vec![(1000, pause(1)), (1100, resume(1, 2)), (1150, pause(2))];
+    let (out, ev) = steady_voice(LEAD_IN, cmds);
+    let (step, i) = worst_step(&out);
+    // The two tails fall together for a while, the second from the 50 frames of fade-in the
+    // voice had made.
+    let both = reference * (1.0 + 50.0 / D as f32);
+    assert!(step <= both + 1e-6, "step {step} at {i}");
+    // The first tail as if never resumed, plus the second from where the fade-in had got to.
+    for j in 0..D {
+        let first = if 150 + j < D {
+            declick_out(150 + j, D)
+        } else {
+            0.0
+        };
+        let want = first + declick_in(50) * declick_out(j, D);
+        let o = out[(1150 + j) as usize];
+        assert!((o - want).abs() < 1e-5, "frame {j}: {o} vs {want}");
+    }
+    assert!(out[1150 + D as usize..].iter().all(|&s| s == 0.0));
+    assert_eq!(ev, vec![]);
+}
+
+/// A resume inside the tail, early in a short integrated fade-in: the tail keeps the envelope of
+/// the frames it plays, not that of the frames the voice resumes from.
+#[test]
+fn a_resume_inside_the_tail_keeps_the_tail_on_its_own_envelope() {
+    let reference = reference_step();
+    let (fade, p, r) = (480u64, 100u64, 200u64);
+    let (out, ev) = steady_voice(fade, || vec![(p, pause(1)), (r, resume(1, 2))]);
+    let (step, i) = worst_step(&out);
+    // The fade-in's own slope on top of the declick's.
+    let slope = 1.0 / fade as f32;
+    assert!(step <= reference + slope + 1e-6, "step {step} at {i}");
+    let env = |pos: u64| (pos as f32 / fade as f32).min(1.0);
+    let lag = r - p;
+    for j in 0..D {
+        let tail = if lag + j < D {
+            env(p + lag + j) * declick_out(lag + j, D)
+        } else {
+            0.0
+        };
+        let want = env(p + j) * declick_in(j) + tail;
+        let o = out[(r + j) as usize];
+        assert!((o - want).abs() < 1e-5, "frame {j}: {o} vs {want}");
+    }
+    assert_eq!(ev, vec![]);
+}
+
+/// A looping voice paused 50 frames before its loop point, so the tail runs on into the next
+/// pass, and devamped 10 frames later: the tail fades to its end as it was measured, not cut at
+/// the end of the play the devamp now stops at.
+#[test]
+fn a_devamp_inside_a_tail_that_crosses_the_loop_point_leaves_the_tail_fading() {
+    let reference = reference_step();
+    let run = |blocks: &[usize]| {
+        let slices = plan(0..300, &[100], &[Plays::Infinite, Plays::Times(1)], 0).unwrap();
+        let (mut ctl, mut r) = setup(config(1));
+        let mut v = voice(&ctl, 1, source(&vec![1.0; 20_000]), 1);
+        v.slices = slices;
+        v.fade_in = Fade::new(100, Curve::Linear);
+        send_start(&mut ctl, 0, v);
+        ctl.send(1050, pause(1));
+        ctl.send(1060, devamp(1, true));
+        let out = render(&mut r, 3000, blocks);
+        (out, sorted(events(&mut ctl)))
+    };
+    let (out, ev) = run(&[3000]);
+    for blocks in [BLOCKS, OTHER_BLOCKS] {
+        let (o, e) = run(blocks);
+        assert!(o == out, "output differs with blocks {blocks:?}");
+        assert_eq!(e, ev);
+    }
+    let (step, i) = worst_step(&out[500..]);
+    assert!(step <= reference + 1e-6, "step {step} at {}", 500 + i);
+    for j in 0..D {
+        let o = out[(1050 + j) as usize];
+        assert!(close(o, declick_out(j, D)), "tail frame {j}: {o}");
+    }
+}
+
+/// A stereo voice, its channels with different content, into different outputs at different
+/// levels, paused and resumed twice inside one tail: each output carries its own channel's tails
+/// (kept by a resume, played under a pause, kept again), the mono voice's render times its level.
+#[test]
+fn tails_of_a_stereo_voice_stay_on_their_own_channels() {
+    let cmds = || {
+        vec![
+            (1000, pause(1)),
+            (1100, resume(1, 2)),
+            (1150, pause(2)),
+            (1200, resume(2, 3)),
+        ]
+    };
+    let (mono, _) = steady_voice(LEAD_IN, cmds);
+    assert!(mono[1205] > 0.1 && mono[1205] < 0.9, "tails still sounding");
+    let data: Vec<f32> = (0..20_000).flat_map(|_| [1.0, -0.6]).collect();
+    for blocks in [&[6000][..], BLOCKS] {
+        let (mut ctl, mut r) = setup(config(2));
+        let mut v = VoiceStart::new(VoiceId(1), source(&data), 2, 2);
+        v.set_crosspoint(0, 0, 1.0);
+        v.set_crosspoint(1, 1, 0.5);
+        v.fade_in = Fade::new(LEAD_IN, Curve::Linear);
+        send_start(&mut ctl, 0, v);
+        for (at, kind) in cmds() {
+            ctl.send(at, kind);
+        }
+        let out = render(&mut r, 6000, blocks);
+        for (k, (f, m)) in out.chunks(2).zip(&mono).enumerate() {
+            assert!(close(f[0], *m), "left, frame {k}: {} vs {m}", f[0]);
+            let want = -0.6 * 0.5 * m;
+            assert!(close(f[1], want), "right, frame {k}: {} vs {want}", f[1]);
+        }
+    }
+}
+
+/// However many pauses and resumes fall inside one tail, every tail they leave fades on, and a
+/// stop in the last of them ends the voice when all are silent.
+#[test]
+fn many_pauses_and_resumes_inside_one_tail_never_jump_the_waveform() {
+    let reference = reference_step();
+    let cmds = || {
+        let mut cmds = Vec::new();
+        for k in 0..6u64 {
+            cmds.push((1000 + 30 * k, pause(1 + k)));
+            cmds.push((1013 + 30 * k, resume(1 + k, 2 + k)));
+        }
+        cmds.push((1190, pause(7)));
+        cmds.push((1195, stop(7, Fade::NONE)));
+        cmds
+    };
+    let (out, ev) = steady_voice(LEAD_IN, cmds);
+    let (step, i) = worst_step(&out);
+    // Tails that fall together add their slopes; none is cut.
+    assert!(step <= 2.0 * reference, "step {step} at {i}");
+    assert!(out[1190 + D as usize - 1..].iter().all(|&s| s == 0.0));
+    assert_eq!(ev, vec![finished(7, 1190 + D, FinishReason::Stopped)]);
 }

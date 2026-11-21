@@ -43,6 +43,7 @@ fn map_all(c: &mut ControlConfig, wss: &[&Workspace]) {
                 PatchMapping {
                     device: "Offline".into(),
                     channels: vec![0, 1],
+                    system: false,
                 },
             )
             .unwrap();
@@ -159,8 +160,8 @@ fn a_count_change_in_one_doc_fits_its_mapping_and_leaves_the_other_docs() {
     let entry = |s: &OfflineShow, ws| s.control().machine().patch_mapping(ws, patch_id()).cloned();
     assert_eq!(
         entry(&s, ws_a).map(|m| m.channels),
-        Some(vec![0, 1, 0]),
-        "doc A's mapping follows its count (the offline device has two outputs)"
+        Some(vec![0, 1]),
+        "doc A's third cue output has no device output of its own (the offline device has two)"
     );
     assert_eq!(entry(&s, ws_b).map(|m| m.channels), Some(vec![0, 1]));
     let rid = s.request_id();
@@ -714,6 +715,7 @@ fn device_loss_stops_every_doc() {
                 PatchMapping {
                     device: DEV_NAME.into(),
                     channels: vec![0, 1],
+                    system: false,
                 },
             )
             .unwrap();

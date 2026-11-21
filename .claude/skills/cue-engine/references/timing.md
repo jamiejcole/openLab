@@ -26,7 +26,7 @@ Reported state derives in order: broken > paused > stopping > fading > pre-waiti
 ### Broken state
 - Run-time break (feedback; `voice_rejected`, `stream_failed`, `device_lost`): owns no voice, cannot start until reset; its pending auto-continue still fires on schedule, except after `device_lost`, which cancels it.
 - `device_lost` ends the run for good (pre-wait, auto-continue, auto-follow cancelled). What it shows (QLab 5, skill `qlab-behaviour` C-X1, Q391-Q396):
-  - In its action and not on its way out (playing, fading, waiting for its probe), or counting its pre-wait or post-wait: `Slot::Lost`, reported `paused` (wire reason `device_lost`, `state_reason`, `is_lost`). It owns no run, voice or deadline; `timers` shows the timer that was counting frozen where the loss left it.
+  - In its action and not on its way out (playing, fading, waiting for its probe), or counting its pre-wait or post-wait: `Slot::Lost`, reported `paused` (wire reason `device_lost`, `state_reason`, `is_lost`). It owns no run, voice or deadline (a post-waiting cue whose known end was carried out ahead in the lookahead window had no voice left for the engine to stop: the binary stops what still sounds); `timers` shows the timer that was counting frozen where the loss left it.
   - A playing one keeps the mark after the device returns; Resume / Resume All clear it (to idle, or broken while the device is away; nothing plays), a start or load with the device back clears it and starts from the top, one while the device is away is refused `CueBroken` and the mark stays; Stop, Panic, Reset, Stop All, Reset All and fade-and-stop-others clear it.
   - A group in its action, not paused, any of whose children left this way from playing (`Exit::Lost` sets `GroupRun::lost`; a waiting child does not) gets a `Slot::Lost` of its own when its action ends by a stop while such a child keeps the mark, whichever child left last and also under `Input::DeviceLost` (`end_group_as_lost`, Q397): paused, its time frozen, kept after the return.
     Resume / Resume All, Stop, Reset clear it; a start clears it at once (no device: `lost_may_clear`). Its own group is marked too.
@@ -40,6 +40,7 @@ Reported state derives in order: broken > paused > stopping > fading > pre-waiti
 `timers(at)` lists every counting timer at rendered sample `at` for the `progress` message (wire shape: `docs/protocol.md`). Pure, allocation-free.
 - Pre-wait: `remaining` to action start. Action of a voiceless cue: elapsed = load offset + samples since start; `remaining` `None` while unknown (group with a busy child); a broken run shows none. Post-wait: counted from action start, also a halted playlist's wait; shown while the action runs, so one cue can have two timers.
 - A paused run's timers stand on the pause sample. A timer starting ahead of `at` shows its whole length, elapsed 0. A due, un-ticked deadline shows remaining 0. Idle, loaded and settled-broken cues have none.
+- A previewed Audio cue gets an item as a playing one's (`Voices::preview_progress`, in `reports.rs` beside the loaded cues'), which replaces its loaded item while it previews; the set that stood is remembered (`last_loaded`) so a stopped preview's item is withdrawn once and a loaded point comes back.
 
 ## Timing and continue modes (CUE-02, CUE-03)
 Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
@@ -49,7 +50,7 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 - Triggering is the Start operation. A cue is idle when its action is complete and no post-wait or fade-out is pending. Stop or Reset cancels the pending post-wait and auto-follow.
 
 ### Auto-load
-- When a GO moves the playhead onto a cue (`go_on`, also a GO on a skipped cue that moves it on; `auto_load_at_playhead`), that cue is loaded as `Load { time: 0 }` (`load_tree`: a group loads the children its action starts first) if it has `auto_load` (QLab 5, manual p. 128). Not when the playhead is set by hand or by navigation, nor when a cue is started without a GO (measured in QLab 5.6.5, Q296).
+- When a GO moves the playhead onto a cue (`go_on`, also a GO on a skipped cue that moves it on; `auto_load_at_playhead`), that cue is loaded as `Load { time: 0 }` (`load_tree`: `sequence` false: a group loads the children its action starts first; the cue alone, not its sequence, Q576) if it has `auto_load` (QLab 5, manual p. 128). Not when the playhead is set by hand or by navigation, nor when a cue is started without a GO (measured in QLab 5.6.5, Q296).
 - Only an idle cue, armed, without static problems: one loaded (to any time), active or broken at run time is left alone, and a disarmed or broken one is not loaded (it would play nothing). No warning either way. A load is no start: no chain budget.
 
 ### Load to time
@@ -57,9 +58,32 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 - `t < P`: pre-wait has `P - t` left; action from the beginning.
 - `t >= P`: action starts at `S`, `a = t - P` into it. Post-wait has `max(W - a, 0)` left; known duration `max(D - a, 0)`.
 - Past the end: only the action is clamped to its length; the post-wait counts from the unclamped `t`. A cue loaded past its length sits `loaded` at its end: no completion, continue or warning. Starting it ends its action on its start sample. Same for every kind. (Refusing the load was rejected: a Load cue with a fixed time must survive its target being trimmed shorter.)
+- Sequence (QLab 5, manual pp. 149, 681): for Load to Time (`Input::Load`) and the Load cue, `load_tree(.., sequence: true)` walks `sequence()`, the auto-continue/auto-follow chain a run follows (skipped cues passed over; continue at pre-wait + effective post-wait, follow at the nominal span; a Devamp that starts the next cue or a follow after an unknown length ends it).
+- Each later cue loads at `t - its start`, or at its top when that is below 0 (one already loaded at its top, `stands_at_top`, is kept: a preload survives a later load). A later one disarmed or with static problems is not loaded but passed; one active or broken at run time stops the walk. Only the cue asked for warns.
+- Negative time (`load_time`): counts back from `sequence().end`, the latest nominal end in the chain (a forever-looping Audio or Video cue counts one pass); unknown end loads at 0. `sequence_span` answers it for the Load to Time slider. `loaded_offsets` (each loaded cue's action offset) feeds the `progress` items of loaded cues.
 - Wait, Fade, Memo, controls, other groups: no clamp at load; at action start the end is `start + (D - a)` saturating at 0.
 - Playlist (not looping) and random: nominal span = sum of children's spans (pre-wait + action, audio from `CueLengths`) or the chosen child's span. Loaded at or past it, the action ends at once on GO (no child plays); below it the child reached loads at the remainder. Unknown or endless span clamps nothing. Random's pick counts as played in its cycle even if nothing starts.
 - Audio: offsets are passed as asked and the binary clamps. An offset at or past the plan's end (trims, slices, finite loops counted) is an empty plan: the binary reports `ActionLength { frames: offset }` (plus the delay of a held-up start) so core dates the end and a chained successor on that sample, not on a late `ActionEnded` (`late_start` warning otherwise). An infinite loop wraps (offset modulo the loop), so it is never past the end.
+
+### Seek (load to a point of the file)
+`Seek { cue, position }` (a click in an Audio cue's waveform, `seek.rs`) names a point of the media file, not of the timeline: core cannot plan slices, so it passes `position` (seconds to device frames; NaN and negative are 0, huge saturates) and the binary keeps it inside the trims and plans from there (`cue_slices_from`), past loops included.
+- A point at or past the out point is the end of a pass of the last slice: its next pass follows if it has one (a forever loop loops on from its start), else nothing (a playing cue's action ends).
+- Stopping (`stop_end`): nothing, and no warning (the stop ends it where it is; a warning row would blame a healthy cue). Not Audio, post-waiting with its sound over, or a run with no voice: `LoadIgnored`. Broken (static, run time, or a lost mark while the device is away): `CueBroken`, nothing sent.
+- A preview of the cue jumps first: `SeekVoice` with a fresh preview id; it stays a preview (no `PreviewChanged`).
+- Idle or loaded: a load there (`LoadVoiceAt`, `Loaded.seek`, no pre-wait left, offset 0); starting it plays from the point with no pre-wait (a cue loaded disarmed gets its `LoadVoiceAt` at the start). A lost mark clears as for Load.
+- Pre-waiting: the pre-wait ends now (`until = now`; paused: on the resume) and the action starts there in the same call (`Run::seek` taken at action start: `LoadVoiceAt`, then `StartVoice` offset 0); a stream a load to time prepared is unloaded first.
+- In its action (running, fading, paused): `SeekVoice { run: fresh, from, at: now }` re-keys the run like a resume (feedback for `from` is stale), the voice counts from 0 at the move (`Voice::Started { from: 0 }`, `action_offset` 0) and its end is unknown until the binary's `ActionLength` for the fresh run, counted from the move: an auto-follow fires once, at the moved sound's end. Timers, post-wait and continue are untouched.
+- The moved voice is given every level Fade cues hold or move (`Ramp` 0 frames at the value, then the rest of a moving ramp) and its duck (`DuckVoice`), and a pending devamp is sent again (a paused one gets it on its resume). Paused stays paused; the resume plays from the point (offset 0).
+- A burst costs core one fresh id per seek and no chain budget; the binary coalesces.
+
+### Moving to another device (`DeviceMoved`, AUD-07)
+`Input::DeviceMoved { cue, run }` (from the binary: the run's patch now plays on another output device; `seek.rs` `device_moved`) moves the sound there in step, as QLab 5 does (skill `qlab-behaviour` Q450).
+- Only a run in its action with a started voice, not broken and not stopping with a fade (`stop_end`: it ends where it is); a stale run id, a pre-wait (its start plays on the patch's device then) or a post-wait after the sound changes nothing.
+- `RelocateVoice { run: fresh, from, at: commit(now), position }` re-keys the run like a seek (feedback for `from` is stale). Playing: `position = Run::position(at)` and the voice counts on from there (`Voice::Started { at, from: position }`), its end unknown until the binary's `ActionLength` for the fresh run, still counted from the action's start; an auto-follow fires once. Paused: `position` is where it froze, `Voice::Started` is kept and the resume plays on from there.
+- As for a seek, the moved voice is given the Fade cues' levels and its duck (`regive_levels`). Timers, post-wait, continues and the group are untouched.
+- A run whose devamp is sent and not answered (`DevampWait.at` is `None`, about one block) is not moved yet: only the audio side knows where its voice is in the loop, and a voice moved then could play the loop again. `Run::move_pending` holds the move; `DevampScheduled` or `DevampIgnored` makes it, and it goes with the run (a stop, a failure).
+- A run whose devamp is scheduled moves at once; its leave deadline (and the Devamp cue's next cue) stays where the answer put it and no devamp is sent again: the binary plans the moved voice to leave on the same sample (its table ends the loop there).
+- A devamp given after the move, while its voice waits to swap, is sent for the fresh run as any devamp; the binary gives it to the old voice (what sounds) and answers for the fresh run, so its leave deadline and the Devamp cue's next cue fall on the end of the pass it came in (skill `engine-control`, patch slots).
 
 ## Operations (CUE-05)
 Voice actions apply to armed Audio cues only. Group operations also reach descendants.
@@ -75,7 +99,7 @@ Voice actions apply to armed Audio cues only. Group operations also reach descen
 | stopping | `TriggerIgnored` | idle, hard `StopVoice` | stopping | stopping | `LoadIgnored` | idle, hard `StopVoice` |
 | broken | `CueBroken` (static problems: timing runs); a broken-and-paused cue resumes | pending auto-continue cancelled | timers freeze | timers continue | `CueBroken` | idle, continue cancelled; static problems stay |
 
-The Start column is for option `Nothing`; other options replace `TriggerIgnored`.
+The Start column is for option `Nothing`; other options replace `TriggerIgnored`. Seek is the Load column except where a running, paused or pre-waiting cue moves and a stopping cue says nothing ("Seek" above).
 
 | From | Event | To |
 |---|---|---|
@@ -130,7 +154,7 @@ Each cue has `second_trigger` and `second_trigger_on_release` (names: `docs/file
 - A held end (SKILL.md paused hold): `ActionFailed`/`StartFailed`/`DevampIgnored` for the ended voice are ignored meanwhile. Reports for a paused segment carry its old id and are stale after the resume, so a late end report can never complete the resumed cue. A resumed voice that had already ended reports with the fresh id. A hard stop forgets the run, so its later `Stopped` report is stale.
 - `LoopReached`/`SliceEnded` are not inputs.
 - `CueLengths { lengths }`: each Audio cue's nominal action length (plan from the top at device rate; `None` = unknown or forever loop; also for a gone cue or unplayable file), re-sent on change. A halted playlist, a load to time into a playlist and a Load cue's negative time use them; a cue never told is unknown.
-- `CuePassLengths { lengths }`: one pass of each Audio cue's trimmed range (every slice once), sent like `CueLengths`. Only a Load cue's negative time uses it, for a target that loops forever (one pass is its end, QLab 5.6.5 measured).
+- `CuePassLengths { lengths }`: one pass of each Audio or Video cue's trimmed range (every slice once), sent like `CueLengths`. Only a Load cue's negative time uses it, for a target that loops forever (one pass is its end, QLab 5.6.5 measured).
 
 ## Contract the binary must meet
 - `SetArmed { cue, armed }` is applied to the model (runtime change, not an undo step) before the next `handle`; the engine honours its override only for the call that made it.

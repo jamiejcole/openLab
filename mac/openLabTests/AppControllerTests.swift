@@ -12,8 +12,10 @@ final class ScriptedAlerts: WorkspaceAlerts {
     var closeShowMode = true
     var quitShowMode = true
     var saveChoices: [SaveChoice] = []
-    private(set) var log: [String] = []
-    private(set) var errors: [String] = []
+    /// Called as each question is asked, before it is answered.
+    var onAsk: (@MainActor () -> Void)?
+    private(set) var log: [String] = [] { didSet { onAsk?() } }
+    private(set) var errors: [String] = [] { didSet { onAsk?() } }
 
     func confirmCloseWhilePlaying(workspace: String) -> Bool {
         log.append("closePlaying")
@@ -207,7 +209,7 @@ final class AppControllerTests: XCTestCase {
         app.recentURLs = { [unowned self] in recents }
         app.recentExists = { _ in true }
         app.keyWindow = { [unowned self] in keyDoc.flatMap { app.windows[$0]?.window } }
-        app.pickSaveURL = { [unowned self] _ in saveURL }
+        app.pickSaveURL = { [unowned self] _, _ in saveURL.map { SaveTarget(url: $0) } }
         app.pickOpenURL = { [unowned self] in openURL }
         session.start()
         await assertEventually { app.windows.count == 1 && session.stores.values.allSatisfy { $0.model != nil } }
@@ -229,10 +231,8 @@ final class AppControllerTests: XCTestCase {
         app?.closeAllWindows()
         app = nil
         engine?.releaseResults()
-        real?.stop()
-        // Leaves nothing showing. (NSApp.windows still grows over the class, 5 to 52 in 158 tests: the windows
-        // are held by an autorelease pool an async XCTest never drains between tests. A turn of the main run
-        // loop here did not free them, so this is a test-process effect, not a product leak.)
+        real?.stopInBackground()
+        // Leaves nothing showing.
         for window in NSApp.windows where window.isVisible { window.close() }
     }
 
@@ -393,12 +393,149 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(app.windows["1"]?.store === app.session.stores["1"])
         XCTAssertTrue(app.windows[second]?.store === app.session.stores[second])
         XCTAssertTrue(app.windows["1"]?.store !== app.windows[second]?.store)
-        XCTAssertEqual(app.windows["1"]?.window?.title, "Demo")
+        XCTAssertEqual(app.windows["1"]?.window?.title, "Demo — Main")
 
         _ = await app.session.close(doc: second, discardChanges: true)
         await assertEventually { app.windows.count == 1 }
         XCTAssertNil(app.windows[second])
         XCTAssertEqual(app.windows["1"]?.window?.isVisible, true)
+    }
+
+    /// What a closed workspace must give up: its window, its controller and the windows it owns.
+    private struct Released {
+        weak var controller: WorkspaceWindowController?
+        weak var window: NSWindow?
+        weak var settings: NSWindow?
+        weak var patchEditor: NSWindow?
+        weak var missingFiles: NSWindow?
+        weak var preshow: NSWindow?
+        weak var log: NSWindow?
+        weak var sheet: NSWindow?
+        var held: [String] {
+            [
+                ("controller", controller as AnyObject?), ("window", window), ("settings", settings),
+                ("patch editor", patchEditor), ("Find Missing Files", missingFiles), ("pre-show check", preshow),
+                ("log", log), ("sheet", sheet),
+            ].filter { $0.1 != nil }.map(\.0)
+        }
+    }
+
+    /// Opens every window `doc`'s workspace owns (settings, a patch editor, Find Missing Files, the
+    /// pre-show check, the log) and, with `sheet`, a sheet on its window, then notes them weakly.
+    private func openOwnedWindows(of doc: ModelID, sheet: Bool = false) async throws -> Released {
+        let wc = try XCTUnwrap(app.windows[doc])
+        await wc.showSettings().value
+        let patch = try XCTUnwrap(wc.store.model?.patches.first?.id)
+        let editor = try XCTUnwrap(wc.editPatch(patch))
+        editor.showWindow(nil)
+        wc.missingFiles.showWindow(nil)
+        await wc.showWorkspaceStatus().value
+        await wc.showStatus(.logs).value
+        if sheet { wc.showNotice("a refusal") }
+        var released = Released()
+        released.controller = wc
+        released.window = wc.window
+        released.settings = wc.existingSettingsWindow?.window
+        released.patchEditor = editor.window
+        released.missingFiles = wc.existingMissingFiles?.window
+        released.preshow = wc.existingStatusWindow?.window
+        released.log = wc.existingLogWindow?.window
+        released.sheet = wc.window?.attachedSheet
+        XCTAssertEqual(released.held.count, sheet ? 8 : 7, "every window is up")
+        return released
+    }
+
+    /// Runs `body` to its end in an autorelease pool of its own, so what AppKit autoreleased on the
+    /// way (a window handed back from a getter, say) is let go when it returns: an async test's own
+    /// pool lasts as long as the test, and would hold every window it touched.
+    private func drained(_ body: @escaping @MainActor () async throws -> Void) {
+        autoreleasepool {
+            let done = expectation(description: "steps done")
+            Task { @MainActor in
+                do { try await body() } catch { XCTFail("\(error)") }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 120)
+        }
+    }
+
+    /// Turns the main run loop, each turn in a pool of its own, until `released` holds nothing
+    /// (at most `turns` turns of up to 10 ms); what is still held.
+    private func stillHeld(_ released: Released, turns: Int = 500) -> [String] {
+        for _ in 0..<turns where !released.held.isEmpty {
+            autoreleasepool { _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01)) }
+        }
+        return released.held
+    }
+
+    /// A workspace closed the way the operator closes it (the window's close button) gives up its
+    /// window, its controller and every window it owns (settings, a patch editor, Find Missing Files,
+    /// the pre-show check, the log; a sheet the third time, closed by File > Close),
+    /// again and again:
+    /// each one kept would hold its window-server surface for the rest of the session (#716). The
+    /// app's window count comes back to where it was.
+    func testAClosedWorkspaceReleasesItsWindowAndTheWindowsItOwns() throws {
+        let windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init))
+        for round in 0..<3 {
+            var released = Released()
+            drained { [self] in
+                let doc = try await addWorkspace()
+                released = try await openOwnedWindows(of: doc, sheet: round == 2)
+                if round == 2 {
+                    // A window with a sheet up takes no close button; the app closes it (File > Close).
+                    await app.closeWorkspace(doc)
+                } else {
+                    app.windows[doc]?.window?.performClose(nil)
+                }
+                await assertEventually { self.app.windows[doc] == nil }
+            }
+            XCTAssertEqual(stillHeld(released), [], "round \(round)")
+        }
+        let added = autoreleasepool {
+            NSApp.windows.filter { !windowsBefore.contains(ObjectIdentifier($0)) && isAppWindow($0) }
+                .map { "\(type(of: $0))" }
+        }
+        XCTAssertEqual(added, [], "the app's windows are back to where they started")
+    }
+
+    /// Closing a workspace whose cue is playing (the operator confirms), with an edit from its window
+    /// and its status window open: the engine closes the doc, which stops its cues, and the window goes
+    /// with everything it owns once the answer comes, which finds nothing to call back into.
+    /// The engine and the app go on.
+    func testAWorkspaceClosedWhileACuePlaysWithRequestsPendingIsReleased() throws {
+        var released = Released()
+        drained { [self] in
+            let doc = try await real.open("Demo")
+            await assertEventually { self.app.windows[doc]?.store.model != nil }
+            let store = try XCTUnwrap(app.session.stores[doc])
+            guard case .success = await store.go(list: list) else { return XCTFail("go") }
+            try await advance()
+            await assertEventually { store.cueStates[self.intro]?.state == .running }
+            released = try await openOwnedWindows(of: doc)
+            engine.holdResults = true
+            let wc = try XCTUnwrap(app.windows[doc])
+            wc.masthead.onCommitNotes?(fade, "pending")
+            _ = wc.showWorkspaceStatus()
+            // The edit waits on its answer. Others may be held beside it: a read the owned windows started
+            // before the hold (the patch editor's mappings, sent once its device list came back) can be
+            // answered after it on a slow machine.
+            await assertEventually {
+                self.engine.heldResults { if case .command = $0 { return true } else { return false } } == 1
+            }
+            engine.holdResults = false
+            alerts.saveChoices = [.dontSave]
+            wc.window?.performClose(nil)
+            await assertEventually { self.app.windows[doc] == nil }
+            XCTAssertEqual(alerts.log.first, "closePlaying")
+            XCTAssertEqual(closeMessages().map(\.doc), [doc])
+            engine.releaseResults()
+        }
+        XCTAssertEqual(stillHeld(released), [])
+        drained { [self] in
+            try await advance()
+            XCTAssertEqual(app.windows["1"]?.window?.isVisible, true, "the other workspace goes on")
+            XCTAssertEqual(app.session.stores["1"]?.cueStates[intro]?.state, .running)
+        }
     }
 
     func testNewAndOpenAddWindowsWhileTheFirstKeepsRunning() async throws {
@@ -424,6 +561,24 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(alerts.errors.isEmpty)
     }
 
+    /// Checklist: the app menu's About item opens the one About window, with a workspace open or
+    /// not, and choosing it again brings that window back, never a second.
+    func testTheAppMenuAboutItemOpensTheOneAboutWindow() throws {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let item = try XCTUnwrap(MainMenu.make().bar.items.first?.submenu?.items.first)
+        XCTAssertEqual(item.title, loc("menu.app.about"))
+        XCTAssertEqual(item.action, #selector(AppDelegate.showAbout(_:)))
+        delegate.showAbout(item)
+        let about = app.aboutWindow
+        addTeardownBlock { @MainActor in about.window?.close() }
+        XCTAssertTrue(about.window?.isVisible == true)
+        about.window?.orderBack(nil)
+        delegate.showAbout(item)
+        XCTAssertTrue(app.aboutWindow === about)
+        XCTAssertEqual(NSApp.windows.filter { $0.identifier?.rawValue == AX.aboutWindow }.count, 1)
+    }
+
     func testNoRevertInTheMenus() {
         let titles = MainMenu.make().bar.items.flatMap {
             $0.submenu?.items.map(\.title) ?? []
@@ -431,7 +586,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "", "", ",", "", "w", "w", "s", "S"])
+                \.keyEquivalent), ["n", "o", "", "", "", "w", "w", "s", "S", "", "", ""])
     }
 
     // MARK: Front-window routing
@@ -850,7 +1005,7 @@ final class AppControllerTests: XCTestCase {
         try await advance()
         await assertEventually { store.cueStates[cue]?.state == .paused }
         // The audio device goes while it is paused: the engine breaks it.
-        guard case .success = await real.request(.loseDevice) else { return XCTFail("lose_device") }
+        guard case .success = await real.request(.loseDevice()) else { return XCTFail("lose_device") }
         await assertEventually { store.cueStates[cue]?.state == .broken }
         wc.cueList.select([cue])
         await app.perform(.pauseResumeSelected)
@@ -1202,6 +1357,70 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(go).count, 1)
     }
 
+    private func spaceUp() throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyUp, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
+    }
+
+    private let group: ModelID = "00000000-0000-0000-0000-000000000020"
+
+    /// Checklist: Workspace Settings, General: "key up before the next GO" on → holding Space fires
+    /// one GO; a second GO needs the key released first. Seen on the real engine: the standby cue
+    /// moves on once for the held key, stays after a press with no release between, and moves
+    /// again after the release.
+    func testWithKeyUpRequiredASecondGoNeedsTheKeyReleasedFirst() async throws {
+        keyDoc = "1"
+        let store = try XCTUnwrap(app.session.stores["1"])
+        guard case .success = await store.send(command: .setSwitch(.goNeedsKeyUp, true)) else {
+            return XCTFail("set switch")
+        }
+        await assertEventually { store.isOn(.goNeedsKeyUp) == true }
+        XCTAssertEqual(store.playheads[list], fade, "standing by on the Fade cue")
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("the first press went") { store.playheads[self.list] == self.group }
+        XCTAssertEqual(store.cueStates[fade]?.state, .running, "the Fade cue started")
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ", repeats: true)), "the held key is taken")
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")), "a press with no release between is taken too")
+        try await advance()
+        await settle()
+        XCTAssertEqual(store.playheads[list], group, "still standing by on the group: nothing started")
+        XCTAssertNotEqual(store.cueStates[group]?.state, .running)
+        app.handleKeyUp(try spaceUp())
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("the press after the release went") { store.playheads[self.list] == nil }
+        try await advance()
+        await assertEventually("the group started") { store.cueStates[self.group]?.state.isActive == true }
+    }
+
+    /// With the box off a fresh press always fires, whether or not a release came (a lost key-up
+    /// must not mute GO), and leaving the app forgets a key held with the box on.
+    func testWithoutKeyUpRequiredAFreshPressAlwaysFiresAndLeavingTheAppForgetsAHeldKey() async throws {
+        keyDoc = "1"
+        let store = try XCTUnwrap(app.session.stores["1"])
+        XCTAssertEqual(store.playheads[list], fade)
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("first press") { store.playheads[self.list] == self.group }
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("second press, no release between") { store.playheads[self.list] == nil }
+        guard case .success = await store.send(command: .setSwitch(.goNeedsKeyUp, true)) else {
+            return XCTFail("set switch")
+        }
+        await assertEventually { store.isOn(.goNeedsKeyUp) == true }
+        // Back on the Fade cue; a press with the box on, held, then the app is left.
+        guard case .success = await store.transport(.setPlayhead(list: list, cue: fade)) else {
+            return XCTFail("set_playhead")
+        }
+        await assertEventually { store.playheads[self.list] == self.fade }
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("held press went") { store.playheads[self.list] == self.group }
+        // The release goes to another app: nothing may hold GO shut.
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
+        await assertEventually("GO fires after the app was left") { store.playheads[self.list] == nil }
+    }
+
     func testSpaceWhileTypingStaysWithTheTextField() async throws {
         keyDoc = "1"
         app.isTextEditing = { true }
@@ -1308,14 +1527,14 @@ final class AppControllerTests: XCTestCase {
         String(format: loc("hotkeys.warn.menuLost"), loc(command), chord.display)
     }
 
-    /// What the Warnings tab lists for the window, as the operator reads it.
+    /// What the Warnings list holds for the window, as the operator reads it.
     private func tabTitles(_ doc: ModelID) -> [String] {
-        app.windows[doc]?.sidebar.warningRows.map(\.title) ?? []
+        app.windows[doc]?.warningsPage.all.map(\.title) ?? []
     }
 
     /// A workspace whose file maps Go to Cmd-S, opened: the key runs GO and Save does not run, and the
-    /// Warnings tab says the Save command lost its key, once.
-    func testAFileKeyMapNamingAMenuChordRunsTheMapsCommandAndTheWarningsTabSaysSo() async throws {
+    /// Warnings list says the Save command lost its key, once.
+    func testAFileKeyMapNamingAMenuChordRunsTheMapsCommandAndTheWarningsListSaysSo() async throws {
         let bar = realMenuBar()
         let cmdS = KeyChord("s", [.command])
         let doc = try await openShow(withHotkeys: #"{"go":\#(Self.hotkey("s", ["command"]))}"#)
@@ -1337,7 +1556,7 @@ final class AppControllerTests: XCTestCase {
     /// Cmd-S typed into the Keys page's Edit name field is taken, as QLab takes a shortcut that means
     /// something else (manual p. 102): no reason beside the field, the engine holds it, and the Warnings
     /// tab says Save lost its key in this workspace.
-    func testTheKeysPageTakesAMenuCommandsKeyAndTheWarningsTabSaysTheMenuLostIt() async throws {
+    func testTheKeysPageTakesAMenuCommandsKeyAndTheWarningsListSaysTheMenuLostIt() async throws {
         _ = realMenuBar()
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
@@ -1351,7 +1570,7 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { field.stringValue == cmdS.display }
         XCTAssertTrue(sc.keyReasons[.editName]?.isHidden ?? false, "no reason: the key is taken")
         let text = lostText("keymap.action.edit_name", cmdS)
-        await assertEventually("the Warnings tab says so") {
+        await assertEventually("the Warnings list says so") {
             _ = self.app.frontKeys
             return self.tabTitles("1").filter { $0 == text }.count == 1
         }
@@ -1659,11 +1878,11 @@ final class AppControllerTests: XCTestCase {
         switcher.selectedSegment = 1
         _ = switcher.target?.perform(switcher.action, with: switcher)
         await assertEventually { wc.isShowMode }
-        XCTAssertEqual(wc.window?.title, String(format: loc("window.main.title.showMode"), "Demo"))
+        XCTAssertEqual(wc.window?.title, String(format: loc("window.main.title.showMode"), "Demo — Main"))
         switcher.selectedSegment = 0
         _ = switcher.target?.perform(switcher.action, with: switcher)
         await assertEventually { !wc.isShowMode }
-        XCTAssertEqual(wc.window?.title, "Demo")
+        XCTAssertEqual(wc.window?.title, "Demo — Main")
     }
 
     func testTransportStillWorksInShowMode() async throws {
@@ -1717,7 +1936,12 @@ final class AppControllerTests: XCTestCase {
             let before = wc.isVisible(area)
             app.toggleLayout(area)
             XCTAssertEqual(wc.isVisible(area), !before, "\(area)")
-            XCTAssertEqual(wc.footer.toggles[area]?.state, before ? .off : .on, "footer follows \(area)")
+            if area == .toolbar {
+                // The footer has no button of its own for the cue toolbar (the GO area's hides both).
+                XCTAssertNil(wc.footer.toggles[area])
+            } else {
+                XCTAssertEqual(wc.footer.toggles[area]?.state, before ? .off : .on, "footer follows \(area)")
+            }
             app.toggleLayout(area)
             XCTAssertEqual(wc.isVisible(area), before)
         }
@@ -1764,17 +1988,6 @@ final class AppControllerTests: XCTestCase {
             moved += 1
         }
         XCTAssertGreaterThan(moved, 0)
-    }
-
-    func testLoadToTimeSendsTheEnginesLoadCommandForTheSelectedCue() async throws {
-        keyDoc = "1"
-        let wc = try XCTUnwrap(app.windows["1"])
-        let cue = try XCTUnwrap(wc.cueList.roots.first).id
-        wc.cueList.selectAsUser([cue])
-        wc.loadToTime(cue, 12.5)
-        await assertEventually { !transports(.load(cue: cue, at: 12.5)).isEmpty }
-        XCTAssertNil(CueTime.parse("-1"), "a typed time is validated by the shared parser")
-        XCTAssertEqual(CueTime.parse("1:02.5"), 62.5)
     }
 
     func testRevealTargetFileNeedsAnAudioCueWithAFile() throws {
@@ -2087,7 +2300,7 @@ final class AppControllerTests: XCTestCase {
         let root = try XCTUnwrap(app.launcher.window?.contentView)
         XCTAssertNotNil(find(root, AX.launcherNew))
         XCTAssertNotNil(find(root, AX.launcherOpen))
-        XCTAssertNotNil(find(root, AX.launcherRecentPrefix + "0"))
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Hamlet"])
     }
 
     func testReopenWithNoWindowsShowsLauncherAndWithWindowsDoesNot() async throws {
@@ -2111,6 +2324,288 @@ final class AppControllerTests: XCTestCase {
         controller.closeAllWindows()
     }
 
+    // MARK: Launcher flows
+
+    private func click(_ id: String) throws {
+        let root = try XCTUnwrap(app.launcher.window?.contentView)
+        let button = try XCTUnwrap(find(root, id) as? NSButton, id)
+        button.performClick(nil)
+    }
+
+    /// Makes the recents seams behave like the system's list: newest first, one forgotten at a time.
+    private func newestFirstRecents() {
+        app.noteRecent = { [unowned self] url in
+            recents.removeAll { $0 == url }
+            recents.insert(url, at: 0)
+        }
+        app.forgetRecents = { [unowned self] in recents = [] }
+    }
+
+    /// Checklist: Launcher showing → double-click (or select and press Return on) a recent show → it
+    /// opens in a workspace window and the launcher closes; the recents list now has that show first.
+    func testDoubleClickOrReturnOnARecentShowOpensItAndMovesItToTheTopOfTheList() async throws {
+        newestFirstRecents()
+        let a = try showFile("Alpha")
+        let b = try showFile("Beta")
+        recents = [a, b]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Alpha", "Beta"])
+        XCTAssertEqual(app.launcher.selectedRow, 0, "the newest is selected, so Return opens it")
+        // Return in the list, as typed.
+        let table = app.launcher.recentsTable
+        app.launcher.select(row: 1)
+        let ret = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        table.keyDown(with: ret)
+        await assertEventually { app.windows.values.contains { $0.window?.title.hasPrefix("Beta") == true } }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        XCTAssertEqual(recents.first, b, "Beta is now first")
+        // A double-click on a row: the table's own action.
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Beta", "Alpha"])
+        let before = app.windows.count
+        app.launcher.select(row: 1)
+        let action = try XCTUnwrap(table.doubleAction)
+        _ = table.target?.perform(action)
+        // clickedRow is -1 without a real click: nothing opens on a stray action.
+        await settle()
+        XCTAssertEqual(app.windows.count, before)
+        app.launcher.openSelected()
+        await assertEventually { app.windows.count == before + 1 }
+        XCTAssertEqual(recents.first, a)
+    }
+
+    /// Checklist: Launcher showing → click New → an untitled workspace opens and the launcher closes;
+    /// click Open → the standard open panel appears, choosing a show opens it, Cancel leaves the
+    /// launcher as it was.
+    func testNewOpensAnUntitledWorkspaceAndOpenAsksForAFileAndCancelLeavesTheLauncher() async throws {
+        let a = try showFile("Opened")
+        let before = app.windows.count
+        app.showLauncher()
+        // Open: Cancel leaves the launcher as it was.
+        openURL = nil
+        var panels = 0
+        app.pickOpenURL = { [unowned self] in
+            panels += 1
+            return openURL
+        }
+        try click(AX.launcherOpen)
+        await settle()
+        XCTAssertEqual(panels, 1)
+        XCTAssertEqual(app.launcher.window?.isVisible, true)
+        XCTAssertEqual(app.windows.count, before)
+        // Open: a show chosen opens it.
+        openURL = a
+        try click(AX.launcherOpen)
+        await assertEventually { app.windows.count == before + 1 }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        // New: an untitled workspace.
+        app.showLauncher()
+        try click(AX.launcherNew)
+        await assertEventually { app.windows.count == before + 2 }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        await assertEventually("the untitled workspace is listed") {
+            app.session.workspaces.contains { $0.path == nil }
+        }
+    }
+
+    /// Checklist: A recent show whose file was moved or deleted → click it → the launcher stays, a
+    /// plain notice names the show and says it could not be found, and offers to remove it from the
+    /// list; the other recents still open.
+    func testAMissingRecentShowSaysSoOffersRemovalAndTheOthersStillOpen() async throws {
+        newestFirstRecents()
+        let good = try showFile("Present")
+        let gone = URL(fileURLWithPath: "/Shows/Moved Away.openlab")
+        let other = try showFile("Other")
+        recents = [gone, good, other]
+        app.recentExists = { $0 != gone }
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [true, false, false])
+        let before = app.windows.count
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
+        await settle()
+        XCTAssertEqual(app.launcher.window?.isVisible, true, "the launcher stays")
+        XCTAssertEqual(app.windows.count, before)
+        XCTAssertFalse(app.launcher.noticeLabel.isHidden)
+        XCTAssertEqual(app.launcher.noticeLabel.stringValue, String(format: loc("launcher.missing"), "Moved Away"))
+        let root = try XCTUnwrap(app.launcher.window?.contentView)
+        XCTAssertEqual((find(root, AX.launcherRemove) as? NSButton)?.isHidden, false)
+        // Remove from List: gone from the list, the others kept in order.
+        try click(AX.launcherRemove)
+        XCTAssertEqual(recents, [good, other])
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Present", "Other"])
+        XCTAssertTrue(app.launcher.noticeLabel.isHidden)
+        // The others open.
+        app.launcher.select(row: 1)
+        app.launcher.openSelected()
+        await assertEventually { app.windows.count == before + 1 }
+        XCTAssertEqual(recents.first, other)
+    }
+
+    /// The system's recent list forgets a deleted file, so the launcher keeps what it listed: the
+    /// deleted show stays, marked missing, after the others until it is removed.
+    func testARecentShowWhoseFileWasDeletedStaysListedAsMissingUntilRemoved() async throws {
+        newestFirstRecents()
+        let a = try showFile("Kept")
+        let b = URL(fileURLWithPath: "/Shows/Deleted.openlab")
+        recents = [a, b]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, false])
+        // The file is deleted: the system list no longer has it.
+        recents = [a]
+        app.recentExists = { $0 != b }
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept", "Deleted"])
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, true])
+        app.launcher.select(row: 1)
+        app.launcher.openSelected()
+        try click(AX.launcherRemove)
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept"], "removed for good")
+    }
+
+    /// A show moved or renamed in Finder is followed by the system's list to its new place: the
+    /// launcher shows it once, not missing. A deleted one still shows as missing.
+    func testAMovedShowIsListedOnceAtItsNewPlaceAndADeletedOneStaysMissing() async throws {
+        newestFirstRecents()
+        app.recentExists = { FileManager.default.fileExists(atPath: $0.path) }
+        let dir = real.folder.appendingPathComponent("moves-\(UUID().uuidString)", isDirectory: true)
+        let a = dir.appendingPathComponent("A", isDirectory: true)
+        let b = dir.appendingPathComponent("B", isDirectory: true)
+        for d in [a, b] { try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true) }
+        let hamlet = a.appendingPathComponent("Hamlet.openlab")
+        let lear = a.appendingPathComponent("Lear.openlab")
+        for u in [hamlet, lear] { try "x".write(to: u, atomically: true, encoding: .utf8) }
+        recents = [hamlet, lear]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, false])
+        // Hamlet is moved (the system follows it); Lear is deleted (the system drops it).
+        let moved = b.appendingPathComponent("Hamlet.openlab")
+        try FileManager.default.moveItem(at: hamlet, to: moved)
+        try FileManager.default.removeItem(at: lear)
+        recents = [moved]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Hamlet", "Lear"])
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, true])
+        XCTAssertEqual(app.launcher.recents.first?.url.path, moved.path)
+    }
+
+    /// A show moved to the Trash is a deleted one: listed as missing, whether the system list
+    /// dropped it or follows it into the Trash.
+    func testAShowMovedToTheTrashIsListedAsMissingWhetherOrNotTheSystemFollowsIt() async throws {
+        newestFirstRecents()
+        app.recentExists = { FileManager.default.fileExists(atPath: $0.path) }
+        let dir = real.folder.appendingPathComponent("trash-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let kept = dir.appendingPathComponent("Kept.openlab")
+        let dropped = dir.appendingPathComponent("Dropped.openlab")
+        let followed = dir.appendingPathComponent("Followed.openlab")
+        for u in [kept, dropped, followed] { try "x".write(to: u, atomically: true, encoding: .utf8) }
+        recents = [kept, dropped, followed]
+        app.showLauncher()
+        var inTrash: [URL] = []
+        addTeardownBlock { for u in inTrash { try? FileManager.default.removeItem(at: u) } }
+        for u in [dropped, followed] {
+            var result: NSURL?
+            try FileManager.default.trashItem(at: u, resultingItemURL: &result)
+            inTrash.append(try XCTUnwrap(result as URL?))
+        }
+        // The system list drops one and follows the other into the Trash.
+        recents = [kept, inTrash[1]]
+        app.showLauncher()
+        let rows = app.launcher.recents
+        XCTAssertEqual(rows.map(\.name), ["Kept", "Followed", "Dropped"])
+        XCTAssertEqual(rows.map(\.missing), [false, true, true])
+        // Choosing the trashed row opens nothing and offers its removal.
+        let before = app.windows.count
+        app.launcher.select(row: 1)
+        app.launcher.openSelected()
+        await settle()
+        XCTAssertEqual(app.windows.count, before, "nothing opens from the Trash")
+        XCTAssertFalse(app.launcher.noticeLabel.isHidden)
+        try click(AX.launcherRemove)
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept", "Dropped"])
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept", "Dropped"], "stays gone after a reload")
+    }
+
+    /// A missing-file notice is about the list it was raised on: showing the launcher again, or
+    /// opening another recent, clears it.
+    func testTheMissingFileNoticeGoesWhenTheLauncherIsShownAgainOrARecentOpens() async throws {
+        newestFirstRecents()
+        let good = try showFile("Fine")
+        let gone = URL(fileURLWithPath: "/Shows/Gone.openlab")
+        recents = [gone, good]
+        app.recentExists = { $0 != gone }
+        app.showLauncher()
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
+        XCTAssertFalse(app.launcher.noticeLabel.isHidden)
+        app.showLauncher()
+        XCTAssertTrue(app.launcher.noticeLabel.isHidden, "shown again")
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
+        XCTAssertFalse(app.launcher.noticeLabel.isHidden)
+        app.launcher.select(row: 1)
+        app.launcher.openSelected()
+        await assertEventually { app.launcher.noticeLabel.isHidden }
+    }
+
+    /// Checklist: A show is already open, then the launcher is brought back from the Window menu →
+    /// opening a second show from it opens a second workspace window beside the first; the first
+    /// keeps its state (a playing cue keeps playing).
+    func testASecondShowOpenedFromTheLauncherBesideAPlayingOneLeavesItPlaying() async throws {
+        let store = try XCTUnwrap(app.session.stores["1"])
+        XCTAssertEqual(store.cueStates[intro]?.state, .running)
+        let second = try showFile("Second Show")
+        recents = [second]
+        app.showLauncher()
+        XCTAssertEqual(app.launcher.window?.isVisible, true)
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
+        await assertEventually { app.windows.count == 2 }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        XCTAssertNotNil(app.windows["1"], "the first workspace's window is still there")
+        XCTAssertEqual(store.cueStates[intro]?.state, .running, "its cue keeps playing")
+        XCTAssertEqual(store.document?.dirty, true, "its unsaved edits are kept")
+    }
+
+    /// Checklist: Launcher showing, a show is opened elsewhere (Finder double-click) → the launcher
+    /// closes without a stray empty window.
+    func testAShowOpenedFromFinderWhileTheLauncherIsShowingClosesItWithNoStrayWindow() async throws {
+        let url = try showFile("From Finder")
+        app.launchApplied = true
+        let before = app.windows.count
+        app.showLauncher()
+        app.openFiles([url])
+        await assertEventually { app.windows.count == before + 1 }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+        await settle()
+        XCTAssertEqual(app.windows.count, before + 1, "no second, empty window")
+    }
+
+    /// Checklist: App just started, engine still starting → …a click made while starting is not lost
+    /// or doubled. A New that gets through while the launch is still being applied waits for it and
+    /// opens exactly one workspace.
+    func testANewClickDuringLaunchWaitsAndOpensExactlyOneWorkspace() async throws {
+        app.awaitingLaunch = true
+        app.showLauncher()
+        let before = app.windows.count
+        try click(AX.launcherNew)
+        await settle()
+        XCTAssertEqual(app.windows.count, before, "held until the launch has been applied")
+        app.awaitingLaunch = false
+        let waiting = app.launchWaiters
+        app.launchWaiters = []
+        for waiter in waiting { waiter.resume() }
+        await assertEventually { app.windows.count == before + 1 }
+        await settle()
+        XCTAssertEqual(app.windows.count, before + 1, "once")
+    }
+
     func testLauncherButtonsDriveNewOpenAndRecent() async throws {
         let url = try showFile("Lear")
         recents = [url]
@@ -2118,12 +2613,16 @@ final class AppControllerTests: XCTestCase {
         let root = try XCTUnwrap(app.launcher.window?.contentView)
         (find(root, AX.launcherNew) as? NSButton)?.performClick(nil)
         await assertEventually { app.windows.count == 2 }
-        (find(root, AX.launcherRecentPrefix + "0") as? NSButton)?.performClick(nil)
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
         await assertEventually { app.windows.count == 3 }
         await assertEventually { recents.count == 2 }
         // The engine answers `open` before it lists the new doc, so the list may still be on its way.
         await assertEventually { app.session.workspaces.contains { $0.path == url.path } }
-        XCTAssertTrue(app.windows.values.contains { $0.window?.title == "Lear" }, "the opened show's window")
+        // The title names the shown cue list too, which it learns from the snapshot after the list.
+        await assertEventually("the opened show's window") {
+            app.windows.values.contains { $0.window?.title.hasPrefix("Lear — ") == true }
+        }
         XCTAssertEqual(recents, [url, url])
     }
 
@@ -2617,8 +3116,8 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { app.windows.count == 2 }
         recents = [url]
         app.showLauncher()
-        let root = try XCTUnwrap(app.launcher.window?.contentView)
-        (find(root, AX.launcherRecentPrefix + "0") as? NSButton)?.performClick(nil)
+        app.launcher.select(row: 0)
+        app.launcher.openSelected()
         // The launcher closes once the engine has answered the open, which a fixed settle() can miss.
         await assertEventually { !(app.launcher.window?.isVisible ?? true) }
         XCTAssertEqual(app.windows.count, 2)
@@ -3057,7 +3556,7 @@ final class AppControllerTests: XCTestCase {
     func testTheWarningsRowButtonOpensTheTool() async throws {
         let folder = try mediaFolder([])
         app.pickFolderURL = { folder }
-        demo.onRelink?()
+        demo.warningsPage.onRelink?()
         await assertEventually { self.searchRequests() == [folder.path] }
         await assertEventually { !self.demo.missingFiles.isBusy }
         XCTAssertEqual(
@@ -3365,16 +3864,14 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(wc.isVisible(.inspector))
         XCTAssertTrue(wc.isVisible(.masthead), "the masthead toggle is independent of Show Mode")
         XCTAssertTrue(wc.cueList.view.superview != nil && !wc.cueList.view.isHidden)
-        XCTAssertFalse(wc.footer.toggles[.toolbar]?.isEnabled ?? true)
+        XCTAssertNil(wc.footer.toggles[.toolbar], "the footer has one button for the GO area and toolbar")
         XCTAssertFalse(wc.footer.toggles[.inspector]?.isEnabled ?? true)
-        XCTAssertEqual(wc.footer.toggles[.toolbar]?.state, .off)
         wc.setVisible(.inspector, true)
         XCTAssertFalse(wc.isVisible(.inspector), "a toggle cannot bring it back in Show Mode")
         wc.setShowMode(false)
         XCTAssertTrue(wc.isVisible(.toolbar))
         XCTAssertFalse(wc.isVisible(.inspector), "the choice made before Show Mode is back")
         XCTAssertEqual(wc.footer.toggles[.inspector]?.state, .off)
-        XCTAssertTrue(wc.footer.toggles[.toolbar]?.isEnabled ?? false)
     }
 
     func testViewMenuGreysTheAreasShowModeHidesAndTheModeItemThatDoesNotApply() async throws {
@@ -3407,32 +3904,35 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: View > Warnings and Tools > Jump to Targets
 
-    private func menuItem(_ action: Selector) throws -> NSMenuItem {
+    private func menuItem(_ action: Selector, titled title: String? = nil) throws -> NSMenuItem {
         try XCTUnwrap(
-            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items).first { $0.action == action },
+            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items).first {
+                $0.action == action && (title == nil || $0.title == title)
+            },
             NSStringFromSelector(action))
     }
 
-    /// The sidebar is hidden on Cue Lists: Cmd-B shows it on the Warnings tab with the broken cue
-    /// listed, and it works in Show Mode too.
+    /// Cmd-B opens the status window on its Warnings page with the broken cue listed, in Show Mode too;
+    /// the sidebar is not touched.
     func testWarningsFromTheViewMenu() async throws {
         keyDoc = "1"
         let delegate = AppDelegate()
         delegate.appController = app
         let wc = try XCTUnwrap(app.windows["1"])
-        let item = try menuItem(#selector(AppDelegate.showWarnings(_:)))
+        let item = try menuItem(#selector(AppDelegate.showWorkspaceStatus(_:)), titled: loc("menu.view.warnings"))
         XCTAssertEqual(item.keyEquivalent, "b")
         XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
         for showMode in [false, true] {
             wc.setShowMode(showMode)
+            wc.existingStatusWindow?.close()
             wc.setVisible(.sidebar, false)
-            wc.sidebar.showTab(0)
             XCTAssertTrue(delegate.validateMenuItem(item))
-            delegate.showWarnings(item)
-            XCTAssertTrue(wc.isVisible(.sidebar))
-            XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 2)
-            XCTAssertFalse(wc.sidebar.warningsTable.isHiddenOrHasHiddenAncestor)
-            await assertEventually { !wc.sidebar.warningRows.isEmpty }
+            delegate.showWorkspaceStatus(item)
+            let status = try XCTUnwrap(wc.existingStatusWindow)
+            XCTAssertTrue(status.window?.isVisible == true)
+            XCTAssertEqual(status.page, .warnings)
+            XCTAssertFalse(wc.isVisible(.sidebar), "the sidebar has no Warnings list to open")
+            await assertEventually { !status.warnings.rows.isEmpty }
         }
         keyDoc = nil
         XCTAssertFalse(delegate.validateMenuItem(item), "no workspace in front")
@@ -3689,21 +4189,6 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(edit.store.logEntries.filter { $0.level == .error }.count, 1, "logged once")
         XCTAssertTrue(show.footer.noticeLabel.stringValue.isEmpty)
         XCTAssertFalse(show.store.logEntries.contains { $0.level == .error })
-    }
-
-    func testLoadToTimeIsOffInShowMode() async throws {
-        keyDoc = "1"
-        let delegate = AppDelegate()
-        delegate.appController = app
-        let wc = try XCTUnwrap(app.windows["1"])
-        let items = MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items)
-        let item = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.loadToTime(_:)) })
-        wc.cueList.selectAsUser([try XCTUnwrap(wc.store.model?.cueLists.first?.cues.first?.id)])
-        XCTAssertTrue(delegate.validateMenuItem(item))
-        wc.setShowMode(true)
-        XCTAssertFalse(delegate.validateMenuItem(item))
-        wc.promptLoadToTime()
-        XCTAssertNil(wc.window?.attachedSheet)
     }
 
     func testFooterNoticeClearsAfterItsLifetimeAndARepeatIsNotClearedEarly() {

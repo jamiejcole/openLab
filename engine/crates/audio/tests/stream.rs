@@ -815,6 +815,60 @@ fn resampled_stream_has_exact_length_and_frequency() {
     assert!((f - 1000.0).abs() < 0.05, "{f} Hz");
 }
 
+/// AUD-02: a streamer configured for 48 kHz streams a voice for a device at 44.1 kHz
+/// (`prepare_at`) from a table planned at 48 kHz and rescaled: the stream has the file's length
+/// at 44.1 kHz, plays its trims there, and a 1 kHz sine is still 1 kHz on that device.
+#[test]
+fn a_stream_prepared_for_another_rate_plays_the_rescaled_plan_at_the_right_pitch() {
+    let path = temp_file(
+        "other-rate.wav",
+        &wav(&sine(48_000, 48_000, 1000.0, 0.5), 1, 48_000, Pcm::F32),
+    );
+    let info = probe(&path).unwrap().info;
+    let (from, to) = (SR, 44_100);
+    let total = info.frames_at(to);
+    assert_eq!(total, 44_100);
+    // Trimmed to 0.1 s .. 0.9 s at 48 kHz: 0.8 s, which is 35 280 frames at 44.1 kHz.
+    let planned = plan(4_800..43_200, &[], &[], 4_800).unwrap();
+    let slices = openlab_audio::rescale(&planned, from, to, total);
+    assert_eq!((slices[0].start, slices[0].frames), (4_410, 35_280));
+    let cfg = openlab_audio::MixerConfig {
+        sample_rate: to,
+        ..config(1)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    let mut d = streamer(100);
+    let p = d
+        .prepare_at(
+            StreamRequest {
+                media: Media::Path(path),
+                info,
+                seeking: Seeking::Direct,
+                slices,
+            },
+            to,
+        )
+        .unwrap();
+    assert!(p.handle.wait_primed(FAILSAFE).unwrap());
+    let (mut v, h) = p.into_voice(VoiceId(1), ctl.cue_outputs());
+    v.set_crosspoint(0, 0, 1.0);
+    send_start(&mut ctl, 0, v);
+    let out = render_synced(&mut r, &mut ctl, &h, 40_000, 0);
+    assert!(events(&mut ctl).contains(&finished(35_280, FinishReason::OutPoint)));
+    assert!(out[35_280..].iter().all(|&s| s == 0.0));
+    let f = frequency(&out[1_000..34_000], to);
+    assert!((f - 1000.0).abs() < 0.05, "{f} Hz");
+    // A rate of 0 is refused, not divided by.
+    let (media, info) = marker_file("other-rate-zero.wav", 100);
+    let req = StreamRequest {
+        media,
+        info,
+        seeking: Seeking::Direct,
+        slices: plan(0..100, &[], &[], 0).unwrap(),
+    };
+    assert!(matches!(d.prepare_at(req, 0), Err(MediaError::Worker)));
+}
+
 /// Every format streams from a seek point exactly as a full decode has it there.
 #[test]
 fn every_format_streams_from_a_seek_point_like_a_full_decode() {
@@ -902,6 +956,9 @@ fn unplayable_streams_fail_with_a_typed_error() {
 fn play_until_failure(media: Media, info: MediaInfo, device_rate: u32) -> MediaError {
     let mut c = StreamerConfig::new(device_rate);
     c.buffer_ms = 100;
+    // The worker publishes the failure before it lets go of the ring; holding it there makes
+    // the gap between the two, which a slow runner can hit, certain.
+    c.after_failure = || std::thread::sleep(std::time::Duration::from_millis(20));
     let mut d = DiskStreamer::new(c).unwrap();
     let cfg = openlab_audio::MixerConfig {
         sample_rate: device_rate,
@@ -931,7 +988,11 @@ fn play_until_failure(media: Media, info: MediaInfo, device_rate: u32) -> MediaE
     }
     let failed = failed.expect("the stream failed");
     assert_eq!(h.error(), Some(failed.clone()));
-    // The stream is gone: the voice plays out what is in the ring, then ends.
+    // The error is readable before the worker lets go of the ring; until it does, the voice
+    // waits for more (an underrun). Once it has, the voice plays out the ring, then ends.
+    spin::spin_until("the failed stream to let go of its ring", || {
+        d.open_streams() == 0
+    });
     let written = h.frames_written();
     assert!(written < total);
     let left = (written - ctl.samples_rendered()) as usize;
@@ -1268,4 +1329,104 @@ fn devamp_from_a_full_ring_never_starves_at_the_exit() {
         assert!(ev.contains(&slice_ended(END, 1)));
         assert!(ev.contains(&finished(60_000, FinishReason::OutPoint)));
     }
+}
+
+/// Renders up to sample `t` (from where the render is), then moves the voice's end to entry
+/// `entry`, `frames` long, on that sample, telling the voice and its stream as the engine does.
+fn end_at(
+    r: &mut OfflineRenderer,
+    ctl: &mut MixerController,
+    h: &StreamHandle,
+    out: &mut Vec<f32>,
+    t: u64,
+    (entry, frames): (usize, u64),
+) {
+    let done = ctl.samples_rendered();
+    out.extend(render_synced(r, ctl, h, (t - done) as usize, 0));
+    ctl.send(
+        t,
+        CommandKind::EndAt {
+            voice: VoiceId(1),
+            entry,
+            frames,
+        },
+    );
+    h.set_end(entry, frames);
+}
+
+/// An end moved while the stream plays (its cue's end time edited): the voice and the stream
+/// agree on it whatever the ring already holds. Shorter: the sound stops there and nothing past
+/// it is heard, also when the ring was written far beyond it. Behind the voice: it ends on the
+/// next frame. Longer after the stream had written all of the old end: the stream writes on
+/// from there and the voice plays on to the new end. Shorter and then longer again: the stream
+/// goes on from what the ring holds, so no frame plays twice or is missed.
+#[test]
+fn an_end_moved_while_streaming_is_where_voice_and_stream_stop() {
+    // (what, the plan's end, each move's sample and new end, the frames heard)
+    let cases = [
+        ("shorter", 20_000u64, vec![(5_000u64, 10_000u64)], 10_000u64),
+        ("behind the voice", 20_000, vec![(6_000, 3_000)], 6_000),
+        ("longer", 10_000, vec![(5_000, 25_000)], 25_000),
+        (
+            "shorter then longer",
+            20_000,
+            vec![(2_000, 8_000), (4_000, 25_000)],
+            25_000,
+        ),
+        // A ring of 2400 frames: the stream has written past the first new end, and the second
+        // grows from what it wrote.
+        (
+            "longer than the ring holds",
+            20_000,
+            vec![(500, 1_500), (1_000, 25_000)],
+            25_000,
+        ),
+    ];
+    for (what, first, moves, plays) in cases {
+        let (media, info) = marker_file("end-moved.wav", 30_000);
+        let (mut ctl, mut r) = setup(config(1));
+        let small = what.starts_with("longer than");
+        let mut d = streamer(if small { 50 } else { 2_000 });
+        let slices = plan(0..first, &[], &[], 0).unwrap();
+        let h = start_stream(&mut d, &mut ctl, media, info, slices, 0);
+        let ahead = if small { 2_000 } else { first };
+        assert!(h.wait_written(ahead, FAILSAFE).unwrap(), "{what}");
+        let mut out = Vec::new();
+        for (t, frames) in moves {
+            end_at(&mut r, &mut ctl, &h, &mut out, t, (0, frames));
+        }
+        let done = out.len();
+        out.extend(render_synced(&mut r, &mut ctl, &h, 30_000 - done, 0));
+        let want: Vec<f32> = (0..plays).map(marker).collect();
+        assert_plays(&out, 0, &want);
+        assert_eq!(
+            events(&mut ctl),
+            vec![
+                slice_ended(plays, 0),
+                finished(plays, FinishReason::OutPoint)
+            ],
+            "{what}"
+        );
+        assert_eq!(ctl.underrun_frames(), 0, "{what}");
+    }
+}
+
+/// A moved end the voice and the stream cannot carry out is left alone by both: a looping
+/// entry keeps its length, and an entry with another after it does not grow. The plan plays as
+/// it was.
+#[test]
+fn an_end_the_stream_cannot_follow_changes_nothing() {
+    let (media, info) = marker_file("end-refused.wav", 6_000);
+    let (mut ctl, mut r) = setup(config(1));
+    let mut d = streamer(2_000);
+    let plays = [Plays::Times(1), Plays::Times(2), Plays::Times(1)];
+    let slices = plan(0..3_000, &[1_000, 2_000], &plays, 0).unwrap();
+    let h = start_stream(&mut d, &mut ctl, media, info, slices.clone(), 0);
+    assert!(h.wait_written(4_000, FAILSAFE).unwrap());
+    let mut out = Vec::new();
+    end_at(&mut r, &mut ctl, &h, &mut out, 100, (1, 500));
+    end_at(&mut r, &mut ctl, &h, &mut out, 200, (0, 1_500));
+    let done = out.len();
+    out.extend(render_synced(&mut r, &mut ctl, &h, 6_000 - done, 0));
+    assert_plays(&out, 0, &unrolled(&slices));
 }

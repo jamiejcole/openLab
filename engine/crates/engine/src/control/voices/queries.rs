@@ -14,6 +14,8 @@ impl Voices {
             .recs
             .iter()
             .filter(|(id, r)| match r.phase {
+                // A voice a seek moved from stands for no run.
+                Phase::Playing if r.retired => false,
                 Phase::Playing => on(**id, r.cue, true),
                 Phase::Waiting { start: Some(_), .. } => on(**id, r.cue, false),
                 _ => false,
@@ -22,6 +24,33 @@ impl Voices {
             .collect();
         v.sort();
         v
+    }
+
+    /// Show voices in a mixer that stand for their run (playing, paused or stopping; not one a
+    /// seek or a move to another device is replacing), sorted: those whose cue's patch now
+    /// plays on another device move there (`Input::DeviceMoved`).
+    pub fn sounding(&self) -> Vec<(VoiceId, CueId, RunId)> {
+        let mut v: Vec<(VoiceId, CueId, RunId)> = self
+            .recs
+            .iter()
+            .filter(|(_, r)| matches!(r.phase, Phase::Playing) && !r.preview && !r.retired)
+            .map(|(id, r)| (*id, r.cue, r.run))
+            .collect();
+        v.sort_by_key(|(id, ..)| id.0);
+        v
+    }
+
+    /// Whether a move to another device given up earlier is due to be tried again (clears each
+    /// one due): the control loop then follows the patches' devices again.
+    pub fn take_due_moves(&mut self, now: SampleTime) -> bool {
+        let mut due = false;
+        for r in self.recs.values_mut() {
+            if r.retry_at.is_some_and(|t| now >= t) {
+                r.retry_at = None;
+                due = true;
+            }
+        }
+        due
     }
 
     /// Mixer patch slots a voice in the mixer may still play through (started, paused or
@@ -51,27 +80,29 @@ impl Voices {
     ) -> Vec<(SampleTime, CommandKind)> {
         let mut commands = Vec::new();
         for (&id, r) in &mut self.recs {
-            if r.preview || !matches!(r.phase, Phase::Playing) {
+            if r.preview || r.retired || !matches!(r.phase, Phase::Playing) {
                 continue;
             }
-            let Some(CueKind::Audio { patch, levels, .. }) = ws.find_cue(r.cue).map(|c| &c.kind)
+            let Some((patch, levels)) = ws
+                .find_cue(r.cue)
+                .and_then(|c| Some((c.kind.sound_patch()?, c.kind.levels()?)))
             else {
                 continue;
             };
-            if r.patch == Some(*patch) {
+            if r.patch == Some(patch) {
                 continue;
             }
-            let Some(slot) = patches.mixer_patch(doc, *patch) else {
+            let Some(slot) = patches.mixer_patch(doc, patch) else {
                 continue;
             };
-            // A voice cannot leave its device's mixer: one whose new patch plays on another
-            // device plays on where it started.
+            // A voice stays in its device's mixer: one whose new patch plays on another device
+            // is replaced by a voice there (`DocCx::follow_devices`), not moved.
             if r.slot.and_then(|s| patches.slot_output(s)) != patches.slot_output(slot) {
                 continue;
             }
             // Not before the voice's own (re)start, which may still be queued in the mixer.
             let at = now.max(r.start_at).max(r.resumed_at.unwrap_or(0));
-            let outputs = patches.outputs(doc, *patch);
+            let outputs = patches.outputs(doc, patch);
             if outputs > r.levelled {
                 let faded: BTreeSet<LevelParam> = engine
                     .fade_ramps(r.cue, at)
@@ -80,8 +111,10 @@ impl Voices {
                     .collect();
                 let new = r.levelled..outputs;
                 let mut give = |param: LevelParam, gain: f32| {
-                    if gain != 0.0 && !faded.contains(&param) {
-                        let target = target(param);
+                    if gain != 0.0
+                        && !faded.contains(&param)
+                        && let Some(target) = target(param)
+                    {
                         let fade = Fade::NONE;
                         commands.push((
                             at,
@@ -118,7 +151,7 @@ impl Voices {
                 r.former.push(old);
             }
             r.slot = Some(slot);
-            r.patch = Some(*patch);
+            r.patch = Some(patch);
             r.moves = r.moves.wrapping_add(1);
             commands.push((
                 at,
@@ -164,6 +197,7 @@ impl Voices {
             .map(|(id, _)| *id)
             .collect();
         for id in expired {
+            self.fade_replaced(id, now, None, fx);
             if let Some(r) = self.remove(id) {
                 // A held start never reached the mixer: nothing played.
                 fx.feedback.push(Input::StartFailed {
@@ -182,27 +216,95 @@ impl Voices {
 
     /// Show cues playing on rendered sample `t`: position in the action, frames left, and the
     /// frame of the media file the voice is at (its slices, loops and devamps applied; `None`
-    /// without a slice table).
+    /// without a slice table). A seek waiting for its stream (or for the resume) already stands
+    /// at its point: the play line moves when the operator clicks, not when the sound does.
     pub fn progress(&self, t: SampleTime) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
+        self.progress_of(t, false)
+    }
+
+    /// The same for each preview playing or paused: a previewed cue counts as a play does (a
+    /// preview starts the cue through its normal outputs) and draws its play line.
+    pub fn preview_progress(&self, t: SampleTime) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
+        self.progress_of(t, true)
+    }
+
+    fn progress_of(
+        &self,
+        t: SampleTime,
+        preview: bool,
+    ) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
         let mut v: Vec<(CueId, u64, Option<u64>, Option<u64>)> = self
             .recs
             .values()
-            .filter(|r| !r.preview)
+            .filter(|r| r.preview == preview && !r.retired)
             .filter_map(|r| {
+                // A move to another device waiting for its swap: the sound is still the old
+                // voice's, and its time runs on.
+                if r.relocated
+                    && let Some(old) = r.replaces.and_then(|o| self.recs.get(&o))
+                    && let Some(pos) = old.position(t)
+                {
+                    let left = old
+                        .total
+                        .map(|total| old.offset.saturating_add(total).saturating_sub(pos));
+                    let elapsed = old.shown.saturating_add(pos.saturating_sub(old.offset));
+                    return Some((r.cue, elapsed, left, old.file_frame(pos)));
+                }
+                if let Phase::Waiting {
+                    prepared: Some(p),
+                    start: Some(_),
+                    ..
+                } = &r.phase
+                    && r.moved
+                {
+                    let scale = p.scale;
+                    let at = p.stream.slices.first().map(|s| scale.master(s.start));
+                    return Some((r.cue, r.shown, p.total, at));
+                }
                 let pos = r.position(t)?;
                 let left = r
                     .total
                     .map(|total| r.offset.saturating_add(total).saturating_sub(pos));
-                Some((r.cue, pos, left, r.file_frame(pos)))
+                // Elapsed counts from where its start stands in the action (a seek's point).
+                let elapsed = r.shown.saturating_add(pos.saturating_sub(r.offset));
+                Some((r.cue, elapsed, left, r.file_frame(pos)))
             })
             .collect();
         v.sort_by_key(|(c, _, _, _)| *c);
         v
     }
 
+    /// The show voices loaded and not started, each with the frame of its media file (master rate)
+    /// it will start at: a loaded cue's position line (a Load cue's time, or a click in the
+    /// timeline). A voice whose stream is not ready yet has none.
+    pub fn loaded_at(&self) -> Vec<(CueId, u64)> {
+        let mut v: Vec<(CueId, u64)> = self
+            .recs
+            .values()
+            .filter(|r| !r.preview && !r.retired)
+            .filter_map(|r| match &r.phase {
+                Phase::Waiting {
+                    prepared: Some(p),
+                    start: None,
+                    ..
+                } => p
+                    .stream
+                    .slices
+                    .first()
+                    .map(|s| (r.cue, p.scale.master(s.start))),
+                _ => None,
+            })
+            .collect();
+        v.sort_by_key(|(c, _)| *c);
+        v
+    }
+
     /// Every voice is gone and nothing is held for one: a stopped show leaks nothing.
     pub fn is_idle(&self) -> bool {
-        self.recs.is_empty() && self.by_run.is_empty() && self.aliases.is_empty()
+        self.recs.is_empty()
+            && self.by_run.is_empty()
+            && self.aliases.is_empty()
+            && self.unmetered.is_empty()
     }
 
     /// Forgets every voice, alias and prime (a new workspace replaces the engine they belong
@@ -210,10 +312,45 @@ impl Voices {
     /// are never reused, so they cannot be taken for the new workspace's voices.
     pub fn forget_all(&mut self) {
         self.recs.clear();
+        self.seek_gate.clear();
         self.by_run.clear();
         self.aliases.clear();
         self.primes.clear();
         self.gone.clear();
+        self.unmetered.clear();
+    }
+
+    /// `ids` were cut by the loss of their device: no meter read reports them again, under
+    /// their own id or the one they had before a resume re-keyed them.
+    pub fn unmeter(&mut self, ids: &[VoiceId]) {
+        for id in ids {
+            self.unmetered.insert(*id);
+            if let Some(prev) = self.recs.get(id).and_then(|r| r.prev_id) {
+                self.unmetered.insert(prev);
+            }
+        }
+    }
+
+    /// Whether a meter entry under `id` is one a lost device cut ([`Self::unmeter`]).
+    pub fn is_unmetered(&self, id: VoiceId) -> bool {
+        self.unmetered.contains(&id)
+            || self
+                .aliases
+                .get(&id)
+                .is_some_and(|(cur, _)| self.unmetered.contains(cur))
+    }
+
+    /// Ids that left since the last voice-meter read: the next read reports them once more.
+    pub fn gone_ids(&self) -> Vec<VoiceId> {
+        self.gone.iter().map(|(id, _)| *id).collect()
+    }
+
+    /// Right after a meter read took the `gone` entries: an id no record or alias names any
+    /// more can never be reported again, so it is forgotten.
+    pub fn forget_unmetered(&mut self) {
+        let mut ids = std::mem::take(&mut self.unmetered);
+        ids.retain(|id| self.knows(*id));
+        self.unmetered = ids;
     }
 
     /// Lets go of every primed stream (a panic, shutdown).
@@ -228,12 +365,26 @@ impl Voices {
     }
 
     /// Stream handles of playing voices, with the frames each voice will have read by rendered
-    /// sample `t` (offline settling).
+    /// sample `t` (offline settling), in its stream's frames (its device's rate), rounded up.
+    /// A voice its lost device cut is left out: stopped on that device's first sample back, it
+    /// reads nothing more, and its disk worker cannot write ahead while nothing reads.
     pub fn stream_needs(&self, t: SampleTime) -> impl Iterator<Item = (&StreamHandle, u64)> {
-        self.recs.values().filter_map(move |r| {
+        self.recs.iter().filter_map(move |(&id, r)| {
+            if self.is_unmetered(id) {
+                return None;
+            }
             let h = r.stream.as_ref()?;
-            let pos = r.position(t)?;
-            Some((h, pos.saturating_sub(r.offset)))
+            // What it missed in underruns it reads later.
+            let played = r
+                .position(t)?
+                .saturating_sub(r.offset)
+                .saturating_sub(r.late);
+            let needed = if r.scale.is_same() {
+                played
+            } else {
+                r.scale.local(played).saturating_add(1)
+            };
+            Some((h, needed))
         })
     }
 
@@ -243,11 +394,10 @@ impl Voices {
             .values()
             .filter_map(|r| match &r.phase {
                 Phase::Waiting {
-                    prepared: Some((p, _)),
-                    ..
-                } => Some(&p.handle),
+                    prepared: Some(p), ..
+                } => Some(&p.stream.handle),
                 _ => None,
             })
-            .chain(self.primes.values().map(|p| &p.prepared.handle))
+            .chain(self.primes.values().map(|p| &p.ready.stream.handle))
     }
 }

@@ -12,6 +12,51 @@ final class LaunchTests: XCTestCase {
         XCTAssertTrue(app.buttons["launcher-open"].exists)
     }
 
+    /// Launcher flow: a real click on New opens an untitled workspace in its own window and the
+    /// launcher goes away.
+    func testClickingNewOnTheLauncherOpensAWorkspaceAndClosesTheLauncher() {
+        let app = launchApp(opening: [])
+        let launcher = app.windows["launcher-window"]
+        XCTAssertTrue(launcher.waitForExistence(timeout: 10))
+        let new = app.buttons["launcher-new"]
+        XCTAssertTrue(waitFor("isEnabled == true", new, timeout: 20), "usable once the engine is ready")
+        new.click()
+        XCTAssertTrue(app.windows.matching(identifier: "main-window").element(boundBy: 0).waitForExistence(timeout: 10))
+        XCTAssertTrue(waitFor("exists == false", launcher, timeout: 10), "the launcher closes")
+    }
+
+    /// The launcher with Demo listed as the one recent show.
+    private func launcherWithADemoRecent() -> XCUIApplication {
+        let app = launchApp(opening: [], recent: ["Demo"])
+        XCTAssertTrue(app.windows["launcher-window"].waitForExistence(timeout: 10))
+        XCTAssertTrue(
+            app.tables["launcher-recents"].tableRows.firstMatch.waitForExistence(timeout: 10), "Demo is listed")
+        // The list is usable once the engine is ready.
+        XCTAssertTrue(waitFor("isEnabled == true", app.buttons["launcher-new"], timeout: 20))
+        return app
+    }
+
+    /// Launcher flow: a double-click on a recent show opens it in a workspace window and the
+    /// launcher closes.
+    func testDoubleClickingARecentShowOnTheLauncherOpensItAndClosesTheLauncher() {
+        let app = launcherWithADemoRecent()
+        app.tables["launcher-recents"].tableRows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .doubleClick()
+        XCTAssertTrue(app.windows.matching(identifier: "main-window").element(boundBy: 0).waitForExistence(timeout: 10))
+        XCTAssertTrue(waitFor("exists == false", app.windows["launcher-window"], timeout: 10), "the launcher closes")
+    }
+
+    /// Launcher flow: select a recent show and press Return: it opens and the launcher closes.
+    func testReturnOnTheSelectedRecentShowOpensItAndClosesTheLauncher() {
+        let app = launcherWithADemoRecent()
+        // A click at the row's centre (the row can report itself not hittable while the window comes forward).
+        app.tables["launcher-recents"].tableRows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .click()
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.windows.matching(identifier: "main-window").element(boundBy: 0).waitForExistence(timeout: 10))
+        XCTAssertTrue(waitFor("exists == false", app.windows["launcher-window"], timeout: 10), "the launcher closes")
+    }
+
     /// The app starts its engine, which has two shows open: one window each, no launcher.
     func testLaunchShowsOneWindowPerWorkspace() {
         let app = launchApp()

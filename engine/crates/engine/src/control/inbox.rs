@@ -56,6 +56,9 @@ pub enum Inbox {
     /// One read runs at a time engine-wide, so its ticket names
     /// the request, and the request the doc.
     Doc(super::docs::DocAnswer),
+    /// A copy of media into a show folder is done (internal feedback); one runs at a time, so
+    /// its ticket names it.
+    Copy(super::copy_media::CopyAnswer),
     /// The media watch's findings (internal feedback). One
     /// watch serves every doc: its events name files, and the loop hands each to the docs that
     /// watch it.
@@ -67,6 +70,9 @@ pub enum Inbox {
     Trigger { source: String, detail: String },
     /// The stage host supervisor's report (video output).
     Stage(crate::stage::StageEvent),
+    /// The last app connection (one bound to no workspace) ended, by a quit or a crash: the
+    /// operator's monitor windows go with the app; the stages' output plays on.
+    AppsGone,
     /// Stop the control loop.
     Shutdown,
 }
@@ -89,6 +95,8 @@ pub enum ProbeAnswer {
         key: String,
         ticket: u64,
         result: Result<(PathBuf, openlab_core::video_probe::ProbeReport), MediaError>,
+        /// A video's sound tracks as the audio decoder probed them (none: no sound).
+        sound: Vec<openlab_audio::MovieSound>,
     },
 }
 
@@ -167,10 +175,12 @@ impl Outbound {
     }
 
     /// Meters and progress: dropped while the channel is half full, to keep room for the rest.
-    pub fn send_lossy(&mut self, doc: Option<super::DocId>, message: ServerMessage) {
+    pub fn send_lossy(&mut self, doc: Option<super::DocId>, message: ServerMessage) -> bool {
         if self.try_lossy(doc, message).is_err() {
             self.lossy_dropped += 1;
+            return false;
         }
+        true
     }
 
     /// The rule of [`Outbound::send_lossy`], handing a dropped message back and not counting

@@ -210,7 +210,9 @@ fn answer(w: &Waiter, wave: &Waveform) {
 
 impl DocCx<'_> {
     /// A `waveform` request: answered at once from a kept waveform, else when a worker has
-    /// read the file. The cue must be an Audio cue whose file is playable.
+    /// read the file. The cue must be an Audio cue whose file is playable, or a Video cue whose
+    /// movie has sound (the waveform is then of the audio track it plays, over the movie's
+    /// length).
     pub(super) fn waveform(
         &mut self,
         id: RequestId,
@@ -218,15 +220,26 @@ impl DocCx<'_> {
         (start, end, buckets): (f64, f64, u32),
         to: &ReplyTx,
     ) {
-        let key = match self.doc.model.ws().find_cue(cue).map(|c| &c.kind) {
+        // (the file, and for a Video cue the audio track of its movie it plays)
+        let (key, track) = match self.doc.model.ws().find_cue(cue).map(|c| &c.kind) {
             None => return fail(to, id, ErrorCode::NotFound, "no such cue"),
-            Some(CueKind::Audio { media: Some(m), .. }) => m.as_str().to_owned(),
-            Some(CueKind::Audio { media: None, .. }) => {
+            Some(CueKind::Audio { media: Some(m), .. }) => (m.as_str().to_owned(), None),
+            Some(CueKind::Video {
+                media: Some(m),
+                sound,
+                ..
+            }) => (m.as_str().to_owned(), Some(sound.audio_track)),
+            Some(CueKind::Audio { media: None, .. } | CueKind::Video { media: None, .. }) => {
                 return fail(to, id, ErrorCode::NotFound, "the cue has no file");
             }
             Some(_) => return fail(to, id, ErrorCode::BadRequest, "not an Audio cue"),
         };
-        let Some(ready) = self.doc.media.ready(&key).cloned() else {
+        let source = |media: &super::media::MediaCatalog| match track {
+            // Its preload when it has one: no disk read at all.
+            None => media.media(&key),
+            Some(track) => media.sound(&key, track),
+        };
+        let Some(ready) = source(&self.doc.media).map(|(ready, _)| ready) else {
             return fail(
                 to,
                 id,
@@ -270,8 +283,7 @@ impl DocCx<'_> {
                 "the file is too long to draw",
             );
         }
-        // Its preload when it has one: no disk read at all.
-        let Some((ready, media)) = self.doc.media.media(&key) else {
+        let Some((ready, media)) = source(&self.doc.media) else {
             return fail(to, id, ErrorCode::Unsupported, "the file is not playable");
         };
         let submitted = self.eng.waveform_reader.submit(

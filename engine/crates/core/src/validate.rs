@@ -12,15 +12,16 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 
-use crate::cue::{Cue, FadeLevels, GroupMode, Hotkey};
+use crate::cue::{Cue, FadeLevels, FadeSpec, GroupMode, Hotkey};
 use crate::cue::{
-    CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS, MAX_DB, MAX_SLICE_MARKERS,
-    MAX_TIME, OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, SILENCE_DB, SliceMarker,
+    CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS, MAX_DB, MAX_DEVICE_OUTPUTS,
+    MAX_SLICE_MARKERS, MAX_TIME, OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, PlayCount,
+    SILENCE_DB, SliceMarker,
 };
 use crate::limits::{fade_holds_levels, group_ids};
 use crate::model::{
-    CueId, CueList, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, StageId,
-    Workspace, WorkspaceSettings, hotkey_field,
+    CueId, CueList, CueListId, NetworkPatchId, OutputPatch, PatchCrosspoint, PatchId, PatchOutput,
+    StageId, Workspace, WorkspaceSettings, hotkey_field,
 };
 use crate::network::MAX_HOST_BYTES;
 use crate::osc_access::{
@@ -191,7 +192,8 @@ pub enum IssueKind {
     InvalidHotkey { field: &'static str },
     /// A patch had no outputs (one was added) or more than [`MAX_CUE_OUTPUTS`] (extras removed).
     PatchChannelCount { patch: PatchId },
-    /// A patch level or delay was out of range; it was clamped.
+    /// A patch level was out of range (clamped), or a crosspoint or device-output entry named
+    /// an output no patch can have or repeated a pair (removed).
     InvalidPatchValue { patch: PatchId, field: &'static str },
     /// `second_trigger` is `play_next` or `play_previous` on a cue that is not a Playlist group:
     /// kept, but a second trigger does nothing (as `nothing`) until the cue is one.
@@ -402,7 +404,7 @@ impl fmt::Display for ValidationIssue {
                  has; it does nothing here"
             ),
             IssueKind::InvalidPatchValue { patch, field } => {
-                write!(f, "patch {}: invalid {field}; clamped", patch.0)
+                write!(f, "patch {}: invalid {field}; corrected", patch.0)
             }
         }
     }
@@ -673,6 +675,28 @@ impl Checker {
         }
     }
 
+    /// A wall-clock trigger whose time is out of range (an hour past 23, a minute or second past
+    /// 59) or that has no day to fire on is switched off, its time put in range and its days
+    /// set to every day: it never fires on a time or day the file did not mean.
+    fn wall_clock(&mut self, cue_id: Option<CueId>, trigger: &mut crate::cue::WallClockTrigger) {
+        if trigger.second_of_day().is_some() && !trigger.days.is_empty() {
+            return;
+        }
+        trigger.enabled = false;
+        trigger.hours = trigger.hours.min(23);
+        trigger.minutes = trigger.minutes.min(59);
+        trigger.seconds = trigger.seconds.min(59);
+        if trigger.days.is_empty() {
+            trigger.days = crate::cue::Weekdays::EVERY_DAY;
+        }
+        self.warn(
+            cue_id,
+            IssueKind::InvalidValue {
+                field: "triggers.wall_clock",
+            },
+        );
+    }
+
     /// The OSC passcode table: rights need View; rows that are empty, too long, repeated
     /// or past the table's size are removed (the first of a repeat stays). A passcode that is
     /// not digits is kept and pointed out: dropping it would silently lock a console out of a
@@ -833,10 +857,58 @@ impl Checker {
             }
             self.silence_below_minimum(&mut output.level_db);
         }
+        self.patch_routing(patch, &mut bad);
         for field in bad {
             self.warn(None, IssueKind::InvalidPatchValue { patch: id, field });
         }
         self.patch_outputs.entry(id).or_insert(patch.outputs.len());
+    }
+
+    /// A patch's crosspoints and device-output levels: entries naming a cue output or device
+    /// output no patch can have, and repeats of a pair (the first is kept), are removed; levels
+    /// are put within range. Sorted, which changes nothing they mean. A device output the
+    /// machine's device lacks is kept: the engine warns about it when the show plays.
+    fn patch_routing(&mut self, patch: &mut OutputPatch, bad: &mut Vec<&'static str>) {
+        let in_range = |output: u32, device_output: u32| {
+            output < MAX_CUE_OUTPUTS && device_output < MAX_DEVICE_OUTPUTS
+        };
+        let crosspoints = &mut patch.crosspoints;
+        let mut dropped = retain_counted(crosspoints, |c| in_range(c.output, c.device_output));
+        crosspoints.sort_by_key(PatchCrosspoint::key);
+        dropped += dedupe(crosspoints, PatchCrosspoint::key);
+        if dropped > 0 {
+            bad.push("crosspoints");
+        }
+        for crosspoint in crosspoints.iter_mut() {
+            if self.patch_level(&mut crosspoint.db) {
+                bad.push("crosspoints.db");
+            }
+        }
+        let outputs = &mut patch.device_outputs;
+        let mut dropped = retain_counted(outputs, |d| in_range(0, d.device_output));
+        outputs.sort_by_key(|d| d.device_output);
+        dropped += dedupe(outputs, |d| d.device_output);
+        if dropped > 0 {
+            bad.push("device_outputs");
+        }
+        for output in outputs.iter_mut() {
+            if self.patch_level(&mut output.level_db) {
+                bad.push("device_outputs.level_db");
+            }
+        }
+    }
+
+    /// Puts one patch level within range and the workspace's limits; true when that changed
+    /// what it means (not a number, or above a maximum).
+    fn patch_level(&mut self, db: &mut f64) -> bool {
+        let mut bad = db.is_nan() || *db > MAX_DB;
+        clamp(db, SILENCE_DB, MAX_DB);
+        if *db > self.limits.max_db {
+            *db = self.limits.max_db;
+            bad = true;
+        }
+        self.silence_below_minimum(db);
+        bad
     }
 
     fn cues(&mut self, cues: &mut [Cue], depth: usize) {
@@ -859,6 +931,7 @@ impl Checker {
             self.too_large(id, "name", cue.name.len(), MAX_CUE_NAME_BYTES);
             self.too_large(id, "notes", cue.notes.len(), MAX_CUE_NOTES_BYTES);
             self.hotkey(id, "triggers.hotkey", cue.triggers.hotkey.as_ref());
+            self.wall_clock(id, &mut cue.triggers.wall_clock);
             self.time(id, "pre_wait", &mut cue.pre_wait);
             self.time(id, "post_wait", &mut cue.post_wait);
             self.time(
@@ -897,29 +970,14 @@ impl Checker {
                 levels,
                 ..
             } => {
-                self.time(id, "start_time", start_time);
-                if let Some(mut end) = *end_time {
-                    if end.is_finite() && end > MAX_TIME {
-                        end = MAX_TIME;
-                        self.warn(id, IssueKind::InvalidTime { field: "end_time" });
-                    }
-                    *end_time = (end.is_finite() && end > *start_time).then_some(end);
-                    if end_time.is_none() {
-                        self.warn(id, IssueKind::InvalidEndTime);
-                    } else if slice_too_short(end - *start_time) {
-                        // Kept as close as allowed: a trim shorter than QLab's floor becomes the
-                        // floor, rather than the whole file (beyond the longest time: cleared).
-                        let floor = *start_time + MIN_SLICE_SECONDS;
-                        *end_time = (floor <= MAX_TIME).then_some(floor);
-                        match *end_time {
-                            Some(end) => self.warn(id, IssueKind::EndTimeTooShort { end }),
-                            None => self.warn(id, IssueKind::InvalidEndTime),
-                        }
-                    }
-                }
-                self.time(id, "fade_in.duration", &mut fade_in.duration);
-                self.time(id, "fade_out.duration", &mut fade_out.duration);
-                self.slices(id, slices, last_slice_play_count, *start_time, *end_time);
+                self.media_timing(
+                    id,
+                    start_time,
+                    end_time,
+                    [fade_in, fade_out],
+                    slices,
+                    last_slice_play_count,
+                );
                 let outputs = self
                     .patch_outputs
                     .get(patch)
@@ -928,10 +986,17 @@ impl Checker {
                 self.cue_levels(id, levels, outputs);
             }
             CueKind::Fade {
-                duration, levels, ..
+                duration,
+                levels,
+                geometry,
+                ..
             } => {
                 self.time(id, "duration", duration);
                 self.fade_levels(id, levels);
+                // Beyond its range: at its end (not finite: its default), with a warning each.
+                for field in geometry.repair() {
+                    self.warn(id, IssueKind::InvalidValue { field });
+                }
             }
             CueKind::Stop { fade_out, .. } => {
                 self.time(id, "fade_out.duration", &mut fade_out.duration);
@@ -941,9 +1006,33 @@ impl Checker {
                 self.time_in(id, "load_to_time", load_to_time, -MAX_TIME, MAX_TIME);
             }
             CueKind::Wait { duration } => self.time(id, "duration", duration),
-            CueKind::Video { duration, .. } => {
+            CueKind::Video {
+                duration,
+                geometry,
+                timing,
+                sound,
+                ..
+            } => {
                 if let Some(d) = duration {
                     self.time(id, "duration", d);
+                }
+                // Its sound's levels, as an Audio cue's.
+                let outputs = (sound.patch)
+                    .and_then(|p| self.patch_outputs.get(&p).copied())
+                    .unwrap_or(MAX_CUE_OUTPUTS as usize);
+                self.cue_levels(id, &mut sound.levels, outputs);
+                // The same trims, slices and fades as an Audio cue's, checked the same way.
+                self.media_timing(
+                    id,
+                    &mut timing.start_time,
+                    &mut timing.end_time,
+                    [&mut timing.fade_in, &mut timing.fade_out],
+                    &mut timing.slices,
+                    &mut timing.last_slice_play_count,
+                );
+                // Beyond its range: at its end (not finite: its default), with a warning each.
+                for field in geometry.repair() {
+                    self.warn(id, IssueKind::InvalidValue { field });
                 }
             }
             CueKind::Network { address, args, .. } => {
@@ -981,15 +1070,52 @@ impl Checker {
             | CueKind::GoTo { .. }
             | CueKind::Arm { .. }
             | CueKind::Disarm { .. }
+            | CueKind::Target { .. }
             | CueKind::Memo => {}
         }
+    }
+
+    /// An Audio or Video cue's trims, fades and slices (file format §5): times in range, the out
+    /// point after the in point by at least [`MIN_SLICE_SECONDS`], slices inside the trims.
+    fn media_timing(
+        &mut self,
+        id: Option<CueId>,
+        start_time: &mut f64,
+        end_time: &mut Option<f64>,
+        [fade_in, fade_out]: [&mut FadeSpec; 2],
+        slices: &mut Vec<SliceMarker>,
+        last_slice_play_count: &mut PlayCount,
+    ) {
+        self.time(id, "start_time", start_time);
+        if let Some(mut end) = *end_time {
+            if end.is_finite() && end > MAX_TIME {
+                end = MAX_TIME;
+                self.warn(id, IssueKind::InvalidTime { field: "end_time" });
+            }
+            *end_time = (end.is_finite() && end > *start_time).then_some(end);
+            if end_time.is_none() {
+                self.warn(id, IssueKind::InvalidEndTime);
+            } else if slice_too_short(end - *start_time) {
+                // Kept as close as allowed: a trim shorter than QLab's floor becomes the
+                // floor, rather than the whole file (beyond the longest time: cleared).
+                let floor = *start_time + MIN_SLICE_SECONDS;
+                *end_time = (floor <= MAX_TIME).then_some(floor);
+                match *end_time {
+                    Some(end) => self.warn(id, IssueKind::EndTimeTooShort { end }),
+                    None => self.warn(id, IssueKind::InvalidEndTime),
+                }
+            }
+        }
+        self.time(id, "fade_in.duration", &mut fade_in.duration);
+        self.time(id, "fade_out.duration", &mut fade_out.duration);
+        self.slices(id, slices, last_slice_play_count, *start_time, *end_time);
     }
 
     fn slices(
         &mut self,
         id: Option<CueId>,
         slices: &mut Vec<SliceMarker>,
-        last_play_count: &mut u32,
+        last_play_count: &mut PlayCount,
         start: f64,
         end: Option<f64>,
     ) {
@@ -1237,6 +1363,23 @@ impl Checker {
                         Some(_) => {}
                     }
                 }
+                if let CueKind::Target {
+                    target,
+                    new_target: Some(new),
+                } = &cue.kind
+                {
+                    match by_id.get(new) {
+                        None => self.warn(id, IssueKind::TargetMissing { target: *new }),
+                        Some(n) => {
+                            if let Some(t) = target.and_then(|t| by_id.get(&t))
+                                && can_target(&cue.kind, &t.kind)
+                                && retarget_problem(t, n) == Some(Retarget::WrongKind)
+                            {
+                                self.warn(id, IssueKind::TargetWrongKind { target: *new });
+                            }
+                        }
+                    }
+                }
                 if cue.second_trigger.effective(&cue.kind) != cue.second_trigger {
                     self.warn(id, IssueKind::SecondTriggerNeedsPlaylist);
                 }
@@ -1256,10 +1399,13 @@ impl Checker {
                     CueKind::Audio { patch, .. } if !patches.contains(patch) => {
                         self.warn(id, IssueKind::PatchMissing { patch: *patch });
                     }
-                    CueKind::Video {
-                        stage: Some(stage), ..
-                    } if !stages.contains(stage) => {
-                        self.warn(id, IssueKind::StageMissing { stage: *stage });
+                    CueKind::Video { stage, sound, .. } => {
+                        if let Some(stage) = stage.filter(|s| !stages.contains(s)) {
+                            self.warn(id, IssueKind::StageMissing { stage });
+                        }
+                        if let Some(patch) = sound.patch.filter(|p| !patches.contains(p)) {
+                            self.warn(id, IssueKind::PatchMissing { patch });
+                        }
                     }
                     CueKind::Network { destination, .. }
                         if !network_patches.contains(destination) =>
@@ -1391,20 +1537,48 @@ fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
     Some(component)
 }
 
-/// Fades act on audio levels (a Group fades its children); Devamp needs slices or a playlist
-/// (which it lets finish its current child). Other control cues accept any target.
+/// Fades act on audio levels (a Group fades its children); Devamp needs slices (an Audio or
+/// Video cue's) or a playlist (which it lets finish its current child); a Target cue needs a
+/// cue that acts on a cue, other than a Fade. Other control cues accept any target.
 pub(crate) fn can_target(source: &CueKind, target: &CueKind) -> bool {
     match source {
-        CueKind::Fade { .. } => matches!(target, CueKind::Audio { .. } | CueKind::Group { .. }),
+        CueKind::Fade { .. } => matches!(
+            target,
+            CueKind::Audio { .. } | CueKind::Video { .. } | CueKind::Group { .. }
+        ),
         CueKind::Devamp { .. } => matches!(
             target,
             CueKind::Audio { .. }
+                | CueKind::Video { .. }
                 | CueKind::Group {
                     mode: GroupMode::Playlist { .. },
                     ..
                 }
         ),
+        // A Target cue retargets a cue that acts on a cue; a Fade's link to its target cannot
+        // be swapped while it runs (QLab 5 manual p. 686).
+        CueKind::Target { .. } => target.has_target() && !matches!(target, CueKind::Fade { .. }),
         _ => true,
+    }
+}
+
+/// Why a Target cue aimed at `target` may not hand it `new` as its temporary target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retarget {
+    /// `target` cannot act on `new`, or `new` is `target` itself.
+    WrongKind,
+    /// `new` has no number (QLab 5 manual p. 686: the new target is named by its number).
+    Unnumbered,
+}
+
+/// [`Retarget`] for `target` and `new`, or `None` when `new` may be its temporary target.
+pub fn retarget_problem(target: &Cue, new: &Cue) -> Option<Retarget> {
+    if new.id == target.id || !can_target(&target.kind, &new.kind) {
+        Some(Retarget::WrongKind)
+    } else if new.number.is_none() {
+        Some(Retarget::Unnumbered)
+    } else {
+        None
     }
 }
 

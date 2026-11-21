@@ -24,15 +24,15 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::changes::Footprint;
-use crate::cue::{Cue, CueKind, MediaRef};
+use crate::cue::{Cue, CueKind, MediaRef, PlayCount};
 use crate::cue_index::{CueContainer, CueIndex, IndexChange, IndexDelta};
 use crate::model::{CueId, NetworkPatch, NetworkPatchId, PatchId, StageId, Workspace};
 use crate::network::{HostKind, check_endpoint, check_message};
 use crate::settings::PatchResolution;
-use crate::validate::can_target;
+use crate::validate::{Retarget, can_target, retarget_problem};
 
 use super::run::{Lost, Slot};
-use super::types::{Action, BrokenReason, CueProblem, MediaStatus};
+use super::types::{Action, BrokenReason, CueProblem, MediaStatus, SliceProblem};
 use super::{Ctx, CueEngine};
 
 /// Shown for a cue whose problems were fixed while the run it was started broken with is still
@@ -44,6 +44,8 @@ const STARTED_BROKEN: &[CueProblem] = &[CueProblem::StartedBroken];
 struct Facts {
     /// Target problems (at most one).
     target: Option<CueProblem>,
+    /// A Target cue's new-target problem (at most one).
+    new_target: Option<CueProblem>,
     /// Audio cues: the media reference and patch, and whether the patch exists.
     audio: Option<AudioFacts>,
     /// Network cues: what is wrong with the destination and the message.
@@ -66,6 +68,11 @@ struct VideoFacts {
     media: Option<MediaRef>,
     stage: Option<StageId>,
     stage_exists: bool,
+    /// Its sound's patch, and whether that patch exists (judged only while its file has sound).
+    patch: Option<PatchId>,
+    patch_exists: bool,
+    /// What the cue's slice plan is built from, as of the model.
+    plan: Option<PlanKey>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,7 +84,7 @@ struct AudioFacts {
     plan: PlanKey,
 }
 
-/// What an Audio cue's slice plan is built from (its file, trims, markers and play counts;
+/// What an Audio or Video cue's slice plan is built from (its file, trims, markers and play counts;
 /// times by their bits). A slice report holds for the cue only while this is unchanged: an edit
 /// of any of them makes the report unknown (assumed playable, like an unreported file) until the
 /// binary checks the new plan, so a fix is never refused for the old report.
@@ -86,22 +93,29 @@ struct PlanKey {
     media: Option<MediaRef>,
     start: u64,
     end: Option<u64>,
-    marks: Vec<(u64, u32)>,
-    last: u32,
+    marks: Vec<(u64, PlayCount)>,
+    last: PlayCount,
 }
 
 impl PlanKey {
     fn of(kind: &CueKind) -> Option<Self> {
-        let CueKind::Audio {
-            media,
-            start_time,
-            end_time,
-            slices,
-            last_slice_play_count,
-            ..
-        } = kind
-        else {
-            return None;
+        let (media, start_time, end_time, slices, last_slice_play_count) = match kind {
+            CueKind::Audio {
+                media,
+                start_time,
+                end_time,
+                slices,
+                last_slice_play_count,
+                ..
+            } => (media, start_time, end_time, slices, last_slice_play_count),
+            CueKind::Video { media, timing, .. } => (
+                media,
+                &timing.start_time,
+                &timing.end_time,
+                &timing.slices,
+                &timing.last_slice_play_count,
+            ),
+            _ => return None,
         };
         Some(Self {
             media: media.clone(),
@@ -125,10 +139,10 @@ struct ModelFacts {
     facts: BTreeMap<CueId, Facts>,
     by_media: HashMap<String, BTreeSet<CueId>>,
     by_patch: HashMap<PatchId, BTreeSet<CueId>>,
-    /// The cues that name a cue as their target, by that cue; and the reverse. Empty sets are
-    /// removed, so a rebuilt model equals an incrementally kept one.
+    /// The cues that name a cue as their target or new target, by that cue; and the reverse.
+    /// Empty sets are removed, so a rebuilt model equals an incrementally kept one.
     by_target: HashMap<CueId, BTreeSet<CueId>>,
-    target_of: HashMap<CueId, CueId>,
+    target_of: HashMap<CueId, Refs>,
     /// The patch ids `facts` were computed against (a change rebuilds everything).
     patch_ids: Vec<PatchId>,
     /// The network patches `facts` were computed against (any change rebuilds everything).
@@ -162,11 +176,13 @@ pub(super) struct Problems {
     model: ModelFacts,
     media: BTreeMap<String, MediaStatus>,
     patches: BTreeMap<PatchId, PatchResolution>,
-    /// Audio cues whose slices the binary reported unplayable, with why (`Input::SliceProblems`),
+    /// Video cues' files the binary reported to have sound (`Input::MediaSound`).
+    sound: BTreeSet<String>,
+    /// Audio and Video cues whose slices the binary reported unplayable, with why (`Input::SliceProblems`),
     /// and the plan inputs the cue had when it was reported ([`PlanKey`]): the report counts
     /// only while the cue still has them. Kept by cue id as reported, like `media`: the binary
     /// tells `None` for a cue it stops tracking (gone, another file, not probed).
-    slices: BTreeMap<CueId, (String, PlanKey)>,
+    slices: BTreeMap<CueId, (SliceProblem, PlanKey)>,
     /// Every cue that has problems, with them.
     current: BTreeMap<CueId, Vec<CueProblem>>,
     /// Cues shown with [`CueProblem::StartedBroken`].
@@ -192,6 +208,7 @@ impl Default for Problems {
             model: ModelFacts::default(),
             media: BTreeMap::new(),
             patches: BTreeMap::new(),
+            sound: BTreeSet::new(),
             slices: BTreeMap::new(),
             current: BTreeMap::new(),
             started_broken: BTreeSet::new(),
@@ -227,6 +244,16 @@ impl CueEngine {
     /// binary should log any increase.
     pub fn unsignalled_model_changes(&self) -> u64 {
         self.problems.unsignalled
+    }
+
+    /// The cues touched by edits not yet followed; `None` when everything is to be looked at
+    /// again (a change with no footprint, or the engine is new).
+    pub(super) fn pending_cues(&self) -> Option<Vec<CueId>> {
+        match &self.problems.pending {
+            Pending::Clean => Some(Vec::new()),
+            Pending::All => None,
+            Pending::Cues { touched, .. } => Some(touched.iter().copied().collect()),
+        }
     }
 
     /// The model's part of the problems is out of date: rebuild it on the next call.
@@ -304,6 +331,19 @@ impl CueEngine {
         out
     }
 
+    /// The cues that name `patch` for their sound (Audio cues, and Video cues whatever their
+    /// file holds), as of the last call: what the binary asks before it calls a patch's own
+    /// trouble a problem of the show.
+    pub fn cues_on_patch(&self, patch: PatchId) -> impl Iterator<Item = CueId> + '_ {
+        self.problems
+            .model
+            .by_patch
+            .get(&patch)
+            .into_iter()
+            .flatten()
+            .copied()
+    }
+
     /// Whether a cue inside the group, at any depth, is shown with static problems (CUE-06). As
     /// in QLab 5 the group then shows as broken too (its state is `broken` while it has no
     /// runtime), but it has no problem of its own: it still starts, and its broken children are
@@ -318,22 +358,28 @@ impl CueEngine {
         self.problems.below.keys().copied().collect()
     }
 
-    /// Whether the patch of an audio cue exists and was last reported `Mapped`: a `device_lost`
-    /// break clears then. An unreported patch does not count,
-    /// so a break the binary reports without any patch status stays until a reset.
+    /// Whether the patch of an audio cue (or of a Video cue whose file has sound) exists and
+    /// was last reported `Mapped`: a `device_lost` break clears then. An unreported patch does
+    /// not count, so a break the binary reports without any patch status stays until a reset.
     pub(super) fn device_back(&self, cue: CueId) -> bool {
         let p = &self.problems;
-        p.model
-            .facts
-            .get(&cue)
-            .and_then(|f| f.audio.as_ref())
-            .is_some_and(|a| {
-                a.patch_exists
-                    && matches!(
-                        p.patches.get(&a.patch),
-                        Some(PatchResolution::Mapped { .. })
-                    )
-            })
+        let patch = p.model.facts.get(&cue).and_then(|f| {
+            let audio = f.audio.as_ref().filter(|a| a.patch_exists).map(|a| a.patch);
+            let video = f.video.as_ref().filter(|v| v.patch_exists);
+            audio.or(video.and_then(|v| v.patch))
+        });
+        patch.is_some_and(|patch| {
+            matches!(p.patches.get(&patch), Some(PatchResolution::Mapped { .. }))
+        })
+    }
+
+    /// Whether `cue` is a Video cue whose file the binary reported to have sound.
+    fn video_sounds(&self, cue: CueId) -> bool {
+        let p = &self.problems;
+        (p.model.facts.get(&cue))
+            .and_then(|f| f.video.as_ref())
+            .and_then(|v| v.media.as_ref())
+            .is_some_and(|m| p.sound.contains(m.as_str()))
     }
 
     /// Whether a mark a lost device left on `cue` may clear for a start: its device is back, or
@@ -345,7 +391,7 @@ impl CueEngine {
             .facts
             .get(&cue)
             .is_some_and(|f| f.audio.is_some());
-        !audio || self.device_back(cue)
+        !(audio || self.video_sounds(cue)) || self.device_back(cue)
     }
 
     /// Whether the cue has static problems now (it reports `broken` while it has no runtime, and
@@ -368,7 +414,7 @@ impl CueEngine {
             .and_then(|c| {
                 facts_of(
                     c,
-                    |t| ws.find_cue(t).map(|t| &t.kind),
+                    |t| ws.find_cue(t),
                     |p| ws.patches.iter().any(|x| x.id == p),
                     |n| ws.network_patches.iter().find(|x| x.id == n),
                     |s| ws.stages.iter().any(|x| x.id == s),
@@ -476,12 +522,12 @@ impl CueEngine {
             };
             let facts = facts_of(
                 cue,
-                |t| model.tree.locate(ws, t).map(|t| &t.kind),
+                |t| model.tree.locate(ws, t),
                 |p| ws.patches.iter().any(|x| x.id == p),
                 |n| ws.network_patches.iter().find(|x| x.id == n),
                 |s| ws.stages.iter().any(|x| x.id == s),
             );
-            computed.push((*id, facts, own_target(cue)));
+            computed.push((*id, facts, own_refs(cue)));
         }
         for (id, facts, target) in computed {
             model.set(id, facts, target);
@@ -699,7 +745,11 @@ impl CueEngine {
     }
 
     /// Records what the binary reported about media files and patches, and recomputes the
-    /// problems of the cues on them only.
+    /// problems of the cues on them only. A patch's new resolution that changes nothing its
+    /// cues show (a mapped patch reported mapped, to the same or another device, for the first
+    /// time or again) recomputes none of them, unless a cue its lost device broke can come back:
+    /// a 2,000-cue doc opening beside a playing one would otherwise recompute every cue in one
+    /// wake.
     pub(super) fn availability(
         &mut self,
         media: Vec<(MediaRef, MediaStatus)>,
@@ -707,6 +757,16 @@ impl CueEngine {
         cx: &mut Ctx,
     ) {
         let mut cues = BTreeSet::new();
+        let lost = self.slots.values().any(|s| {
+            matches!(
+                s,
+                Slot::Broken(BrokenReason::DeviceLost)
+                    | Slot::Lost(Lost {
+                        clears_on_return: true,
+                        ..
+                    })
+            )
+        });
         let p = &mut self.problems;
         for (file, status) in media {
             let key = file.as_str();
@@ -719,7 +779,10 @@ impl CueEngine {
             }
         }
         for (patch, resolution) in patches {
-            if p.patches.insert(patch, resolution.clone()) != Some(resolution)
+            let old = p.patches.insert(patch, resolution.clone());
+            let changed = shown(old.as_ref()) != shown(Some(&resolution));
+            let back = lost && shown(Some(&resolution)).is_none() && !is_mapped(old.as_ref());
+            if (changed || back)
                 && let Some(on) = p.model.by_patch.get(&patch)
             {
                 cues.extend(on.iter().copied());
@@ -728,25 +791,48 @@ impl CueEngine {
         self.refresh(cues, cx);
     }
 
-    /// Records which Audio cues' slices the binary found unplayable (and which no longer are),
+    /// Records which Video cues' files have sound, and recomputes the problems of the cues on
+    /// the files whose answer changed only.
+    pub(super) fn media_sound(&mut self, media: Vec<(MediaRef, bool)>, cx: &mut Ctx) {
+        let mut cues = BTreeSet::new();
+        let p = &mut self.problems;
+        for (file, sounds) in media {
+            let key = file.as_str();
+            let changed = if sounds {
+                p.sound.insert(key.to_owned())
+            } else {
+                p.sound.remove(key)
+            };
+            if changed && let Some(on) = p.model.by_media.get(key) {
+                cues.extend(on.iter().copied());
+            }
+        }
+        self.refresh(cues, cx);
+    }
+
+    /// Records which Audio and Video cues' slices the binary found unplayable (and which no longer are),
     /// and recomputes the problems of those cues only.
-    pub(super) fn slice_problems(&mut self, cues: Vec<(CueId, Option<String>)>, cx: &mut Ctx) {
+    pub(super) fn slice_problems(
+        &mut self,
+        cues: Vec<(CueId, Option<SliceProblem>)>,
+        cx: &mut Ctx,
+    ) {
         let p = &mut self.problems;
         let mut changed = BTreeSet::new();
         for (cue, reason) in cues {
             // Reported against the model as it is now (the binary checks the current workspace).
-            let key = p
-                .model
-                .facts
-                .get(&cue)
-                .and_then(|f| f.audio.as_ref())
-                .map(|a| a.plan.clone());
+            let key = p.model.facts.get(&cue).and_then(|f| {
+                f.audio
+                    .as_ref()
+                    .map(|a| a.plan.clone())
+                    .or_else(|| f.video.as_ref().and_then(|v| v.plan.clone()))
+            });
             let differs = match (reason, key) {
                 (Some(reason), Some(key)) => {
                     let entry = (reason, key);
                     p.slices.insert(cue, entry.clone()) != Some(entry)
                 }
-                // Not an Audio cue (any more): nothing to hold the report against.
+                // Not an Audio or Video cue (any more): nothing to hold the report against.
                 (Some(_), None) | (None, _) => p.slices.remove(&cue).is_some(),
             };
             if differs {
@@ -851,11 +937,20 @@ impl CueEngine {
     }
 }
 
+/// What a cue on a patch shows of its resolution: nothing while it is mapped or unreported.
+fn shown(r: Option<&PatchResolution>) -> Option<&PatchResolution> {
+    r.filter(|r| !matches!(r, PatchResolution::Mapped { .. }))
+}
+
+fn is_mapped(r: Option<&PatchResolution>) -> bool {
+    matches!(r, Some(PatchResolution::Mapped { .. }))
+}
+
 /// A cue's problems in their order: target, nothing to fade, media, slices, patch or device,
 /// network destination.
 fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
     let (media, patches) = (&p.media, &p.patches);
-    let mut found: Vec<CueProblem> = f.target.iter().cloned().collect();
+    let mut found: Vec<CueProblem> = f.target.iter().chain(&f.new_target).cloned().collect();
     if f.nothing_to_fade {
         found.push(CueProblem::NothingToFade);
     }
@@ -877,12 +972,10 @@ fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
                 // Slices are planned against the file's probe: a file that is missing or
                 // cannot be played has no slices to judge.
                 Some(MediaStatus::Available | MediaStatus::Unknown) | None => {
-                    if let Some((reason, key)) = p.slices.get(&cue)
+                    if let Some((problem, key)) = p.slices.get(&cue)
                         && *key == a.plan
                     {
-                        found.push(CueProblem::SlicesUnplayable {
-                            reason: reason.clone(),
-                        });
+                        found.push(problem.problem());
                     }
                 }
             },
@@ -902,8 +995,36 @@ fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
         found.extend(n.fixed.iter().cloned());
     }
     if let Some(v) = &f.video {
-        if let Some(problem) = media_problem(v.media.as_ref(), media) {
-            found.push(problem);
+        match media_problem(v.media.as_ref(), media) {
+            Some(problem) => found.push(problem),
+            // As an Audio cue's: judged only against a file that plays.
+            None => {
+                if let Some((problem, key)) = p.slices.get(&cue)
+                    && v.plan.as_ref() == Some(key)
+                {
+                    found.push(problem.problem());
+                }
+            }
+        }
+        // Its sound needs its patch as an Audio cue's does; a file without sound never does.
+        if v.media
+            .as_ref()
+            .is_some_and(|m| p.sound.contains(m.as_str()))
+        {
+            match v.patch {
+                None => found.push(CueProblem::NoPatch),
+                Some(patch) if !v.patch_exists => found.push(CueProblem::PatchMissing { patch }),
+                Some(patch) => {
+                    if let Some(resolution) = patches.get(&patch)
+                        && !matches!(resolution, PatchResolution::Mapped { .. })
+                    {
+                        found.push(CueProblem::DeviceUnavailable {
+                            patch,
+                            resolution: resolution.clone(),
+                        });
+                    }
+                }
+            }
         }
         match v.stage {
             None => found.push(CueProblem::NoStage),
@@ -954,19 +1075,19 @@ fn model_facts(ws: &Workspace) -> ModelFacts {
     for cue in order {
         let facts = facts_of(
             cue,
-            |t| by_id.get(&t).map(|c| &c.kind),
+            |t| by_id.get(&t).copied(),
             |p| patches.contains(&p),
             |n| network.get(&n).copied(),
             |s| stages.contains(&s),
         );
-        out.set(cue.id, facts, own_target(cue));
+        out.set(cue.id, facts, own_refs(cue));
     }
     out
 }
 
 impl ModelFacts {
     /// Replaces what the model says about `id`, keeping the indexes in step.
-    fn set(&mut self, id: CueId, facts: Option<Facts>, target: Option<CueId>) {
+    fn set(&mut self, id: CueId, facts: Option<Facts>, refs: Refs) {
         self.forget(id);
         if let Some(facts) = &facts
             && let Some(audio) = &facts.audio
@@ -979,22 +1100,25 @@ impl ModelFacts {
             }
             self.by_patch.entry(audio.patch).or_default().insert(id);
         }
-        if let Some(file) = facts
-            .as_ref()
-            .and_then(|f| f.video.as_ref())
-            .and_then(|v| v.media.as_ref())
-        {
-            self.by_media
-                .entry(file.as_str().to_owned())
-                .or_default()
-                .insert(id);
+        if let Some(video) = facts.as_ref().and_then(|f| f.video.as_ref()) {
+            if let Some(file) = &video.media {
+                self.by_media
+                    .entry(file.as_str().to_owned())
+                    .or_default()
+                    .insert(id);
+            }
+            if let Some(patch) = video.patch {
+                self.by_patch.entry(patch).or_default().insert(id);
+            }
         }
         if let Some(facts) = facts {
             self.facts.insert(id, facts);
         }
-        if let Some(target) = target {
-            self.by_target.entry(target).or_default().insert(id);
-            self.target_of.insert(id, target);
+        for target in refs.iter().flatten() {
+            self.by_target.entry(*target).or_default().insert(id);
+        }
+        if refs.iter().any(Option::is_some) {
+            self.target_of.insert(id, refs);
         }
     }
 
@@ -1003,6 +1127,17 @@ impl ModelFacts {
     /// matters).
     fn forget(&mut self, id: CueId) {
         let removed = self.facts.remove(&id);
+        if let Some(patch) = removed
+            .as_ref()
+            .and_then(|f| f.video.as_ref())
+            .and_then(|v| v.patch)
+            && let Some(on) = self.by_patch.get_mut(&patch)
+        {
+            on.remove(&id);
+            if on.is_empty() {
+                self.by_patch.remove(&patch);
+            }
+        }
         if let Some(file) = removed
             .as_ref()
             .and_then(|f| f.video.as_ref())
@@ -1030,31 +1165,36 @@ impl ModelFacts {
                 }
             }
         }
-        if let Some(target) = self.target_of.remove(&id)
-            && let Some(on) = self.by_target.get_mut(&target)
-        {
-            on.remove(&id);
-            if on.is_empty() {
-                self.by_target.remove(&target);
+        for target in self.target_of.remove(&id).iter().flatten().flatten() {
+            if let Some(on) = self.by_target.get_mut(target) {
+                on.remove(&id);
+                if on.is_empty() {
+                    self.by_target.remove(target);
+                }
             }
         }
     }
 }
 
-/// The cue `cue` names as its target, if it is a targeting kind with one set.
-fn own_target(cue: &Cue) -> Option<CueId> {
-    if cue.kind.has_target() {
+/// The cues another cue's problems depend on: its target and a Target cue's new target.
+type Refs = [Option<CueId>; 2];
+
+/// The cues `cue` names: its target, if it is a targeting kind with one set, and a Target cue's
+/// new target.
+fn own_refs(cue: &Cue) -> Refs {
+    let target = if cue.kind.has_target() {
         cue.kind.target()
     } else {
         None
-    }
+    };
+    [target, cue.kind.new_target()]
 }
 
-/// What the model says about `cue`, or `None` for a kind that cannot have problems. `kind_of`
-/// gives a target's kind (`None`: not in the workspace).
+/// What the model says about `cue`, or `None` for a kind that cannot have problems. `cue_of`
+/// gives another cue (`None`: not in the workspace).
 fn facts_of<'w>(
     cue: &Cue,
-    kind_of: impl Fn(CueId) -> Option<&'w CueKind>,
+    cue_of: impl Fn(CueId) -> Option<&'w Cue>,
     patch_exists: impl Fn(PatchId) -> bool,
     network_patch: impl Fn(NetworkPatchId) -> Option<&'w NetworkPatch>,
     stage_exists: impl Fn(StageId) -> bool,
@@ -1063,7 +1203,7 @@ fn facts_of<'w>(
         match cue.kind.target() {
             None => Some(CueProblem::NoTarget),
             Some(target) if target == cue.id => Some(CueProblem::TargetSelf),
-            Some(target) => match kind_of(target) {
+            Some(target) => match cue_of(target).map(|t| &t.kind) {
                 None => Some(CueProblem::TargetMissing { target }),
                 Some(kind) if !can_target(&cue.kind, kind) => {
                     Some(CueProblem::TargetWrongKind { target })
@@ -1073,6 +1213,27 @@ fn facts_of<'w>(
         }
     } else {
         None
+    };
+    // A Target cue's new target: there, with a number, and one its target can act on. Judged
+    // against the target only while the target is there and of a kind it can retarget.
+    let new_target = match &cue.kind {
+        CueKind::Target { target, new_target } => match new_target {
+            None => Some(CueProblem::NoNewTarget),
+            Some(new) => match cue_of(*new) {
+                None => Some(CueProblem::NewTargetMissing { target: *new }),
+                Some(n) => {
+                    let problem = match target.and_then(&cue_of) {
+                        Some(t) if can_target(&cue.kind, &t.kind) => retarget_problem(t, n),
+                        _ => n.number.is_none().then_some(Retarget::Unnumbered),
+                    };
+                    problem.map(|p| match p {
+                        Retarget::WrongKind => CueProblem::NewTargetWrongKind { target: *new },
+                        Retarget::Unnumbered => CueProblem::NewTargetUnnumbered { target: *new },
+                    })
+                }
+            },
+        },
+        _ => None,
     };
     let audio = match &cue.kind {
         CueKind::Audio { media, patch, .. } => PlanKey::of(&cue.kind).map(|plan| AudioFacts {
@@ -1111,20 +1272,42 @@ fn facts_of<'w>(
         _ => None,
     };
     let video = match &cue.kind {
-        CueKind::Video { media, stage, .. } => Some(VideoFacts {
+        CueKind::Video {
+            media,
+            stage,
+            sound,
+            ..
+        } => Some(VideoFacts {
             media: media.clone(),
             stage: *stage,
             stage_exists: stage.is_some_and(&stage_exists),
+            patch: sound.patch,
+            patch_exists: sound.patch.is_some_and(&patch_exists),
+            plan: PlanKey::of(&cue.kind),
         }),
         _ => None,
     };
-    let nothing_to_fade = matches!(&cue.kind, CueKind::Fade { levels, .. }
+    // A ticked picture value is something to fade (QLab 5 manual p. 247: a level or a
+    // parameter) only for a target that has a picture: a Video cue, or a target not set or not
+    // there yet (its own problem shows). An Audio or Group target is moved by levels alone.
+    let pictured = |target: &Option<CueId>| match target.and_then(&cue_of) {
+        Some(t) => matches!(t.kind, CueKind::Video { .. }),
+        None => true,
+    };
+    let nothing_to_fade = matches!(&cue.kind, CueKind::Fade { levels, geometry, target, .. }
         if levels.master_db.is_none()
             && levels.output_db.iter().all(Option::is_none)
-            && levels.crosspoints.is_empty());
-    (target.is_some() || audio.is_some() || network.is_some() || video.is_some() || nothing_to_fade)
+            && levels.crosspoints.is_empty()
+            && !(geometry.any() && pictured(target)));
+    (target.is_some()
+        || new_target.is_some()
+        || audio.is_some()
+        || network.is_some()
+        || video.is_some()
+        || nothing_to_fade)
         .then_some(Facts {
             target,
+            new_target,
             audio,
             network,
             video,

@@ -6,7 +6,7 @@ Mixer events, stream state and probe answers become cue-engine inputs. `StartFai
 |---|---|
 | `VoiceFinished` (current id) | `ActionEnded { cue, run, at }`; a failure instead if its stream failed (`StartFailed` if no frame was written, else `ActionFailed`) |
 | `VoiceFinished { Faulted }` (dropped after repeated render panics or a panic applying a command) | failure with `stream_failed` (also after a pending pause) plus an `audio_fault` notice; `health` logs `faulted_voices` at `error` |
-| `VoiceFinished` dated after a pending pause | forwarded (the engine ignores it while paused); record kept; the resume that follows reports `ActionEnded` with the **fresh** run on the resume sample (the mixer ignores a resume of a voice it no longer has) |
+| `VoiceFinished` dated after a pending pause | forwarded (the engine ignores it while paused); record kept; the resume that follows reports `ActionEnded` with the **fresh** run on the resume sample (the mixer ignores a resume of a voice it no longer has). Only while the cue engine still holds that run (below) |
 | `VoiceFinished` dated on the pause sample | nothing left to pause: handled as an end |
 | `VoiceFinished` under an old id after a resume was sent | the voice ended before the resume applied: `ActionEnded` with the fresh run, dated no earlier than the resume |
 | `VoiceRejected` | `StartFailed { voice_rejected }` when it is the id the start was sent with (also if a pause/resume were sent meanwhile); `ActionFailed { voice_rejected }` for a refused resume, which also stops the voice still paused under its old id |
@@ -14,12 +14,16 @@ Mixer events, stream state and probe answers become cue-engine inputs. `StartFai
 | start whose stream cannot be prepared (file gone/changed, failed probe, unbuildable plan) or the mixer cannot take at once | `StartFailed` |
 | `DevampScheduled` / `DevampIgnored` | `Input::DevampScheduled { at }` / `DevampIgnored` for the run the id stands for (an old id is stale); after `DevampScheduled` for the current id send the new `ActionLength` |
 | `MoveEnded { moves }` | no feedback; when `moves` equals the `MoveVoice`s sent, the slots the voice moved off are free to reclaim |
+| `UnderrunEnded` | no feedback; a Video cue's picture is put back by the frames missed and its run's end moved (skill `video`, Sound) |
 | `Underrun` | an `underrun` notice. A starved voice does not skip what it missed, so it ends later than planned; the engine keeps the planned end (next cue on time, late tail overlaps) |
 | probe answer | `MediaStatus` in one `Availability` per tick: `available` (damaged-but-playable too; damage is a warning), `missing` (`NotFound`), else `unsupported { reason }` |
 
+- **An ended paused voice's record is kept only while the cue engine still holds its run** (`DocModel::holds_run`: a show run that is not broken, or the cue's preview).
+  For a run dropped since the pause (its device was lost, and the voice is settled without the mixer's report: the device parked, or the report lost) no resume can come, so the record goes like any ended voice's. A kept record would block the cue's prime for the session.
 - **No feedback before its sample**: a report dated `at` (a re-reported end on a resume sample, the end of an empty action) is held until `now > at`. Mixer events report rendered samples, so qualify at once.
 - The id a voice had before its latest resume stays an **alias** until the voice is gone (an end before the resume applied arrives under it); older ids are named for one more meter read only, so many pauses keep one alias.
-- **Orphaned tails**: after an underrun a voice can sound past the end the engine completed its cue on. Panic, Stop All, Hard Stop All, Reset All, hard stop (`stop` without fade) and Reset stop every such voice in their scope (whole show, or the cue and descendants): Panic with a fade ending on the panic's end, the others at once. A cue's own `panic_cue` leaves the tail to the cue's own end (a later Stop All or Panic cuts it).
+- **Orphaned tails**: after an underrun a voice can sound past the end the engine completed its cue on. Panic, Stop All, Hard Stop All, Reset All, hard stop (`stop` without fade) and Reset stop every such voice in their scope (whole show, or the cue and descendants): Panic with a fade ending on the panic's end, the others at once.
+  A cue failed with `device_lost` (its device lost, or its patch moved to a device that cannot play) has its tail stopped at once the same way, also in its post-wait within the block the engine completes a known end ahead. A cue's own `panic_cue` leaves the tail to the cue's own end (a later Stop All or Panic cuts it).
 - Resuming a voice that had ended is reachable only for an action whose length the engine was not told (a loop).
 
 ## Reconciliation of lost events

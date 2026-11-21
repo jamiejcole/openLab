@@ -26,11 +26,11 @@ pub struct Stage {
     /// Pixel size, 1 to [`MAX_STAGE_PIXELS`] each.
     pub width: u32,
     pub height: u32,
-    /// Black stays up on the stage's display while no cue plays on it (QLab's "keep rendering
-    /// between cues", p. 227). Off (the default, as QLab draws a stage only while a cue runs on
-    /// it): the stage's window is hidden while nothing plays, so a stage on the operator's own
-    /// display never covers it between cues.
-    #[serde(default)]
+    /// Black stays up on the stage's display while no cue plays on it, once a picture has
+    /// played there, until a panic (QLab's "keep rendering between cues", p. 227). On by default
+    /// and for a file that does not say: what QLab shows after a cue's media ends. Off: the
+    /// stage's window is hidden while nothing plays.
+    #[serde(default = "default_keep_black")]
     pub keep_black: bool,
     /// Stacking order among stages on the same display (p. 227): a higher layer is drawn on
     /// top; on the same layer, the stage whose name sorts first is on top. 0 to
@@ -39,19 +39,23 @@ pub struct Stage {
     pub layer: u16,
 }
 
+fn default_keep_black() -> bool {
+    true
+}
+
 fn default_layer() -> u16 {
     DEFAULT_STAGE_LAYER
 }
 
 impl Stage {
-    /// A stage sized as `width` x `height`, hidden between cues.
+    /// A stage sized as `width` x `height`, keeping black between cues.
     pub fn new(id: StageId, name: impl Into<String>, width: u32, height: u32) -> Self {
         Self {
             id,
             name: name.into(),
             width: clamp_side(width),
             height: clamp_side(height),
-            keep_black: false,
+            keep_black: true,
             layer: DEFAULT_STAGE_LAYER,
         }
     }
@@ -199,12 +203,14 @@ mod tests {
     }
 
     #[test]
-    fn a_stage_without_keep_black_in_its_file_is_hidden_between_cues() {
+    fn a_stage_without_keep_black_in_its_file_keeps_black_between_cues() {
         let s: Stage = serde_json::from_str(
             r#"{"id":"00000000-0000-0000-0000-000000000001","name":"S","width":1920,"height":1080}"#,
         )
         .unwrap();
-        assert!(!s.keep_black);
+        assert!(s.keep_black);
+        let new = Stage::new(s.id, "S", 1920, 1080);
+        assert!(new.keep_black, "a new stage keeps black too");
         assert_eq!(s.layer, DEFAULT_STAGE_LAYER);
     }
 }

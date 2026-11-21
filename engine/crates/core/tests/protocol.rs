@@ -104,10 +104,17 @@ fn snapshot() -> Snapshot {
         }],
         previewing: vec![cue_id(10)],
         played: vec![cue_id(10)],
+        playlist_next: vec![PlaylistNextEntry {
+            group: cue_id(12),
+            cue: cue_id(13),
+        }],
         warnings: vec![WireWarning::Notice {
+            patch: None,
             code: "media_damaged".into(),
             message: "intro.wav has a damaged tail".into(),
             cue: Some(cue_id(10)),
+            device: None,
+            count: None,
         }],
         media_durations: vec![CueMediaDuration {
             cue: cue_id(10),
@@ -116,6 +123,8 @@ fn snapshot() -> Snapshot {
             duration: Some(120.0),
             channels: Some(2),
             picture: None,
+            audio_tracks: Vec::new(),
+            audio_track: None,
         }],
     }
 }
@@ -198,6 +207,13 @@ fn all_actions() -> Vec<(&'static str, TransportAction)> {
             },
         ),
         ("reset_all", TransportAction::ResetAll),
+        (
+            "seek",
+            TransportAction::Seek {
+                cue: c,
+                position: 3.5,
+            },
+        ),
     ]
 }
 
@@ -259,6 +275,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 mapping: Some(PatchMapping {
                     device: "Scarlett 18i20".into(),
                     channels: vec![2, 3],
+                    system: false,
                 }),
             },
         ),
@@ -273,8 +290,8 @@ fn all_requests() -> Vec<(&'static str, Request)> {
         ),
         // Test support only (the `test-support` feature, `--virtual-device`).
         ("advance", Request::Advance { frames: 4800 }),
-        ("lose_device", Request::LoseDevice),
-        ("restore_device", Request::RestoreDevice),
+        ("lose_device", Request::LoseDevice { device: None }),
+        ("restore_device", Request::RestoreDevice { device: None }),
         (
             "discard_recovery",
             Request::DiscardRecovery {
@@ -321,6 +338,30 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 points: vec![[0.5, 0.5]],
             },
         ),
+        (
+            "set_default_device",
+            Request::SetDefaultDevice {
+                device: "openlab:virtual-2".into(),
+            },
+        ),
+        ("sequence_span", Request::SequenceSpan { cue: cue_id(10) }),
+        (
+            "set_stage_monitor",
+            Request::SetStageMonitor {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                open: true,
+            },
+        ),
+        (
+            "monitor_probe",
+            Request::MonitorProbe {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                width: 640,
+                height: 480,
+                points: vec![[0.5, 0.05], [0.5, 0.5]],
+            },
+        ),
+        ("copy_media", Request::CopyMedia),
     ]
 }
 
@@ -355,6 +396,37 @@ fn request_variants() -> Vec<(&'static str, Request)> {
             Request::SetPatchMapping {
                 patch: PatchId(uuid::Uuid::from_u128(0x70)),
                 mapping: None,
+            },
+        ),
+        (
+            "set_patch_mapping_system_output",
+            Request::SetPatchMapping {
+                patch: PatchId(uuid::Uuid::from_u128(0x71)),
+                mapping: Some(PatchMapping::system_output(vec![0, 1])),
+            },
+        ),
+        (
+            "lose_device_second",
+            Request::LoseDevice {
+                device: Some("openlab:virtual-2".into()),
+            },
+        ),
+        (
+            "restore_device_second",
+            Request::RestoreDevice {
+                device: Some("openlab:virtual-2".into()),
+            },
+        ),
+        ("backup_keep", Request::BackupKeep),
+        ("set_backup_keep", Request::SetBackupKeep { count: 20 }),
+        ("osc_state", Request::OscState),
+        ("set_osc_port", Request::SetOscPort { port: 53100 }),
+        ("set_stand_back", Request::SetStandBack { on: true }),
+        (
+            "drop_out",
+            Request::DropOut {
+                device: None,
+                count: 3,
             },
         ),
     ]
@@ -415,6 +487,21 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // Renumber with a prefix and a suffix: cues read "A10b", "A11b".
+    add(
+        "command_renumber",
+        client(ClientMessage::Command {
+            id: rid(4),
+            command: Box::new(Command::Renumber {
+                ids: vec![cue_id(10), cue_id(11)],
+                start: 10.0,
+                increment: 1.0,
+                prefix: "A".into(),
+                suffix: "b".into(),
+            }),
+            coalesce: None,
+        }),
+    );
     add(
         "command_coalesce",
         client(ClientMessage::Command {
@@ -450,6 +537,8 @@ fn fixtures() -> Vec<(String, Sample)> {
     // Swift test compares): no number, the file, one cue output per patch output and file
     // channel n on cue output n at 0 dB. The engine's real-audio tests play this message.
     let mut dropped = cue(13, audio());
+    // The app's new cues store the hotkey switch off (an unticked box beside an empty field).
+    dropped.triggers.hotkey_enabled = false;
     if let CueKind::Audio { media, levels, .. } = &mut dropped.kind {
         *media = Some(MediaRef::new("/Volumes/Show/thunder.wav"));
         levels.crosspoints = (0..2)
@@ -490,6 +579,7 @@ fn fixtures() -> Vec<(String, Sample)> {
         },
     );
     network.number = None;
+    network.triggers.hotkey_enabled = false;
     add(
         "command_add_new_network_cue",
         client(ClientMessage::Command {
@@ -528,8 +618,12 @@ fn fixtures() -> Vec<(String, Sample)> {
             media: Some(MediaRef::new("/Volumes/Show/Backdrop.mov")),
             stage: Some(openlab_core::StageId(uuid::Uuid::from_u128(1))),
             duration: None,
+            geometry: Default::default(),
+            timing: Default::default(),
+            sound: Default::default(),
         },
     );
+    video.triggers.hotkey_enabled = false;
     video.number = None;
     add(
         "command_add_new_video_cue",
@@ -626,15 +720,41 @@ fn fixtures() -> Vec<(String, Sample)> {
         *slices = vec![
             SliceMarker {
                 time: 0.5,
-                play_count: 3,
+                play_count: 3.into(),
             },
             SliceMarker {
                 time: 1.0,
-                play_count: 1,
+                play_count: 1.into(),
             },
         ];
-        *last_slice_play_count = 2;
+        *last_slice_play_count = 2.into();
     }
+    // The three ways a slice plays, as they are written: a count, 0 for "until devamped" and
+    // "skip" for a slice that is not played.
+    let mut counted = timed.clone();
+    if let CueKind::Audio { slices, .. } = &mut counted {
+        *slices = vec![
+            SliceMarker {
+                time: 0.5,
+                play_count: PlayCount::Skip,
+            },
+            SliceMarker {
+                time: 1.0,
+                play_count: PlayCount::Endless,
+            },
+        ];
+    }
+    add(
+        "command_set_slice_play_counts",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetCueProperty {
+                id: cue_id(10),
+                property: CueProperty::Kind { value: counted },
+            }),
+            coalesce: None,
+        }),
+    );
     add(
         "command_set_audio_timing",
         client(ClientMessage::Command {
@@ -722,6 +842,14 @@ fn fixtures() -> Vec<(String, Sample)> {
                         modifiers: Modifiers::default(),
                     }),
                     hotkey_enabled: false,
+                    wall_clock: WallClockTrigger {
+                        enabled: true,
+                        hours: 19,
+                        minutes: 25,
+                        seconds: 0,
+                        days: Weekdays::EVERY_DAY.with(Weekday::Sunday, false),
+                        twelve_hour: true,
+                    },
                 },
             },
         ),
@@ -922,6 +1050,39 @@ fn fixtures() -> Vec<(String, Sample)> {
     );
     add("closed", server(ServerMessage::Closed { doc: DocId(3) }));
     add(
+        "media_copy_progress",
+        server(ServerMessage::MediaCopyProgress {
+            cues: vec![
+                CueId(uuid::Uuid::from_u128(1)),
+                CueId(uuid::Uuid::from_u128(2)),
+            ],
+            files_done: 1,
+            files_total: 2,
+            bytes_done: 1_048_576,
+            bytes_total: 3_145_728,
+            on_demand: true,
+        }),
+    );
+    add(
+        "media_copied",
+        server(ServerMessage::MediaCopied {
+            report: Box::new(openlab_core::protocol::MediaCopyReport {
+                on_demand: true,
+                copied: 3,
+                reused: 1,
+                in_folder: 2,
+                failed: vec![openlab_core::protocol::MediaCopyFailure {
+                    cue: CueId(uuid::Uuid::from_u128(4)),
+                    file: "/Volumes/Library/Thunder.wav".into(),
+                    reason: openlab_core::protocol::MediaCopyReason::Missing,
+                    message: "could not read the file: No such file or directory".into(),
+                }],
+                failed_count: 1,
+                cancelled: false,
+            }),
+        }),
+    );
+    add(
         "video_outputs",
         server(ServerMessage::VideoOutputs {
             displays: vec![openlab_core::stage_link::Display {
@@ -931,13 +1092,24 @@ fn fixtures() -> Vec<(String, Sample)> {
                 height: 1080,
             }],
             video: Some(true),
-            stages: vec![StageMappingEntry {
-                stage: StageId(uuid::Uuid::from_u128(0x80)),
-                mapping: None,
-                state: Some(openlab_core::stage_link::StageState::DisplayMissing {
-                    display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
-                }),
-            }],
+            stages: vec![
+                StageMappingEntry {
+                    stage: StageId(uuid::Uuid::from_u128(0x80)),
+                    mapping: None,
+                    state: Some(openlab_core::stage_link::StageState::DisplayMissing {
+                        display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
+                    }),
+                    panicked: false,
+                    monitor: true,
+                },
+                StageMappingEntry {
+                    stage: StageId(uuid::Uuid::from_u128(0x81)),
+                    mapping: None,
+                    state: Some(openlab_core::stage_link::StageState::Hidden),
+                    panicked: true,
+                    monitor: false,
+                },
+            ],
         }),
     );
     add(
@@ -1072,6 +1244,15 @@ fn fixtures() -> Vec<(String, Sample)> {
                     cue: cue_id(10),
                     played: true,
                 },
+                RuntimeChange::PlaylistNext {
+                    group: cue_id(12),
+                    cue: Some(cue_id(13)),
+                },
+                RuntimeChange::PlaylistNext {
+                    group: cue_id(12),
+                    cue: None,
+                },
+                RuntimeChange::GoProtection { active: true },
                 RuntimeChange::Warning {
                     warning: WireWarning::TriggerIgnored {
                         cue: cue_id(10),
@@ -1095,6 +1276,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                     duration: None,
                     channels: Some(6),
                     picture: None,
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }),
                 RuntimeChange::MediaDuration(CueMediaDuration {
                     cue: cue_id(11),
@@ -1103,6 +1286,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                     duration: None,
                     channels: None,
                     picture: None,
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }),
             ],
         }),
@@ -1126,6 +1311,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                         fps: 25.0,
                         duration: 12.5,
                     }),
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }),
                 RuntimeChange::MediaDuration(CueMediaDuration {
                     cue: cue_id(16),
@@ -1138,8 +1325,45 @@ fn fixtures() -> Vec<(String, Sample)> {
                         width: 3840,
                         height: 2160,
                     }),
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }),
             ],
+        }),
+    );
+    // A Video cue whose movie has two audio tracks, playing the second: its channels are the
+    // rows of the cue's levels.
+    add(
+        "runtime_media_duration_video_sound",
+        server(ServerMessage::Runtime {
+            seq: 46,
+            changes: vec![RuntimeChange::MediaDuration(CueMediaDuration {
+                cue: cue_id(15),
+                file: Some(12.5),
+                trimmed: Some(12.5),
+                duration: Some(12.5),
+                channels: Some(6),
+                picture: Some(openlab_core::video_probe::ProbeReport::Video {
+                    codec: openlab_core::video_probe::VideoCodec::H264,
+                    width: 1920,
+                    height: 1080,
+                    fps: 25.0,
+                    duration: 12.5,
+                }),
+                audio_tracks: vec![
+                    openlab_core::protocol::AudioTrackFormat {
+                        codec: "mp4a".into(),
+                        channels: 2,
+                        sample_rate: 44_100,
+                    },
+                    openlab_core::protocol::AudioTrackFormat {
+                        codec: "lpcm".into(),
+                        channels: 6,
+                        sample_rate: 48_000,
+                    },
+                ],
+                audio_track: Some(1),
+            })],
         }),
     );
     add(
@@ -1155,6 +1379,27 @@ fn fixtures() -> Vec<(String, Sample)> {
                 ProgressItem {
                     cue: cue_id(11),
                     elapsed: 0.25,
+                    remaining: None,
+                    position: None,
+                },
+            ],
+            waits: vec![],
+        }),
+    );
+    // Loaded to a time: a Wait cue 4 s into its action, an Audio cue 2.5 s in at its file point.
+    add(
+        "progress_loaded",
+        server(ServerMessage::Progress {
+            items: vec![
+                ProgressItem {
+                    cue: cue_id(10),
+                    elapsed: 2.5,
+                    remaining: None,
+                    position: Some(32.5),
+                },
+                ProgressItem {
+                    cue: cue_id(14),
+                    elapsed: 4.0,
                     remaining: None,
                     position: None,
                 },
@@ -1194,6 +1439,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             outputs: vec![OutputMeter {
                 patch: patch_id(1),
                 peaks: vec![0.5, 0.25],
+                cue_outputs: vec![0.5, 0.125],
             }],
             cues: vec![CueMeter {
                 cue: cue_id(10),
@@ -1271,13 +1517,25 @@ fn fixtures() -> Vec<(String, Sample)> {
         server(ServerMessage::Warnings {
             warnings: vec![
                 WireWarning::Notice {
+                    patch: None,
                     code: "file_repaired".into(),
                     message: "duplicate cue number 3 was cleared".into(),
                     cue: None,
+                    device: None,
+                    count: None,
                 },
                 WireWarning::LateStart {
                     cue: cue_id(10),
                     late_ms: 12,
+                },
+                WireWarning::Notice {
+                    patch: Some(patch_id(1)),
+                    code: "patch_routing_beyond_device".into(),
+                    message: "patch \"Main\" routes to device output 5, but \"Out\" has 2 here"
+                        .into(),
+                    cue: None,
+                    device: Some("Out".into()),
+                    count: None,
                 },
             ],
         }),
@@ -1300,6 +1558,30 @@ fn fixtures() -> Vec<(String, Sample)> {
                 ErrorCode::CommandRefused,
                 format!("cue {} does not exist", cue_id(99)),
             )),
+        }),
+    );
+    add(
+        "result_backup_keep",
+        server(ServerMessage::Result {
+            id: rid(48),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::BackupKeep { count: 20 }),
+            }),
+        }),
+    );
+    add(
+        "result_osc",
+        server(ServerMessage::Result {
+            id: rid(47),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::Osc {
+                    port: 53000,
+                    open: true,
+                    error: Some("could not listen on 0.0.0.0:53100: it is already in use".into()),
+                }),
+            }),
         }),
     );
     add(
@@ -1392,6 +1674,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                             mapping: Some(PatchMapping {
                                 device: "Scarlett 2i2".into(),
                                 channels: vec![0, 1],
+                                system: false,
                             }),
                             resolution: Some(WireResolution::Mapped {
                                 device: "Scarlett 2i2".into(),
@@ -1404,10 +1687,19 @@ fn fixtures() -> Vec<(String, Sample)> {
                             resolution: Some(WireResolution::Unmapped),
                         },
                         PatchMappingEntry {
+                            patch: PatchId(uuid::Uuid::from_u128(0x73)),
+                            mapping: Some(PatchMapping::system_output(vec![0, 1])),
+                            resolution: Some(WireResolution::Mapped {
+                                device: "MacBook Pro Speakers".into(),
+                                channels: vec![0, 1],
+                            }),
+                        },
+                        PatchMappingEntry {
                             patch: PatchId(uuid::Uuid::from_u128(0x72)),
                             mapping: Some(PatchMapping {
                                 device: "MOTU 828".into(),
                                 channels: vec![2, 3],
+                                system: false,
                             }),
                             resolution: Some(WireResolution::DeviceMissing {
                                 device: "MOTU 828".into(),
@@ -1441,6 +1733,26 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "result_sequence_span",
+        server(ServerMessage::Result {
+            id: rid(63),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::SequenceSpan { span: Some(9.5) }),
+            }),
+        }),
+    );
+    add(
+        "result_sequence_span_unknown",
+        server(ServerMessage::Result {
+            id: rid(64),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::SequenceSpan { span: None }),
+            }),
+        }),
+    );
+    add(
         "result_stage_mappings",
         server(ServerMessage::Result {
             id: rid(62),
@@ -1459,16 +1771,22 @@ fn fixtures() -> Vec<(String, Sample)> {
                             state: Some(openlab_core::stage_link::StageState::Shown {
                                 display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
                             }),
+                            panicked: false,
+                            monitor: false,
                         },
                         StageMappingEntry {
                             stage: StageId(uuid::Uuid::from_u128(0x81)),
                             mapping: None,
                             state: Some(openlab_core::stage_link::StageState::NoDisplay),
+                            panicked: false,
+                            monitor: false,
                         },
                         StageMappingEntry {
                             stage: StageId(uuid::Uuid::from_u128(0x82)),
                             mapping: None,
                             state: None,
+                            panicked: false,
+                            monitor: false,
                         },
                     ],
                 }),
@@ -1966,6 +2284,7 @@ fn every_message_type_and_variant_has_a_fixture() {
             | TransportAction::Pause { .. }
             | TransportAction::Resume { .. }
             | TransportAction::Load { .. }
+            | TransportAction::Seek { .. }
             | TransportAction::Reset { .. }
             | TransportAction::TriggerReleased { .. }
             | TransportAction::Preview { .. }
@@ -1973,8 +2292,8 @@ fn every_message_type_and_variant_has_a_fixture() {
             | TransportAction::Batch { .. } => {}
         }
     }
-    assert_eq!(all_actions().len(), 24);
-    assert_eq!(all_requests().len(), 28);
+    assert_eq!(all_actions().len(), 25);
+    assert_eq!(all_requests().len(), 33);
 }
 
 #[test]
@@ -2075,6 +2394,39 @@ fn defaults_fill_optional_fields() {
     );
 }
 
+/// A play count that is none of a number of plays, 0 or "skip" is refused when the message is
+/// decoded, on every command that carries a cue (a whole kind, an added cue, a paste): it never
+/// reaches the model as some other count.
+#[test]
+fn a_bad_play_count_is_refused_on_every_command_that_carries_a_cue() {
+    for name in [
+        "command_set_slice_play_counts",
+        "command_add_cue",
+        "command_paste_clipboard",
+    ] {
+        let path = fixture_dir().join(format!("client/{name}.json"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(decode_client(&text).is_ok(), "{name}");
+        let (last, _) = text
+            .split_once("\"last_slice_play_count\": ")
+            .unwrap_or_else(|| panic!("{name} carries no play count"));
+        let rest = &text[last.len() + "\"last_slice_play_count\": ".len()..];
+        let (_, rest) = rest.split_once(',').unwrap();
+        for (value, ok) in [
+            ("\"skip\"", true),
+            ("0", true),
+            ("-1", false),
+            ("2.5", false),
+            ("4294967296", false),
+            ("\"loop\"", false),
+            ("null", false),
+        ] {
+            let edited = format!("{last}\"last_slice_play_count\": {value},{rest}");
+            assert_eq!(decode_client(&edited).is_ok(), ok, "{name}: {value}");
+        }
+    }
+}
+
 #[test]
 fn malformed_input_is_an_error_never_a_panic() {
     let deep = format!("{}{}", "[".repeat(100_000), "]".repeat(100_000));
@@ -2115,7 +2467,6 @@ fn malformed_input_is_an_error_never_a_panic() {
         format!(
             r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":-1e999}}}}"#
         ),
-        format!(r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":-1}}}}"#),
         format!(r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":NaN}}}}"#),
         format!(
             r#"{{"type":"transport","id":1,"action":{{"type":"load","cue":"{c}","at":null}}}}"#
@@ -2154,14 +2505,48 @@ fn malformed_input_is_an_error_never_a_panic() {
         // A client frame is never a valid server frame either way round, and must not panic.
         let _ = decode_server(text);
     }
-    assert_eq!(
+    // A load time may be negative (back from the end) but never not-a-number or infinite.
+    assert!(
         decode_client(
             r#"{"type":"transport","id":1,"action":{"type":"load","cue":"00000000-0000-0000-0000-000000000001","at":-1}}"#
-        ),
-        Err(ProtocolError::OutOfRange {
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        encode_client(&transport(
+            1,
+            TransportAction::Load {
+                cue: cue_id(1),
+                at: f64::INFINITY
+            }
+        ))
+        .err(),
+        Some(ProtocolError::NonFinite {
             field: "transport.load.at"
         })
     );
+    // A seek's file position: before the file is refused, and so is a number that is not one
+    // (a JSON number cannot be NaN, but an encoder must not send one either).
+    assert_eq!(
+        decode_client(
+            r#"{"type":"transport","id":1,"action":{"type":"seek","cue":"00000000-0000-0000-0000-000000000001","position":-0.5}}"#
+        ),
+        Err(ProtocolError::OutOfRange {
+            field: "transport.seek.position"
+        })
+    );
+    for position in [f64::NAN, f64::INFINITY] {
+        assert!(
+            encode_client(&transport(
+                1,
+                TransportAction::Seek {
+                    cue: cue_id(1),
+                    position,
+                },
+            ))
+            .is_err()
+        );
+    }
 }
 
 /// A `batch` is refused whole when it is empty, too long, names a cue twice, carries
@@ -2222,6 +2607,29 @@ fn an_advance_beyond_the_limit_is_bad_request() {
     assert!(advance(0).is_ok());
 }
 
+/// Test support: a `drop_out` of none or of more than `MAX_DROP_OUTS` is refused at decode.
+#[test]
+fn a_drop_out_count_outside_the_limit_is_bad_request() {
+    let drop_out = |count: u32| {
+        let text = serde_json::to_string(&ClientMessage::Request {
+            id: rid(1),
+            request: Request::DropOut {
+                device: None,
+                count,
+            },
+        })
+        .unwrap();
+        decode_client(&text)
+    };
+    let refused = Err(ProtocolError::OutOfRange {
+        field: "request.count",
+    });
+    assert_eq!(drop_out(0), refused);
+    assert_eq!(drop_out(MAX_DROP_OUTS + 1), refused);
+    assert!(drop_out(1).is_ok());
+    assert!(drop_out(MAX_DROP_OUTS).is_ok());
+}
+
 #[test]
 fn a_batch_is_refused_whole_unless_well_formed() {
     let batch = |actions: Vec<TransportAction>| {
@@ -2267,15 +2675,15 @@ fn a_batch_is_refused_whole_unless_well_formed() {
             "{not_per_cue:?}"
         );
     }
-    assert_eq!(
+    assert!(
         batch(vec![
             start(1),
             TransportAction::Load {
                 cue: cue_id(2),
                 at: -1.0
             }
-        ]),
-        field("transport.load.at")
+        ])
+        .is_ok()
     );
     // The largest batch fits a frame and decodes; every per-cue kind is accepted.
     let most: Vec<_> = (0..MAX_BATCH_ACTIONS as u128).map(start).collect();
@@ -2293,6 +2701,10 @@ fn a_batch_is_refused_whole_unless_well_formed() {
         TransportAction::Load {
             cue: cue_id(7),
             at: 0.0,
+        },
+        TransportAction::Seek {
+            cue: cue_id(11),
+            position: 1.5,
         },
         TransportAction::Reset { cue: cue_id(8) },
         TransportAction::Preview { cue: cue_id(9) },
@@ -2403,6 +2815,13 @@ fn per_device_fields_are_optional_on_the_wire() {
     let mapping: PatchMappingEntry =
         serde_json::from_str(r#"{"patch":"00000000-0000-0000-0000-000000000070"}"#).unwrap();
     assert_eq!(mapping.resolution, None);
+    let meter: OutputMeter =
+        serde_json::from_str(r#"{"patch":"00000000-0000-0000-0000-000000000070","peaks":[0.5]}"#)
+            .unwrap();
+    assert!(
+        meter.cue_outputs.is_empty(),
+        "an older engine's meter has no cue outputs"
+    );
 }
 
 #[test]
@@ -2497,6 +2916,7 @@ fn progress_and_meters_are_sanitised_not_refused() {
         outputs: vec![OutputMeter {
             patch: patch_id(1),
             peaks: vec![peak, 0.5],
+            cue_outputs: vec![peak],
         }],
         cues: vec![CueMeter {
             cue: cue_id(1),
@@ -2509,7 +2929,8 @@ fn progress_and_meters_are_sanitised_not_refused() {
             ServerMessage::Meters {
                 outputs: vec![OutputMeter {
                     patch: patch_id(1),
-                    peaks: vec![0.0, 0.5]
+                    peaks: vec![0.0, 0.5],
+                    cue_outputs: vec![0.0],
                 }],
                 cues: vec![CueMeter {
                     cue: cue_id(1),
@@ -2639,6 +3060,20 @@ fn engine_actions_map_to_runtime_changes() {
             cue: c,
             played: false
         })
+    );
+    assert_eq!(
+        map(Action::PlaylistNextChanged {
+            group: c,
+            next: None
+        }),
+        Some(RuntimeChange::PlaylistNext {
+            group: c,
+            cue: None
+        })
+    );
+    assert_eq!(
+        map(Action::GoProtection { active: true }),
+        Some(RuntimeChange::GoProtection { active: true })
     );
     assert_eq!(
         map(Action::GroupWarningChanged {
@@ -2806,7 +3241,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 17;
+const ENGINE_PROBLEM_COUNT: usize = 23;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -2826,6 +3261,12 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::SlicesUnplayable { .. } => 14,
         CueProblem::NoStage => 15,
         CueProblem::StageMissing { .. } => 16,
+        CueProblem::NoPatch => 17,
+        CueProblem::NothingPlays => 18,
+        CueProblem::NoNewTarget => 19,
+        CueProblem::NewTargetMissing { .. } => 20,
+        CueProblem::NewTargetWrongKind { .. } => 21,
+        CueProblem::NewTargetUnnumbered { .. } => 22,
     }
 }
 
@@ -2848,6 +3289,12 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::SlicesUnplayable { .. } => 14,
         WireProblem::NoStage => 15,
         WireProblem::StageMissing { .. } => 16,
+        WireProblem::NoPatch => 17,
+        WireProblem::NothingPlays => 18,
+        WireProblem::NoNewTarget => 19,
+        WireProblem::NewTargetMissing { .. } => 20,
+        WireProblem::NewTargetWrongKind { .. } => 21,
+        WireProblem::NewTargetUnnumbered { .. } => 22,
     }
 }
 
@@ -3064,9 +3511,12 @@ fn all_warnings() -> Vec<WireWarning> {
         reason: WireGoIgnored::DoubleGo,
     });
     all.push(WireWarning::Notice {
+        patch: None,
         code: "media_damaged".into(),
         message: "intro.wav has a damaged tail".into(),
         cue: Some(c),
+        device: None,
+        count: None,
     });
     all
 }
@@ -3137,6 +3587,19 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
             WireProblem::TargetWrongKind { target: t },
         ),
         (CueProblem::NothingToFade, WireProblem::NothingToFade),
+        (CueProblem::NoNewTarget, WireProblem::NoNewTarget),
+        (
+            CueProblem::NewTargetMissing { target: t },
+            WireProblem::NewTargetMissing { target: t },
+        ),
+        (
+            CueProblem::NewTargetWrongKind { target: t },
+            WireProblem::NewTargetWrongKind { target: t },
+        ),
+        (
+            CueProblem::NewTargetUnnumbered { target: t },
+            WireProblem::NewTargetUnnumbered { target: t },
+        ),
         (CueProblem::NoMedia, WireProblem::NoMedia),
         (
             CueProblem::MediaMissing { media: media() },
@@ -3200,7 +3663,9 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
             },
         ),
         (CueProblem::StartedBroken, WireProblem::StartedBroken),
+        (CueProblem::NothingPlays, WireProblem::NothingPlays),
         (CueProblem::NoStage, WireProblem::NoStage),
+        (CueProblem::NoPatch, WireProblem::NoPatch),
         (
             CueProblem::StageMissing {
                 stage: openlab_core::StageId(uuid::Uuid::from_u128(7)),
@@ -3414,9 +3879,12 @@ fn preshow_report_sample() -> PreshowReport {
             },
         ],
         system: vec![WireWarning::Notice {
+            patch: None,
             code: "device_lost".into(),
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
+            device: Some("Scarlett 2i2".into()),
+            count: None,
         }],
     }
 }
@@ -3512,6 +3980,31 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
             add(&format!("warnings_{}", tag(&w)), warnings(w));
         }
     }
+    // A device notice names its device, so a client can list one entry per device.
+    add(
+        "warnings_notice_device_lost",
+        warnings(WireWarning::Notice {
+            patch: None,
+            code: "device_lost".into(),
+            message: "audio device \"Scarlett 2i2\" is lost".into(),
+            cue: None,
+            device: Some("Scarlett 2i2".into()),
+            count: None,
+        }),
+    );
+    // A repeating notice says how often (an output device's dropouts so far).
+    add(
+        "warnings_notice_audio_dropouts",
+        warnings(WireWarning::Notice {
+            patch: None,
+            code: "audio_dropouts".into(),
+            message: "audio device \"Scarlett 2i2\" dropped out 3 time(s): gaps in its sound"
+                .into(),
+            cue: None,
+            device: Some("Scarlett 2i2".into()),
+            count: Some(3),
+        }),
+    );
     for (_, r) in go_table() {
         let name = format!("warnings_go_ignored_{}", tag(&r));
         add(
@@ -3795,6 +4288,40 @@ fn property_commands() -> Vec<(String, Command)> {
         PatchProperty::ChannelCount { value: 6 },
         PatchProperty::Outputs {
             value: vec![patch_output(); 2],
+        },
+        PatchProperty::Crosspoint {
+            output: 0,
+            device_output: 3,
+            value: Some(-6.0),
+        },
+        PatchProperty::Crosspoints {
+            value: vec![
+                PatchCrosspoint {
+                    output: 0,
+                    device_output: 2,
+                    db: -6.0,
+                },
+                PatchCrosspoint {
+                    output: 1,
+                    device_output: 0,
+                    db: -120.0,
+                },
+            ],
+        },
+        PatchProperty::DeviceOutputLevel {
+            device_output: 2,
+            value: -10.0,
+        },
+        PatchProperty::DeviceOutputMute {
+            device_output: 3,
+            value: true,
+        },
+        PatchProperty::DeviceOutputs {
+            value: vec![DeviceOutputLevel {
+                device_output: 1,
+                level_db: -3.0,
+                mute: true,
+            }],
         },
     ];
     let network = [
@@ -4271,6 +4798,7 @@ fn arb_action() -> impl Strategy<Value = TransportAction> {
         arb_cue().prop_map(|cue| TransportAction::Pause { cue }),
         arb_cue().prop_map(|cue| TransportAction::Resume { cue }),
         (arb_cue(), arb_time()).prop_map(|(cue, at)| TransportAction::Load { cue, at }),
+        (arb_cue(), arb_time()).prop_map(|(cue, position)| TransportAction::Seek { cue, position }),
         arb_cue().prop_map(|cue| TransportAction::Reset { cue }),
         arb_cue().prop_map(|cue| TransportAction::TriggerReleased { cue }),
         arb_cue().prop_map(|cue| TransportAction::Preview { cue }),
@@ -4338,9 +4866,18 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::ListDevices),
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
+        Just(Request::CopyMedia),
         Just(Request::ListPatchMappings),
+        Just(Request::BackupKeep),
+        any::<u32>().prop_map(|count| Request::SetBackupKeep { count }),
+        Just(Request::OscState),
+        any::<u16>().prop_map(|port| Request::SetOscPort { port }),
+        any::<bool>().prop_map(|on| Request::SetStandBack { on }),
         Just(Request::ListDisplays),
         Just(Request::ListStageMappings),
+        any::<u128>().prop_map(|c| Request::SequenceSpan {
+            cue: CueId(uuid::Uuid::from_u128(c))
+        }),
         (any::<u128>(), proptest::option::of("[!-~]{1,40}")).prop_map(|(stage, display)| {
             Request::SetStageMapping {
                 stage: StageId(uuid::Uuid::from_u128(stage)),
@@ -4357,7 +4894,11 @@ fn arb_request() -> impl Strategy<Value = Request> {
         )
             .prop_map(|(patch, mapping)| Request::SetPatchMapping {
                 patch: PatchId(uuid::Uuid::from_u128(patch)),
-                mapping: mapping.map(|(device, channels)| PatchMapping { device, channels }),
+                mapping: mapping.map(|(device, channels)| PatchMapping {
+                    device,
+                    channels,
+                    system: false,
+                }),
             }),
         proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
@@ -4374,8 +4915,11 @@ fn arb_request() -> impl Strategy<Value = Request> {
                 buckets,
             }),
         (0..=MAX_ADVANCE_FRAMES).prop_map(|frames| Request::Advance { frames }),
-        Just(Request::LoseDevice),
-        Just(Request::RestoreDevice),
+        proptest::option::of(arb_text()).prop_map(|device| Request::LoseDevice { device }),
+        proptest::option::of(arb_text()).prop_map(|device| Request::RestoreDevice { device }),
+        (proptest::option::of(arb_text()), 1..=MAX_DROP_OUTS)
+            .prop_map(|(device, count)| Request::DropOut { device, count }),
+        arb_text().prop_map(|device| Request::SetDefaultDevice { device }),
     ]
 }
 
@@ -4419,13 +4963,19 @@ fn arb_command() -> impl Strategy<Value = Command> {
         (
             proptest::collection::vec(arb_cue(), 0..4),
             arb_time(),
-            arb_time()
+            arb_time(),
+            arb_text(),
+            arb_text()
         )
-            .prop_map(|(ids, start, increment)| Command::Renumber {
-                ids,
-                start,
-                increment
-            }),
+            .prop_map(
+                |(ids, start, increment, prefix, suffix)| Command::Renumber {
+                    ids,
+                    start,
+                    increment,
+                    prefix,
+                    suffix,
+                }
+            ),
     ]
 }
 

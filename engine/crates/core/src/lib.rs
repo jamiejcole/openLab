@@ -16,6 +16,7 @@ mod cue_engine;
 mod cue_index;
 mod history;
 mod limits;
+mod media_copy;
 mod media_path;
 mod model;
 mod network;
@@ -29,7 +30,11 @@ pub mod stage_link;
 mod tree;
 mod validate;
 mod video;
+mod video_geometry;
 pub mod video_probe;
+mod video_sound;
+mod video_timing;
+mod wall_clock;
 
 pub use backup::*;
 pub use changes::*;
@@ -43,6 +48,7 @@ pub use cue::*;
 pub use cue_engine::*;
 pub use cue_index::*;
 pub use history::*;
+pub use media_copy::*;
 pub use media_path::*;
 pub use model::*;
 pub use network::*;
@@ -54,6 +60,10 @@ pub use show_file::*;
 pub use tree::descendants;
 pub use validate::*;
 pub use video::*;
+pub use video_geometry::*;
+pub use video_sound::*;
+pub use video_timing::*;
+pub use wall_clock::*;
 
 /// Crate version, as set in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

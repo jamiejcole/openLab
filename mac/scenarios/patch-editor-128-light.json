@@ -1,5 +1,5 @@
 {
-  "about": "The patch editor of a patch given 128 cue outputs, light: every row is in the routing matrix (it scrolls), meters line up with the first 64 rows and the note says what is shown; then the editor and the settings table at their least sizes.",
+  "about": "The patch editor of a patch given 128 cue outputs, light: every row is in the routing matrix (it scrolls), every row has its meter; then the editor and the settings table at their least sizes.",
   "show": "Demo",
   "appearance": "light",
   "steps": [

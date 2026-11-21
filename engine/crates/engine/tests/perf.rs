@@ -133,6 +133,7 @@ fn scaled_workspace(k: u128) -> openlab_core::Workspace {
                 },
                 stop_target_when_done: i % 2 == 0,
                 mode: Default::default(),
+                geometry: Default::default(),
             },
         ));
     }
@@ -558,7 +559,67 @@ fn performance_budgets() {
     );
     watch_budget();
     two_doc_budgets(&path);
+    copy_budget(&path);
 }
+
+/// WS-04: copying every file of a 2,000-cue show into its show folder (on demand) costs the
+/// control thread no wake longer than [`COPY_WAKE_LIMIT`]: the wakes while the files are copied,
+/// the one that takes the copy's answer, and each wake after it that points the next part of the
+/// cues at their copies (a few hundred a wake, all one undo step) and takes up their files.
+fn copy_budget(path: &std::path::Path) {
+    let mut while_copying = Duration::MAX;
+    let mut applying = Duration::MAX;
+    for _ in 0..RUNS {
+        let text = read_text(path, MAX_SHOW_FILE_BYTES).unwrap();
+        let ws = load_show(&text).unwrap().workspace;
+        let mut c = config(&ws);
+        c.show_path = Some(path.to_path_buf());
+        c.copy.pacing.pause = Duration::ZERO;
+        let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+        s.settle_media();
+        let id = s.request_id();
+        s.send(ClientMessage::Request {
+            id,
+            request: openlab_core::protocol::Request::CopyMedia,
+        });
+        let mut longest = Duration::ZERO;
+        for _ in 0..10 {
+            let t = Instant::now();
+            s.tick();
+            longest = longest.max(t.elapsed());
+        }
+        while_copying = while_copying.min(longest);
+        let answer = s.next_copy_answer().expect("the copy answers");
+        let t = Instant::now();
+        s.deliver(answer);
+        let mut longest = t.elapsed();
+        let mut wakes = 0;
+        while s.control().copies_busy() > 0 {
+            let t = Instant::now();
+            s.tick();
+            longest = longest.max(t.elapsed());
+            wakes += 1;
+            assert!(wakes < 200, "the copy never ended");
+        }
+        // And the wake after the last part, which takes up its files.
+        let t = Instant::now();
+        s.tick();
+        longest = longest.max(t.elapsed());
+        applying = applying.min(longest);
+    }
+    eprintln!(
+        "copy media of a 2,000-cue show: wake while copying {while_copying:?}, longest wake applying it {applying:?} (limit {COPY_WAKE_LIMIT:?})"
+    );
+    assert!(
+        while_copying < COPY_WAKE_LIMIT,
+        "wake while copying {while_copying:?}"
+    );
+    assert!(applying < COPY_WAKE_LIMIT, "applying the copy {applying:?}");
+}
+
+/// The longest control wake a copy of media may cause: one audio block divided by [`HEADROOM`],
+/// as the doc open and Save As gates, so a copy finishing while cues play never makes a long wake.
+const COPY_WAKE_LIMIT: Duration = Duration::from_nanos(256 * 1_000_000_000 / 48_000 / 2);
 
 /// Runs of ten passes, the best taken: the shared Intel runner measured 78 ms, 179 ms and
 /// 207 ms on the same code, so a few runs can all land in a slow spell.
@@ -652,6 +713,7 @@ fn map(c: &mut openlab_engine::control::ControlConfig, ws: &openlab_core::Worksp
             openlab_core::PatchMapping {
                 device: "Offline".into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();
@@ -750,6 +812,7 @@ fn two_doc_budgets(one_doc_path: &std::path::Path) {
         two_doc_idle(one_doc_path, &second),
         two_doc_edits(one_doc_path, &second),
         install_and_remove(&second),
+        save_as_elsewhere(),
         shared_render(),
     ];
     let failed: Vec<String> = failures.into_iter().flatten().collect();
@@ -830,20 +893,94 @@ fn two_doc_edits(one_doc_path: &std::path::Path, second: &std::path::Path) -> Op
     (!failed.is_empty()).then(|| failed.join("; "))
 }
 
-/// Opening and closing a 2,000-cue doc while another plays: the control thread's part of each
-/// (the install of the parts the document worker built; the close) and the wake after it fit
-/// in one audio block ([`ARCH_BLOCK`], or the show's block if shorter) over [`HEADROOM`], and
-/// the playing doc's cue plays on without a late start.
-fn install_and_remove(second: &std::path::Path) -> Option<String> {
+/// The longest of the control wakes from now until the media watch share has nothing waiting:
+/// a doc opening or closing beside another has its new files taken up, or its keys let go of, a
+/// few hundred a wake, so each of those wakes counts, not only the first.
+fn longest_wake(s: &mut OfflineShow) -> Duration {
+    let mut longest = Duration::ZERO;
+    for _ in 0..20 {
+        let t = Instant::now();
+        s.control_mut().tick();
+        longest = longest.max(t.elapsed());
+        if s.control().watch_waiting() == 0 {
+            return longest;
+        }
+    }
+    panic!("the media watch share still has work waiting after 20 wakes");
+}
+
+/// Every Audio cue in `cues` names its file by name alone: relative to the show's folder, which
+/// holds the test's media and show files alike.
+fn relative_media(cues: &mut [Cue]) {
+    for c in cues {
+        match &mut c.kind {
+            CueKind::Audio { media: Some(m), .. } => {
+                let name = std::path::Path::new(m.as_str())
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap()
+                    .to_owned();
+                *m = openlab_core::MediaRef::new(name);
+            }
+            CueKind::Group { children, .. } => relative_media(children),
+            _ => {}
+        }
+    }
+}
+
+/// One open and close of the doc at `path` beside the playing one, each step's time kept in
+/// `took` (install, wakes after it, remove, wakes after it) if it is the shortest so far.
+fn install_remove_once(s: &mut OfflineShow, path: &std::path::Path, took: &mut [Duration]) {
     use openlab_engine::control::DocSource;
+    s.take_outbound();
+    let rid = s.request_id();
+    let (tx, _rx) = openlab_engine::control::reply_channel();
+    s.control_mut().open_doc(
+        DocSource::Open {
+            path: path.to_path_buf(),
+            recovery: None,
+        },
+        rid,
+        &tx,
+    );
+    let answer = s.next_doc_answer().expect("the document worker answers");
+    let t = Instant::now();
+    s.deliver(answer);
+    took[0] = took[0].min(t.elapsed());
+    took[1] = took[1].min(longest_wake(s));
+    let (_, doc) = s.control_mut().take_opened().pop().expect("opened");
+    s.settle_media();
+    s.run(BLOCK * 4);
+    let t = Instant::now();
+    s.control_mut().close_doc(doc, false).unwrap();
+    took[2] = took[2].min(t.elapsed());
+    took[3] = took[3].min(longest_wake(s));
+    s.settle_docs();
+    s.run(BLOCK * 4);
+}
+
+/// Opening and closing a 2,000-cue doc while another plays: the control thread's part of each
+/// (the install of the parts the document worker built; the close) and each wake after it
+/// while the media watch follows fit in one audio block ([`ARCH_BLOCK`], or the show's block if
+/// shorter) over [`HEADROOM`], and the playing doc's cue plays on without a late start. Once
+/// for a doc with files of its own, once for a copy of the playing show saved beside its media
+/// (relative keys), whose every file the watch has already (each is taken up in the wake after the install).
+fn install_and_remove(second: &std::path::Path) -> Option<String> {
     let block = Duration::from_secs_f64(secs(BLOCK));
     let limit = block.min(ARCH_BLOCK) / HEADROOM;
     // The first doc plays a long cue throughout.
     let long = wav(&dc(RATE as usize * 600, 0.25));
     let mut first = big_workspace();
     first.cue_lists[0].cues.push(audio(9_100_000, &long, 0));
+    let mut copy = first.clone();
+    copy.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(3));
+    copy.name = "copy".into();
+    // Saved beside its media, as most shows are: its keys are relative, not its files' paths.
+    relative_media(&mut copy.cue_lists[0].cues);
+    let copy_path = show_file(&copy);
     let mut c = config(&first);
     map(&mut c, &second_workspace());
+    map(&mut c, &copy);
     // The watch thread, as the engine runs it: in manual mode its own work (a path's volume,
     // its stat state) would be done on the control thread, which it never is live.
     c.watch.mode = openlab_engine::control::watch::WatchMode::Thread;
@@ -857,11 +994,15 @@ fn install_and_remove(second: &std::path::Path) -> Option<String> {
     assert!(playing(&s));
     let names = [
         "install",
-        "wake after install",
+        "wakes after install",
         "remove",
-        "wake after remove",
+        "wakes after remove",
+        "install (files watched already)",
+        "wakes after install (files watched already)",
+        "remove (files watched already)",
+        "wakes after remove (files watched already)",
     ];
-    let mut took = [Duration::MAX; 4];
+    let mut took = [Duration::MAX; 8];
     // Each step is timed once per run, so a shared runner's noise needs more runs than the
     // loops that time a thousand ticks; the budget is unchanged. Each step keeps its minimum
     // over up to 20 runs (the minima may come from different runs), and the loop ends as soon
@@ -870,36 +1011,127 @@ fn install_and_remove(second: &std::path::Path) -> Option<String> {
         if took.iter().all(|t| *t < limit) {
             break;
         }
-        s.take_outbound();
-        let rid = s.request_id();
-        let (tx, _rx) = openlab_engine::control::reply_channel();
-        s.control_mut().open_doc(
-            DocSource::Open {
-                path: second.to_path_buf(),
-                recovery: None,
-            },
-            rid,
-            &tx,
-        );
-        let answer = s.next_doc_answer().expect("the document worker answers");
-        let t = Instant::now();
-        s.deliver(answer);
-        took[0] = took[0].min(t.elapsed());
-        let t = Instant::now();
-        s.control_mut().tick();
-        took[1] = took[1].min(t.elapsed());
-        let (_, doc) = s.control_mut().take_opened().pop().expect("opened");
-        s.settle_media();
-        s.run(BLOCK * 4);
-        let t = Instant::now();
-        s.control_mut().close_doc(doc, false).unwrap();
-        took[2] = took[2].min(t.elapsed());
-        let t = Instant::now();
-        s.control_mut().tick();
-        took[3] = took[3].min(t.elapsed());
-        s.settle_docs();
-        s.run(BLOCK * 4);
+        install_remove_once(&mut s, second, &mut took[..4]);
+        install_remove_once(&mut s, &copy_path, &mut took[4..]);
         assert!(playing(&s), "the first doc's cue plays on");
+    }
+    let late = warnings(&s.take_outbound())
+        .iter()
+        .any(|w| matches!(w, openlab_core::protocol::WireWarning::LateStart { .. }));
+    assert!(!late, "a late start in the playing doc");
+    assert_eq!(s.stalls(), 0);
+    let mut failed = Vec::new();
+    for (name, took) in names.iter().zip(took) {
+        eprintln!("2,000-cue doc {name}: {took:?} (limit {limit:?})");
+        if took >= limit {
+            failed.push(format!("{name}: {took:?}"));
+        }
+    }
+    (!failed.is_empty()).then(|| failed.join("; "))
+}
+
+/// One Save As of doc `doc` to `to`: the control thread's handling of the request, and the
+/// longest wake from then until the save is answered and the media watch share has nothing
+/// waiting (the doc's files all taken up from the new folder), each kept in `took` if it is the
+/// shortest so far. Probe answers that come meanwhile are handled between the wakes.
+fn save_as_once(
+    s: &mut OfflineShow,
+    doc: openlab_core::protocol::DocId,
+    to: &std::path::Path,
+    took: &mut [Duration],
+) {
+    use openlab_core::protocol::Request;
+    s.take_outbound();
+    let (tx, mut rx) = openlab_engine::control::reply_channel();
+    let request = ClientMessage::Request {
+        id: s.request_id(),
+        request: Request::SaveAs {
+            path: to.to_string_lossy().into_owned(),
+        },
+    };
+    let t = Instant::now();
+    s.control_mut().handle_doc(doc, request, &tx);
+    took[0] = took[0].min(t.elapsed());
+    let mut longest = Duration::ZERO;
+    let began = Instant::now();
+    loop {
+        let t = Instant::now();
+        s.control_mut().tick();
+        longest = longest.max(t.elapsed());
+        if s.control().docs_busy() == 0 && s.control().watch_waiting() == 0 {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(30),
+            "the Save As never settled"
+        );
+        s.wait_step();
+    }
+    took[1] = took[1].min(longest);
+    let replies: Vec<ServerMessage> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    assert_eq!(s.control().doc(doc).unwrap().show_path(), Some(to));
+    s.settle_media();
+    s.run(BLOCK * 4);
+}
+
+/// Save As of a 2,000-cue show into another folder while another doc on the same files plays:
+/// the control thread's handling of the request and every wake after it until the media watch
+/// share has taken up its files from the new folder fit in one audio block ([`ARCH_BLOCK`], or
+/// the show's block if shorter) over [`HEADROOM`], as [`install_and_remove`]'s steps do, and the playing cue plays on without a late start. The show is saved beside its
+/// media (relative references, every one re-spelled by each move) and moved back and forth
+/// between its media folder and another, so every Save As moves it.
+fn save_as_elsewhere() -> Option<String> {
+    let block = Duration::from_secs_f64(secs(BLOCK));
+    let limit = block.min(ARCH_BLOCK) / HEADROOM;
+    let long = wav(&dc(RATE as usize * 600, 0.25));
+    let mut first = big_workspace();
+    first.cue_lists[0].cues.push(audio(9_100_000, &long, 0));
+    let mut copy = first.clone();
+    copy.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(3));
+    copy.name = "copy".into();
+    relative_media(&mut copy.cue_lists[0].cues);
+    let home = show_file(&copy);
+    let support = tempfile::tempdir().unwrap();
+    let away = tempfile::tempdir().unwrap();
+    let away = away.path().join("moved.openlab");
+    let mut c = config(&first);
+    map(&mut c, &copy);
+    c.app_dirs = Some(openlab_engine::persist::AppDirs::new(support.path()));
+    c.watch.mode = openlab_engine::control::watch::WatchMode::Thread;
+    let mut s = OfflineShow::new(first, mixer_config(), c).unwrap();
+    s.settle_media();
+    let doc = s
+        .open_doc(openlab_engine::control::DocSource::Open {
+            path: home.clone(),
+            recovery: None,
+        })
+        .unwrap();
+    s.settle_media();
+    s.transport(openlab_core::protocol::TransportAction::Start { cue: id(9_100_000) });
+    s.run(BLOCK * 4);
+    let playing = |s: &OfflineShow| {
+        s.control().engine().state(id(9_100_000)) == openlab_core::CueState::Running
+    };
+    assert!(playing(&s));
+    let names = ["save as request", "wakes after save as"];
+    let mut took = [Duration::MAX; 2];
+    for _ in 0..RUNS * 4 {
+        if took.iter().all(|t| *t < limit) {
+            break;
+        }
+        save_as_once(&mut s, doc, &away, &mut took);
+        save_as_once(&mut s, doc, &home, &mut took);
+        assert!(playing(&s), "the other doc's cue plays on");
     }
     let late = warnings(&s.take_outbound())
         .iter()

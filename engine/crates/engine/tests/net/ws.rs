@@ -86,6 +86,8 @@ struct Control {
     logs: Mutex<Vec<String>>,
     /// `Inbox::Trigger` (source, detail) pairs, in arrival order.
     triggers: Mutex<Vec<(String, String)>>,
+    /// `Inbox::AppsGone` messages from the server.
+    apps_gone: AtomicU64,
     /// While set, the client's own snapshot requests are answered (at the revision of the
     /// moment they arrive) only when the test calls [`Control::release_replies`].
     hold_snapshots: AtomicBool,
@@ -119,6 +121,7 @@ fn snapshot(revision: u64) -> Snapshot {
         playheads: vec![],
         previewing: vec![],
         played: vec![],
+        playlist_next: vec![],
         warnings: vec![],
         media_durations: vec![],
     }
@@ -149,6 +152,10 @@ fn control_thread(rx: &Receiver<Inbox>, out: &Out, c: &Control) {
             }
             Inbox::Trigger { source, detail } => {
                 c.triggers.lock().unwrap().push((source, detail));
+                continue;
+            }
+            Inbox::AppsGone => {
+                c.apps_gone.fetch_add(1, Ordering::SeqCst);
                 continue;
             }
             _ => break,
@@ -993,19 +1000,27 @@ async fn goodbye_ends_the_session_and_only_shutdown_reaches_the_control_loop() {
 
 // --- keepalive ------------------------------------------------------------------------------
 
+/// Each ping is sent when the test says so, and on the clock every one of them comes later than
+/// `dead_after` since the client was last heard (as after the engine was starved or suspended).
+/// Only pings left unanswered may count against a client, and this one answers each.
 #[tokio::test]
 async fn the_server_pings_and_a_reading_client_stays_connected() {
+    let ping = Arc::new(tokio::sync::Notify::new());
     let f = fixture_with(ServerConfig {
-        ping_interval: Duration::from_millis(40),
-        dead_after: Duration::from_millis(400),
+        ping_interval: Duration::from_nanos(1),
+        // Ten pings: more than the server can send before it reads an answer already on its
+        // socket, fewer than the test asks for.
+        dead_after: Duration::from_nanos(10),
+        ping_on: Some(ping.clone()),
         ..ServerConfig::default()
     });
     let mut c = f.client().await;
     guard("waiting for 15 pings", async {
-        let mut pings = 0;
-        while pings < 15 {
+        for _ in 0..15 {
+            ping.notify_one();
+            // Reading the next frame also writes the pong for the ping before.
             match c.next().await {
-                Some(Ok(Message::Ping(_))) => pings += 1,
+                Some(Ok(Message::Ping(_))) => {}
                 other => panic!("{other:?}"),
             }
         }
@@ -1014,6 +1029,7 @@ async fn the_server_pings_and_a_reading_client_stays_connected() {
     // Still alive: it answers requests.
     send(&mut c, &go(1)).await;
     wait_result(&mut c, 1).await;
+    assert_eq!(f.logs_with("unanswered"), 0, "{:?}", f.control.logs);
 }
 
 #[tokio::test]
@@ -1040,6 +1056,8 @@ async fn a_client_that_answers_nothing_is_dropped() {
         }
     })
     .await;
+    // The show log says why the connection went.
+    f.wait_logs("left 4 pings unanswered", 1).await;
 }
 
 #[tokio::test]
@@ -1503,6 +1521,40 @@ async fn an_app_connection_lost_without_goodbye_relaunches_the_app() {
     assert_eq!(fix.logs_with("relaunching the app"), 1);
 }
 
+/// #648 flow: the app quitting (or crashing) closes its monitor windows. The control loop is
+/// told the app is gone once its last app connection ends, said goodbye or not; a window's
+/// connection ending, or one of two app connections, tells it nothing.
+#[tokio::test]
+async fn the_last_app_connection_ending_tells_the_control_loop_the_app_is_gone() {
+    let fix = fixture();
+    let gone = |fix: &Fix| fix.control.apps_gone.load(Ordering::SeqCst);
+    let first = fix.app_client().await;
+    let second = fix.app_client().await;
+    drop(fix.client().await);
+    drop(first);
+    fix.sync().await;
+    assert_eq!(gone(&fix), 0, "a window and one of two app connections");
+    drop(second);
+    guard("the app gone", async {
+        while gone(&fix) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    fix.sync().await;
+    assert_eq!(gone(&fix), 1, "once, for the last");
+    // A quit says goodbye first: the same.
+    let mut c = fix.app_client().await;
+    send(&mut c, &ClientMessage::Goodbye { shutdown: false }).await;
+    expect_closed(&mut c).await;
+    guard("the app gone again", async {
+        while gone(&fix) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
 /// An app connection lost while the app's process still runs (reconnecting slowly, or
 /// hung) does not relaunch it: `open -b` would only bring it to the front mid-show. Once the
 /// process is gone the app is relaunched.
@@ -1608,4 +1660,31 @@ async fn an_app_lost_while_the_engine_shuts_down_is_not_relaunched() {
     assert_eq!(fix.logs_with("closed without goodbye"), 1, "only the first");
     assert_eq!(fix.logs_with("relaunching the app"), 0);
     assert!(!launched.load(Ordering::SeqCst));
+}
+
+/// A `goodbye { shutdown: true }` sent behind requests whose replies are still being written
+/// reaches the control loop when the client waits for the server to close the connection (the
+/// client contract in docs/protocol.md). A client that closes at once under the replies resets the
+/// connection, which can throw the goodbye away unread; that half is the client's to avoid.
+#[tokio::test]
+async fn a_shutdown_goodbye_behind_replies_reaches_the_control_loop_when_the_client_waits_for_the_close()
+ {
+    for attempt in 0..10 {
+        let f = fixture();
+        let mut c = f.client().await;
+        for n in 1..=20 {
+            send(&mut c, &go(n)).await;
+        }
+        send(&mut c, &ClientMessage::Goodbye { shutdown: true }).await;
+        expect_closed(&mut c).await;
+        drop(c);
+        // The stand-in records the goodbye on its thread; a round trip orders after it.
+        let mut e = f.client().await;
+        send(&mut e, &go(100)).await;
+        wait_result(&mut e, 100).await;
+        assert!(
+            f.control.shutdown.load(Ordering::SeqCst),
+            "attempt {attempt}"
+        );
+    }
 }

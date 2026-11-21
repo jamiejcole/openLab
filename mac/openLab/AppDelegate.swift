@@ -72,7 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return launch.terminate()
         }
         // The launcher shows until the engine reports a workspace.
+        #if DEBUG
+            if let recents = EngineMode.testRecents() { appController.recentURLs = { recents } }
+        #endif
         appController.beginLaunch()
+        appController.bindLauncher(to: engine.1)
         appController.installKeyMonitor()
         _ = alarmController
         // The first time the engine is up: after its recovery check was asked, do what the launch
@@ -210,16 +214,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
     @MainActor @objc func movePlayheadNext(_ sender: Any?) { appController.movePlayheadAdjacent(by: 1) }
     @MainActor @objc func movePlayheadPrevious(_ sender: Any?) { appController.movePlayheadAdjacent(by: -1) }
+    @MainActor @objc func movePlayheadNextSequence(_ sender: Any?) {
+        appController.frontController?.cueList.movePlayheadBySequence(1)
+    }
+    @MainActor @objc func movePlayheadPreviousSequence(_ sender: Any?) {
+        appController.frontController?.cueList.movePlayheadBySequence(-1)
+    }
+    @MainActor @objc func toggleSidebarTab(_ sender: Any?) { appController.frontController?.toggleSidebarTab() }
+    @MainActor @objc func toggleWorkspaceFullScreen(_ sender: Any?) {
+        appController.frontController?.window?.toggleFullScreen(nil)
+    }
+    @MainActor @objc func showWorkspaceInFinder(_ sender: Any?) { appController.showFrontWorkspaceInFinder() }
+    @MainActor @objc func copyMediaIntoShowFolder(_ sender: Any?) {
+        appController.frontController?.copyMediaIntoShowFolder()
+    }
+    @MainActor @objc func pasteLevels(_ sender: Any?) { appController.frontController?.pasteLevels() }
     @MainActor @objc func selectNextInspectorTab(_ sender: Any?) { appController.selectAdjacentInspectorTab(by: 1) }
     @MainActor @objc func selectPreviousInspectorTab(_ sender: Any?) {
         appController.selectAdjacentInspectorTab(by: -1)
     }
-    @MainActor @objc func loadToTime(_ sender: Any?) { appController.frontController?.promptLoadToTime() }
+    @MainActor @objc func loadToTime(_ sender: Any?) { appController.frontController?.toggleLoadToTime() }
     @MainActor @objc func revealTargetFile(_ sender: Any?) {
         appController.frontController?.cueList.revealSelectedTarget()
     }
-    @MainActor @objc func showWarnings(_ sender: Any?) { appController.frontController?.showWarnings() }
     @MainActor @objc func jumpToTargets(_ sender: Any?) { appController.frontController?.jumpToTargets() }
+    @MainActor @objc func showAbout(_ sender: Any?) { appController.aboutWindow.showWindow(nil) }
     @MainActor @objc func showPreferences(_ sender: Any?) {
         appController.preferencesWindow.reload()
         appController.preferencesWindow.showWindow(nil)
@@ -245,11 +264,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    @MainActor @objc func showLog(_ sender: Any?) { appController.showLog() }
     @MainActor @objc func revealCrashReports(_ sender: Any?) { appController.revealCrashReports() }
     @MainActor @objc func showWorkspaceSettings(_ sender: Any?) { appController.frontController?.showSettings() }
+    @MainActor @objc func showWorkspaceSettingsPage(_ sender: NSMenuItem) {
+        let page = (sender.representedObject as? String).flatMap(SettingsPage.init)
+        appController.frontController?.showSettings(page: page)
+    }
     @MainActor @objc func showOverrideControls(_ sender: Any?) { appController.showOverrideControls() }
-    @MainActor @objc func showPreshowCheck(_ sender: Any?) { appController.frontController?.showPreshowCheck() }
+    @MainActor @objc func showWorkspaceStatus(_ sender: Any?) { appController.frontController?.showWorkspaceStatus() }
 
     @MainActor @objc func findMissingFiles(_ sender: Any?) {
         guard let store = appController.frontController?.store else { return }
@@ -286,16 +308,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             // Show Mode has taken the toolbar and inspector away (SM-01): their items wait.
             return !(front.isShowMode && WorkspaceWindowController.hiddenInShowMode.contains(area))
         case #selector(selectCue(_:))?, #selector(movePlayheadToCue(_:))?, #selector(movePlayheadNext(_:))?,
-            #selector(movePlayheadPrevious(_:))?:
+            #selector(movePlayheadPrevious(_:))?, #selector(movePlayheadNextSequence(_:))?,
+            #selector(movePlayheadPreviousSequence(_:))?:
             return appController.frontController != nil && !appController.isTextEditing()
+        case #selector(toggleSidebarTab(_:))?: return appController.frontController != nil
+        case #selector(toggleWorkspaceFullScreen(_:))?:
+            guard let window = appController.frontController?.window else { return false }
+            item.title = loc(
+                window.styleMask.contains(.fullScreen) ? "menu.view.exitFullScreen" : "menu.view.enterFullScreen")
+            return true
+        case #selector(showWorkspaceInFinder(_:))?: return appController.canShowFrontWorkspaceInFinder
+        case #selector(copyMediaIntoShowFolder(_:))?: return appController.frontController?.canCopyMedia ?? false
+        case #selector(pasteLevels(_:))?:
+            return textEditor == nil && (appController.frontController?.canPasteLevels ?? false)
         case #selector(selectNextInspectorTab(_:))?, #selector(selectPreviousInspectorTab(_:))?:
             // Cmd-Left / Right move the insertion point of a text field being edited.
             guard let front = appController.frontController else { return false }
             return front.isVisible(.inspector) && !appController.isTextEditing()
         case #selector(loadToTime(_:))?:
-            // An edit-time tool: off in Show Mode, as in QLab.
-            return appController.frontController.map { !$0.isShowMode && !$0.cueList.selectedIDs().isEmpty } ?? false
-        case #selector(showWarnings(_:))?: return appController.frontController != nil  // views only: Show Mode too
+            // An operator's tool: on in Show Mode too (QLab manual p. 149); it cycles the bar.
+            return appController.frontController != nil
         case #selector(jumpToTargets(_:))?:
             // Not while a text field is edited: the jump would take its focus.
             return (appController.frontController?.canJumpToTargets ?? false) && !appController.isTextEditing()
@@ -323,9 +355,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(saveWorkspace(_:))?, #selector(saveWorkspaceAs(_:))?:
             return appController.canSaveFront
         case #selector(recoverAutosaves(_:))?: return engineSession.connectionState == .connected
-        case #selector(showLog(_:))?: return appController.frontController != nil
-        case #selector(showWorkspaceSettings(_:))?: return appController.frontController != nil
-        case #selector(showPreshowCheck(_:))?: return appController.frontController?.canRunPreshowCheck ?? false
+        case #selector(showWorkspaceSettings(_:))?, #selector(showWorkspaceSettingsPage(_:))?:
+            return appController.frontController != nil
+        case #selector(showWorkspaceStatus(_:))?: return appController.frontController != nil  // Show Mode too
         default: break
         }
         guard let raw = item.representedObject as? String, let command = TransportCommand(rawValue: raw) else {

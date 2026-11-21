@@ -880,12 +880,14 @@ final class EngineCrashFlowTests: XCTestCase {
     /// The app with Hamlet (the demo show, a cue playing and an unsaved edit) and A (an empty show)
     /// open. `before`: what happens in the folder before the app starts its engine.
     private func launch(
-        hidingFirstRun: Bool = false, firstRunPort: UInt16? = nil, launchDefaults: UserDefaults? = nil
+        hidingFirstRun: Bool = false, firstRunPort: UInt16? = nil, launchDefaults: UserDefaults? = nil,
+        displays: String? = nil
     ) async throws {
         let support = runs.support
         processes = SystemEngineProcesses(
             infoURL: runs.infoURL, watchStderr: false,
-            arguments: TestEngineOptions(clock: .stepped, appSupport: support).engineArguments, watchStdin: true)
+            arguments: TestEngineOptions(clock: .stepped, appSupport: support, displays: displays).engineArguments,
+            watchStdin: true)
         let supervised: EngineProcesses =
             hidingFirstRun ? HidesFirstRunFile(processes, closedPort: firstRunPort) : processes
         hiding = supervised as? HidesFirstRunFile
@@ -913,6 +915,9 @@ final class EngineCrashFlowTests: XCTestCase {
         // engine.json appears once the engine is up: the reconnect backoff is fired until then.
         let up = await pump { session.connectionState == .connected }
         XCTAssertTrue(up, "the supervisor started the engine and the app reached it")
+        // The tests that follow ask for opens themselves, once connected, and run the launch choice
+        // (if any) themselves: nothing waits for it.
+        app.awaitingLaunch = false
     }
 
     private func openShows() async throws {
@@ -966,6 +971,7 @@ final class EngineCrashFlowTests: XCTestCase {
             _ = await eventually { !processes.isEngine(info.pid) }
         }
         runs?.endAll()
+        (app, alarm, supervisor, presenter, delegate) = (nil, nil, nil, nil, nil)
     }
 
     private func pump(_ condition: @MainActor () -> Bool) async -> Bool {
@@ -1043,9 +1049,79 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertTrue(alerts.log.isEmpty)
     }
 
+    /// VID-12: a stage with its black up, the engine killed and relaunched by the app: the output
+    /// display shows black, never the desktop, from the kill on, through the relaunch (which
+    /// reopens the workspace with the stage's black down) until Esc (the app's backstop;
+    /// BlackBackstopTests for the rest).
+    func testAKeepBlackStageShowsBlackNeverTheDesktopWhileTheEngineIsKilledAndRelaunched() async throws {
+        try await launch(displays: BlackBackstopTests.displays)
+        app.backstop.readDisplays = { BlackBackstopTests.virtual }
+        app.backstop.displaysChanged()
+        let session = app.session
+        await assertEventually("the stage host listed its displays") {
+            guard case .success(let ok) = await session.appClient.send({ .request(id: $0, .listDisplays) }),
+                case .displays(let list, _)? = ok.data
+            else { return false }
+            return list.count == 2
+        }
+        _ = await session.open(path: try runs.show("Video", named: "Cyc"))
+        await assertEventually { session.stores.values.first?.model != nil }
+        let store = try XCTUnwrap(session.stores.values.first)
+        let stage: ModelID = "00000000-0000-0000-0000-0000000000f1"
+        guard case .success = await store.setStageMapping(stage, display: "V1"),
+            case .success = await store.send(
+                command: .setStage(stage, .object(["type": .string("keep_black"), "value": .bool(true)]))),
+            case .success = await store.save(),
+            // A picture shown on it (the test card): its black is up from then on.
+            case .success = await store.client.send({ .request(id: $0, .stageTestCard(stage: stage, frame: 1)) })
+        else { return XCTFail("the stage was not set up") }
+        let shown: @MainActor () -> Bool = {
+            store.videoOutputs.stages.first { $0.stage == stage }?.state?.state == "shown"
+        }
+        // `video_outputs` pushes go at most every 100 ms of the stepped clock.
+        let up = await eventually {
+            try? await self.advance(0.11)
+            return shown() && self.app.backstop.windows["V1"] != nil
+        }
+        XCTAssertTrue(up, "the stage is up black, the backstop under it")
+        let window = try XCTUnwrap(app.backstop.windows["V1"])
+        XCTAssertTrue(window.isVisible)
+        XCTAssertEqual(window.frame, BlackBackstopTests.v1Frame)
+
+        var uncovered = false
+        let covered: @MainActor () -> Void = {
+            if self.app.backstop.windows["V1"] !== window || !window.isVisible { uncovered = true }
+        }
+        try await crash()
+        covered()
+        let back = await pump {
+            covered()
+            return self.presenter.detail.contains(loc("engine.alarm.back"))
+        }
+        XCTAssertTrue(back, "a new engine reattached the workspace")
+        // The new engine opened the workspace with the stage's black down (no picture played on it
+        // there yet): the app carries the black through, so the display never shows the desktop.
+        let told = await eventually {
+            covered()
+            try? await self.advance(0.11)
+            let entry = store.videoOutputs.stages.first { $0.stage == stage }
+            return entry?.state?.state == "hidden" && entry?.panicked == true
+        }
+        XCTAssertTrue(told, "the new engine's stage host has the stage hidden")
+        await settle()
+        covered()
+        XCTAssertFalse(uncovered, "the backstop stayed up from the kill on, through the relaunch")
+        XCTAssertTrue(app.backstop.windows["V1"] === window && window.isVisible)
+        // Esc takes it away.
+        app.beep = {}
+        _ = await app.panicAll()
+        XCTAssertNil(app.backstop.windows["V1"])
+        XCTAssertFalse(window.isVisible)
+    }
+
     /// The output override lives in the engine only: after a crash and restart the app follows the
-    /// new engine's status (the override is off again), its panel and badge with it.
-    func testAnEngineRestartTheAppSurvivesLeavesPanelAndBadgeMatchingTheNewEngine() async throws {
+    /// new engine's status (the override is off again), its panel with it.
+    func testAnEngineRestartTheAppSurvivesLeavesThePanelMatchingTheNewEngine() async throws {
         try await launch()
         try await openShows()
         let hamlet = try XCTUnwrap(hamletStore)
@@ -1054,18 +1130,18 @@ final class EngineCrashFlowTests: XCTestCase {
         _ = await app.session.setOutputOverrides(networkDisabled: true)
         let shown = await eventually {
             try? await self.advance(0.3)
-            return !wc.footer.overrideBadge.isHidden && self.app.overrides.networkSwitch.state == .off
+            return self.app.overrides.networkSwitch.state == .off
         }
-        XCTAssertTrue(shown, "the badge and the switch follow the engine")
+        XCTAssertTrue(shown, "the switch follows the engine")
         try await crash()
         let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }
         XCTAssertTrue(back)
         let matched = await eventually {
             try? await self.advance(0.3)
-            return wc.footer.overrideBadge.isHidden && self.app.overrides.networkSwitch.state == .on
+            return self.app.overrides.networkSwitch.state == .on
                 && wc.store.status != nil
         }
-        XCTAssertTrue(matched, "the new engine has no override, so neither badge nor switch shows one")
+        XCTAssertTrue(matched, "the new engine has no override, so the switch shows none")
     }
 
     /// An unclean exit before this launch (the last engine was killed with an untitled workspace
@@ -1207,8 +1283,9 @@ final class EngineCrashFlowTests: XCTestCase {
         // inspector, locked editing, and the same cue standing by as the editable copy shows.
         XCTAssertEqual(locked.footer.modeSwitch.selectedSegment, 1)
         XCTAssertEqual(editable.footer.modeSwitch.selectedSegment, 0)
-        XCTAssertEqual(locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode"))
-        XCTAssertEqual(editable.window?.title, "Saved In Edit Mode")
+        XCTAssertEqual(
+            locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode \u{2014} Main"))
+        XCTAssertEqual(editable.window?.title, "Saved In Edit Mode \u{2014} Main")
         XCTAssertTrue(locked.cueToolbar.isHidden)
         XCTAssertFalse(locked.isVisible(.inspector))
         XCTAssertFalse(editable.cueToolbar.isHidden)
@@ -1250,7 +1327,7 @@ final class EngineCrashFlowTests: XCTestCase {
         let ok = await eventually {
             guard direct.state == .connected else { return false }
             _ = await direct.send({ .request(id: $0, .advance(frames: 480)) })
-            return self.tap.heldCount >= 1
+            return self.tap.heldResults(of: \.opensADoc) >= 1
         }
         XCTAssertTrue(ok, "the new engine answered the first reopen")
     }
@@ -1766,7 +1843,7 @@ final class EngineCrashFlowTests: XCTestCase {
     /// The app started as the system starts it: the delegate's launch, on a real engine run (an
     /// engine already running is attached to), until the launch choice has been carried out.
     /// `opening`: show files the system hands over as it starts the app (a double-click in Finder).
-    private func startApp(opening: [URL] = []) async throws {
+    private func startApp(opening: [URL] = [], duringStart: (() -> Void)? = nil) async throws {
         let support = runs.support
         processes = SystemEngineProcesses(
             infoURL: runs.infoURL, watchStderr: false,
@@ -1789,6 +1866,8 @@ final class EngineCrashFlowTests: XCTestCase {
         delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
         if !opening.isEmpty { delegate.application(NSApplication.shared, open: opening) }
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        // What the operator does before the engine has connected.
+        duringStart?()
         let wanted = LaunchPreferences(defaults: prefs).behavior == .launcher
         XCTAssertEqual(launcherShown, wanted, "the launcher shows at once only when it is the choice")
         let up = await pump { session.connectionState == .connected && !self.app.launching }
@@ -1824,6 +1903,114 @@ final class EngineCrashFlowTests: XCTestCase {
         try await startApp()
         XCTAssertTrue(launcherShown)
         XCTAssertTrue(app.allWindows.isEmpty)
+    }
+
+    /// Checklist: No workspace open, three recent shows, launch preference "show the launcher" → app
+    /// starts → the launcher lists the three shows newest first (name plus folder), with New and Open
+    /// buttons and the app version; nothing else is open.
+    func testTheLauncherAtStartListsThreeRecentsNewestFirstWithNewOpenAndTheVersion() async throws {
+        makePrefs(.launcher)
+        let urls = ["Hamlet", "Lear", "Macbeth"].map { URL(fileURLWithPath: "/Shows/Season/\($0).openlab") }
+        try await startApp {
+            self.app.recentURLs = { urls }
+            self.app.recentExists = { _ in true }
+        }
+        XCTAssertTrue(launcherShown)
+        XCTAssertTrue(app.allWindows.isEmpty, "nothing else is open")
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Hamlet", "Lear", "Macbeth"])
+        let root = try XCTUnwrap(app.launcher.window?.contentView)
+        let table = app.launcher.recentsTable
+        for (i, name) in ["Hamlet", "Lear", "Macbeth"].enumerated() {
+            let cell = try XCTUnwrap(table.view(atColumn: 0, row: i, makeIfNecessary: true))
+            XCTAssertEqual(launcherTexts(cell), [name, "/Shows/Season"])
+        }
+        let shown = launcherTexts(root)
+        XCTAssertTrue(shown.contains { $0.hasPrefix(loc("launcher.new")) })
+        XCTAssertTrue(shown.contains { $0.hasPrefix(loc("launcher.open")) })
+        XCTAssertTrue(shown.contains(String(format: loc("launcher.version"), LauncherWindowController.version)))
+    }
+
+    /// Checklist: App just started, engine still starting → the launcher is already visible; New, Open
+    /// and recents show a clear "starting" state (disabled with a visible reason); once the engine is
+    /// ready they become usable with no further action; a click made while starting is not lost or
+    /// doubled.
+    func testTheLauncherIsVisibleWhileTheEngineStartsDisabledWithAReasonThenUsable() async throws {
+        makePrefs(.launcher)
+        let url = URL(fileURLWithPath: try runs.show("Demo", named: "Early"))
+        var seen: [String] = []
+        var disabled = false
+        try await startApp {
+            self.app.recentURLs = { [url] }
+            self.app.reloadLauncher()
+            XCTAssertTrue(self.launcherShown, "visible before the engine answers")
+            let launcher = self.app.launcher
+            let root = launcher.window?.contentView ?? NSView()
+            seen = launcherTexts(root)
+            disabled =
+                [AX.launcherNew, AX.launcherOpen].allSatisfy { id in
+                    (self.view(id, in: root) as? NSButton)?.isEnabled == false
+                } && !launcher.recentsTable.isEnabled
+            // Return on the list and a click on New do nothing yet.
+            launcher.openSelected()
+            (self.view(AX.launcherNew, in: root) as? NSButton)?.performClick(nil)
+        }
+        XCTAssertTrue(seen.contains(loc("launcher.starting")), "\(seen)")
+        XCTAssertTrue(seen.contains(loc("launcher.starting.detail")))
+        XCTAssertTrue(disabled)
+        await settle()
+        XCTAssertTrue(app.allWindows.isEmpty, "the starting clicks did nothing: not queued and doubled later")
+        XCTAssertEqual(app.launcher.engineState, .ready)
+        let root = try XCTUnwrap(app.launcher.window?.contentView)
+        XCTAssertEqual((view(AX.launcherNew, in: root) as? NSButton)?.isEnabled, true)
+        XCTAssertEqual((view(AX.launcherOpen, in: root) as? NSButton)?.isEnabled, true)
+        XCTAssertTrue(app.launcher.recentsTable.isEnabled)
+        XCTAssertFalse(launcherTexts(root).contains(loc("launcher.starting")))
+        (view(AX.launcherNew, in: root) as? NSButton)?.performClick(nil)
+        await assertEventually { self.app.allWindows.count == 1 }
+        await settle()
+        XCTAssertEqual(app.allWindows.count, 1, "one workspace")
+    }
+
+    /// Checklist: Engine fails to start → the launcher says so plainly and what to do next instead of
+    /// staying blank or showing an enabled-looking New.
+    func testTheLauncherSaysThePlainReasonWhenTheEngineDoesNotStartAndRecoversWhenItAnswers() async throws {
+        makePrefs(.launcher)
+        try await startApp()
+        let supervisor = try XCTUnwrap(supervisor)
+        let launcher = app.launcher
+        let root = try XCTUnwrap(launcher.window?.contentView)
+        // Each reason is shown as the supervisor words it, with no advice added on top: the
+        // crash-loop text says openLab tries again, the unkillable one says to restart the
+        // computer, and a spawn error says to quit and reopen.
+        let reasons = [
+            loc("engine.alarm.crashLoop"), loc("engine.alarm.unkillable"),
+            String(format: loc("engine.alarm.spawnFailed"), "2"),
+        ]
+        for reason in reasons {
+            supervisor.alarms.send(.cannotStart(reason))
+            let shown = launcherTexts(root)
+            XCTAssertTrue(shown.contains(loc("launcher.failed")))
+            XCTAssertTrue(shown.contains(reason), "\(shown)")
+            let advice = loc("engine.alarm.spawnFailed").components(separatedBy: ". ").last ?? "-"
+            XCTAssertEqual(
+                shown.contains { $0.contains(advice) }, reason.contains(advice), "advice only where it fits: \(reason)")
+            for id in [AX.launcherNew, AX.launcherOpen] {
+                XCTAssertEqual((view(id, in: root) as? NSButton)?.isEnabled, false, id)
+            }
+            XCTAssertFalse(launcher.recentsTable.isEnabled)
+        }
+        // An engine that is being replaced reads as starting; one that answers, as ready.
+        supervisor.alarms.send(.startTimedOut)
+        XCTAssertEqual(launcher.engineState, .starting)
+        supervisor.ready.send()
+        XCTAssertEqual(launcher.engineState, .ready)
+        XCTAssertEqual((view(AX.launcherNew, in: root) as? NSButton)?.isEnabled, true)
+    }
+
+    private func view(_ id: String, in root: NSView) -> NSView? {
+        if root.accessibilityIdentifier() == id { return root }
+        for sub in root.subviews { if let hit = view(id, in: sub) { return hit } }
+        return nil
     }
 
     func testRestoreReopensWhatWasOpen() async throws {
@@ -2056,7 +2243,7 @@ final class EngineCrashFlowTests: XCTestCase {
         _ = await store.send(command: .renameWorkspace("Edited"))
         await assertEventually { store.document?.dirty == true }
         let target = URL(fileURLWithPath: runs.folder.appendingPathComponent("Saved At Quit.openlab").path)
-        app.pickSaveURL = { _ in target }
+        app.pickSaveURL = { _, _ in SaveTarget(url: target) }
         alerts.saveChoices = [.save]
         // The save's reply can overtake the message that gives the store its path: hold it so it always does.
         tap.holdDocument = true
@@ -2118,6 +2305,37 @@ final class EngineCrashFlowTests: XCTestCase {
         await assertEventually { self.openNames() == ["A", "B"] }
     }
 
+    /// #754: Cmd-N the moment the app opens, before it has an engine → no error; the new workspace
+    /// opens once the engine is ready.
+    func testNewWorkspaceAskedForBeforeTheEngineIsConnectedOpensOnceItIsReadyWithNoError() async throws {
+        makePrefs(.launcher)
+        try await startApp {
+            XCTAssertNotEqual(self.app.session.connectionState, .connected)
+            Task { await self.app.newWorkspace() }
+        }
+        await assertEventually("the new workspace opens") { self.app.allWindows.count == 1 }
+        await settle()
+        XCTAssertEqual(app.allWindows.count, 1)
+        XCTAssertEqual(alerts.errors, [], "no error alert")
+        XCTAssertFalse(launcherShown)
+    }
+
+    /// #754: File > Open and a recent workspace chosen before the engine is connected, and a show
+    /// double-clicked at launch, open once it is, with no error.
+    func testOpenAndAShowFileAskedForBeforeTheEngineIsConnectedOpenOnceItIsReadyWithNoError() async throws {
+        makePrefs(.launcher)
+        let a = URL(fileURLWithPath: try runs.show("Demo", named: "A"))
+        let b = URL(fileURLWithPath: try runs.show("Demo", named: "B"))
+        let c = URL(fileURLWithPath: try runs.show("Demo", named: "C"))
+        try await startApp(opening: [a]) {
+            self.app.pickOpenURL = { b }
+            Task { await self.app.openWorkspace() }
+            Task { await self.app.openWorkspace(url: c) }
+        }
+        await assertEventually("all three open") { self.openNames() == ["A", "B", "C"] }
+        XCTAssertEqual(alerts.errors, [], "no error alert")
+    }
+
     func testNothingToRestoreShowsTheLauncher() async throws {
         makePrefs(.restore)
         try await startApp()
@@ -2141,6 +2359,21 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertFalse(launcherShown, "no window at all")
     }
 
+    /// A quit while the engine is still answering the app (here the device lists the Preferences
+    /// window asks for): the app closes its connection only once the engine has ended it, having
+    /// read the `goodbye`. Closed under the answers, the connection was reset, which can throw away
+    /// the goodbye before the engine reads it: the engine took the quit for a crash and played on.
+    func testAQuitClosesTheAppConnectionOnlyAfterTheEngineReadTheGoodbye() async throws {
+        makePrefs()
+        try await startApp()
+        for _ in 0..<20 {
+            Task { _ = await self.app.session.appClient.send { .request(id: $0, .listDevices) } }
+        }
+        await Task.yield()
+        try await quit()
+        XCTAssertEqual(tap.appClosesAfterTheEngine, [true], "the engine ended the connection first")
+    }
+
     func testThePreferenceIsReachableFromTheAppMenuAndKept() async throws {
         makePrefs()
         let appMenu = try XCTUnwrap(MainMenu.make().bar.items.first?.submenu)
@@ -2161,6 +2394,61 @@ final class EngineCrashFlowTests: XCTestCase {
         app.preferencesWindow.reload()
         XCTAssertEqual(
             app.preferencesWindow.launchPopup.titleOfSelectedItem, loc(LaunchBehavior.newBlank.titleKey))
+    }
+
+    /// Flow "Choose Preferences with or without a workspace open": one window with its sections; choosing
+    /// it again brings that same window forward.
+    func testPreferencesOpenWithOrWithoutAWorkspaceAndAgainBringsTheSameWindowForward() async throws {
+        makePrefs()
+        try await startApp()
+        XCTAssertTrue(app.allWindows.isEmpty)
+        delegate?.showPreferences(nil)
+        let window = try XCTUnwrap(app.preferencesWindow.window)
+        XCTAssertTrue(window.isVisible, "opens with no workspace open")
+        XCTAssertEqual(
+            app.preferencesWindow.tabs.tabViewItems.map(\.label), [loc("prefs.general"), loc("prefs.audio")])
+        await app.openWorkspace(url: URL(fileURLWithPath: try runs.show("Demo", named: "A")))
+        await assertEventually { self.openNames() == ["A"] }
+        window.orderBack(nil)
+        delegate?.showPreferences(nil)
+        XCTAssertTrue(app.preferencesWindow.window === window, "the same window")
+        XCTAssertEqual(NSApp.windows.filter { $0.identifier?.rawValue == AX.preferencesWindow }.count, 1)
+        XCTAssertTrue(window.isVisible)
+        XCTAssertTrue(window.isKeyWindow || NSApp.keyWindow == nil, "brought forward")
+    }
+
+    /// Flow "General: change At launch to each option, quit and relaunch": the app does what was chosen.
+    func testEachLaunchChoiceMadeInTheWindowIsWhatTheNextLaunchDoes() async throws {
+        makePrefs()
+        try await startApp()
+        func choose(_ behavior: LaunchBehavior) {
+            delegate?.showPreferences(nil)
+            let popup = app.preferencesWindow.launchPopup
+            popup.selectItem(withTitle: loc(behavior.titleKey))
+            _ = popup.sendAction(popup.action, to: popup.target)
+        }
+        choose(.restore)
+        try await quit()
+        try await startApp()
+        XCTAssertTrue(app.allWindows.isEmpty)
+        XCTAssertTrue(launcherShown, "reopen with nothing to reopen shows the launcher")
+        choose(.newBlank)
+        try await quit()
+        try await startApp()
+        await assertEventually("a new blank workspace") { self.app.allWindows.count == 1 }
+        XCTAssertFalse(launcherShown)
+        choose(.nothing)
+        alerts.saveChoices = [.dontSave]  // each launch has its own alerts: the blank workspace is not kept
+        try await quit()
+        try await startApp()
+        await settle()
+        XCTAssertTrue(app.allWindows.isEmpty)
+        XCTAssertFalse(launcherShown, "nothing at all")
+        choose(.launcher)
+        try await quit()
+        try await startApp()
+        XCTAssertTrue(launcherShown)
+        XCTAssertTrue(app.allWindows.isEmpty)
     }
 }
 

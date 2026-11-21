@@ -1,0 +1,11 @@
+{
+  "about": "Look pass 1 (#775): a Video cue's Triggers tab with no hotkey (the box reads unticked) at the least window.",
+  "show": "Video",
+  "window": {"width": 1400, "height": 900},
+  "steps": [
+    {"select": "1"},
+    {"tab": "triggers"},
+    {"resize": [1024, 700]},
+    {"shot": "video-triggers-no-key"}
+  ]
+}

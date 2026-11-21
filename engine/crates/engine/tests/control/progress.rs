@@ -43,6 +43,7 @@ fn fade_on_idle(n: u128, target: u128, seconds: f64) -> openlab_core::Cue {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }
@@ -279,6 +280,50 @@ fn a_looping_slice_reports_file_positions_inside_the_slice_on_every_pass() {
     }
 }
 
+/// A skipped slice is never where the cue is: the reported file position (the play line in the
+/// waveform) goes from the end of the slice before it to the start of the one after, and is
+/// where the audio is.
+#[test]
+fn the_file_position_jumps_over_a_skipped_slice() {
+    // 2400 frames cut at 800 and 1600, the middle slice skipped.
+    let path = wav(&ramp(2400));
+    let c = with_counts(
+        audio(1, &path, 0),
+        &[
+            (secs(800), openlab_core::PlayCount::ONCE),
+            (secs(1600), openlab_core::PlayCount::Skip),
+        ],
+        openlab_core::PlayCount::ONCE,
+    );
+    let mut s = show(workspace(vec![c]));
+    s.take_outbound();
+    start(&mut s, 1);
+    s.run(2400);
+    let msgs = s.take_outbound();
+    let ch = s.channel(0);
+    let first = first_nonzero(&ch).unwrap();
+    let pos = item_positions(&msgs, 1);
+    assert!(pos.len() >= 4, "{pos:?}");
+    assert!(
+        pos.iter()
+            .all(|(_, p)| !(800.0..1600.0).contains(&frames_of(*p))),
+        "never inside the skipped slice: {pos:?}"
+    );
+    assert!(pos.iter().any(|(_, p)| frames_of(*p) < 800.0), "{pos:?}");
+    assert!(pos.iter().any(|(_, p)| frames_of(*p) >= 1600.0), "{pos:?}");
+    for &(elapsed, p) in &pos {
+        if let Some(heard) = heard_frame(&ch, first, elapsed) {
+            assert!(
+                (heard - frames_of(p)).abs() <= 1.0,
+                "{elapsed}: {heard} vs {}",
+                frames_of(p)
+            );
+        }
+    }
+    // What is left is counted on what plays: 1600 frames in all.
+    assert_eq!(last_nonzero(&ch), Some(first + 1599));
+}
+
 fn devamp_cue(n: u128, target: u128, stop: bool) -> openlab_core::Cue {
     cue(
         n,
@@ -343,4 +388,183 @@ fn a_devamp_stop_keeps_the_position_inside_the_loop() {
     let pos = item_positions(&s.take_outbound(), 1);
     assert!(!pos.is_empty());
     assert!(pos.iter().all(|(_, p)| frames_of(*p) < 800.0), "{pos:?}");
+}
+
+/// A previewed cue counts as a play does (elapsed, remaining and where its voice is in the file),
+/// so the cue list's Duration cell and the Time & Loops tab's play line follow it; once the preview
+/// stops one more message goes out without it.
+#[test]
+fn a_previewed_cue_reports_its_progress_and_the_report_stops_with_it() {
+    let path = wav(&ramp(1600));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.take_outbound();
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(800);
+    let msgs = s.take_outbound();
+    let items: Vec<ProgressItem> = reports(&msgs)
+        .into_iter()
+        .flat_map(|(items, _)| items)
+        .filter(|i| i.cue == id(1))
+        .collect();
+    assert!(items.len() >= 3, "{items:?}");
+    assert!(
+        items.windows(2).all(|w| w[1].elapsed > w[0].elapsed),
+        "counts: {items:?}"
+    );
+    let total = frames_of(1600.0 / f64::from(RATE));
+    for i in &items {
+        let left = i.remaining.map(frames_of).unwrap_or(-1.0);
+        assert!(
+            (frames_of(i.elapsed) + left - total).abs() < 2.0,
+            "ends with the file: {i:?}"
+        );
+        let at = i.position.map(frames_of).unwrap_or(-1.0);
+        assert!(
+            (at - frames_of(i.elapsed)).abs() < 2.0,
+            "the file position: {i:?}"
+        );
+    }
+    let last = items.last().map(|i| frames_of(i.elapsed)).unwrap_or(0.0);
+    assert!((500.0..=800.0).contains(&last), "{last}");
+    s.transport(TransportAction::StopPreview { cue: Some(id(1)) });
+    s.run(u64::from(RATE) / 2);
+    let after = s.take_outbound();
+    let withdrawn = reports(&after)
+        .iter()
+        .rev()
+        .find(|(items, _)| items.iter().all(|i| i.cue != id(1)))
+        .is_some();
+    assert!(withdrawn, "a message without the cue follows the stop");
+    s.take_outbound();
+    s.run(u64::from(RATE) / 2);
+    assert!(
+        reports(&s.take_outbound()).is_empty(),
+        "nothing more once it is gone"
+    );
+    for m in &msgs {
+        check_wire(m);
+    }
+}
+
+/// A loaded cue previewed has one item in each message, the preview's, not the point it was
+/// loaded at; when the preview stops its loaded point comes back.
+#[test]
+fn a_loaded_cue_previewed_reports_the_preview_then_its_loaded_point_again() {
+    let path = wav(&ramp(4800));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    let loaded_at = 3600.0 / f64::from(RATE);
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: loaded_at,
+    });
+    s.run(400);
+    s.take_outbound();
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(1200);
+    let during = reports(&s.take_outbound());
+    assert!(!during.is_empty());
+    for (items, _) in &during {
+        let mine: Vec<&ProgressItem> = items.iter().filter(|i| i.cue == id(1)).collect();
+        assert_eq!(mine.len(), 1, "one item per message: {items:?}");
+        let at = mine[0].position.map(frames_of).unwrap_or(-1.0);
+        assert!(
+            at < 1300.0,
+            "the preview's place, from the cue's start: {:?}",
+            mine[0]
+        );
+    }
+    s.transport(TransportAction::StopPreview { cue: Some(id(1)) });
+    s.run(u64::from(RATE) / 2);
+    let back = reports(&s.take_outbound());
+    let last = back
+        .last()
+        .and_then(|(items, _)| items.iter().find(|i| i.cue == id(1)).cloned());
+    let at = last.and_then(|i| i.position).unwrap_or(-1.0);
+    assert!(
+        (at - loaded_at).abs() < 1e-3,
+        "the loaded point again: {at}"
+    );
+}
+
+/// Flow: Load to Time on a cue without a voice (a Fade, a Wait, a Group) shows the loaded time
+/// in its row: the progress message carries how far into its action each one stands, once,
+/// and nothing more while they stand there.
+#[test]
+fn a_cue_without_a_voice_loaded_to_a_time_reports_where_it_stands() {
+    // No continues, so no sequence carries one load into the next cue.
+    let mut fade = fade_on_idle(1, 3, 6.0);
+    fade.pre_wait = 1.0;
+    let mut s = show(workspace(vec![
+        fade,
+        wait(2, 6.0),
+        cue(
+            3,
+            CueKind::Group {
+                mode: openlab_core::GroupMode::Timeline,
+                children: vec![],
+            },
+        ),
+    ]));
+    s.take_outbound();
+    for (cue, at) in [(1, 5.0), (2, 4.0), (3, 4.0)] {
+        s.transport(TransportAction::Load { cue: id(cue), at });
+    }
+    s.run(SEC);
+    let r = reports(&s.take_outbound());
+    let (items, _) = r.last().expect("a progress message for the loaded set");
+    let stands: Vec<(u128, f64, Option<f64>)> = items
+        .iter()
+        .map(|i| (i.cue.0.as_u128(), i.elapsed, i.position))
+        .collect();
+    // The Fade's 1 s pre-wait is behind it: 4 s into its action.
+    assert_eq!(
+        stands,
+        vec![(1, 4.0, None), (2, 4.0, None), (3, 4.0, None)],
+        "{r:?}"
+    );
+    s.run(SEC);
+    assert!(reports(&s.take_outbound()).is_empty());
+}
+
+/// The Load to Time bar's slider spans the standing-by cue's whole sequence (`sequence_span`):
+/// a 1 s pre-wait and 2 s Fade that auto-continues after a 3 s post-wait into a 6 s Wait is
+/// 1 + 3 + 6 = 10 s; an unknown cue has none.
+#[test]
+fn sequence_span_answers_the_length_of_the_cues_sequence() {
+    use openlab_core::protocol::{ClientMessage, OkBody, Outcome, Request, ResultData};
+    let mut s = show(workspace(vec![
+        timed(fade_on_idle(1, 3, 2.0), 1.0, 3.0),
+        wait(2, 6.0),
+        cue(
+            3,
+            CueKind::Group {
+                mode: openlab_core::GroupMode::Timeline,
+                children: vec![],
+            },
+        ),
+    ]));
+    let mut span = |cue: u128| {
+        let id = s.request_id();
+        s.send(ClientMessage::Request {
+            id,
+            request: Request::SequenceSpan {
+                cue: openlab_core::CueId(Uuid::from_u128(cue)),
+            },
+        })
+        .into_iter()
+        .find_map(|m| match m {
+            ServerMessage::Result {
+                outcome:
+                    Outcome::Ok(OkBody {
+                        data: Some(ResultData::SequenceSpan { span }),
+                        ..
+                    }),
+                ..
+            } => Some(span),
+            _ => None,
+        })
+        .expect("sequence_span")
+    };
+    assert_eq!(span(1), Some(10.0));
+    assert_eq!(span(99), None);
 }

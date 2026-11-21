@@ -1,0 +1,13 @@
+{
+  "about": "Application preferences, General tab (#773).",
+  "show": "Demo",
+  "appearance": "light",
+  "steps": [
+    {
+      "focus": "preferences"
+    },
+    {
+      "shot": "general"
+    }
+  ]
+}

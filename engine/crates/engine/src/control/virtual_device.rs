@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The virtual output device (`--virtual-device`, built only with the `test-support` feature):
-//! the real engine with no audio hardware, for the app's
-//! tests. It is a [`DeviceLayer`] like cpal's, so the stream is opened, closed, lost and reopened
-//! through the same device policy (`devices.rs`) a real interface goes through.
+//! The virtual output devices (`--virtual-device`, built only with the `test-support` feature):
+//! the real engine with no audio hardware, for the app's tests. They are a [`DeviceLayer`] like
+//! cpal's, so each stream is opened, closed, lost and reopened through the same device policy
+//! (`devices.rs`) a real interface goes through. The first is listed from the start and is the
+//! system's output; the second is listed once a test plugs it in (`restore_device`), so a test
+//! can play on two devices, unplug either, and move the system's output between them.
 //!
 //! - **Stepped**: device time moves only on an `advance { frames }` request. The control thread
 //!   waits for the engine's background work, then renders the frames block by block into a
@@ -19,7 +21,7 @@
 //! parks (stepped) or sleeps (realtime) in between, as a host's own audio thread would.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant, SystemTime};
@@ -39,10 +41,13 @@ use super::inbox::reply;
 use super::offline::SETTLE_TIMEOUT;
 use super::{Control, EpochClock, Flow, Inbox, ReplyTx, fail, ok};
 
-/// The device's id, as the device list gives it.
+/// The first device's id, as the device list gives it.
 pub const VIRTUAL_DEVICE_ID: &str = "openlab:virtual";
-/// The device's name, as `list_devices` shows it.
+/// The first device's name, as `list_devices` shows it.
 pub const VIRTUAL_DEVICE_NAME: &str = "openLab Virtual Output";
+/// The second device's id: not listed until a test plugs it in.
+pub const SECOND_DEVICE_ID: &str = "openlab:virtual-2";
+pub const SECOND_DEVICE_NAME: &str = "openLab Virtual Output 2";
 pub const VIRTUAL_RATE: u32 = 48_000;
 pub const VIRTUAL_CHANNELS: u16 = 2;
 /// Where the stepped engine's epoch clock starts: 2026-01-01 00:00:00 UTC (a fixed time, so log
@@ -74,10 +79,12 @@ impl VirtualMode {
     }
 }
 
-/// What the control thread, the device thread and a stream's render thread share. Only atomics,
-/// apart from the render thread's handle, which the render thread never touches.
-struct Shared {
-    mode: VirtualMode,
+/// One virtual device, as the control thread, the device threads and its stream's render
+/// thread share it. Only atomics, apart from the render thread's handle, which the render thread
+/// never touches.
+struct Port {
+    id: &'static str,
+    name: &'static str,
     /// The device is listed and can be opened.
     present: AtomicBool,
     /// The device went away: the open stream reports it lost once and never calls back again.
@@ -88,6 +95,41 @@ struct Shared {
     /// device started; `done` follows it.
     granted: AtomicU64,
     done: AtomicU64,
+    /// Dropouts (`drop_out`) the stream reports at its next block.
+    xruns_due: AtomicU64,
+    /// The open stream's render thread, to wake it.
+    render_thread: Mutex<Option<Thread>>,
+}
+
+impl Port {
+    fn new(id: &'static str, name: &'static str, present: bool) -> Self {
+        Self {
+            id,
+            name,
+            present: AtomicBool::new(present),
+            lost: AtomicBool::new(false),
+            rendering: AtomicBool::new(false),
+            granted: AtomicU64::new(0),
+            done: AtomicU64::new(0),
+            xruns_due: AtomicU64::new(0),
+            render_thread: Mutex::new(None),
+        }
+    }
+
+    fn wake(&self) {
+        if let Some(t) = crate::lock(&self.render_thread).as_ref() {
+            t.unpark();
+        }
+    }
+}
+
+/// What every virtual device shares: the mode, device time and the stepped requests' state.
+struct Shared {
+    mode: VirtualMode,
+    /// The devices, in list order.
+    ports: [Arc<Port>; 2],
+    /// The index in `ports` of the device the list marks as the system's output.
+    default: AtomicUsize,
     /// Frames device time has moved (stepped): the virtual clock every injected clock reads.
     elapsed: AtomicU64,
     /// An `advance` is under way (a second one is refused).
@@ -98,8 +140,6 @@ struct Shared {
     /// are taken in at the next wait, so what they change is reported at the same point of a
     /// test's script whenever they arrived.
     held: Mutex<VecDeque<Inbox>>,
-    /// The open stream's render thread, to wake it.
-    render_thread: Mutex<Option<Thread>>,
 }
 
 /// The virtual device: the handle the host builds the engine around and the control loop
@@ -127,16 +167,15 @@ impl VirtualDevice {
         Self {
             shared: Arc::new(Shared {
                 mode,
-                present: AtomicBool::new(true),
-                lost: AtomicBool::new(false),
-                rendering: AtomicBool::new(false),
-                granted: AtomicU64::new(0),
-                done: AtomicU64::new(0),
+                ports: [
+                    Arc::new(Port::new(VIRTUAL_DEVICE_ID, VIRTUAL_DEVICE_NAME, true)),
+                    Arc::new(Port::new(SECOND_DEVICE_ID, SECOND_DEVICE_NAME, false)),
+                ],
+                default: AtomicUsize::new(0),
                 elapsed: AtomicU64::new(0),
                 stepping: AtomicBool::new(false),
                 settling: AtomicBool::new(false),
                 held: Mutex::new(VecDeque::new()),
-                render_thread: Mutex::new(None),
             }),
             base: Instant::now(),
             inbox: None,
@@ -153,7 +192,7 @@ impl VirtualDevice {
         self.shared.mode
     }
 
-    /// The device list as the host would give it: the virtual device, unless it was lost.
+    /// The device list as the host would give it: the virtual devices that are plugged in.
     pub fn listed(&self) -> Vec<ListedDevice> {
         list(&self.shared)
     }
@@ -208,58 +247,75 @@ impl VirtualDevice {
         }
     }
 
-    fn wake(&self) {
-        if let Some(t) = crate::lock(&self.shared.render_thread).as_ref() {
-            t.unpark();
+    /// The device with this id (`None`: the first).
+    fn port(&self, id: Option<&str>) -> Option<&Arc<Port>> {
+        let ports = &self.shared.ports;
+        match id {
+            None => ports.first(),
+            Some(id) => ports.iter().find(|p| p.id == id),
         }
     }
 
-    /// The device goes away: unlisted, and the open stream reports it lost and goes silent.
-    fn lose(&self) {
-        self.shared.present.store(false, Ordering::Release);
-        self.shared.lost.store(true, Ordering::Release);
-        self.wake();
+    /// Some device's stream calls back.
+    fn any_rendering(&self) -> bool {
+        self.shared
+            .ports
+            .iter()
+            .any(|p| p.rendering.load(Ordering::Acquire))
     }
 
-    /// The device is back in the list (a stream lost before stays silent; the policy reopens).
-    fn restore(&self) {
-        self.shared.lost.store(false, Ordering::Release);
-        self.shared.present.store(true, Ordering::Release);
+    /// The device goes away: unlisted, and its open stream reports it lost and goes silent.
+    fn lose(port: &Port) {
+        port.present.store(false, Ordering::Release);
+        port.lost.store(true, Ordering::Release);
+        port.wake();
     }
 
-    /// Waits until no stream calls back (the open one has seen the loss).
-    fn wait_silent(&self) -> Result<(), String> {
+    /// The device is in the list again (a stream lost before stays silent; the policy reopens).
+    fn restore(port: &Port) {
+        port.lost.store(false, Ordering::Release);
+        port.present.store(true, Ordering::Release);
+    }
+
+    /// Waits until the device's stream no longer calls back (it has seen the loss).
+    fn wait_silent(port: &Port) -> Result<(), String> {
         let deadline = Instant::now() + RENDER_TIMEOUT;
-        while self.shared.rendering.load(Ordering::Acquire) {
+        while port.rendering.load(Ordering::Acquire) {
             if Instant::now() >= deadline {
-                return Err("the virtual device's stream did not stop".into());
+                return Err(format!("the stream of {} did not stop", port.name));
             }
-            self.wake();
+            port.wake();
             thread::yield_now();
         }
         Ok(())
     }
 
-    /// Stepped: the open stream renders `frames` (at most one block), and this returns once it
-    /// has. Nothing renders while no stream calls back (the device is down).
+    /// Stepped: every open stream renders `frames` (at most one block), in step, as devices on
+    /// one clock do, and this returns once they have. A device with no stream calling back (down,
+    /// closed or never opened) renders nothing.
     fn render(&self, frames: u64) -> Result<(), String> {
-        let s = &self.shared;
-        if !s.rendering.load(Ordering::Acquire) {
-            return Ok(());
+        let mut targets = [None; 2];
+        for (port, target) in self.shared.ports.iter().zip(targets.iter_mut()) {
+            if port.rendering.load(Ordering::Acquire) {
+                let t = port.done.load(Ordering::Acquire).saturating_add(frames);
+                port.granted.store(t, Ordering::Release);
+                port.wake();
+                *target = Some(t);
+            }
         }
-        let target = s.done.load(Ordering::Acquire).saturating_add(frames);
-        s.granted.store(target, Ordering::Release);
-        self.wake();
         let deadline = Instant::now() + RENDER_TIMEOUT;
-        while s.done.load(Ordering::Acquire) < target {
-            // Closed or lost meanwhile: the frames are not rendered, as on a device that went.
-            if !s.rendering.load(Ordering::Acquire) {
-                return Ok(());
+        for (port, target) in self.shared.ports.iter().zip(targets) {
+            let Some(target) = target else { continue };
+            while port.done.load(Ordering::Acquire) < target {
+                // Closed or lost meanwhile: the frames are not rendered, as on a device that went.
+                if !port.rendering.load(Ordering::Acquire) {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!("the stream of {} did not render", port.name));
+                }
+                thread::yield_now();
             }
-            if Instant::now() >= deadline {
-                return Err("the virtual device's stream did not render".into());
-            }
-            thread::yield_now();
         }
         Ok(())
     }
@@ -272,21 +328,25 @@ fn frames_to_duration(frames: u64) -> Duration {
 }
 
 fn list(shared: &Shared) -> Vec<ListedDevice> {
-    if !shared.present.load(Ordering::Acquire) {
-        return Vec::new();
-    }
-    vec![ListedDevice {
-        id: VIRTUAL_DEVICE_ID.into(),
-        name: VIRTUAL_DEVICE_NAME.into(),
-        is_default: true,
-        configs: vec![ConfigRange {
-            channels: VIRTUAL_CHANNELS,
-            min_rate: VIRTUAL_RATE,
-            max_rate: VIRTUAL_RATE,
-            buffer: BufferRange::Unknown,
-            format: SampleFormat::F32,
-        }],
-    }]
+    let default = shared.default.load(Ordering::Acquire);
+    shared
+        .ports
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.present.load(Ordering::Acquire))
+        .map(|(i, p)| ListedDevice {
+            id: p.id.into(),
+            name: p.name.into(),
+            is_default: i == default,
+            configs: vec![ConfigRange {
+                channels: VIRTUAL_CHANNELS,
+                min_rate: VIRTUAL_RATE,
+                max_rate: VIRTUAL_RATE,
+                buffer: BufferRange::Unknown,
+                format: SampleFormat::F32,
+            }],
+        })
+        .collect()
 }
 
 struct VirtualLayer(Arc<Shared>);
@@ -312,11 +372,12 @@ impl DeviceLayer for VirtualLayer {
         request: &OpenRequest,
     ) -> Result<Box<dyn OpenStream>, OpenFailure> {
         let shared = &self.0;
-        let wanted = request
-            .device_id
-            .as_deref()
-            .is_none_or(|id| id == VIRTUAL_DEVICE_ID);
-        if !wanted || !shared.present.load(Ordering::Acquire) {
+        // No id: the system's output, as a host opens its default device.
+        let wanted = match request.device_id.as_deref() {
+            Some(id) => shared.ports.iter().find(|p| p.id == id),
+            None => shared.ports.get(shared.default.load(Ordering::Acquire)),
+        };
+        let Some(port) = wanted.filter(|p| p.present.load(Ordering::Acquire)) else {
             return Err(OpenFailure {
                 error: DeviceError {
                     kind: OpenErrorKind::NotFound,
@@ -324,7 +385,7 @@ impl DeviceLayer for VirtualLayer {
                 },
                 mixer: MixerBack::Mixer(Box::new(mixer)),
             });
-        }
+        };
         let block = request.buffer_frames.unwrap_or(256).clamp(
             1,
             u32::try_from(openlab_audio::MAX_BLOCK_FRAMES).unwrap_or(u32::MAX),
@@ -333,12 +394,12 @@ impl DeviceLayer for VirtualLayer {
         let (host, mut link) = OutputHost::new(mixer, VIRTUAL_CHANNELS);
         let stop = Arc::new(AtomicBool::new(false));
         // Frames asked for before this stream opened (while none was open) are not owed.
-        shared
-            .done
-            .store(shared.granted.load(Ordering::Acquire), Ordering::Release);
-        shared.rendering.store(true, Ordering::Release);
+        port.done
+            .store(port.granted.load(Ordering::Acquire), Ordering::Release);
+        port.rendering.store(true, Ordering::Release);
         let render = Render {
-            shared: Arc::clone(shared),
+            mode: shared.mode,
+            port: Arc::clone(port),
             stop: Arc::clone(&stop),
             reporter: link.reporter(),
             monitor: link.monitor(),
@@ -350,7 +411,7 @@ impl DeviceLayer for VirtualLayer {
         let thread = match spawned {
             Ok(t) => t,
             Err(e) => {
-                shared.rendering.store(false, Ordering::Release);
+                port.rendering.store(false, Ordering::Release);
                 // The closure, and the host in it, were dropped: the mixer is back.
                 let mixer = match link.take_mixer() {
                     Some(m) => MixerBack::Mixer(Box::new(m)),
@@ -365,10 +426,10 @@ impl DeviceLayer for VirtualLayer {
                 });
             }
         };
-        *crate::lock(&shared.render_thread) = Some(thread.thread().clone());
+        *crate::lock(&port.render_thread) = Some(thread.thread().clone());
         let info = StreamInfo {
-            device_id: VIRTUAL_DEVICE_ID.into(),
-            name: VIRTUAL_DEVICE_NAME.into(),
+            device_id: port.id.into(),
+            name: port.name.into(),
             channels: outputs.min(VIRTUAL_CHANNELS),
             outputs_dropped: VIRTUAL_CHANNELS < outputs,
             block_frames: Some(block),
@@ -376,7 +437,7 @@ impl DeviceLayer for VirtualLayer {
             monitor: link.monitor(),
         };
         Ok(Box::new(VirtualStream {
-            shared: Arc::clone(shared),
+            port: Arc::clone(port),
             stop,
             thread: Some(thread),
             link,
@@ -386,7 +447,7 @@ impl DeviceLayer for VirtualLayer {
 }
 
 struct VirtualStream {
-    shared: Arc<Shared>,
+    port: Arc<Port>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<OutputHost>>,
     link: HostLink,
@@ -399,7 +460,7 @@ impl OpenStream for VirtualStream {
     }
 
     fn close(mut self: Box<Self>) -> MixerBack {
-        self.shared.rendering.store(false, Ordering::Release);
+        self.port.rendering.store(false, Ordering::Release);
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             thread.thread().unpark();
@@ -407,7 +468,7 @@ impl OpenStream for VirtualStream {
             // through the link.
             drop(thread.join());
         }
-        *crate::lock(&self.shared.render_thread) = None;
+        *crate::lock(&self.port.render_thread) = None;
         match self.link.take_mixer() {
             Some(m) => MixerBack::Mixer(Box::new(m)),
             None => MixerBack::Pending(Box::new(self.link)),
@@ -417,7 +478,8 @@ impl OpenStream for VirtualStream {
 
 /// A stream's render thread.
 struct Render {
-    shared: Arc<Shared>,
+    mode: VirtualMode,
+    port: Arc<Port>,
     stop: Arc<AtomicBool>,
     reporter: ErrorReporter,
     monitor: DeviceMonitor,
@@ -435,20 +497,25 @@ impl Render {
         let mut next = Instant::now();
         let mut reported = false;
         while !self.stop.load(Ordering::Acquire) {
-            if reported || self.shared.lost.load(Ordering::Acquire) {
+            // Dropouts a test asked for, reported as a host reports them: atomics only.
+            let due = self.port.xruns_due.swap(0, Ordering::AcqRel);
+            for _ in 0..due {
+                self.reporter.report(HostError::Xrun);
+            }
+            if reported || self.port.lost.load(Ordering::Acquire) {
                 // Lost: reported once, then silent for good, as a device that went away.
                 if !reported {
                     self.reporter.report(HostError::Lost);
                     reported = true;
-                    self.shared.rendering.store(false, Ordering::Release);
+                    self.port.rendering.store(false, Ordering::Release);
                 }
                 self.idle(period);
                 continue;
             }
-            match self.shared.mode {
+            match self.mode {
                 VirtualMode::Stepped => {
-                    let done = self.shared.done.load(Ordering::Acquire);
-                    let granted = self.shared.granted.load(Ordering::Acquire);
+                    let done = self.port.done.load(Ordering::Acquire);
+                    let granted = self.port.granted.load(Ordering::Acquire);
                     if granted <= done {
                         thread::park();
                         continue;
@@ -462,7 +529,7 @@ impl Render {
                     // Not a real-time device: its render time is no engine load, and leaving
                     // it would make the `status` messages differ from run to run.
                     let _ = self.monitor.take_engine_load();
-                    self.shared
+                    self.port
                         .done
                         .store(done + frames as u64, Ordering::Release);
                 }
@@ -484,7 +551,7 @@ impl Render {
     }
 
     fn idle(&self, period: Duration) {
-        match self.shared.mode {
+        match self.mode {
             VirtualMode::Stepped => thread::park(),
             VirtualMode::Realtime => thread::sleep(period),
         }
@@ -542,30 +609,94 @@ impl Control {
 
     /// `lose_device` (either virtual mode). Stepped, the loss is handled before the answer: the
     /// stream has gone silent, the control loop has seen it and closed the stream.
-    pub(super) fn lose_device(&mut self, id: RequestId, to: &ReplyTx) -> Flow {
+    pub(super) fn lose_device(
+        &mut self,
+        id: RequestId,
+        device: Option<&str>,
+        to: &ReplyTx,
+    ) -> Flow {
         let Some(vd) = self.virtual_device() else {
             return not_virtual(id, "lose_device", to);
         };
-        vd.lose();
+        let Some(port) = vd.port(device) else {
+            return no_such_device(id, device, to);
+        };
+        VirtualDevice::lose(port);
         let result = match (&vd.inbox, vd.mode()) {
-            (Some(inbox), VirtualMode::Stepped) => {
-                vd.wait_silent().map_err(Stop::Failed).and_then(|()| {
+            (Some(inbox), VirtualMode::Stepped) => VirtualDevice::wait_silent(port)
+                .map_err(Stop::Failed)
+                .and_then(|()| {
                     self.tick();
                     self.settle(inbox)
-                })
-            }
+                }),
             _ => Ok(()),
         };
         self.stepped_outcome(id, result, to)
     }
 
-    /// `restore_device` (either virtual mode): the device is listed again; the device policy
-    /// reopens it at its next list read (stepped: once an `advance` passes it).
-    pub(super) fn restore_device(&mut self, id: RequestId, to: &ReplyTx) -> Flow {
+    /// `restore_device` (either virtual mode): the device is listed (again); the device policy
+    /// opens it at its next list read (stepped: once an `advance` passes it).
+    pub(super) fn restore_device(
+        &mut self,
+        id: RequestId,
+        device: Option<&str>,
+        to: &ReplyTx,
+    ) -> Flow {
         let Some(vd) = self.virtual_device() else {
             return not_virtual(id, "restore_device", to);
         };
-        vd.restore();
+        let Some(port) = vd.port(device) else {
+            return no_such_device(id, device, to);
+        };
+        VirtualDevice::restore(port);
+        reply(to, ok(id, None));
+        Flow::Continue
+    }
+
+    /// `drop_out` (either virtual mode): the device's stream reports `count` dropouts at its
+    /// next block (stepped: once an `advance` renders one), as a host reports xruns.
+    pub(super) fn drop_out(
+        &mut self,
+        id: RequestId,
+        device: Option<&str>,
+        count: u32,
+        to: &ReplyTx,
+    ) -> Flow {
+        let Some(vd) = self.virtual_device() else {
+            return not_virtual(id, "drop_out", to);
+        };
+        let Some(port) = vd.port(device) else {
+            return no_such_device(id, device, to);
+        };
+        // The decoder refuses a count out of range; the cap also holds for a caller in process.
+        if !(1..=openlab_core::protocol::MAX_DROP_OUTS).contains(&count) {
+            fail(
+                to,
+                id,
+                ErrorCode::BadRequest,
+                format!(
+                    "count must be 1 to {}",
+                    openlab_core::protocol::MAX_DROP_OUTS
+                ),
+            );
+            return Flow::Continue;
+        }
+        port.xruns_due.fetch_add(u64::from(count), Ordering::AcqRel);
+        reply(to, ok(id, None));
+        Flow::Continue
+    }
+
+    /// `set_default_device` (either virtual mode): the list marks `device` as the system's
+    /// output from the policy's next list read, plugged in or not (a default that is not
+    /// listed leaves the list with none, as when the system's output is unplugged).
+    pub(super) fn set_default_device(&mut self, id: RequestId, device: &str, to: &ReplyTx) -> Flow {
+        let Some(vd) = self.virtual_device() else {
+            return not_virtual(id, "set_default_device", to);
+        };
+        let Some(index) = vd.shared.ports.iter().position(|p| p.id == device) else {
+            return no_such_device(id, Some(device), to);
+        };
+        vd.shared.default.store(index, Ordering::Release);
         reply(to, ok(id, None));
         Flow::Continue
     }
@@ -599,7 +730,7 @@ impl Control {
         let mut left = frames;
         while left > 0 {
             let n = left.min(self.eng.block.max(1));
-            if vd.shared.rendering.load(Ordering::Acquire) {
+            if vd.any_rendering() {
                 let end = self.eng.rendered().saturating_add(n);
                 if self.wait_streams(end, SETTLE_TIMEOUT) > 0 {
                     return Err(Stop::Failed(format!(
@@ -650,7 +781,7 @@ impl Control {
     }
 
     /// Waits until no media probe, preload or waveform read, device job, document read or
-    /// save, or network send is outstanding, taking in the held answers first, then what
+    /// save, network send, or picture open a start waits for is outstanding, taking in the held answers first, then what
     /// arrives. Device time stands still meanwhile. The loop ticks only once no worker's
     /// answer is outstanding, so the changes those answers make go out together in one tick
     /// whatever order and timing they came in (a tick also collects saves, and may start
@@ -706,12 +837,16 @@ impl Control {
         }
     }
 
-    /// Work a worker answers through the inbox, handled as it arrives.
+    /// Work a worker answers through the inbox, handled as it arrives. A Video cue's start
+    /// waiting for its picture's open counts: live, device time moves on while the stage host
+    /// opens the file, but a stepped `advance` would run its frames before the open answered, so
+    /// the picture would start late by however far the request moved time.
     fn answers_outstanding(&self) -> bool {
         self.probes_pending() > 0
             || self.preloads_pending() > 0
             || self.device_jobs_pending() > 0
             || self.net_busy() > 0
+            || self.pictures_waiting() > 0
     }
 
     /// Work the control loop collects in a tick (document reads and saves) or that answers a
@@ -725,6 +860,19 @@ impl Control {
 const SETTLE_POLL: Duration = Duration::from_millis(2);
 /// A settle with answers outstanding ticks after this long without one.
 const QUIET_TICK: Duration = Duration::from_millis(50);
+
+fn no_such_device(id: RequestId, device: Option<&str>, to: &ReplyTx) -> Flow {
+    fail(
+        to,
+        id,
+        ErrorCode::NotFound,
+        format!(
+            "no virtual device {:?}: the ids are {VIRTUAL_DEVICE_ID:?} and {SECOND_DEVICE_ID:?}",
+            device.unwrap_or_default()
+        ),
+    );
+    Flow::Continue
+}
 
 fn not_virtual(id: RequestId, what: &str, to: &ReplyTx) -> Flow {
     fail(
@@ -923,7 +1071,7 @@ mod tests {
     #[test]
     fn a_loss_during_an_advance_is_handled_inside_it() {
         let mut r = rig(VirtualMode::Stepped);
-        let (lose, mut lose_rx) = conn(2, Request::LoseDevice);
+        let (lose, mut lose_rx) = conn(2, Request::LoseDevice { device: None });
         r.inbox.send(lose).unwrap();
         let (_, o) = ask(&mut r, Request::Advance { frames: 48_000 });
         assert_eq!(code(&o), None, "{o:?}");
@@ -944,7 +1092,7 @@ mod tests {
         let mut r = rig(VirtualMode::Stepped);
         let (_, o) = ask(&mut r, Request::Advance { frames: 512 });
         assert_eq!(code(&o), None, "{o:?}");
-        let (flow, o) = ask(&mut r, Request::LoseDevice);
+        let (flow, o) = ask(&mut r, Request::LoseDevice { device: None });
         assert_eq!((flow, code(&o)), (Flow::Continue, None), "{o:?}");
         assert!(r.control.device_down());
         assert_eq!(r.control.device_jobs_pending(), 0, "the stream was closed");
@@ -958,7 +1106,7 @@ mod tests {
         );
         assert!(r.control.device_down(), "reopens fail while it is gone");
 
-        let (_, o) = ask(&mut r, Request::RestoreDevice);
+        let (_, o) = ask(&mut r, Request::RestoreDevice { device: None });
         assert_eq!(code(&o), None, "{o:?}");
         assert_eq!(r.vd.listed().len(), 1);
         // Within a list period (1 s) and the backoff, it is open and rendering again.
@@ -966,6 +1114,170 @@ mod tests {
         assert_eq!(code(&o), None, "{o:?}");
         assert!(!r.control.device_down());
         assert!(r.control.mixer().samples_rendered() > 512);
+    }
+
+    /// `drop_out`: the stream reports the dropouts at its next block, the engine counts them
+    /// as xruns and logs them; a count out of range is refused; an unknown device is
+    /// `not_found`.
+    #[test]
+    fn a_drop_out_is_reported_at_the_next_block_and_logged() {
+        let mut r = rig(VirtualMode::Stepped);
+        let (_, o) = ask(&mut r, Request::Advance { frames: 512 });
+        assert_eq!(code(&o), None, "{o:?}");
+        let (_, o) = ask(
+            &mut r,
+            Request::DropOut {
+                device: None,
+                count: 3,
+            },
+        );
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(r.control.mixer().xruns(), 0, "not before a block");
+        let (_, o) = ask(&mut r, Request::Advance { frames: 512 });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(r.control.mixer().xruns(), 3);
+        let log = r.control.show_log().tail(100);
+        assert!(
+            log.iter()
+                .any(|e| e.message.contains("dropped out 3 time(s)")),
+            "{log:#?}"
+        );
+        for count in [0, openlab_core::protocol::MAX_DROP_OUTS + 1] {
+            let (_, o) = ask(
+                &mut r,
+                Request::DropOut {
+                    device: None,
+                    count,
+                },
+            );
+            assert_eq!(code(&o), Some(ErrorCode::BadRequest), "{count}");
+        }
+        let (_, o) = ask(
+            &mut r,
+            Request::DropOut {
+                device: Some("nope".into()),
+                count: 1,
+            },
+        );
+        assert_eq!(code(&o), Some(ErrorCode::NotFound));
+    }
+
+    /// The devices listed, as `(id, is_default)`.
+    fn listed_ids(vd: &VirtualDevice) -> Vec<(String, bool)> {
+        vd.listed()
+            .into_iter()
+            .map(|d| (d.id, d.is_default))
+            .collect()
+    }
+
+    /// AUD-02: the second device is listed once a test plugs it in, either can be unplugged,
+    /// and the system's output moves between them on request; an unknown id is `not_found`.
+    #[test]
+    fn the_second_device_is_listed_once_plugged_in_and_the_system_output_moves_on_request() {
+        let mut r = rig(VirtualMode::Stepped);
+        assert_eq!(listed_ids(&r.vd), [(VIRTUAL_DEVICE_ID.into(), true)]);
+        let second = || Some(SECOND_DEVICE_ID.to_owned());
+        let (_, o) = ask(&mut r, Request::RestoreDevice { device: second() });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(
+            listed_ids(&r.vd),
+            [
+                (VIRTUAL_DEVICE_ID.into(), true),
+                (SECOND_DEVICE_ID.into(), false)
+            ]
+        );
+        let (_, o) = ask(
+            &mut r,
+            Request::SetDefaultDevice {
+                device: SECOND_DEVICE_ID.into(),
+            },
+        );
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(
+            listed_ids(&r.vd),
+            [
+                (VIRTUAL_DEVICE_ID.into(), false),
+                (SECOND_DEVICE_ID.into(), true)
+            ]
+        );
+        // The system's output unplugged: the list has no default.
+        let (_, o) = ask(&mut r, Request::LoseDevice { device: second() });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(listed_ids(&r.vd), [(VIRTUAL_DEVICE_ID.into(), false)]);
+        let unknown = || Some("openlab:virtual-3".to_owned());
+        for request in [
+            Request::LoseDevice { device: unknown() },
+            Request::RestoreDevice { device: unknown() },
+            Request::SetDefaultDevice {
+                device: "openlab:virtual-3".into(),
+            },
+        ] {
+            let (_, o) = ask(&mut r, request.clone());
+            assert_eq!(code(&o), Some(ErrorCode::NotFound), "{request:?}: {o:?}");
+        }
+        assert_eq!(listed_ids(&r.vd), [(VIRTUAL_DEVICE_ID.into(), false)]);
+    }
+
+    /// A mixer and its controller like the rig's, for a stream opened on the layer directly.
+    fn mixer() -> (openlab_audio::MixerController, Mixer) {
+        Mixer::new(MixerConfig {
+            sample_rate: VIRTUAL_RATE,
+            output_channels: usize::from(VIRTUAL_CHANNELS),
+            ..MixerConfig::default()
+        })
+        .unwrap()
+    }
+
+    /// Stepped, a stream open on each device renders every `advance` in step; unplugging the
+    /// second silences only its stream, and it cannot be opened while it is not plugged in.
+    #[test]
+    fn streams_on_both_devices_render_in_step_and_each_is_lost_alone() {
+        let mut r = rig(VirtualMode::Stepped);
+        let second = OpenRequest {
+            device_id: Some(SECOND_DEVICE_ID.into()),
+            buffer_frames: Some(BLOCK),
+        };
+        let mut layer = r.vd.layer();
+        let (_, m) = mixer();
+        let Err(refused) = layer.open(m, &second) else {
+            panic!("opened a device that is not plugged in");
+        };
+        assert_eq!(refused.error.kind, OpenErrorKind::NotFound);
+
+        let (_, o) = ask(
+            &mut r,
+            Request::RestoreDevice {
+                device: Some(SECOND_DEVICE_ID.into()),
+            },
+        );
+        assert_eq!(code(&o), None, "{o:?}");
+        let (ctl, m) = mixer();
+        let Ok(stream) = layer.open(m, &second) else {
+            panic!("the plugged-in second device did not open");
+        };
+        assert_eq!(stream.info().name, SECOND_DEVICE_NAME);
+        let (_, o) = ask(&mut r, Request::Advance { frames: 4_900 });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(r.control.mixer().samples_rendered(), 4_900);
+        assert_eq!(ctl.samples_rendered(), 4_900, "in step with the first");
+
+        let (_, o) = ask(
+            &mut r,
+            Request::LoseDevice {
+                device: Some(SECOND_DEVICE_ID.into()),
+            },
+        );
+        assert_eq!(code(&o), None, "{o:?}");
+        let (_, o) = ask(&mut r, Request::Advance { frames: 512 });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(
+            r.control.mixer().samples_rendered(),
+            5_412,
+            "the first plays on"
+        );
+        assert_eq!(ctl.samples_rendered(), 4_900, "the second is silent");
+        assert!(!r.control.device_down());
+        drop(stream.close());
     }
 
     /// Realtime: the stream renders on its own, `advance` is refused, and a lost device
@@ -978,7 +1290,7 @@ mod tests {
         });
         let (_, o) = ask(&mut r, Request::Advance { frames: 1 });
         assert_eq!(code(&o), Some(ErrorCode::Unsupported));
-        let (_, o) = ask(&mut r, Request::LoseDevice);
+        let (_, o) = ask(&mut r, Request::LoseDevice { device: None });
         assert_eq!(code(&o), None, "{o:?}");
         crate::spin::spin_until("the loss is seen", || {
             r.control.tick();
@@ -993,8 +1305,11 @@ mod tests {
         let mut show = crate::control::tests::memo_show();
         for request in [
             Request::Advance { frames: 1 },
-            Request::LoseDevice,
-            Request::RestoreDevice,
+            Request::LoseDevice { device: None },
+            Request::RestoreDevice { device: None },
+            Request::SetDefaultDevice {
+                device: SECOND_DEVICE_ID.into(),
+            },
         ] {
             let replies = show.send_app(ClientMessage::Request {
                 id: RequestId(9),

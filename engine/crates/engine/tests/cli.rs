@@ -7,14 +7,20 @@
 )]
 
 use std::process::Command;
+use std::time::Duration;
 
 mod common;
+#[path = "../../audio/tests/common/spin.rs"]
+mod spin;
 
 use common::{ENGINE, Engine};
 
+/// How long a run of the engine that should end at once may take before it counts as hung.
+const RUN_LIMIT: Duration = Duration::from_secs(60);
+
 #[test]
 fn version_prints_to_stdout() {
-    let out = Command::new(ENGINE).arg("--version").output().unwrap();
+    let out = spin::output_within(Command::new(ENGINE).arg("--version"), RUN_LIMIT);
     assert!(out.status.success());
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
@@ -27,11 +33,10 @@ fn version_into_closed_pipe_does_not_panic() {
     // Close the read end before the engine starts, so its write always hits a broken pipe.
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
-    let status = Command::new(ENGINE)
-        .arg("--version")
-        .stdout(writer)
-        .status()
-        .unwrap();
+    let status = spin::status_within(
+        Command::new(ENGINE).arg("--version").stdout(writer),
+        RUN_LIMIT,
+    );
     // 101 is Rust's panic exit code.
     assert_ne!(status.code(), Some(101), "engine panicked: {status}");
 }
@@ -45,7 +50,7 @@ fn a_bad_command_line_is_a_usage_error_on_stderr_with_exit_2() {
         &["--nope"],
         &["--relaunch-app", "not a bundle id"],
     ] {
-        let out = Command::new(ENGINE).args(bad).output().unwrap();
+        let out = spin::output_within(Command::new(ENGINE).args(bad), RUN_LIMIT);
         assert_eq!(out.status.code(), Some(2), "{bad:?}");
         assert!(out.stdout.is_empty(), "{bad:?}");
         assert!(
@@ -220,11 +225,12 @@ fn a_second_engine_is_refused_while_another_holds_the_instance_lock() {
         .unwrap();
     held.try_lock().unwrap();
     // `--watch-stdin` with no stdin: an engine that wrongly started ends at once, not never.
-    let out = Command::new(ENGINE)
-        .args(["--app-support".as_ref(), root.path().as_os_str()])
-        .arg("--watch-stdin")
-        .output()
-        .unwrap();
+    let out = spin::output_within(
+        Command::new(ENGINE)
+            .args(["--app-support".as_ref(), root.path().as_os_str()])
+            .arg("--watch-stdin"),
+        RUN_LIMIT,
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(
@@ -235,4 +241,13 @@ fn a_second_engine_is_refused_while_another_holds_the_instance_lock() {
         assert!(!dir.join(left_alone).exists(), "{left_alone} was created");
     }
     drop(held);
+}
+
+/// A program run with a bounded wait that does not end in time is killed and fails its test,
+/// naming the command, instead of holding the test run.
+#[cfg(unix)]
+#[test]
+#[should_panic(expected = "did not end within")]
+fn a_run_that_does_not_end_in_time_fails_naming_it() {
+    spin::output_within(Command::new("sleep").arg("600"), Duration::ZERO);
 }

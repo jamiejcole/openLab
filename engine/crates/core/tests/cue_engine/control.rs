@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Control cues (CT-11..CT-17, CT-19..CT-21). Virtual sample clock at 1 kHz: one second is 1000 samples.
+//! Control cues (CT-11..CT-21). Virtual sample clock at 1 kHz: one second is 1000 samples.
 
 use crate::common::*;
 use openlab_core::*;
@@ -564,6 +564,317 @@ fn a_negative_load_time_longer_than_the_target_or_with_no_known_end_loads_at_the
     );
 }
 
+/// Flow: the Load to Time tool with a negative time (the `load` transport action) loads the
+/// cue that long before the end of its pre-wait and action together, as a Load cue does.
+#[test]
+fn a_transport_load_with_a_negative_time_loads_before_the_cues_end() {
+    let mut rig = Rig::new(vec![timed(sound(1), 1.0, 0.0, DNC), sound(2)]);
+    let lengths = [(id(1), Some(4000))].into_iter().collect();
+    rig.at(0, Input::CueLengths { lengths });
+    // 1 s pre-wait + 4 s audio = 5 s; 2 s back is 3 s: 2 s into the audio.
+    let load = rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: -2.0,
+        },
+    );
+    assert!(
+        load.iter().any(|a| matches!(
+            a,
+            Action::LoadVoice { cue, offset: 2000, .. } if *cue == id(1)
+        )),
+        "{load:?}"
+    );
+    // Further back than the start, and a cue with no known end: loaded at the start.
+    for (cue, time) in [(1, -60.0), (2, -1.0)] {
+        let load = rig.at(10, Input::Load { cue: id(cue), time });
+        assert!(
+            load.iter()
+                .any(|a| matches!(a, Action::LoadVoice { offset: 0, .. })),
+            "{cue}: {load:?}"
+        );
+    }
+}
+
+fn auto_loading(mut c: Cue) -> Cue {
+    c.auto_load = true;
+    c
+}
+
+fn voice_loads(actions: &[Action]) -> Vec<(CueId, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::LoadVoice { cue, offset, .. } => Some((*cue, *offset)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Flow: a time typed into the Load to Time bar loads the standing-by cue's sequence. A time
+/// past the first cue's end carries into the cue it auto-follows into (QLab 5, manual pp. 149,
+/// 681): cue 1 (4 s) auto-follows into cue 2 (4 s); 6 s loads cue 1 at its end and cue 2 2 s
+/// in, and GO plays cue 2 from 2 s at once.
+#[test]
+fn a_time_typed_loads_the_standing_by_sequence_and_go_starts_from_there() {
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), sound(2)]);
+    let lengths = [(id(1), Some(4000)), (id(2), Some(4000))]
+        .into_iter()
+        .collect();
+    rig.at(0, Input::CueLengths { lengths });
+    let load = rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 6.0,
+        },
+    );
+    assert_eq!(voice_loads(&load), vec![(id(1), 6000), (id(2), 2000)]);
+    assert_eq!(rig.state(2), CueState::Loaded);
+    rig.go(100);
+    // The binary dates cue 1's empty plan's end on its start sample.
+    let run = rig.run(1);
+    let end = rig.at(
+        100,
+        Input::ActionLength {
+            cue: id(1),
+            run,
+            frames: 6000,
+        },
+    );
+    let end = [end, rig.tick(100)].concat();
+    assert!(
+        end.iter().any(|a| matches!(
+            a,
+            Action::StartVoice { cue, at: 100, offset: 2000, .. } if *cue == id(2)
+        )),
+        "{end:?}"
+    );
+}
+
+/// The time also carries through auto-continues (each next cue starts at its predecessor's
+/// pre-wait plus post-wait; a Wait cue's post-wait is its duration); a cue the time does not
+/// reach is loaded at its top (QLab 5, manual p. 680: the whole sequence is loaded).
+#[test]
+fn a_load_time_carries_through_auto_continues_and_loads_an_unreached_cue_at_its_top() {
+    let mut rig = Rig::new(vec![
+        timed(timer(1, 9, 4.0), 0.5, 1.0, AC),
+        timed(wait(2, 3.0), 0.0, 0.0, AC),
+        wait(3, 1.0),
+        sound(9),
+    ]);
+    // Cue 2 starts 1.5 s in, cue 3 4.5 s in: 2.5 s reaches cue 2 (1 s in), not cue 3.
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 2.5,
+        },
+    );
+    assert_eq!(rig.state(1), CueState::Loaded);
+    assert_eq!(rig.state(2), CueState::Loaded);
+    assert_eq!(rig.state(3), CueState::Loaded);
+    assert!(
+        rig.engine.loaded_offsets().all(|(c, _)| c != id(3)),
+        "cue 3 at its top"
+    );
+    // Cue 1 starts at 100 two seconds into its action; its post-wait is over, so cue 2 starts
+    // at once, 1 s into its 3 s: it ends at 2100.
+    rig.start(100, 1);
+    assert_eq!(rig.state(2), CueState::Running);
+    rig.tick(2099);
+    assert_eq!(rig.state(2), CueState::Running);
+    rig.tick(2100);
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+/// Inside a start-first group the children chain by their own continues: a group loaded to a
+/// time loads its first child and carries the rest of the time into the child it auto-follows into.
+#[test]
+fn a_group_loaded_to_a_time_carries_it_through_its_childrens_sequence() {
+    let mut rig = Rig::new(vec![
+        grp(
+            1,
+            GroupMode::StartFirstAndEnter,
+            vec![timed(timer(2, 9, 2.0), 0.0, 0.0, AF), wait(3, 3.0)],
+        ),
+        sound(9),
+    ]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 3.0,
+        },
+    );
+    assert_eq!(rig.state(2), CueState::Loaded);
+    assert_eq!(rig.state(3), CueState::Loaded);
+    // Started, the first child is at its end and the second runs its last 2 s.
+    rig.start(100, 1);
+    assert_eq!(rig.state(3), CueState::Running);
+    rig.tick(2099);
+    assert_eq!(rig.state(3), CueState::Running);
+    rig.tick(2100);
+    assert_eq!(rig.state(3), CueState::Idle);
+}
+
+/// Loading the sequence again to an earlier time leaves no later cue standing at the old time:
+/// one the new time does not reach goes back to its top, so the run starts it from there.
+#[test]
+fn a_sequence_loaded_again_earlier_moves_the_cues_it_no_longer_reaches_back_to_their_top() {
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), sound(2)]);
+    let lengths = [(id(1), Some(4000)), (id(2), Some(4000))]
+        .into_iter()
+        .collect();
+    rig.at(0, Input::CueLengths { lengths });
+    let load = |time| Input::Load { cue: id(1), time };
+    rig.at(0, load(6.0));
+    assert_eq!(rig.state(2), CueState::Loaded);
+    let again = rig.at(10, load(1.0));
+    assert_eq!(voice_loads(&again), vec![(id(1), 1000), (id(2), 0)]);
+    assert!(
+        again
+            .iter()
+            .any(|a| matches!(a, Action::UnloadVoice { cue, .. } if *cue == id(2))),
+        "the stream at the old time is let go: {again:?}"
+    );
+    assert_eq!(rig.state(2), CueState::Loaded);
+}
+
+/// A load at a cue's top (a Load cue or Load to Time at 0) keeps a later cue of its sequence
+/// that already stands loaded at its top (a preload): it is neither unloaded nor loaded again.
+#[test]
+fn a_load_at_the_top_keeps_a_later_cues_preload() {
+    let mut rig = Rig::new(vec![timed(sound(2), 0.0, 0.0, AF), sound(3)]);
+    let lengths = [(id(2), Some(4000)), (id(3), Some(4000))]
+        .into_iter()
+        .collect();
+    rig.at(0, Input::CueLengths { lengths });
+    let load = |cue| Input::Load {
+        cue: id(cue),
+        time: 0.0,
+    };
+    rig.at(0, load(3));
+    let run = rig.run(3);
+    let again = rig.at(10, load(2));
+    assert_eq!(rig.state(2), CueState::Loaded);
+    assert_eq!(rig.state(3), CueState::Loaded);
+    assert_eq!(rig.run(3), run, "the preload is kept: {again:?}");
+    assert!(
+        !again
+            .iter()
+            .any(|a| matches!(a, Action::UnloadVoice { cue, .. } if *cue == id(3))),
+        "{again:?}"
+    );
+}
+
+/// A disarmed later cue plays nothing, so it is not loaded (as auto-load leaves a disarmed cue
+/// alone); the time carries on past it.
+#[test]
+fn a_sequence_load_passes_over_a_disarmed_cue() {
+    let mut off = timed(wait(2, 1.0), 0.0, 0.0, AF);
+    off.armed = false;
+    let mut rig = Rig::new(vec![timed(wait(1, 1.0), 0.0, 0.0, AF), off, wait(3, 2.0)]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 0.0,
+        },
+    );
+    assert_eq!(rig.state(1), CueState::Loaded);
+    assert_eq!(
+        rig.state(2),
+        CueState::Idle,
+        "the disarmed cue is not loaded"
+    );
+    assert_eq!(rig.state(3), CueState::Loaded, "the cue after it is");
+}
+
+/// Auto-load loads the cue the GO lands on, not its sequence (Q576): on the head of a 42-cue
+/// auto-follow chain it loads one voice, so landings in rehearsal cannot pile up streams.
+#[test]
+fn auto_load_on_the_head_of_a_long_chain_loads_that_cue_alone() {
+    let mut cues = vec![sound(1), auto_loading(timed(sound(2), 0.0, 0.0, AF))];
+    cues.extend((3..43u128).map(|n| timed(sound(n), 0.0, 0.0, AF)));
+    cues.push(sound(43));
+    let mut rig = Rig::new(cues);
+    let lengths = (2..=43u128).map(|n| (id(n), Some(1000))).collect();
+    rig.at(0, Input::CueLengths { lengths });
+    let go = rig.go(10);
+    assert_eq!(voice_loads(&go), vec![(id(2), 0)]);
+    assert!((3..=43u128).all(|n| rig.state(n) == CueState::Idle));
+}
+
+/// The Load cue carries its time on through its target's sequence too (#755).
+#[test]
+fn a_load_cue_carries_its_time_into_the_rest_of_its_targets_sequence() {
+    let mut rig = Rig::new(vec![
+        load_cue(1, 2, 6.0),
+        timed(sound(2), 0.0, 0.0, AF),
+        sound(3),
+    ]);
+    let lengths = [(id(2), Some(4000)), (id(3), Some(4000))]
+        .into_iter()
+        .collect();
+    rig.at(0, Input::CueLengths { lengths });
+    let go = rig.go(0);
+    assert_eq!(voice_loads(&go), vec![(id(2), 6000), (id(3), 2000)]);
+}
+
+/// A later cue the run would pass over (static problems) is not loaded but the time carries
+/// on past it, quietly; one already running ends what the load reaches; an auto-follow after
+/// a cue of unknown length ends the sequence.
+#[test]
+fn a_sequence_load_passes_over_a_broken_cue_and_stops_at_a_running_or_unknown_one() {
+    let mut rig = Rig::new(vec![
+        timed(wait(1, 1.0), 0.0, 0.0, AF),
+        timed(cue(2, CueKind::Start { target: None }), 0.5, 0.0, AF),
+        timed(wait(3, 1.0), 0.0, 0.0, AF),
+        timed(sound(4), 0.0, 0.0, AF),
+        sound(5),
+    ]);
+    let load = rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 2.0,
+        },
+    );
+    assert_eq!(warnings(&load), vec![]);
+    assert_eq!(rig.state(2), CueState::Broken);
+    // Cue 3 starts at 1.5 s: loaded 0.5 s in. Cue 4 starts at 2.5 s: not reached, at its top.
+    assert_eq!(rig.state(3), CueState::Loaded);
+    assert_eq!(rig.state(4), CueState::Loaded);
+    assert_eq!(
+        rig.engine.loaded_offsets().collect::<Vec<_>>(),
+        vec![(id(1), 2000), (id(3), 500)]
+    );
+    // Cue 4's length is unknown: the sequence ends there, so cue 5 is never loaded.
+    let load = rig.at(
+        10,
+        Input::Load {
+            cue: id(4),
+            time: 60.0,
+        },
+    );
+    assert_eq!(voice_loads(&load), vec![(id(4), 60000)]);
+    assert_eq!(rig.state(5), CueState::Idle);
+    // A running cue in the sequence stops the walk, without a warning.
+    rig.start(20, 3);
+    let load = rig.at(
+        30,
+        Input::Load {
+            cue: id(1),
+            time: 5.0,
+        },
+    );
+    assert_eq!(warnings(&load), vec![]);
+    assert_eq!(rig.state(3), CueState::Running);
+    assert_eq!(rig.state(4), CueState::Loaded);
+}
+
 #[test]
 fn load_cue_on_an_active_or_broken_target_warns() {
     let mut rig = Rig::new(vec![load_cue(1, 3, 0.0), memo(2), sound(3)]);
@@ -965,6 +1276,290 @@ fn arm_cue_with_a_missing_target_warns() {
     let go = rig.go(0);
     assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
     assert!(set_armed(&go).is_empty());
+}
+
+// ----- Target (CT-18) -----
+
+fn target_cue(n: u128, target: Option<CueId>, new_target: Option<CueId>) -> Cue {
+    cue(n, CueKind::Target { target, new_target })
+}
+
+/// A Target cue (1) that points the Start cue (2) at the numbered sound 5 instead of sound 3;
+/// a memo (4) between.
+fn target_rig() -> Rig {
+    Rig::checked(vec![
+        target_cue(1, t(2), t(5)),
+        start_cue(2, 3),
+        numbered(3, "3", audio()),
+        memo(4),
+        numbered(5, "5", audio()),
+    ])
+}
+
+#[test]
+fn a_new_target_cue_is_broken_with_what_is_missing() {
+    let mut rig = Rig::checked(vec![target_cue(1, None, None), memo(2)]);
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::NoTarget, CueProblem::NoNewTarget]
+    );
+    assert_eq!(rig.state(1), CueState::Broken);
+    let go = rig.go(0);
+    assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
+}
+
+#[test]
+fn a_target_cue_on_a_start_cue_with_a_numbered_new_target_is_ready() {
+    let rig = target_rig();
+    assert_eq!(rig.problems(1), vec![]);
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
+fn running_the_target_cue_makes_its_target_act_on_the_new_target() {
+    let mut rig = target_rig();
+    let saved = rig.ws.clone();
+    let go = rig.go(0);
+    assert!(warnings(&go).is_empty(), "{go:?}");
+    assert!(voice_starts(&go).is_empty());
+    assert_eq!(rig.engine.temp_target(id(2)), Some(id(5)));
+    // The model is untouched: nothing to save, nothing edited.
+    assert_eq!(rig.ws, saved);
+    assert!(!go.iter().any(|a| matches!(a, Action::SetArmed { .. })));
+    // The Start cue now starts sound 5, not its saved target 3.
+    assert_eq!(voice_starts(&rig.start(100, 2)), vec![(id(5), 100)]);
+    assert_eq!(rig.state(3), CueState::Idle);
+    // And keeps doing so.
+    rig.stop(200, 5);
+    assert_eq!(voice_starts(&rig.start(300, 2)), vec![(id(5), 300)]);
+}
+
+#[test]
+fn a_reopened_show_acts_on_the_saved_target() {
+    let mut rig = target_rig();
+    rig.go(0);
+    // Reopening makes a new engine for the same (saved) model.
+    let mut reopened = Rig::checked(rig.ws.clone().cue_lists[0].cues.clone());
+    assert_eq!(reopened.engine.temp_target(id(2)), None);
+    assert_eq!(voice_starts(&reopened.start(100, 2)), vec![(id(3), 100)]);
+}
+
+#[test]
+fn reset_or_reset_all_returns_the_saved_target() {
+    // A reset of the targeted cue.
+    let mut rig = target_rig();
+    rig.go(0);
+    rig.at(10, Input::Reset { cue: id(2) });
+    assert_eq!(rig.engine.temp_target(id(2)), None);
+    assert_eq!(voice_starts(&rig.start(100, 2)), vec![(id(3), 100)]);
+    // Reset All.
+    let mut rig = target_rig();
+    rig.go(0);
+    rig.at(10, Input::ResetAll);
+    assert_eq!(voice_starts(&rig.start(100, 2)), vec![(id(3), 100)]);
+    // A Reset cue aimed at it.
+    let mut rig = Rig::checked(vec![
+        target_cue(1, t(2), t(5)),
+        reset_cue(6, 2),
+        start_cue(2, 3),
+        numbered(3, "3", audio()),
+        numbered(5, "5", audio()),
+    ]);
+    rig.go(0);
+    assert_eq!(rig.engine.temp_target(id(2)), Some(id(5)));
+    rig.go(10);
+    assert_eq!(rig.engine.temp_target(id(2)), None);
+    assert_eq!(voice_starts(&rig.start(100, 2)), vec![(id(3), 100)]);
+    // A reset of a group around it.
+    let mut rig = Rig::checked(vec![
+        target_cue(1, t(2), t(5)),
+        grp(6, GroupMode::Timeline, vec![start_cue(2, 3)]),
+        numbered(3, "3", audio()),
+        numbered(5, "5", audio()),
+    ]);
+    rig.go(0);
+    rig.at(10, Input::Reset { cue: id(6) });
+    assert_eq!(rig.engine.temp_target(id(2)), None);
+}
+
+#[test]
+fn every_change_of_a_temporary_target_is_counted_for_the_binary() {
+    let mut rig = target_rig();
+    assert_eq!(rig.engine.temp_target_changes(), 0);
+    rig.go(0);
+    assert_eq!(rig.engine.temp_target_changes(), 1);
+    // The same change again is none.
+    rig.start(10, 1);
+    assert_eq!(rig.engine.temp_target_changes(), 1);
+    rig.at(20, Input::Reset { cue: id(2) });
+    assert_eq!(rig.engine.temp_target_changes(), 2);
+    // A reset with nothing to drop, and Reset All with none set, count nothing.
+    rig.at(30, Input::Reset { cue: id(2) });
+    rig.at(40, Input::ResetAll);
+    assert_eq!(rig.engine.temp_target_changes(), 2);
+    rig.start(50, 1);
+    rig.at(60, Input::ResetAll);
+    assert_eq!(rig.engine.temp_target_changes(), 4);
+}
+
+#[test]
+fn a_target_cue_aimed_at_a_fade_or_a_missing_or_unnumbered_cue_is_broken_and_does_nothing() {
+    let fade_cue = cue(2, fade(3));
+    let mut rig = Rig::checked(vec![
+        target_cue(1, t(2), t(5)),
+        fade_cue,
+        numbered(3, "3", audio()),
+        numbered(5, "5", audio()),
+    ]);
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::TargetWrongKind { target: id(2) }]
+    );
+    let go = rig.go(0);
+    assert_eq!(warnings(&go), vec![EngineWarning::CueBroken { cue: id(1) }]);
+    assert_eq!(rig.engine.temp_target(id(2)), None);
+
+    // A new target that is not there, and one without a number.
+    let mut rig = Rig::checked(vec![
+        target_cue(1, t(2), t(99)),
+        start_cue(2, 3),
+        numbered(3, "3", audio()),
+        sound(5),
+    ]);
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::NewTargetMissing { target: id(99) }]
+    );
+    rig.find_mut(1).kind = CueKind::Target {
+        target: t(2),
+        new_target: t(5),
+    };
+    rig.tick(1);
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::NewTargetUnnumbered { target: id(5) }]
+    );
+    rig.go(2);
+    assert_eq!(rig.engine.temp_target(id(2)), None);
+    assert_eq!(voice_starts(&rig.start(100, 2)), vec![(id(3), 100)]);
+    // Giving cue 5 a number fixes it (the edit of cue 5 refreshes the Target cue).
+    rig.find_mut(5).number = Some("5".into());
+    rig.tick(200);
+    assert_eq!(rig.problems(1), vec![]);
+
+    // A new target its target cannot act on (a Devamp needs a sound), and the target itself.
+    let mut rig = Rig::checked(vec![
+        target_cue(1, t(2), t(4)),
+        devamp_cue(2, 3, false, false),
+        numbered(3, "3", audio()),
+        numbered(4, "4", CueKind::Memo),
+    ]);
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::NewTargetWrongKind { target: id(4) }]
+    );
+    rig.find_mut(2).number = Some("2".into());
+    rig.find_mut(1).kind = CueKind::Target {
+        target: t(2),
+        new_target: t(2),
+    };
+    rig.tick(1);
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::NewTargetWrongKind { target: id(2) }]
+    );
+    // The targeted cue turned into a Memo: the Target cue is then aimed at the wrong kind.
+    rig.find_mut(2).kind = CueKind::Memo;
+    rig.tick(2);
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::TargetWrongKind { target: id(2) }]
+    );
+}
+
+#[test]
+fn a_target_cue_run_while_its_target_plays_leaves_that_run_alone() {
+    // A Devamp cue (2) whose devamp of loop 3 is pending (start next cue): a Target cue then
+    // points it at sound 5. The pending devamp and its next cue are the old run's.
+    let mut rig = Rig::checked(vec![
+        sound(3),
+        devamp_cue(2, 3, true, false),
+        memo(6),
+        timed(target_cue(1, t(2), t(5)), 0.0, 0.0, DNC),
+        numbered(5, "5", audio()),
+    ]);
+    rig.start(0, 3);
+    rig.start(10, 2);
+    let run = rig.run(3);
+    rig.start(20, 1);
+    assert_eq!(rig.engine.temp_target(id(2)), Some(id(5)));
+    let scheduled = rig.at(
+        30,
+        Input::DevampScheduled {
+            cue: id(3),
+            run,
+            at: 500,
+        },
+    );
+    assert!(warnings(&scheduled).is_empty());
+    assert_eq!(starts(&rig.tick(500)), vec![(id(6), 500)]);
+    assert_eq!(rig.state(3), CueState::Running);
+    // Its next run acts on the new target, which is not playing.
+    let next = rig.start(600, 2);
+    assert_eq!(
+        warnings(&next),
+        vec![EngineWarning::TargetNotRunning {
+            cue: id(2),
+            target: id(5)
+        }]
+    );
+}
+
+#[test]
+fn a_target_given_during_the_pre_wait_is_used_when_the_action_starts() {
+    let mut rig = Rig::checked(vec![
+        timed(start_cue(2, 3), 1.0, 0.0, DNC),
+        target_cue(1, t(2), t(5)),
+        numbered(3, "3", audio()),
+        numbered(5, "5", audio()),
+    ]);
+    rig.start(0, 2);
+    rig.start(500, 1);
+    assert_eq!(voice_starts(&rig.tick(1000)), vec![(id(5), 1000)]);
+}
+
+#[test]
+fn a_target_cue_can_retarget_another_target_cue() {
+    // Cue 6 points Target cue 1 at Start cue 7 (number 7); then cue 1 retargets 7, not 2.
+    let mut rig = Rig::checked(vec![
+        timed(target_cue(6, t(1), t(7)), 0.0, 0.0, AC),
+        target_cue(1, t(2), t(5)),
+        start_cue(2, 3),
+        numbered(7, "7", CueKind::Start { target: t(3) }),
+        numbered(3, "3", audio()),
+        numbered(5, "5", audio()),
+    ]);
+    rig.go(0);
+    assert_eq!(rig.engine.temp_target(id(1)), Some(id(7)));
+    assert_eq!(rig.engine.temp_target(id(7)), Some(id(5)));
+    assert_eq!(rig.engine.temp_target(id(2)), None);
+    assert_eq!(voice_starts(&rig.start(100, 7)), vec![(id(5), 100)]);
+}
+
+#[test]
+fn a_temporary_target_deleted_later_only_warns() {
+    let mut rig = target_rig();
+    rig.go(0);
+    rig.cues_mut().retain(|c| c.id != id(5));
+    let start = rig.start(100, 2);
+    assert_eq!(
+        warnings(&start),
+        vec![EngineWarning::TargetMissing {
+            cue: id(2),
+            target: id(5)
+        }]
+    );
+    assert!(voice_starts(&start).is_empty());
 }
 
 // ----- Devamp (CT-16) -----

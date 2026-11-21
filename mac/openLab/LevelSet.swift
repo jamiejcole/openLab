@@ -91,9 +91,10 @@ struct LevelSet: Equatable {
     /// and "set defaults", which replace the whole matrix, drop them.
     var unread: [JSONValue] = []
 
-    /// Reads `kind.levels` of an Audio or Fade cue; nil for anything else or a malformed object.
+    /// Reads `kind.levels` of an Audio, Video or Fade cue (a Video cue's are an Audio cue's, for its
+    /// movie's sound); nil for anything else or a malformed object.
     init?(kind: JSONValue) {
-        guard let type = kind["type"]?.stringValue, type == "audio" || type == "fade",
+        guard let type = kind["type"]?.stringValue, type == "audio" || type == "video" || type == "fade",
             let levels = kind["levels"], case .object = levels
         else { return nil }
         isFade = type == "fade"
@@ -220,17 +221,33 @@ struct LevelSet: Equatable {
         }
     }
 
-    /// Mute keeps the level. Only an Audio cue's outputs and listed crosspoints have one.
+    /// Mute keeps the level. Only an Audio cue's outputs and listed crosspoints have one. An output
+    /// the levels do not list yet (one of its patch's, silent) is listed first, as a typed level
+    /// lists it, so the mute is kept.
     mutating func setMute(_ slot: Slot, _ mute: Bool) {
         guard !isFade else { return }
         switch slot {
         case .master: return
-        case .output(let o): if outputs.indices.contains(o) { outputs[o].mute = mute }
+        case .output(let o):
+            // An unlisted output is unmuted already.
+            guard o >= 0, o < Self.maxCueOutputs, mute || outputs.indices.contains(o) else { return }
+            padOutputs(to: o + 1)
+            outputs[o].mute = mute
         case .cross(let i, let o):
             let p = Point(input: i, output: o)
             if crosspoints[p] != nil { crosspoints[p]?.mute = mute }
         }
     }
+
+    /// Un-mutes every cue output and crosspoint (an Audio cue only); levels are kept.
+    mutating func clearMutes() {
+        guard !isFade else { return }
+        for o in outputs.indices { outputs[o].mute = false }
+        for p in crosspoints.keys { crosspoints[p]?.mute = false }
+    }
+
+    /// Whether any cue output or crosspoint is muted.
+    var hasMute: Bool { outputs.contains { $0.mute } || crosspoints.values.contains { $0.mute } }
 
     /// A Fade stops moving this level (grey). Not for an Audio cue.
     mutating func deactivate(_ slot: Slot) {

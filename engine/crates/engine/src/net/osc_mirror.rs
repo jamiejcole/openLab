@@ -15,7 +15,10 @@ use std::ops::ControlFlow;
 use openlab_core::protocol::{
     Delete, DocumentState, RuntimeChange, Snapshot, Upsert, WireCueState,
 };
-use openlab_core::{Cue, CueId, CueKind, CueList, CueListId, OscAccess, Workspace, WorkspaceId};
+use openlab_core::{
+    Cue, CueId, CueKind, CueList, CueListId, FillStyle, OscAccess, OscRights, Workspace,
+    WorkspaceId,
+};
 use serde_json::{Value, json};
 
 use crate::osc::{CueField, OscShow, Target, upper};
@@ -123,7 +126,18 @@ impl Mirror {
 
     /// The passcode table.
     pub fn access(&self) -> &OscAccess {
-        &self.workspace.settings.osc_access
+        // OSC access off (Workspace Settings, OSC): every peer is judged by a table that grants
+        // nothing, so every message is `denied`, and sessions made under the real table end when
+        // the copy sees the table change.
+        static NO_ACCESS: OscAccess = OscAccess {
+            no_passcode: OscRights::NONE,
+            passcodes: Vec::new(),
+        };
+        if self.workspace.settings.osc_enabled {
+            &self.workspace.settings.osc_access
+        } else {
+            &NO_ACCESS
+        }
     }
 
     /// Takes the active list over from the copy this one replaces, if it is the same workspace
@@ -518,6 +532,7 @@ fn action_length(cue: &Cue, lengths: &HashMap<CueId, f64>) -> Option<f64> {
         | CueKind::GoTo { .. }
         | CueKind::Arm { .. }
         | CueKind::Disarm { .. }
+        | CueKind::Target { .. }
         | CueKind::Network { .. } => Some(0.0),
     }
 }
@@ -538,6 +553,7 @@ fn kind_name(kind: &CueKind) -> &'static str {
         CueKind::GoTo { .. } => "GoTo",
         CueKind::Arm { .. } => "Arm",
         CueKind::Disarm { .. } => "Disarm",
+        CueKind::Target { .. } => "Target",
         CueKind::Wait { .. } => "Wait",
         CueKind::Memo => "Memo",
         CueKind::Network { .. } => "Network",
@@ -556,6 +572,10 @@ impl OscShow for MirrorShow<'_> {
 
     fn access(&self) -> &OscAccess {
         self.0.access()
+    }
+
+    fn enabled(&self) -> bool {
+        self.0.workspace.settings.osc_enabled
     }
 
     /// The list whose playhead moved last, else the first (the main list).
@@ -591,6 +611,28 @@ impl OscShow for MirrorShow<'_> {
             CueField::IsRunning => json!(is_running(state)),
             CueField::IsPaused => json!(state == Some(WireCueState::Paused)),
             CueField::IsBroken => json!(state == Some(WireCueState::Broken)),
+            geometry => {
+                let CueKind::Video { geometry: g, .. } = &cue.kind else {
+                    return None;
+                };
+                match geometry {
+                    CueField::Opacity => json!(g.opacity),
+                    CueField::Layer => json!(g.layer),
+                    CueField::FillStage => json!(g.fill_stage),
+                    CueField::FillStyle => json!(match g.fill_style {
+                        FillStyle::Fit => 0,
+                        FillStyle::Fill => 1,
+                        FillStyle::Stretch => 2,
+                    }),
+                    CueField::Smooth => json!(g.smooth),
+                    CueField::PreserveAspectRatio => json!(g.scale_locked),
+                    CueField::CropTop => json!(g.crop.top),
+                    CueField::CropBottom => json!(g.crop.bottom),
+                    CueField::CropLeft => json!(g.crop.left),
+                    CueField::CropRight => json!(g.crop.right),
+                    _ => return None,
+                }
+            }
         })
     }
 
@@ -600,6 +642,16 @@ impl OscShow for MirrorShow<'_> {
         };
         match field {
             CueField::Duration => matches!(cue.kind, CueKind::Wait { .. } | CueKind::Fade { .. }),
+            CueField::Opacity
+            | CueField::Layer
+            | CueField::FillStage
+            | CueField::FillStyle
+            | CueField::Smooth
+            | CueField::PreserveAspectRatio
+            | CueField::CropTop
+            | CueField::CropBottom
+            | CueField::CropLeft
+            | CueField::CropRight => matches!(cue.kind, CueKind::Video { .. }),
             _ => true,
         }
     }
@@ -717,6 +769,7 @@ mod tests {
             triggers: Triggers {
                 hotkey: None,
                 hotkey_enabled: true,
+                wall_clock: Default::default(),
             },
             second_trigger: SecondTrigger::Nothing,
             second_trigger_on_release: false,
@@ -750,6 +803,11 @@ mod tests {
                 auto_number_start: 1.0,
                 auto_number_increment: 1.0,
                 new_cues_auto_load: false,
+                auto_number_new_cues: true,
+                lock_playhead: true,
+                go_needs_key_up: false,
+                osc_enabled: true,
+                copy_media_on_add: true,
             },
             patches: vec![],
             network_patches: vec![],
@@ -781,6 +839,7 @@ mod tests {
             }],
             previewing: vec![],
             played: vec![],
+            playlist_next: vec![],
             warnings: vec![],
             media_durations: vec![],
         })
@@ -1172,6 +1231,7 @@ mod tests {
             playheads: vec![],
             previewing: vec![],
             played: vec![],
+            playlist_next: vec![],
             warnings: vec![],
             media_durations: vec![],
         });
@@ -1352,7 +1412,7 @@ mod tests {
             fade_in: no_fade,
             fade_out: no_fade,
             slices: vec![],
-            last_slice_play_count: 1,
+            last_slice_play_count: 1.into(),
             levels: openlab_core::CueLevels {
                 master_db: 0.0,
                 outputs: vec![],
@@ -1373,6 +1433,8 @@ mod tests {
             duration,
             channels: None,
             picture: None,
+            audio_tracks: Vec::new(),
+            audio_track: None,
         };
         let mut m = Mirror::from_snapshot(Snapshot {
             revision: 0,
@@ -1385,6 +1447,7 @@ mod tests {
             playheads: vec![],
             previewing: vec![],
             played: vec![],
+            playlist_next: vec![],
             warnings: vec![],
             media_durations: vec![media(1, Some(4.25))],
         });
@@ -1411,6 +1474,9 @@ mod tests {
             media: Some(openlab_core::MediaRef::new("a.mov")),
             stage: None,
             duration: None,
+            geometry: Default::default(),
+            timing: Default::default(),
+            sound: Default::default(),
         };
         let base = mirror(2);
         let mut workspace = base.workspace.clone();
@@ -1424,6 +1490,8 @@ mod tests {
             duration,
             channels: None,
             picture: None,
+            audio_tracks: Vec::new(),
+            audio_track: None,
         };
         let mut m = Mirror::from_snapshot(Snapshot {
             revision: 0,
@@ -1436,6 +1504,7 @@ mod tests {
             playheads: vec![],
             previewing: vec![],
             played: vec![],
+            playlist_next: vec![],
             warnings: vec![],
             // A movie of 2 s; a still shown until stopped.
             media_durations: vec![media(1, Some(2.0), Some(2.0)), media(2, None, None)],

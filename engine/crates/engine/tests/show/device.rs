@@ -30,19 +30,27 @@ use super::{BLOCK, RATE, mixer_config};
 
 /// How long the driver waits for the device thread or a disk worker before failing the test.
 const WAIT: Duration = Duration::from_secs(30);
+/// How long a picture's open may take: Apple's media framework has stalled a good file's open
+/// past 10 s on CI's virtual machines.
+const PICTURE_OPEN_WAIT: Duration = Duration::from_secs(180);
 /// Timed-out 20 ms waits before a wait for another thread is called a hang.
 const WAIT_STEPS: u32 = 1_500;
 
 /// A listed output device with `channels` channels at [`RATE`].
 pub fn listed(id: &str, name: &str, channels: u16) -> ListedDevice {
+    listed_at(id, name, channels, RATE)
+}
+
+/// A listed output device with `channels` channels that runs only at `rate`.
+pub fn listed_at(id: &str, name: &str, channels: u16, rate: u32) -> ListedDevice {
     ListedDevice {
         id: id.into(),
         name: name.into(),
         is_default: false,
         configs: vec![ConfigRange {
             channels,
-            min_rate: RATE,
-            max_rate: RATE,
+            min_rate: rate,
+            max_rate: rate,
             buffer: BufferRange::Unknown,
             format: SampleFormat::F32,
         }],
@@ -57,6 +65,31 @@ struct Live {
     reporter: ErrorReporter,
     /// The device delivers callbacks (false once it is lost).
     rendering: bool,
+    /// Its mixer's rate: a callback lasting `n` frames at [`RATE`] has `n × rate / RATE` here.
+    rate: u32,
+    /// Time it has rendered since it opened, in frames at [`RATE`].
+    elapsed: u64,
+    /// How far its clock runs off the others', in parts per million (`Fake::set_drift`), and
+    /// the time and frames it had rendered when that was set.
+    drift: (i64, u64, u64),
+    /// Frames it has rendered at its own rate.
+    done: u64,
+}
+
+impl Live {
+    /// Frames at its own rate in a callback of `frames` at [`RATE`], so over many callbacks it
+    /// renders as much time as a device at [`RATE`] does, to within a frame (with a drift, that
+    /// much more or less).
+    fn frames_in(&mut self, frames: usize) -> usize {
+        let (ppm, since, base) = self.drift;
+        self.elapsed += frames as u64;
+        let per_million = i128::from(1_000_000 + ppm);
+        let span = i128::from(self.elapsed - since) * i128::from(self.rate) * per_million;
+        let at = base + u64::try_from(span / (i128::from(RATE) * 1_000_000)).unwrap();
+        let n = at - self.done;
+        self.done = at;
+        usize::try_from(n).unwrap()
+    }
 }
 
 #[derive(Default)]
@@ -117,6 +150,14 @@ impl Fake {
     /// Plugs a device in.
     pub fn plug(&self, device: ListedDevice) {
         self.state.lock().unwrap().devices.push(device);
+    }
+
+    /// The system's default output becomes device `id` (none: no device is the default), as
+    /// when the operator picks another output in the system's sound settings.
+    pub fn set_default(&self, id: Option<&str>) {
+        for d in &mut self.state.lock().unwrap().devices {
+            d.is_default = Some(d.id.as_str()) == id;
+        }
     }
 
     /// Unplugs a device: it leaves the list. If it is the open one, its callbacks stop and,
@@ -205,6 +246,22 @@ impl Fake {
         self.state.lock().unwrap().reported_block = Some(frames);
     }
 
+    /// Device `id`'s clock runs `ppm` parts per million fast (slow when negative) against the
+    /// others' from now on: each callback it renders that much more (less) than its rate says.
+    pub fn set_drift(&self, id: &str, ppm: i64) {
+        let mut s = self.state.lock().unwrap();
+        for l in s.live.iter_mut().filter(|l| l.id == id) {
+            l.drift = (ppm, l.elapsed, l.done);
+        }
+    }
+
+    /// The most parts per million any open device's clock runs fast (0: none does).
+    fn fastest_drift(&self) -> u64 {
+        let s = self.state.lock().unwrap();
+        let fastest = s.live.iter().map(|l| l.drift.0).max().unwrap_or(0);
+        u64::try_from(fastest).unwrap_or(0)
+    }
+
     /// Streams opened from now on report this sample rate.
     pub fn report_rate(&self, rate: u32) {
         self.state.lock().unwrap().reported_rate = Some(rate);
@@ -273,7 +330,7 @@ impl Fake {
             .filter(|l| l.rendering)
             .map(|l| {
                 let ch = l.host.device_channels();
-                let mut buf = vec![0.0f32; frames * ch];
+                let mut buf = vec![0.0f32; l.frames_in(frames) * ch];
                 l.host.render(&mut buf, None);
                 (l.id.clone(), ch, buf)
             })
@@ -351,6 +408,7 @@ impl DeviceLayer for FakeLayer {
             });
         };
         let outputs = u16::try_from(mixer.output_channels()).unwrap();
+        let rate = mixer.sample_rate();
         let channels = device.max_channels();
         let (host, link) = OutputHost::new(mixer, channels);
         let rendering = !std::mem::take(&mut s.silent_next_open);
@@ -360,20 +418,25 @@ impl DeviceLayer for FakeLayer {
             host,
             reporter: link.reporter(),
             rendering,
+            rate,
+            elapsed: 0,
+            drift: (0, 0, 0),
+            done: 0,
         });
         let block = s
             .device_blocks
             .iter()
             .rev()
             .find(|(id, _)| *id == device.id)
-            .map_or(s.block, |&(_, b)| b);
+            // As long in time as the others' (a callback renders that long on every device).
+            .map_or(s.block * rate / RATE, |&(_, b)| b);
         let info = StreamInfo {
             device_id: device.id.clone(),
             name: device.name.clone(),
             channels: outputs.min(channels),
             outputs_dropped: channels < outputs,
             block_frames: s.reported_block.unwrap_or(Some(block)),
-            sample_rate: s.reported_rate.unwrap_or(RATE),
+            sample_rate: s.reported_rate.unwrap_or(rate),
             monitor: link.monitor(),
         };
         Ok(Box::new(FakeStream {
@@ -436,6 +499,15 @@ pub struct DeviceShow {
     /// Captured audio per device, per channel.
     captures: Vec<(String, Vec<Vec<f32>>)>,
     next_id: u64,
+    /// Streams prepared but not playing are not waited for before a callback: a slow disk,
+    /// whose stream a move to another device cannot have by its swap.
+    pub slow_disk: bool,
+    /// No stream is waited for before a callback: a disk that has not delivered, so a playing
+    /// voice underruns (tests of a starved voice).
+    pub starved: bool,
+    /// Timed-out 20 ms waits before the probes are called hung: [`WAIT_STEPS`], or more when
+    /// the engine's own probe watchdog (`probe_timeout`) waits longer before giving up on one.
+    probe_wait_steps: u32,
 }
 
 impl DeviceShow {
@@ -445,7 +517,8 @@ impl DeviceShow {
         // As many patch matrices as the engine hands out slots.
         let mut mixer = mixer_config();
         mixer.patches = mixer.patches.max(config.mixer_patches);
-        config.output_mixer.get_or_insert(mixer);
+        // The primary's mixer is the one configured, if a test gives one.
+        let mixer = *config.output_mixer.get_or_insert(mixer);
         let fake = Fake::new(devices.clone());
         let (ctl, mixer) = Mixer::new(mixer).unwrap();
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
@@ -462,6 +535,8 @@ impl DeviceShow {
             let (wall, slept) = (Arc::clone(&wall), Arc::clone(&slept));
             Arc::new(move || sys_base + *wall.lock().unwrap() + *slept.lock().unwrap())
         };
+        let probe_wait_steps = WAIT_STEPS
+            .max(u32::try_from(config.probe_timeout.as_millis() / 20).unwrap_or(u32::MAX));
         let primary = devices[0].id.clone();
         let request = OpenRequest {
             device_id: Some(primary.clone()),
@@ -498,6 +573,9 @@ impl DeviceShow {
             primary,
             captures: Vec::new(),
             next_id: 0,
+            slow_disk: false,
+            starved: false,
+            probe_wait_steps,
         };
         show.settle_media();
         show
@@ -555,7 +633,24 @@ impl DeviceShow {
         }
     }
 
-    fn settle_media(&mut self) {
+    /// Waits until no Video cue's start waits for its picture's open, as the offline driver
+    /// does: live the clock moves on in real time meanwhile, here it would run far ahead.
+    fn settle_pictures(&mut self) {
+        let deadline = std::time::Instant::now() + PICTURE_OPEN_WAIT;
+        while self.control.pictures_waiting() > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a picture's file never opened"
+            );
+            if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
+                let _ = self.control.handle(msg);
+            }
+            self.control.tick();
+        }
+    }
+
+    /// Waits until every media probe has answered.
+    pub fn settle_media(&mut self) {
         let mut timeouts = 0;
         while self.control.probes_pending() > 0 {
             match self.inbox.recv_timeout(Duration::from_millis(20)) {
@@ -564,7 +659,7 @@ impl DeviceShow {
                 }
                 Err(_) => {
                     timeouts += 1;
-                    assert!(timeouts <= WAIT_STEPS, "probes never answered");
+                    assert!(timeouts <= self.probe_wait_steps, "probes never answered");
                     self.control.tick();
                 }
             }
@@ -624,10 +719,11 @@ impl DeviceShow {
         self.control.tick();
     }
 
-    /// One block: answers in, streams settled, one device callback (if the device is up),
-    /// then a control tick.
+    /// One block: answers in, streams and picture opens settled, one device callback (if the
+    /// device is up), then a control tick.
     pub fn step(&mut self) {
         self.pump_inbox();
+        self.settle_pictures();
         self.callback(self.fake.block() as usize);
         self.control.tick();
     }
@@ -689,12 +785,31 @@ impl DeviceShow {
     }
 
     fn settle_streams(&mut self, frames: u64) {
+        if self.starved {
+            return;
+        }
         let end = self.rendered() + frames;
+        // A device whose clock runs fast plays more of its streams than the master clock counts:
+        // as much more is waited for (on every stream, as the test does not say which is whose).
+        let ppm = self.fake.fastest_drift();
         for (handle, needed) in self.control.stream_needs(end) {
+            let needed = match ppm {
+                0 => needed,
+                ppm => needed + needed * ppm / 1_000_000 + frames + 1,
+            };
+            // A devamp cut a voice published is seen by its disk worker on its next poll, in
+            // real time; a render faster than that must wait for it, as the offline driver does.
             assert!(
-                matches!(handle.wait_written(needed, WAIT), Ok(true) | Err(_)),
+                matches!(handle.wait_cut_seen(WAIT), Ok(true) | Err(_)),
+                "a disk worker never saw a devamp"
+            );
+            assert!(
+                matches!(handle.wait_fed(needed, WAIT), Ok(true) | Err(_)),
                 "a disk worker stalled"
             );
+        }
+        if self.slow_disk {
+            return;
         }
         for handle in self.control.prepared_streams() {
             assert!(
@@ -738,10 +853,26 @@ impl DeviceShow {
 
     /// Opens `ws` as another doc and waits until it is installed and its files probed.
     pub fn open_doc(&mut self, ws: Workspace) -> DocId {
+        self.open_source(DocSource::Workspace(Box::new(ws)))
+    }
+
+    /// Opens a new workspace (`new`), as the app's New does, and waits until it is installed.
+    pub fn new_doc(&mut self) -> DocId {
+        self.open_source(DocSource::New)
+    }
+
+    /// Opens the show file at `path` (`open`) and waits until it is installed and probed.
+    pub fn open_file(&mut self, path: &std::path::Path) -> DocId {
+        self.open_source(DocSource::Open {
+            path: path.to_path_buf(),
+            recovery: None,
+        })
+    }
+
+    fn open_source(&mut self, source: DocSource) -> DocId {
         let (tx, _rx) = reply_channel();
         let id = self.request_id();
-        self.control
-            .open_doc(DocSource::Workspace(Box::new(ws)), id, &tx);
+        self.control.open_doc(source, id, &tx);
         let mut timeouts = 0;
         let doc = loop {
             if let Some((_, doc)) = self.control.take_opened().pop() {
@@ -760,6 +891,45 @@ impl DeviceShow {
         };
         self.settle_media();
         doc
+    }
+
+    /// Sends `message`, then handles answers and ticks (no callback, so sample time stands)
+    /// until `done` holds: for a request another thread answers, such as a stage probe.
+    pub fn send_until(
+        &mut self,
+        message: ClientMessage,
+        done: impl Fn(&Control) -> bool,
+    ) -> Vec<ServerMessage> {
+        let (tx, mut rx) = reply_channel();
+        self.pump_inbox();
+        let _ = self.control.handle(Inbox::Client { message, reply: tx });
+        self.wait_until(done);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// Handles answers and ticks (no callback, so sample time stands) until `done` holds: for
+    /// what another thread does, such as the stage host starting.
+    pub fn wait_until(&mut self, done: impl Fn(&Control) -> bool) {
+        let deadline = std::time::Instant::now() + PICTURE_OPEN_WAIT;
+        loop {
+            self.pump_inbox();
+            self.control.tick();
+            if done(&self.control) {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "it never happened");
+            if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
+                let _ = self.control.handle(msg);
+            }
+        }
+    }
+
+    /// A message for doc `doc`; the replies.
+    pub fn send_doc(&mut self, doc: DocId, message: ClientMessage) -> Vec<ServerMessage> {
+        let (tx, mut rx) = reply_channel();
+        self.pump_inbox();
+        let _ = self.control.handle_doc(doc, message, &tx);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     /// A transport action for doc `doc`.

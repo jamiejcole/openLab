@@ -9,6 +9,7 @@ use openlab_core::{
 };
 
 use super::DocCx;
+use super::voices::{Effects, Env};
 
 impl DocCx<'_> {
     /// A command, undo or redo changed the workspace.
@@ -18,8 +19,51 @@ impl DocCx<'_> {
         for input in inputs {
             self.feed(input, now);
         }
+        // The cue engine first carries out what is due by now and commits its window: a message
+        // is handled before the block's tick, so an end it already counts as committed would
+        // otherwise look still ahead, and the voice would be moved past an action the engine
+        // then ends on its old end.
+        self.feed(Input::Tick, now);
+        self.follow_end_times(now, footprint);
         // Follow the edit at once: a deleted running cue stops now, not at the next deadline.
         self.feed(Input::Tick, now);
+    }
+
+    /// An end time edited while its cue plays is heard at once: the voices and pictures of the
+    /// edited cues end at their new end, and the cue engine is told each run's new length.
+    fn follow_end_times(&mut self, now: SampleTime, footprint: &Footprint) {
+        if footprint.edited.is_empty() {
+            return;
+        }
+        let mut fx = Effects::default();
+        {
+            let floor = self.stop_floor();
+            let engine = self.doc.model.engine();
+            let runs = |cue, run| engine.runs_action(cue, run);
+            let mut env = Env {
+                doc: self.doc.id,
+                ws: self.doc.model.ws(),
+                media: &self.doc.media,
+                streamer: &mut self.eng.streamer,
+                patches: &self.eng.patches,
+                ids: &mut self.eng.voice_ids,
+                rate: self.eng.rate,
+                rates: self.eng.outputs.rates(),
+                cue_outputs: self.eng.cue_outputs,
+                now,
+                window: self.eng.block,
+                floor,
+            };
+            for &cue in &footprint.edited {
+                self.doc
+                    .voices
+                    .follow_end_time(cue, &runs, &mut env, &mut fx);
+            }
+        }
+        for &cue in &footprint.edited {
+            self.follow_picture_end(cue, now, &mut fx);
+        }
+        self.follow(fx, now);
     }
 
     /// A refused command that is not "nothing changed": a transaction's rollback failed
@@ -41,6 +85,7 @@ impl DocCx<'_> {
         // Not `reset`: the files are the same, so their probe results stay (a cue started
         // meanwhile must not find them pending).
         self.doc.media.sync(self.doc.model.ws());
+        self.follow_picture_geometry();
         let inputs = self.sync_workspace(false);
         self.document();
         for input in inputs {
@@ -60,6 +105,7 @@ impl DocCx<'_> {
         // The catalog's cue index follows the edit first; the changes are read through it, at
         // the cost of the edit's cues. The walk is the fallback.
         self.doc.media.sync_cues(self.doc.model.ws(), footprint);
+        self.follow_picture_geometry();
         let (upserts, deletes) =
             model_changes_indexed(self.doc.model.ws(), footprint, self.doc.media.index())
                 .unwrap_or_else(|| {
@@ -105,6 +151,7 @@ impl DocCx<'_> {
             self.doc.model.ws(),
             &self.eng.config.machine,
             &self.eng.playable,
+            self.eng.system_output().as_deref(),
             &busy,
         );
         let now = self.now();
@@ -130,14 +177,16 @@ impl DocCx<'_> {
         } else {
             changed
         };
-        if patches.is_empty() {
-            Vec::new()
-        } else {
-            vec![Input::Availability {
+        let mut inputs = Vec::new();
+        if !patches.is_empty() {
+            inputs.push(Input::Availability {
                 media: Vec::new(),
                 patches,
-            }]
+            });
         }
+        // A voice whose patch now plays on another device follows it there.
+        inputs.extend(self.follow_devices(now));
+        inputs
     }
 }
 

@@ -1,0 +1,42 @@
+{
+  "about": "Stage monitor windows from a Video cue's I/O tab (#648): the watch button beside the stage pop-up; the window opened, idle and while the movie plays beside the stage's display (V1); the window at a square and a tall size (black bars); the cue on no stage with the button off; the least window size.",
+  "show": "Video",
+  "displays": "V1:1920x1080",
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1,
+    "media/card.jpg": 1,
+    "media/A very long name for a projection clip used in the second act.mov": 2
+  },
+  "settings": {
+    "settings_version": 1,
+    "workspaces": {
+      "00000000-0000-0000-0000-0000000000f0": {
+        "patches": {},
+        "stages": {
+          "00000000-0000-0000-0000-0000000000f1": {"display": "V1", "name": "Virtual V1", "width": 1920, "height": 1080}
+        }
+      }
+    }
+  },
+  "steps": [
+    {"advance": 0.1},
+    {"select": "1"},
+    {"tab": "io"},
+    {"shot": "io-watch-button"},
+    {"click": "inspector-io-monitor"},
+    {"advance": 0.1},
+    {"shot": "watching-idle", "monitor": "Stage 1", "display": "V1"},
+    {"key": "space"},
+    {"advance": 1.5},
+    {"select": "1"},
+    {"shot": "watching-playing", "monitor": "Stage 1", "display": "V1"},
+    {"shot": "watching-square", "monitor": "Stage 1", "monitor_size": [400, 400]},
+    {"shot": "watching-tall", "monitor": "Stage 1", "monitor_size": [240, 480]},
+    {"select": "6"},
+    {"shot": "io-no-stage"},
+    {"resize": [800, 500]},
+    {"select": "1"},
+    {"shot": "least-size"}
+  ]
+}

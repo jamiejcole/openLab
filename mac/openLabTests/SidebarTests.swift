@@ -101,20 +101,42 @@ final class SidebarTests: XCTestCase {
 
     // MARK: Cue lists
 
+    /// Flow: sidebar shown → two tabs only (cue lists and active cues); no Warnings tab. The footer's
+    /// warnings button leads to the Status window's Warnings page instead.
+    func testTheSidebarHasTwoTabsAndTheFootersWarningsButtonOpensStatus() async throws {
+        let wc = try await make()
+        wc.sidebar.loadViewIfNeeded()
+        XCTAssertEqual(wc.sidebar.tabs.segmentCount, 2)
+        let labels = (0..<2).map { wc.sidebar.tabs.label(forSegment: $0) ?? "" }
+        XCTAssertTrue(labels[0].contains("Cue List"), labels[0])
+        XCTAssertTrue(labels[1].contains("Active Cue"), labels[1])
+        for tab in 0..<2 {
+            wc.sidebar.showTab(tab)
+            XCTAssertFalse((labels[tab]).localizedCaseInsensitiveContains("warning"))
+        }
+        wc.footer.showWarnings(count: 2)
+        wc.footer.warningsButton.performClick(nil)
+        XCTAssertEqual(wc.existingStatusWindow?.page, .warnings)
+        XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 1, "the sidebar did not change tab")
+        wc.existingStatusWindow?.close()
+    }
+
     /// Each transport icon is drawn inside its button's shape with a margin, at the default and the
     /// minimum sidebar width: the glyph at the size the button sets, against the cell's content
     /// area.
     func testTransportIconsFitInsideTheirButtons() async throws {
         let wc = try await make()
         wc.sidebar.loadViewIfNeeded()
-        for width: CGFloat in [280, 200] {
+        for width in [280, SidebarViewController.minWidth] {
             wc.sidebar.view.frame = NSRect(x: 0, y: 0, width: width, height: 600)
             wc.sidebar.view.layoutSubtreeIfNeeded()
+            // The column is laid out at this width (nothing in it holds the sidebar wider).
+            XCTAssertEqual(wc.sidebar.tabs.frame.width, width - 20, accuracy: 0.5, "tabs at \(width)")
             for (id, button) in wc.sidebar.transportButtons {
                 let cell = try XCTUnwrap(button.cell as? NSButtonCell)
                 let content = cell.drawingRect(forBounds: button.bounds)
-                let config = try XCTUnwrap(button.symbolConfiguration)
-                let image = try XCTUnwrap(button.image?.withSymbolConfiguration(config))
+                let image = try XCTUnwrap(button.image)
+                XCTAssertEqual(image.size.width, SidebarViewController.transportIconSize, "\(id)")
                 XCTAssertLessThanOrEqual(image.size.height + 4, content.height, "\(id) height at \(width)")
                 XCTAssertLessThanOrEqual(image.size.width + 4, content.width, "\(id) width at \(width)")
             }
@@ -234,13 +256,15 @@ final class SidebarTests: XCTestCase {
     }
 
     /// CL-01: New List asks the engine for an empty list after the last one and shows it once the
-    /// engine has accepted; New Cart stays off (CL-05).
+    /// engine has accepted; there is no New Cart button.
     func testNewListAddsAnEmptyListAtTheEndAndShowsIt() async throws {
         let wired = try await Rig.open()
         side = SidebarViewController(store: wired.store, activeTable: spy)
         side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
         XCTAssertTrue(side.newListButton.isEnabled)
-        XCTAssertFalse(side.newCartButton.isEnabled)
+        func buttons(_ v: NSView) -> [NSButton] { (v as? NSButton).map { [$0] } ?? v.subviews.flatMap(buttons) }
+        let carts = buttons(side.view).map(\.title).filter { $0.contains("Cart") }
+        XCTAssertEqual(carts, [], "no New Cart button: carts are not built")
         var picked: ModelID?
         side.onSelectList = { picked = $0 }
         side.newListButton.performClick(nil)
@@ -254,6 +278,43 @@ final class SidebarTests: XCTestCase {
         let sent = wired.wire.commands.filter { $0.json["type"]?.stringValue == "add_cue_list" }
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(sent.first?.json["index"], .int(1))
+    }
+
+    /// Show Mode locks every way to add, rename or delete a list: New List (button and its action),
+    /// rename and delete refuse, a press adds nothing and the window stays on its list.
+    /// Choosing another existing list still works there; back in Edit Mode New List adds again.
+    func testInShowModeNoListCanBeAddedRenamedOrDeletedButListsCanStillBeChosen() async throws {
+        let wired = try await Rig.open()
+        let wc = WorkspaceWindowController(store: wired.store)
+        let side = try XCTUnwrap(wc.sidebar)
+        side.newListButton.performClick(nil)
+        await assertEventually("a second list in Edit Mode") { wired.store.model?.cueLists.count == 2 }
+        let lists = try XCTUnwrap(wired.store.model?.cueLists.map(\.id))
+        await assertEventually { wc.cueList.listID == lists[1] }
+        wc.setShowMode(true)
+        await assertEventually { side.listEditLocked }
+        XCTAssertFalse(side.newListButton.isEnabled)
+        side.newListButton.performClick(nil)
+        side.addList()
+        try await wired.advance(0.2)
+        XCTAssertEqual(wired.store.model?.cueLists.map(\.id), lists, "nothing added")
+        XCTAssertEqual(wc.cueList.listID, lists[1], "the window stays on its list")
+        XCTAssertEqual(wired.wire.commands.filter { $0.json["type"]?.stringValue == "add_cue_list" }.count, 1)
+        // Rename and delete refuse too.
+        await side.rename(list: lists[0], to: "Other")
+        await side.delete(list: lists[1])
+        try await wired.advance(0.2)
+        XCTAssertEqual(wired.store.model?.cueLists.map(\.id), lists)
+        XCTAssertEqual(wired.store.model?.cueLists.first?.name, "Main")
+        // Choosing an existing list is still allowed.
+        side.listTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        XCTAssertEqual(wc.cueList.listID, lists[0])
+        // Back in Edit Mode New List adds again.
+        wc.setShowMode(false)
+        await assertEventually { !side.listEditLocked }
+        XCTAssertTrue(side.newListButton.isEnabled)
+        side.newListButton.performClick(nil)
+        await assertEventually("a third list") { wired.store.model?.cueLists.count == 3 }
     }
 
     /// The right-click menu on a list row renames and deletes it; Show Mode and an engine refusal
@@ -284,6 +345,23 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(sent("rename_cue_list"), 1, "nothing is sent in Show Mode")
         XCTAssertEqual(sent("remove_cue_list"), 1)
         XCTAssertEqual(wired.store.model?.cueLists.first?.name, "Front of House")
+    }
+
+    /// An Active Cues tab with nothing playing says so; the note goes when a cue plays and on any other tab.
+    func testActiveCuesTabSaysNothingIsPlayingWhenItIsEmpty() async throws {
+        _ = try await make()
+        side.showTab(1)
+        XCTAssertTrue(side.activeEmptyNote.isHidden, "two cues are active: no note")
+        try state(Self.intro, "idle")
+        try state(Self.rain, "idle")
+        XCTAssertEqual(side.activeCues, [])
+        XCTAssertFalse(side.activeEmptyNote.isHidden)
+        XCTAssertEqual(side.activeEmptyNote.stringValue, loc("sidebar.active.empty"))
+        side.showTab(0)
+        XCTAssertTrue(side.activeEmptyNote.isHidden, "not over the other tabs")
+        side.showTab(1)
+        try state(Self.door, "running")
+        XCTAssertTrue(side.activeEmptyNote.isHidden)
     }
 
     func testCuesAppearAndDisappearWithRuntimeChangesWithoutAFullReload() async throws {
@@ -317,6 +395,76 @@ final class SidebarTests: XCTestCase {
         side.clearUpdateLog()
         try receive(#"{"type":"progress","items":[{"cue":"\#(Self.door)","elapsed":1,"remaining":1}]}"#)
         XCTAssertEqual(side.updatedActiveRows, [Self.rain])
+    }
+
+    /// A long name with only a time under it (a loop with no end, a held cue) uses the row's width up to
+    /// the buttons; the panic button is at the row's trailing edge, not beside the text.
+    func testALongNameWithASingleTimeUsesTheRowsWidth() throws {
+        let cell = ActiveCueCell()
+        cell.frame = NSRect(x: 0, y: 0, width: 280, height: 56)
+        cell.title.stringValue = "1  Thunder rumble in the distance, rolling in from stage left and building"
+        cell.times.stringValue = CueTime.running(3.96)
+        cell.layoutSubtreeIfNeeded()
+        func inCell(_ v: NSView) -> NSRect { v.convert(v.bounds, to: cell) }
+        let title = inCell(cell.title)
+        let pause = inCell(cell.pauseButton)
+        let panic = inCell(cell.panicButton)
+        let timesWidth = (cell.times.stringValue as NSString).size(withAttributes: [.font: cell.times.font!]).width
+        XCTAssertGreaterThan(title.width, timesWidth + 60, "the name is not cut to the width of the time text")
+        XCTAssertGreaterThan(title.width, cell.bounds.width - pause.width - panic.width - 40, "it takes the room")
+        XCTAssertGreaterThan(panic.maxX, cell.bounds.width - 14, "the panic button is at the row's edge")
+        XCTAssertGreaterThanOrEqual(title.minX + 4, pause.maxX, "the name follows the pause button")
+        XCTAssertLessThanOrEqual(title.maxX, panic.minX, "and ends before the panic button")
+    }
+
+    /// Flow: an active cue with a long name and its times under it (Intro loops until devamped: the time into its
+    /// pass and the time left in it) → in the window's own Active Cues the name uses the row's width up to the
+    /// buttons and is not cut to the width of the time text.
+    func testAnActiveCueWithALongNameAndItsTimesUsesTheRowsWidthInActiveCues() async throws {
+        let long = "Thunder rumble in the distance, rolling in from stage left"
+        let wired = try await Rig.open(
+            "Demo",
+            edit: { folder in
+                try editShow(folder.appendingPathComponent("Demo.openlab")) { ws in
+                    guard var list = ws["cue_lists"]?.arrayValue?.first, var cues = list["cues"]?.arrayValue,
+                        var intro = cues.first
+                    else { return }
+                    intro.set("name", .string(long))
+                    cues[0] = intro
+                    list.set("cues", .array(cues))
+                    var lists = ws["cue_lists"]?.arrayValue ?? []
+                    lists[0] = list
+                    ws.set("cue_lists", .array(lists))
+                }
+            })
+        let wc = WorkspaceWindowController(store: wired.store)
+        defer { wc.window?.close() }
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(NSRect(x: 0, y: 0, width: 1100, height: 700), display: true)
+        wc.setVisible(.sidebar, true)
+        wc.sidebar.tabs.selectedSegment = 1
+        wc.sidebar.tabs.performClick(nil)
+        guard case .success = await wired.store.transport(.start(cue: Self.intro)) else {
+            return XCTFail("start Intro")
+        }
+        try await wired.advance(0.5)
+        await assertEventually { wc.sidebar.activeCues == [Self.intro] && wired.store.progress[Self.intro] != nil }
+        window.layoutIfNeeded()
+        let cell = try XCTUnwrap(
+            wc.sidebar.activeTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? ActiveCueCell)
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertTrue(cell.title.stringValue.hasSuffix(long), "the row names Intro: \(cell.title.stringValue)")
+        XCTAssertTrue(cell.times.stringValue.contains("-"), "the pass's time left too: \(cell.times.stringValue)")
+        func inCell(_ v: NSView) -> NSRect { v.convert(v.bounds, to: cell) }
+        let (title, pause, panic) = (inCell(cell.title), inCell(cell.pauseButton), inCell(cell.panicButton))
+        let timesWidth = (cell.times.stringValue as NSString).size(withAttributes: [.font: cell.times.font!]).width
+        XCTAssertGreaterThan(cell.bounds.width, 200, "the sidebar has its room")
+        // The times carry the time left too, so they can be most of a narrow row: the name is wider than
+        // them (not cut to their width) and, below, takes the room the buttons leave.
+        XCTAssertGreaterThan(title.width, timesWidth, "the name is not cut to the width of the time text")
+        XCTAssertGreaterThan(title.width, cell.bounds.width - pause.width - panic.width - 40, "it takes the room")
+        XCTAssertGreaterThan(panic.maxX, cell.bounds.width - 14, "the panic button is at the row's edge")
+        XCTAssertLessThanOrEqual(title.maxX, panic.minX, "the name ends before the panic button")
     }
 
     func testPausedAndStoppingCuesKeepTheirProgressAcrossStateChanges() async throws {
@@ -387,46 +535,40 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(actions, [.panicCue(cue: Self.intro)])
     }
 
-    // MARK: Wall clock
-
-    func testWallClockFormatsTheInjectedTime() throws {
-        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
-        let label = WallClockLabel()
-        label.dateFormatter = WallClockLabel.makeFormatter(locale: Locale(identifier: "en_GB"), timeZone: utc)
-        label.now = { Date(timeIntervalSince1970: 14 * 3600 + 3 * 60 + 9) }
-        label.refresh()
-        XCTAssertEqual(label.stringValue, "14:03:09")
-        label.now = { Date(timeIntervalSince1970: 14 * 3600 + 3 * 60 + 10) }
-        label.refresh()
-        XCTAssertEqual(label.stringValue, "14:03:10")
-        label.dateFormatter = WallClockLabel.makeFormatter(locale: Locale(identifier: "en_US"), timeZone: utc)
-        label.refresh()
-        XCTAssertEqual(label.stringValue.replacingOccurrences(of: "\u{202f}", with: " "), "2:03:10 PM")
-    }
-
-    func testWallClockTimerEndsWhenTheLabelIsGone() throws {
-        var timer: Timer?
-        weak var gone: WallClockLabel?
-        autoreleasepool {
-            let window = NSWindow(
-                contentRect: .init(x: 0, y: 0, width: 200, height: 50), styleMask: [], backing: .buffered, defer: true)
-            window.isReleasedWhenClosed = false
-            let label = WallClockLabel()
-            window.contentView?.addSubview(label)
-            timer = label.timer
-            gone = label
-            window.close()  // leaves the label attached, as closing a workspace window does
+    /// Flow: Intro loops until devamped; on its third pass the cue list's Duration cell and the real Active
+    /// Cues row show the same time into the pass, and the row the time left in it.
+    func testALoopingAudioCueOnItsThirdPassShowsTheSameTimeInTheCellAndInActiveCues() async throws {
+        let wired = try await Rig.open("Demo")
+        let wc = WorkspaceWindowController(store: wired.store)
+        defer { wc.window?.close() }
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(NSRect(x: 0, y: 0, width: 1100, height: 700), display: true)
+        wc.setVisible(.sidebar, true)
+        wc.sidebar.tabs.selectedSegment = 1
+        wc.sidebar.tabs.performClick(nil)
+        guard case .success = await wired.store.transport(.start(cue: Self.intro)) else {
+            return XCTFail("start Intro")
         }
-        XCTAssertNil(gone)
-        let t = try XCTUnwrap(timer)
-        // Either the window's teardown detached the label or the next tick finds it gone.
-        if t.isValid { t.fire() }
-        XCTAssertFalse(t.isValid)
-    }
-
-    func testFooterHasTheClock() async throws {
-        let wc = try await make()
-        XCTAssertEqual(wc.footer.clock.accessibilityIdentifier(), AX.wallClock)
-        XCTAssertFalse(wc.footer.clock.stringValue.isEmpty)
+        try await wired.advance(0.5)
+        await assertEventually {
+            wired.store.progress[Self.intro] != nil && wired.store.mediaDurations[Self.intro]?.file != nil
+        }
+        let pass = try XCTUnwrap(wired.store.mediaDurations[Self.intro]?.file)
+        try await wired.advance(2 * pass + 1)
+        await assertEventually { wc.sidebar.activeCues == [Self.intro] }
+        let outline = wc.cueList.outlineView
+        let node = try XCTUnwrap(wc.cueList.node(Self.intro))
+        let column = outline.column(withIdentifier: NSUserInterfaceItemIdentifier("duration"))
+        let cell = try XCTUnwrap(
+            outline.view(atColumn: column, row: outline.row(forItem: node), makeIfNecessary: true) as? CueCell)
+        let shown = try XCTUnwrap(CueTime.parse(cell.label.stringValue), "the Duration cell: \(cell.label.stringValue)")
+        XCTAssertLessThan(shown, pass + 0.01, "the cell counts inside the third pass, not the whole time")
+        let row = try XCTUnwrap(
+            wc.sidebar.activeTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? ActiveCueCell)
+        XCTAssertTrue(
+            row.times.stringValue.hasPrefix(CueTime.running(shown)),
+            "Active Cues \(row.times.stringValue) vs the cell \(cell.label.stringValue)")
+        XCTAssertTrue(row.times.stringValue.contains("  -"), "with the time left in the pass: \(row.times.stringValue)")
+        XCTAssertEqual(row.bar.doubleValue, shown / pass, accuracy: 0.001, "the bar is how far through the pass it is")
     }
 }

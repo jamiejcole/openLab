@@ -327,7 +327,7 @@ fn short_region(seconds: f64, as_trim: bool) -> Cue {
         if !as_trim {
             slices.push(SliceMarker {
                 time: seconds,
-                play_count: 0,
+                play_count: 0.into(),
             });
         }
     }
@@ -394,7 +394,7 @@ fn many_slices(n: usize) -> Cue {
         *slices = (1..=n)
             .map(|i| SliceMarker {
                 time: i as f64,
-                play_count: 1,
+                play_count: 1.into(),
             })
             .collect();
     }

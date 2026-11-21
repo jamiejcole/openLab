@@ -29,7 +29,7 @@ jobs:
       mac: ${{ steps.diff.outputs.mac }}
       app_engine: ${{ steps.diff.outputs.app_engine }}
       bundle: ${{ steps.diff.outputs.bundle }}
-      intel: ${{ steps.diff.outputs.intel }}
+      mac_matrix: ${{ steps.matrix.outputs.mac_matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -50,7 +50,6 @@ jobs:
             echo "mac=true" >> "$GITHUB_OUTPUT"
             echo "app_engine=true" >> "$GITHUB_OUTPUT"
             echo "bundle=true" >> "$GITHUB_OUTPUT"
-            echo "intel=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           files=$(git diff --name-only "$base" HEAD)
@@ -64,7 +63,35 @@ jobs:
           if [ "$all" = true ] || match "$mac_re" || match "$PATHS_APP_ENGINE_RE"; then echo "mac=true"; else echo "mac=false"; fi >> "$GITHUB_OUTPUT"
           if [ "$all" = true ] || match "$PATHS_APP_ENGINE_RE"; then echo "app_engine=true"; else echo "app_engine=false"; fi >> "$GITHUB_OUTPUT"
           if [ "$EVENT" != pull_request ] || [ "$all" = true ] || match "$PATHS_BUNDLE_RE"; then echo "bundle=true"; else echo "bundle=false"; fi >> "$GITHUB_OUTPUT"
-          if [ "$all" = true ] || match "$PATHS_INTEL_RE"; then echo "intel=true"; else echo "intel=false"; fi >> "$GITHUB_OUTPUT"
+
+      # The macOS app job's matrix. A pull request or push that runs the real-engine app tests (app_engine)
+      # splits them into two shards (scripts/mac-test-shards.txt); one that does not runs the engine-free
+      # unit tests in one job (a fraction of the time, so a split would only add setups). When the build
+      # changes (bundle), one more entry builds and checks the Release bundle in parallel with the tests, so
+      # it adds no time to a shard. Nightly and on demand run the core flows, the whole UI suite (minus scripts/ui-local-only.txt) and the
+      # bundle in one job. `lint` marks the one entry that runs the format lint; `bundle` the one that
+      # builds the bundle.
+      - id: matrix
+        env:
+          EVENT: ${{ github.event_name }}
+          APP_ENGINE: ${{ steps.diff.outputs.app_engine }}
+          BUNDLE: ${{ steps.diff.outputs.bundle }}
+        run: |
+          case "$EVENT" in
+            schedule|workflow_dispatch)
+              m='[{"name":"macOS app","shard":"full","target":"test-mac-ui-full","lint":true,"bundle":true}]' ;;
+            *)
+              if [ "$APP_ENGINE" = true ]; then
+                m='[{"name":"macOS app (1/2)","shard":"1","target":"test-mac-shard SHARD=1","lint":true,"bundle":false},{"name":"macOS app (2/2)","shard":"2","target":"test-mac-shard SHARD=2","lint":false,"bundle":false}'
+              else
+                m='[{"name":"macOS app","shard":"unit","target":"test-mac-unit","lint":true,"bundle":false}'
+              fi
+              if [ "$BUNDLE" = true ]; then
+                m="$m"',{"name":"macOS app (bundle)","shard":"bundle","target":"","lint":false,"bundle":true}'
+              fi
+              m="$m]" ;;
+          esac
+          echo "mac_matrix=$m" >> "$GITHUB_OUTPUT"
 
   # Repo hygiene that needs no toolchain (scripts/check-repo.sh): fast, runs on every PR and push.
   checks:
@@ -87,11 +114,11 @@ jobs:
     if: needs.changes.outputs.engine == 'true'
     strategy:
       fail-fast: false
-      # macOS Intel runs on main, nightly, on demand, and on PRs that touch perf-sensitive code
-      # (`changes.intel`): Windows covers other x86-64 code on PRs, the app job builds and checks the
-      # universal bundle, and the Intel queue was the longest wait.
+      # macOS Intel runs on main, nightly and on demand, never on a pull request: there it only repeated
+      # arm64's debug tests (its perf gates run on main), Windows covers x86-64 code, the app job builds
+      # and checks the universal bundle, and its hosted runner hung past every time limit twice.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.intel != 'true' && '[{"name":"macOS arm64","os":"macos-26"},{"name":"Windows x64","os":"windows-2025"}]' || '[{"name":"macOS arm64","os":"macos-26"},{"name":"macOS Intel","os":"macos-26-intel"},{"name":"Windows x64","os":"windows-2025"}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"macOS arm64","os":"macos-26"},{"name":"Windows x64","os":"windows-2025"}]' || '[{"name":"macOS arm64","os":"macos-26"},{"name":"macOS Intel","os":"macos-26-intel"},{"name":"Windows x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
     # Backstop: a hung test fails the job instead of holding the runner for hours (arm64 also
     # builds and runs the release suite).
@@ -118,14 +145,21 @@ jobs:
       # `make prepush` run too (it cds to engine/ itself; bash because Windows steps default to pwsh).
       - run: ../scripts/rust-checks.sh fmt
       - run: ../scripts/rust-checks.sh clippy
+      # Step limits fail a hung test well before the job's backstop (a hung video test once held
+      # the Intel job 33+ min). Green debug runs took at most 13 min (Intel) with the build; about
+      # twice that leaves room for a cold cache.
       - run: ../scripts/rust-checks.sh test
+        timeout-minutes: 25
       # Release builds skip debug-only checks (the cue engine's full model check on every call,
       # debug_assert!s) and optimise differently, so the suite also runs as shipped. In this job
       # rather than a separate one: it reuses the job's checkout, toolchain and cache, and runs on
       # every PR; arm64 is the fastest runner.
+      # The video crate's release tests run in the `video-release` job instead: on this VM, after the
+      # tests above, every movie open waits 30 s (#751).
       - name: Tests (release)
         if: matrix.os == 'macos-26'
-        run: ../scripts/rust-checks.sh test-release
+        timeout-minutes: 25
+        run: ../scripts/rust-checks.sh test-release-no-video
       # NFR-23/QA-06: the mixer must render 64 stereo voices with fades at >= 10x real time.
       # Release-only (a debug build is far slower), gated on the slowest runner.
       - name: CPU budget gate
@@ -155,6 +189,27 @@ jobs:
         env:
           OPENLAB_SOAK_RT_SECS: "180"
         run: ../scripts/soak-rt-ci.sh
+
+  # The video crate's tests, optimised, on a fresh hosted arm64 VM. On the VM that has just run the rest
+  # of the tests, every movie open waits 30 s and the suite runs past any limit; on a fresh one it takes
+  # about 4 minutes (dispatch run 44418588009, #751). Not on pull requests (they run the video tests in
+  # debug in `rust`), to spare a macOS runner per push (owner decision 2026-11-18).
+  video-release:
+    name: Video (release, macOS arm64)
+    needs: changes
+    if: github.event_name != 'pull_request' && needs.changes.outputs.engine == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      # No rust-cache: its key carries the job id and only main's `rust` job saves, so nothing would be
+      # restored here. A cold build takes about 5 minutes.
+      - run: ../scripts/rust-checks.sh test-release-video
+        timeout-minutes: 20
 
   cargo-deny:
     needs: changes
@@ -238,15 +293,25 @@ jobs:
           key: ${{ matrix.check }}
       - run: make ${{ matrix.check }} SAN_TOOLCHAIN="$SAN_TOOLCHAIN" SAN_TARGET="$SAN_TARGET"
 
+  # Pull request or push with the real-engine app tests: two shards in parallel, each building the app and
+  # running its share (`make test-mac-shard`, scripts/mac-test-shards.txt); shard 2 also runs the UI smoke
+  # set. Otherwise one job (see the `changes` job's matrix step).
   mac:
-    name: macOS app
+    name: ${{ matrix.name }}
     needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.mac_matrix) }}
     # The app bundles the engine, so an engine change rebuilds it too.
     if: needs.changes.outputs.mac == 'true'
     runs-on: xcode-27
-    # Backstop: a hung test fails the job (seen holding a runner past 75 min; a run takes 15-20). Above
-    # the core-flows (12) and test (38) step limits plus setup, so those steps are cancelled first.
-    timeout-minutes: 60
+    # Backstop: a hung test fails the job (seen holding a runner past 75 min). Setup before the test step is
+    # about 0.7 min; the app and engine build (about 5 min) is inside the test step. Job limit = setup + step
+    # limits, with headroom, so the step is cancelled first: shard 0.7 + 25 (about 6 build + about 9 tests) -> 30;
+    # engine-free 0.7 + 30 -> 35; bundle entry 0.7 + about 11 for the three bundle steps -> 30; nightly and on
+    # demand 0.7 + core flows 12 + tests 55 = 67.7, leaving 22 of the 90 for the bundle (about 11) and rebuild.
+    timeout-minutes: ${{ matrix.shard == 'full' && 90 || (matrix.shard == 'unit' && 35 || 30) }}
     steps:
       - uses: actions/checkout@v7
       - name: Select Xcode
@@ -279,10 +344,12 @@ jobs:
           # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: swift format lint --strict -r mac/
-      # The app tests that start the real engine are expensive: a PR or push runs them with the UI smoke
-      # set (`make test-mac`) only when the engine, the protocol, the app's engine client, its tests or project changed
-      # (`changes.app_engine`, scripts/paths.sh); otherwise the engine-free unit tests (`make
-      # test-mac-unit`, where the real-engine tests report a skip). The full UI suite is slow and flaky,
+        if: matrix.lint
+      # The app tests that start the real engine are expensive: a PR or push runs them in two shards, the UI
+      # smoke set in shard 2 (`make test-mac-shard`, together the same tests as `make test-mac`), only when the
+      # engine, the protocol, the app's engine client, its tests or project changed (`changes.app_engine`,
+      # scripts/paths.sh); otherwise the engine-free unit tests (`make test-mac-unit`, where the real-engine
+      # tests report a skip). The full UI suite is slow and flaky,
       # so it runs on the nightly schedule (and on demand), where a failure turns the run red and the
       # `alert` job opens the ci-red issue, unless its spindump proves the runner's WindowServer wedged
       # and a retry passes (scripts/run-mac-tests.sh).
@@ -290,35 +357,39 @@ jobs:
       # below runs after them even when they fail (the run stays red), and runs them again.
       - run: make test-mac-core-flows
         timeout-minutes: 12
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      # 12 + 38 plus about 1.5 of setup fit the job's 60 minutes, so a hung run is cancelled here and the
-      # step below still uploads its results. A hung test does not get that far: the wrapper ends the run
-      # (exit 76) and `make test-mac` starts no second process (scripts/run-mac-tests.sh).
-      - timeout-minutes: 38
-        if: ${{ !cancelled() }}
-        run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || (needs.changes.outputs.app_engine == 'true' && 'test-mac' || 'test-mac-unit') }}
+        if: matrix.shard == 'full'
+      # A shard's step is about 6 min of building and 9 of tests (25 is a stop for a run that stalls); the
+      # engine-free run is shorter. A hung run is cancelled here and the step below still uploads its
+      # results. A hung test does not get that far: the wrapper ends the run (exit 76) and no second
+      # process starts (scripts/run-mac-tests.sh). A proven runner stall (exit 75) is investigated and
+      # recorded before anyone re-runs the job; CI never re-runs it by itself.
+      - timeout-minutes: ${{ matrix.shard == 'full' && 55 || (matrix.shard == 'unit' && 30 || 25) }}
+        if: ${{ !cancelled() && matrix.target != '' }}
+        run: make ${{ matrix.target }}
       # A hung or crashed test run leaves its result bundle (stacks, per-test logs) here; keep it a few days.
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: mac-xcresult
+          name: mac-xcresult-${{ matrix.shard }}
+          if-no-files-found: ignore
           path: build/Logs/Test/*.xcresult
           retention-days: 5
+      # The Release bundle is built once, by the entry that has `bundle` set (about 11 min in all).
       - run: make mac
-        if: needs.changes.outputs.bundle == 'true'
+        if: matrix.bundle
       - run: make verify-bundle
-        if: needs.changes.outputs.bundle == 'true'
+        if: matrix.bundle
       - run: make dmg
-        if: needs.changes.outputs.bundle == 'true'
+        if: matrix.bundle
       # Rebuilds the universal engine twice, so nightly and on demand only (those events have bundle=true).
       - run: make test-bundle-rebuild
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: matrix.shard == 'full'
 
   # The one check branch protection requires: green when every job that ran passed.
   result:
     name: CI Result
     if: always()
-    needs: [changes, checks, rust, cargo-deny, fuzz, sanitizers, mac]
+    needs: [changes, checks, rust, video-release, cargo-deny, fuzz, sanitizers, mac]
     runs-on: ubuntu-24.04
     steps:
       - env:

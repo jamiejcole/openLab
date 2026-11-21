@@ -235,7 +235,8 @@ fn blank_cue(id: CueId) -> Cue {
         continue_mode: ContinueMode::DoNotContinue,
         triggers: Triggers {
             hotkey: None,
-            hotkey_enabled: true,
+            hotkey_enabled: false,
+            wall_clock: Default::default(),
         },
         second_trigger: SecondTrigger::Nothing,
         second_trigger_on_release: false,
@@ -244,6 +245,9 @@ fn blank_cue(id: CueId) -> Cue {
         kind: CueKind::Memo,
     }
 }
+
+/// Kind fields whose value is an object a `KindFields` edit may give only some parts of.
+const PARTIAL_FIELDS: [&str; 5] = ["translation", "scale", "anchor", "crop", "geometry"];
 
 /// The cue's kind with `fields` set, every other field as it is now.
 fn merge_kind_fields(
@@ -263,10 +267,39 @@ fn merge_kind_fields(
         let Some(slot) = merged.get_mut(key) else {
             return Err(CommandError::PropertyNotApplicable(id));
         };
+        // A Video cue's pair or crop, or a Fade cue's picture values (a pair in them too), may
+        // name only the parts that change, so two edits of different parts sent before either is
+        // answered (an OSC peer's cropTop then cropLeft) both hold.
+        if PARTIAL_FIELDS.contains(&key.as_str())
+            && let (serde_json::Value::Object(now), serde_json::Value::Object(parts)) =
+                (&mut *slot, value)
+        {
+            merge_parts(now, parts)?;
+            continue;
+        }
         *slot = value.clone();
     }
     serde_json::from_value(serde_json::Value::Object(merged))
         .map_err(|_| CommandError::InvalidValue("a kind field has a value of the wrong type"))
+}
+
+/// Sets each of `parts` in `now`, an object part by its own parts; a part `now` lacks is refused.
+fn merge_parts(
+    now: &mut serde_json::Map<String, serde_json::Value>,
+    parts: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CommandError> {
+    for (part, v) in parts {
+        let Some(old) = now.get_mut(part) else {
+            return Err(CommandError::InvalidValue("a kind field has no such part"));
+        };
+        match (old, v) {
+            (serde_json::Value::Object(old), serde_json::Value::Object(inner)) => {
+                merge_parts(old, inner)?;
+            }
+            (old, v) => *old = v.clone(),
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn set_property(

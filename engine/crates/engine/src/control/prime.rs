@@ -95,19 +95,32 @@ impl Engine {
 impl DocCx<'_> {
     /// Keeps the cues near each playhead primed.
     pub(super) fn prime(&mut self, now: SampleTime) {
-        let wanted = prime_set(
+        let pictured = prime_set(
             self.doc.model.ws(),
             self.doc.model.engine(),
             self.doc.media.index(),
             self.eng.config.prime_cues,
+            pictures,
         );
+        self.prime_pictures(&pictured);
+        let mut wanted = prime_set(
+            self.doc.model.ws(),
+            self.doc.model.engine(),
+            self.doc.media.index(),
+            self.eng.config.prime_cues,
+            sounds,
+        );
+        // A Video cue whose file is known to have no sound (a still, a silent movie) has
+        // nothing to prime: it takes no share of the pool from the cues that do.
+        wanted.retain(|c| !self.known_silent(*c));
         // Their files are probed first (H2: a restart mid-show must not leave the cue at the
         // playhead behind a hundred others).
         let keys: Vec<String> = wanted
             .iter()
             .filter_map(
                 |c| match &self.doc.media.index().locate(self.doc.model.ws(), *c)?.kind {
-                    CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
+                    CueKind::Audio { media: Some(m), .. }
+                    | CueKind::Video { media: Some(m), .. } => Some(m.as_str().to_owned()),
                     _ => None,
                 },
             )
@@ -134,8 +147,10 @@ impl DocCx<'_> {
             patches: &self.eng.patches,
             ids: &mut self.eng.voice_ids,
             rate: self.eng.rate,
+            rates: self.eng.outputs.rates(),
             cue_outputs: self.eng.cue_outputs,
             now,
+            window: self.eng.block,
             floor,
         };
         let cut = self.doc.voices.prime(&wanted, cap, burst, &mut env);
@@ -163,8 +178,14 @@ impl DocCx<'_> {
 /// which a trigger set kept up from edit footprints would save only at the price of a second
 /// index that could go stale. Cue ids are unique (commands and opening refuse duplicates); if
 /// they were not, the index places the first cue with an id, as `find_cue` does.
-fn prime_set(ws: &Workspace, engine: &CueEngine, index: &CueIndex, per_list: usize) -> Vec<CueId> {
-    let mut wanted = Wanted::default();
+fn prime_set(
+    ws: &Workspace,
+    engine: &CueEngine,
+    index: &CueIndex,
+    per_list: usize,
+    keep: Keep,
+) -> Vec<CueId> {
+    let mut wanted = Wanted::new(keep);
     let mut targets = Vec::new();
     for list in &ws.cue_lists {
         let Some(head) = engine.playhead(list.id) else {
@@ -180,7 +201,8 @@ fn prime_set(ws: &Workspace, engine: &CueEngine, index: &CueIndex, per_list: usi
             let Some(id) = at else { break };
             if let Some(cue) = index.locate(ws, id) {
                 wanted.add(cue, engine);
-                if let Some(t) = cue.kind.target() {
+                // What it acts on now: a Target cue may have given it a temporary target.
+                if let Some(t) = engine.acts_on(cue) {
                     targets.push(t);
                 }
             }
@@ -203,7 +225,7 @@ fn prime_set(ws: &Workspace, engine: &CueEngine, index: &CueIndex, per_list: usi
 /// the reference it is tested against.
 #[cfg(test)]
 fn prime_set_walk(ws: &Workspace, engine: &CueEngine, per_list: usize) -> Vec<CueId> {
-    let mut wanted = Wanted::default();
+    let mut wanted = Wanted::new(sounds);
     let mut targets = Vec::new();
     for list in &ws.cue_lists {
         let Some(head) = engine.playhead(list.id) else {
@@ -214,7 +236,7 @@ fn prime_set_walk(ws: &Workspace, engine: &CueEngine, per_list: usize) -> Vec<Cu
         for &id in positions.iter().skip(from).take(per_list) {
             if let Some(cue) = ws.find_cue(id) {
                 wanted.add(cue, engine);
-                if let Some(t) = cue.kind.target() {
+                if let Some(t) = engine.acts_on(cue) {
                     targets.push(t);
                 }
             }
@@ -231,18 +253,49 @@ fn prime_set_walk(ws: &Workspace, engine: &CueEngine, per_list: usize) -> Vec<Cu
     wanted.list
 }
 
+/// Which kinds of cue a prime set takes.
+type Keep = fn(&CueKind) -> bool;
+
+/// Cues with sound to keep primed: Audio cues with a file, and Video cues with a file and a
+/// patch (a movie without sound has nothing to prime, found when the stream is asked for).
+fn sounds(kind: &CueKind) -> bool {
+    match kind {
+        CueKind::Audio { media, .. } => media.is_some(),
+        CueKind::Video { media, sound, .. } => media.is_some() && sound.patch.is_some(),
+        _ => false,
+    }
+}
+
+/// Cues whose picture is opened ahead: Video cues with a file and a stage.
+fn pictures(kind: &CueKind) -> bool {
+    matches!(
+        kind,
+        CueKind::Video {
+            media: Some(_),
+            stage: Some(_),
+            ..
+        }
+    )
+}
+
 /// The cues to prime, in the order they were found, each once.
-#[derive(Default)]
 struct Wanted {
     list: Vec<CueId>,
     seen: HashSet<CueId>,
+    keep: Keep,
 }
 
 impl Wanted {
+    fn new(keep: Keep) -> Self {
+        Self {
+            list: Vec::new(),
+            seen: HashSet::new(),
+            keep,
+        }
+    }
+
     fn add(&mut self, cue: &Cue, engine: &CueEngine) {
-        let ok = cue.armed
-            && matches!(cue.kind, CueKind::Audio { media: Some(_), .. })
-            && engine.run_of(cue.id).is_none();
+        let ok = cue.armed && engine.run_of(cue.id).is_none() && (self.keep)(&cue.kind);
         if ok && self.seen.insert(cue.id) {
             self.list.push(cue.id);
         }
@@ -366,7 +419,7 @@ mod tests {
             }
             let index = CueIndex::build(&ws);
             for per_list in [0, 1, 3, 8, 100] {
-                let got = prime_set(&ws, &engine, &index, per_list);
+                let got = prime_set(&ws, &engine, &index, per_list, sounds);
                 assert_eq!(
                     got,
                     prime_set_walk(&ws, &engine, per_list),
@@ -440,7 +493,7 @@ mod tests {
         ws.cue_lists[0].cues.push(moved);
         assert_eq!(engine.playhead(ws.cue_lists[1].id), Some(cue_id(10)));
         let index = CueIndex::build(&ws);
-        let got = prime_set(&ws, &engine, &index, 3);
+        let got = prime_set(&ws, &engine, &index, 3, sounds);
         let ids = |ks: &[u128]| ks.iter().map(|k| cue_id(*k)).collect::<Vec<_>>();
         assert_eq!(got, ids(&[3, 11, 12, 13, 6]));
         assert_eq!(got, prime_set_walk(&ws, &engine, 3));
@@ -460,7 +513,7 @@ mod tests {
             let cue = Some(cue_id(cues - 10));
             let _ = engine.handle(&ws, Input::SetPlayhead { list, cue }, 0);
             let index = CueIndex::build(&ws);
-            let got = prime_set(&ws, &engine, &index, 8);
+            let got = prime_set(&ws, &engine, &index, 8, sounds);
             assert_eq!(got.len(), 8);
             index.lookup_steps()
         };

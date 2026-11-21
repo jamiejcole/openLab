@@ -56,7 +56,8 @@ final class MeterTests: XCTestCase {
     override func tearDown() async throws {
         MeterView.defaultWindowIsCovered = Self.shippedCoverCheck
         view?.removeFromSuperview()
-        window?.orderOut(nil)
+        window?.close()
+        (window, view, bank, ticker) = (nil, nil, nil, nil)
     }
 
     private func push(_ peaks: [Float], cue: ModelID = intro) {
@@ -70,14 +71,15 @@ final class MeterTests: XCTestCase {
         view.bank = rig.store.meters
         XCTAssertEqual(rig.store.meters.visibleCount, 1)
         let msg = try ServerMessage.decode(
-            #"{"type":"meters","outputs":[{"patch":"p1","peaks":[0.25]}],"cues":[{"cue":"\#(Self.intro)","peaks":[0.5,0.125]}]}"#
+            #"{"type":"meters","outputs":[{"patch":"p1","peaks":[0.25],"cue_outputs":[0.75]}],"cues":[{"cue":"\#(Self.intro)","peaks":[0.5,0.125]}]}"#
         )
         rig.store.receive(msg)
         rig.store.meters.tick(1.0 / 60)
         XCTAssertEqual(rig.store.meters.channelCount(.cue(Self.intro)), 2)
         XCTAssertEqual(rig.store.meters.level(.cue(Self.intro), channel: 0), 0.5)
         XCTAssertEqual(rig.store.meters.level(.cue(Self.intro), channel: 1), 0.125)
-        XCTAssertEqual(rig.store.meters.level(.output("p1"), channel: 0), 0.25)
+        // A patch meter is its cue outputs themselves, not the device outputs they are mapped to.
+        XCTAssertEqual(rig.store.meters.level(.output("p1"), channel: 0), 0.75)
     }
 
     // MARK: Coalescing
@@ -162,7 +164,8 @@ final class MeterTests: XCTestCase {
         XCTAssertEqual(bank.channelCount(.cue(Self.intro)), MeterBank.maxChannels)
         XCTAssertEqual(bank.level(.cue(Self.intro), channel: 0), 0.1, accuracy: 1e-6)
         XCTAssertEqual(bank.level(.cue(Self.intro), channel: 3), 0.5, accuracy: 1e-6)
-        XCTAssertEqual(bank.level(.cue(Self.intro), channel: 99), 0)
+        XCTAssertEqual(bank.level(.cue(Self.intro), channel: 127), 0.1, accuracy: 1e-6, "a patch's last output")
+        XCTAssertEqual(bank.level(.cue(Self.intro), channel: MeterBank.maxChannels), 0)
         XCTAssertEqual(bank.level(.cue(Self.intro), channel: -1), 0)
         for i in 0..<(MeterBank.maxSources + 50) { push([0.1], cue: ModelID("c\(i)")) }
         XCTAssertLessThanOrEqual(bank.sourceCount, MeterBank.maxSources)

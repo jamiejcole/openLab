@@ -25,9 +25,9 @@ mod waveform;
 
 pub use controller::{BatchTooLarge, MixerController};
 pub use decode::{
-    DEFAULT_PRELOAD_BUDGET, INDEX_SPACING, Media, MediaError, MediaInfo, MediaRead, MediaWarning,
-    Preloaded, Probed, SeekIndex, Seeking, WarningKind, preload, preload_within, probe,
-    probe_media,
+    DEFAULT_PRELOAD_BUDGET, Fit, INDEX_SPACING, MAX_MOVIE_SOUND_TRACKS, Media, MediaError,
+    MediaInfo, MediaRead, MediaWarning, MovieSound, MovieTrack, Preloaded, Probed, SeekIndex,
+    Seeking, WarningKind, preload, preload_within, probe, probe_media, probe_movie,
 };
 #[cfg(feature = "device")]
 pub use device::{
@@ -49,7 +49,7 @@ pub use mixer::{
 };
 pub use negotiate::{
     BufferChoice, BufferRange, ConfigRange, Latency, NegotiateError, Negotiated, Request,
-    SampleFormat, negotiate, reopen_delay_ms,
+    SampleFormat, choose_output, negotiate, reopen_delay_ms,
 };
 pub use offline::OfflineRenderer;
 pub use output::{
@@ -58,7 +58,7 @@ pub use output::{
 };
 pub use plan::{
     MAX_SLICES, MIN_LOOP_MS, PlanError, Plays, Slice, StreamLink, check_loop_lengths,
-    min_loop_frames, plan, plan_at_rate, total_frames,
+    frames_at_rate, min_loop_frames, plan, plan_at_rate, rescale, total_frames,
 };
 #[cfg(unix)]
 pub use regular_file::O_NONBLOCK;

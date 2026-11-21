@@ -24,6 +24,13 @@ enum CueTime {
         return ms % 10 == 0 ? text(ms / 10, perSecond: 100) : text(ms, perSecond: 1000)
     }
 
+    /// A time in an inspector field: always milliseconds, as QLab's inspector shows them, so every field
+    /// of the inspector reads the same and gives back exactly what it shows.
+    static func precise(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "" }
+        return text(Int(min(seconds, 1e9) * 1000 + 0.5), perSecond: 1000)
+    }
+
     /// A running time (elapsed, remaining): always hundredths, so the width does not flicker.
     static func running(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "" }
@@ -41,6 +48,14 @@ enum CueTime {
         let (h, m, sec) = (s / 3600, s / 60 % 60, s % 60)
         let fraction = String(format: perSecond == 100 ? "%02d" : "%03d", units % perSecond)
         return (h > 0 ? String(format: "%d:%02d:%02d.", h, m, sec) : String(format: "%02d:%02d.", m, sec)) + fraction
+    }
+
+    /// `parse` with an optional leading minus: a negative time counts back from a cue's end (Load to
+    /// Time, QLab manual p. 149). `-0` is zero.
+    static func parseSigned(_ text: String) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("-") else { return parse(trimmed) }
+        return parse(String(trimmed.dropFirst())).map { $0 == 0 ? 0 : -$0 }
     }
 
     /// Seconds from `s.sss`, `m:ss.sss` or `h:mm:ss.sss` (rounded to a millisecond), or nil for
@@ -66,4 +81,40 @@ enum CueTime {
         total = (total * 1000).rounded() / 1000
         return total <= maxSeconds ? total : nil
     }
+}
+
+/// Where a looping cue is in its pass: the cue list's Duration cell and Active Cues count the same time.
+enum LoopPass {
+    /// For a cue with no end whose voice is inside a slice: how far into the slice it is, and the
+    /// slice's length.
+    static func of(_ cue: Cue, _ p: ProgressItem, fileDuration: Double?) -> (gone: Double, length: Double)? {
+        guard p.remaining == nil, let position = p.position else { return nil }
+        let kind = cue.raw["kind"] ?? .null
+        switch cue.kindType {
+        case "audio": break
+        // A Video cue's loops are an Audio cue's; one held on its last frame has no end either,
+        // but is in no pass: it counts up.
+        case "video":
+            let counts = [kind["last_slice_play_count"]] + (kind["slices"]?.arrayValue ?? []).map { $0["play_count"] }
+            guard counts.contains(where: { $0?.doubleValue == 0 }) else { return nil }
+        default: return nil
+        }
+        let start = kind["start_time"]?.doubleValue ?? 0
+        let end = kind["end_time"]?.doubleValue ?? fileDuration ?? position
+        let marks = (kind["slices"]?.arrayValue ?? []).compactMap { $0["time"]?.doubleValue }.sorted()
+        let from = marks.last { $0 <= position } ?? start
+        let to = marks.first { $0 > position } ?? end
+        guard to > from else { return nil }
+        // A Video cue devamped out of its loop and held on its last frame stands at the very end of
+        // its last pass (the engine reports a hair before it): it is in no pass any more and counts up,
+        // as a held cue that never looped does.
+        if cue.kindType == "video", kind["hold_at_end"] == .bool(true), to - position < heldWithin {
+            return nil
+        }
+        return (min(max(0, position - from), to - from), to - from)
+    }
+
+    /// How near a pass's end a Video cue's position must be to count as held there (the engine's is
+    /// a microsecond short of it).
+    private static let heldWithin = 1e-4
 }

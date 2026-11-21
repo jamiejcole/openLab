@@ -1,6 +1,6 @@
 ---
 name: engine-control
-description: "Load when changing or reviewing the engine control thread, engine/crates/engine/src/control/: inbox, replies, model_changed, wake/tick, DocId, voices, Action to mixer commands, patch slots, priming, feedback, mixer faults, lost-event reconciliation, performance budgets, pre-show check, hotkeys."
+description: "Load when changing or reviewing the engine control thread, engine/crates/engine/src/control/: inbox, replies, model_changed, wake/tick, DocId, voices, Action to mixer commands, patch slots, priming, feedback, mixer faults, lost-event reconciliation, budgets, pre-show check, hotkeys, wall clock."
 ---
 
 # Engine control loop
@@ -10,11 +10,11 @@ description: "Load when changing or reviewing the engine control thread, engine/
 
 ## Must not break
 - **The control thread never touches the disk, sockets or the device layer.** Reads and saves go to the document worker and writer, probes and preloads to probe workers, sends to per-destination workers, device open/close/list to device threads. A GO never waits on any of them.
-- **No thread or clock of its own.** Time is the master clock: the primary device's sample counter (skill `devices`, several devices). Wall clock is used only by the device policy, the master clock while the primary is away and another device plays, and the probe/document watchdogs.
+- **No thread or clock of its own.** Time is the master clock: the primary device's sample counter (skill `devices`, several devices). Wall clock is used only by the device policy, the master clock while the primary is away and another device plays, the probe/document watchdogs and wall-clock triggers.
 - **Every workspace edit reaches the cue engine** (only through `DocModel::edit()`; a forgotten signal must not compile). A refused or no-op command changes and broadcasts nothing.
 - Exactly one `result` per command/transport/undo/redo/request, and `model_changed` goes out before it.
 - `VoiceId`s are engine-wide and never reused; each has an owning doc. A voice event no open doc owns is dropped.
-- A patch slot is never handed out while a voice may play through it, and no edit re-routes or silences a voice that is sounding (except a playing cue's own patch change, which follows by crossfade).
+- A patch slot is never handed out while a voice may play through it, and no edit re-routes or silences a voice that is sounding (except a playing cue's own patch change, which follows by crossfade, and its patch moving to another device, which moves it there in step by a crossfade between two voices).
 - A start that will never play fails (`StartFailed`: cue skipped, auto-follow fires) rather than showing as running with no sound.
 - No feedback is handed to the cue engine before the sample it reports (`now > at`).
 - A lost mixer event must never leave a cue running for ever (reconciliation).
@@ -79,9 +79,12 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 | Action | Carried out |
 |---|---|
 | `LoadVoice` | slice table, `prepare` (or wait for the probe); kept as the run's stream |
+| `LoadVoiceAt { position }` | as `LoadVoice`, the table planned from a file frame (`plan::cue_slices_from`); a `StartVoice` offset 0 uses it. Starts with the cue's fade-in only at the in point |
+| `SeekVoice { run, from, at, position }` | see "Seek" below |
 | `UnloadVoice` | stream dropped |
 | `StartVoice { run, at, offset }` | loaded stream, else the cue's primed one (offset 0 only), else a fresh `prepare`; `VoiceStart` with the model's levels; then `ActionLength` (below) |
 | `StopVoice { at, fade }` | mixer `StopVoice` with the curve; record goes with `VoiceFinished` |
+| `RelocateVoice` | the voice moves to its patch's current device: a new voice there from where the sound is, crossfading `MOVE_LEAD` later (reference `patch-slots`) |
 | `PauseVoice` | native mixer pause (position and ring kept) |
 | `ResumeVoice { run, paused, at }` | mixer resume re-keys the voice to a fresh id for the fresh run |
 | `Ramp` | mixer `Ramp`, or one `RampSet` for a run of ramps of one voice with the same date and fade; no gangs (Fade and level-edit values are already per output). Fade cues and level edits on a playing cue are carried out alike |
@@ -95,7 +98,22 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 - **`ActionLength`** after a start of a finite action: `offset + table frames (+ delay if held)`, so the engine owns the end as a deadline on the exact sample (auto-follow and playlists do not wait for the mixer report).
   After `DevampScheduled` send the new length (leave sample plus the rest of the table; the leave sample alone for a devamp stop); none while what follows loops for ever. Previews send none. An offset at or past the table's end is an empty plan: nothing plays and `ActionLength { frames: offset (+ delay) }` ends the action on its start sample.
 - **Pause by stop and restart** (a binary without native pause) must restart with the Fade levels and ramps from `fade_ramps(cue, at)` on the resume sample (start with each `value`, then `Ramp` for each still moving), and must never report its stop as `ActionEnded`. This engine pauses natively.
-- **Slice table** (`plan::cue_slices`): trims, markers and play counts, then skip `offset` frames with loops unrolled. A table that cannot be built fails the run if started anyway (`StartFailed { stream_failed }`, or `ActionFailed` if only loaded, plus `bad_plan`). As soon as the file is probed the plan checks make the cue broken (`slices_unplayable`) before any GO.
+- **Seek** (`voices/actions.rs`): `SeekVoice` makes a record for the fresh run at the file frame (`moved`) and retires `from`'s (its events are no one's, it shows no progress). A playing `from` plays on until the moved stream is primed (checked each tick, at most `SEEK_PRIME_WAIT` 0.25 s), then one batch stops it with a `SEEK_CROSSFADE` (10 ms linear) fade and starts the moved voice with the same fade-in on the same sample; `ActionLength` counts from the move (+ the wait as `delay`).
+  - A Video cue's sound takes the rest of its picture's plan from the point instead of a file frame (`SeekTo::Plan`, skill `video`).
+  - A paused `from` is cut at once and the moved record waits paused (stream prepared now) for the resume. A stop or pause before the swap lets `from` go (with the stop's fade, or the crossfade).
+  - Levels during the wait: commands for the fresh run queue for the moved voice, and every gain command also goes to `from`, which is what sounds. On the swap the queue is caught up (`caught_up`): each gain set where it stands then, followed by the rest of a moving ramp, so a Fade (and its stop of the target) ends on the sample the engine planned. A resume or a held start replays its queue from the start instead, as a paused voice does.
+  - Bursts: a seek of a record still waiting replaces it (and inherits the voice it was to replace); each cue prepares at most one seek or load-at stream per `SEEK_PREPARE_INTERVAL` (50 ms, `seek_gate`), the rest wait for the tick; a swap waits for the cue's last crossfade to end. So a burst costs one stream and at most two sounding voices per cue. A started cue (GO) never waits on the gate.
+  - Progress: elapsed is `shown` + played (`shown`: the point's place in the action from the top, a forever loop counted once); a waiting move already reports its point.
+- **Slice table** (`plan::cue_slices`): trims, markers and play counts, then skip `offset` frames with loops unrolled. A table that cannot be built fails the run if started anyway (`StartFailed { stream_failed }`, or `ActionFailed` if only loaded, plus `bad_plan`). As soon as the file is probed the plan checks make the cue broken (`slices_unplayable`, or `nothing_plays` when every slice inside the trims is skipped) before any GO.
+- The table is made when the voice is prepared; an edit changes only its end. The start time, markers and play counts edited while the cue plays are heard from its next start (tested for a count set to skip and for every slice skipped, which leaves the cue running and shows it broken once it has stopped).
+- **End time edited while it plays** (`voices/end_time.rs`, after every edit of the cue: drag, typed value, OSC, undo; skill `qlab-behaviour` Q651-Q653). Each record keeps what its table was planned from (`Planned`: the time and loops then and the probe; carried by a seek, a Video cue's seek and a move to another device).
+  - With the new end and the rest as planned, `new_end` finds how the table ends: the entry of the new last slice becomes the last at its new length (`frames` 0: the table is past it).
+  - A playing voice gets `EndAt` dated now (not before its start or latest resume) and its stream `set_end`; its `table` and `total` follow, and the core is told `ActionLength` = where it is now plus what is left (so behind the playhead: the action ends now, its continue there). A paused one keeps it for its resume.
+  - Only while the cue engine still runs the action (`CueEngine::runs_action`; a voice a seek or move is taking over counts as the run taking it over): an action already ended on its known length, dated up to a lookahead ahead, plays out its old end and is never lengthened under a cue shown idle. The same holds for a picture.
+  - The edit feeds `Tick` at `now` before it follows the end: a message is handled before its block's tick, so without it an old end inside the window the tick commits would still look ahead, the voice would be moved, and the core would then end the action on the old end anyway (sound playing on past it, or stopped short of the follow). A Video cue's end action also takes its picture and sound (`end_pictures`, `end_sounds`), so they end with the action whichever end the voice was given.
+  - A record not started (loaded, a seek or move waiting) has its prepared stream and handed-on table cut the same way; nothing left drops the stream, so its start ends at once. A move waiting to swap tells the core its new length.
+  - Not followed, kept until the next start: the new end's slice loops, the end moved past a marker the table lacks, or a grow after a cut dropped entries the stream may have written (`Planned::grows`).
+- A skipped slice (`PlayCount::Skip`) has no entry in the table: `offset`, the lengths told to clients and a seek all count only what plays, and `cue_slices_from` a point inside a skipped slice starts at the next slice that plays (none after it: the end of the last one that does).
 - **Waiting for a probe** (a Video cue's picture waits the same way: skill `video`): a start/load whose file is not probed waits (`probe_wait` notice); commands for it are queued and replayed after the start, a pause holds it, a stop drops it. On the answer it starts at `max(start, now)` with `cold_start` (delay counted into `ActionLength`); a failed probe fails the run.
   **A start held past `PROBE_HOLD_LIMIT` (sample time) fails with `StartFailed { stream_failed }`** and `probe_timeout`: cue skipped (auto-follow fires), broken until reset or started again; a late answer clears the file's static problem but does not restart it.
 - **A stream that never opens** (volume hangs after the probe): the voice starts cold, plays silence, and holds one opener, never a disk worker.
@@ -111,7 +129,11 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 - A cue's `meters` entry has one peak per output of its patch (`Engine::cue_outputs` is only the read stride); a patch's output meters come from its device's mixer, one per mapped channel.
 
 ## Priming and preload
-- After every playhead change, model change, probe answer, landed preload and freed show voice, the loop keeps primed (stream prepared and filling): the next `PRIME_CUES` from each playhead, their targets (a group primes its audio cues), and every cue whose hotkey trigger is on (`Triggers::active_hotkey`); only armed audio cues with media and no run, at most `MAX_PRIMES`.
+- After every playhead change, model change, probe answer, landed preload and freed show voice, the loop keeps primed (stream prepared and filling): the next `PRIME_CUES` from each playhead, their targets (a group primes its audio cues), and every cue whose hotkey trigger is on (`Triggers::active_hotkey`); only armed Audio cues with media and no run, at most `MAX_PRIMES`.
+- A target there is what the cue acts on now (`CueEngine::acts_on`: a Target cue's temporary target, else its own); a change of temporary targets (`temp_target_changes`: a Target cue ran, a reset or Reset All dropped one) dirties the primes, so GO never finds the old target primed and the new one cold.
+  - Video cues with a file and a patch for their sound are primed too (the stream of the audio track they play); one whose file is known to have no sound is left out of the set.
+  - The same pass opens the pictures of the first Video cues near the playheads on the stage host (`prime_pictures`, a set of its own: any Video cue with a file and a stage; skill `video`).
+- A voice start can be held with a Video cue sequence (`Voices::apply_gated`): it stays waiting (stops, pauses, resumes and level changes act on it as on any waiting start) until `open_gate` lets it start at its sequence date plus the hold, counted into `ActionLength` (skill `video`).
 - A prime is used by a start from the top only if file, probe, trims/slices and source (file or preloaded samples) still match; otherwise it is released. A start without a prime is cold: audible once its ring fills, `cold_start` notice, **never a failure**.
 - Primes are one pool across docs, at most half the streamer's `max_streams` (primes must never take a permit a start needs; a start finding none fails `stream_failed`). Each doc keeps what it wants while all wants fit; otherwise max-min fair shares: a doc over its share lets go of its least urgent primes next pass, a doc under it fills at most 4 rings per pass (no disk burst).
 - **Preload** (a cue asks, or the probe advises `preload_advised`): decoded on a probe worker within `preload_budget`, one budget for all docs, given back when no cue uses the file or a doc closes. Over budget or failed: it streams, listed `preload_over_budget` / `preload_failed`.
@@ -122,6 +144,10 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 - **Panic** (`panic_all`, Esc or `transport: panic` on an app connection) panics every doc as a `panic` transport (twice within the fade is a hard stop in each).
 - **Hotkeys**: `Control::hotkey` (`phase: down`) sends `Start` for every cue of every doc that `Workspace::cues_with_hotkey` returns (same key and modifiers, workspace order; shared hotkeys all start, no warning). A doc whose workspace map (transport, selected-cue or cue-editing keys) uses that key starts nothing (the workspace action wins; that action is the front window's, not the engine's; the engine does nothing on a cue-editing key).
   `Control::hotkey_released` (`phase: up`) sends `TriggerReleased` to the same cues; a cue whose second trigger is not on release ignores it. A press on a paused cue resumes it. Semantics: skill `cue-engine`.
+- **Wall-clock triggers** (`control/wall_clock.rs`, TRG-05): each wake reads `ControlConfig::clock` once (`Engine::read_local_time`) and adds `ControlConfig::local_zone`'s offset (`LocalZone::system()` set by the host: a thread `openlab-localtime` works out the next 4 s of offsets every 250 ms, as the zone database may be read from disk; the control thread only `try_lock`s it and keeps the last offset; default and stepped virtual device: UTC). 
+  Each doc's `WallClockWatch` (core) is new with the doc, so a time already passed does not fire. It gets the wake's UTC and local seconds.
+  The cues it returns get a `start` transport, as a hotkey's do, with a `trigger` log record (source `wall clock`; `warn` for a disarmed or broken cue). A missed cue is a `warn` record and a `wall_clock_missed` notice (`runtime` warning with the cue, at most 20 a step); a jump is logged only when the doc has a trigger on.
+  No local time (zone thread not started: host uses `LocalZone::unknown()`, never UTC; first lookup not answered): nothing fires, the watch starts afresh when time is known, and a doc with a trigger on gets one `error` record and a `wall_clock_unknown` notice after 2 s. Tests set a `ManualClock` and `LocalZone::fixed`/`new`/`unknown`. Rules: skill `cue-engine`.
 - **Open** is refused (`command_refused`) while another document request runs (one at a time, engine-wide) or with `MAX_DOCS` open, and with `io` while reads are stuck.
   The document worker builds the doc's parts (`DocParts`: workspace, followed cue engine, catalog index with paths resolved, slice-plan checks), so installing on the control thread is an insert plus probe jobs, slot commands (`SnapPatch`), first reports, `result { opened { doc } }` and the `workspaces` list. Install and close stay under half an audio block.
 - **Close** order: `no_workspace` if not open; `unsaved_changes` unless `discard_changes` (then the autosave it wrote is removed after any write in flight).
@@ -135,7 +161,11 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 
 ## Offline driver
 `OfflineShow::step()` hands the inbox to control, **settles** the streams, renders one block, then ticks.
-  Settling waits (blocking, outside `tick`, with a 30 s timeout counted in `stalls()`) until every playing stream has written what the block will read and every prepared stream is primed; that makes renders exact and repeatable (a device never lets disk workers fall far behind; a faster-than-real-time render would). `settle_media()` waits for probes and started preloads; `render_only(frames)` renders with no tick (a late control thread).
+  Settling waits (blocking, outside `tick`, with a 30 s timeout counted in `stalls()`) until every playing stream has written what the block will read and every prepared stream is primed; that makes renders exact and repeatable (a device never lets disk workers fall far behind; a faster-than-real-time render would).
+  It also waits until no Video cue's start waits for its picture's open (`wait_for_pictures(false)` turns that off for a test of a slow or hung open).
+  What a voice will read is counted in voice frames (`StreamHandle::wait_fed`), not frames written: after a devamp cut the ring also holds the stale loop frames the voice skips, so the written count runs ahead of the voice and waiting on it lets the voice run dry. `settle_media()` waits for probes and started preloads; `render_only(frames)` renders with no tick (a late control thread).
+  Every wait for another thread (`settle_*`, `wait_for`, `send_until`) gives up after `SETTLE_TIMEOUT` (30 s), counted in `stalls()`; test support `set_settle_timeout` changes it for tests whose workers lean on a slow platform framework (the video tests).
+  A wait of `SLOW_WAIT` (10 s) or longer is reported as it ends, straight to stderr past the test capture (what was waited for, the test thread, the calling line via `#[track_caller]`) and kept in `slow_waits()`, so a run that is only slow (no test fails) still names where its time went; test support `set_slow_wait` changes the threshold.
 
 ## Performance budgets
 Numbers are asserted in `engine/crates/engine/tests/perf.rs` (a 2,110-cue show built in the test); the CI performance gate runs the timed ones on an Intel runner. NFR-24/25 stay unticked (minimum-spec hardware is not measured).
@@ -148,15 +178,22 @@ Numbers are asserted in `engine/crates/engine/tests/perf.rs` (a 2,110-cue show b
 | Idle tick | < 1% of a core at one wake per 5 ms |
 | 4x the cues | < 12x the time (linear is 4x, quadratic 16x) |
 | Media watch with 2,000 files | < 1% of a core |
-| Second 2,000-cue doc open | idle tick <= 3x one doc, edits <= 1.5x + 0.5 ms; install, the wake after, and close each under half an audio block |
+| Second 2,000-cue doc open | idle tick <= 3x one doc, edits <= 1.5x + 0.5 ms; install, close and each wake after either under half an audio block |
+| Save As of a 2,000-cue doc into another folder (doc unchanged while it is written), another doc on its files playing | the request and each wake after it, until its files are watched and probed from the new folder, under half an audio block |
+| Copy media into the show folder, every file of a 2,000-cue doc (`copy_budget`) | every wake while it copies, takes its answer and points the cues at their copies (32 a wake, one undo step) under one audio block / `HEADROOM` (2.67 ms) |
 | 64 stereo fading cues, 512-frame blocks | >= 10x real time; two docs <= 1.25x slower than one |
 
 - Bookkeeping follows the edit's footprint, not the show (cue index position maps, problem facts, catalog key set, `PlanChecks` examining only touched cues, `model_changes` reading through the index). Counters pin it (`whole_show_passes`, `examined`, `walks`, `plan_builds`); do not add a per-edit or per-probe-answer pass over every cue. Priming finds cues through the cue index; its one per-pass walk is a flag test for triggers.
-- Install/close stay under half a block by doing work off the control thread (paths resolved and docs dropped on the document worker).
+- Install/close and the wakes after them stay under half a block by doing work off the control thread or spreading it: the document worker resolves paths and builds the catalog's entries and probe jobs (`Indexed::prepare`; install only sends the jobs), closed docs, their watch keys and probe claims are dropped on it.
+  A Save As into another folder re-spells the copy and prepares its index on the writer thread; the control thread swaps them in when the doc is unchanged since (skill `persistence`).
+  The watch share takes a doc's keys up at once (hashed on the worker) and paces only telling the watch thread of new files and letting go of a closed doc's keys, `CHANGES_PER_WAKE` a wake (skill `media-files`), and a patch reported mapped recomputes no cue (skill `cue-engine`).
 
 ## Pre-show check (engine half)
 `preshow_check` (`control/preshow.rs`) is built on the control thread from state it holds, no I/O: `CueEngine::broken_cues()` (folds in probes, watch, patch availability), patch resolutions, the workspace's cues, and the `warnings` list (refreshed if stale). Media is as fresh as the last probe and watch event; never re-read at request time.
-  `summary.total` counts broken cues plus `system` entries that are problems (`preload_over_budget` is information); an unused patch is listed, not counted. Network destinations are `not_checked` when present, `missing` when a cue names one the workspace lacks.
+  `summary.total` counts broken cues plus `system` entries that are problems (`preload_over_budget` is information); an unused patch is listed, not counted, and raises no `patch_no_device` notice.
+  `system` leaves out every notice whose `patch` no cue plays on (as the patch list counts users), and a device's own notices (`DEVICE_CODES`, no `patch`) while no used patch is on that device (`devices_played`: mapping, system output's device now, resolution; a used patch with no device to name counts them all); the `warnings` list still shows both.
+  The primary's `CLOCK_CODES` (lost, stalled, unrecoverable, not `outputs_dropped`) count while the workspace has any cue, as its stall stops every timed cue's clock.
+  Network destinations are `not_checked` when present, `missing` when a cue names one the workspace lacks.
 
 ## References (read only when the task needs it)
 - `references/feedback.md`: the mixer/stream/probe event to cue-engine input table, orphaned tails and aliases, reconciliation of lost events, mixer stage faults. Read when changing feedback handling, `control/faults.rs`, or anything that ends or fails a run.

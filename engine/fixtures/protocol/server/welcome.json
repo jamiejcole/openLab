@@ -180,7 +180,12 @@
         },
         "auto_number_start": 1.0,
         "auto_number_increment": 1.0,
-        "new_cues_auto_load": false
+        "new_cues_auto_load": false,
+        "auto_number_new_cues": true,
+        "lock_playhead": true,
+        "go_needs_key_up": false,
+        "osc_enabled": true,
+        "copy_media_on_add": true
       },
       "patches": [
         {
@@ -320,7 +325,24 @@
                   "crosspoints": []
                 },
                 "stop_target_when_done": true,
-                "mode": "absolute"
+                "mode": "absolute",
+                "geometry": {
+                  "fade_opacity": false,
+                  "opacity": 1.0,
+                  "fade_translation": false,
+                  "translation": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "fade_scale": false,
+                  "scale": {
+                    "x": 1.0,
+                    "y": 1.0
+                  },
+                  "scale_locked": true,
+                  "fade_rotation": false,
+                  "rotation": 0.0
+                }
               }
             }
           ]
@@ -358,6 +380,12 @@
     ],
     "played": [
       "00000000-0000-0000-0000-00000000000a"
+    ],
+    "playlist_next": [
+      {
+        "group": "00000000-0000-0000-0000-00000000000c",
+        "cue": "00000000-0000-0000-0000-00000000000d"
+      }
     ],
     "warnings": [
       {

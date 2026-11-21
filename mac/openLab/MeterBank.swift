@@ -3,7 +3,8 @@
 import AppKit
 import QuartzCore
 
-/// What a meter shows: a cue's peaks, or an output patch's.
+/// What a meter shows: a cue's peaks, or an output patch's cue outputs (each before the patch's
+/// crosspoints, so a row shows what that cue output carries wherever it is routed).
 enum MeterSource: Hashable {
     case cue(ModelID)
     case output(ModelID)
@@ -16,8 +17,9 @@ enum MeterSource: Hashable {
 /// a push is dropped unread and no timer runs, so a hidden tab costs nothing.
 @MainActor
 final class MeterBank {
-    /// Most channels kept per source, and most sources: a bound on what a push can make this keep.
-    nonisolated static let maxChannels = 64
+    /// Most channels kept per source (a patch's most cue outputs), and most sources: a bound on
+    /// what a push can make this keep.
+    nonisolated static let maxChannels = LevelSet.maxCueOutputs
     nonisolated static let maxSources = 256
     /// Fall rate of the shown level, in dB per second.
     static let fallDbPerSecond = 20.0
@@ -77,7 +79,7 @@ final class MeterBank {
 
     func ingest(outputs: [OutputMeter], cues: [CueMeter]) {
         guard !views.isEmpty else { return }
-        for m in outputs { fold(.output(m.patch), m.peaks) }
+        for m in outputs { fold(.output(m.patch), m.cueOutputs) }
         for m in cues { fold(.cue(m.cue), m.peaks) }
     }
 
@@ -196,17 +198,33 @@ final class MeterView: NSView {
     var fixedRows: Int? {
         didSet { if oldValue != fixedRows { invalidate() } }
     }
+    /// Upright bars, one per column, filling from the bottom: channel n's bar is `width` wide at
+    /// `first + n * step` (the Levels tab puts one beside each cue output's fader). nil: the
+    /// channels are stacked rows across the view.
+    struct Columns: Equatable {
+        var first: CGFloat
+        var step: CGFloat
+        var width: CGFloat
+        var count: Int
+    }
+    var columns: Columns? {
+        didSet { if oldValue != columns { invalidate() } }
+    }
     private var attachedTo: MeterBank?
     #if DEBUG
         /// Redraws requested so far (tests count them: a view that cannot draw ignores `needsDisplay`).
         private(set) var invalidations = 0
+        /// Columns the last draw painted (tests check a draw paints only what is in view).
+        private(set) var drawnColumns = 0
     #endif
 
     func invalidate() {
         #if DEBUG
             invalidations += 1
         #endif
-        needsDisplay = true
+        // A row of columns can be far wider than what shows of it: only the part in view is drawn
+        // again (a part scrolled into view later is drawn as it comes in).
+        if columns != nil { setNeedsDisplay(visibleRect) } else { needsDisplay = true }
     }
     /// Whether a window is covered: asked when the view joins a window (`atJoin`) and on each
     /// occlusion change. At join only an active app is believed, as a headless host reports a
@@ -304,23 +322,65 @@ final class MeterView: NSView {
         return CGFloat(min(max((db + rangeDb) / rangeDb, 0), 1))
     }
 
+    /// Clicks go to what lies under the bars (the faders and the board beside them).
+    override func hitTest(_ point: NSPoint) -> NSView? { columns == nil ? super.hitTest(point) : nil }
+
+    private static func colour(_ level: Float) -> NSColor {
+        level >= 0.708 ? .systemRed : level >= 0.25 ? .systemYellow : .systemGreen
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         NSBezierPath.clip(bounds)
+        if let columns { return drawColumns(columns, in: dirtyRect) }
         let count = source.flatMap { bank?.channelCount($0) } ?? 0
-        let rows = fixedRows.map { max($0, 1) } ?? max(count, 1)
-        // Every row stays inside the view: with many channels the gaps go first, then the rows
-        // get thinner than a point.
+        // A source with nothing to show (no channels sent yet) draws nothing, not an empty bar.
+        if fixedRows == nil && count == 0 { return }
+        let rows = shownRows
+        for row in 0..<rows {
+            let r = rowRect(row)
+            NSColor.quaternaryLabelColor.setFill()
+            r.fill()
+            guard count > 0, let source, let level = bank?.level(source, channel: row), level > 0 else { continue }
+            Self.colour(level).setFill()
+            NSRect(x: r.minX, y: r.minY, width: r.width * Self.fill(level), height: r.height).fill()
+        }
+    }
+
+    /// The rows drawn when the channels are stacked rows (`columns` nil).
+    private var shownRows: Int {
+        fixedRows.map { max($0, 1) } ?? max(source.flatMap { bank?.channelCount($0) } ?? 0, 1)
+    }
+
+    /// Where channel `row`'s bar is drawn when the channels are stacked rows. Every row stays inside
+    /// the view: with many channels the gaps go first, then the rows get thinner than a point.
+    func rowRect(_ row: Int) -> NSRect {
+        let rows = shownRows
         var gap: CGFloat = 1
         if (bounds.height - gap * CGFloat(rows - 1)) / CGFloat(rows) < 1 { gap = 0 }
         let h = (bounds.height - gap * CGFloat(rows - 1)) / CGFloat(rows)
-        for row in 0..<rows {
-            let y = CGFloat(row) * (h + gap)
+        return NSRect(x: 0, y: CGFloat(row) * (h + gap), width: bounds.width, height: h)
+    }
+
+    /// Only the columns in `dirty`: a tick redraws what is in view, not all 128. As for rows, a
+    /// channel not sent (the cue is not playing) draws nothing, not an empty bar.
+    private func drawColumns(_ c: Columns, in dirty: NSRect) {
+        guard let source, let bank, c.count > 0, c.step > 0 else { return }
+        let first = max(0, Int(((dirty.minX - c.first - c.width) / c.step).rounded(.down)))
+        let last = min(
+            c.count - 1, Int(((dirty.maxX - c.first) / c.step).rounded(.down)), bank.channelCount(source) - 1)
+        #if DEBUG
+            drawnColumns = max(0, last - first + 1)
+        #endif
+        guard first <= last else { return }
+        for n in first...last {
+            let track = NSRect(x: c.first + CGFloat(n) * c.step, y: 0, width: c.width, height: bounds.height)
             NSColor.quaternaryLabelColor.setFill()
-            NSRect(x: 0, y: y, width: bounds.width, height: h).fill()
-            guard count > 0, let source, let level = bank?.level(source, channel: row), level > 0 else { continue }
-            (level >= 0.708 ? NSColor.systemRed : level >= 0.25 ? NSColor.systemYellow : NSColor.systemGreen)
-                .setFill()
-            NSRect(x: 0, y: y, width: bounds.width * Self.fill(level), height: h).fill()
+            track.fill()
+            let level = bank.level(source, channel: n)
+            guard level > 0 else { continue }
+            let h = track.height * Self.fill(level)
+            Self.colour(level).setFill()
+            NSRect(x: track.minX, y: track.maxY - h, width: track.width, height: h).fill()
         }
     }
 }

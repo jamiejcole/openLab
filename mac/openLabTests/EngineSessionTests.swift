@@ -442,7 +442,7 @@ final class EngineSessionTests: XCTestCase {
         // The first reopen is read and answered (the answer held), so the engine takes another.
         let answered = await eventually {
             try? await runs.advance(0.01)
-            return self.tap.heldCount == 1
+            return self.tap.heldResults(of: \.opensADoc) == 1
         }
         XCTAssertTrue(answered, "the first reopen was answered")
         tap.holdResults = false
@@ -477,7 +477,7 @@ final class EngineSessionTests: XCTestCase {
         let opened = Task { await s.open(path: bPath) }
         await assertEventually("the open was sent") { count(isOpen) == 1 }
         let scanned = Task { await s.scanRecovery() }
-        await assertEventually("the open's answer is held") { self.tap.heldCount >= 1 }
+        await assertEventually("the open's answer is held") { self.tap.heldResults(of: \.opensADoc) == 1 }
         for _ in 0..<100 { await Task.yield() }
         XCTAssertEqual(count(isScan), 0, "the scan waits for the open's answer")
         tap.holdResults = false
@@ -508,7 +508,7 @@ final class EngineSessionTests: XCTestCase {
             _ = await s.scanRecovery()
             ended += 1
         }
-        await assertEventually("the open was answered, held") { self.tap.heldCount >= 1 }
+        await assertEventually("the open was answered, held") { self.tap.heldResults(of: \.opensADoc) == 1 }
         tap.dropConnections()
         tap.holdResults = false
         tap.releaseResults()
@@ -530,7 +530,7 @@ final class EngineSessionTests: XCTestCase {
             _ = await s.scanRecovery()
             ended += 1
         }
-        await assertEventually("the open was answered, held") { self.tap.heldCount >= 1 }
+        await assertEventually("the open was answered, held") { self.tap.heldResults(of: \.opensADoc) == 1 }
         try await runs.crash()
         tap.holdResults = false
         tap.releaseResults()

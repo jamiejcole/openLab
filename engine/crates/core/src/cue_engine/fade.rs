@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Fade cues (CT-10, audio levels): a fade of the target's levels over the cue's duration, as
-//! `Ramp` actions the mixer carries out: absolute for an audio cue, relative for the audio cues
-//! in a group (QLab check F2).
+//! Fade cues (CT-10, audio levels; VID-05, a picture's geometry): a fade of the target's levels
+//! over the cue's duration, as `Ramp` actions the mixer carries out: absolute for an audio cue,
+//! relative for the audio cues in a group (QLab check F2). A Video target's ticked picture values
+//! (opacity, position, scale, rotation) are faded by the same ramps, which the binary sends to
+//! the stage host instead of the mixer.
 
 use std::collections::BTreeSet;
 
 use crate::cue::{Cue, CueKind};
 use crate::model::CueId;
+use crate::video_geometry::PictureParam;
 
 use super::group;
 use super::level::{self, Level, LevelParam, LevelRamp};
@@ -30,6 +33,7 @@ impl CueEngine {
             levels,
             stop_target_when_done,
             mode,
+            geometry: picture,
             ..
         }) = ws.find_cue(cue).map(|c| &c.kind)
         else {
@@ -56,12 +60,13 @@ impl CueEngine {
             || *mode == crate::cue::FadeMode::Relative;
         let limits = ws.settings.limits();
         let candidates: Vec<&Cue> = match &target_model.kind {
-            CueKind::Audio { .. } => vec![target_model],
-            // A group fades the audio cues inside it (any depth) that are playing now.
+            // A Video cue's sound fades as an Audio cue's.
+            CueKind::Audio { .. } | CueKind::Video { .. } => vec![target_model],
+            // A group fades the cues with sound inside it (any depth) that are playing now.
             CueKind::Group { .. } => group::descendants(target_model)
                 .into_iter()
                 .filter_map(|id| ws.find_cue(id))
-                .filter(|c| matches!(c.kind, CueKind::Audio { .. }))
+                .filter(|c| c.kind.levels().is_some())
                 .collect(),
             _ => return cx.warn(EngineWarning::TargetWrongKind { cue, target }),
         };
@@ -82,10 +87,22 @@ impl CueEngine {
             if !seen.insert(c.id) {
                 continue;
             }
-            let CueKind::Audio { levels: base, .. } = &c.kind else {
+            let Some(base) = c.kind.levels() else {
                 continue;
             };
-            let wanted = level::fade_targets(levels, &c.kind, (!relative).then_some(limits));
+            let outputs = level::cue_outputs(ws, &c.kind);
+            let wanted =
+                level::fade_targets(levels, &c.kind, outputs, (!relative).then_some(limits));
+            // A picture's values: only of a Video cue the Fade names itself (a group's Fade moves
+            // levels only).
+            let pictured: Vec<(PictureParam, f64, f64)> = match &c.kind {
+                CueKind::Video { geometry, .. } if c.id == target => picture
+                    .targets()
+                    .into_iter()
+                    .map(|(p, v)| (p, v, p.of(geometry)))
+                    .collect(),
+                _ => Vec::new(),
+            };
             let before = self.state(c.id);
             let Some(Slot::Active(run)) = self.slots.get_mut(&c.id) else {
                 continue;
@@ -119,7 +136,7 @@ impl CueEngine {
                     .levels
                     .get(&param)
                     .map(|l| l.value(start))
-                    .or_else(|| level::model_gain(base, param))
+                    .or_else(|| level::model_gain(base, param, outputs))
                     .unwrap_or(0.0);
                 // Relative: the level moves by the fade's dB from where it is now (so a silent
                 // level stays silent and is left alone), within the workspace limits.
@@ -159,6 +176,60 @@ impl CueEngine {
                     gain,
                     from,
                     // In action time: a load to time starts the action `offset` samples in.
+                    lead: start.saturating_sub(at).saturating_add(offset),
+                    frames,
+                });
+            }
+            for &(p, value, model) in &pictured {
+                let param = LevelParam::Picture(p);
+                let from = run
+                    .levels
+                    .get(&param)
+                    .map_or(model, |l| f64::from(l.value(start)));
+                // Relative: opacity and scale are multiplied, position and rotation moved by it
+                // (QLab 5 manual p. 246); within the value's range either way.
+                let to = if relative {
+                    let Some(to) = p.relative(from, value) else {
+                        continue;
+                    };
+                    to
+                } else {
+                    p.clamp(value)
+                };
+                let (from, to) = (from as f32, to as f32);
+                moved = true;
+                cx.out.push(Action::Ramp {
+                    cue: c.id,
+                    run: run.run,
+                    at: start,
+                    param,
+                    gain: to,
+                    frames,
+                    curve: *curve,
+                });
+                // Drawn as sent: a picture has no de-zipper, 0 frames is at once.
+                run.levels.insert(
+                    param,
+                    Level {
+                        owner: Some((cue, seq)),
+                        from,
+                        to,
+                        start,
+                        frames,
+                        curve: *curve,
+                    },
+                );
+                if run.geometry.is_none()
+                    && let CueKind::Video { geometry, .. } = &c.kind
+                {
+                    run.geometry = Some(*geometry);
+                }
+                fade.ramps.push(FadeRamp {
+                    cue: c.id,
+                    seq: run.seq,
+                    param,
+                    gain: to,
+                    from,
                     lead: start.saturating_sub(at).saturating_add(offset),
                     frames,
                 });
@@ -306,13 +377,18 @@ impl CueEngine {
                 Voice::Started { first, .. } => first,
                 Voice::None | Voice::Loaded => 0,
             };
-            let (heard_frames, heard_curve) =
-                level::heard(start, frames, fade.curve, voice_start, rate);
-            let gain = if fade.retimed {
-                // The plan ran from where it started, perhaps above a limit lowered since.
-                level::limit_gain(limits, r.gain_at(length, fade.curve))
+            let picture = r.param.picture().is_some();
+            let (heard_frames, heard_curve) = if picture {
+                (frames, fade.curve)
             } else {
-                r.gain
+                level::heard(start, frames, fade.curve, voice_start, rate)
+            };
+            let gain = match (fade.retimed, picture) {
+                // A picture's value has no volume limit.
+                (true, true) => r.gain_at(length, fade.curve),
+                // The plan ran from where it started, perhaps above a limit lowered since.
+                (true, false) => level::limit_gain(limits, r.gain_at(length, fade.curve)),
+                (false, _) => r.gain,
             };
             *level = Level {
                 owner: Some((cue, seq)),

@@ -9,7 +9,7 @@ import Foundation
 enum PasteProperty: String, CaseIterable {
     case name, notes, preWait, postWait, duration, continueMode, colour, secondColour, flagged, autoLoad, armed
     case skipIfDisarmed
-    case fadeAndStopOthers, duckOthers, secondTrigger, secondTriggerOnRelease
+    case fadeAndStopOthers, duckOthers, secondTrigger, secondTriggerOnRelease, wallClock
     case outputPatch, stage
     case levels
     case fadeCurve, fadeMode, fadeStopTarget
@@ -30,7 +30,7 @@ enum PasteProperty: String, CaseIterable {
         case .name, .notes, .preWait, .postWait, .duration, .continueMode, .colour, .secondColour, .flagged,
             .autoLoad, .armed, .skipIfDisarmed:
             return .basics
-        case .fadeAndStopOthers, .duckOthers, .secondTrigger, .secondTriggerOnRelease: return .triggers
+        case .fadeAndStopOthers, .duckOthers, .secondTrigger, .secondTriggerOnRelease, .wallClock: return .triggers
         case .outputPatch, .stage: return .io
         case .levels: return .levels
         case .fadeCurve, .fadeMode, .fadeStopTarget: return .fade
@@ -54,9 +54,11 @@ enum PasteProperty: String, CaseIterable {
                 || from == "video" && to == "video"
         case .triggers: return true
         case .io:
-            let kind = self == .stage ? "video" : "audio"
-            return from == kind && to == kind
-        case .levels: return from == to && (from == "audio" || from == "fade")
+            if self == .stage { return from == "video" && to == "video" }
+            return Self.soundKinds.contains(from) && Self.soundKinds.contains(to)
+        // An Audio cue's levels and a Video cue's are the same thing; a Fade's go to a Fade.
+        case .levels:
+            return from == to && from == "fade" || Self.soundKinds.contains(from) && Self.soundKinds.contains(to)
         case .fade: return from == "fade" && to == "fade"
         case .mode: return from == "group" && to == "group"
         case .loadTime: return from == "load" && to == "load"
@@ -65,7 +67,13 @@ enum PasteProperty: String, CaseIterable {
         }
     }
 
-    /// Whether `cue` can take this property from `source`: by their kinds; a duration only from and
+    /// The kinds with an output patch and levels: which Video cues have sound is the cue's own
+    /// question (`applies(from:to:media:)`).
+    static let soundKinds: Set<String> = ["audio", "video"]
+
+    /// Whether `cue` can take this property from `source`: by their kinds; an output patch or levels
+    /// only from and to a cue with sound (an Audio cue, a Video cue whose movie has sound: a silent
+    /// one shows neither); a duration only from and
     /// to a cue whose duration is typed (a still, not a movie: `media` holds what the probes read); a
     /// stage or output patch only when `model`, the targets' workspace, has it (a cue copied from
     /// another workspace, or whose stage or patch went since, would be left broken). A stage of none
@@ -83,8 +91,13 @@ enum PasteProperty: String, CaseIterable {
             guard let model, let stage = kind?["stage"]?.stringValue else { return true }
             return model.stages.contains { $0.id.raw == stage }
         case .outputPatch:
-            guard let model, let patch = kind?["patch"]?.stringValue else { return true }
+            guard source.sounds(media[source.id]), cue.sounds(media[cue.id]) else { return false }
+            // A Video cue's patch of none goes to Video cues only: an Audio cue always has a patch.
+            guard let patch = kind?["patch"]?.stringValue else { return cue.kindType == "video" }
+            guard let model else { return true }
             return model.patches.contains { $0.id.raw == patch }
+        case .levels:
+            return source.kindType == "fade" || source.sounds(media[source.id]) && cue.sounds(media[cue.id])
         default: return true
         }
     }
@@ -154,11 +167,14 @@ enum PasteProperty: String, CaseIterable {
         case .secondTrigger: return set(.secondTrigger(raw["second_trigger"]?.stringValue ?? "nothing"))
         case .secondTriggerOnRelease:
             return set(.secondTriggerOnRelease(raw["second_trigger_on_release"] == .bool(true)))
-        case .outputPatch: return field("patch")
+        case .wallClock:
+            // The time-of-day trigger alone: the cue keeps its own hotkey.
+            return [InspectorEdit.setTriggers(cue, wallClock: WallClockTrigger(json: raw["triggers"]?["wall_clock"]))]
+        case .outputPatch: return set(.kindFields(["patch": kind["patch"] ?? .null]))
         case .stage: return set(.stage(kind["stage"]?.stringValue.map { ModelID($0) }))
         case .levels:
             if cue.kindType == "fade" { return field("levels") }
-            // An Audio cue keeps its own outputs: the levels are fitted to them.
+            // An Audio or Video cue keeps its own outputs: the levels are fitted to them.
             guard let from = LevelSet(kind: kind), let to = LevelSet(kind: cue.raw["kind"] ?? .null) else { return [] }
             guard let levels = from.pasted(onto: to).json(into: .object([:]))["levels"] else { return [] }
             return set(.kindFields(["levels": levels]))
@@ -183,7 +199,7 @@ enum PasteProperty: String, CaseIterable {
 }
 
 extension LevelSet {
-    /// These levels as an Audio cue with `dest`'s outputs takes them: the main level, each output
+    /// These levels as an Audio or Video cue with `dest`'s outputs takes them: the main level, each output
     /// both have, the whole routing (a route to an output the cue's patch lacks is kept, silent, as
     /// the engine keeps one; entries this app cannot read go too), and the gangs of its outputs. An
     /// output fader the cue lacks is left out; one these levels lack keeps the cue's own.
@@ -205,19 +221,24 @@ extension LevelSet {
         case mute(Slot)
         case gang(output: Int, letter: String)
         case silenceAll
+        case clearMutes
         case defaults
     }
 
     /// These levels after `edit`, which left the shown levels as `shown`: the one level moved (an
     /// output with this cue's own gang, as a drag on it would), its mute, its gang, or the whole-set
-    /// action. Nothing else is written, and a level this cue does not have is left alone.
-    func taking(_ edit: Edit, from shown: LevelSet, limits: VolumeLimits, drag: Bool = false) -> LevelSet {
+    /// action. Nothing else is written, and a level this cue does not have is left alone. `outputs`:
+    /// the cue outputs its patch has, each this cue's even where its levels do not name it yet.
+    func taking(
+        _ edit: Edit, from shown: LevelSet, limits: VolumeLimits, drag: Bool = false, outputs: Int = 0
+    ) -> LevelSet {
         var s = self
+        let width = max(s.outputs.count, min(outputs, Self.maxCueOutputs))
         func has(_ slot: Slot) -> Bool {
             switch slot {
             case .master: return true
-            case .output(let o): return s.outputs.indices.contains(o)
-            case .cross(_, let o): return s.outputs.indices.contains(o)
+            case .output(let o): return o >= 0 && o < width
+            case .cross(_, let o): return o >= 0 && o < width
             }
         }
         switch edit {
@@ -230,6 +251,7 @@ extension LevelSet {
         case .gang(let o, let letter):
             s.setGang(of: o, letter: letter)
         case .silenceAll: s.silenceAll()
+        case .clearMutes: s.clearMutes()
         case .defaults: s.setDefaults()
         }
         return s

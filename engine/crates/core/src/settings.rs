@@ -30,13 +30,24 @@ pub const DEFAULT_BUFFER_FRAMES: u32 = 512;
 /// Devices with a buffer size kept; more in a file are dropped.
 const MAX_BUFFER_ENTRIES: usize = 256;
 
+/// What a patch on the system output whose Mac has no default output device resolves to (a
+/// device no layer lists, so it is missing).
+pub const SYSTEM_OUTPUT: &str = "system output";
+
 /// Where one patch plays on this machine.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PatchMapping {
-    /// The device's name as the device layer lists it.
+    /// The device's name as the device layer lists it; empty on the system output.
     pub device: String,
-    /// Device channel (0-based) for each logical output of the patch, in order.
+    /// Device channel (0-based) for each of the patch's first logical outputs, in order; outputs
+    /// past the list have no device output of their own (a device with fewer outputs than the
+    /// patch, as QLab 5 routes cue output n only where device output n exists). The patch's
+    /// crosspoints may still send them anywhere.
     pub channels: Vec<u32>,
+    /// Plays on the system output: whichever device the operating system's default output is,
+    /// followed when it changes (QLab 5 manual p. 7), rather than on a named device.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub system: bool,
 }
 
 impl PatchMapping {
@@ -46,11 +57,33 @@ impl PatchMapping {
         Self {
             device: String::new(),
             channels: Vec::new(),
+            system: false,
+        }
+    }
+
+    /// Plays on the system output, output `i` of the patch on its channel `channels[i]`.
+    pub fn system_output(channels: Vec<u32>) -> Self {
+        Self {
+            device: String::new(),
+            channels,
+            system: true,
         }
     }
 
     pub fn is_none(&self) -> bool {
-        self.device.is_empty() && self.channels.is_empty()
+        !self.system && self.device.is_empty() && self.channels.is_empty()
+    }
+
+    /// The device it plays on: the named one, or for the system output `system` (the default
+    /// output device now, if there is one). `None` for a cleared entry.
+    pub fn device_for<'a>(&'a self, system: Option<&'a str>) -> Option<&'a str> {
+        if self.system {
+            system
+        } else if self.device.is_empty() {
+            None
+        } else {
+            Some(&self.device)
+        }
     }
 }
 
@@ -100,6 +133,10 @@ pub struct MachineSettings {
     /// (`set_output_device`). None: the system default device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_device: Option<String>,
+    /// The port OSC listens on (UDP and TCP), set on the OSC settings page; absent: 53000.
+    /// 1 to 65535.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osc_port: Option<u16>,
     /// Frames per callback asked of each output device, by name ([`MIN_BUFFER_FRAMES`] to
     /// [`MAX_BUFFER_FRAMES`]); a device not here is asked for [`DEFAULT_BUFFER_FRAMES`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -123,6 +160,7 @@ impl Default for MachineSettings {
             settings_version: SETTINGS_VERSION,
             backup_keep: DEFAULT_BACKUP_KEEP,
             output_device: None,
+            osc_port: None,
             buffer_frames: BTreeMap::new(),
             workspaces: BTreeMap::new(),
             extra: BTreeMap::new(),
@@ -169,6 +207,15 @@ pub fn load_settings(text: &str) -> LoadedSettings {
     {
         object.remove("output_device");
         warnings.push("output device is not a name; using the system default".to_owned());
+    }
+    // Likewise an OSC port that is not a port number drops only itself.
+    if let Some(object) = value.as_object_mut()
+        && object
+            .get("osc_port")
+            .is_some_and(|v| !v.as_u64().is_some_and(|p| (1..=65535).contains(&p)))
+    {
+        object.remove("osc_port");
+        warnings.push("OSC port is not a port number; using 53000".to_owned());
     }
     // Likewise a buffer size that is not a frame count drops only itself.
     if let Some(sizes) = value
@@ -312,7 +359,11 @@ fn mapping_problem(patch: &str, mapping: &PatchMapping) -> Option<String> {
     if mapping.is_none() {
         return None;
     }
-    if mapping.device.is_empty() || mapping.device.len() > MAX_DEVICE_NAME_BYTES {
+    if mapping.system {
+        if !mapping.device.is_empty() {
+            return Some("a device name with the system output".into());
+        }
+    } else if mapping.device.is_empty() || mapping.device.len() > MAX_DEVICE_NAME_BYTES {
         return Some("invalid device name".into());
     }
     if mapping.channels.is_empty() || mapping.channels.len() > MAX_CUE_OUTPUTS as usize {
@@ -345,6 +396,25 @@ impl MachineSettings {
             .get(&workspace.to_string())?
             .patches
             .get(&patch.to_string())
+    }
+
+    /// Keeps `count` backups per workspace (0 turns them off). Refuses more than
+    /// [`MAX_BACKUP_KEEP`] and changes nothing.
+    pub fn set_backup_keep(&mut self, count: u32) -> Result<(), String> {
+        if count > MAX_BACKUP_KEEP {
+            return Err(format!("at most {MAX_BACKUP_KEEP} backups can be kept"));
+        }
+        self.backup_keep = count;
+        Ok(())
+    }
+
+    /// Sets the port OSC listens on from the next engine start. Refuses 0 and changes nothing.
+    pub fn set_osc_port(&mut self, port: u16) -> Result<(), String> {
+        if port == 0 {
+            return Err("an OSC port is a number from 1 to 65535".into());
+        }
+        self.osc_port = Some(port);
+        Ok(())
     }
 
     /// Chooses the output device the engine opens at its next start; `None` goes back to the
@@ -461,7 +531,7 @@ pub struct DeviceInfo {
 /// Where a patch can play right now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatchResolution {
-    /// Every logical output has a device channel.
+    /// The patch's first outputs each have a device channel (the rest have none).
     Mapped { device: String, channels: Vec<u32> },
     /// The operator has not mapped this patch on this machine (WS-07): ask once.
     Unmapped,
@@ -473,29 +543,36 @@ pub enum PatchResolution {
         needed: u32,
         available: u32,
     },
-    /// The mapping lists a different number of channels than the patch has outputs.
+    /// The mapping lists more channels than the patch has outputs.
     OutputCountMismatch { mapped: usize, outputs: usize },
 }
 
-/// Resolves one patch against the devices present.
+/// Resolves one patch against the devices present. `system`: the name of the system's default
+/// output device now, which a patch on the system output plays on.
 pub fn resolve_patch(
     settings: &MachineSettings,
     workspace: WorkspaceId,
     patch: &OutputPatch,
     devices: &[DeviceInfo],
+    system: Option<&str>,
 ) -> PatchResolution {
     let Some(mapping) = settings.patch_mapping(workspace, patch.id) else {
         return PatchResolution::Unmapped;
     };
-    if mapping.channels.len() != patch.outputs.len() {
+    if mapping.channels.len() > patch.outputs.len() {
         return PatchResolution::OutputCountMismatch {
             mapped: mapping.channels.len(),
             outputs: patch.outputs.len(),
         };
     }
-    let Some(device) = devices.iter().find(|d| d.name == mapping.device) else {
+    let Some(name) = mapping.device_for(system) else {
         return PatchResolution::DeviceMissing {
-            device: mapping.device.clone(),
+            device: SYSTEM_OUTPUT.to_owned(),
+        };
+    };
+    let Some(device) = devices.iter().find(|d| d.name == name) else {
+        return PatchResolution::DeviceMissing {
+            device: name.to_owned(),
         };
     };
     let needed = mapping
@@ -505,13 +582,13 @@ pub fn resolve_patch(
         .map_or(0, |&max| max.saturating_add(1));
     if needed > device.output_channels {
         return PatchResolution::ChannelsMissing {
-            device: mapping.device.clone(),
+            device: name.to_owned(),
             needed,
             available: device.output_channels,
         };
     }
     PatchResolution::Mapped {
-        device: mapping.device.clone(),
+        device: name.to_owned(),
         channels: mapping.channels.clone(),
     }
 }
@@ -578,6 +655,8 @@ mod tests {
 
     fn patch(n: u128, outputs: usize) -> OutputPatch {
         OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: pid(n),
             name: "Main".into(),
             master_db: 0.0,
@@ -597,6 +676,7 @@ mod tests {
         PatchMapping {
             device: device.into(),
             channels: channels.to_vec(),
+            system: false,
         }
     }
 
@@ -615,6 +695,21 @@ mod tests {
         let out = save_settings(&loaded.settings).unwrap();
         assert!(out.contains("\"future\""), "{out}");
         assert!(!out.contains("recent_files"), "{out}");
+    }
+
+    #[test]
+    fn an_osc_port_that_is_not_a_port_number_is_dropped_with_a_warning() {
+        for bad in ["0", "70000", "\"x\"", "-1", "1.5"] {
+            let loaded = load_settings(&format!(
+                r#"{{"settings_version": 1, "backup_keep": 4, "osc_port": {bad}}}"#
+            ));
+            assert_eq!(loaded.settings.osc_port, None, "{bad}");
+            assert_eq!(loaded.warnings.len(), 1, "{bad}: {:?}", loaded.warnings);
+            assert_eq!(loaded.settings.backup_keep, 4, "{bad}");
+        }
+        let loaded = load_settings(r#"{"settings_version": 1, "osc_port": 53100}"#);
+        assert_eq!(loaded.settings.osc_port, Some(53100));
+        assert!(loaded.warnings.is_empty());
     }
 
     #[test]
@@ -680,7 +775,7 @@ mod tests {
         assert_eq!(loaded.warnings, Vec::<String>::new());
         assert_eq!(loaded.settings, settings);
         assert_eq!(
-            resolve_patch(&loaded.settings, ws(1), &patch(2, 2), &[]),
+            resolve_patch(&loaded.settings, ws(1), &patch(2, 2), &[], None),
             PatchResolution::Unmapped
         );
     }
@@ -826,6 +921,72 @@ mod tests {
         settings.clear_patch_mapping(ws(9), pid(9));
     }
 
+    /// A patch on the system output plays on whatever device is the default output now, and is
+    /// missing while there is none; it is stored as such (no device name) and reloads so. A
+    /// named mapping writes no `system` key; an entry naming a device on the system output is
+    /// refused by the setter and dropped, with a warning, on load.
+    #[test]
+    fn a_system_output_mapping_follows_the_default_device_and_round_trips() {
+        let mut settings = MachineSettings::default();
+        settings
+            .set_patch_mapping(ws(1), pid(1), PatchMapping::system_output(vec![0, 1]))
+            .unwrap();
+        settings
+            .set_patch_mapping(ws(1), pid(2), mapping("A", &[0, 1]))
+            .unwrap();
+        let devices = [device("A", 2), device("B", 4)];
+        let p = patch(1, 2);
+        assert_eq!(
+            resolve_patch(&settings, ws(1), &p, &devices, Some("B")),
+            PatchResolution::Mapped {
+                device: "B".into(),
+                channels: vec![0, 1]
+            }
+        );
+        assert_eq!(
+            resolve_patch(&settings, ws(1), &p, &devices, Some("A")),
+            PatchResolution::Mapped {
+                device: "A".into(),
+                channels: vec![0, 1]
+            }
+        );
+        assert_eq!(
+            resolve_patch(&settings, ws(1), &p, &devices, None),
+            PatchResolution::DeviceMissing {
+                device: SYSTEM_OUTPUT.into()
+            }
+        );
+        // A named patch never follows the default.
+        assert_eq!(
+            resolve_patch(&settings, ws(1), &patch(2, 2), &devices, Some("B")),
+            PatchResolution::Mapped {
+                device: "A".into(),
+                channels: vec![0, 1]
+            }
+        );
+        let text = save_settings(&settings).unwrap();
+        assert_eq!(text.matches("\"system\": true").count(), 1, "{text}");
+        assert!(!text.contains("\"system\": false"), "{text}");
+        let loaded = load_settings(&text);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings, settings);
+        let mut named = PatchMapping::system_output(vec![0]);
+        named.device = "A".into();
+        let mut refused = MachineSettings::default();
+        assert!(
+            refused
+                .set_patch_mapping(ws(1), pid(1), named.clone())
+                .is_err()
+        );
+        assert_eq!(refused, MachineSettings::default());
+        let bad = text.replacen("\"device\": \"\",", "\"device\": \"A\",", 1);
+        assert_ne!(bad, text);
+        let loaded = load_settings(&bad);
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.patch_entry(ws(1), pid(1)), None);
+        assert!(loaded.settings.patch_entry(ws(1), pid(2)).is_some());
+    }
+
     #[test]
     fn resolution() {
         let mut settings = MachineSettings::default();
@@ -835,7 +996,7 @@ mod tests {
         let devices = [device("A", 4), device("B", 2)];
         let p = patch(1, 2);
         assert_eq!(
-            resolve_patch(&settings, ws(1), &p, &devices),
+            resolve_patch(&settings, ws(1), &p, &devices, None),
             PatchResolution::Mapped {
                 device: "A".into(),
                 channels: vec![2, 3]
@@ -843,37 +1004,45 @@ mod tests {
         );
         // Other workspace and other patch: unmapped, not an error.
         assert_eq!(
-            resolve_patch(&settings, ws(2), &p, &devices),
+            resolve_patch(&settings, ws(2), &p, &devices, None),
             PatchResolution::Unmapped
         );
         assert_eq!(
-            resolve_patch(&settings, ws(1), &patch(2, 2), &devices),
+            resolve_patch(&settings, ws(1), &patch(2, 2), &devices, None),
             PatchResolution::Unmapped
         );
         // Unknown device.
         assert_eq!(
-            resolve_patch(&settings, ws(1), &p, &[device("B", 8)]),
+            resolve_patch(&settings, ws(1), &p, &[device("B", 8)], None),
             PatchResolution::DeviceMissing { device: "A".into() }
         );
         assert_eq!(
-            resolve_patch(&settings, ws(1), &p, &[]),
+            resolve_patch(&settings, ws(1), &p, &[], None),
             PatchResolution::DeviceMissing { device: "A".into() }
         );
         // Device too small.
         assert_eq!(
-            resolve_patch(&settings, ws(1), &p, &[device("A", 3)]),
+            resolve_patch(&settings, ws(1), &p, &[device("A", 3)], None),
             PatchResolution::ChannelsMissing {
                 device: "A".into(),
                 needed: 4,
                 available: 3
             }
         );
-        // The patch grew since it was mapped.
+        // The patch grew since it was mapped: its third output has no device output of its own.
         assert_eq!(
-            resolve_patch(&settings, ws(1), &patch(1, 3), &devices),
+            resolve_patch(&settings, ws(1), &patch(1, 3), &devices, None),
+            PatchResolution::Mapped {
+                device: "A".into(),
+                channels: vec![2, 3]
+            }
+        );
+        // It shrank: the mapping names an output it no longer has.
+        assert_eq!(
+            resolve_patch(&settings, ws(1), &patch(1, 1), &devices, None),
             PatchResolution::OutputCountMismatch {
                 mapped: 2,
-                outputs: 3
+                outputs: 1
             }
         );
     }

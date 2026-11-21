@@ -8,8 +8,13 @@ MAC_TESTS_WITH_LIMIT := scripts/run-mac-tests.sh $(XCODEBUILD) -destination "pla
 UI_SMOKE := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-smoke.txt),-only-testing:$(t))
 # The unit test classes `make test-mac` runs in its second test process.
 LATE_TEST_CLASSES := $(shell grep -hoE 'class [M-Z][A-Za-z0-9_]*: XCTestCase' mac/openLabTests/*.swift | sed 's/class //; s/:.*//' | sort -u)
+# The unit test classes shard 1 of the CI app job runs and shard 2 skips (scripts/mac-test-shards.txt):
+# field 1 is the shard, field 2 the class; a comment's first field is `#`.
+SHARD1_CLASSES := $(shell awk '$$1 == "1" { print $$2 }' scripts/mac-test-shards.txt)
 # The everyday-flow tests (scripts/core-flows.txt), unit and UI, as -only-testing arguments.
 CORE_FLOWS := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/core-flows.txt),-only-testing:$(t))
+# The UI tests the hosted CI runners cannot pass (scripts/ui-local-only.txt).
+UI_LOCAL_ONLY_LIST := $(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-local-only.txt)
 
 FUZZ_TIME ?= 30
 FUZZ_TOOLCHAIN ?= nightly
@@ -17,7 +22,7 @@ FUZZ_TOOLCHAIN ?= nightly
 SAN_TOOLCHAIN ?= nightly-2026-10-15
 SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: ui-shots lint test test-rust test-mac test-mac-unit test-mac-core-flows test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
+.PHONY: ui-shots lint test test-rust test-mac test-mac-shard test-mac-unit test-mac-core-flows test-mac-ui-full test-mac-local-only mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
 
 lint:
 	scripts/check-repo.sh
@@ -87,6 +92,19 @@ MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly
 miri:
 	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
+# Two test processes one after the other: $(1) names the target in messages, $(2) the first selection, $(3)
+# the second. The second does not start after a run cut short by a proven stall (exit 75 of
+# scripts/run-mac-tests.sh) or a hang (76): the runner is wedged, so it would most likely hang to the step's
+# limit. Otherwise both run, and the failing code is kept (the second's if both fail).
+define two_test_processes
+	rc=0; \
+	$(MAC_TESTS_WITH_LIMIT) -- $(2) || rc=$$?; \
+	if [ "$$rc" = 75 ]; then echo "$(1): the first test process was cut short by a WindowServer stall on the runner; not starting the second. Re-run the job."; exit $$rc; fi; \
+	if [ "$$rc" = 76 ]; then echo "$(1): a test hung in the first test process; not starting the second, which would most likely hang to the step's limit. Read the hang report in the result bundle, then re-run the job."; exit $$rc; fi; \
+	$(MAC_TESTS_WITH_LIMIT) -- $(3) || rc=$$?; \
+	exit $$rc
+endef
+
 # The engine-free unit tests: what every app PR runs. The tests that start the real engine report a
 # skip (OPENLAB_ENGINE_TESTS=skip reaches the test process through xcodebuild's TEST_RUNNER_ prefix).
 test-mac-unit: project
@@ -94,6 +112,7 @@ test-mac-unit: project
 
 # Every unit test, real-engine ones included, plus the UI smoke set (scripts/ui-smoke.txt): what a PR
 # that changes the engine, the protocol, the app's engine client, its tests or project runs (scripts/paths.sh).
+# CI runs the same tests as two parallel shards (`test-mac-shard` below); this target stays the local run.
 # Two test processes: later classes ran about twice as fast in a fresh one when a hang forced a restart
 # (one process gathers windows and connections over 1,100 tests). Both always run, so a failure in the
 # first still reports the second's, except after a run cut short by a proven stall (exit 75 of
@@ -101,12 +120,21 @@ test-mac-unit: project
 test-mac: project
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
 	@test -n "$(LATE_TEST_CLASSES)" || { echo "no test classes for the second test process"; exit 1; }
-	rc=0; \
-	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(foreach c,$(LATE_TEST_CLASSES),-skip-testing:openLabTests/$(c)) || rc=$$?; \
-	if [ "$$rc" = 75 ]; then echo "test-mac: the first test process was cut short by a WindowServer stall on the runner; not starting the second. Re-run the job."; exit $$rc; fi; \
-	if [ "$$rc" = 76 ]; then echo "test-mac: a test hung in the first test process; not starting the second, which would most likely hang to the step's limit. Read the hang report in the result bundle, then re-run the job."; exit $$rc; fi; \
-	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(LATE_TEST_CLASSES),-only-testing:openLabTests/$(c)) $(UI_SMOKE) || rc=$$?; \
-	exit $$rc
+	$(call two_test_processes,test-mac,-only-testing:openLabTests $(foreach c,$(LATE_TEST_CLASSES),-skip-testing:openLabTests/$(c)),$(foreach c,$(LATE_TEST_CLASSES),-only-testing:openLabTests/$(c)) $(UI_SMOKE))
+
+# Half of `make test-mac`, as the CI app job runs them in parallel (SHARD=1 or 2; the list is
+# scripts/mac-test-shards.txt). Shard 1 runs its listed classes. Shard 2 runs every other unit test (the
+# whole target minus the list, so an unlisted class still runs), then the UI smoke set in a second
+# process; like `test-mac`, it starts none after a run cut short by a stall (75) or a hang (76).
+test-mac-shard: project
+	@case "$(SHARD)" in 1|2) ;; *) echo "usage: make test-mac-shard SHARD=1|2"; exit 2;; esac
+	@test -n "$(SHARD1_CLASSES)" || { echo "scripts/mac-test-shards.txt lists no classes"; exit 1; }
+ifeq ($(SHARD),2)
+	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
+	$(call two_test_processes,test-mac-shard,-only-testing:openLabTests $(foreach c,$(SHARD1_CLASSES),-skip-testing:openLabTests/$(c)),$(UI_SMOKE))
+else
+	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(SHARD1_CLASSES),-only-testing:openLabTests/$(c))
+endif
 
 # The everyday QLab-user flows on the real engine (scripts/core-flows.txt): nightly before the full suite,
 # and on demand after a big feature change.
@@ -114,9 +142,15 @@ test-mac-core-flows: project
 	@test -n "$(CORE_FLOWS)" || { echo "scripts/core-flows.txt lists no tests"; exit 1; }
 	$(MAC_TESTS_WITH_LIMIT) -- $(CORE_FLOWS)
 
-# Every unit test and the whole UI suite: what the nightly run does.
+# Every unit test and the whole UI suite: what the nightly run does. On CI (CI set) it skips the tests in
+# scripts/ui-local-only.txt, which `make test-mac-local-only` runs on a Mac.
 test-mac-ui-full: project
-	$(MAC_TESTS_WITH_LIMIT) --
+	$(if $(CI),@printf 'test-mac-ui-full: skipped on CI (scripts/ui-local-only.txt): %s\n' $(UI_LOCAL_ONLY_LIST))
+	$(MAC_TESTS_WITH_LIMIT) -- $(if $(CI),$(foreach t,$(UI_LOCAL_ONLY_LIST),-skip-testing:$(t)))
+
+# The UI tests CI skips (scripts/ui-local-only.txt), on this Mac.
+test-mac-local-only: project
+	$(if $(UI_LOCAL_ONLY_LIST),$(MAC_TESTS_WITH_LIMIT) -- $(foreach t,$(UI_LOCAL_ONLY_LIST),-only-testing:$(t)),@echo "scripts/ui-local-only.txt lists no tests: nothing to run")
 
 # Pictures of the real workspace window driven through a scenario on the real engine, drawn offscreen
 # (no focus taken): `make ui-shots SCENARIO=mac/scenarios/<name>.json [OUT=<dir>]`. It waits for any other

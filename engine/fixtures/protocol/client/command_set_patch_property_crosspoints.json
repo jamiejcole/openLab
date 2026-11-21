@@ -1,0 +1,23 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_patch_property",
+    "id": "00000000-0000-0000-0000-000000000002",
+    "property": {
+      "type": "crosspoints",
+      "value": [
+        {
+          "output": 0,
+          "device_output": 2,
+          "db": -6.0
+        },
+        {
+          "output": 1,
+          "device_output": 0,
+          "db": -120.0
+        }
+      ]
+    }
+  }
+}

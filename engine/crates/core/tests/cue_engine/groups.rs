@@ -841,6 +841,724 @@ fn reordering_a_playlist_while_it_plays_applies_to_the_next_child() {
     assert_eq!(starts(&rig.tick(1000)), vec![(id(12), 1000)]);
 }
 
+// ----- the playlist's next child (the cue list's mark) -----
+
+fn marks(actions: &[Action]) -> Vec<(CueId, Option<CueId>)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::PlaylistNextChanged { group, next } => Some((*group, *next)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn three_waits(loop_: bool) -> Rig {
+    Rig::new(vec![grp(
+        1,
+        playlist(loop_, false),
+        vec![wait(10, 1.0), wait(11, 1.0), wait(12, 1.0)],
+    )])
+}
+
+#[test]
+fn a_playlist_marks_its_first_child_then_the_one_after_the_playing_child_and_the_first_after_a_reset()
+ {
+    let mut rig = three_waits(false);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    assert_eq!(
+        rig.engine.playlist_marks().collect::<Vec<_>>(),
+        vec![(id(1), id(10))]
+    );
+    assert_eq!(marks(&rig.go(0)), vec![(id(1), Some(id(11)))]);
+    assert_eq!(marks(&rig.tick(1000)), vec![(id(1), Some(id(12)))]);
+    // The last child plays: nothing comes after it.
+    assert_eq!(marks(&rig.tick(2000)), vec![(id(1), None)]);
+    assert_eq!(rig.engine.playlist_marks().count(), 0);
+    let reset = rig.at(2500, Input::Reset { cue: id(1) });
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(marks(&reset), vec![(id(1), Some(id(10)))]);
+    // Nothing changed: nothing reported.
+    assert!(marks(&rig.tick(3000)).is_empty());
+}
+
+#[test]
+fn a_looping_playlist_marks_its_first_child_while_the_last_plays() {
+    let mut rig = three_waits(true);
+    rig.go(0);
+    rig.tick(1000);
+    assert_eq!(marks(&rig.tick(2000)), vec![(id(1), Some(id(10)))]);
+    assert_eq!(marks(&rig.tick(3000)), vec![(id(1), Some(id(11)))]);
+}
+
+#[test]
+fn the_mark_passes_over_a_skipped_child_and_one_broken_at_run_time() {
+    let mut skipped = wait(10, 1.0);
+    skipped.armed = false;
+    skipped.skip_if_disarmed = true;
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![skipped, wait(11, 1.0), wait(12, 1.0)],
+    )]);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    // A child that broke while it played is passed over until it is reset.
+    rig.ws.cue_lists[0].cues.push(grp(
+        2,
+        playlist(false, false),
+        vec![cue(20, audio()), wait(21, 1.0)],
+    ));
+    rig.start(0, 20);
+    rig.failed(10, 20);
+    assert_eq!(rig.state(20), CueState::Broken);
+    assert_eq!(rig.engine.next_in_playlist(id(2)), Some(id(21)));
+    assert_eq!(
+        marks(&rig.at(20, Input::Reset { cue: id(20) })),
+        vec![(id(2), Some(id(20)))]
+    );
+}
+
+#[test]
+fn a_child_running_on_its_own_stays_marked_unless_its_second_trigger_stops_it() {
+    // A start of the playlist gives that child its second trigger: one that stops it leaves the
+    // playlist to play the next child, any other keeps it as the one playing.
+    for (option, next) in [(SecondTrigger::Stop, 11), (SecondTrigger::Nothing, 10)] {
+        let mut sound = timed(cue(10, audio()), 1.0, 0.0, DNC);
+        sound.second_trigger = option;
+        let mut rig = Rig::new(vec![grp(
+            1,
+            playlist(false, false),
+            vec![sound, wait(11, 1.0)],
+        )]);
+        rig.start(0, 10);
+        assert_eq!(rig.state(10), CueState::PreWaiting);
+        assert_eq!(
+            rig.engine.next_in_playlist(id(1)),
+            Some(id(next)),
+            "{option:?}"
+        );
+        let go = rig.start(10, 1);
+        let wait_started = changes(&go, 11).iter().any(|(s, _)| *s != CueState::Idle);
+        assert_eq!(
+            wait_started,
+            next == 11,
+            "{option:?}: the start plays the marked child"
+        );
+    }
+}
+
+#[test]
+fn the_mark_passes_over_a_child_with_static_problems_as_the_start_does() {
+    let mut broken = cue(10, audio());
+    if let CueKind::Audio { patch, .. } = &mut broken.kind {
+        *patch = patch_id(99);
+    }
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![broken, wait(11, 1.0)],
+    )]);
+    assert!(!rig.problems(10).is_empty());
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let go = rig.go(0);
+    assert_eq!(
+        running_at(&go, 11),
+        Some(0),
+        "the start plays the marked child"
+    );
+}
+
+/// Playlist 1 [audio 10 (pre-wait 2 s, second trigger `option`), wait 11 (5 s), wait 12].
+fn sound_then_waits(option: SecondTrigger) -> Rig {
+    let mut sound = timed(sound(10), 2.0, 0.0, DNC);
+    sound.second_trigger = option;
+    Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![sound, wait(11, 5.0), wait(12, 5.0)],
+    )])
+}
+
+/// Checks that 10 is marked and that a start of group 1 at `now` takes 10's own run as the child
+/// playing: 11 is not started, and the playlist reaches it only when 10's pre-wait ends at `end`
+/// (11's trigger ignored if it is already running).
+fn start_keeps_child_10(rig: &mut Rig, now: SampleTime, end: SampleTime) {
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let go = rig.start(now, 1);
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+    assert!(rig.tick(end - 1).is_empty());
+    let on = rig.tick(end);
+    let reached = starts(&on).contains(&(id(11), end))
+        || warnings(&on)
+            .iter()
+            .any(|w| matches!(w, EngineWarning::TriggerIgnored { cue, .. } if *cue == id(11)));
+    assert!(reached, "the playlist moves on from 10 at its end: {on:?}");
+}
+
+#[test]
+fn the_mark_keeps_a_child_that_broke_in_its_pre_wait_as_the_start_takes_it() {
+    let mut rig = sound_then_waits(SecondTrigger::Nothing);
+    rig.start(0, 10);
+    rig.failed(500, 10);
+    assert_eq!(rig.state(10), CueState::Broken);
+    assert_eq!(rig.state(11), CueState::Running, "the follow-through");
+    start_keeps_child_10(&mut rig, 1000, 2000);
+}
+
+#[test]
+fn the_mark_keeps_a_child_started_broken_whose_problems_cleared_in_its_pre_wait() {
+    let mut rig = sound_then_waits(SecondTrigger::Nothing);
+    let patches = std::mem::take(&mut rig.ws.patches);
+    rig.tick(100);
+    assert!(!rig.problems(10).is_empty());
+    rig.start(200, 10);
+    rig.ws.patches = patches;
+    rig.tick(300);
+    assert_eq!(rig.state(10), CueState::Broken, "started broken");
+    start_keeps_child_10(&mut rig, 1000, 2200);
+}
+
+#[test]
+fn the_mark_keeps_a_running_child_whose_patch_went_missing_as_the_start_takes_it() {
+    let mut rig = sound_then_waits(SecondTrigger::Nothing);
+    rig.start(0, 10);
+    rig.ws.patches.clear();
+    rig.tick(100);
+    assert!(!rig.problems(10).is_empty());
+    assert_eq!(rig.state(10), CueState::PreWaiting);
+    start_keeps_child_10(&mut rig, 1000, 2000);
+}
+
+#[test]
+fn the_mark_keeps_a_paused_child_whose_patch_went_missing_as_the_start_resumes_it() {
+    let mut rig = sound_then_waits(SecondTrigger::Nothing);
+    rig.start(0, 10);
+    rig.pause(500, 10);
+    rig.ws.patches.clear();
+    rig.tick(600);
+    assert!(!rig.problems(10).is_empty());
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let go = rig.start(1000, 1);
+    assert!(
+        rig.state(10).is_active() && !rig.engine.is_paused(id(10)),
+        "{go:?}"
+    );
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+}
+
+#[test]
+fn the_mark_passes_over_a_child_whose_panic_trigger_stops_it_with_no_panic_time() {
+    let mut rig = sound_then_waits(SecondTrigger::Panic);
+    rig.ws.settings.panic_duration = 0.0;
+    rig.tick(10);
+    rig.start(100, 10);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let go = rig.start(1000, 1);
+    assert_eq!(
+        rig.state(10),
+        CueState::Idle,
+        "the panic stopped it at once"
+    );
+    assert_eq!(
+        running_at(&go, 11),
+        Some(1000),
+        "the start plays the marked child"
+    );
+}
+
+/// Checks that 11 is marked and that a start of group 1 at `now` stops 10 at once and plays 11.
+fn start_stops_child_10_and_plays_11(rig: &mut Rig, now: SampleTime) {
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let go = rig.start(now, 1);
+    assert_eq!(
+        rig.state(10),
+        CueState::Idle,
+        "the panic stopped it at once"
+    );
+    assert_eq!(
+        running_at(&go, 11),
+        Some(now),
+        "the start plays the marked child"
+    );
+}
+
+#[test]
+fn the_mark_passes_over_a_child_in_its_pre_wait_whose_panic_trigger_stops_it_at_once() {
+    let mut rig = sound_then_waits(SecondTrigger::Panic);
+    assert!(rig.ws.settings.panic_duration > 0.0);
+    rig.start(100, 10);
+    assert_eq!(rig.state(10), CueState::PreWaiting);
+    start_stops_child_10_and_plays_11(&mut rig, 1000);
+}
+
+#[test]
+fn the_mark_passes_over_a_wait_child_whose_panic_trigger_stops_it_at_once() {
+    let mut first = wait(10, 5.0);
+    first.second_trigger = SecondTrigger::Panic;
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![first, wait(11, 5.0)],
+    )]);
+    rig.start(100, 10);
+    assert_eq!(rig.state(10), CueState::Running);
+    start_stops_child_10_and_plays_11(&mut rig, 1000);
+}
+
+#[test]
+fn the_mark_passes_over_a_group_child_with_nothing_to_fade_whose_panic_trigger_stops_it() {
+    // Group 10's only child is in its pre-wait: the panic stops that child at once, so the
+    // group has no child left fading out and stops at once too.
+    let inner = timed(sound(100), 2.0, 0.0, DNC);
+    let mut group = grp(10, TIMELINE, vec![inner]);
+    group.second_trigger = SecondTrigger::Panic;
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![group, wait(11, 5.0)],
+    )]);
+    rig.start(100, 10);
+    assert_eq!(rig.state(10), CueState::Running);
+    assert_eq!(rig.state(100), CueState::PreWaiting);
+    start_stops_child_10_and_plays_11(&mut rig, 1000);
+    assert_eq!(rig.state(100), CueState::Idle);
+}
+
+#[test]
+fn the_mark_keeps_a_playing_child_whose_panic_trigger_fades_it_out() {
+    let mut rig = sound_then_waits(SecondTrigger::Panic);
+    rig.start(100, 10);
+    rig.tick(2100);
+    assert_eq!(rig.state(10), CueState::Running);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let go = rig.start(2500, 1);
+    assert!(rig.state(10).is_active(), "fading out in the panic: {go:?}");
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+}
+
+#[test]
+fn the_mark_follows_a_panic_trigger_child_whose_voice_starts_after_its_panic_would_end() {
+    // A 0.1 s panic and a 0.5 s lookahead: 10's voice is set to start at 2100 from 1700 on.
+    let mut sound = timed(sound(10), 2.0, 0.0, DNC);
+    sound.second_trigger = SecondTrigger::Panic;
+    let mut rig = Rig::with_lookahead(
+        vec![grp(1, playlist(false, false), vec![sound, wait(11, 5.0)])],
+        500,
+    );
+    rig.ws.settings.panic_duration = 0.1;
+    rig.start(100, 10);
+    rig.tick(1700);
+    assert_eq!(
+        rig.engine.next_in_playlist(id(1)),
+        Some(id(11)),
+        "a panic now would end before the voice starts: it stops 10 at once"
+    );
+    rig.tick(2050);
+    assert_eq!(
+        rig.engine.next_in_playlist(id(1)),
+        Some(id(10)),
+        "a panic now fades the voice out"
+    );
+    let go = rig.start(3000, 1);
+    let faded = go.iter().any(|a| {
+        matches!(a, Action::StopVoice { cue, fade: Some(f), .. } if *cue == id(10) && f.frames == 100)
+    });
+    assert!(faded, "fading out in the panic: {go:?}");
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+}
+
+/// Playlist 1 holds Timeline group 10 (a Panic second trigger) with sound 100 playing, and
+/// wait 11.
+fn group_playing_then_wait() -> Rig {
+    let mut group = grp(10, TIMELINE, vec![sound(100)]);
+    group.second_trigger = SecondTrigger::Panic;
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![group, wait(11, 5.0)],
+    )]);
+    rig.start(100, 10);
+    assert_eq!(rig.state(100), CueState::Running);
+    rig
+}
+
+#[test]
+fn the_mark_keeps_a_group_child_whose_panic_trigger_fades_out_its_playing_child() {
+    let mut rig = group_playing_then_wait();
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let go = rig.start(1000, 1);
+    assert!(rig.state(10).is_active(), "waiting on 100's fade: {go:?}");
+    assert!(rig.state(100).is_active(), "fading out: {go:?}");
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+}
+
+#[test]
+fn the_mark_passes_over_a_group_child_whose_playing_child_was_moved_out_of_it() {
+    let mut rig = group_playing_then_wait();
+    let moved = children_mut(&mut rig.ws.cue_lists[0].cues[0])[0].clone();
+    children_mut(&mut children_mut(&mut rig.ws.cue_lists[0].cues[0])[0]).clear();
+    rig.ws.cue_lists[0].cues.push(moved);
+    rig.tick(500);
+    assert!(rig.state(10).is_active(), "the group still runs");
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let go = rig.start(1000, 1);
+    assert_eq!(
+        rig.state(10),
+        CueState::Idle,
+        "nothing of its own to fade: {go:?}"
+    );
+    assert!(
+        rig.state(100).is_active(),
+        "outside the group, the panic leaves it"
+    );
+    assert_eq!(running_at(&go, 11), Some(1000), "{go:?}");
+}
+
+#[test]
+fn the_mark_passes_over_a_group_child_whose_inner_group_lost_its_playing_child() {
+    // 100 started in group 20 and was then moved out of 20 into 10 itself: a panic of 10 lets
+    // 100 fade, stops 20 at once (it no longer waits on 100) and so stops 10 at once (100 did
+    // not start in it).
+    let inner = grp(20, TIMELINE, vec![sound(100)]);
+    let mut group = grp(10, TIMELINE, vec![inner]);
+    group.second_trigger = SecondTrigger::Panic;
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![group, wait(11, 5.0)],
+    )]);
+    rig.start(100, 10);
+    assert_eq!(rig.state(100), CueState::Running);
+    let ten = &mut children_mut(&mut rig.ws.cue_lists[0].cues[0])[0];
+    let moved = children_mut(&mut children_mut(ten)[0]).remove(0);
+    children_mut(ten).push(moved);
+    rig.tick(500);
+    assert!(rig.state(10).is_active() && rig.state(20).is_active());
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let go = rig.start(1000, 1);
+    assert_eq!(rig.state(10), CueState::Idle, "{go:?}");
+    assert!(
+        rig.state(100).is_active(),
+        "fading out in the panic: {go:?}"
+    );
+    assert_eq!(running_at(&go, 11), Some(1000), "{go:?}");
+}
+
+#[test]
+fn the_mark_names_a_child_a_looping_playlist_plays_fresh_after_going_round() {
+    // 3 has static problems (its target is missing) and ends at once; 4's second trigger
+    // stops its run of its own, so the start goes round and plays 4 afresh.
+    let mut stop_trigger = timed(sound(4), 2.0, 0.0, DNC);
+    stop_trigger.second_trigger = SecondTrigger::Stop;
+    let broken = cue(
+        3,
+        CueKind::Start {
+            target: Some(id(99)),
+        },
+    );
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(true, false),
+        vec![broken, stop_trigger],
+    )]);
+    assert!(!rig.problems(3).is_empty());
+    rig.start(100, 4);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(4)));
+    let go = rig.start(1000, 1);
+    assert_eq!(rig.state(4), CueState::PreWaiting, "a new run: {go:?}");
+    assert!(
+        rig.tick(2999)
+            .iter()
+            .all(|a| !matches!(a, Action::StartVoice { .. }))
+    );
+    assert!(
+        voice_starts(&rig.tick(3000))
+            .iter()
+            .any(|(c, at, _)| *c == id(4) && *at == 3000),
+        "its pre-wait runs from the start"
+    );
+}
+
+#[test]
+fn a_looping_playlists_mark_follows_every_round_its_move_on_takes() {
+    // [10: 10 s wait, a Stop second trigger; 11: Start cue with a missing target; 12: 1 s wait].
+    // As 12 ends the playlist goes round: it stops 10's run of its own and passes 11, whose run
+    // keeps only its timing and ends at once; that end moves it on round again, past 12 (now
+    // skipped), to 10 afresh.
+    let mut first = wait(10, 10.0);
+    first.second_trigger = SecondTrigger::Stop;
+    let broken = cue(
+        11,
+        CueKind::Start {
+            target: Some(id(99)),
+        },
+    );
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(true, false),
+        vec![first, broken, wait(12, 1.0)],
+    )]);
+    rig.go(0);
+    rig.tick(10000);
+    assert_eq!(rig.state(12), CueState::Running);
+    rig.start(10500, 10);
+    let own = rig.run(10);
+    let last = &mut children_mut(&mut rig.ws.cue_lists[0].cues[0])[2];
+    last.armed = false;
+    last.skip_if_disarmed = true;
+    rig.tick(10600);
+    assert_eq!(
+        rig.state(12),
+        CueState::Running,
+        "disarming leaves it playing"
+    );
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let end = rig.tick(11000);
+    assert_eq!(running_at(&end, 10), Some(11000), "{end:?}");
+    assert_ne!(rig.run(10), own, "a new run of 10");
+}
+
+#[test]
+fn a_disarmed_playlist_marks_no_child_and_its_start_plays_none() {
+    let mut rig = three_waits(false);
+    rig.find_mut(1).armed = false;
+    assert_eq!(marks(&rig.tick(10)), vec![(id(1), None)]);
+    let go = rig.start(100, 1);
+    assert!(starts(&go).iter().all(|(c, _)| *c == id(1)), "{go:?}");
+    rig.find_mut(1).armed = true;
+    assert_eq!(marks(&rig.tick(300)), vec![(id(1), Some(id(10)))]);
+}
+
+#[test]
+fn a_voice_committed_ahead_of_now_flips_the_mark_as_now_reaches_it() {
+    // A 0.1 s panic and a 0.5 s lookahead. Fade 2's action at 1400 commits a ramp on sound
+    // 10's voice from 1000 on: until a panic could begin fading it there (from 1300), a panic
+    // stops 10 at once, so the playlist would play 11. Nothing changes state as that moment
+    // passes.
+    let mut first = sound(10);
+    first.second_trigger = SecondTrigger::Panic;
+    let mut rig = Rig::with_lookahead(
+        vec![
+            grp(1, playlist(false, false), vec![first, wait(11, 5.0)]),
+            timed(cue(2, crate::common::fade(10)), 0.4, 0.0, DNC),
+        ],
+        500,
+    );
+    rig.ws.settings.panic_duration = 0.1;
+    rig.start(100, 10);
+    rig.tick(900);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    rig.start(1000, 2);
+    assert_eq!(
+        rig.engine.next_in_playlist(id(1)),
+        Some(id(11)),
+        "a panic now stops 10 at once"
+    );
+    let on = rig.tick(1350);
+    assert!(
+        on.iter().all(|a| !matches!(a, Action::StateChanged { .. })),
+        "{on:?}"
+    );
+    assert_eq!(
+        marks(&on),
+        vec![(id(1), Some(id(10)))],
+        "a panic now fades 10 out"
+    );
+    let go = rig.start(1360, 1);
+    let faded = go
+        .iter()
+        .any(|a| matches!(a, Action::StopVoice { cue, fade: Some(_), .. } if *cue == id(10)));
+    assert!(faded, "fading out in the panic: {go:?}");
+    assert!(starts(&go).iter().all(|(c, _)| *c != id(11)), "{go:?}");
+}
+
+#[test]
+fn a_length_arriving_after_a_load_to_time_moves_the_mark() {
+    // Sound 10 is not probed yet: the playlist's span is unknown, so a load to 3 s clamps
+    // nothing and the mark names 10.
+    let mut rig = Rig::new(vec![grp(1, playlist(false, false), vec![sound(10)])]);
+    rig.at(
+        0,
+        Input::Load {
+            cue: id(1),
+            time: 3.0,
+        },
+    );
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(10)));
+    let lengths = |frames| Input::CueLengths {
+        lengths: vec![(id(10), Some(frames))],
+    };
+    let probed = rig.at(100, lengths(1000));
+    assert_eq!(
+        marks(&probed),
+        vec![(id(1), None)],
+        "loaded past its 1 s span"
+    );
+    // An end-trim edit that lengthens it past the load point: the binary sends the new length.
+    let trimmed = rig.at(200, lengths(5000));
+    assert_eq!(marks(&trimmed), vec![(id(1), Some(id(10)))]);
+    let shortened = rig.at(300, lengths(1000));
+    assert_eq!(marks(&shortened), vec![(id(1), None)]);
+    let go = rig.start(400, 1);
+    assert!(
+        voice_starts(&go).is_empty(),
+        "the start plays nothing: {go:?}"
+    );
+    assert_ne!(rig.state(10), CueState::Running);
+}
+
+/// Playlist 1 (no loop) [Timeline 5 [sound 10, 5 s]] and `more` after it, loaded to 3 s: its
+/// span is 10's length, so the mark names 5.
+fn nested_sound_loaded_to_3_s(more: Vec<Cue>) -> Rig {
+    let mut cues = vec![grp(
+        1,
+        playlist(false, false),
+        vec![grp(5, TIMELINE, vec![sound(10)])],
+    )];
+    cues.extend(more);
+    let mut rig = Rig::new(cues);
+    rig.at(
+        0,
+        Input::CueLengths {
+            lengths: vec![(id(10), Some(5000))],
+        },
+    );
+    rig.at(
+        10,
+        Input::Load {
+            cue: id(1),
+            time: 3.0,
+        },
+    );
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(5)));
+    rig
+}
+
+/// Checks that a start of 1 at `now` plays none of its children.
+fn start_plays_no_child(rig: &mut Rig, now: SampleTime) {
+    let go = rig.start(now, 1);
+    for n in [5, 10] {
+        assert!(
+            changes(&go, n).iter().all(|(s, _)| !s.is_active()),
+            "{n}: {go:?}"
+        );
+    }
+}
+
+#[test]
+fn a_grandchilds_media_going_missing_clears_a_loaded_playlists_mark() {
+    let mut rig = nested_sound_loaded_to_3_s(vec![]);
+    let missing = rig.at(
+        100,
+        Input::MediaStatus {
+            media: MediaRef::new("media/a.wav"),
+            status: MediaStatus::Missing,
+        },
+    );
+    assert_eq!(rig.state(10), CueState::Broken);
+    assert_eq!(marks(&missing), vec![(id(1), None)], "nothing left to play");
+    start_plays_no_child(&mut rig, 200);
+}
+
+#[test]
+fn a_disarm_cue_on_a_grandchild_clears_a_loaded_playlists_mark() {
+    let disarm = cue(
+        2,
+        CueKind::Disarm {
+            target: Some(id(10)),
+        },
+    );
+    let mut rig = nested_sound_loaded_to_3_s(vec![disarm]);
+    let disarmed = rig.start(100, 2);
+    assert_eq!(
+        marks(&disarmed),
+        vec![(id(1), None)],
+        "nothing left to play"
+    );
+    // The binary writes the change into the model, as `SetArmed` asks.
+    rig.find_mut(10).armed = false;
+    assert!(marks(&rig.tick(150)).is_empty());
+    start_plays_no_child(&mut rig, 200);
+}
+
+#[test]
+fn a_shuffled_playlist_marks_the_child_its_pass_plays_next_and_none_before_it_is_drawn() {
+    let kids = (10..15).map(|n| wait(n, 1.0)).collect();
+    let mut rig = Rig::seeded(vec![grp(1, playlist(false, true), kids)], 7);
+    assert_eq!(
+        rig.engine.next_in_playlist(id(1)),
+        None,
+        "the order is drawn when it starts"
+    );
+    rig.go(0);
+    for t in 1..5 {
+        let marked = rig.engine.next_in_playlist(id(1));
+        assert!(marked.is_some());
+        let started: Vec<CueId> = starts(&rig.tick(t * 1000))
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
+        assert_eq!(
+            started,
+            vec![marked.unwrap()],
+            "the marked child is the one that plays next"
+        );
+    }
+    assert_eq!(
+        rig.engine.next_in_playlist(id(1)),
+        None,
+        "the pass's last child plays"
+    );
+}
+
+#[test]
+fn a_stopping_playlist_marks_nothing_until_it_is_idle_again() {
+    let mut rig = Rig::new(vec![grp(
+        1,
+        playlist(false, false),
+        vec![cue(10, audio()), cue(11, audio())],
+    )]);
+    rig.go(0);
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(11)));
+    let fading = rig.at(
+        100,
+        Input::Stop {
+            cue: id(1),
+            fade_out: Some(FadeSpec {
+                duration: 1.0,
+                curve: FadeCurve::Linear,
+            }),
+        },
+    );
+    assert_eq!(
+        marks(&fading),
+        vec![(id(1), None)],
+        "a stopping playlist starts no child"
+    );
+    assert_eq!(marks(&rig.stop(200, 1)), vec![(id(1), Some(id(10)))]);
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
+fn edits_move_the_mark_and_a_group_that_leaves_playlist_mode_or_the_show_reports_none() {
+    let mut rig = three_waits(false);
+    // A reorder of the children while idle: the new first child.
+    children_mut(&mut rig.ws.cue_lists[0].cues[0]).swap(0, 2);
+    assert_eq!(marks(&rig.tick(10)), vec![(id(1), Some(id(12)))]);
+    if let CueKind::Group { mode, .. } = &mut rig.ws.cue_lists[0].cues[0].kind {
+        *mode = TIMELINE;
+    }
+    assert_eq!(marks(&rig.tick(20)), vec![(id(1), None)]);
+    let mut rig = three_waits(false);
+    rig.ws.cue_lists[0].cues.clear();
+    assert_eq!(
+        marks(&rig.tick(10)),
+        vec![(id(1), None)],
+        "a deleted group reports none, once"
+    );
+    assert!(marks(&rig.tick(20)).is_empty());
+}
+
 // ----- random -----
 
 /// The child a random group started in `actions` (the group itself excluded).

@@ -65,6 +65,12 @@ pub enum JobKind {
 }
 
 type SaveReply = Sender<Result<SaveReport, PersistError>>;
+
+/// Work a save asks of the writer thread on its copy before writing it: a Save As into another
+/// folder re-spells the copy's media references and prepares what the doc needs from the new
+/// folder there, off the control thread. What it returns comes back in
+/// [`SaveReport::prepared`] if the save succeeds; it is dropped on the writer thread otherwise.
+pub type BeforeWrite = Box<dyn FnOnce(&mut Workspace) -> Box<dyn std::any::Any + Send> + Send>;
 /// `Ok(None)`: nothing written, because a newer autosave replaced this one, the state is
 /// already saved, or the writer is shutting down.
 type AutosaveReply = Sender<Result<Option<PathBuf>, PersistError>>;
@@ -77,6 +83,7 @@ struct SaveJob {
     revision: u64,
     /// Show files of other open workspaces: the save is refused if `path` is one of them.
     others: Vec<PathBuf>,
+    before: Option<BeforeWrite>,
     reply: SaveReply,
 }
 
@@ -492,12 +499,14 @@ impl SaveWriter {
         keep: u32,
         revision: u64,
     ) -> Receiver<Result<SaveReport, PersistError>> {
-        self.save_unless(workspace, path, now_ms, keep, revision, Vec::new())
+        self.save_unless(workspace, path, now_ms, keep, revision, Vec::new(), None)
     }
 
     /// As [`Self::save`], refused with [`PersistError::OpenElsewhere`] (nothing written) when
     /// `path` names the same file as one of `others` (compared by [`super::file_key`] on this
-    /// thread, so a symlinked or otherwise re-spelled path is caught too).
+    /// thread, so a symlinked or otherwise re-spelled path is caught too). `before`, if any, is
+    /// run on the copy on the writer thread just before it is written ([`BeforeWrite`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn save_unless(
         &self,
         workspace: Workspace,
@@ -506,6 +515,7 @@ impl SaveWriter {
         keep: u32,
         revision: u64,
         others: Vec<PathBuf>,
+        before: Option<BeforeWrite>,
     ) -> Receiver<Result<SaveReport, PersistError>> {
         let (reply, answer) = mpsc::channel();
         let mut state = self.shared.lock();
@@ -520,6 +530,7 @@ impl SaveWriter {
             keep,
             revision,
             others,
+            before,
             reply,
         };
         if let Some(refused) = state.refusal(&job.target()) {
@@ -765,7 +776,7 @@ fn run(shared: &Shared, dirs: &AppDirs, hook: Option<&(dyn Fn(JobKind) + Send + 
     while let Some((id, next)) = next_job(shared) {
         // A dropped receiver just means nobody waits for the answer.
         match next {
-            Next::Save(job) => {
+            Next::Save(mut job) => {
                 if let Some(hook) = hook {
                     hook(JobKind::Save);
                 }
@@ -773,6 +784,7 @@ fn run(shared: &Shared, dirs: &AppDirs, hook: Option<&(dyn Fn(JobKind) + Send + 
                 let result = if job.others.iter().any(|o| super::file_key(o) == target) {
                     Err(PersistError::OpenElsewhere(job.path.clone()))
                 } else {
+                    let prepared = job.before.take().map(|before| before(&mut job.workspace));
                     let may_clear = || begin_clearing(shared, id);
                     save_workspace_inner(
                         dirs,
@@ -783,6 +795,7 @@ fn run(shared: &Shared, dirs: &AppDirs, hook: Option<&(dyn Fn(JobKind) + Send + 
                         |_| Ok(()),
                         &may_clear,
                     )
+                    .map(|report| SaveReport { prepared, ..report })
                 };
                 if result.is_ok() {
                     let mut state = shared.lock();

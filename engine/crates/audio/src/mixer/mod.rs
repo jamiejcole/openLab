@@ -210,7 +210,8 @@ impl VoiceStart {
 #[derive(Debug)]
 pub enum CommandKind {
     StartVoice(Box<VoiceStart>),
-    /// `fade.frames == 0` cuts at the exact sample.
+    /// `fade.frames == 0` cuts at the exact sample. A voice still fading out after a pause is
+    /// not cut by any stop: it ends when that fade does.
     StopVoice {
         voice: VoiceId,
         fade: Fade,
@@ -267,6 +268,19 @@ pub enum CommandKind {
     Devamp {
         voice: VoiceId,
         stop: bool,
+    },
+    /// The voice's slice table ends with entry `entry`, `frames` long, from this sample on: its
+    /// cue's end time moved while it plays. Later entries are dropped; the voice ends where it
+    /// reaches the new end, on its next frame if it is past it already (a paused voice ends
+    /// when it resumes), and `frames` 0 ends it on its next frame. Only an entry played once
+    /// changes length, and only the last entry grows: its disk stream must be told the same
+    /// (`StreamHandle::set_end`), or the voice waits for frames that never come. Anything else,
+    /// and a voice without a slice table, is ignored. A fade-out the change reaches fades on
+    /// from where its gain is.
+    EndAt {
+        voice: VoiceId,
+        entry: usize,
+        frames: u64,
     },
     /// Pause a playing voice on this sample (CUE-05). It keeps its source, position and state,
     /// consumes nothing and outputs silence (after a de-zipper-length declick fade-out) until
@@ -339,6 +353,13 @@ pub enum Event {
     },
     /// Start of an underrun episode; one event per episode, frames counted in the controller.
     Underrun { voice: VoiceId, at: SampleTime },
+    /// End of an underrun episode: from sample `at` the voice plays on, `frames` later than it
+    /// would have without the episode (what it missed was silence, not skipped).
+    UnderrunEnded {
+        voice: VoiceId,
+        at: SampleTime,
+        frames: u64,
+    },
     VoiceRejected {
         voice: VoiceId,
         at: SampleTime,
@@ -441,6 +462,10 @@ struct Patch {
     dirty_rows: usize,
     /// A disabled patch is not mixed and ignores routing commands.
     health: Health,
+    /// Each bus row's peak since the last meter flush (the cue output as the cues send it, before
+    /// the matrix), and how many rows may hold one.
+    peak: Vec<f32>,
+    peak_rows: usize,
 }
 
 impl Patch {
@@ -452,6 +477,8 @@ impl Patch {
         self.rows = 0;
         self.dirty = false;
         self.dirty_rows = 0;
+        self.peak.fill(0.0);
+        self.peak_rows = 0;
     }
 
     /// Makes the patch live for this segment with at least `rows` bus rows cleared (the first
@@ -516,6 +543,12 @@ pub struct Mixer {
     /// Applying a command this matches panics.
     #[cfg(test)]
     pub(crate) panic_apply: Option<fn(&CommandKind) -> bool>,
+    /// Playing this voice on through a faulted block panics.
+    #[cfg(test)]
+    pub(crate) panic_advance: Option<VoiceId>,
+    /// Panics caught so far (the faulted blocks, and voices that faulted while playing on).
+    #[cfg(test)]
+    pub(crate) unwinds: u32,
 }
 
 impl Mixer {
@@ -565,7 +598,7 @@ impl Mixer {
         let (ret_tx, ret_rx) =
             RingBuffer::new(COMMAND_CAPACITY + PENDING_CAPACITY + max_voices + 1);
         let shared = Arc::new(Shared {
-            meters: Meters::new(outs, max_voices, cue_outputs),
+            meters: Meters::new(outs, max_voices, cue_outputs).with_patches(patches),
             ..Shared::default()
         });
 
@@ -600,6 +633,8 @@ impl Mixer {
                     dirty: false,
                     dirty_rows: 0,
                     health: Health::OK,
+                    peak: vec![0.0; cue_outputs],
+                    peak_rows: 0,
                 })
                 .collect(),
             out_health: vec![Health::OK; outs],
@@ -632,9 +667,21 @@ impl Mixer {
             panic_voice: None,
             #[cfg(test)]
             panic_apply: None,
+            #[cfg(test)]
+            panic_advance: None,
+            #[cfg(test)]
+            unwinds: 0,
         };
-        let controller =
-            MixerController::new(cmd_tx, ev_rx, ret_rx, shared, cue_outputs, outs, lookahead);
+        let controller = MixerController::new(
+            cmd_tx,
+            ev_rx,
+            ret_rx,
+            shared,
+            cue_outputs,
+            outs,
+            sample_rate,
+            lookahead,
+        );
         Ok((controller, mixer))
     }
 
@@ -690,6 +737,12 @@ impl Mixer {
             self.stage.enter(Stage::Meters);
             let meters = &self.outbox.shared.meters;
             meters.flush_outputs(&mut self.out_peak);
+            for (k, p) in self.patches.iter_mut().enumerate() {
+                let rows = std::mem::take(&mut p.peak_rows);
+                if let Some(local) = p.peak.get_mut(..rows) {
+                    meters.flush_patch(k, local);
+                }
+            }
             for v in self.voices.iter_mut().filter(|v| v.is_active()) {
                 meters.flush_voice(v.slot, v.epoch, &mut v.meter);
             }

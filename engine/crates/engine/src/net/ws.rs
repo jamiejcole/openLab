@@ -23,13 +23,16 @@ use openlab_core::protocol::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch};
-use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until, timeout, timeout_at};
+use tokio::time::{
+    Instant, Interval, MissedTickBehavior, interval_at, sleep_until, timeout, timeout_at,
+};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{WebSocketStream, accept_async_with_config};
 
 use super::NetError;
-use super::hub::{self, Broadcast, Hub, Kind};
+use super::hub::{self, Broadcast, Hub, Kind, TapSlot};
+use super::liveness::Liveness;
 use super::osc::{self, OscConfig, OscListenerStats, OscPorts};
 use super::refusals::Refusals;
 use super::relaunch::{AppProcess, Budget, Next, Relaunch, next};
@@ -58,8 +61,14 @@ pub struct ServerConfig {
     pub hello_timeout: Duration,
     /// A `ping` is sent this often.
     pub ping_interval: Duration,
-    /// A client that has sent nothing (not even a `pong`) for this long is dead.
+    /// A client that has left the pings of this long unanswered (anything it sends answers
+    /// them, a `pong` included) is dead. Counted in pings sent, not on the clock, so the engine
+    /// being late to its own timer never counts against a client.
     pub dead_after: Duration,
+    /// Tests send each ping themselves, by notifying this, instead of on the timer: what a test
+    /// sees then follows from the order of its own steps, not from how fast the machine is.
+    #[cfg(feature = "test-support")]
+    pub ping_on: Option<Arc<tokio::sync::Notify>>,
     /// One write to a client that makes no progress for this long closes the connection.
     pub write_timeout: Duration,
     /// How long a `result` waits for the `model_changed` that precedes it.
@@ -91,6 +100,8 @@ impl Default for ServerConfig {
             hello_timeout: Duration::from_secs(5),
             ping_interval: Duration::from_secs(10),
             dead_after: Duration::from_secs(30),
+            #[cfg(feature = "test-support")]
+            ping_on: None,
             write_timeout: Duration::from_secs(10),
             revision_wait: Duration::from_secs(2),
             snapshot_wait: Duration::from_secs(60),
@@ -126,7 +137,7 @@ pub struct WsServer {
     token: String,
     shutdown: watch::Sender<bool>,
     runtime: Mutex<Option<tokio::runtime::Runtime>>,
-    osc: Option<osc::Running>,
+    osc: Option<Arc<osc::OscServer>>,
 }
 
 impl std::fmt::Debug for WsServer {
@@ -161,31 +172,11 @@ impl WsServer {
             .map_err(NetError::Runtime)?;
         // OSC is optional and must never keep the engine from starting: a port in use (another
         // QLab-compatible app) is a warning in the log, and the UI protocol still works.
-        let osc_bound = config
+        let tap_slot = TapSlot::default();
+        let osc = config
             .osc
             .clone()
-            .and_then(|osc_config| match osc::bind(&osc_config) {
-                Ok(bound) => Some((bound, osc_config)),
-                Err(e) => {
-                    let _ = inbox.send(Inbox::Log {
-                        level: LogLevel::Warn,
-                        message: format!(
-                            "OSC server is off: could not listen on {}:{}: {e}",
-                            osc_config.bind, osc_config.port
-                        ),
-                    });
-                    None
-                }
-            });
-        let (osc, tap) = match osc_bound {
-            Some((bound, osc_config)) => {
-                match osc::start(&runtime, bound, osc_config, inbox.clone()) {
-                    Some((running, tap)) => (Some(running), Some(tap)),
-                    None => (None, None),
-                }
-            }
-            None => (None, None),
-        };
+            .map(|osc_config| osc::OscServer::start(osc_config, inbox.clone(), tap_slot.clone()));
         let (shutdown, shutdown_rx) = watch::channel(false);
         let shared = Arc::new(Shared {
             token: token.clone(),
@@ -198,7 +189,7 @@ impl WsServer {
             relaunches: Mutex::new(Budget::default()),
             app: Mutex::new(None),
         });
-        runtime.spawn(hub::distribute(shared.hub.clone(), outbound, tap));
+        runtime.spawn(hub::distribute(shared.hub.clone(), outbound, tap_slot));
         let accept_shared = shared.clone();
         runtime.spawn(async move {
             if let Ok(listener) = TcpListener::from_std(listener) {
@@ -220,12 +211,17 @@ impl WsServer {
 
     /// The OSC sockets' ports; `None` if OSC is off or could not bind.
     pub fn osc_ports(&self) -> Option<OscPorts> {
-        self.osc.as_ref().map(|o| o.ports)
+        self.osc.as_ref().and_then(|o| o.ports())
     }
 
     /// What the OSC listeners dropped, refused or answered; `None` if OSC is off.
     pub fn osc_stats(&self) -> Option<OscListenerStats> {
-        self.osc.as_ref().map(osc::Running::stats)
+        self.osc.as_ref().and_then(|o| o.stats())
+    }
+
+    /// The OSC server, to change its port (`None`: OSC is not configured).
+    pub fn osc_server(&self) -> Option<Arc<osc::OscServer>> {
+        self.osc.clone()
     }
 
     /// The token a client must present in `hello` (written to `engine.json`).
@@ -235,6 +231,9 @@ impl WsServer {
 
     /// Closes every connection and stops the runtime (and with it the fan-out task).
     pub fn stop(&self) {
+        if let Some(osc) = &self.osc {
+            osc.stop();
+        }
         let _ = self.shutdown.send(true);
         let runtime = lock(&self.runtime).take();
         if let Some(runtime) = runtime {
@@ -387,6 +386,16 @@ fn authenticate(
     }
 }
 
+/// Resolves when the next ping is due: on the timer, or when a test says so.
+#[cfg_attr(not(feature = "test-support"), allow(unused_variables))]
+async fn ping_due(ticker: &mut Interval, config: &ServerConfig) {
+    #[cfg(feature = "test-support")]
+    if let Some(on) = &config.ping_on {
+        return on.notified().await;
+    }
+    ticker.tick().await;
+}
+
 async fn serve(shared: Arc<Shared>, tcp: TcpStream, pending: OwnedSemaphorePermit) {
     let _ = tcp.set_nodelay(true);
     let authed = Arc::new(AtomicBool::new(false));
@@ -467,7 +476,7 @@ struct Conn {
     /// Results held back for their `model_changed`, in arrival order.
     held: VecDeque<Held>,
     bad_frames: u32,
-    last_heard: Instant,
+    liveness: Liveness,
     /// The client said `goodbye`: its end is no crash.
     said_goodbye: bool,
 }
@@ -490,12 +499,16 @@ async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>) {
         snapshot_waits: Vec::new(),
         held: VecDeque::new(),
         bad_frames: 0,
-        last_heard: Instant::now(),
+        liveness: Liveness::new(shared.config.ping_interval, shared.config.dead_after),
         said_goodbye: false,
         shared,
     };
     let _ = conn.session().await;
     conn.shared.hub.unregister(conn.hub_id);
+    if conn.doc.is_none() && conn.shared.hub.app_connections() == 0 {
+        // The app is gone (quit or crashed): its monitor windows go with it.
+        let _ = conn.shared.inbox.send(Inbox::AppsGone);
+    }
     if conn.doc.is_none() && !conn.said_goodbye && !*conn.shared.shutdown.borrow() {
         app_lost(&conn.shared);
     }
@@ -684,7 +697,7 @@ impl Conn {
         let config = self.shared.config.clone();
         let mut ticker = interval_at(Instant::now() + config.ping_interval, config.ping_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        self.last_heard = Instant::now();
+        self.liveness.heard();
         loop {
             let waiting = !self.snapshot_waits.is_empty();
             if !waiting && self.lagged.load(Ordering::Acquire) {
@@ -720,7 +733,7 @@ impl Conn {
                     None => return Ok(()),
                 },
                 frame = self.ws.next(), if self.inflight < MAX_INFLIGHT => {
-                    self.last_heard = Instant::now();
+                    self.liveness.heard();
                     match frame {
                         None | Some(Ok(Message::Close(_))) => return Ok(()),
                         Some(Err(e)) => {
@@ -746,10 +759,17 @@ impl Conn {
                 () = sleep_until(wait_deadline.unwrap_or_else(Instant::now)), if wait_deadline.is_some() => {
                     self.expire_waits();
                 }
-                _ = ticker.tick() => {
-                    if self.inflight < MAX_INFLIGHT
-                        && self.last_heard.elapsed() > config.dead_after
-                    {
+                () = ping_due(&mut ticker, &config) => {
+                    // A connection that is not being read cannot be heard: its pings are not
+                    // counted against it.
+                    if self.inflight < MAX_INFLIGHT && !self.liveness.ping_due() {
+                        let _ = self.shared.inbox.send(Inbox::Log {
+                            level: LogLevel::Warn,
+                            message: format!(
+                                "closed a connection that left {} pings unanswered",
+                                self.liveness.unanswered()
+                            ),
+                        });
                         return Err(Closed);
                     }
                     self.write(Message::Ping(Default::default())).await?;

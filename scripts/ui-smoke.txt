@@ -1,6 +1,6 @@
 # The UI tests that run on every PR (`make test-mac`, so CI and `make prepush`), as xcodebuild
 # -only-testing identifiers: openLabUITests/<Class>/<test>. The full suite runs nightly
-# (`make test-mac-ui-full`). scripts/check-repo.sh fails if an entry names a test that does not exist.
+# (`make test-mac-ui-full`; CI skips scripts/ui-local-only.txt). scripts/check-repo.sh fails if an entry names a test that does not exist.
 # Launch: the app starts the real engine and opens one window per workspace.
 openLabUITests/LaunchTests/testLaunchShowsOneWindowPerWorkspace
 # GO: Space starts the cue at the playhead.

@@ -41,18 +41,34 @@ fn stage(n: u128) -> Stage {
     s
 }
 
+/// How long a test's stage host may take to start (`hello`) and to answer a ping: far beyond
+/// any machine's slowness (shipped 20 s and 5 s; a CI virtual machine's graphics and media
+/// frameworks have stalled for seconds). The tests that mean to kill one move a hand clock,
+/// set a short limit or kill it.
+const SLOW_MACHINE: Duration = Duration::from_secs(120);
+/// The offline driver's waits for the stage host: past a start at its `hello` limit.
+const SETTLE: Duration = Duration::from_secs(150);
+
 fn host_config(args: &[&str]) -> StageHostConfig {
     let mut c = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     c.args = args.iter().map(|a| (*a).to_owned()).collect();
-    // A stage host slow to answer on a loaded machine is never killed as hung: the tests that
-    // mean to kill one move a hand clock or kill it.
-    c.answer_within = Duration::from_secs(120);
+    c.answer_within = SLOW_MACHINE;
     c
 }
 
 /// Two virtual displays, drawn offscreen.
 fn virtual_host() -> StageHostConfig {
-    host_config(&["--virtual-displays", "V1:1920x1080,V2:1280x720"])
+    let mut c = host_config(&["--virtual-displays", "V1:1920x1080,V2:1280x720"]);
+    c.hello_within = SLOW_MACHINE;
+    c
+}
+
+/// An offline show of `ws` on `c` whose waits for the stage host are [`SETTLE`] long.
+fn show_patient(ws: Workspace, c: ControlConfig) -> OfflineShow {
+    let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+    s.set_settle_timeout(SETTLE);
+    s.settle_media();
+    s
 }
 
 fn mapping(display: &str) -> StageMapping {
@@ -73,7 +89,7 @@ fn stage_show(ws: Workspace, host: StageHostConfig, display: Option<&str>) -> Of
             .set_stage_mapping(ws.id, stage_id(1), Some(mapping(d)))
             .unwrap();
     }
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     assert_eq!(s.stalls(), 0, "the stage host did not settle");
     s
@@ -196,13 +212,14 @@ fn a_stage_on_its_chosen_display_shows_black_and_then_the_test_card() {
 }
 
 /// A new workspace on a Mac with two displays has one stage per display (QLab 5 manual
-/// p. 226): named, with its display's pixel size, shown on it on this machine, and hidden while
-/// nothing plays (keep-black off), so the operator's own display is never covered.
+/// p. 226): named, with its display's pixel size, shown on it on this machine, keeping black,
+/// and hidden until a picture plays on it (#708), so no display is covered before then.
 #[test]
 fn a_new_workspace_has_one_stage_per_display() {
     let mut c: ControlConfig = config(&workspace(vec![]));
     c.stage_host = Some(virtual_host());
     let mut s = OfflineShow::empty(mixer_config(), c).unwrap();
+    s.set_settle_timeout(SETTLE);
     assert!(s.wait_for(|c| c.displays().len() == 2));
     s.open_doc(openlab_engine::control::DocSource::New).unwrap();
     s.settle_stages();
@@ -212,10 +229,7 @@ fn a_new_workspace_has_one_stage_per_display() {
             .iter()
             .map(|st| (st.name.as_str(), st.width, st.height, st.keep_black))
             .collect::<Vec<_>>(),
-        [
-            ("Stage 1", 1920, 1080, false),
-            ("Stage 2", 1280, 720, false)
-        ]
+        [("Stage 1", 1920, 1080, true), ("Stage 2", 1280, 720, true)]
     );
     let entries = mappings(&mut s);
     assert_eq!(
@@ -226,6 +240,7 @@ fn a_new_workspace_has_one_stage_per_display() {
         [Some("V1"), Some("V2")]
     );
     assert!(entries.iter().all(|e| e.state == Some(StageState::Hidden)));
+    assert!(entries.iter().all(|e| e.panicked), "their black is down");
     assert_eq!(s.stalls(), 0);
 }
 
@@ -298,7 +313,7 @@ fn a_stage_without_its_display_opens_with_a_warning() {
         .set_stage_mapping(ws.id, stage_id(2), Some(mapping("GONE")))
         .unwrap();
     c.push_log = true;
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     assert_eq!(state(&mut s, 1), Some(StageState::NoDisplay));
     assert_eq!(
@@ -388,7 +403,7 @@ fn a_stage_display_unplugged_mid_cue_warns_and_comes_back() {
     c.machine
         .set_stage_mapping(ws.id, stage_id(1), Some(mapping("V1")))
         .unwrap();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     s.transport(TransportAction::Go { list: list_id() });
     s.run(BLOCK * 4);
@@ -448,6 +463,163 @@ fn a_hung_stage_host_is_killed_and_replaced() {
     );
 }
 
+/// #789 flow: control thread hung (no alive mark) with a stage host running: the supervisor
+/// sleeps between its checks, still kills and relaunches a stage host that stops answering, and
+/// pings again as soon as the control thread is alive. The control thread hangs while the test
+/// does not tick it; the supervisor's clock moves by hand past many pings. Its wakes are counted:
+/// a supervisor whose next ping (never sent) were its deadline would wake without end in the
+/// bounded waits for its reports.
+#[test]
+fn control_thread_hung_the_supervisor_sleeps_still_replaces_a_hung_stage_host_and_pings_when_alive()
+{
+    let hand = HandClock::new();
+    let mut host = virtual_host();
+    hand.drive(&mut host);
+    host.answer_within = Duration::from_secs(5);
+    let mut s = stage_show(with_stages(vec![], vec![stage(1)]), host, Some("V1"));
+    let first = s.control().stage_host_pid().expect("a stage host runs");
+    let woke = hand.wakes();
+    for _ in 0..6 {
+        hand.advance(&mut s, 1);
+        while s.handle_next_within(Duration::from_millis(200)) {}
+    }
+    let wakes = hand.wakes() - woke;
+    // Six moves of the clock, an answered ping, a few reports: tens at most, never thousands.
+    assert!(wakes < 200, "the supervisor woke {wakes} times while idle");
+    // The stage host stops answering while the control thread is still hung: no ping goes, so
+    // nothing tells it is hung yet.
+    s.control_mut().hang_stage_host();
+    let sent = hand.pings();
+    hand.advance(&mut s, 10);
+    while s.handle_next_within(Duration::from_millis(200)) {}
+    assert_eq!(
+        hand.pings(),
+        sent,
+        "a ping went while the control thread was hung"
+    );
+    // The control thread runs again: a ping goes at once, without the clock moving.
+    assert!(
+        s.wait_for(|_| hand.pings() > sent),
+        "no ping when alive again"
+    );
+    hand.advance(&mut s, 6);
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != first)));
+    assert!(!alive(first), "the hung stage host was not killed");
+    s.settle_stages();
+    assert_eq!(
+        state(&mut s, 1),
+        Some(StageState::Shown {
+            display: "V1".into()
+        })
+    );
+}
+
+/// Stage 1 on V1 (standing for the display with the menu bar) and stage 2 on V2, both keeping
+/// black, on a stage host with `extra` arguments and a hand-moved supervisor clock.
+fn menu_bar_show(hand: &HandClock, extra: &[&str]) -> OfflineShow {
+    let args: Vec<&str> = ["--virtual-displays", "V1:1920x1080,V2:1280x720"]
+        .into_iter()
+        .chain(["--menu-bar-display", "V1"])
+        .chain(extra.iter().copied())
+        .collect();
+    let mut host = host_config(&args);
+    host.hello_within = SLOW_MACHINE;
+    hand.drive(&mut host);
+    let ws = with_stages(vec![], vec![stage(1), stage(2)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(host);
+    for (n, display) in [(1, "V1"), (2, "V2")] {
+        c.machine
+            .set_stage_mapping(ws.id, stage_id(n), Some(mapping(display)))
+            .unwrap();
+    }
+    c.push_log = true;
+    let mut s = show_patient(ws, c);
+    s.settle_stages();
+    s
+}
+
+/// #708 flow: a hung engine while a stage covers the only display: the stage stands back by
+/// itself and the operator reaches the app. The engine's control thread stops (the test stops
+/// calling into it) while its supervisor's clock runs on: no ping goes (each needs the control
+/// thread to have said it runs), so after the stage host's silence limit (2 s here; shipped
+/// `ENGINE_SILENCE`, 4 s) the window on the display with the menu bar (V1) stands back, and
+/// says so, while both stages stay as they were. Waits are on the stage host's report, bounded.
+#[test]
+fn a_hung_engine_while_a_stage_covers_the_only_display_the_stage_stands_back_by_itself() {
+    let hand = HandClock::new();
+    let mut s = menu_bar_show(&hand, &["--engine-silence-ms", "2000"]);
+    let shown = |d: &str| Some(StageState::Shown { display: d.into() });
+    assert_eq!(state(&mut s, 1), shown("V1"));
+    assert_eq!(state(&mut s, 2), shown("V2"));
+    s.take_outbound();
+    // The control thread hangs. Its supervisor's clock moves a second at a time: a ping would
+    // go each time if pings did not wait for the control thread.
+    let mut stood_back = false;
+    for _ in 0..80 {
+        hand.advance(&mut s, 1);
+        while s.handle_next_within(Duration::from_millis(100)) {}
+        if logged(&mut s, "stands back under the app's windows") {
+            stood_back = true;
+            break;
+        }
+    }
+    assert!(
+        stood_back,
+        "the stage on the menu bar's display never stood back"
+    );
+    assert_eq!(
+        s.control().stage_state(stage_id(1)),
+        shown("V1").as_ref(),
+        "still drawn"
+    );
+    assert_eq!(s.control().stage_state(stage_id(2)), shown("V2").as_ref());
+}
+
+/// #708: the app's `set_stand_back` reaches the stage host (the window on the display with the
+/// menu bar stands back, and covers again when it is turned off), and a stage host started while
+/// it is on (after a crash) is told again.
+#[test]
+fn set_stand_back_reaches_the_stage_host_and_a_relaunched_one() {
+    let hand = HandClock::new();
+    let mut s = menu_bar_show(&hand, &[]);
+    s.take_outbound();
+    assert!(matches!(
+        request(&mut s, Request::SetStandBack { on: true }),
+        Outcome::Ok(_)
+    ));
+    let said = |s: &mut OfflineShow, text: &str| {
+        let mut seen = false;
+        for _ in 0..50 {
+            s.tick();
+            if logged(s, text) {
+                seen = true;
+                break;
+            }
+            let _ = s.handle_next_within(Duration::from_millis(100));
+        }
+        seen
+    };
+    assert!(said(&mut s, "stands back for the app's question"));
+    let first = s.control().stage_host_pid().expect("a stage host runs");
+    let killed = std::process::Command::new("kill")
+        .args(["-9", &first.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != first)));
+    s.settle_stages();
+    assert!(
+        said(&mut s, "stands back for the app's question"),
+        "told again"
+    );
+    assert!(matches!(
+        request(&mut s, Request::SetStandBack { on: false }),
+        Outcome::Ok(_)
+    ));
+    assert!(said(&mut s, "covers its display again"));
+}
+
 /// A stage host slow to start (here a second of real time before it runs, while the
 /// supervisor's clock is moved past a ping's answer time) is not killed as hung: `hello` has a
 /// deadline of its own.
@@ -466,7 +638,7 @@ fn a_stage_host_slow_to_start_is_not_killed_as_hung() {
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
     c.push_log = true;
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     // Before its hello (the script is still asleep): past a ping's answer time, short of
     // hello's.
     hand.advance(&mut s, 6);
@@ -501,7 +673,7 @@ fn a_stage_host_sending_garbage_is_stopped_and_sound_plays_on() {
     let ws = with_stages(vec![tone_cue()], vec![stage(1)]);
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.transport(TransportAction::Go { list: list_id() });
     s.run(BLOCK * 4);
     let started = s.channel(0).len();
@@ -532,13 +704,13 @@ fn a_stage_host_sending_garbage_is_stopped_and_sound_plays_on() {
 /// log, so it cannot flood the log or the clients.
 #[test]
 fn a_stage_host_logging_in_a_burst_is_rate_limited() {
-    let script = r#"printf '{"type":"hello","version":1,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
+    let script = r#"printf '{"type":"hello","version":5,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
     let mut host = host_config(&["-c", script]);
     host.program = PathBuf::from("/bin/sh");
     let ws = with_stages(vec![], vec![stage(1)]);
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     assert!(s.wait_for(|c| c.stage_host_pid().is_some()));
     let mut seen = 0;
     for _ in 0..200 {
@@ -632,6 +804,169 @@ fn test_card(s: &mut OfflineShow, n: u128, frame: u16) {
             ..
         }]
     ));
+}
+
+/// Opens or closes stage `n`'s monitor window, as the app's monitor buttons do.
+fn set_monitor(s: &mut OfflineShow, n: u128, open: bool) -> Outcome {
+    request(
+        s,
+        Request::SetStageMonitor {
+            stage: stage_id(n),
+            open,
+        },
+    )
+}
+
+/// What stage `n`'s monitor window shows at a content size of `size` pixels: the test card's
+/// frame and the colours at `points`; no colours when it has no monitor window open.
+fn monitor_shows(
+    s: &mut OfflineShow,
+    n: u128,
+    (width, height): (u32, u32),
+    points: &[[f32; 2]],
+) -> (Option<u16>, Vec<[u8; 4]>) {
+    match ok_data(request(
+        s,
+        Request::MonitorProbe {
+            stage: stage_id(n),
+            width,
+            height,
+            points: points.to_vec(),
+        },
+    )) {
+        Some(ResultData::StageProbe { frame, colours }) => (frame, colours),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn monitor_listed(s: &mut OfflineShow, n: u128) -> bool {
+    mappings(s)
+        .into_iter()
+        .find(|e| e.stage == stage_id(n))
+        .is_some_and(|e| e.monitor)
+}
+
+/// The test card's quadrant centres (as [`probe`] reads them) on a stage fitted inside
+/// `[left, top, right, bottom]` of a window.
+fn quadrants_in([left, top, right, bottom]: [f32; 4]) -> Vec<[f32; 2]> {
+    [[0.25, 0.3], [0.75, 0.3], [0.25, 0.8], [0.75, 0.8]]
+        .iter()
+        .map(|[x, y]| [left + x * (right - left), top + y * (bottom - top)])
+        .collect()
+}
+
+/// #648 flow: the monitor button beside a stage in settings, or on a Video cue's I/O tab → a
+/// resizable window shows that stage scaled to fit, with black bars where shapes differ. Both
+/// buttons send `set_stage_monitor`; the stage host draws the window. Read back at a window of
+/// the stage's shape, a square one (bars above and below) and, for a tall stage with no
+/// display, a wide one (bars at the sides).
+#[test]
+fn the_monitor_button_opens_a_window_showing_the_stage_scaled_to_fit_with_black_bars() {
+    let mut tall = Stage::new(stage_id(2), "Tall".to_owned(), 1080, 1920);
+    tall.keep_black = false;
+    let mut s = stage_show(
+        with_stages(vec![], vec![stage(1), tall]),
+        virtual_host(),
+        Some("V1"),
+    );
+    test_card(&mut s, 1, 42);
+    test_card(&mut s, 2, 43);
+    // No window before the button.
+    assert!(!monitor_listed(&mut s, 1));
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.5, 0.5]]),
+        (None, vec![])
+    );
+    for n in [1, 2] {
+        assert!(matches!(set_monitor(&mut s, n, true), Outcome::Ok(_)));
+        assert!(monitor_listed(&mut s, n));
+    }
+    // The stage's own shape: the stage fills the window.
+    let full = [0.0, 0.0, 1.0, 1.0];
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &quadrants_in(full)),
+        (Some(42), QUADRANTS.to_vec())
+    );
+    // A square window: the stage across its width, black bars above and below.
+    let square = [0.0, 0.21875, 1.0, 0.78125];
+    let (frame, colours) = monitor_shows(&mut s, 1, (400, 400), &quadrants_in(square));
+    assert_eq!((frame, colours), (Some(42), QUADRANTS.to_vec()));
+    let (_, bars) = monitor_shows(&mut s, 1, (400, 400), &[[0.5, 0.1], [0.5, 0.9]]);
+    assert_eq!(bars, vec![BLACK; 2]);
+    // A tall stage with no display, in a wide window: bars at the sides, the card between.
+    assert_eq!(state(&mut s, 2), Some(StageState::NoDisplay));
+    let wide = [0.341_796_9, 0.0, 0.658_203_1, 1.0];
+    let (frame, colours) = monitor_shows(&mut s, 2, (640, 360), &quadrants_in(wide));
+    assert_eq!((frame, colours), (Some(43), QUADRANTS.to_vec()));
+    let (_, bars) = monitor_shows(&mut s, 2, (640, 360), &[[0.1, 0.5], [0.9, 0.5]]);
+    assert_eq!(bars, vec![BLACK; 2]);
+    // The button again on an open monitor brings it to the front: still open, still drawn.
+    assert!(matches!(set_monitor(&mut s, 1, true), Outcome::Ok(_)));
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.25, 0.3]]).0,
+        Some(42)
+    );
+    // The stage's display shows what it showed: a monitor never changes it.
+    assert_eq!(probe(&mut s, 1), (Some(42), QUADRANTS.to_vec()));
+    // An unknown stage is refused; closing takes the window down.
+    let unknown = request(
+        &mut s,
+        Request::SetStageMonitor {
+            stage: stage_id(9),
+            open: true,
+        },
+    );
+    assert!(matches!(unknown, Outcome::Error(e) if e.code == ErrorCode::NotFound));
+    assert!(matches!(set_monitor(&mut s, 1, false), Outcome::Ok(_)));
+    assert!(!monitor_listed(&mut s, 1));
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.5, 0.5]]),
+        (None, vec![])
+    );
+    assert_eq!(s.stalls(), 0);
+}
+
+/// #648 flow: Show Mode → monitors stay as they are; the app quitting closes them without
+/// stopping the engine's output. The app's last connection ending (a quit or a crash; the
+/// WebSocket server's own test shows it tells the control loop) closes every monitor while the
+/// stage's display shows on.
+#[test]
+fn show_mode_leaves_monitors_as_they_are_and_the_app_quitting_closes_them_but_not_the_output() {
+    let mut s = stage_show(
+        with_stages(vec![], vec![stage(1)]),
+        virtual_host(),
+        Some("V1"),
+    );
+    test_card(&mut s, 1, 42);
+    assert!(matches!(set_monitor(&mut s, 1, true), Outcome::Ok(_)));
+    assert!(matches!(
+        request(&mut s, Request::SetShowMode { on: true }),
+        Outcome::Ok(_)
+    ));
+    assert!(monitor_listed(&mut s, 1), "Show Mode leaves it open");
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.25, 0.3]]).0,
+        Some(42)
+    );
+    s.deliver(openlab_engine::control::Inbox::AppsGone);
+    assert!(s.wait_for(|c| !c.monitor_open(stage_id(1))));
+    s.settle_stages();
+    assert!(!monitor_listed(&mut s, 1));
+    assert_eq!(
+        monitor_shows(&mut s, 1, (640, 360), &[[0.5, 0.5]]),
+        (None, vec![])
+    );
+    assert!(logged(&mut s, "monitor windows are closed"));
+    // The output plays on: the stage still up on its display with its picture.
+    assert_eq!(probe(&mut s, 1), (Some(42), QUADRANTS.to_vec()));
+    assert_eq!(display_frame(&mut s, "V1"), Some(42));
+    assert_eq!(
+        state(&mut s, 1),
+        Some(StageState::Shown {
+            display: "V1".into()
+        })
+    );
+    assert_eq!(s.stalls(), 0);
 }
 
 /// #642 flow 3: New stage adds a stage with a chosen display or none; rename in place; remove;
@@ -747,7 +1082,7 @@ fn two_stages_on_one_display_stack_by_layer() {
             .set_stage_mapping(ws.id, stage_id(n), Some(mapping("V1")))
             .unwrap();
     }
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     test_card(&mut s, 1, 111);
     test_card(&mut s, 2, 222);
@@ -798,7 +1133,7 @@ fn the_windowed_stage_host_exits_when_its_input_closes() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, r#"{{"type":"hello","version":1}}"#).unwrap();
+    writeln!(stdin, r#"{{"type":"hello","version":5}}"#).unwrap();
     let mut out = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
@@ -933,7 +1268,7 @@ fn child_named(parent: u32, name: &str) -> Option<u32> {
 fn a_stage_host_reporting_in_a_burst_neither_floods_the_log_nor_grows_memory() {
     let known = stage_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":1,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":5,"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
@@ -956,7 +1291,7 @@ cat > /dev/null"#
     // One second of report budget for the whole burst, whatever the machine's speed.
     let clock = openlab_engine::control::ManualClock::new(1_000);
     c.clock = clock.clock();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     assert!(s.wait_for(|c| c.displays().iter().any(|d| d.id == "END")));
     let out = s.take_outbound();
     let lines = out
@@ -1016,7 +1351,7 @@ fn a_crash_after_a_long_healthy_run_is_relaunched_at_once() {
     let ws = with_stages(vec![], vec![stage(1)]);
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     assert!(s.wait_for(|c| c.stage_host_pid().is_some()));
     let first = s.control().stage_host_pid().unwrap();
     // Two minutes of healthy running, then it is killed.
@@ -1054,7 +1389,7 @@ fn a_snapshot_is_followed_by_the_video_outputs() {
     c.stage_host = Some(virtual_host());
     let clock = openlab_engine::control::ManualClock::new(10_000);
     c.clock = clock.clock();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     clock.advance(200);
     s.tick();
@@ -1086,7 +1421,7 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
     c.stage_host = Some(virtual_host());
     let clock = openlab_engine::control::ManualClock::new(10_000);
     c.clock = clock.clock();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     s.settle_stages();
     clock.advance(200);
     s.tick();
@@ -1137,7 +1472,7 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
 fn a_reporting_burst_is_pushed_at_most_once_per_gap() {
     let known = stage_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":1,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":5,"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
@@ -1153,7 +1488,7 @@ cat > /dev/null"#
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
     c.clock = openlab_engine::control::ManualClock::new(1_000).clock();
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     assert!(s.wait_for(|c| c.displays().iter().any(|d| d.id == "END")));
     let pushes = s
         .take_outbound()
@@ -1175,7 +1510,7 @@ fn a_silent_stage_host_is_killed_after_the_answer_time() {
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
     c.push_log = true;
-    let mut s = show_with(ws, c);
+    let mut s = show_patient(ws, c);
     let mut seen = false;
     for _ in 0..500 {
         s.tick();
@@ -1211,7 +1546,7 @@ fn routine_clocks_never_get_a_busy_stage_host_stopped() {
     use openlab_engine::stage::{StageEvent, StageHost};
     // Answers hello, then never reads again.
     let script =
-        r#"read line; echo '{"type":"hello","version":1,"pid":1,"video":true}'; exec sleep 600"#;
+        r#"read line; echo '{"type":"hello","version":5,"pid":1,"video":true}'; exec sleep 600"#;
     let mut config = host_config(&["-c", script]);
     config.program = PathBuf::from("/bin/sh");
     config.answer_within = Duration::from_secs(3600);
@@ -1254,4 +1589,232 @@ fn routine_clocks_never_get_a_busy_stage_host_stopped() {
     }
     let reason = stopped(&rx, Duration::from_secs(10)).expect("stopped as not reading");
     assert!(reason.contains("stopped reading"), "{reason}");
+}
+
+/// A blocking WebSocket connection to a real engine process.
+type Socket = tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>;
+
+/// A connection to the engine on `port` that has said hello (bound to `doc`, or the app
+/// connection) and been welcomed: the welcome's snapshot, if any.
+fn connect(
+    port: u16,
+    token: &str,
+    doc: Option<openlab_core::protocol::DocId>,
+) -> (Socket, Option<openlab_core::protocol::Snapshot>) {
+    use tokio_tungstenite::tungstenite::{Message, client};
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    // A hang guard on every read: the engine answers within milliseconds.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    let (mut ws, _) = client(format!("ws://127.0.0.1:{port}"), stream).unwrap();
+    let hello = ClientMessage::Hello {
+        protocol_version: openlab_core::protocol::PROTOCOL_VERSION,
+        token: token.into(),
+        client_name: "force-quit test".into(),
+        workspace: doc,
+        pid: None,
+    };
+    ws.send(Message::text(
+        openlab_core::protocol::encode_client(&hello).unwrap(),
+    ))
+    .unwrap();
+    loop {
+        if let ServerMessage::Welcome { snapshot, .. } = next_message(&mut ws) {
+            return (ws, snapshot.map(|s| *s));
+        }
+    }
+}
+
+fn next_message(ws: &mut Socket) -> ServerMessage {
+    loop {
+        match ws.read().unwrap() {
+            tokio_tungstenite::tungstenite::Message::Text(text) => {
+                return openlab_core::protocol::decode_server(&text).unwrap();
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// Sends `message` (built with its id) and reads until its `result`.
+fn call(
+    ws: &mut Socket,
+    id: u64,
+    message: impl FnOnce(openlab_core::protocol::RequestId) -> ClientMessage,
+) -> Outcome {
+    let id = openlab_core::protocol::RequestId(id);
+    let text = openlab_core::protocol::encode_client(&message(id)).unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::text(text))
+        .unwrap();
+    loop {
+        if let ServerMessage::Result { id: got, outcome } = next_message(ws)
+            && got == id
+        {
+            return outcome;
+        }
+    }
+}
+
+/// #642 flow: the app is force-quit while a cue plays → the picture stays up and the engine
+/// keeps playing. A real (test-support) engine process on its stepped virtual device runs its
+/// stage host on a virtual display; the app's connections (its app connection and its
+/// workspace's) end without `goodbye`, as a force-quit's do. A connection made afterwards finds
+/// the cue still running and its picture on the stage, and the cue then ends on its time with
+/// the stage black.
+#[test]
+fn the_app_force_quit_while_a_cue_plays_leaves_the_picture_up_and_the_engine_playing() {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    let engine = test_engine();
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("card.png");
+    let made = show::spin::output_within(
+        Command::new(STAGE_HOST)
+            .arg("--make-test-media")
+            .arg("png")
+            .arg(&png),
+        SLOW_MACHINE,
+    );
+    assert!(made.status.success(), "{made:?}");
+    // A still of the test card for 2 s on stage 1, which keeps black and is shown on V1.
+    let still = openlab_core::Cue {
+        kind: openlab_core::CueKind::Video {
+            media: Some(openlab_core::MediaRef::new(png.to_str().unwrap())),
+            stage: Some(stage_id(1)),
+            duration: Some(2.0),
+            geometry: Default::default(),
+            timing: Default::default(),
+            sound: Default::default(),
+        },
+        ..show::cue(1, openlab_core::CueKind::Memo)
+    };
+    let ws = with_stages(vec![still], vec![stage(1)]);
+    let show_file = dir.path().join("show.openlab");
+    std::fs::write(&show_file, openlab_core::save_show(&ws).unwrap()).unwrap();
+    let mut machine = openlab_core::MachineSettings::default();
+    let mut display = mapping("V1");
+    (display.width, display.height) = (192, 108);
+    machine
+        .set_stage_mapping(ws.id, stage_id(1), Some(display))
+        .unwrap();
+    std::fs::create_dir_all(dir.path().join("openLab")).unwrap();
+    std::fs::write(
+        dir.path().join("openLab").join("settings.json"),
+        openlab_core::save_settings(&machine).unwrap(),
+    )
+    .unwrap();
+    let child = Command::new(&engine)
+        .args([
+            "--virtual-device",
+            "stepped",
+            "--virtual-displays",
+            "V1:192x108",
+        ])
+        .arg("--app-support")
+        .arg(dir.path())
+        .arg("--open")
+        .arg(&show_file)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = Reaped(child);
+    // Its errors read all along on a thread of their own, so a full pipe never blocks it.
+    let stderr = std::io::BufReader::new(child.0.stderr.take().unwrap());
+    let (lines_tx, lines) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in stderr.lines().map_while(Result::ok) {
+            let _ = lines_tx.send(line);
+        }
+    });
+    let (mut port, mut doc) = (None, None);
+    while port.is_none() || doc.is_none() {
+        let line = lines
+            .recv_timeout(SLOW_MACHINE)
+            .expect("the engine did not say it was listening with the show open");
+        if let Some(p) = line.split("listening on 127.0.0.1:").nth(1) {
+            port = p.trim().parse::<u16>().ok();
+        }
+        if let Some(n) = line.split("(doc ").nth(1) {
+            doc = n.trim_end_matches(')').parse::<u64>().ok();
+        }
+        assert!(!line.contains("could not open"), "{line}");
+    }
+    let (port, doc) = (
+        port.expect("listening"),
+        openlab_core::protocol::DocId(doc.expect("opened")),
+    );
+    let file: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("openLab").join("engine.json")).unwrap(),
+    )
+    .unwrap();
+    let token = file["token"].as_str().unwrap().to_owned();
+    let advance = |ws: &mut Socket, id: u64, seconds: f64| {
+        let frames = (seconds * 48_000.0) as u64;
+        let outcome = call(ws, id, |id| ClientMessage::Request {
+            id,
+            request: Request::Advance { frames },
+        });
+        assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    };
+    let shows = |ws: &mut Socket, id: u64| match call(ws, id, |id| ClientMessage::Request {
+        id,
+        request: Request::StageProbe {
+            stage: stage_id(1),
+            points: vec![[0.25, 0.3]],
+        },
+    }) {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::StageProbe { frame, colours }) => (frame, colours),
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("{e:?}"),
+    };
+    // The app: its app connection and the workspace's. GO, and the card is up.
+    let (mut app, _) = connect(port, &token, None);
+    let (mut window, _) = connect(port, &token, Some(doc));
+    advance(&mut app, 1, 0.0);
+    // The stage host starts beside the engine: wait (a count of round trips, no clock) until
+    // it has said where the stage is: hidden, as no picture has played on it since the show
+    // opened (#708: nothing covers a display before then).
+    let hidden = Some(StageState::Hidden);
+    let up = (0..20_000u64).any(|n| {
+        let outcome = call(&mut window, 1_000 + n, |id| ClientMessage::Request {
+            id,
+            request: Request::ListStageMappings,
+        });
+        matches!(outcome, Outcome::Ok(body) if matches!(&body.data,
+            Some(ResultData::StageMappings { stages }) if stages.first().map(|e| &e.state) == Some(&hidden)))
+    });
+    assert!(up, "the stage host never said where the stage is");
+    let go = call(&mut window, 2, |id| ClientMessage::Transport {
+        id,
+        action: TransportAction::Go { list: list_id() },
+    });
+    assert!(matches!(go, Outcome::Ok(_)), "{go:?}");
+    advance(&mut app, 3, 0.5);
+    assert_eq!(shows(&mut window, 4), (Some(0), vec![QUADRANTS[0]]));
+    // Force-quit: both connections just end.
+    drop(window);
+    drop(app);
+    // The engine plays on: still up after another half second, its cue running.
+    let (mut app, _) = connect(port, &token, None);
+    advance(&mut app, 5, 0.5);
+    let (mut window, snapshot) = connect(port, &token, Some(doc));
+    let running =
+        snapshot.expect("a snapshot").cue_states.iter().any(|e| {
+            e.cue == show::id(1) && e.state == openlab_core::protocol::WireCueState::Running
+        });
+    assert!(running, "the cue plays on");
+    assert_eq!(
+        shows(&mut window, 6),
+        (Some(0), vec![QUADRANTS[0]]),
+        "the picture stays up"
+    );
+    // And it ends on its time: black then, never a frozen frame.
+    advance(&mut app, 7, 1.1);
+    assert_eq!(shows(&mut window, 8), (None, vec![BLACK]));
+    assert!(child.0.try_wait().unwrap().is_none(), "the engine runs on");
 }

@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use crate::command::{Command, CueProperty};
 use crate::command_model::PatchProperty;
 use crate::cue::{Cue, CueKind, LevelLimits};
-use crate::model::{CueId, Workspace};
+use crate::model::{CueId, DeviceOutputLevel, Workspace};
 use crate::tree::{descendants, walk_mut};
 
 /// Whether a Fade aimed at `target` holds levels; aimed at one of `groups` it holds changes in dB.
@@ -65,7 +65,8 @@ impl Workspace {
     }
 
     /// The commands that put every level of the workspace within `limits`: Audio cues and Fade
-    /// cues aimed at something other than a Group, and the patches' masters and outputs.
+    /// cues aimed at something other than a Group, and the patches' masters, outputs,
+    /// crosspoints and device outputs.
     pub fn limit_clamps(&self, limits: LevelLimits) -> Vec<Command> {
         let mut out = Vec::new();
         for patch in &self.patches {
@@ -89,10 +90,47 @@ impl Workspace {
                     });
                 }
             }
+            // Each list as one command, however many of its entries move: a dense matrix is
+            // 8,192 crosspoints, and one command per cell would cost a patch check each.
+            let mut crosspoints = patch.crosspoints.clone();
+            crosspoints
+                .iter_mut()
+                .for_each(|c| c.db = limits.limit(c.db));
+            if crosspoints != patch.crosspoints {
+                out.push(Command::SetPatchProperty {
+                    id,
+                    property: PatchProperty::Crosspoints { value: crosspoints },
+                });
+            }
+            // A device output the limit puts back at 0 dB, unmuted, leaves the list, as an edit
+            // to it does.
+            let device_outputs: Vec<_> = patch
+                .device_outputs
+                .iter()
+                .filter_map(|d| {
+                    let level_db = limits.limit(d.level_db);
+                    let moved = DeviceOutputLevel {
+                        level_db,
+                        ..d.clone()
+                    };
+                    (level_db == d.level_db || !moved.is_default()).then_some(moved)
+                })
+                .collect();
+            if device_outputs != patch.device_outputs {
+                out.push(Command::SetPatchProperty {
+                    id,
+                    property: PatchProperty::DeviceOutputs {
+                        value: device_outputs,
+                    },
+                });
+            }
         }
         for cue in self.cues() {
             // Not a clone of every group (and its subtree).
-            if !matches!(cue.kind, CueKind::Audio { .. } | CueKind::Fade { .. }) {
+            if !matches!(
+                cue.kind,
+                CueKind::Audio { .. } | CueKind::Video { .. } | CueKind::Fade { .. }
+            ) {
                 continue;
             }
             let mut kind = cue.kind.clone();

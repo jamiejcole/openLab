@@ -46,6 +46,21 @@ extension WorkspaceWindowController {
             PastePropertiesSheet.remember(ticked, offered: all, in: pasteDefaults)
             Task { await self.editor.pasteProperties(ticked, from: source, onto: cues) }
         }
-        if let presentSheet { presentSheet(sheet.window) } else { window.beginSheet(sheet.window) }
+        if let presentSheet { presentSheet(sheet.window) } else { StandBack.beginSheet(sheet.window, on: window) }
+    }
+
+    /// Tools > Paste Levels: the copied cue's levels onto the selected cues at once, without the sheet.
+    var canPasteLevels: Bool {
+        guard !isShowMode, let source = editor.clipboardCue, let model = store.model else { return false }
+        let targets = cueList.selectedIDs().compactMap { model.cue($0) }
+        return !targets.isEmpty
+            && PasteProperty.offered(from: source, to: targets, media: store.mediaDurations, model: model)
+                .contains { $0.properties.contains(.levels) }
+    }
+
+    func pasteLevels() {
+        guard canPasteLevels, let source = editor.clipboardCue else { return NSSound.beep() }
+        let cues = cueList.selectedIDs()
+        Task { await editor.pasteProperties([.levels], from: source, onto: cues) }
     }
 }

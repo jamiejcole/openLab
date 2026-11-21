@@ -34,7 +34,18 @@ final class LevelFaderCell: NSSliderCell {
     var isMixed = false
 
     override func drawKnob(_ knobRect: NSRect) {
-        if !isMixed { super.drawKnob(knobRect) }
+        guard !isMixed else { return }
+        // The system's knob is near-white: on a light window it needs an outline and a darker body to read.
+        if controlView?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .aqua {
+            let knob = NSBezierPath(roundedRect: knobRect.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4)
+            NSColor(white: 0.62, alpha: 1).setFill()
+            knob.fill()
+            NSColor(white: 0.25, alpha: 1).setStroke()
+            knob.lineWidth = 1
+            knob.stroke()
+        } else {
+            super.drawKnob(knobRect)
+        }
     }
 }
 
@@ -67,6 +78,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     let matrix = LevelMatrixView()
     let board = LevelsBoard()
     let scroll = LevelsScrollView()
+    /// An Audio cue's left column, scrolling when the tab is shorter than its controls.
+    let sideScroll = NSScrollView()
     /// The name of the chosen level, over the controls that act on it.
     let cellLabel = NSTextField(labelWithString: "")
     /// Types in the chosen level's box: laid over it while typing, hidden otherwise.
@@ -78,11 +91,15 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         if case .output(let o) = selection, faders.indices.contains(o + 1) { return faders[o + 1] }
         return faders[0]
     }
-    let muteCheck = NSButton(checkboxWithTitle: loc("levels.mute"), target: nil, action: nil)
     let activeCheck = NSButton(checkboxWithTitle: loc("levels.active"), target: nil, action: nil)
-    let gangField = NSTextField()
-    let gangLabel = NSTextField(labelWithString: loc("levels.gang"))
-    /// Peaks of the cue's output channels (an Audio cue's Levels tab only).
+    /// Gang assignment (an Audio cue): the levels are hidden and a letter typed in a cue output's box puts
+    /// it in that gang (QLab 5 manual p. 181).
+    let gangsButton = NSButton(title: loc("levels.gangs"), target: nil, action: nil)
+    /// Un-mutes every cue output and crosspoint.
+    let clearMutesButton = NSButton(title: loc("levels.clearMutes"), target: nil, action: nil)
+    private(set) var gangMode = false
+    /// Peaks of the cue's outputs, a bar beside each cue output's fader (an Audio cue's Levels tab
+    /// only; QLab 5 manual p. 204).
     let meter = MeterView()
     let defaultButton = NSButton(title: loc("levels.setDefault"), target: nil, action: nil)
     let silentButton = NSButton(title: loc("levels.setSilent"), target: nil, action: nil)
@@ -93,6 +110,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     static let sideWidth: CGFloat = 170
     /// The least height a fader has; a shorter tab scrolls.
     static let minFaderHeight: CGFloat = 70
+    static let faderWidth: CGFloat = 22
+    /// A cue output's meter bar beside its fader, and how far its ends sit inside the fader's.
+    static let meterWidth: CGFloat = 4
+    static let meterInset: CGFloat = 4
 
     /// A whole new level set, and the gesture it belongs to (nil for a one-off edit such as a typed value).
     var onEdit: ((LevelSet, Int?) -> Void)?
@@ -152,9 +173,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         cellLabel.setAX("\(prefix)-cell")
         levelField.setAX("\(prefix)-field")
         meter.setAX("\(prefix)-meter")
-        muteCheck.setAX("\(prefix)-mute")
+        gangsButton.setAX("\(prefix)-gangs")
+        clearMutesButton.setAX("\(prefix)-clear-mutes")
         activeCheck.setAX("\(prefix)-active")
-        gangField.setAX("\(prefix)-gang")
         defaultButton.setAX("\(prefix)-default")
         silentButton.setAX("\(prefix)-silent")
         fromTargetButton.setAX("\(prefix)-from-target")
@@ -162,15 +183,18 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         editPatchButton.target = self
         editPatchButton.action = #selector(editPatchClicked)
         levelField.delegate = self
-        gangField.delegate = self
         levelField.alignment = .center
         levelField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         levelField.isHidden = true
-        gangField.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        for c in [muteCheck, activeCheck, defaultButton, silentButton, fromTargetButton] as [NSControl] {
+        for c in [activeCheck, defaultButton, silentButton, fromTargetButton, gangsButton, clearMutesButton]
+            as [NSControl]
+        {
             c.target = self
         }
-        muteCheck.action = #selector(muteToggled)
+        gangsButton.setButtonType(.pushOnPushOff)
+        gangsButton.action = #selector(gangsToggled)
+        clearMutesButton.action = #selector(clearMutes)
+        matrix.onMute = { [weak self] slot in self?.toggleMute(slot) }
         activeCheck.action = #selector(activeToggled)
         defaultButton.action = #selector(setDefaults)
         silentButton.action = #selector(silenceAll)
@@ -191,6 +215,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
         board.addSubview(matrix)
         board.addSubview(levelField)
+        // Under the faders, which are added after it.
+        if !isFade { board.addSubview(meter) }
         syncFaders(outputs: 0)
         scroll.documentView = board
         scroll.hasVerticalScroller = true
@@ -201,11 +227,14 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
         scroll.onLayout = { [weak self] in self?.layoutBoard() }
 
+        // An Audio cue's column is buttons only, as QLab's is: its meters are beside the faders, a
+        // level's mute is in the box's menu, its gang is typed in gang mode. A Fade keeps the chosen
+        // level's block.
         let buttons: [NSButton] =
-            isFade ? [fromTargetButton, silentButton] : [defaultButton, silentButton, editPatchButton]
-        let gangRow = NSStackView(views: [gangLabel, gangField])
-        gangRow.spacing = 6
-        let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : [cellLabel, muteCheck, gangRow, meter]
+            isFade
+            ? [fromTargetButton, silentButton]
+            : [defaultButton, silentButton, gangsButton, clearMutesButton, editPatchButton]
+        let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : []
         cellLabel.font = .systemFont(ofSize: 11)
         cellLabel.textColor = .secondaryLabelColor
         cellLabel.lineBreakMode = .byTruncatingTail
@@ -219,15 +248,42 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             side.addArrangedSubview(b)
             b.widthAnchor.constraint(equalTo: side.widthAnchor).isActive = true
         }
-        side.setCustomSpacing(16, after: buttons[buttons.count - 1])
+        side.setCustomSpacing(isFade ? 16 : 8, after: buttons[buttons.count - 1])
         for v in chosen { side.addArrangedSubview(v) }
-        if !isFade { meter.widthAnchor.constraint(equalTo: side.widthAnchor).isActive = true }
         side.widthAnchor.constraint(equalToConstant: Self.sideWidth).isActive = true
         side.setHuggingPriority(.defaultHigh, for: .vertical)
         view.orientation = .horizontal
         view.alignment = .top
         view.spacing = 12
-        view.addArrangedSubview(side)
+        if isFade {
+            view.addArrangedSubview(side)
+        } else {
+            // An Audio cue's column scrolls when the tab is shorter than its controls, so a short
+            // window never has to grow for them.
+            let column = FlippedView()
+            side.translatesAutoresizingMaskIntoConstraints = false
+            column.addSubview(side)
+            sideScroll.documentView = column
+            sideScroll.hasVerticalScroller = true
+            sideScroll.autohidesScrollers = true
+            sideScroll.drawsBackground = false
+            sideScroll.borderType = .noBorder
+            column.translatesAutoresizingMaskIntoConstraints = false
+            let clip = sideScroll.contentView
+            NSLayoutConstraint.activate([
+                column.topAnchor.constraint(equalTo: clip.topAnchor),
+                column.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+                column.widthAnchor.constraint(equalToConstant: Self.sideWidth),
+                side.topAnchor.constraint(equalTo: column.topAnchor),
+                side.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+                side.bottomAnchor.constraint(equalTo: column.bottomAnchor),
+                // Room for an always-visible scroller beside the column, as `layoutBoard` leaves for the board's.
+                sideScroll.widthAnchor.constraint(
+                    equalToConstant: Self.sideWidth + NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)),
+            ])
+            view.addArrangedSubview(sideScroll)
+            sideScroll.heightAnchor.constraint(equalTo: view.heightAnchor).isActive = true
+        }
         view.addArrangedSubview(scroll)
         scroll.heightAnchor.constraint(equalTo: view.heightAnchor).isActive = true
         scroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -287,9 +343,18 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         if matrix.frame.origin != NSPoint(x: 0, y: boxesTop) { matrix.setFrameOrigin(NSPoint(x: 0, y: boxesTop)) }
         for (n, f) in faders.enumerated() {
             let box = matrix.rect(of: Self.slot(ofFader: n))
-            let frame = NSRect(x: box.midX - 11, y: top, width: 22, height: boxesTop - gap - top)
+            let frame = NSRect(
+                x: box.midX - Self.faderWidth / 2, y: top, width: Self.faderWidth, height: boxesTop - gap - top)
             if f.frame != frame { f.frame = frame }
         }
+        // A meter bar just right of each cue output's fader, as tall as the fader's track.
+        let meterFrame = NSRect(
+            x: 0, y: top + Self.meterInset, width: size.width,
+            height: max(0, boxesTop - gap - top - 2 * Self.meterInset))
+        if meter.frame != meterFrame { meter.frame = meterFrame }
+        meter.columns = MeterView.Columns(
+            first: matrix.rect(of: .output(0)).midX + Self.faderWidth / 2, step: LevelMatrixView.cellW,
+            width: Self.meterWidth, count: matrix.outputCount)
         if !levelField.isHidden { levelField.frame = fieldFrame(selection) }
     }
 
@@ -363,11 +428,19 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     @objc private func editPatchClicked() { onEditPatch?() }
 
+    /// The shown cues play through a patch the workspace has (one patch, when several are shown):
+    /// there is a patch for Edit Patch to open.
+    var hasPatch = true {
+        didSet { if hasPatch != oldValue { refreshStrip() } }
+    }
+
     private func refreshStrip() {
         // Opening the editor changes nothing; Show Mode keeps it shut like every other edit.
-        editPatchButton.isEnabled = !isLocked && levels != nil
+        editPatchButton.isEnabled = !isLocked && levels != nil && hasPatch
         guard let levels else {
-            for c in [levelField, muteCheck, activeCheck, gangField, defaultButton, silentButton, fromTargetButton]
+            for c in [
+                levelField, activeCheck, defaultButton, silentButton, fromTargetButton, gangsButton, clearMutesButton,
+            ]
                 as [NSControl]
             {
                 c.isEnabled = false
@@ -380,37 +453,39 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         cellLabel.stringValue = Self.name(of: slot)
         let active = levels.isActive(slot)
         let db = levels.db(slot)
-        if !isDirty { levelField.stringValue = mixed.contains(slot) ? "" : db.map(LevelText.format) ?? "" }
+        if !isDirty {
+            if gangMode {
+                if case .output(let o) = slot, !gangsMixed {
+                    levelField.stringValue = levels.gang(of: o).map(LevelSet.gangLetter) ?? ""
+                } else {
+                    levelField.stringValue = ""
+                }
+            } else {
+                levelField.stringValue = mixed.contains(slot) ? "" : db.map(LevelText.format) ?? ""
+            }
+        }
         let free = !isLocked
-        // A fader runs from the minimum limit and stops at 0 dB (QLab manual p. 181), or at the
-        // maximum if that is lower; a level above it shows pinned there.
+        // A fader runs from the workspace's minimum level to its maximum, 0 dB part-way up.
         for (n, f) in faders.enumerated() {
             f.minValue = limits.min
-            f.maxValue = min(limits.max, 0)
+            f.maxValue = limits.max
             f.doubleValue = min(max(levels.db(Self.slot(ofFader: n)) ?? limits.min, limits.min), f.maxValue)
             f.isMixed = mixed.contains(Self.slot(ofFader: n))
             f.isEnabled = free
+            f.isHidden = gangMode
         }
+        // Gang mode hides the levels, and with them the meters beside the faders.
+        if meter.isHidden != gangMode { meter.isHidden = gangMode }
         activeCheck.state = active ? .on : .off
-        muteCheck.state = levels.isMuted(slot) ? .on : .off
-        var isOutput = false
-        var gangText = ""
-        if case .output(let o) = slot {
-            isOutput = true
-            gangText = levels.gang(of: o).map(LevelSet.gangLetter) ?? ""
-        }
-        if !isDirty { gangField.stringValue = gangsMixed ? "" : gangText }
         levelField.isEnabled = free
         activeCheck.isEnabled = free
-        // A mute belongs to a cue output or a route that exists (a route not listed is silent already).
-        var hasMute = false
-        switch slot {
-        case .master: hasMute = false
-        case .output: hasMute = true
-        case .cross(let i, let o): hasMute = levels.crosspoints[.init(input: i, output: o)] != nil
-        }
-        muteCheck.isEnabled = free && hasMute && !levels.isFade
-        gangField.isEnabled = free && isOutput && !levels.isFade && !gangsMixed
+        let isOutput: Bool
+        if case .output = slot { isOutput = true } else { isOutput = false }
+        // Gang mode types in a cue output's box only, and only while the cues shown agree on their gangs.
+        levelField.isEnabled = free && (!gangMode || (isOutput && !gangsMixed))
+        gangsButton.isEnabled = !levels.isFade && free && !gangsMixed
+        gangsButton.state = gangMode ? .on : .off
+        clearMutesButton.isEnabled = free && !levels.isFade && levels.hasMute
         defaultButton.isEnabled = free
         silentButton.isEnabled = free
         fromTargetButton.isEnabled = free && canSetFromTarget
@@ -468,10 +543,30 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         edit(gesture: gesture, as: .level(slot)) { $0.set(slot, db: db, drag: true, limits: limits) }
     }
 
-    @objc private func muteToggled() {
-        let slot = selection
-        let mute = muteCheck.state == .on
+    /// Mutes or un-mutes a cue output or a listed crosspoint (its box's menu).
+    func toggleMute(_ slot: LevelSet.Slot) {
+        guard let levels, isMuteable(slot, levels) else { return }
+        let mute = !levels.isMuted(slot)
         edit(as: .mute(slot)) { $0.setMute(slot, mute) }
+    }
+
+    /// A mute belongs to a cue output or a route that exists (a route not listed is silent already).
+    func isMuteable(_ slot: LevelSet.Slot, _ levels: LevelSet) -> Bool {
+        guard !isLocked, !levels.isFade else { return false }
+        switch slot {
+        case .master: return false
+        case .output: return true
+        case .cross(let i, let o): return levels.crosspoints[.init(input: i, output: o)] != nil
+        }
+    }
+
+    @objc private func clearMutes() { edit(as: .clearMutes) { $0.clearMutes() } }
+
+    @objc private func gangsToggled() {
+        commitTyping()
+        gangMode = gangsButton.state == .on
+        matrix.gangMode = gangMode
+        refreshStrip()
     }
 
     @objc private func activeToggled() {
@@ -524,18 +619,20 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     private func commitText(of field: NSTextField) {
         let slot = selection
-        if field === levelField {
-            let text = levelField.stringValue
-            // Emptied is -inf (QLab 5 manual p. 204), except on a level a Fade is not moving, which
-            // it leaves alone. Only white space is no change: a stray Space, the GO key, leaves that
-            // (ours).
-            if LevelText.isStraySpace(text) || (text.isEmpty && levels?.isActive(slot) == false) { return }
-            let limits = limits
-            let db = LevelText.parse(text, limits: limits)
-            edit(as: .level(slot)) { $0.set(slot, db: db, limits: limits) }
-        } else if field === gangField, case .output(let o) = slot {
-            let text = gangField.stringValue
-            edit(as: .gang(output: o, letter: text)) { $0.setGang(of: o, letter: text) }
+        guard field === levelField else { return }
+        let text = levelField.stringValue
+        if gangMode {
+            if case .output(let o) = slot, !gangsMixed {
+                edit(as: .gang(output: o, letter: text)) { $0.setGang(of: o, letter: text) }
+            }
+            return
         }
+        // Emptied is -inf (QLab 5 manual p. 204), except on a level a Fade is not moving, which
+        // it leaves alone. Only white space is no change: a stray Space, the GO key, leaves that
+        // (ours).
+        if LevelText.isStraySpace(text) || (text.isEmpty && levels?.isActive(slot) == false) { return }
+        let limits = limits
+        let db = LevelText.parse(text, limits: limits)
+        edit(as: .level(slot)) { $0.set(slot, db: db, limits: limits) }
     }
 }

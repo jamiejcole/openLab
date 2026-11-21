@@ -6,10 +6,10 @@
 //! windows come up with `orderFrontRegardless`, are borderless, ignore the mouse and cannot
 //! become key, so the operator's keys stay with the openLab app. A stage's window covers its
 //! display's whole frame, joins every Space and stays out of Mission Control and window
-//! cycling. On a display without the menu bar it is at screen-saver level, over everything;
-//! on the one with the menu bar (the operator's, a laptop's only one) it is just under every
-//! app's windows, so the app stays usable over a black desktop. System full-screen mode is
-//! never used: it would need activation and a Space of its own.
+//! cycling. It is at screen-saver level, over everything, on every display; on the one with the
+//! menu bar (the operator's, a laptop's only one) it stands back just under every app's windows
+//! while the app has a question up or the engine has gone silent, so the operator can see the
+//! app. System full-screen mode is never used: it would need activation and a Space of its own.
 //!
 //! AppKit and the drawing live on the main thread, with the [`Host`]. A reader thread decodes
 //! the engine's lines and hands each to the main queue. Every picture's file is opened and
@@ -20,6 +20,7 @@
 mod displays;
 mod gpu;
 mod media;
+mod monitor;
 mod probe;
 #[cfg(feature = "test-support")]
 mod testmedia;
@@ -45,11 +46,12 @@ use objc2_core_graphics::{
 use objc2_foundation::{NSNumber, NSRect, NSString};
 use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+use openlab_core::StageId;
 use openlab_core::stage_link::{Display, FromStage, LinkLevel, ToStage};
 
 use self::displays::Found;
 use self::gpu::Gpu;
-use crate::host::{Flow, Host, Layer, PictureEvent, Platform, write_all};
+use crate::host::{Flow, Host, Layer, PictureEvent, Platform, Presented, write_all};
 use openlab_core::stage_link::{Line, read_line};
 
 pub fn run(args: Vec<String>) -> ExitCode {
@@ -84,21 +86,16 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
         }
         #[cfg(feature = "test-support")]
-        [flag, list] if flag == "--virtual-displays" => match virtual_displays(list) {
-            Some(displays) => offscreen(displays, media::LIMITS),
-            None => ExitCode::from(super::USAGE_EXIT),
-        },
-        #[cfg(feature = "test-support")]
-        [flag, list, limits_flag, limits, rest @ ..]
-            if flag == "--virtual-displays"
-                && limits_flag == "--media-limits"
-                && (rest.is_empty() || rest == ["--media-clock-by-hand"]) =>
-        {
-            if !rest.is_empty() {
-                media::fault::use_hand_clock();
-            }
-            match (virtual_displays(list), media_limits(limits)) {
-                (Some(displays), Some(limits)) => offscreen(displays, limits),
+        [flag, list, options @ ..] if flag == "--virtual-displays" => {
+            let (list, starred) = menu_bar_marked(list);
+            match (virtual_displays(&list), offscreen_options(options)) {
+                (Some(displays), Some(mut options)) => {
+                    options.menu_bar = options.menu_bar.or(starred);
+                    if options.hand_clock {
+                        media::fault::use_hand_clock();
+                    }
+                    offscreen(displays, options)
+                }
                 _ => ExitCode::from(super::USAGE_EXIT),
             }
         }
@@ -112,23 +109,34 @@ pub struct Mac {
     windows: Option<Windows>,
     /// Video cues' pictures, by the engine's id.
     media: HashMap<u64, media::Picture>,
-    /// Pictures that failed while drawn, not yet reported.
-    failed: Vec<(u64, String)>,
+    /// What became of pictures that failed while drawn, not yet reported.
+    failed: Vec<PictureEvent>,
     /// Test support: the limits on the open and frames of a file a fault switch names
     /// (`limits_of`).
     #[cfg(feature = "test-support")]
     fault_limits: media::Limits,
+    /// Test support: the limits on every other file's open and frames (`limits_of`).
+    #[cfg(feature = "test-support")]
+    good_limits: media::Limits,
     /// The displays last read, with their CoreGraphics ids.
     found: Vec<Found>,
+    /// The display whose window stands back under the app's windows (`Platform::stand_back`).
+    standing_back: Option<String>,
     /// Test support: displays that stand in for real ones, drawn offscreen only.
     #[cfg(feature = "test-support")]
     virtual_displays: Option<Vec<Display>>,
+    /// Test support: the virtual display that stands for the one with the menu bar
+    /// (`--menu-bar-display`).
+    #[cfg(feature = "test-support")]
+    virtual_menu_bar: Option<String>,
 }
 
 struct Windows {
     mtm: MainThreadMarker,
     /// One window per display with stages shown on it, by display id.
     open: HashMap<String, DisplayWindow>,
+    /// The monitor windows open, by stage.
+    monitors: HashMap<StageId, monitor::Monitor>,
 }
 
 struct DisplayWindow {
@@ -154,11 +162,11 @@ impl Platform for Mac {
         self.found.iter().map(|f| f.display.clone()).collect()
     }
 
-    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<(), String> {
+    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<Presented, String> {
         let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
         let Some(windows) = self.windows.as_mut() else {
             // Offscreen: the stages are drawn only when a probe asks.
-            return Ok(());
+            return Ok(Presented::Drawn);
         };
         let cg = self
             .found
@@ -174,16 +182,19 @@ impl Platform for Mac {
         }
         let w = windows.open.get(&display.id).ok_or("window lost")?;
         w.window.setFrame_display(frame, false);
-        fit_level(&w.window, cg);
+        let level = level_for(self.standing_back.as_deref() == Some(display.id.as_str()));
+        if w.window.level() != level {
+            w.window.setLevel(level);
+        }
         w.layer.setDrawableSize(CGSize::new(
             f64::from(display.width),
             f64::from(display.height),
         ));
         order_front(&w.window);
-        let drawable = w
-            .layer
-            .nextDrawable()
-            .ok_or("no drawable for the display's window")?;
+        // No drawable in time (the GPU under load): this frame is skipped, the window kept.
+        let Some(drawable) = w.layer.nextDrawable() else {
+            return Ok(Presented::Skipped);
+        };
         let device = gpu.device_owned();
         let (media, failed) = (&mut self.media, &mut self.failed);
         let mut drawn = Vec::new();
@@ -201,7 +212,7 @@ impl Platform for Mac {
         let d: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
         cb.presentDrawable(d);
         cb.commit();
-        Ok(())
+        Ok(Presented::Drawn)
     }
 
     fn close(&mut self, display: &str) {
@@ -261,12 +272,13 @@ impl Platform for Mac {
     }
 
     fn take_picture_events(&mut self) -> Vec<PictureEvent> {
-        let mut events: Vec<PictureEvent> = std::mem::take(&mut self.failed)
-            .into_iter()
-            .map(|(p, why)| PictureEvent::Failed(p, why))
-            .collect();
+        let mut events = std::mem::take(&mut self.failed);
         let mut gone = Vec::new();
         for (id, picture) in &mut self.media {
+            // Before a failure it may have led to: said even when the picture then goes.
+            if let Some(why) = picture.take_reopened() {
+                events.push(PictureEvent::Reopened(*id, why));
+            }
             match picture.poll() {
                 Some(media::Polled::Opened) => events.push(PictureEvent::Opened(*id)),
                 Some(media::Polled::Failed(why)) => {
@@ -286,18 +298,120 @@ impl Platform for Mac {
     fn live(&self) -> bool {
         self.windows.is_some()
     }
+
+    fn present_monitor(&mut self, title: &str, layer: &Layer) -> Result<(), String> {
+        let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
+        let Some(windows) = self.windows.as_mut() else {
+            // Offscreen: drawn only when a probe asks.
+            return Ok(());
+        };
+        if !windows.monitors.contains_key(&layer.stage) {
+            let opened = windows.monitors.len();
+            let m = monitor::build(windows.mtm, title, (layer.width, layer.height), opened, gpu)?;
+            order_front(&m.window);
+            windows.monitors.insert(layer.stage, m);
+        }
+        let m = windows
+            .monitors
+            .get_mut(&layer.stage)
+            .ok_or("monitor lost")?;
+        m.set_title(title);
+        if !m.ready() {
+            return Ok(());
+        }
+        m.fit();
+        // A drawable not there now is a frame skipped, never a monitor closed.
+        let Some(drawable) = m.layer().nextDrawable() else {
+            return Ok(());
+        };
+        let device = gpu.device_owned();
+        let (media, failed) = (&mut self.media, &mut self.failed);
+        let mut drawn = Vec::new();
+        let cb = gpu.draw(&drawable.texture(), std::slice::from_ref(layer), &mut |c| {
+            drawn.push(c.picture);
+            // The frame the displays show at the next refresh.
+            frame_of(&device, media, failed, c, media::FRAME_AHEAD, false)
+        })?;
+        for picture in drawn {
+            if let Some(p) = self.media.get_mut(&picture) {
+                p.drawn_with(&cb);
+            }
+        }
+        m.drawn_with(&cb);
+        let d: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
+        cb.presentDrawable(d);
+        cb.commit();
+        Ok(())
+    }
+
+    fn raise_monitor(&mut self, stage: StageId) {
+        if let Some(m) = self.windows.as_ref().and_then(|w| w.monitors.get(&stage)) {
+            if m.window.isMiniaturized() {
+                m.window.deminiaturize(None);
+            }
+            order_front(&m.window);
+        }
+    }
+
+    fn close_monitor(&mut self, stage: StageId) {
+        if let Some(m) = self
+            .windows
+            .as_mut()
+            .and_then(|w| w.monitors.remove(&stage))
+        {
+            m.window.close();
+        }
+    }
+
+    fn stand_back(&mut self, display: Option<&str>) {
+        self.standing_back = display.map(str::to_owned);
+    }
+
+    fn menu_bar_display(&self) -> Option<String> {
+        #[cfg(feature = "test-support")]
+        if self.virtual_displays.is_some() {
+            return self.virtual_menu_bar.clone();
+        }
+        let main = CGMainDisplayID();
+        (self.found.iter())
+            .find(|f| f.cg == main)
+            .map(|f| f.display.id.clone())
+    }
+
+    fn take_closed_monitors(&mut self) -> Vec<StageId> {
+        let Some(windows) = self.windows.as_mut() else {
+            return Vec::new();
+        };
+        let closed: Vec<StageId> = windows
+            .monitors
+            .iter()
+            .filter(|(_, m)| m.closed())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &closed {
+            windows.monitors.remove(id);
+        }
+        closed
+    }
 }
 
 impl Mac {
-    /// The limits on `file`'s open and frames: the shipped ones, or (test support) the shorter
-    /// ones a test gave for the files whose names ask for a fault, so a hung test file fails
-    /// quickly while a good file is never failed by a slow machine.
+    /// Test support: the limits on `file`'s open and frames the test gave (each the shipped one
+    /// unless given): shorter for the files whose names ask for a fault, so a hung test file
+    /// fails quickly, and longer for every other file, so a good file is never failed by a slow
+    /// machine (a CI virtual machine whose media framework stalls for seconds).
+    #[cfg(feature = "test-support")]
     fn limits_of(&self, file: &str) -> media::Limits {
-        #[cfg(feature = "test-support")]
         if media::fault::named(file) {
-            return self.fault_limits;
+            self.fault_limits
+        } else {
+            self.good_limits
         }
-        let _ = file;
+    }
+
+    /// The limits on a file's open and frames: the shipped ones.
+    #[cfg(not(feature = "test-support"))]
+    fn limits_of(&self, _file: &str) -> media::Limits {
         media::LIMITS
     }
 }
@@ -308,17 +422,26 @@ impl Mac {
 fn frame_of(
     device: &ProtocolObject<dyn MTLDevice>,
     media: &mut HashMap<u64, media::Picture>,
-    failed: &mut Vec<(u64, String)>,
+    failed: &mut Vec<PictureEvent>,
     cue: &crate::host::CuePicture,
     ahead: f64,
     wait: bool,
-) -> Option<(gpu::Texture, (u32, u32))> {
+) -> Option<(gpu::Texture, (u32, u32), gpu::Colour)> {
     let source = media.get_mut(&cue.picture)?;
-    match source.frame(device, cue.position + ahead, wait) {
+    match source.frame(
+        device,
+        cue.position_after(ahead),
+        cue.pass_after(ahead),
+        cue.upcoming(),
+        wait,
+    ) {
         Ok(frame) => frame,
         Err(why) => {
+            if let Some(note) = source.take_reopened() {
+                failed.push(PictureEvent::Reopened(cue.picture, note));
+            }
             media.remove(&cue.picture);
-            failed.push((cue.picture, why));
+            failed.push(PictureEvent::Failed(cue.picture, why));
             None
         }
     }
@@ -371,25 +494,15 @@ fn output_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
     window
 }
 
-/// The level of an output window on display `cg`. The display with the menu bar is the one
-/// the operator works on (a laptop has no other): there the window is just under every app's
-/// normal windows, still over the desktop and its icons, so the openLab app's windows, sheets,
-/// alerts and menus, and the menu bar and Dock, stay over a black stage. Anywhere else it is
-/// at screen-saver level, over everything. Read at every present, which every display change
-/// (a display plugged in or out, the menu bar moved) brings, so the level follows at once.
-fn level_on(cg: CGDirectDisplayID) -> NSWindowLevel {
-    if cg == CGMainDisplayID() {
+/// An output window's level: screen-saver, over every app's windows, the menu bar and the Dock;
+/// or, standing back (a question of the app's is up, or the engine has gone silent), just under
+/// every app's normal windows, still over the desktop and its icons, so the operator sees the app
+/// while what the stage draws is unchanged.
+fn level_for(standing_back: bool) -> NSWindowLevel {
+    if standing_back {
         NSNormalWindowLevel - 1
     } else {
         NSScreenSaverWindowLevel
-    }
-}
-
-/// Puts `window` at its level for display `cg`, touching AppKit only when it changes.
-fn fit_level(window: &NSWindow, cg: CGDirectDisplayID) {
-    let level = level_on(cg);
-    if window.level() != level {
-        window.setLevel(level);
     }
 }
 
@@ -415,8 +528,9 @@ thread_local! {
 }
 
 /// Test support: a stage presented through the shipped `present` on the display with the menu
-/// bar, never ordered front: the levels its window had as it was ordered front, and its level
-/// after. `None` without a GPU or a display with the menu bar.
+/// bar (the operator's, a laptop's only one), never ordered front: the levels its window had as
+/// it was ordered front, and its level after. `None` without a GPU or a display with the menu
+/// bar.
 #[cfg(feature = "test-support")]
 fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
     let mut mac = Mac {
@@ -424,12 +538,16 @@ fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
         windows: Some(Windows {
             mtm,
             open: HashMap::new(),
+            monitors: HashMap::new(),
         }),
         media: HashMap::new(),
         failed: Vec::new(),
         fault_limits: media::LIMITS,
+        good_limits: media::LIMITS,
         found: Vec::new(),
+        standing_back: None,
         virtual_displays: None,
+        virtual_menu_bar: None,
     };
     mac.displays();
     let main = CGMainDisplayID();
@@ -455,11 +573,6 @@ fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
 pub struct WindowReport {
     pub level: isize,
     pub screen_saver_level: isize,
-    /// Its level once fitted to the display with the menu bar, then to another display, then
-    /// to the menu bar's display again (the menu bar moved back).
-    pub level_on_main: isize,
-    pub level_on_other: isize,
-    pub level_back_on_main: isize,
     pub normal_level: isize,
     /// A stage presented on the menu bar's display through the shipped path (never really
     /// ordered front): its window's level each time it was ordered front, and after.
@@ -473,6 +586,26 @@ pub struct WindowReport {
     pub borderless: bool,
     pub frame_is_the_screens: bool,
     pub visible: bool,
+    /// A monitor window built for a 1920 x 1080 stage titled "Stage 1", never ordered front.
+    pub monitor: MonitorReport,
+}
+
+/// Test support: a monitor window as AppKit holds it.
+#[cfg(feature = "test-support")]
+pub struct MonitorReport {
+    pub title: String,
+    pub titled: bool,
+    pub closable: bool,
+    pub resizable: bool,
+    /// Clicking it never activates the stage host.
+    pub non_activating: bool,
+    /// It becomes key only for a view that takes typing (it has none).
+    pub key_only_if_needed: bool,
+    pub hides_on_deactivate: bool,
+    pub floating: bool,
+    pub level: isize,
+    pub content: (f64, f64),
+    pub visible: bool,
 }
 
 /// Test support: builds an output window on the main thread for the main screen's frame and
@@ -485,19 +618,9 @@ pub fn window_report() -> Option<WindowReport> {
     let window = output_window(mtm, frame);
     let got = window.frame();
     let level = window.level();
-    let main = CGMainDisplayID();
-    fit_level(&window, main);
-    let level_on_main = window.level();
-    fit_level(&window, main.wrapping_add(1));
-    let level_on_other = window.level();
-    fit_level(&window, main);
-    let level_back_on_main = window.level();
     let report = WindowReport {
         level,
         screen_saver_level: NSScreenSaverWindowLevel,
-        level_on_main,
-        level_on_other,
-        level_back_on_main,
         normal_level: NSNormalWindowLevel,
         presented_on_main: presented_on_main(mtm),
         menu_bar_level: objc2_app_kit::NSMainMenuWindowLevel,
@@ -512,9 +635,34 @@ pub fn window_report() -> Option<WindowReport> {
             && got.size.width == frame.size.width
             && got.size.height == frame.size.height,
         visible: window.isVisible(),
+        monitor: monitor_report(mtm),
     };
     window.close();
     Some(report)
+}
+
+/// Test support: a monitor window built as the stage host builds one, read back, never
+/// ordered front.
+#[cfg(feature = "test-support")]
+fn monitor_report(mtm: MainThreadMarker) -> MonitorReport {
+    let panel = monitor::panel(mtm, "Stage 1", (1920, 1080));
+    let style = panel.styleMask();
+    let content = panel.contentRectForFrameRect(panel.frame()).size;
+    let report = MonitorReport {
+        title: panel.title().to_string(),
+        titled: style.contains(NSWindowStyleMask::Titled),
+        closable: style.contains(NSWindowStyleMask::Closable),
+        resizable: style.contains(NSWindowStyleMask::Resizable),
+        non_activating: style.contains(NSWindowStyleMask::NonactivatingPanel),
+        key_only_if_needed: panel.becomesKeyOnlyIfNeeded(),
+        hides_on_deactivate: panel.hidesOnDeactivate(),
+        floating: panel.isFloatingPanel(),
+        level: panel.level(),
+        content: (content.width, content.height),
+        visible: panel.isVisible(),
+    };
+    panel.close();
+    report
 }
 
 /// Ends the process at once, from any thread: no exit handlers and no stdio flush, so a hung
@@ -557,14 +705,20 @@ fn windowed() -> ExitCode {
         windows: Some(Windows {
             mtm,
             open: HashMap::new(),
+            monitors: HashMap::new(),
         }),
         media: HashMap::new(),
         failed: Vec::new(),
         #[cfg(feature = "test-support")]
         fault_limits: media::LIMITS,
+        #[cfg(feature = "test-support")]
+        good_limits: media::LIMITS,
         found: Vec::new(),
+        standing_back: None,
         #[cfg(feature = "test-support")]
         virtual_displays: None,
+        #[cfg(feature = "test-support")]
+        virtual_menu_bar: None,
     };
     HOST.with(|h| *h.borrow_mut() = Some(Host::new(platform)));
     // SAFETY: a plain function with no user data; it only queues work on the main thread.
@@ -713,29 +867,121 @@ fn virtual_displays(list: &str) -> Option<Vec<Display>> {
         .collect()
 }
 
-/// Test support: `OPEN_MS,FRAME_MS`, the limits on a picture's open and frames.
+/// Test support: a `--virtual-displays` list with a `*` after one display's size (`V2:1280x720*`)
+/// names that display as the one with the menu bar (as `--menu-bar-display` does): the list
+/// without the mark, and the display marked.
+#[cfg(feature = "test-support")]
+fn menu_bar_marked(list: &str) -> (String, Option<String>) {
+    let mut marked = None;
+    let items: Vec<&str> = list
+        .split(',')
+        .map(|item| match item.strip_suffix('*') {
+            Some(plain) => {
+                marked = plain.split_once(':').map(|(id, _)| id.to_owned());
+                plain
+            }
+            None => item,
+        })
+        .collect();
+    (items.join(","), marked)
+}
+
+/// Test support: `OPEN_MS,FRAME_MS`, the limits on a picture's open and frames, each at most
+/// an hour (so a deadline counted from now never overflows).
 #[cfg(feature = "test-support")]
 fn media_limits(text: &str) -> Option<media::Limits> {
+    const MOST_MS: u64 = 3_600_000;
+    let ms = |t: &str| t.parse::<u64>().ok().filter(|ms| *ms <= MOST_MS);
     let (open, frame) = text.split_once(',')?;
     Some(media::Limits {
-        open: std::time::Duration::from_millis(open.parse().ok()?),
-        frame: std::time::Duration::from_millis(frame.parse().ok()?),
+        open: std::time::Duration::from_millis(ms(open)?),
+        frame: std::time::Duration::from_millis(ms(frame)?),
     })
+}
+
+/// Test support: what follows `--virtual-displays LIST`, in any order, each at most once.
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+struct Offscreen {
+    /// `--media-limits OPEN_MS,FRAME_MS`: the limits on a file a fault switch names.
+    fault_limits: media::Limits,
+    /// `--good-media-limits OPEN_MS,FRAME_MS`: the limits on every other file.
+    good_limits: media::Limits,
+    /// `--media-clock-by-hand`: the limits run on a media clock only the test moves.
+    hand_clock: bool,
+    /// `--menu-bar-display ID`: the virtual display that stands for the one with the menu bar.
+    menu_bar: Option<String>,
+    /// `--engine-silence-ms MS`: how long the engine may be silent (shipped `ENGINE_SILENCE`).
+    engine_silence: Option<std::time::Duration>,
+}
+
+/// Test support: the offscreen options, or `None` for anything unknown, malformed or repeated.
+/// Without an option its shipped value stays.
+#[cfg(feature = "test-support")]
+fn offscreen_options(mut args: &[String]) -> Option<Offscreen> {
+    let (mut fault, mut good, mut hand_clock) = (None, None, false);
+    let (mut menu_bar, mut engine_silence) = (None, None);
+    loop {
+        args = match args {
+            [] => {
+                return Some(Offscreen {
+                    fault_limits: fault.unwrap_or(media::LIMITS),
+                    good_limits: good.unwrap_or(media::LIMITS),
+                    hand_clock,
+                    menu_bar,
+                    engine_silence,
+                });
+            }
+            [flag, value, rest @ ..] if flag == "--menu-bar-display" && menu_bar.is_none() => {
+                menu_bar = Some(value.clone());
+                rest
+            }
+            [flag, value, rest @ ..]
+                if flag == "--engine-silence-ms" && engine_silence.is_none() =>
+            {
+                let ms: u64 = value
+                    .parse()
+                    .ok()
+                    .filter(|ms| (1..=3_600_000).contains(ms))?;
+                engine_silence = Some(std::time::Duration::from_millis(ms));
+                rest
+            }
+            [flag, value, rest @ ..] if flag == "--media-limits" && fault.is_none() => {
+                fault = Some(media_limits(value)?);
+                rest
+            }
+            [flag, value, rest @ ..] if flag == "--good-media-limits" && good.is_none() => {
+                good = Some(media_limits(value)?);
+                rest
+            }
+            [flag, rest @ ..] if flag == "--media-clock-by-hand" && !hand_clock => {
+                hand_clock = true;
+                rest
+            }
+            _ => return None,
+        };
+    }
 }
 
 /// Test support: the host on the main thread with no windows, its stages drawn offscreen for
 /// probes. A `hang` stops answering but still ends with the engine's pipe.
 #[cfg(feature = "test-support")]
-fn offscreen(displays: Vec<Display>, limits: media::Limits) -> ExitCode {
+fn offscreen(displays: Vec<Display>, options: Offscreen) -> ExitCode {
     let mut host = Host::new(Mac {
         gpu: Gpu::new(),
         windows: None,
         media: HashMap::new(),
         failed: Vec::new(),
-        fault_limits: limits,
+        fault_limits: options.fault_limits,
+        good_limits: options.good_limits,
         found: Vec::new(),
+        standing_back: None,
         virtual_displays: Some(displays),
+        virtual_menu_bar: options.menu_bar,
     });
+    if let Some(limit) = options.engine_silence {
+        host.set_engine_silence(limit);
+    }
     crate::host::serve(
         std::io::BufReader::new(std::io::stdin()),
         &mut std::io::stdout().lock(),
@@ -749,12 +995,85 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_virtual_display_marked_with_a_star_has_the_menu_bar() {
+        assert_eq!(
+            menu_bar_marked("V1:1920x1080,V2:1280x720*"),
+            ("V1:1920x1080,V2:1280x720".to_owned(), Some("V2".to_owned()))
+        );
+        assert_eq!(menu_bar_marked("V1:64x36"), ("V1:64x36".to_owned(), None));
+    }
+
+    #[test]
     fn virtual_displays_are_parsed_or_refused() {
         let d = virtual_displays("A:1920x1080,B:640x480").unwrap();
         assert_eq!(d.len(), 2);
         assert_eq!((d[1].id.as_str(), d[1].width, d[1].height), ("B", 640, 480));
         for bad in ["", "A", "A:1920", "A:x1080", "A:1920x"] {
             assert!(virtual_displays(bad).is_none(), "{bad}");
+        }
+    }
+
+    /// A file a fault switch names gets the fault limits, every other file the good ones.
+    #[test]
+    fn fault_files_and_good_files_get_their_own_limits() {
+        let ms = |ms| std::time::Duration::from_millis(ms);
+        let mac = Mac {
+            gpu: Err("no GPU needed".into()),
+            windows: None,
+            media: HashMap::new(),
+            failed: Vec::new(),
+            fault_limits: media::Limits {
+                open: ms(1),
+                frame: ms(2),
+            },
+            good_limits: media::Limits {
+                open: ms(3),
+                frame: ms(4),
+            },
+            found: Vec::new(),
+            standing_back: None,
+            virtual_displays: None,
+            virtual_menu_bar: None,
+        };
+        let fault = mac.limits_of("/shows/openlab-test-hang-open.mov");
+        assert_eq!((fault.open, fault.frame), (ms(1), ms(2)));
+        let good = mac.limits_of("/shows/clip.mov");
+        assert_eq!((good.open, good.frame), (ms(3), ms(4)));
+    }
+
+    fn options(args: &[&str]) -> Option<Offscreen> {
+        offscreen_options(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn offscreen_options_are_parsed_in_any_order_or_refused() {
+        let none = options(&[]).unwrap();
+        assert_eq!(none.fault_limits.open, media::LIMITS.open);
+        assert_eq!(none.good_limits.frame, media::LIMITS.frame);
+        assert!(!none.hand_clock);
+        let all = options(&[
+            "--good-media-limits",
+            "60000,30000",
+            "--media-clock-by-hand",
+            "--media-limits",
+            "400,500",
+        ])
+        .unwrap();
+        assert_eq!(all.good_limits.open.as_millis(), 60_000);
+        assert_eq!(all.good_limits.frame.as_millis(), 30_000);
+        assert_eq!(all.fault_limits.open.as_millis(), 400);
+        assert_eq!(all.fault_limits.frame.as_millis(), 500);
+        assert!(all.hand_clock);
+        for bad in [
+            &["--media-limits"][..],
+            &["--media-limits", "400"],
+            &["--good-media-limits", "x,1"],
+            &["--good-media-limits", "3600001,1"],
+            &["--media-limits", "1,1", "--media-limits", "2,2"],
+            &["--media-clock-by-hand", "--media-clock-by-hand"],
+            &["--other"],
+        ] {
+            assert!(options(bad).is_none(), "{bad:?}");
         }
     }
 }

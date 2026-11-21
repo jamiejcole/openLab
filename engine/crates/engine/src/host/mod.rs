@@ -470,6 +470,20 @@ fn run_with(
     config.show_log = show_log;
     config.status = Some(StatusConfig::default());
     config.push_log = true;
+    match crate::control::wall_clock::LocalZone::system() {
+        Ok(zone) => config.local_zone = zone,
+        Err(e) => {
+            // Never UTC in its place: a trigger would fire hours off its time. With no zone no
+            // trigger fires, and a workspace with one on raises a notice.
+            config.local_zone = crate::control::wall_clock::LocalZone::unknown();
+            let _ = inbox_tx.send(Inbox::Log {
+                level: LogLevel::Error,
+                message: format!(
+                    "time-of-day triggers are off: the time zone thread did not start: {e}"
+                ),
+            });
+        }
+    }
     match stage_host_program() {
         Some(program) => config.stage_host = Some(crate::stage::StageHostConfig::new(program)),
         None => {
@@ -487,6 +501,11 @@ fn run_with(
     if let Some(vd) = virtual_device {
         say(&format!("audio: the virtual device ({:?})", vd.mode()));
         config.clock = vd.epoch_clock();
+        if vd.mode() == VirtualMode::Stepped {
+            // Stepped time starts at a known UTC instant; its local time is that, whatever
+            // zone the machine running the tests is in.
+            config.local_zone = crate::control::wall_clock::LocalZone::fixed(0);
+        }
         config.seed = VIRTUAL_SEED;
         if vd.mode() == VirtualMode::Stepped {
             config.cpu_probe = no_cpu;
@@ -533,12 +552,14 @@ fn run_with(
         Relaunch::new(action)
     });
     let (stopping, stopping_rx) = Stopping::new();
-    // On the virtual device the OSC listeners stay off: test engines run side by side, and
-    // whichever got port 53000 first would log differently from the others.
+    // On the virtual device the OSC listeners stay off unless the machine settings name a port (a
+    // test of the OSC page does): test engines run side by side, and whichever got port 53000
+    // first would log differently from the others. Then it listens on the loopback only.
     #[cfg(feature = "test-support")]
-    let osc = config.virtual_device.is_none().then(OscConfig::default);
+    let osc = (config.virtual_device.is_none() || config.machine.osc_port.is_some())
+        .then(|| osc_config(&config));
     #[cfg(not(feature = "test-support"))]
-    let osc = Some(OscConfig::default());
+    let osc = Some(osc_config(&config));
     let net_config = ServerConfig {
         osc,
         relaunch,
@@ -546,6 +567,7 @@ fn run_with(
         ..ServerConfig::default()
     };
     let server = WsServer::start(inbox_tx.clone(), outbound, net_config)?;
+    config.osc = server.osc_server();
     let control = Control::empty(
         ctl,
         Backend::Device(Box::new(device)),
@@ -717,6 +739,19 @@ fn open_outcome(path: &str, outcome: &Outcome) -> String {
 /// A line on stderr, for whoever runs the engine by hand.
 fn say(text: &str) {
     let _ = writeln!(std::io::stderr().lock(), "openlab-engine: {text}");
+}
+
+/// OSC listens on the port this machine chose on the OSC settings page, else 53000.
+fn osc_config(config: &ControlConfig) -> OscConfig {
+    let mut osc = OscConfig::default();
+    if let Some(port) = config.machine.osc_port {
+        osc.port = port;
+    }
+    #[cfg(feature = "test-support")]
+    if config.virtual_device.is_some() {
+        osc.bind = std::net::Ipv4Addr::LOCALHOST.into();
+    }
+    osc
 }
 
 #[cfg(test)]

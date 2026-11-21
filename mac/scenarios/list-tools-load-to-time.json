@@ -1,0 +1,21 @@
+{
+  "about": "The Load to Time bar: Tools > Load to Time cycles the bar open in the cue-type row's place, the cursor into its time field, then closed. A time typed loads the standing-by cue (its row shows the point it stands at), a negative time counts back from the end, and the bar works in Show Mode too.",
+  "show": "Demo",
+  "media": {"media/a.wav": 8, "media/d.wav": 6, "media/r.wav": 6, "media/o.wav": 6},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"shot": "toolbar-before"},
+    {"tool": "load_to_time"},
+    {"shot": "bar-open"},
+    {"tool": "load_to_time"},
+    {"type": "load-time-field", "text": "3.5"},
+    {"advance": 0.5},
+    {"shot": "loaded-to-3-5"},
+    {"type": "load-time-field", "text": "-2"},
+    {"advance": 0.5},
+    {"shot": "loaded-2-before-the-end"},
+    {"tool": "load_to_time"},
+    {"shot": "bar-closed"}
+  ]
+}

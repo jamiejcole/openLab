@@ -4,10 +4,13 @@ Problems are found before a cue is triggered (NFR-07), so the operator sees them
 
 ## Problems (`CueProblem`, in this order)
 - `no_target`, `target_missing`, `target_self`: targeting cues (Fade, Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm). Model.
-- `target_wrong_kind`: Fade needs Audio or Group; Devamp needs Audio or a playlist group. Same rule as load-time validation.
+- `target_wrong_kind`: Fade needs Audio, Video or Group; Devamp needs Audio or a playlist group; Target needs a cue that acts on a cue, not a Fade. Same rule as load-time validation.
+- Target cues: `no_new_target`, `new_target_missing`, then from `retarget_problem` (validate.rs) `new_target_wrong_kind` (the target cannot act on it, or it is the target) or `new_target_unnumbered`; judged against the target only while it is there and of a kind it can retarget.
 - `nothing_to_fade`: Fade with no level set (`fade-levels.md`).
 - `no_media`: Audio with no file. `media_missing`, `media_unsupported`: from `Input::MediaStatus`.
 - `slices_unplayable { reason }`: from `Input::SliceProblems` (trims, markers or play counts cannot be played with the probed file: a looping slice under 50 ms, a start trim past the end). Not shown while the cue has no file or a media problem.
+- `nothing_plays`: from `Input::SliceProblems` too (`SliceProblem::NothingPlays`): every slice inside the trims is skipped, so no part of the file plays (QLab 5 manual pp. 184-185). Shown and cleared as `slices_unplayable` is; a still Video cue (which ignores its time and loops) never has it.
+- `no_patch`: a Video cue whose file has sound (`Input::MediaSound`) with its patch "none"; its `patch_missing` and `device_unavailable` likewise only while its file has sound.
 - `patch_missing`: model. `device_unavailable { patch, resolution }`: `Input::PatchStatus` with any resolution but `mapped`.
 - `network_patch_missing`, `network_host_invalid`, `network_message_invalid`: Network cues, from the model via `check_endpoint` / `check_message` (limits: skill `osc`).
 - `started_broken`: shown alone while a cue triggered with problems, fixed since, still has that run pending.
@@ -19,8 +22,9 @@ Problems are found before a cue is triggered (NFR-07), so the operator sees them
 
 ## Inputs
 - `MediaStatus { media, status }`: `available`, `missing`, `unsupported { reason }`, `unknown` (forgets the report: assumed playable). Keyed by `MediaRef` as stored, so every Audio cue on a reference shares it. `PatchStatus { patch, resolution }` uses `resolve_patch`'s `PatchResolution`. `Availability` carries many of both in one call.
-- `SliceProblems { cues: [(cue, reason?)] }`: the binary planned the slices against the probe (core cannot plan audio); `reason` set = unplayable, absent = playable or no longer planned.
+- `SliceProblems { cues: [(cue, problem?)] }`: the binary planned the slices against the probe (core cannot plan audio); a `SliceProblem` (`Unplayable { reason }` or `NothingPlays`) = cannot play, absent = playable or no longer planned.
 - A slice report is kept with the cue's plan inputs at that moment (file, trims, markers, play counts) and counts only while the cue still has them: an edit of any makes the slices unknown (assumed playable) until the binary reports the new plan, so a GO right after a fix is never refused for the old report.
+- A status recomputes only the cues on it, and a patch's only when what they show can change: a patch reported `mapped` (to any device) after being unreported or `mapped` recomputes none, unless a cue its lost device broke can clear (then the cues on it are, so that cue clears). A 2,000-cue doc opening reports its patches once; recomputing every cue then took a third of its install.
 - Nothing reported = no problem: the engine cannot know a file is missing until told. When to send each: skill `engine-control`. A binary playing an unmapped patch on a default device sends the `mapped` resolution it uses.
 
 ## State, triggering, pre-show
@@ -34,7 +38,8 @@ Problems are found before a cue is triggered (NFR-07), so the operator sees them
 ## Model-change contract (core side)
 - The model-derived part (targets, patches, media references, indexes from reference and patch to cues) is refreshed only on the first call after `model_changed()` or `model_changed_cues(&footprint)`, so a show with thousands of cues pays only what an edit touched. The binary calls one after every workspace change (command, undo, redo, relink, applied `SetArmed`, newly opened workspace) before the next `handle` (mechanics: skill `engine-control`).
 - `model_changed()` rebuilds everything. `model_changed_cues` recomputes the footprint's cues, cues the edit added (group descendants included) and every cue whose problems depend on one of them.
-- Dependency rule: a cue's problems come from its own content, the existence and kind of its target (`can_target` reads the kind and a group's mode) and the patch and network-patch id sets. So a touched, added or removed cue refreshes the cues that target it (reverse index `by_target`); group warnings are recounted for groups a cue was added to, removed from or moved between, and around any cue that started or stopped showing problems.
+- Dependency rule: a cue's problems come from its own content, the existence and kind of its target (`can_target` reads the kind and a group's mode), a Target cue's new target (existence, kind, number) and the patch and network-patch id sets. So a touched, added or removed cue refreshes the cues that target it (reverse index `by_target`); group warnings are recounted for groups a cue was added to, removed from or moved between, and around any cue that started or stopped showing problems.
+- A Target cue names two cues (its target and its new target, `Refs`); both are in `by_target`, so an edit of either refreshes it.
 - If the engine cannot follow from the footprint (patch or list id set differs, duplicate cue id, a cue the index cannot place) it rebuilds everything. A footprint that misses a changed cue breaks the contract like a missed signal.
 - `CueIndex` records each cue's container and order, followed from the footprint and checked step by step so a stale record never yields a wrong cue. An added subtree is new as a whole: a cue in it that the index already had (an id removed and added again in one edit, as a transaction or its undo does) is reported gone and fresh, with all its old and new descendants.
 - When anything was added, `reconcile` walks every added, removed or moved cue as an added top, because a cue moved out of an added subtree later in the same transaction no longer sits under the added top yet carries new content. The media catalog's `sync_cues` follows the same rule.

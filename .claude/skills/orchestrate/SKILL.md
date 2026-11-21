@@ -28,8 +28,10 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 - `gh pr list` and `gh run list --branch main --limit 3`. A red `main` (or an open `ci-red` issue) is the top priority.
 
 ## 1. Pick work
+- Each day the owner gets a build of the integration branch (`make mac`, `make verify-bundle`, `make dmg`, sent with `SendUserFile`); what they report from using it comes first.
+- Before pausing for a usage window, schedule a wake-up for its reset time.
 - A feature issue without acceptance flows gets them first (CLAUDE.md "Tests"): a separate `general-purpose` agent (never the batch's implementer) writes them from `~/qlab-ref` behaviour pages (not only the layout map), cites pages, and adds them as the issue's Checklist. Its flows name the states a user meets along the way (CLAUDE.md "Tests"), since those are where drawing bugs hide.
-- First count open `low` + `severity:*` issues (`gh issue list --state open --limit 1000 --label low --json number --jq length`, same for each `severity:*` label). Above 30, the batch is only those issues (CLAUDE.md "Findings policy").
+- Until 0.1.0 is released the order is: open `severity:high` issues, faults the owner reports from the daily build, then open branches (CLAUDE.md "Work and git": feature freeze). Open `low` and `severity:medium` issues wait.
 - Pick from the current milestone's open task issues, skipping issues blocked by an open issue (`gh api repos/jamiejcole/openLab/issues/N/dependencies/blocked_by`). Prefer finishing a milestone over starting several, and show-safety issues first. Model from the `model:*` label, size from `size:*`.
 - Batch 1–4 closely related issues per implementer (same files, same concepts), at most two for mac work. Split unrelated areas into separate implementers. An issue's text may say what to batch it with.
 - Every implementer works in its own worktree (`isolation: "worktree"`) on a task branch, never on `main`. Parallel implementers only when they touch disjoint files (e.g. `engine/` vs `mac/`; two `mac/` tasks rarely qualify: `AppController`, `WorkspaceStore` and the window controllers are shared).
@@ -62,16 +64,16 @@ Never paste large file contents into briefs — point at paths. Agent hand-back 
 ## 4. Adversarial review
 - Spawn a fresh `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, the shot paths from the implementer's report (for a mac drawing change), and any area you're suspicious of. Every PR gets one (CLAUDE.md "Review").
 - For a change to what the mac app draws, spawn a `subagent_type: "ui-qa"` at the same time with: issue numbers and the worktree path. Never pass it the diff or the implementer's report beyond its scenario paths. Its defects go to the implementer with the reviewer's findings; check a defect by Reading its shot. On a round-2 re-review it re-runs only its failing scenarios.
-- Re-run each High and Medium's command or test before sending it on; a finding that doesn't reproduce goes back to the reviewer or to a second reviewer, not to the implementer.
+- Re-run each High's command or test before sending it on; a finding that doesn't reproduce goes back to the reviewer or to a second reviewer, not to the implementer.
 - Triage per CLAUDE.md "Findings policy". Niche QLab parity → the `v0.0.3` milestone.
-- Send findings to the **same implementer** via `SendMessage` (it keeps its context), then re-review the fix commits, within the limit in CLAUDE.md "Review". A reviewer-implementer disagreement still unresolved after that goes to the user.
+- A fix of a few lines the orchestrator makes itself, with its test; a larger one goes to a fresh implementer whose brief names the files, the finding and the test to add (a resumed agent re-reads its whole history, which costs more than a fresh brief). Then the reviewer checks the fix commits, within the limit in CLAUDE.md "Review". A reviewer-implementer disagreement still unresolved after that goes to the user.
 
 ## 5. Land it (PR into `main`)
 Review traffic stays local (implementer report files, reviewer replies, `SendMessage`); GitHub is only the merge gate.
 - Branch named after the tasks (e.g. `m5-2-engine-lifecycle`). Push once: `git push origin <worktree-branch>:<task-branch>`.
 - `gh pr create --base main` with the body from `.github/pull_request_template.md`: `Closes #N` for each issue, task IDs + one line each, requirement IDs, the `PREPUSH PASS` line, the review summary and docs-claims lines of the template, QLab rows added. No full review text.
 - Check CI on the PR at each check-in until it finishes (`gh pr checks N`); fetch job logs only if red (`gh run view <id> --log-failed`). If GitHub reports a conflict, merge `main` into the branch (merge commit, never rebase a pushed branch), re-run `make prepush`, push.
-- Merge only when: CI green, no open High or Medium that blocks under CLAUDE.md "Review" (or the user's downgrade is quoted in the PR), Lows fixed or dropped with a line in the PR. `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`.
+- Merge only when: CI green, `make test-mac-local-only` passed on this Mac for the PR that lands a milestone (CLAUDE.md "Tests"), no open High, Mediums and Lows fixed or dropped with a line in the PR (CLAUDE.md "Findings policy"). `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`.
 - Afterwards: `git fetch origin main`, fast-forward the local `main`, remove the worktree (and its `engine/target`).
 - Orchestrator-only PRs that touch `CLAUDE.md`, `.claude/`, `.github/`, `Makefile`, `scripts/` or docs claims get a `pr-reviewer` pass whose brief says: check for contradictions with the other instruction files and for claims that don't match the repo. Land them only while no agent is running, so no agent works under old rules. Small handoff-note commits may ride along in the next batch's PR.
 
@@ -94,10 +96,10 @@ Review traffic stays local (implementer report files, reviewer replies, `SendMes
 - **Escalate instead of deciding** when: architecture or scope changes, a new non-trivial dependency, anything needing the user's machine/accounts/security settings, a reviewer-implementer deadlock, or a requirement looks wrong.
 
 ## 8. Milestone end
-1. Cleanup batch: every open `low` / `severity:*` issue in the milestone is fixed or re-milestoned with a reason. Audits below file only Highs and Mediums.
+1. Cleanup batch: every open `low` / `severity:*` issue in the milestone is fixed or re-milestoned with a reason. Audits below file only Highs.
 2. Flow audit: run the core-flows set against the real engine, and have a `ui-qa` agent use the app through the milestone's flows (every scenario in `mac/scenarios/`, plus its own) and compare with QLab 5. `.claude/rehearsal-notes.md` "Works" lists only flows that passed.
-3. Whole-repo audit: 4 parallel reviewers (Opus: core+audio, engine service, app; Sonnet: CI/docs/instructions), each reading its area's files in full (not a diff) against CLAUDE.md. A second agent verifies each High/Medium before it is filed.
-4. Update the policy-health line in `.claude/skills/orchestrate/state.md`: open `low` + `severity:*` count, `low` issues closed, Mediums fixed in the last reviews, claims the repo did not back.
+3. Whole-repo audit: 4 parallel reviewers (Opus: core+audio, engine service, app; Sonnet: CI/docs/instructions), each reading its area's files in full (not a diff) against CLAUDE.md. A second agent verifies each High before it is filed.
+4. Update the policy-health line in `.claude/skills/orchestrate/state.md`: open `low` + `severity:*` count, `low` issues closed, claims the repo did not back.
 5. Then the user check-in (section 7).
 
 ## Standing decisions

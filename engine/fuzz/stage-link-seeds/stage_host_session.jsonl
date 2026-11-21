@@ -10,3 +10,4 @@
 {"type":"display_probed","display":"V1","frame":7,"colours":[[0,0,0,255]]}
 {"type":"picture_opened","picture":3}
 {"type":"picture_failed","picture":3,"reason":"the movie could not be read"}
+{"type":"monitor_closed","stage":"00000000-0000-0000-0000-000000000001"}

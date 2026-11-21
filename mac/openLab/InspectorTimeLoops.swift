@@ -10,6 +10,12 @@ extension InspectorViewController {
         timeLoops.onChange = { [weak self] change in self?.sendTimeLoops(change) }
         timeLoops.onHold = { [weak self] in self?.gestureHold($0) }
         timeLoops.onInvalid = { [weak self] key in self?.showRefusal(loc(key)) }
+        timeLoops.onPreview = { [weak self] in self?.previewClicked() }
+        timeLoops.onReset = { [weak self] in
+            guard let self, let id = cue?.id, store.previewing.contains(id) else { return }
+            onTransport?(.stopPreview(cue: id))
+        }
+        timeLoops.onSeek = { [weak self] cue, position in self?.seek(cue, to: position) }
         timeLoops.loadPeaks = { [weak self] cue, start, end, buckets in
             guard let self else { return .failure(.notConnected) }
             return await self.store.waveform(cue: cue, start: start, end: end, buckets: buckets)
@@ -30,15 +36,27 @@ extension InspectorViewController {
         timeLoopsItem = item
     }
 
-    /// Fills the tab (third after Basics and Triggers, see `InspectorTabs`) for an Audio cue.
+    /// Fills the tab (see `InspectorTabs`) for an Audio or Video cue. A movie's has the hold-at-end
+    /// box and the waveform of the audio track it plays; one with no sound has its ruler alone.
     func renderTimeLoops(_ cue: Cue) {
         guard timeLoopsItem != nil else { return }
-        let audio = cue.kindType == "audio"
-        guard audio else {
+        guard Self.timeLoopsKinds.contains(cue.kindType) else {
             timeLoops.isActive = false
             return
         }
-        timeLoops.show(cue: cue.id, kind: cue.raw["kind"] ?? .null, duration: store.mediaDurations[cue.id]?.file)
+        let missing = (store.problems[cue.id] ?? []).contains {
+            $0.type == "media_missing" || $0.type == "media_unsupported"
+        }
+        let probed = store.mediaDurations[cue.id]
+        let media: TimeLoopsPanel.Media
+        switch (cue.kindType, probed?.picture?.type) {
+        case ("audio", _): media = .sound
+        case (_, "still"): media = .still
+        default: media = .movie(track: probed?.hasSound == true ? probed?.audioTrack ?? 0 : nil)
+        }
+        timeLoops.show(
+            cue: cue.id, kind: cue.raw["kind"] ?? .null, duration: store.mediaDurations[cue.id]?.file,
+            missing: missing, media: media)
         updateTimeLoopsActive()
         updateTimeLoopsProgress()
     }
@@ -51,19 +69,44 @@ extension InspectorViewController {
 
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         endGestures()
+        tabBar.select(tabViewItem?.identifier as? String)
         updateTimeLoopsActive()
     }
 
-    /// The playhead line follows the selected cue's progress.
+    /// The kinds with a time and loops tab.
+    static let timeLoopsKinds: Set<String> = ["audio", "video"]
+
+    /// The playhead line follows the selected cue's progress (inside a loop, the loop's pass: the
+    /// engine sends where in the file the cue is).
     func updateTimeLoopsProgress() {
-        guard let cue, cue.kindType == "audio" else { return }
-        timeLoops.showProgress(position: store.progress[cue.id]?.position)
+        guard let cue, Self.timeLoopsKinds.contains(cue.kindType) else { return }
+        // Playing, paused or previewing: where it is; loaded: where it stands.
+        timeLoops.showProgress(
+            position: store.shownProgress(cue.id)?.position, loadedAt: store.loadedAt[cue.id]?.position)
+    }
+
+    /// A click in the timeline: the cue (Audio or Video) plays on (or is loaded, or its pre-wait ends) from
+    /// `position` seconds into its file; the engine keeps it inside the trims. A broken cue gets
+    /// only the line: nothing would load or sound. A refusal goes to the show log, as a transport
+    /// key's does.
+    func seek(_ id: ModelID, to position: Double) {
+        // A still has no timeline to click in: the panel sends nothing for it.
+        guard !isLocked, position.isFinite, position >= 0,
+            let kind = store.model?.cue(id)?.kindType, Self.timeLoopsKinds.contains(kind)
+        else { return }
+        let problems = store.problems[id] ?? []
+        guard (store.cueStates[id]?.state ?? (problems.isEmpty ? .idle : .broken)) != .broken else { return }
+        Task { [store] in
+            if case .failure(let e) = await store.transport(.seek(cue: id, position: position)) {
+                _ = store.receive(.log(.warn, String(format: loc("error.transportFailed"), EngineSession.describe(e))))
+            }
+        }
     }
 
     /// Sends `change` made to the cue as the model has it plus any edit not yet answered
     /// (`cueForEdit`), then shows that at once, so the next edit and the waveform build on it.
     func sendTimeLoops(_ change: TimeLoopsPanel.Change) {
         sendKind({ TimeLoopsPanel.apply(change, to: $0) }, key: "timeLoops")
-        if let cue = cueForEdit, cue.kindType == "audio" { renderTimeLoops(cue) }
+        if let cue = cueForEdit, Self.timeLoopsKinds.contains(cue.kindType) { renderTimeLoops(cue) }
     }
 }

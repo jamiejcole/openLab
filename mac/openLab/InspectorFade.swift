@@ -176,7 +176,7 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
     func show(kind: JSONValue) {
         self.kind = kind
         if durationField.currentEditor() == nil {
-            durationField.stringValue = CueTime.format(kind["duration"]?.doubleValue ?? 0)
+            durationField.stringValue = CueTime.precise(kind["duration"]?.doubleValue ?? 0)
         }
         curvePopup.selectItem(at: Self.curves.firstIndex(of: kind["curve"]?.stringValue ?? "") ?? 0)
         for v in [risingView, fallingView] {
@@ -198,7 +198,7 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard !isLocked else { return }
-        let shown = CueTime.format(kind["duration"]?.doubleValue ?? 0)
+        let shown = CueTime.precise(kind["duration"]?.doubleValue ?? 0)
         guard durationField.stringValue != shown else { return }
         guard let seconds = CueTime.parse(durationField.stringValue) else {
             durationField.stringValue = shown
@@ -206,7 +206,7 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
             return
         }
         onChange?(.duration(seconds))
-        durationField.stringValue = CueTime.format(seconds)  // what will be stored, until the model answers
+        durationField.stringValue = CueTime.precise(seconds)  // what will be stored, until the model answers
     }
 
     @objc private func curveChanged() {

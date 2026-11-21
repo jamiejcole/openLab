@@ -1,0 +1,12 @@
+{
+  "type": "warnings",
+  "warnings": [
+    {
+      "type": "notice",
+      "code": "audio_dropouts",
+      "message": "audio device \"Scarlett 2i2\" dropped out 3 time(s): gaps in its sound",
+      "device": "Scarlett 2i2",
+      "count": 3
+    }
+  ]
+}

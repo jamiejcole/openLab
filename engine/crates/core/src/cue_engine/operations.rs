@@ -3,7 +3,7 @@
 //! The per-cue operations: start, stop, pause, resume, load and reset, and the chain budget a
 //! start spends.
 
-use crate::cue::{CueKind, FadeSpec};
+use crate::cue::{Cue, CueKind, FadeSpec, SecondTrigger};
 use crate::model::{CueId, CueListId};
 
 use super::run::{Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
@@ -46,43 +46,17 @@ impl CueEngine {
         if !self.clear_lost_to_start(cue, at, cx) {
             return cx.warn(EngineWarning::CueBroken { cue });
         }
-        // A cue fading out in a panic is not active for the second-trigger rule: the trigger
-        // ends that fade at once and starts the cue afresh.
         let panicked = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.panicked);
         // Triggers that start nothing cost no budget: the budget is shared by every call at one
         // `now`, so ignored triggers (a stuck controller key) must not use it up for a GO. A
         // cycle still ends, since each of its laps creates or resumes a runtime, which is charged
         // below (a second trigger that restarts or moves a playlist on is charged for its
         // start), and a trigger back to an active cue starts nothing else.
-        if !panicked {
-            match self.slots.get(&cue) {
-                Some(Slot::Broken(_) | Slot::Lost(_)) => {
-                    return cx.warn(EngineWarning::CueBroken { cue });
-                }
-                // A broken run keeps the rule as it was: a paused one resumes.
-                Some(Slot::Active(run)) if run.is_broken() => {
-                    if run.paused_at.is_none() {
-                        return cx.warn(EngineWarning::CueBroken { cue });
-                    }
-                }
-                // A paused cue resumes whatever its option (QLab check S1): the option
-                // applies only to a cue that is playing (or waiting).
-                Some(Slot::Active(run)) if run.paused_at.is_none() => {
-                    let option = model.second_trigger.effective(&model.kind);
-                    return self.second_trigger(cue, option, at, cx);
-                }
-                Some(Slot::Active(_)) => {}
-                Some(Slot::Loaded(_)) | None => {}
-            }
-        }
-        // A skipped cue (disarmed, "skip if disarmed") is not there (QLab 5, manual p. 128): a
-        // trigger starts nothing and no continue of its own fires. One still running from before
-        // it was disarmed took its second trigger above; one fading out in a panic is let go on
-        // fading, not restarted.
-        if self.is_skipped(model)
-            && !matches!(self.slots.get(&cue), Some(Slot::Active(r)) if !r.panicked)
-        {
-            return;
+        match self.start_path(model) {
+            StartPath::Refused => return cx.warn(EngineWarning::CueBroken { cue }),
+            StartPath::Skipped => return,
+            StartPath::Trigger(option) => return self.second_trigger(cue, option, at, cx),
+            StartPath::Resume | StartPath::Fresh => {}
         }
         if !self.budget_left(cx) {
             return cx.warn(EngineWarning::ChainLimit {
@@ -95,7 +69,7 @@ impl CueEngine {
             self.as_of(at, cx, |e, cx| e.stop_tree(cue, None, cx));
         }
         let before = self.state(cue);
-        let (run, split, voice) = match self.slots.get(&cue) {
+        let (run, split, voice, seek) = match self.slots.get(&cue) {
             Some(Slot::Broken(_) | Slot::Lost(_)) => {
                 return cx.warn(EngineWarning::CueBroken { cue });
             }
@@ -124,10 +98,11 @@ impl CueEngine {
                 } else {
                     Voice::None
                 },
+                loaded.seek,
             ),
             None => {
                 let pre_wait = cx.secs(model.pre_wait, &self.config);
-                (self.new_run(), (pre_wait, 0, pre_wait), Voice::None)
+                (self.new_run(), (pre_wait, 0, pre_wait), Voice::None, None)
             }
         };
         let (pre_wait_left, action_offset, pre_wait_total) = split;
@@ -143,6 +118,7 @@ impl CueEngine {
         self.continued.remove(&cue);
         let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
         new.action_offset = action_offset;
+        new.seek = seek;
         new.pre_wait_total = pre_wait_total;
         new.voice = voice;
         new.started = at;
@@ -161,13 +137,45 @@ impl CueEngine {
         self.release_panicking_parents(cue, at, cx);
     }
 
+    /// What a start of `cue` does with the runtime it has now, before anything changes. The
+    /// playlist's next-child mark goes by it too, so the mark names what a start plays.
+    pub(super) fn start_path(&self, cue: &Cue) -> StartPath {
+        let slot = self.slots.get(&cue.id);
+        match slot {
+            Some(Slot::Lost(_)) if !self.lost_may_clear(cue.id) => return StartPath::Refused,
+            Some(Slot::Broken(_)) => return StartPath::Refused,
+            // A cue fading out in a panic is not active for the second-trigger rule: the trigger
+            // ends that fade at once and starts the cue afresh. A paused cue resumes whatever
+            // its option (QLab check S1): the option applies only to a cue that is playing (or
+            // waiting); a broken run is refused unless paused (its frozen timers then run on).
+            Some(Slot::Active(run)) if !run.panicked && run.paused_at.is_none() => {
+                return if run.is_broken() {
+                    StartPath::Refused
+                } else {
+                    StartPath::Trigger(cue.second_trigger.effective(&cue.kind))
+                };
+            }
+            Some(Slot::Active(run)) if !run.panicked => return StartPath::Resume,
+            _ => {}
+        }
+        // A skipped cue (disarmed, "skip if disarmed") is not there (QLab 5, manual p. 128): a
+        // trigger starts nothing and no continue of its own fires. One still running from before
+        // it was disarmed took its second trigger above; one fading out in a panic is let go on
+        // fading, not restarted.
+        if self.is_skipped(cue) {
+            StartPath::Skipped
+        } else {
+            StartPath::Fresh
+        }
+    }
+
     /// A GO has moved the list's playhead: the cue it now stands on is loaded if it is set to
     /// auto-load (QLab 5, manual p. 128). Measured in QLab 5.6.5: it loads as the GO moves the
     /// playhead onto it, not when the playhead is put there by hand, nor when the cue before it
     /// is started without a GO. Only an idle one, armed and without problems: one already
     /// loaded, running or broken is left as it is, and a disarmed or broken cue would play
-    /// nothing, so loading it would only show a loaded mark that means nothing. A group loads
-    /// as Load does (the children its action starts first).
+    /// nothing, so loading it would only show a loaded mark that means nothing. It loads the cue
+    /// alone (a group: the children its action starts first), not the rest of its sequence.
     pub(super) fn auto_load_at_playhead(&mut self, list: CueListId, cx: &mut Ctx) {
         let ws = cx.ws;
         let Some(next) = self.playhead(list).and_then(|id| ws.find_cue(id)) else {
@@ -180,7 +188,9 @@ impl CueEngine {
         {
             return;
         }
-        self.load_tree(next.id, 0.0, cx);
+        // The cue alone (and a group's first children): auto-load is a head start for the coming GO,
+        // not a load of the sequence (Q576).
+        self.load_tree(next.id, 0.0, false, cx);
     }
 
     /// Forgets that `cue` was started: its row shows its first colour again.
@@ -426,6 +436,7 @@ impl CueEngine {
                 action_offset,
                 pre_wait_total: pre_wait,
                 voice,
+                seek: None,
             }),
         );
         self.report(cue, before, cx.now, cx);
@@ -435,7 +446,7 @@ impl CueEngine {
     /// is back (a group's at once), so the cue starts from its beginning (QLab 5). `false` while
     /// the device is still away: the start is refused as for any cue on a missing device and the
     /// mark stays.
-    fn clear_lost_to_start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) -> bool {
+    pub(super) fn clear_lost_to_start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) -> bool {
         if !matches!(self.slots.get(&cue), Some(Slot::Lost(_))) {
             return true;
         }
@@ -456,4 +467,19 @@ impl CueEngine {
         }
         self.report(cue, before, cx.now, cx);
     }
+}
+
+/// What a start does with a cue's runtime ([`CueEngine::start_path`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StartPath {
+    /// Broken (or on a device still away): refused, its runtime left as it is.
+    Refused,
+    /// Skipped: nothing starts, its runtime left as it is.
+    Skipped,
+    /// Playing or waiting: its second trigger, with this option.
+    Trigger(SecondTrigger),
+    /// Paused: it resumes.
+    Resume,
+    /// A new run (one fading out in a panic is stopped first).
+    Fresh,
 }

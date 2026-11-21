@@ -33,6 +33,18 @@ impl DocCx<'_> {
 
     /// One transport action; `later_panic`: a `panic_cue` after another of the same batch.
     fn transport_one(&mut self, action: TransportAction, now: SampleTime, later_panic: bool) {
+        // A seek names a time in the cue's file; the cue engine counts a Video cue's into its
+        // action, where its plan (trims, slices, loops) first stands there.
+        let action = match action {
+            TransportAction::Seek { cue, position } if self.is_video(cue) => {
+                match self.video_seek_point(cue, position) {
+                    Some(position) => TransportAction::Seek { cue, position },
+                    // A still, or a movie not probed: no point to go to.
+                    None => return,
+                }
+            }
+            action => action,
+        };
         let scope = orphan_scope(&action);
         let panic = matches!(action, TransportAction::Panic);
         self.observe_transport(&action);
@@ -51,6 +63,12 @@ impl DocCx<'_> {
         }
         if let Some(scope) = scope {
             self.silence_orphans(scope, now);
+        }
+        // QLab 5 manual p. 227: a panic takes down the black of every stage that keeps it,
+        // once the pictures on it have faded.
+        if panic {
+            let stages: Vec<_> = self.doc.model.ws().stages.iter().map(|s| s.id).collect();
+            self.eng.release_stages(stages);
         }
     }
 
@@ -172,6 +190,7 @@ pub fn transport_input(action: TransportAction) -> Option<Input> {
         TransportAction::Pause { cue } => Input::Pause { cue },
         TransportAction::Resume { cue } => Input::Resume { cue },
         TransportAction::Load { cue, at } => Input::Load { cue, time: at },
+        TransportAction::Seek { cue, position } => Input::Seek { cue, position },
         TransportAction::Reset { cue } => Input::Reset { cue },
         TransportAction::TriggerReleased { cue } => Input::TriggerReleased { cue },
         TransportAction::Preview { cue } => Input::Preview { cue },

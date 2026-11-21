@@ -29,10 +29,25 @@ final class AppController {
     let launcher = LauncherWindowController()
     /// The Override Controls panel and what feeds it (`AppController+Overrides`).
     let overrides = OutputOverridesPanel()
+    /// VID-12: black on the output displays of keep-black stages while no stage host draws them.
+    let backstop: BlackBackstop
     var statusSubs: [ObjectIdentifier: AnyCancellable] = [:]
 
     // Seams for tests (no modal loops, no panels, no real recents list or key window).
-    var alerts: WorkspaceAlerts = AppKitAlerts()
+    /// The questions the app asks; each stands the stage on the display with the menu bar back
+    /// while it is up (`StandingBackAlerts`).
+    var alerts: WorkspaceAlerts {
+        get { StandingBackAlerts(base: askedBy) }
+        set { askedBy = newValue }
+    }
+    private var askedBy: WorkspaceAlerts = AppKitAlerts()
+    /// The engine watch's clock (a seam: tests move it by hand), its loop, and whether its last ask
+    /// is still unanswered (`AppController+StandBack`).
+    var engineWatchScheduler: Scheduler = SystemScheduler()
+    var engineWatch: Task<Void, Never>?
+    var engineAsked = false
+    /// The last `set_stand_back` sent (`AppController+StandBack`): the next waits for it.
+    var standBackSend: Task<Void, Never>?
     /// `alerts` for errors and notices: with a window in Show Mode they become a log record and a
     /// footer line on that window instead of a modal (NFR-10). Confirmations are not gated.
     var gatedAlerts: WorkspaceAlerts {
@@ -67,7 +82,9 @@ final class AppController {
     var pickOpenURL: @MainActor () -> URL? = AppController.openPanel
     /// The folder to search for missing media (nil: cancelled).
     var pickFolderURL: @MainActor () -> URL? = AppController.folderPanel
-    var pickSaveURL: @MainActor (String) -> URL? = AppController.savePanel
+    /// Where to save a show and whether into a new show folder with its media (nil: cancelled). The
+    /// name suggested, and whether the folder choice starts chosen.
+    var pickSaveURL: @MainActor (String, Bool) -> SaveTarget? = AppController.savePanel
     var noteRecent: @MainActor (URL) -> Void = { NSDocumentController.shared.noteNewRecentDocumentURL($0) }
     var recentURLs: @MainActor () -> [URL] = { NSDocumentController.shared.recentDocumentURLs }
     /// Whether a recent workspace's file is still there (a seam: tests list files that do not exist).
@@ -104,8 +121,12 @@ final class AppController {
     var isModalUp: @MainActor () -> Bool = { NSApp.modalWindow != nil }
     private var resignObserver: Any?
     private var keyUpMonitor: Any?
+    /// Key codes of GO presses (Workspace Settings, General: key up before the next GO) whose
+    /// key-up has not come yet; a GO key down again meanwhile fires nothing. Cleared when the app
+    /// is left, since the release may then go to another app.
+    var goKeysDown: Set<UInt16> = []
 
-    private var subs: [AnyCancellable] = []
+    var subs: [AnyCancellable] = []
     private var keyMonitor: Any?
     /// How many monitors `installKeyMonitor` has registered (tests: exactly one).
     private(set) var keyMonitorInstalls = 0
@@ -127,11 +148,36 @@ final class AppController {
     var launching = false
     /// `applyLaunchBehavior` has run: the engine is up and a show file can be opened at once.
     var launchApplied = false
+    /// The real app is starting: `applyLaunchBehavior` has not finished. Commands that need the engine
+    /// (`afterLaunch`) wait while it is true.
+    var awaitingLaunch = false
+    /// The recents the launcher last listed, kept with `launchDefaults`: the system list drops a
+    /// deleted file, and the launcher keeps it (marked missing) until the operator removes it.
+    var rememberedRecents: [URL] {
+        get { launchDefaults?.stringArray(forKey: "launcher-recents")?.map { URL(fileURLWithPath: $0) } ?? memory }
+        set {
+            memory = newValue
+            launchDefaults?.set(newValue.map(\.path), forKey: "launcher-recents")
+        }
+    }
+    private var memory: [URL] = []
+    /// A bookmark per remembered path, made while its file existed: it still finds the file after
+    /// the file is moved or renamed.
+    var recentBookmarks: [String: Data] {
+        get { (launchDefaults?.dictionary(forKey: "launcher-recent-bookmarks") as? [String: Data]) ?? bookmarkMemory }
+        set {
+            bookmarkMemory = newValue
+            launchDefaults?.set(newValue, forKey: "launcher-recent-bookmarks")
+        }
+    }
+    private var bookmarkMemory: [String: Data] = [:]
+    var launchWaiters: [CheckedContinuation<Void, Never>] = []
     /// Show files asked for before `launchApplied`.
     var filesToOpen: [URL] = []
     /// Files just saved with Save As, by store: the save's reply may overtake the message that gives
     /// the store its new path, and a quit records the open files before that message can arrive.
     var savedAsPaths: [ObjectIdentifier: String] = [:]
+    lazy var aboutWindow = AboutWindowController()
     lazy var preferencesWindow = PreferencesWindowController(
         preferences: launchPreferences, audio: AudioPreferencesModel(client: session.appClient))
 
@@ -145,15 +191,37 @@ final class AppController {
         self.supervisor = supervisor
         self.scheduler = scheduler
         self.timeout = timeout
+        backstop = BlackBackstop(scheduler: scheduler)
+        // A question of the app's up: the stage and the app's black on the display with the menu bar
+        // stand back under the app's windows until it is answered (#708).
+        StandBack.shared.changed = { [weak self] asking in self?.questionsChanged(asking) }
+        backstop.asking = StandBack.shared.isAsking
+        backstop.menuBarCoverChanged = { [weak self] covered in self?.watchEngine(covered) }
+        subs.append(
+            session.$connectionState.removeDuplicates().sink { [weak self] state in
+                if state == .connected { self?.sendStandBack() }
+            })
         // A key released while the app is inactive never reaches the monitor: forget held keys.
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in  // No trigger_released is sent: a cue is never stopped without an observed key release.
-            MainActor.assumeIsolated { self?.heldHotkeys = [:] }
+            MainActor.assumeIsolated {
+                self?.heldHotkeys = [:]
+                self?.goKeysDown.removeAll()
+            }
         }
         launcher.onNew = { [weak self] in Task { await self?.newWorkspace() } }
         launcher.onOpen = { [weak self] in Task { await self?.openWorkspace() } }
-        launcher.onOpenRecent = { [weak self] url in Task { await self?.openWorkspace(url: url) } }
+        launcher.onOpenRecent = { [weak self] url in
+            guard let self else { return }
+            // The file may have gone since the list was drawn: say so, and leave the launcher up.
+            if isMissingRecent(url) {
+                launcher.showMissing(url)
+                return
+            }
+            Task { await self.openWorkspace(url: url) }
+        }
+        launcher.onForgetRecent = { [weak self] url in self?.forgetRecent(url) }
         subs.append(session.storesChanged.sink { [weak self] in self?.sync() })
         // $workspaces publishes before the property changes: use the delivered value.
         subs.append(session.$workspaces.sink { [weak self] in self?.updateTitles($0) })
@@ -191,11 +259,33 @@ final class AppController {
         let keys = frontKeys
         if let command = keys.command(for: chord), canPerform(command) {
             let isRepeat = event.isARepeat
+            // With "key up before the next GO" on, the GO key down again without its release in
+            // between (a stuck or doubled key) is taken and fires nothing.
+            if command == .go, frontController?.store.isOn(.goNeedsKeyUp) == true {
+                if isRepeat || !goKeysDown.insert(event.keyCode).inserted { return nil }
+            }
             performNow(command, isRepeat: isRepeat)
             return nil
         }
         if beginCellEdit(keys.editKey(for: chord), event: event) { return nil }
-        return fireCueHotkeys(chord, event: event) ? nil : event
+        // The Time & Loops waveform's own keys (Shift-I, Shift-O, M) while it has the focus go on to
+        // it, before a cue hotkey on the same key.
+        if frontController?.window?.firstResponder is WaveformView, WaveformView.editKey(for: event) != nil {
+            return event
+        }
+        if fireCueHotkeys(chord, event: event) { return nil }
+        return moveBySequenceKey(chord, event: event) ? nil : event
+    }
+
+    /// `=` and `-` move the playhead to the next and previous sequence (QLab 5's View menu gives
+    /// them these unmodified keys), with the list focused and no text being typed. They are not menu
+    /// key equivalents: the menu bar takes no unmodified key, which a cue hotkey could then never use.
+    private func moveBySequenceKey(_ chord: KeyChord, event: NSEvent) -> Bool {
+        guard chord.mask == 0, chord.key == "=" || chord.key == "-", !event.isARepeat, !isTextEditing(),
+            let list = frontController?.cueList, frontController?.window?.firstResponder === list.outlineView
+        else { return false }
+        list.movePlayheadBySequence(chord.key == "=" ? 1 : -1)
+        return true
     }
 
     /// The front workspace's cue-editing keys (its key map: N, Q, O, T, E, D, W, C and F by default),
@@ -267,6 +357,7 @@ final class AppController {
     /// Key up: the hotkey's `up`, so the engine releases the cues it fired that use
     /// second-trigger-on-release.
     func handleKeyUp(_ event: NSEvent) {
+        goKeysDown.remove(event.keyCode)
         guard let hotkey = heldHotkeys.removeValue(forKey: event.keyCode), let key = hotkey["key"]?.stringValue
         else { return }
         Task { await sendHotkey(key: key, modifiers: Self.modifiers(of: hotkey), up: true) }
@@ -284,7 +375,7 @@ final class AppController {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         if let type = UTType(filenameExtension: "openlab") { panel.allowedContentTypes = [type] }
-        return panel.runModal() == .OK ? panel.url : nil
+        return StandBack.runModal(panel) == .OK ? panel.url : nil
     }
 
     private static func folderPanel() -> URL? {
@@ -294,7 +385,7 @@ final class AppController {
         panel.allowsMultipleSelection = false
         panel.message = loc("relink.panel.message")
         panel.prompt = loc("relink.panel.prompt")
-        return panel.runModal() == .OK ? panel.url : nil
+        return StandBack.runModal(panel) == .OK ? panel.url : nil
     }
 
     /// A workspace name as the Save panel's suggested file name: its first line, trimmed, without
@@ -309,10 +400,15 @@ final class AppController {
         return out
     }
 
-    private static func savePanel(_ name: String) -> URL? {
+    /// The Save panel, with QLab 5's choice under it (manual p. 117): a new show folder holding the
+    /// show and a copy of its media, or the show file only.
+    private static func savePanel(_ name: String, newFolder: Bool) -> SaveTarget? {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = suggestedFileName(name)
         if let type = UTType(filenameExtension: "openlab") { panel.allowedContentTypes = [type] }
-        return panel.runModal() == .OK ? panel.url : nil
+        let choice = SaveTarget.choicePopup(newFolder: newFolder)
+        panel.accessoryView = SaveTarget.accessory(choice)
+        guard StandBack.runModal(panel) == .OK, let url = panel.url else { return nil }
+        return SaveTarget(url: url, newFolder: choice.indexOfSelectedItem == 0)
     }
 }

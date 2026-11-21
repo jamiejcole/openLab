@@ -104,8 +104,12 @@ Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open anoth
 - **Document state.** `document` (`path`, `dirty`, `can_undo`, `can_redo`): dirty is `revision != saved_revision`. Opening an autosave installs it dirty (`saved_revision = revision - 1`).
 - **Autosave pacing.** Each tick, if the workspace is dirty, no autosave is in flight, the revision was not already autosaved, and `autosave_due(dirty_since, last_autosave, now, interval)` says so (`interval` is `autosave_interval`, at least 1 s; `now` is `ControlConfig::clock`, tests inject `ManualClock`), the loop hands a clone to the writer, bound to the show path (or the workspace id before the first save).
   So the first autosave is one interval after the workspace became dirty, later ones one interval after the previous. A failed autosave is logged once per run of failures and retried at the next due time. The writer drops an autosave whose revision a manual save already made durable.
-- **Save As to another folder rebases relative media** so references name the same files. The copy being written is rebased first (`relink_command` on the clone).
+- **Save As to another folder rebases relative media** so references name the same files. The copy being written is rebased first (`relink_command` on the clone), on the writer thread just before it is written (`BeforeWrite`, `prepare_move`), which also builds the catalog's index for the new folder there (`Indexed::prepare`).
+  The control thread only clones the workspace for the save.
   When the write succeeds the live workspace gets the same relinks without an undo step: history is cleared, `revision` rises, the doc's clients get a `snapshot`, the media catalog resets to the new folder (every file probed again) and the workspace is clean unless edited meanwhile.
+  The writer also makes a second clone of the rebased copy for that `snapshot`; it is used only if the model has not been edited since (edit count), else the snapshot clones as usual.
+  If the doc is unchanged since the save began (no `DocModel::edit` since, same folder), the copy as written becomes the workspace (its Show Mode flag kept) and the catalog takes up the prepared index (`MediaCatalog::reset_indexed`).
+  Otherwise (an edit, undo or another save's move came between) the control thread rebases the live workspace from the folder it leaves (whether or not the copy needed it: an edit meanwhile, or an earlier save's move, may hold references the copy did not) and indexes it itself. What either lets go of (old workspace, catalog entries, history) is dropped on the document worker. A failed save drops the prepared work with it and changes nothing.
   An absolute path literally inside the new folder is made relative; one outside it is never touched (stored form: `docs/file-format.md` section 4.3). Relative references of a never-saved workspace have no folder to resolve against and are left as they are.
   For the first Save As of a never-saved show history is kept (every path was absolute; undo restores a spelling that still names its file).
 - **Recent files are the app's** (WS-08): the engine keeps no list, and `load_settings` drops a `recent_files` key.
@@ -119,6 +123,7 @@ Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open anoth
   "settings_version": 1,
   "backup_keep": 20,
   "output_device": "Scarlett 2i2",
+  "osc_port": 53000,
   "buffer_frames": { "Scarlett 18i20": 256 },
   "workspaces": {
     "<workspace-id>": {
@@ -128,16 +133,18 @@ Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open anoth
 }
 ```
 - `channels[i]` is the device channel (0-based) for logical output `i` of the patch.
+- `"system": true` (written only when true) puts the patch on the system output: `{"device": "", "channels": [0, 1], "system": true}`; it plays on whichever device the system's default output is (skill `devices`). An entry with `system` and a device name is dropped with a warning on load and refused by `set_patch_mapping`.
 - `buffer_frames` (AUD-21): frames per callback asked of each device by name, 16 to 1024; a device not listed gets 512. A bad entry is dropped with a warning (`load_settings`), as `set_buffer_frames` refuses it.
 - `load_settings` never fails: unreadable content gives defaults and a warning; invalid entries are dropped with a warning; `backup_keep` is clamped. Workspace and patch ids are normalised to lower-case hyphenated form. Unknown keys are ignored but kept on rewrite (`MachineSettings::extra`).
 - A file that produced warnings is first copied to `settings.json.corrupt` (`.corrupt.1`, ... a few at most) before anything overwrites it.
-- **Auto-map.** A patch with no entry on this machine (new workspace, show from another Mac, patch added later) is mapped to the first N outputs of the primary device, when it has at least N, and the file is rewritten atomically off the control thread. Existing entries are never overwritten. The operator's `set_patch_mapping` also rewrites the file. Default-mapping rules: skill `engine-control`.
+- **Auto-map.** A patch with no entry on this machine (new workspace, show from another Mac, patch added later) is mapped to the first N outputs of the primary device, when it has at least N, and the file is rewritten atomically off the control thread.
+  A new workspace's patches for the other devices are written mapped to their own devices (skill `devices`). Existing entries are never overwritten. The operator's `set_patch_mapping` also rewrites the file. Default-mapping rules: skill `engine-control`.
 - An entry `{"device": "", "channels": []}` means the operator cleared the mapping. It is kept, so the patch stays unmapped and is not auto-mapped.
 - Stage displays (video): `workspaces.<id>.stages.<stage id>` = `{display, name, width, height}`, written by `set_stage_mapping`; no entry means no display on this machine (nothing is auto-mapped). A damaged entry drops only itself. Skill `video`.
 - **An external edit of `settings.json` while the engine runs is overwritten at the next rewrite** (it writes the in-memory copy).
 - If the file could not be read at start (an I/O error, not "missing"), or it produced warnings and its `.corrupt` copy could not be made, the engine keeps default mappings in memory only, warns once and never writes the file (`ControlConfig::machine_writable`). If the settings thread cannot start or has stopped, mappings stay in memory with a warning.
 - At shutdown the engine waits at most `DROP_WAIT` (5 s) for the settings thread's pending write. A write stuck on a hung volume is left to finish on its own, so it never holds up quit or relaunch.
-- `resolve_patch(settings, workspace_id, patch, devices)` gives `Mapped`, `Unmapped` (ask the operator once), `DeviceMissing`, `ChannelsMissing` or `OutputCountMismatch`. The last three leave the patch silent and its cues broken, never a crash.
+- `resolve_patch(settings, workspace_id, patch, devices)` gives `Mapped`, `Unmapped` (ask the operator once), `DeviceMissing`, `ChannelsMissing` or `OutputCountMismatch` (the mapping lists more channels than the patch has outputs; fewer means the later outputs have no device output of their own). The last three leave the patch silent and its cues broken, never a crash.
 - Recent files and open-on-launch (WS-08) are app-side. Per-cue-type defaults are deferred (REQUIREMENTS §21).
 
 ## Media paths (WS-03, NFR-32)

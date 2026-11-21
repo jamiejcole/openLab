@@ -1,0 +1,14 @@
+{
+  "about": "#779: the General settings page's copy-media switch and its note (dark): off as the bundled show holds it, then on; Show Mode locks it; the least settings window.",
+  "show": "Demo",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "general"},
+    {"shot": "general-copy-off"},
+    {"click": "settings-copy-media"},
+    {"advance": 0.1},
+    {"shot": "general-copy-on"},
+    {"resize": [680, 552]},
+    {"shot": "general-least"}
+  ]
+}

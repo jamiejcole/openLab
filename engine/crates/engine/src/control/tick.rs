@@ -28,11 +28,19 @@ impl Control {
         self.route_mixer_events();
         self.watch_tick();
         self.begin_meter_round();
+        let moved_before = self.moves_taken_up();
+        self.eng.read_local_time();
         self.each_doc(|cx| cx.tick());
         self.clear_left_autosaves();
         self.end_meter_round();
         self.balance_primes();
-        self.follow_key_changes();
+        // A Save As into another folder taken up this wake gave its catalog thousands of new
+        // keys: the watch share takes them at the start of the next wake, so the wake that
+        // answers the save does not also pay for them (the share has the doc's old keys until
+        // then, and no batch of the watch is read before they are replaced).
+        if self.moves_taken_up() == moved_before {
+            self.follow_key_changes();
+        }
         self.probe_watchdog();
         self.waveform_watchdog();
         self.hand_out_freed_slots();
@@ -40,12 +48,17 @@ impl Control {
         self.eng.check_stalled_save();
         self.eng.poll_clears();
         self.poll_orphan_saves();
+        self.copy_tick();
         self.eng.resend_closed();
         self.publish_workspaces();
         self.sync_stages();
+        self.eng.stages_alive();
         let now = self.eng.now();
         self.eng.prune_pictures(now);
         self.eng.try_held_back_pictures(now);
+        if self.eng.trials_ended() {
+            self.reprime();
+        }
         self.eng.picture_clock(false);
         self.eng.flush_report_lines();
         self.push_video_outputs();
@@ -58,6 +71,11 @@ impl Control {
         self.health();
         let paths = self.docs.iter().map(|d| d.show_path.as_deref());
         self.eng.observe_tick(paths);
+        // What the watch share let go of this wake is freed off the control thread.
+        if let Some(gone) = self.eng.watch.take_gone() {
+            self.eng.docs.discard(gone);
+        }
+        self.eng.watch.end_wake();
         self.eng.outputs.pump();
     }
 
@@ -96,6 +114,8 @@ impl Control {
     /// Each catalog's key changes to the shared watch, then the watch's batches to the docs
     /// that watch their files, its watchdog, log entries and notices.
     fn watch_tick(&mut self) {
+        // What a doc opening or closing left waiting, within this wake's share.
+        self.eng.watch.pump();
         self.follow_key_changes();
         for batch in std::mem::take(&mut self.eng.watch_batches) {
             let events = self.eng.watch.accept(batch);
@@ -132,6 +152,11 @@ impl Control {
         if changed {
             self.mark_warnings_dirty();
         }
+    }
+
+    /// Saves into another folder whose prepared copy every doc has taken up, in all.
+    fn moves_taken_up(&self) -> u64 {
+        self.docs.iter().map(|d| d.file.moves_taken_up).sum()
     }
 
     /// Hands every catalog's new key changes to the shared watch.
@@ -303,6 +328,9 @@ impl Control {
             );
             self.mark_warnings_dirty();
         }
+        if self.eng.sound_health() {
+            self.mark_warnings_dirty();
+        }
         self.each_doc(|cx| cx.resend_state());
         let eng = &mut self.eng;
         let out = eng.out.dropped() + eng.out.lossy_dropped();
@@ -325,6 +353,7 @@ fn event_voice(e: &Event) -> Option<VoiceId> {
     match e {
         Event::VoiceFinished { voice, .. }
         | Event::Underrun { voice, .. }
+        | Event::UnderrunEnded { voice, .. }
         | Event::VoiceRejected { voice, .. }
         | Event::LoopReached { voice, .. }
         | Event::SliceEnded { voice, .. }
@@ -345,7 +374,9 @@ impl DocCx<'_> {
         // The mixer's events of this doc's voices, routed here by the engine this wake.
         let mut events = std::mem::take(&mut self.doc.events);
         for e in events.drain(..) {
-            self.doc.voices.event(e, &mut fx);
+            let model = &self.doc.model;
+            let held = |cue, run| model.holds_run(cue, run);
+            self.doc.voices.event(e, &held, &mut fx);
         }
         self.doc.events = events;
         let start_limit = seconds_to_samples(STREAM_START_LIMIT.as_secs_f64(), self.eng.rate);
@@ -353,11 +384,24 @@ impl DocCx<'_> {
         let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.eng.rate);
         self.doc.voices.expire_held(now, hold, &mut fx);
         self.expire_held_pictures(now, hold, &mut fx);
+        self.start_waiting_pictures(now, &mut fx);
+        self.start_seeks(now, &mut fx);
+        let outputs = &self.eng.outputs;
+        self.doc.voices.note_drifts(|v| outputs.drift(v));
+        self.follow_sound_clocks(now, &mut fx);
         self.follow(fx, now);
+        self.flush_underruns();
+        // A move to another device given up on a slow disk is tried again when due.
+        if self.doc.voices.take_due_moves(now) {
+            for input in self.follow_devices(now) {
+                self.feed(input, now);
+            }
+        }
         self.reclaim_slots(now);
         self.doc.net.tick(now);
         self.note_lookup_limit();
         self.deliver_deferred(now);
+        self.wall_clock_triggers(now);
         if self.doc.model.engine().is_due(now) {
             self.feed(Input::Tick, now);
         }

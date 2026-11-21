@@ -189,8 +189,9 @@ pub struct NumberAssignment {
     reason = "one command per edit, never on the audio path; boxing the cue would only move it"
 )]
 pub enum Command {
-    /// Adds one cue, with its children if it is a Group. With `auto_number`, its number is
-    /// replaced by [`next_auto_number`] (ED-08).
+    /// Adds one cue, with its children if it is a Group. With `auto_number` and the workspace's
+    /// auto-numbering on, its number is replaced by [`next_auto_number`] (ED-08); with it off the
+    /// cue keeps the number it came with.
     AddCue {
         at: Position,
         cue: Cue,
@@ -243,11 +244,16 @@ pub enum Command {
         numbers: Vec<NumberAssignment>,
     },
     /// Numbers `ids` `start`, `start + increment`, … in cue list order, whatever order `ids` is
-    /// in (ED-08). A group is numbered before its children, if both are listed.
+    /// in (ED-08), each with `prefix` before and `suffix` after, skipping any number a cue
+    /// outside `ids` already has. A group is numbered before its children, if both are listed.
     Renumber {
         ids: Vec<CueId>,
         start: f64,
         increment: f64,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        prefix: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        suffix: String,
     },
     /// Several commands as one undo step. If one is refused, none is applied. May not contain
     /// another transaction.
@@ -411,6 +417,10 @@ pub enum CommandError {
     PatchInUse { patch: PatchId, cue: CueId },
     #[error("network patch {patch} is used by cue {cue}")]
     NetworkPatchInUse { patch: NetworkPatchId, cue: CueId },
+    /// A stage a cue is playing on (or is loaded, pre-waiting or stopping on) cannot be
+    /// removed: the engine refuses it, naming both as the operator sees them.
+    #[error("stage \"{stage}\" cannot be removed while cue \"{cue}\" uses it")]
+    StageInUse { stage: String, cue: String },
     #[error("cue list {0} still has cues")]
     CueListNotEmpty(CueListId),
     #[error("cue list {0} is the only one")]
@@ -614,8 +624,8 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
             mut cue,
             auto_number,
         } => {
-            if auto_number {
-                cue.number = Some(next_auto_number(ws)?);
+            if auto_number && ws.settings.auto_number_new_cues {
+                cue.number = Some(next_auto_number(ws, &at)?);
             }
             if !restoring {
                 ws.clamp_new_cues(std::slice::from_mut(&mut cue));
@@ -684,7 +694,9 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
             ids,
             start,
             increment,
-        } => renumber(ws, &ids, start, increment),
+            prefix,
+            suffix,
+        } => renumber(ws, &ids, start, increment, &prefix, &suffix),
         Command::Transaction { .. } => Err(CommandError::NestedTransaction),
         other => apply_model(ws, &other, restoring).unwrap_or(Err(CommandError::Internal)),
     }
@@ -719,8 +731,8 @@ fn refuse(issues: Vec<ValidationIssue>) -> Result<(), CommandError> {
 /// different workspace from the one it was copied in (ED-05). `new_id` supplies a fresh id for
 /// every cue, children included; core cannot make ids itself.
 ///
-/// - Targets inside the copied set follow to the copies; other targets are kept if the cue
-///   exists in `workspace` and cleared if not.
+/// - Targets (and a Target cue's new target) inside the copied set follow to the copies; other
+///   targets are kept if the cue exists in `workspace` and cleared if not.
 /// - Numbers already used in `workspace` (or earlier in the copy) are cleared.
 /// - An Audio cue's patch or a Network cue's destination missing from `workspace` becomes the
 ///   workspace's first one, if it has any. A Network cue with no patch (the nil id) keeps none.
@@ -771,10 +783,24 @@ pub fn prepare_paste(
                 .or_else(|| existing.contains(&target).then_some(target));
             cue.kind.set_target(kept);
         }
+        if let CueKind::Target { new_target, .. } = &mut cue.kind
+            && let Some(new) = *new_target
+        {
+            *new_target = renamed
+                .get(&new)
+                .copied()
+                .or_else(|| existing.contains(&new).then_some(new));
+        }
         match &mut cue.kind {
             CueKind::Audio { patch, .. } if !patches.contains(patch) => {
                 if let Some(first) = first_patch {
                     *patch = first;
+                }
+            }
+            // A Video cue's "none" stays none; a patch this workspace lacks becomes its first.
+            CueKind::Video { sound, .. } if sound.patch.is_some_and(|p| !patches.contains(&p)) => {
+                if let Some(first) = first_patch {
+                    sound.patch = Some(first);
                 }
             }
             // The nil id is the inspector's deliberate "no patch": it stays, so the copy is as

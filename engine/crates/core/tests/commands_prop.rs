@@ -221,10 +221,16 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
                 },
                 stop_target_when_done: false,
                 mode: Default::default(),
+                geometry: Default::default(),
             }
         }
-        5 => CueKind::Arm {
+        5 if p.d.is_multiple_of(2) => CueKind::Arm {
             target: choose(&ids, p.b),
+        },
+        // A Target cue: its problems depend on its new target's kind and number too.
+        5 => CueKind::Target {
+            target: choose(&ids, p.b),
+            new_target: choose(&ids, p.c),
         },
         // Files shared with the Audio cues, stages that exist and that do not, and valid and
         // hostile still durations.
@@ -232,6 +238,9 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
             media: (!p.c.is_multiple_of(11)).then(|| MediaRef::new(MEDIA[(p.b / 3) as usize % 4])),
             stage: (!p.d.is_multiple_of(5)).then(|| stage_id(1 + u128::from(p.d % 4))),
             duration: (!p.b.is_multiple_of(3)).then(|| time(p.c)),
+            geometry: Default::default(),
+            timing: Default::default(),
+            sound: Default::default(),
         },
         _ => CueKind::Network {
             destination: net_id(1),
@@ -303,6 +312,19 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
                         modifiers: Modifiers::default(),
                     }),
                 hotkey_enabled: p.c.is_multiple_of(2),
+                // Times past 23:59:59 and an empty day set are refused like a bad key.
+                wall_clock: WallClockTrigger {
+                    enabled: p.d.is_multiple_of(2),
+                    hours: (p.d % 26) as u8,
+                    minutes: (p.d / 26 % 61) as u8,
+                    seconds: (p.a % 61) as u8,
+                    days: if p.a.is_multiple_of(9) {
+                        Weekdays::NONE
+                    } else {
+                        Weekdays::EVERY_DAY.with(Weekday::ALL[(p.a % 7) as usize], false)
+                    },
+                    twelve_hour: p.d.is_multiple_of(3),
+                },
             },
         },
         9 => CueProperty::Target {
@@ -537,6 +559,51 @@ fn patch_output_from(p: &Pick) -> PatchOutput {
 
 fn patch_property(p: &Pick) -> PatchProperty {
     let output = p.c as usize % 4;
+    // Device outputs in range, at the edge and past it; cue outputs likewise.
+    let device_output = [0, 1, 5, 63, 64, u32::MAX][p.a as usize % 6];
+    let cue_output = [0, 1, 3, 127, 128][p.c as usize % 5];
+    match p.b % 13 {
+        8 => PatchProperty::Crosspoint {
+            output: cue_output,
+            device_output,
+            value: (!p.d.is_multiple_of(4)).then(|| level(p.d)),
+        },
+        9 => PatchProperty::DeviceOutputLevel {
+            device_output,
+            value: level(p.d),
+        },
+        10 => PatchProperty::DeviceOutputMute {
+            device_output,
+            value: p.d.is_multiple_of(2),
+        },
+        // Sorted and unique, or not (refused whole).
+        11 => PatchProperty::Crosspoints {
+            value: (0..p.d % 5)
+                .map(|i| PatchCrosspoint {
+                    output: (cue_output + i) % 130,
+                    device_output: if p.a.is_multiple_of(3) {
+                        device_output
+                    } else {
+                        i
+                    },
+                    db: level(p.d.wrapping_add(i)),
+                })
+                .collect(),
+        },
+        12 => PatchProperty::DeviceOutputs {
+            value: (0..p.d % 4)
+                .map(|i| DeviceOutputLevel {
+                    device_output: device_output.wrapping_add(i),
+                    level_db: level(p.c.wrapping_add(i)),
+                    mute: i.is_multiple_of(2),
+                })
+                .collect(),
+        },
+        _ => patch_output_property(p, output),
+    }
+}
+
+fn patch_output_property(p: &Pick, output: usize) -> PatchProperty {
     match p.b % 8 {
         0 => PatchProperty::Name {
             value: name_pool(p.d),
@@ -871,6 +938,8 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
                 .collect(),
             start: [1.0, 0.0, 10.0, 0.1, -1.0, f64::NAN][p.b as usize % 6],
             increment: [1.0, 5.0, 0.1, 0.0, f64::INFINITY, 0.5][p.d as usize % 6],
+            prefix: String::new(),
+            suffix: String::new(),
         },
         10 => {
             if p.d % 4 == 3
@@ -1720,8 +1789,15 @@ fn status_input(ws: &Workspace, p: &Pick) -> Input {
         11 => Input::SliceProblems {
             cues: vec![(
                 choose(&ids, p.b).unwrap_or(cue_id(1)),
-                (!p.d.is_multiple_of(3))
-                    .then(|| ["too short", "bad marks"][p.d as usize % 2].into()),
+                (!p.d.is_multiple_of(3)).then(|| {
+                    if p.d.is_multiple_of(2) {
+                        SliceProblem::NothingPlays
+                    } else {
+                        SliceProblem::Unplayable {
+                            reason: "too short".into(),
+                        }
+                    }
+                }),
             )],
         },
         _ => Input::Tick,

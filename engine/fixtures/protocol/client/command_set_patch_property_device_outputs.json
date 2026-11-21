@@ -1,0 +1,18 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_patch_property",
+    "id": "00000000-0000-0000-0000-000000000002",
+    "property": {
+      "type": "device_outputs",
+      "value": [
+        {
+          "device_output": 1,
+          "level_db": -3.0,
+          "mute": true
+        }
+      ]
+    }
+  }
+}

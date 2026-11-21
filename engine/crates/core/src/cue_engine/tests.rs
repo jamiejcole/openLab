@@ -32,6 +32,7 @@ fn cue(n: u128, kind: CueKind, pre_wait: f64) -> Cue {
         triggers: Triggers {
             hotkey: None,
             hotkey_enabled: true,
+            wall_clock: Default::default(),
         },
         second_trigger: SecondTrigger::Nothing,
         second_trigger_on_release: false,
@@ -56,6 +57,11 @@ fn workspace(cues: Vec<Cue>) -> Workspace {
             auto_number_start: 1.0,
             auto_number_increment: 1.0,
             new_cues_auto_load: false,
+            auto_number_new_cues: true,
+            lock_playhead: true,
+            go_needs_key_up: false,
+            osc_enabled: true,
+            copy_media_on_add: true,
         },
         patches: vec![],
         network_patches: vec![],
@@ -137,6 +143,7 @@ fn a_fade_cue_whose_target_changed_unsignalled_only_warns() {
         },
         stop_target_when_done: false,
         mode: Default::default(),
+        geometry: Default::default(),
     };
     let ws = workspace(vec![
         cue(1, fade, 1.0),

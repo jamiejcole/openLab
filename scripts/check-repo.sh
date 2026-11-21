@@ -133,7 +133,7 @@ known_entries() {
 # 1. SPDX header on every source file (CLAUDE.md, "Contracts (same commit)").
 spdx() {
   local missing
-  missing=$(git ls-files -co --exclude-standard '*.rs' '*.swift' '*.sh' '*.yml' '*.strings' 'scripts/hooks/*' Makefile |
+  missing=$(git ls-files -co --exclude-standard '*.rs' '*.swift' '*.sh' '*.py' '*.yml' '*.strings' 'scripts/hooks/*' Makefile |
     sort -u | xargs grep -L "SPDX-License-Identifier: GPL-3.0-or-later")
   if [ -n "$missing" ]; then
     fail spdx "missing 'SPDX-License-Identifier: GPL-3.0-or-later' in: $(echo $missing)"
@@ -357,6 +357,16 @@ one_gate() {
     hits=$(grep -nE '^[^#]*cargo (clippy|test|fmt)( |$)' "$f" | grep -v -- --ignored)
     [ -z "$hits" ] || fail one-gate "$f spells out a Rust gate command (call scripts/rust-checks.sh instead): $(echo "$hits" | head -n 3 | tr '\n' ' ')"
   done
+}
+
+# 9b. #708: every modal alert, sheet and panel of the mac app goes through StandBack.swift, so a stage
+# over the operator's display stands back while the question is up.
+stand_back_gate() {
+  local hits
+  hits=$(grep -rn '' mac/openLab --include='*.swift' | grep -v '^mac/openLab/StandBack.swift:' \
+    | sed -E 's/StandBack\.(runModal|beginSheet)\(//g' \
+    | grep -E '\.runModal\(|beginSheetModal\(|\.beginSheet\(|runModal\(for:|presentAsSheet|presentAsModalWindow|beginCriticalSheet|beginModalSession|[Pp]anel\.begin(WithCompletionHandler)?[ ({]')
+  [ -z "$hits" ] || fail stand-back "a modal alert, sheet or panel outside StandBack.swift (call StandBack.runModal / StandBack.beginSheet): $(echo "$hits" | head -n 3 | tr '\n' ' ')"
 }
 
 # 10. Regression (#408): `prepush.sh --check` with no stamp file must say why it refuses.
@@ -583,8 +593,9 @@ FAKE
 }
 # `make test-mac` with a stub in place of the test wrapper: the stub exits with the given codes, one per
 # call; wanted is make's exit code and the number of processes it started.
+# MAKE_TARGET: what to run (`test-mac`, or `test-mac-shard SHARD=2`); MAKE_TAG names its directories.
 make_test_mac_case() { # dir, name, wanted exit code, wanted calls, stub exit codes
-  local c="$1/make-$2" rc n want
+  local c="$1/make-$MAKE_TAG-$2" rc n want
   mkdir -p "$c"
   printf '%s\n' $5 >"$c/rcs"
   : >"$c/calls"
@@ -595,7 +606,7 @@ echo "$*" >>"$d/calls"
 exit "$(sed -n "$(wc -l <"$d/calls" | tr -d ' ')p" "$d/rcs")"
 STUB
   chmod +x "$c/stub"
-  make -s -o project test-mac MAC_TESTS_WITH_LIMIT="$c/stub" >"$c/out" 2>&1
+  make -s -o project $MAKE_TARGET MAC_TESTS_WITH_LIMIT="$c/stub" >"$c/out" 2>&1
   rc=$?
   n=$(wc -l <"$c/calls" | tr -d ' ')
   # make reports a failed recipe as exit 2 and "Error <recipe's code>".
@@ -604,18 +615,23 @@ STUB
     || fail make-test-mac "$2: want exit $3 and $4 process(es), got make exit $rc and $n: $(cat "$c/out")"
 }
 make_test_mac_cases() {
-  make_test_mac_case "$1" cut-short 75 1 "75 0"
-  grep -q 'not starting the second' "$1/make-cut-short/out" || fail make-test-mac "a skipped second process must say why"
-  make_test_mac_case "$1" hung 76 1 "76 0"
-  grep -q 'not starting the second' "$1/make-hung/out" || fail make-test-mac "a hang must stop the second process and say why"
-  make_test_mac_case "$1" pass 0 2 "0 0"
-  make_test_mac_case "$1" first-fails 65 2 "65 0"
-  make_test_mac_case "$1" second-fails 70 2 "0 70"
-  make_test_mac_case "$1" both-fail 70 2 "65 70"
+  local d="$1" tag
+  for MAKE_TARGET in "test-mac" "test-mac-shard SHARD=2"; do
+    MAKE_TAG=$(printf '%s' "$MAKE_TARGET" | tr -c 'A-Za-z0-9\n' '-')
+    tag=$MAKE_TAG
+    make_test_mac_case "$d" cut-short 75 1 "75 0"
+    grep -q 'not starting the second' "$d/make-$tag-cut-short/out" || fail make-test-mac "$MAKE_TARGET: a skipped second process must say why"
+    make_test_mac_case "$d" hung 76 1 "76 0"
+    grep -q 'not starting the second' "$d/make-$tag-hung/out" || fail make-test-mac "$MAKE_TARGET: a hang must stop the second process and say why"
+    make_test_mac_case "$d" pass 0 2 "0 0"
+    make_test_mac_case "$d" first-fails 65 2 "65 0"
+    make_test_mac_case "$d" second-fails 70 2 "0 70"
+    make_test_mac_case "$d" both-fail 70 2 "65 70"
+  done
 }
 
-# 12. Every identifier in scripts/ui-smoke.txt and scripts/core-flows.txt names an existing test, so a
-# rename cannot silently drop it from the per-PR set or the core-flows set.
+# 12. Every identifier in scripts/ui-smoke.txt, scripts/core-flows.txt and scripts/ui-local-only.txt names an
+# existing test, so a rename cannot silently drop it from the per-PR set, the core-flows set or the local-only set.
 # test_in_class <class> <test> <files...>: true when the test function is declared inside that class.
 test_in_class() {
   local cls=$1 name=$2
@@ -672,6 +688,15 @@ ui_smoke() {
   [ "$LIST_N" -ge 3 ] || fail ui-smoke "scripts/ui-smoke.txt lists $LIST_N tests; the smoke set needs launch, GO and panic"
   test_list scripts/core-flows.txt core-flows openLabTests
   [ "$LIST_N" -ge 10 ] || fail core-flows "scripts/core-flows.txt lists $LIST_N tests; the core-flows set is the everyday flows"
+  test_list scripts/ui-local-only.txt ui-local-only openLabUITests
+  # A local-only test in a set CI runs by -only-testing would still run there.
+  local t
+  while IFS= read -r t; do
+    case "$t" in ''|'#'*) continue ;; esac
+    if grep -qxF "$t" scripts/ui-smoke.txt scripts/core-flows.txt; then
+      fail ui-local-only "'$t' is local-only but also in scripts/ui-smoke.txt or scripts/core-flows.txt, which CI runs"
+    fi
+  done < scripts/ui-local-only.txt
 }
 
 # `make test-mac` splits the unit tests over two processes: what the first skips, the second must run.
@@ -683,6 +708,44 @@ test_mac_split() {
   [ -n "$skipped" ] || fail test-mac-split "make test-mac skips no classes in its first process"
   [ "$skipped" = "$only" ] || fail test-mac-split "make test-mac's second process must run exactly what its first skips"
   printf '%s\n' "$plan" | grep -qx -- '-only-testing:openLabTests' || fail test-mac-split "make test-mac's first process must select the whole unit target"
+}
+
+# The CI app job's two shards (scripts/mac-test-shards.txt): the listed classes exist and are listed once,
+# shard 1 runs exactly the list, and shard 2 skips exactly the list, so every class runs somewhere.
+test_mac_shards() {
+  local list=scripts/mac-test-shards.txt n=0 line cls plan only skipped
+  # A line is `1 <class>`, nothing else: the Makefile reads fields, so stray whitespace must not make a
+  # class skipped by shard 2 yet selected by shard 1.
+  while IFS= read -r line; do
+    printf '%s\n' "$line" | grep -qE '^[[:space:]]*(#|$)' && continue
+    n=$((n + 1))
+    if ! printf '%s\n' "$line" | grep -qE '^1 [A-Za-z0-9_]+$'; then
+      fail mac-shards "'$line' is not '1 <class>' (shard 2 runs the rest; no leading or trailing space)"
+      continue
+    fi
+    cls=${line#* }
+    grep -qE "^(@[A-Za-z0-9_]+[[:space:]]+)*((public|internal|open)[[:space:]]+)?(final[[:space:]]+)?class[[:space:]]+$cls[[:space:]]*:[[:space:]]*XCTestCase" mac/openLabTests/*.swift \
+      || fail mac-shards "$cls is no XCTestCase class in mac/openLabTests"
+  done <"$list"
+  [ "$n" -gt 0 ] || fail mac-shards "$list lists no classes"
+  # The line rule itself: an indented line and a shard other than 1 must be refused.
+  printf '  1 CueListTests\n' | grep -qE '^1 [A-Za-z0-9_]+$' && fail mac-shards "an indented shard line must not pass the line rule"
+  printf '2 CueListTests\n' | grep -qE '^1 [A-Za-z0-9_]+$' && fail mac-shards "a shard-2 line must not pass the line rule"
+  for cls in $(grep -E '^1 ' "$list" | awk '{print $2}' | sort | uniq -d); do
+    fail mac-shards "$cls is listed more than once"
+  done
+  plan=$(make -n test-mac-shard SHARD=1 | tr ' ' '\n')
+  only=$(printf '%s\n' "$plan" | sed -n 's/^-only-testing:openLabTests\/\([^/]*\)$/\1/p' | sort | tr '\n' ' ')
+  [ -n "$only" ] && [ "$only" = "$(grep -E '^1 ' "$list" | awk '{print $2}' | sort | tr '\n' ' ')" ] \
+    || fail mac-shards "make test-mac-shard SHARD=1 must run exactly its listed classes, got: $only"
+  printf '%s\n' "$plan" | grep -q -- '-only-testing:openLabUITests/' && fail mac-shards "only shard 2 runs the UI smoke set"
+  plan=$(make -n test-mac-shard SHARD=2 | tr ' ' '\n')
+  skipped=$(printf '%s\n' "$plan" | sed -n 's/^-skip-testing:openLabTests\/\(.*\)$/\1/p' | sort -u | tr '\n' ' ')
+  [ "$skipped" = "$(grep -E '^1 ' "$list" | awk '{print $2}' | sort | tr '\n' ' ')" ] \
+    || fail mac-shards "make test-mac-shard SHARD=2 must skip exactly the classes of shard 1, got: $skipped"
+  printf '%s\n' "$plan" | grep -qx -- '-only-testing:openLabTests' || fail mac-shards "shard 2 must select the whole unit target"
+  printf '%s\n' "$plan" | grep -q -- '-only-testing:openLabUITests/' || fail mac-shards "shard 2 must run the UI smoke set"
+  make -s -o project test-mac-shard SHARD=3 MAC_TESTS_WITH_LIMIT=true >/dev/null 2>&1 && fail mac-shards "make test-mac-shard SHARD=3 must be refused"
 }
 
 # 13. Milestone and task IDs (M5.4, M4.12c; as identifiers m5_6b) stay out of code, comments and test names
@@ -796,8 +859,22 @@ $hits"
 $hits"
 }
 
+# 16. THIRD-PARTY-NOTICES.txt names every third-party crate the shipped binaries link (the licences
+# require the notices to ship). Where the crate sources are not fetched it is checked against Cargo.lock only.
+notices() {
+  local out
+  if ! command -v python3 >/dev/null 2>&1; then
+    fail notices "python3 is needed to check THIRD-PARTY-NOTICES.txt"
+    return
+  fi
+  if ! out=$(python3 -I scripts/third-party-notices.py self-test 2>&1 && python3 -I scripts/third-party-notices.py check 2>&1); then
+    fail notices "$out"
+  fi
+}
+
 known_entries
 spdx
+notices
 strings_keys
 debug_assertions
 versions
@@ -807,6 +884,7 @@ path_filters
 wall_clock
 wall_clock_cases
 one_gate
+stand_back_gate
 prepush_no_stamp
 soak_classifier
 wedged_classifier
@@ -814,6 +892,7 @@ wedged_run
 test_list_cases
 ui_smoke
 test_mac_split
+test_mac_shards
 task_ids
 skill_shape_cases
 skills

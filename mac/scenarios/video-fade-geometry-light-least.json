@@ -1,0 +1,28 @@
+{
+  "about": "A Fade cue aimed at a Video cue (#647) in light appearance at the least window size (800x500): the Geometry tab with values ticked, a scale unlocked, then narrower still; nothing may be clipped or drawn outside the tab.",
+  "show": "VideoSound",
+  "appearance": "light",
+  "displays": "V1:1920x1080",
+  "media": {
+    "media/talk.mov": {"seconds": 20, "sound": "pcm:2:48000"},
+    "media/tracks.mov": {"seconds": 6, "sound": "pcm:2:48000+pcm:6:44100"},
+    "media/silent.mov": 4,
+    "media/still.png": 1,
+    "media/tone.wav": 10
+  },
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"advance": 0.2},
+    {"select": "5"},
+    {"tab": "fadeGeometry"},
+    {"shot": "least-untouched"},
+    {"click": "fade-geometry-opacity-tick"},
+    {"type": "fade-geometry-opacity", "text": "25"},
+    {"click": "fade-geometry-scale-tick"},
+    {"click": "fade-geometry-scale-lock"},
+    {"type": "fade-geometry-scale-x", "text": "2"},
+    {"shot": "least-ticked"},
+    {"inside": "fade-geometry-preview", "of": "inspector-tabs"},
+    {"inside": "fade-geometry-rotation-reset", "of": "inspector-tabs"}
+  ]
+}

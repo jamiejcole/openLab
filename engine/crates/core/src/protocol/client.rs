@@ -186,10 +186,18 @@ pub enum TransportAction {
     Resume {
         cue: CueId,
     },
-    /// Loads the cue so it starts `at` seconds into its timeline (0: a plain load).
+    /// Loads the cue so it starts `at` seconds into its timeline (0: a plain load); a negative
+    /// `at` counts back from its end.
     Load {
         cue: CueId,
         at: f64,
+    },
+    /// Moves an Audio cue's playback to `position` seconds from the start of its media file
+    /// (a click in its waveform): an idle or loaded cue loads there, a playing or previewing
+    /// one jumps there and plays on, a paused one moves there and stays paused.
+    Seek {
+        cue: CueId,
+        position: f64,
     },
     Reset {
         cue: CueId,
@@ -232,6 +240,7 @@ impl TransportAction {
             | Self::Pause { cue }
             | Self::Resume { cue }
             | Self::Load { cue, .. }
+            | Self::Seek { cue, .. }
             | Self::Reset { cue }
             | Self::Preview { cue }
             | Self::StopPreview { cue: Some(cue) } => Some(*cue),
@@ -256,7 +265,12 @@ impl TransportAction {
     /// What serde cannot check: numbers in range, and a batch's shape.
     fn validate(&self) -> Result<(), ProtocolError> {
         match self {
-            Self::Load { at, .. } => non_negative("transport.load.at", *at),
+            // A negative time counts back from the cue's end (the Load to Time tool).
+            Self::Load { at, .. } if !at.is_finite() => Err(ProtocolError::NonFinite {
+                field: "transport.load.at",
+            }),
+            Self::Load { .. } => Ok(()),
+            Self::Seek { position, .. } => non_negative("transport.seek.position", *position),
             Self::Stop {
                 fade_out: Some(fade),
                 ..
@@ -354,6 +368,33 @@ pub enum Request {
         #[serde(default)]
         device: Option<String>,
     },
+    /// How many backups of each workspace this machine keeps (0: none are made): answers
+    /// `backup_keep`. App-scope.
+    BackupKeep,
+    /// Keeps this many backups of each workspace from the next save on (0 to the engine's maximum;
+    /// 0 turns backups off), in the machine settings. Answers `backup_keep`; `bad_request` above the
+    /// maximum, `io` when the choice cannot be kept; nothing changes on a refusal. App-scope.
+    SetBackupKeep {
+        count: u32,
+    },
+    /// The port OSC listens on and whether it is open: answers `osc` (`port`, `open`, `error`).
+    /// App-scope.
+    OscState,
+    /// Listens for OSC on `port` (1 to 65535, UDP and TCP) from now on and at every start: the
+    /// new port is opened first and the old one closed only then. Answers `osc` once it is open;
+    /// `bad_request` for port 0, `io` when the new port cannot be opened (in use, say): the old one
+    /// then goes on listening and the `osc` state carries the reason; `io` too when the choice
+    /// cannot be kept. App-scope.
+    SetOscPort {
+        port: u16,
+    },
+    /// While `on`, the stage on the display with the menu bar stands back: under every app's
+    /// windows (over the desktop), so a question the app asks there can be seen; nothing stops
+    /// or fades. The app sets it for as long as an alert, sheet or panel of its own is up. Reset
+    /// when the last app connection ends. Answers `ok`. App-scope.
+    SetStandBack {
+        on: bool,
+    },
     /// Sets the buffer size, in frames per callback, of output device `device` on this machine
     /// (AUD-21): 16 to 1024 (the default is 512). `device` must be a name `list_devices` gives.
     /// Kept in the machine settings. A device the engine plays on reopens at once at that size
@@ -372,6 +413,13 @@ pub enum Request {
         /// Network cues still run, complete and continue, but send nothing.
         network_disabled: bool,
     },
+    /// Copies every file the connection's workspace's cues target that is not inside its show
+    /// folder into the folder's `audio` or `video` folder, and points those cues at the copies
+    /// as one undo step when every file is done (WS-04; QLab 5's on-demand copy). Runs off the
+    /// control thread; `media_copy_progress` and `media_copied` report it. Answers `ok` as soon
+    /// as it starts, or `command_refused` for a show never saved, in Show Mode, or with this
+    /// command already running or waiting. Workspace-bound.
+    CopyMedia,
     /// Puts the connection's workspace in Show Mode or back in Edit Mode (SM-01). The engine
     /// keeps it (not in the show file) so it survives a UI restart, reports it in `document`,
     /// and prevents system and display sleep while any open workspace is in Show Mode (SM-07).
@@ -411,6 +459,22 @@ pub enum Request {
         #[serde(default)]
         display: Option<String>,
     },
+    /// Opens (`open`) or closes the monitor window of the connection's workspace's `stage`: a
+    /// live copy of the stage, scaled to fit a resizable window, drawn by the stage host whether
+    /// or not the stage is shown on a display. Opening one already open brings it to the front.
+    /// Not saved anywhere; closed when the stage goes, the workspace closes or the last app
+    /// connection ends. Answers `ok`, or `not_found` (stage unknown). Workspace-bound.
+    SetStageMonitor {
+        stage: StageId,
+        open: bool,
+    },
+    /// How long the sequence that starts at `cue` lasts: its pre-waits and actions through its
+    /// auto-continue and auto-follow chain, as a run would time them (what the `load` transport
+    /// action's negative time counts back from), for the Load to Time bar's slider. Answers
+    /// `sequence_span`. Workspace-bound.
+    SequenceSpan {
+        cue: CueId,
+    },
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
     PreshowCheck,
@@ -442,14 +506,37 @@ pub enum Request {
     Advance {
         frames: u64,
     },
-    /// Test support only: the virtual output device goes away (the host reports it lost and it
-    /// leaves the device list), as an unplugged interface does. App-scope.
+    /// Test support only: a virtual output device goes away (the host reports it lost and it
+    /// leaves the device list), as an unplugged interface does. `device`: its id as
+    /// `list_devices` gives it; absent, the first. App-scope.
     #[cfg(feature = "test-support")]
-    LoseDevice,
-    /// Test support only: the virtual output device is back in the list; the engine reopens it
-    /// as it would a device plugged back in. App-scope.
+    LoseDevice {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+    },
+    /// Test support only: a virtual output device is in the list (back, or plugged in for the
+    /// first time); the engine opens it as it would a device plugged in. `device` as for
+    /// `LoseDevice`. App-scope.
     #[cfg(feature = "test-support")]
-    RestoreDevice,
+    RestoreDevice {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+    },
+    /// Test support only: a virtual output device's stream reports `count` dropouts (xruns, 1 to
+    /// [`MAX_DROP_OUTS`]) as a host does, at its next block (stepped: the next `advance`).
+    /// `device` as for `LoseDevice`. App-scope.
+    #[cfg(feature = "test-support")]
+    DropOut {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+        count: u32,
+    },
+    /// Test support only: the device list marks `device` (a virtual device's id) as the system's
+    /// output, as the operator changing the computer's sound output does. App-scope.
+    #[cfg(feature = "test-support")]
+    SetDefaultDevice {
+        device: String,
+    },
     /// Test support only: the stage host draws its test card for `frame` on the connection's
     /// workspace's `stage` (docs/protocol.md section 5). Answers `ok` once sent. Workspace-bound.
     #[cfg(feature = "test-support")]
@@ -472,11 +559,26 @@ pub enum Request {
         display: String,
         points: Vec<[f32; 2]>,
     },
+    /// Test support only: reads what `stage`'s monitor window shows at a content size of
+    /// `width` x `height` pixels at `points` (fractions of the window from the top left):
+    /// answers `stage_probe`, with no colours when the stage host has no monitor window open
+    /// for it. Workspace-bound.
+    #[cfg(feature = "test-support")]
+    MonitorProbe {
+        stage: StageId,
+        width: u32,
+        height: u32,
+        points: Vec<[f32; 2]>,
+    },
 }
 
 /// Most frames one `advance` may move device time by: ten minutes at 192 kHz.
 #[cfg(feature = "test-support")]
 pub const MAX_ADVANCE_FRAMES: u64 = 192_000 * 600;
+
+/// Most dropouts one `drop_out` may report.
+#[cfg(feature = "test-support")]
+pub const MAX_DROP_OUTS: u32 = 10_000;
 
 /// Most buckets one `waveform` request may ask for: more than any screen is wide.
 pub const MAX_WAVEFORM_BUCKETS: u32 = 8192;
@@ -581,7 +683,19 @@ impl ClientMessage {
             }
             #[cfg(feature = "test-support")]
             Self::Request {
-                request: Request::StageProbe { points, .. } | Request::DisplayProbe { points, .. },
+                request: Request::MonitorProbe { width, height, .. },
+                ..
+            } if !crate::video::side_ok(*width) || !crate::video::side_ok(*height) => {
+                Err(ProtocolError::OutOfRange {
+                    field: "request.width",
+                })
+            }
+            #[cfg(feature = "test-support")]
+            Self::Request {
+                request:
+                    Request::StageProbe { points, .. }
+                    | Request::DisplayProbe { points, .. }
+                    | Request::MonitorProbe { points, .. },
                 ..
             } if points.is_empty()
                 || points.len() > crate::stage_link::MAX_PROBE_POINTS
@@ -600,6 +714,13 @@ impl ClientMessage {
                 ..
             } if *frames > MAX_ADVANCE_FRAMES => Err(ProtocolError::OutOfRange {
                 field: "request.frames",
+            }),
+            #[cfg(feature = "test-support")]
+            Self::Request {
+                request: Request::DropOut { count, .. },
+                ..
+            } if !(1..=MAX_DROP_OUTS).contains(count) => Err(ProtocolError::OutOfRange {
+                field: "request.count",
             }),
             Self::Hotkey { key, .. } if key.is_empty() || key.len() > MAX_HOTKEY_KEY => {
                 Err(ProtocolError::OutOfRange {

@@ -9,12 +9,24 @@
 //! **Clock.** The engine's time (the master clock) is the primary device's sample counter while
 //! that device plays, so timing on it stays sample-accurate. Another device's commands are dated
 //! by translation from one pair of counter reads: `local = local_rendered + (at -
-//! master_rendered)`; its events come back through the inverse. Every device runs at the
-//! primary's rate. Simultaneous starts on two devices land within one buffer of each other.
+//! master_rendered) × local rate / master rate`; its events come back through the inverse.
+//! Simultaneous starts on two devices land within one buffer of each other.
+//!
+//! **Rates.** Each device runs at its own rate (the primary's when it can) with its own mixer.
+//! Everything the control thread counts is in frames of the master clock (the primary's rate);
+//! a command routed to a device at another rate has its frame counts (fades, trims) converted
+//! to that device's frames here, the one place every voice command passes. A voice's stream and
+//! slice table are made at its device's rate when it is prepared.
 //! While the primary device is away and another plays, the master clock carries on from the
 //! monotonic wall clock, from the last sample the primary rendered; when it returns its counter
 //! is offset to continue from there. With no device playing, the clock stands still (nothing
 //! can play). It never goes back.
+//!
+//! **Drift.** Another device's clock is never exactly the master's: its voices, dated once on
+//! the master clock, run ahead of it (or behind) by as much as the two clocks drift apart while
+//! they play. How far is followed per device from the same counter pairs, smoothed
+//! ([`Skew`]), and told per voice ([`Outputs::drift`]), so what follows a voice's sound (its
+//! picture) can follow that device's clock instead of the master's.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -100,10 +112,103 @@ pub(super) struct Outputs {
     /// device's policy clock; none for the offline driver, which never loses its device).
     wall: Option<WallClock>,
     rate: u32,
-    /// Voices on a device other than the primary: their device and the last local sample a
-    /// command of theirs was dated, so commands of one voice never go backwards. A voice not
-    /// here plays on the primary.
-    voices: HashMap<VoiceId, (OutputKey, SampleTime)>,
+    /// Each output's mixer rate, by key (the primary's is `rate`).
+    rates: Vec<u32>,
+    /// Voices on a device other than the primary. A voice not here plays on the primary.
+    voices: HashMap<VoiceId, OnOutput>,
+    /// How far each output's clock is from the master's, by key (none for the primary, or
+    /// before its first reading).
+    skews: Vec<Option<Skew>>,
+}
+
+/// A voice on a device other than the primary.
+#[derive(Clone, Copy, Debug)]
+struct OnOutput {
+    key: OutputKey,
+    /// The last local sample a command of the voice was dated, so its commands never go
+    /// backwards.
+    last: SampleTime,
+    /// Its device's [`Skew`] when it started, less any drift it carried from before a pause:
+    /// its drift while it plays is the skew now less this. None until the device's first
+    /// reading (a voice dated on a device still opening): its drift starts there.
+    base: Option<f64>,
+    /// Its drift when it paused (it plays nothing, so the clocks drifting meanwhile do not
+    /// move it).
+    paused: Option<f64>,
+}
+
+/// How long the smoothing of a device's clock against the master's takes to follow a change:
+/// its counters are read between callbacks, so a reading is off by up to a buffer of each,
+/// while the clocks drift by parts per million.
+const SKEW_SMOOTHING_S: f64 = 2.0;
+
+/// Where another device's clock is against the master's, in master frames: its counter (at the
+/// master rate) less the master's, read in pairs, smoothed over [`SKEW_SMOOTHING_S`]. Only its
+/// changes mean anything: by as much as it grows, a voice on that device has played more than
+/// the master clock has counted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Skew {
+    frames: f64,
+    /// The master sample of the last reading.
+    at: SampleTime,
+    /// The device stopped playing since (lost, reopening, a buffer change): its counter stood
+    /// while the master clock ran, which is no drift.
+    gap: bool,
+}
+
+/// What a reading did to a device's [`Skew`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reading {
+    /// The first: the skew is taken as read.
+    First,
+    /// The first after a gap: the skew jumped by this, which is not drift.
+    Jumped(f64),
+    /// Smoothed in, or nothing to take in.
+    Followed,
+}
+
+impl Skew {
+    /// Takes in a reading: the device has rendered `local` frames at `local_rate` when the master
+    /// clock is at `master` (at `master_rate`).
+    fn observe(
+        this: &mut Option<Self>,
+        master: SampleTime,
+        local: SampleTime,
+        master_rate: u32,
+        local_rate: u32,
+    ) -> Reading {
+        if local_rate == 0 || master_rate == 0 {
+            return Reading::Followed;
+        }
+        let raw = local as f64 * f64::from(master_rate) / f64::from(local_rate) - master as f64;
+        match this {
+            None => {
+                *this = Some(Skew {
+                    frames: raw,
+                    at: master,
+                    gap: false,
+                });
+                Reading::First
+            }
+            Some(s) if s.gap => {
+                let jump = raw - s.frames;
+                *s = Skew {
+                    frames: raw,
+                    at: master,
+                    gap: false,
+                };
+                Reading::Jumped(jump)
+            }
+            Some(s) if master > s.at => {
+                let span = (master - s.at) as f64 / f64::from(master_rate);
+                let weight = (span / SKEW_SMOOTHING_S).min(1.0);
+                s.frames += (raw - s.frames) * weight;
+                s.at = master;
+                Reading::Followed
+            }
+            Some(_) => Reading::Followed,
+        }
+    }
 }
 
 impl Outputs {
@@ -119,8 +224,20 @@ impl Outputs {
             clock: Clock::Primary,
             wall,
             rate,
+            rates: vec![rate],
             voices: HashMap::new(),
+            skews: vec![None],
         }
+    }
+
+    /// Each output's rate, by key: the frames of its mixer, streams and commands.
+    pub fn rates(&self) -> &[u32] {
+        &self.rates
+    }
+
+    /// Output `key`'s rate (the master clock's for an unknown key).
+    pub fn rate_of(&self, key: OutputKey) -> u32 {
+        self.rates.get(key).copied().unwrap_or(self.rate)
     }
 
     pub fn primary(&self) -> &Output {
@@ -170,6 +287,8 @@ impl Outputs {
         if self.len() >= MAX_OUTPUTS {
             return None;
         }
+        self.rates.push(output.mixer.sample_rate());
+        self.skews.push(None);
         self.others.push(output);
         Some(self.others.len())
     }
@@ -230,11 +349,65 @@ impl Outputs {
                 _ => Clock::Frozen { base: now },
             },
         };
+        for key in 1..self.len() {
+            self.observe_skew(key);
+        }
+    }
+
+    /// Reads output `key`'s counter against the master clock into its [`Skew`], while it plays
+    /// and the master clock runs. A voice dated before the device's first reading starts its
+    /// drift there; a jump after a gap moves every voice's base with it, so it counts as no
+    /// drift.
+    fn observe_skew(&mut self, key: OutputKey) {
+        if key == 0 || self.is_frozen() {
+            return;
+        }
+        let master = self.rendered();
+        let Some(o) = self.get(key) else {
+            return;
+        };
+        if !o.is_up() {
+            if let Some(Some(skew)) = self.skews.get_mut(key) {
+                skew.gap = true;
+            }
+            return;
+        }
+        let (local, local_rate) = (o.mixer.samples_rendered(), o.mixer.sample_rate());
+        let Some(skew) = self.skews.get_mut(key) else {
+            return;
+        };
+        let reading = Skew::observe(skew, master, local, self.rate, local_rate);
+        let now = skew.map(|s| s.frames);
+        let on = self.voices.values_mut().filter(|v| v.key == key);
+        match reading {
+            Reading::First => on.for_each(|v| v.base = v.base.or(now)),
+            Reading::Jumped(jump) => on.for_each(|v| v.base = v.base.map(|b| b + jump).or(now)),
+            Reading::Followed => {}
+        }
+    }
+
+    /// Output `key`'s smoothed skew now, in master frames (none before its first reading).
+    fn skew_of(&self, key: OutputKey) -> Option<f64> {
+        self.skews.get(key).copied().flatten().map(|s| s.frames)
+    }
+
+    /// How many master frames of its sound voice `voice` has played more than the master clock
+    /// has counted since it started (fewer: negative), from its device's clock drifting against
+    /// the master's; a pause holds it. Always 0 on the primary, whose clock the master is.
+    pub fn drift(&self, voice: VoiceId) -> f64 {
+        let Some(v) = self.voices.get(&voice) else {
+            return 0.0;
+        };
+        v.paused
+            .unwrap_or_else(|| match (self.skew_of(v.key), v.base) {
+                (Some(now), Some(base)) => now - base,
+                _ => 0.0,
+            })
     }
 
     /// The output voice `voice` plays on.
     pub fn output_of(&self, voice: VoiceId) -> OutputKey {
-        self.voices.get(&voice).map_or(0, |&(o, _)| o)
+        self.voices.get(&voice).map_or(0, |v| v.key)
     }
 
     /// Voices on output `key` among `voices`.
@@ -247,12 +420,12 @@ impl Outputs {
 
     /// Whether a voice may still play on output `key`.
     pub fn has_voices(&self, key: OutputKey) -> bool {
-        self.voices.values().any(|&(o, _)| o == key)
+        self.voices.values().any(|v| v.key == key)
     }
 
     /// Forgets every voice of output `key` (its records were settled as ended).
     pub fn forget_output(&mut self, key: OutputKey) {
-        self.voices.retain(|_, &mut (o, _)| o != key);
+        self.voices.retain(|_, v| v.key != key);
     }
 
     /// Forgets voices `keep` says are gone.
@@ -275,29 +448,53 @@ impl Outputs {
                 CommandKind::StartVoice(v) => {
                     let key = slot_output(v.patch).unwrap_or(0);
                     if key != 0 {
-                        self.voices.insert(v.voice, (key, 0));
+                        self.observe_skew(key);
+                        let base = self.skew_of(key);
+                        let on = OnOutput {
+                            key,
+                            last: 0,
+                            base,
+                            paused: None,
+                        };
+                        self.voices.insert(v.voice, on);
                     }
                     key
                 }
-                CommandKind::ResumeVoice { voice, new_id } => {
-                    let entry = self.voices.get(voice).copied();
-                    if let Some(entry) = entry {
-                        self.voices.insert(*new_id, entry);
+                CommandKind::ResumeVoice { voice, new_id } => match self.voices.get(voice) {
+                    Some(&entry) => {
+                        // It goes on with the drift it had when it paused.
+                        let had = self.drift(*voice);
+                        let resumed = OnOutput {
+                            base: self.skew_of(entry.key).map(|now| now - had),
+                            paused: None,
+                            ..entry
+                        };
+                        self.voices.insert(*new_id, resumed);
+                        entry.key
                     }
-                    entry.map_or(0, |(o, _)| o)
+                    None => 0,
+                },
+                CommandKind::PauseVoice { voice } => {
+                    let had = self.drift(*voice);
+                    if let Some(v) = self.voices.get_mut(voice) {
+                        v.paused = Some(had);
+                    }
+                    self.output_of(*voice)
                 }
                 CommandKind::StopVoice { voice, .. }
                 | CommandKind::Ramp { voice, .. }
                 | CommandKind::RampSet { voice, .. }
                 | CommandKind::MoveVoice { voice, .. }
                 | CommandKind::Devamp { voice, .. }
-                | CommandKind::PauseVoice { voice } => self.output_of(*voice),
+                | CommandKind::EndAt { voice, .. } => self.output_of(*voice),
                 CommandKind::SetPatchRouting { patch, .. } | CommandKind::SnapPatch { patch } => {
                     slot_output(*patch).unwrap_or(0)
                 }
                 CommandKind::SetMaster { .. } => 0,
             };
             let local = self.local_date(key, at, master, command_voice(&kind));
+            let mut kind = kind;
+            at_rate(&mut kind, self.rate, self.rate_of(key));
             match out.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, batch)) => batch.push((local, kind)),
                 None => out.push((key, vec![(local, kind)])),
@@ -347,15 +544,17 @@ impl Outputs {
             return at;
         };
         let local_rendered = output.mixer.samples_rendered();
+        let ahead = i128::from(at) - i128::from(master);
         let mut local = if output.is_up() {
-            let shifted = i128::from(local_rendered) + i128::from(at) - i128::from(master);
+            let shifted = i128::from(local_rendered)
+                + rescale_signed(ahead, self.rate, output.mixer.sample_rate());
             u64::try_from(shifted.max(i128::from(local_rendered))).unwrap_or(local_rendered)
         } else {
             local_rendered
         };
         if let Some(entry) = voice.and_then(|v| self.voices.get_mut(&v)) {
-            local = local.max(entry.1);
-            entry.1 = local;
+            local = local.max(entry.last);
+            entry.last = local;
         }
         local
     }
@@ -368,8 +567,9 @@ impl Outputs {
         let Some(output) = self.get(key) else {
             return at;
         };
-        let shifted = i128::from(self.rendered()) + i128::from(at)
-            - i128::from(output.mixer.samples_rendered());
+        let behind = i128::from(at) - i128::from(output.mixer.samples_rendered());
+        let shifted = i128::from(self.rendered())
+            + rescale_signed(behind, output.mixer.sample_rate(), self.rate);
         u64::try_from(shifted.max(0)).unwrap_or(0)
     }
 
@@ -383,10 +583,12 @@ impl Outputs {
         while let Some(e) = output.mixer.poll_event() {
             events.push(e);
         }
+        let local = output.mixer.sample_rate();
         for e in &mut events {
             if let Some(at) = event_date(e) {
                 *at = self.master_date(key, *at);
             }
+            span_at_master(e, local, self.rate);
             if let Event::VoiceFinished { voice, .. } = e {
                 self.voices.remove(voice);
             }
@@ -402,6 +604,60 @@ impl Outputs {
     }
 }
 
+/// `x` frames at rate `from` as frames at rate `to`, rounded half away from zero (a rate of 0
+/// gives 0).
+fn rescale_signed(x: i128, from: u32, to: u32) -> i128 {
+    if from == to {
+        return x;
+    }
+    if from == 0 {
+        return 0;
+    }
+    let (from, to) = (i128::from(from), i128::from(to));
+    let scaled = x.saturating_mul(to);
+    let half = from / 2;
+    if scaled >= 0 {
+        (scaled + half) / from
+    } else {
+        (scaled - half) / from
+    }
+}
+
+/// A command's frame counts (fades, trims), made in frames at rate `from` (the master clock's),
+/// as frames at rate `to` (its device's). A fade that had any length keeps at least one frame,
+/// so a ramp stays a ramp and a fading stop is not turned into a cut.
+fn at_rate(kind: &mut CommandKind, from: u32, to: u32) {
+    if from == to {
+        return;
+    }
+    let frames = |n: u64| openlab_audio::frames_at_rate(n, from, to);
+    let fade = |f: &mut openlab_audio::Fade| {
+        if f.frames > 0 {
+            f.frames = frames(f.frames).max(1);
+        }
+    };
+    match kind {
+        CommandKind::StartVoice(v) => {
+            fade(&mut v.fade_in);
+            fade(&mut v.fade_out);
+            v.skip_frames = frames(v.skip_frames);
+            v.play_frames = v.play_frames.map(frames);
+        }
+        CommandKind::StopVoice { fade: f, .. }
+        | CommandKind::Ramp { fade: f, .. }
+        | CommandKind::RampSet { fade: f, .. } => fade(f),
+        CommandKind::SetPatchRouting { .. }
+        | CommandKind::SnapPatch { .. }
+        | CommandKind::MoveVoice { .. }
+        | CommandKind::SetMaster { .. }
+        | CommandKind::Devamp { .. }
+        // Its frames are the voice's own table's, at the device's rate already.
+        | CommandKind::EndAt { .. }
+        | CommandKind::PauseVoice { .. }
+        | CommandKind::ResumeVoice { .. } => {}
+    }
+}
+
 fn command_voice(kind: &CommandKind) -> Option<VoiceId> {
     match kind {
         CommandKind::StartVoice(v) => Some(v.voice),
@@ -410,6 +666,7 @@ fn command_voice(kind: &CommandKind) -> Option<VoiceId> {
         | CommandKind::RampSet { voice, .. }
         | CommandKind::MoveVoice { voice, .. }
         | CommandKind::Devamp { voice, .. }
+        | CommandKind::EndAt { voice, .. }
         | CommandKind::PauseVoice { voice } => Some(*voice),
         CommandKind::ResumeVoice { new_id, .. } => Some(*new_id),
         CommandKind::SetPatchRouting { .. }
@@ -418,11 +675,21 @@ fn command_voice(kind: &CommandKind) -> Option<VoiceId> {
     }
 }
 
+/// An event's count of frames, counted by a mixer at `local`, as master frames: what follows
+/// it (a picture following its sound) is planned in master time.
+fn span_at_master(e: &mut Event, local: u32, master: u32) {
+    if let Event::UnderrunEnded { frames, .. } = e {
+        let scaled = rescale_signed(i128::from(*frames), local, master);
+        *frames = u64::try_from(scaled).unwrap_or(u64::MAX);
+    }
+}
+
 /// The sample an event is dated on.
 fn event_date(e: &mut Event) -> Option<&mut SampleTime> {
     match e {
         Event::VoiceFinished { at, .. }
         | Event::Underrun { at, .. }
+        | Event::UnderrunEnded { at, .. }
         | Event::VoiceRejected { at, .. }
         | Event::PendingFull { at }
         | Event::LoopReached { at, .. }
@@ -431,5 +698,230 @@ fn event_date(e: &mut Event) -> Option<&mut SampleTime> {
         | Event::DevampIgnored { at, .. }
         | Event::MoveEnded { at, .. }
         | Event::StageFaulted { at, .. } => Some(at),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use openlab_audio::{Curve, Fade, Mixer, MixerConfig, VoiceStart};
+
+    use super::*;
+
+    fn output(name: &str, rate: u32) -> Output {
+        let (mixer, _) = Mixer::new(MixerConfig {
+            sample_rate: rate,
+            ..MixerConfig::default()
+        })
+        .unwrap();
+        Output {
+            name: name.into(),
+            mixer,
+            backend: Backend::Offline,
+        }
+    }
+
+    fn start(voice: u64, patch: u16) -> CommandKind {
+        let (_, rx) = rtrb::RingBuffer::new(4);
+        let mut v = VoiceStart::new(VoiceId(voice), rx, 1, 1);
+        v.patch = patch;
+        v.fade_in = Fade::new(480, Curve::Linear);
+        v.fade_out = Fade::new(1, Curve::Linear);
+        CommandKind::StartVoice(Box::new(v))
+    }
+
+    /// A voice on a device at another rate: its commands are dated `(at - master) × local /
+    /// master` after that device's counter and their fades are as long in time there (at least
+    /// a frame, so a fade is never turned into a cut); the primary's are left alone; the
+    /// device's events come back through the inverse.
+    #[test]
+    fn commands_for_a_device_at_another_rate_are_dated_and_timed_at_its_rate() {
+        let mut o = Outputs::new(output("one", 48_000), 48_000);
+        assert_eq!(o.add(output("two", 44_100)), Some(1));
+        assert_eq!(o.rates(), &[48_000, 44_100]);
+        let fade = |frames| Fade::new(frames, Curve::Linear);
+        let routed = o.route(
+            vec![
+                (4_800, start(1, 1)),
+                (
+                    9_600,
+                    CommandKind::StopVoice {
+                        voice: VoiceId(1),
+                        fade: fade(480),
+                    },
+                ),
+                (
+                    9_600,
+                    CommandKind::Ramp {
+                        voice: VoiceId(1),
+                        target: openlab_audio::GainTarget::Master,
+                        gain: 0.5,
+                        fade: fade(1),
+                    },
+                ),
+                (4_800, start(2, 0)),
+            ],
+            |patch| Some(OutputKey::from(patch)),
+        );
+        let (one, two) = (&routed[1], &routed[0]);
+        assert_eq!(two.0, 1);
+        let dates: Vec<SampleTime> = two.1.iter().map(|(at, _)| *at).collect();
+        assert_eq!(dates, vec![4_410, 8_820, 8_820]);
+        let CommandKind::StartVoice(v) = &two.1[0].1 else {
+            panic!()
+        };
+        assert_eq!((v.fade_in.frames, v.fade_out.frames), (441, 1));
+        assert!(matches!(two.1[1].1, CommandKind::StopVoice { fade, .. } if fade.frames == 441));
+        assert!(matches!(two.1[2].1, CommandKind::Ramp { fade, .. } if fade.frames == 1));
+        // The primary's: as sent.
+        assert_eq!(one.0, 0);
+        let CommandKind::StartVoice(v) = &one.1[0].1 else {
+            panic!()
+        };
+        assert_eq!((one.1[0].0, v.fade_in.frames), (4_800, 480));
+        assert_eq!(o.output_of(VoiceId(1)), 1);
+        // The inverse: the device's sample 4 410 is master sample 4 800.
+        assert_eq!(o.master_date(1, 4_410), 4_800);
+        assert_eq!(o.master_date(1, 0), 0);
+    }
+
+    /// What a voice on a device at another rate missed is told in master frames, as its date
+    /// is: the picture put back by it is planned in master time.
+    #[test]
+    fn an_underruns_length_on_a_device_at_another_rate_is_in_master_frames() {
+        let mut e = Event::UnderrunEnded {
+            voice: VoiceId(1),
+            at: 0,
+            frames: 4_410,
+        };
+        span_at_master(&mut e, 44_100, 48_000);
+        assert!(matches!(e, Event::UnderrunEnded { frames: 4_800, .. }));
+        span_at_master(&mut e, 48_000, 48_000);
+        assert!(matches!(e, Event::UnderrunEnded { frames: 4_800, .. }));
+        let mut other = Event::PendingFull { at: 7 };
+        span_at_master(&mut other, 44_100, 48_000);
+        assert!(matches!(other, Event::PendingFull { at: 7 }));
+    }
+
+    /// An output whose mixer the test renders, to move its counter.
+    fn rendered_output(name: &str, rate: u32) -> (Output, Mixer) {
+        let (controller, mixer) = Mixer::new(MixerConfig {
+            sample_rate: rate,
+            ..MixerConfig::default()
+        })
+        .unwrap();
+        let output = Output {
+            name: name.into(),
+            mixer: controller,
+            backend: Backend::Offline,
+        };
+        (output, mixer)
+    }
+
+    fn render(mixer: &mut Mixer, frames: usize) {
+        let mut out = vec![0.0; frames * mixer.output_channels()];
+        mixer.process(&mut out, frames);
+    }
+
+    /// A voice on a second device whose clock runs fast (1000 ppm here) tells its drift: as much
+    /// as that device has rendered past the master clock since the voice started, to within the
+    /// smoothing; a pause holds it while the clocks drift on, and the resumed voice goes on
+    /// from there under its new id. A voice on the primary, whose clock the master is, has none.
+    #[test]
+    fn a_voice_on_a_drifting_device_tells_its_drift_and_a_pause_holds_it() {
+        let (one, mut primary) = rendered_output("one", 8_000);
+        let (two, mut other) = rendered_output("two", 8_000);
+        let mut o = Outputs::new(one, 8_000);
+        o.add(two);
+        // A second's blocks: the other device renders 8 more frames in them.
+        let mut second = |o: &mut Outputs| {
+            for block in 0..100 {
+                render(&mut primary, 80);
+                render(&mut other, if block % 12 == 0 { 81 } else { 80 });
+                o.follow_clock();
+            }
+        };
+        second(&mut o);
+        let routed = o.route(vec![(0, start(1, 1)), (0, start(2, 0))], |patch| {
+            Some(OutputKey::from(patch))
+        });
+        assert_eq!(routed.len(), 2);
+        for _ in 0..20 {
+            second(&mut o);
+        }
+        // 20 s at 9 frames a second, less what the smoothing has not caught up yet (at most its
+        // 2 s of drift).
+        let drift = o.drift(VoiceId(1));
+        assert!((160.0..181.0).contains(&drift), "{drift}");
+        assert_eq!(o.drift(VoiceId(2)), 0.0);
+        o.route(
+            vec![(0, CommandKind::PauseVoice { voice: VoiceId(1) })],
+            |_| None,
+        );
+        let held = o.drift(VoiceId(1));
+        for _ in 0..10 {
+            second(&mut o);
+        }
+        assert_eq!(o.drift(VoiceId(1)), held, "held while paused");
+        let resume = CommandKind::ResumeVoice {
+            voice: VoiceId(1),
+            new_id: VoiceId(3),
+        };
+        o.route(vec![(0, resume)], |_| None);
+        assert!((o.drift(VoiceId(3)) - held).abs() < 1e-6);
+        for _ in 0..10 {
+            second(&mut o);
+        }
+        // The smoothing has caught up with the steady drift: 10 s more, 90 frames.
+        let on = o.drift(VoiceId(3)) - held;
+        assert!((85.0..95.0).contains(&on), "{on}");
+    }
+
+    /// A device's skew follows its clock from pairs of counter readings: a slow one goes
+    /// negative, a first reading is taken as it is, the first after a gap jumps (and says by how
+    /// much), and readings without the master clock moving (or with a rate of 0) change nothing.
+    #[test]
+    fn a_skew_follows_a_slow_device_and_ignores_readings_that_say_nothing() {
+        let mut skew = None;
+        let first = Skew::observe(&mut skew, 1_000, 900, 8_000, 8_000);
+        assert_eq!(
+            (first, skew.map(|s| s.frames)),
+            (Reading::First, Some(-100.0))
+        );
+        Skew::observe(&mut skew, 1_000, 0, 8_000, 8_000);
+        Skew::observe(&mut skew, 2_000, 0, 8_000, 0);
+        assert_eq!(skew.map(|s| s.frames), Some(-100.0));
+        // Away for 1 000 master frames: its counter stood.
+        if let Some(s) = skew.as_mut() {
+            s.gap = true;
+        }
+        let back = Skew::observe(&mut skew, 2_000, 900, 8_000, 8_000);
+        assert_eq!(
+            (back, skew.map(|s| s.frames)),
+            (Reading::Jumped(-1_000.0), Some(-1_100.0))
+        );
+        // A device rendering 0.9 of the master's frames, at 44.1 kHz against 48.
+        let mut master = 1_000;
+        for _ in 0..1_000 {
+            master += 4_800;
+            let local = (master as f64 * 0.9 * 44_100.0 / 48_000.0) as u64;
+            Skew::observe(&mut skew, master, local, 48_000, 44_100);
+        }
+        let frames = skew.unwrap().frames;
+        let reading = 0.9 * master as f64 - master as f64;
+        // Behind the reading by the smoothing's lag (10% of 0.1 s per 0.1 s, over 2 s).
+        assert!(
+            frames < 0.0 && (frames - reading) > 0.0,
+            "{frames} {reading}"
+        );
+        assert!((frames - reading) < 2.0 * 4_800.0 * 0.1 * 20.0, "{frames}");
+    }
+
+    #[test]
+    fn signed_rescaling_rounds_half_away_from_zero() {
+        assert_eq!(rescale_signed(3, 2, 3), 5);
+        assert_eq!(rescale_signed(-3, 2, 3), -5);
+        assert_eq!(rescale_signed(-1, 48_000, 44_100), -1);
+        assert_eq!(rescale_signed(7, 0, 44_100), 0);
+        assert_eq!(rescale_signed(i128::MAX, 1, 2), i128::MAX);
     }
 }

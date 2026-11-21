@@ -176,12 +176,30 @@ pub enum WireProblem {
     SlicesUnplayable {
         reason: String,
     },
+    /// Every slice inside the cue's trims is skipped: no part of its file plays.
+    NothingPlays,
     StartedBroken,
     /// A Video cue whose stage is "none".
     NoStage,
     /// A Video cue's stage is not in the workspace.
     StageMissing {
         stage: StageId,
+    },
+    /// A Video cue whose file has sound has its output patch set to "none".
+    NoPatch,
+    /// A Target cue with no new target set.
+    NoNewTarget,
+    /// A Target cue's new target is not in the workspace.
+    NewTargetMissing {
+        target: CueId,
+    },
+    /// A Target cue's new target is one its target cannot act on, or its target itself.
+    NewTargetWrongKind {
+        target: CueId,
+    },
+    /// A Target cue's new target has no number.
+    NewTargetUnnumbered {
+        target: CueId,
     },
 }
 
@@ -192,6 +210,14 @@ impl From<&CueProblem> for WireProblem {
             CueProblem::TargetMissing { target } => Self::TargetMissing { target: *target },
             CueProblem::TargetSelf => Self::TargetSelf,
             CueProblem::TargetWrongKind { target } => Self::TargetWrongKind { target: *target },
+            CueProblem::NoNewTarget => Self::NoNewTarget,
+            CueProblem::NewTargetMissing { target } => Self::NewTargetMissing { target: *target },
+            CueProblem::NewTargetWrongKind { target } => {
+                Self::NewTargetWrongKind { target: *target }
+            }
+            CueProblem::NewTargetUnnumbered { target } => {
+                Self::NewTargetUnnumbered { target: *target }
+            }
             CueProblem::NothingToFade => Self::NothingToFade,
             CueProblem::NoMedia => Self::NoMedia,
             CueProblem::MediaMissing { media } => Self::MediaMissing {
@@ -201,6 +227,7 @@ impl From<&CueProblem> for WireProblem {
                 media: media.clone(),
                 reason: reason.clone(),
             },
+            CueProblem::NoPatch => Self::NoPatch,
             CueProblem::PatchMissing { patch } => Self::PatchMissing { patch: *patch },
             CueProblem::DeviceUnavailable { patch, resolution } => Self::DeviceUnavailable {
                 patch: *patch,
@@ -219,6 +246,7 @@ impl From<&CueProblem> for WireProblem {
             CueProblem::SlicesUnplayable { reason } => Self::SlicesUnplayable {
                 reason: reason.clone(),
             },
+            CueProblem::NothingPlays => Self::NothingPlays,
             CueProblem::StartedBroken => Self::StartedBroken,
             CueProblem::NoStage => Self::NoStage,
             CueProblem::StageMissing { stage } => Self::StageMissing { stage: *stage },
@@ -337,13 +365,26 @@ pub enum WireWarning {
         list: CueListId,
         reason: WireGoIgnored,
     },
-    /// From the binary: file repairs on load, damaged media, a failed autosave. `code` is a
-    /// stable snake_case key the UI can localise; `message` is English for logs.
+    /// From the binary: file repairs on load, damaged media, a failed autosave, device problems.
+    /// `code` is a stable snake_case key the UI can localise; `message` is English for logs.
     Notice {
         code: String,
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cue: Option<CueId>,
+        /// The audio device a device notice is about, by the name the system gives it: lets a
+        /// client list one entry per device and name it in its own words.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
+        /// The output patch a patch notice is about (a patch's device missing or unusable, no
+        /// device, too few channels, routing past the device, no mixer patch), so a client can
+        /// name it and the pre-show check can leave out a patch no cue uses.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        patch: Option<PatchId>,
+        /// How often it happened, for a notice about something that repeats (an output
+        /// device's dropouts so far, a cue's underruns since its previous notice).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<u64>,
     },
 }
 
@@ -449,6 +490,16 @@ pub enum RuntimeChange {
         cue: CueId,
         played: bool,
     },
+    /// The child a Playlist group plays next changed (`cue`; `null`: none), which the cue list
+    /// marks on the group's box.
+    PlaylistNext {
+        group: CueId,
+        cue: Option<CueId>,
+    },
+    /// Double-GO protection began (`active` true: a GO now is ignored) or ended.
+    GoProtection {
+        active: bool,
+    },
     Warning {
         warning: WireWarning,
     },
@@ -486,6 +537,26 @@ pub struct CueMediaDuration {
     /// `still`). Absent for an Audio cue, and with the lengths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<crate::video_probe::ProbeReport>,
+    /// The audio tracks of a Video cue's movie, in file order (VID-06). Empty (absent) for a
+    /// movie without sound, a still and an Audio cue: the cue then has no sound, no levels to
+    /// show and no need of an output patch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_tracks: Vec<AudioTrackFormat>,
+    /// Which of `audio_tracks` the cue plays, from 0: its stored `audio_track`, or 0 when the
+    /// file has no such track (a `audio_track_missing` warning says so). `channels` is that
+    /// track's. Absent with `audio_tracks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_track: Option<u32>,
+}
+
+/// One audio track of a movie as its probe read it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioTrackFormat {
+    /// The four-character code of its sample format (`mp4a`: AAC; `lpcm`, `sowt`, `twos`,
+    /// `in24`, `fl32`: PCM; `alac`), at most 4 characters of printable ASCII.
+    pub codec: String,
+    pub channels: u16,
+    pub sample_rate: u32,
 }
 
 impl RuntimeChange {
@@ -524,14 +595,22 @@ impl RuntimeChange {
                 group: *group,
                 warning: *warning,
             },
+            Action::GoProtection { active } => Self::GoProtection { active: *active },
             Action::PlayedChanged { cue, played } => Self::Played {
                 cue: *cue,
                 played: *played,
+            },
+            Action::PlaylistNextChanged { group, next } => Self::PlaylistNext {
+                group: *group,
+                cue: *next,
             },
             Action::Warning(warning) => Self::Warning {
                 warning: WireWarning::from_engine(warning, rate),
             },
             Action::LoadVoice { .. }
+            | Action::LoadVoiceAt { .. }
+            | Action::SeekVoice { .. }
+            | Action::RelocateVoice { .. }
             | Action::UnloadVoice { .. }
             | Action::StartVoice { .. }
             | Action::StopVoice { .. }

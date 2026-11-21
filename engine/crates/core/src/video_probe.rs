@@ -32,8 +32,8 @@ pub const MAX_FRAME_RATE: f64 = 1000.0;
 /// Longest probe line, newline excluded.
 pub const MAX_PROBE_LINE_BYTES: usize = 4096;
 
-/// The moving-picture codecs a Video cue plays (VID-03). HAP is not among them yet: no decoder
-/// for it is built, so a HAP movie is reported unsupported.
+/// The moving-picture codecs a Video cue plays (VID-03). HAP's other flavours (HAP Q Alpha,
+/// Alpha-Only, R, HDR) are reported unsupported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VideoCodec {
@@ -42,6 +42,12 @@ pub enum VideoCodec {
     /// Every ProRes 422 and 4444 flavour.
     #[serde(rename = "prores")]
     ProRes,
+    /// HAP (`Hap1`).
+    Hap,
+    /// HAP Alpha (`Hap5`).
+    HapAlpha,
+    /// HAP Q (`HapY`).
+    HapQ,
 }
 
 /// The still image formats a Video cue shows (VID-03).
@@ -170,5 +176,26 @@ mod tests {
         assert!(decode_probe_report(&" ".repeat(MAX_PROBE_LINE_BYTES + 1)).is_err());
         let panorama = r#"{"type":"still","format":"png","width":16384,"height":4096}"#;
         assert!(decode_probe_report(panorama).is_ok());
+    }
+
+    /// The three HAP flavours go round the line under their own names (VID-03).
+    #[test]
+    fn hap_hap_alpha_and_hap_q_are_named_on_the_line() {
+        for (codec, name) in [
+            (VideoCodec::Hap, "hap"),
+            (VideoCodec::HapAlpha, "hap_alpha"),
+            (VideoCodec::HapQ, "hap_q"),
+        ] {
+            let video = ProbeReport::Video {
+                codec,
+                width: 288,
+                height: 160,
+                fps: 25.0,
+                duration: 2.0,
+            };
+            let line = video.to_line().unwrap();
+            assert!(line.contains(&format!(r#""codec":"{name}""#)), "{line}");
+            assert_eq!(decode_probe_report(&line).unwrap(), video);
+        }
     }
 }

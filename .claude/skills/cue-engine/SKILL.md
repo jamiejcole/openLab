@@ -1,6 +1,6 @@
 ---
 name: cue-engine
-description: "Load when changing or reviewing the cue state machine in engine/crates/core/src/cue_engine/: timing, states, chains, groups, GO, playhead, second trigger, level edits and takeover, fades, panic, Stop All/Reset All, preview, broken cues, display_name (cue.rs), cues_with_hotkey (model.rs)."
+description: "Load when changing or reviewing the cue state machine in engine/crates/core/src/cue_engine/: timing, states, chains, groups, GO, playhead, second trigger, level edits, fades, panic, Stop/Reset All, preview, broken cues, display_name (cue.rs), cues_with_hotkey (model.rs), wall_clock.rs."
 ---
 
 # Cue engine (`openlab-core::cue_engine`)
@@ -62,6 +62,12 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - A cycle that moves time (non-zero wait, Wait or Fade duration) is a timed loop, not a hang; Stop, Reset and Panic end it.
 - A cue acting while its own action is under way ignores a trigger back to itself (`TriggerIgnored`).
 
+## Wall-clock triggers (single home)
+- `WallClockWatch::advance(ws, WallTime { utc, local })` (`wall_clock.rs`) takes whole seconds of real (UTC) and local time (UTC plus the zone's offset) and returns the cues to start (workspace order, children included), the cues passed over (`missed`) and any step where local time did not move with real time (`jump`). The binary starts them with `Input::Start`, so rule 1 and the playhead rules of a hotkey apply.
+- The first look only notes the time. Real time decides whether a step counts: 0 to `MAX_GAP_SECS` (2) real seconds; longer or back fires nothing and reports what local time passed (sleep, a held-up loop, the clock set by hand).
+- Local time decides what fires in a counting step: only its last `real` local seconds (daylight saving starting or a zone change fires the first second after the skip and reports the skipped times missed); local time going back fires nothing. A cue never fires twice for one local instant (`fired`), so the hour daylight saving repeats fires once.
+- A trigger whose time is out of range or with no day never fires; validation switches it off and commands refuse it.
+
 ## Reviewer checklist
 - Does a new start path charge the chain budget and respect rule 1?
 - Does a new "ends" path respect rule 2 and the paused hold?
@@ -75,7 +81,7 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 ## References (read when)
 - `references/timing.md`: deadlines, lookahead, late starts, per-voice monotonic commands, states, run ids, timer progress, timing equations, load-to-time, the operation and event tables, second-trigger options, feedback matching. Read for any timing, state or trigger change.
 - `references/groups-playhead.md`: group action, modes, playlist, halted playlist, random, child started on its own, group operations, GO, double-GO, playhead, stepping. Read for group, GO or playhead work.
-- `references/kinds.md`: control cues, GoTo, Arm/Disarm, Devamp, Wait/Memo, Network cue semantics, `display_name`. Read when touching a cue kind's action.
+- `references/kinds.md`: control cues, GoTo, Target, Arm/Disarm, Devamp, Wait/Memo, Network cue semantics, `display_name`. Read when touching a cue kind's action.
 - `references/fade-levels.md`: Fade cues and live level edits on playing cues, volume limits, edit takeover, duck or boost others. Read for Fade, duck or level code.
 - `references/panic-transport.md`: Panic, Stop All, a cue's own panic, Reset All, Pause/Resume All, fade and stop others, played (second colour), previews. Read for any stop-everything, stop-others or preview change.
 - `references/broken-and-edits.md`: static problems, availability inputs, incremental cache contract, model-edit following, running groups under edits. Read for broken-cue or edit work.

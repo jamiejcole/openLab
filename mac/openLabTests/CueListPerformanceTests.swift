@@ -56,7 +56,11 @@ final class CueListPerformanceTests: XCTestCase {
         // Debug-build decode on a shared CI runner measured 2.2 s; this guards against a gross
         // regression only. Real decode cost is tracked by the off-main-actor decode task.
         XCTAssertLessThan(decode, 8.0)
-        XCTAssertLessThan(apply, 1.0)
+        // Apply takes 0.11 s on a laptop and, for the same code, 0.2 s to 1.0 s on the shared CI runners
+        // (six runs measured): the gross regression this guards against (a reload per row, work that
+        // grows with the square of the list) costs far more than 2 s. The single whole reload is
+        // checked below on its own.
+        XCTAssertLessThan(apply, 2.0)
         XCTAssertEqual(h.vc.nodeCount, 2000)
         XCTAssertEqual(h.spy.wholeReloads, 1)
     }

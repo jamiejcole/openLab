@@ -6,10 +6,10 @@
 //! operator's mapping is never touched.
 
 use openlab_core::protocol::{DeviceEntry, ErrorBody, ErrorCode, LogLevel, RequestId};
-use openlab_core::{CueId, CueKind, CueState, Input, PatchId, PatchMapping, SampleTime};
+use openlab_core::{CueId, CueState, Input, PatchId, PatchMapping, SampleTime};
 
 use super::inbox::reply;
-use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
+use super::{Backend, Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
 
 impl Control {
     /// `set_patch_mapping` (WS-07): sets or clears where doc `doc`'s `patch` plays on
@@ -64,13 +64,32 @@ fn mapping_refusal(
     outputs: usize,
     devices: &[DeviceEntry],
 ) -> Option<ErrorBody> {
-    let Some(device) = devices.iter().find(|d| d.name == mapping.device) else {
+    let device = if mapping.system {
+        // The system output is no device of its own: its channels are checked against the
+        // device it is now.
+        if !mapping.device.is_empty() {
+            return Some(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "a mapping on the system output names no device",
+            ));
+        }
+        devices.iter().find(|d| d.is_default)
+    } else {
+        devices.iter().find(|d| d.name == mapping.device)
+    };
+    let Some(device) = device else {
         return Some(ErrorBody::new(
             ErrorCode::NotFound,
-            format!("no output device named \"{}\"", mapping.device),
+            if mapping.system {
+                "the system has no default output device".to_owned()
+            } else {
+                format!("no output device named \"{}\"", mapping.device)
+            },
         ));
     };
-    if mapping.channels.len() != outputs {
+    // Its first outputs; the rest have no device output of their own (a device smaller than
+    // the patch).
+    if mapping.channels.is_empty() || mapping.channels.len() > outputs {
         return Some(ErrorBody::new(
             ErrorCode::BadRequest,
             format!(
@@ -95,10 +114,20 @@ fn mapping_refusal(
     None
 }
 
+/// How the log names where `mapping` plays.
+fn mapping_device_text(mapping: &PatchMapping) -> String {
+    if mapping.system {
+        "the system output".to_owned()
+    } else {
+        mapping.device.clone()
+    }
+}
+
 impl DocCx<'_> {
-    /// The operator cleared `patch`'s device: every Audio cue playing through it (running or
-    /// fading) pauses, as QLab 5.5.3 does; mapping a device again does not resume them. A device
-    /// that disappears by itself is device loss, not this.
+    /// The operator cleared `patch`'s device: every cue playing through it (running or fading)
+    /// pauses, as QLab 5.5.3 does; mapping a device again does not resume them. A Video cue
+    /// plays through its patch only when its movie has sound: a still or a silent movie that
+    /// names the patch plays on. A device that disappears by itself is device loss, not this.
     fn pause_cues_on(&mut self, patch: PatchId, now: SampleTime) {
         let engine = self.doc.model.engine();
         let playing: Vec<CueId> = self
@@ -106,9 +135,10 @@ impl DocCx<'_> {
             .model
             .ws()
             .cues()
-            .filter(|c| matches!(&c.kind, CueKind::Audio { patch: p, .. } if *p == patch))
+            .filter(|c| c.kind.sound_patch() == Some(patch))
             .map(|c| c.id)
             .filter(|id| matches!(engine.state(*id), CueState::Running | CueState::Fading))
+            .filter(|id| self.cue_patch(*id) == Some(patch))
             .collect();
         for cue in playing {
             self.feed(Input::Pause { cue }, now);
@@ -143,7 +173,7 @@ impl DocCx<'_> {
                 }
                 let text = format!(
                     "patch '{name}' mapped to {} {}",
-                    mapping.device,
+                    mapping_device_text(&mapping),
                     channels_text(&mapping.channels)
                 );
                 self.eng
@@ -174,10 +204,11 @@ impl DocCx<'_> {
 
 impl DocCx<'_> {
     /// Maps each patch of the open workspace that has no mapping entry on this machine to the
-    /// first outputs of the primary device. Nothing happens while it does not play (an outage,
-    /// or none): the patch stays unmapped and the next sync with it maps it. A device with
-    /// fewer outputs than the patch needs leaves it unmapped (one warning per patch and
-    /// device); a different device is tried again.
+    /// first outputs of the primary device: cue output n to device output n, as QLab 5 does.
+    /// Cue outputs past the device's outputs get none (their crosspoints may still route them).
+    /// Nothing happens while it does not play (an outage, or none): the patch stays unmapped and
+    /// the next sync with it maps it. A device with no outputs leaves it unmapped (one warning
+    /// per patch and device); a different device is tried again.
     pub(super) fn map_unmapped_patches(&mut self) {
         let Some(device) = self
             .eng
@@ -211,8 +242,8 @@ impl DocCx<'_> {
             {
                 continue;
             }
-            let wanted = patch.outputs.len();
-            if wanted > have {
+            let wanted = patch.outputs.len().min(have);
+            if wanted == 0 {
                 if self
                     .eng
                     .mapping_warned
@@ -221,8 +252,7 @@ impl DocCx<'_> {
                     notes.push((
                         LogLevel::Warn,
                         format!(
-                            "device {} has {have} outputs, patch '{}' needs {wanted}: left \
-                             unmapped",
+                            "device {} has no outputs: patch '{}' left unmapped",
                             device.name, patch.name
                         ),
                     ));
@@ -234,6 +264,7 @@ impl DocCx<'_> {
             let mapping = PatchMapping {
                 device: device.name.clone(),
                 channels,
+                system: false,
             };
             match self.eng.config.machine.set_patch_mapping(
                 self.doc.model.ws().id,
@@ -279,28 +310,45 @@ impl DocCx<'_> {
     /// Keeps this machine's mapping of each patch as long as the patch: after a cue-output count
     /// edit, its undo or redo (or a show whose count differs from the stored mapping), outputs the
     /// patch keeps keep their device channels, a new one goes to the channel of its own number
-    /// counted round the outputs openLab can use on that device, and removed ones drop. So one
-    /// edit never leaves the patch `output_count_mismatch` (its cues broken). An explicitly
-    /// cleared entry stays cleared.
+    /// when openLab can use that output of the device (else it, and those after it, get none, as
+    /// QLab 5 routes cue output n only to device output n), and removed ones drop. So one edit
+    /// never leaves the patch `output_count_mismatch` (its cues broken). An explicitly cleared
+    /// entry stays cleared.
     pub(super) fn fit_mappings_to_patches(&mut self) {
         let ws = self.doc.model.ws();
         let mut fitted: Vec<(PatchId, String, PatchMapping)> = Vec::new();
         let mut devices = None;
+        let system = self.eng.system_output();
         for patch in &ws.patches {
             let Some(old) = self.eng.config.machine.patch_entry(ws.id, patch.id) else {
                 continue;
             };
             let wanted = patch.outputs.len();
-            if old.device.is_empty() || old.channels.len() == wanted {
+            if old.is_none() || old.channels.len() == wanted {
+                continue;
+            }
+            if old.channels.len() > wanted {
+                // Shrunk: the outputs it lost drop.
+                let mut fit = old.clone();
+                fit.channels.truncate(wanted);
+                fitted.push((patch.id, patch.name.clone(), fit));
                 continue;
             }
             // Listed only when an entry needs it: the list is built on each call.
             let list = devices.get_or_insert_with(|| self.eng.device_list());
+            let on = old.device_for(system.as_deref());
             let usable = list
                 .iter()
-                .find(|d| d.name == old.device)
+                .find(|d| Some(d.name.as_str()) == on)
                 .map(|d| usize::try_from(d.output_channels).unwrap_or(usize::MAX))
-                .map(|have| have.min(self.eng.device_outputs.max(1)))
+                // Every device opens with as many outputs as it has, up to 64; the offline
+                // driver's one mixer has its own count.
+                .map(|have| match self.eng.outputs.primary().backend {
+                    Backend::Device(_) => have.min(openlab_audio::MAX_OUTPUT_CHANNELS),
+                    Backend::Offline => {
+                        have.min(self.eng.outputs.primary().mixer.device_outputs().max(1))
+                    }
+                })
                 // Not connected now: round the outputs the mapping already reaches.
                 .unwrap_or_else(|| {
                     old.channels
@@ -309,20 +357,20 @@ impl DocCx<'_> {
                         .map_or(1, |&c| usize::try_from(c).unwrap_or(0).saturating_add(1))
                 })
                 .max(1);
-            let channels: Vec<u32> = (0..wanted)
-                .map(|i| {
-                    old.channels
-                        .get(i)
-                        .copied()
-                        .unwrap_or_else(|| u32::try_from(i % usable).unwrap_or(0))
-                })
-                .collect();
+            let mut channels = old.channels.clone();
+            channels.extend(
+                (old.channels.len()..wanted.min(usable)).filter_map(|i| u32::try_from(i).ok()),
+            );
+            if channels == old.channels {
+                continue;
+            }
             fitted.push((
                 patch.id,
                 patch.name.clone(),
                 PatchMapping {
                     device: old.device.clone(),
                     channels,
+                    system: old.system,
                 },
             ));
         }
@@ -335,7 +383,7 @@ impl DocCx<'_> {
             let text = format!(
                 "patch '{name}' now has {} cue outputs: mapped to {} {}",
                 mapping.channels.len(),
-                mapping.device,
+                mapping_device_text(&mapping),
                 channels_text(&mapping.channels)
             );
             match self
@@ -359,6 +407,69 @@ impl DocCx<'_> {
 }
 
 impl Engine {
+    /// A new workspace's output patches (QLab 5 manual p. 106): one for each output device
+    /// connected now. Its own first patch is the primary device's (the default mapping puts it
+    /// there when the doc opens); each other listed device with outputs gets a patch like it,
+    /// named "Patch 2", "Patch 3"... in list order, mapped on this machine to that device's first
+    /// outputs. At most [`MAX_OUTPUTS`] in all: the engine plays on no more devices at once. With
+    /// no device playing the workspace keeps its one patch.
+    ///
+    /// [`MAX_OUTPUTS`]: super::outputs::MAX_OUTPUTS
+    pub(super) fn add_device_patches(&mut self, ws: &mut openlab_core::Workspace) {
+        let Some((primary, _)) = self.playable.iter().find(|(_, key)| *key == 0) else {
+            return;
+        };
+        let primary = primary.name.clone();
+        let Some(first) = ws.patches.first().cloned() else {
+            return;
+        };
+        let mut named = vec![primary];
+        let mut notes = Vec::new();
+        for device in self.device_list() {
+            if ws.patches.len() >= super::outputs::MAX_OUTPUTS {
+                break;
+            }
+            if device.output_channels == 0 || named.contains(&device.name) {
+                continue;
+            }
+            named.push(device.name.clone());
+            let have = usize::try_from(device.output_channels).unwrap_or(usize::MAX);
+            let wanted = first.outputs.len().min(have);
+            let mut patch = first.clone();
+            patch.id = PatchId(super::docs::random_id());
+            patch.name = format!("Patch {}", ws.patches.len() + 1);
+            let mapping = PatchMapping {
+                device: device.name.clone(),
+                channels: (0..wanted).filter_map(|c| u32::try_from(c).ok()).collect(),
+                system: false,
+            };
+            // A listed device with outputs is always a valid mapping; were one refused, that
+            // device would get no patch rather than a second one on the primary.
+            if self
+                .config
+                .machine
+                .set_patch_mapping(ws.id, patch.id, mapping)
+                .is_err()
+            {
+                continue;
+            }
+            notes.push(format!(
+                "mapped patch '{}' to {} {}",
+                patch.name,
+                device.name,
+                outputs_text(wanted)
+            ));
+            ws.patches.push(patch);
+        }
+        if notes.is_empty() {
+            return;
+        }
+        self.save_machine();
+        for message in notes {
+            self.log(LogLevel::Info, message);
+        }
+    }
+
     /// `set_output_device`: the device the engine opens at its next start. Validated against the
     /// list, stored like a mapping; the stream in use is not touched (the engine plays on one
     /// device for its whole run).
@@ -386,6 +497,52 @@ impl Engine {
         self.save_machine();
         self.log(LogLevel::Info, message);
         Ok(())
+    }
+
+    /// `set_backup_keep`: how many backups of each workspace later saves keep.
+    pub(super) fn set_backup_keep(&mut self, count: u32) -> Result<u32, ErrorBody> {
+        self.require_saveable()?;
+        self.config
+            .machine
+            .set_backup_keep(count)
+            .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
+        self.save_machine();
+        self.log(
+            LogLevel::Info,
+            format!("{count} backups of each workspace will be kept"),
+        );
+        Ok(count)
+    }
+
+    /// The OSC server's state, for `osc_state`.
+    pub(super) fn osc_state(&self) -> Option<crate::net::OscState> {
+        self.config.osc.as_ref().map(|osc| osc.state())
+    }
+
+    /// `set_osc_port`: opens the new port first and keeps the old one if that fails; the choice is
+    /// kept for the next start.
+    pub(super) fn set_osc_port(&mut self, port: u16) -> Result<crate::net::OscState, ErrorBody> {
+        let Some(osc) = self.config.osc.clone() else {
+            return Err(ErrorBody::new(ErrorCode::Unsupported, "OSC is not running"));
+        };
+        if port == 0 {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "an OSC port is a number from 1 to 65535",
+            ));
+        }
+        self.require_saveable()?;
+        let state = osc.set_port(port).map_err(|why| {
+            self.log(LogLevel::Warn, format!("OSC port {port}: {why}"));
+            ErrorBody::new(ErrorCode::Io, why)
+        })?;
+        self.config
+            .machine
+            .set_osc_port(port)
+            .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
+        self.save_machine();
+        self.log(LogLevel::Info, format!("OSC listens on port {port}"));
+        Ok(state)
     }
 
     /// Refuses an operator's change to the machine settings that could not be kept: they would

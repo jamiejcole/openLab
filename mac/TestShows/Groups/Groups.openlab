@@ -1,0 +1,615 @@
+{
+ "format_version": 9,
+ "workspace": {
+  "id": "00000697-0000-4000-8000-000000000001",
+  "name": "Group boxes",
+  "settings": {
+   "copy_media_on_add": false,
+   "min_go_interval": 0.5,
+   "panic_duration": 3.0,
+   "autosave_interval": 30.0,
+   "osc_access": {
+    "no_passcode": {
+     "view": false,
+     "edit": false,
+     "control": false
+    },
+    "passcodes": [
+     {
+      "passcode": "1234",
+      "rights": {
+       "view": true,
+       "edit": true,
+       "control": true
+      }
+     }
+    ]
+   },
+   "output_max_db": 12.0,
+   "output_min_db": -60.0,
+   "hotkeys": {
+    "go": {
+     "key": "space",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "stop_all": null,
+    "pause_all": null,
+    "resume_all": {
+     "key": "]",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "load_selected": {
+     "key": "l",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "pause_resume_selected": {
+     "key": "p",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "start_selected": null,
+    "stop_selected": null,
+    "reset_selected": null,
+    "preview_selected": {
+     "key": "v",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "panic_selected": {
+     "key": "s",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    }
+   },
+   "auto_number_start": 1.0,
+   "auto_number_increment": 0.5
+  },
+  "patches": [
+   {
+    "id": "00000653-0000-4000-8000-000000000003",
+    "name": "Main PA",
+    "master_db": 0.0,
+    "outputs": [
+     {
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "level_db": -1.5,
+      "mute": false,
+      "polarity_inverted": true
+     }
+    ]
+   }
+  ],
+  "network_patches": [
+   {
+    "id": "00000653-0000-4000-8000-000000000004",
+    "name": "Lighting desk",
+    "host": "127.0.0.1",
+    "port": 53000,
+    "protocol": "udp"
+   }
+  ],
+  "cue_lists": [
+   {
+    "id": "00000697-0000-4000-8000-000000000002",
+    "name": "Main",
+    "cues": [
+     {
+      "id": "00000697-0000-4000-8000-000000000901",
+      "number": "1",
+      "name": "Opening",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "osc": null
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000697-0000-4000-8000-000000000907",
+      "number": "2",
+      "name": "Storm",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "osc": null
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "group",
+       "mode": {
+        "type": "timeline"
+       },
+       "children": [
+        {
+         "id": "00000697-0000-4000-8000-000000000902",
+         "number": "2.1",
+         "name": "Thunder",
+         "notes": "",
+         "color": "red",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "memo"
+         }
+        },
+        {
+         "id": "00000697-0000-4000-8000-000000000903",
+         "number": "2.2",
+         "name": "Rain",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "memo"
+         }
+        },
+        {
+         "id": "00000697-0000-4000-8000-000000000906",
+         "number": "2.3",
+         "name": "Inner playlist",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "group",
+          "mode": {
+           "type": "playlist",
+           "loop": false,
+           "shuffle": false
+          },
+          "children": [
+           {
+            "id": "00000697-0000-4000-8000-000000000904",
+            "number": "2.3.1",
+            "name": "Song one",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+             "hotkey": null,
+             "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+             "type": "wait",
+             "duration": 2.0
+            }
+           },
+           {
+            "id": "00000697-0000-4000-8000-000000000905",
+            "number": "2.3.2",
+            "name": "Song two",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+             "hotkey": null,
+             "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+             "type": "wait",
+             "duration": 2.0
+            }
+           }
+          ]
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "00000697-0000-4000-8000-00000000090b",
+      "number": "3",
+      "name": "Pre-show music",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "osc": null
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "group",
+       "mode": {
+        "type": "playlist",
+        "loop": false,
+        "shuffle": false
+       },
+       "children": [
+        {
+         "id": "00000697-0000-4000-8000-000000000908",
+         "number": "3.1",
+         "name": "Track one",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "wait",
+          "duration": 3.0
+         }
+        },
+        {
+         "id": "00000697-0000-4000-8000-000000000909",
+         "number": "3.2",
+         "name": "Track two",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "wait",
+          "duration": 3.0
+         }
+        },
+        {
+         "id": "00000697-0000-4000-8000-00000000090a",
+         "number": "3.3",
+         "name": "Track three, the long closing number that runs past the end of the Name column",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "wait",
+          "duration": 3.0
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "00000697-0000-4000-8000-00000000090e",
+      "number": "4",
+      "name": "Random bells",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "osc": null
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "group",
+       "mode": {
+        "type": "start_random"
+       },
+       "children": [
+        {
+         "id": "00000697-0000-4000-8000-00000000090c",
+         "number": "4.1",
+         "name": "Bell A",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "memo"
+         }
+        },
+        {
+         "id": "00000697-0000-4000-8000-00000000090d",
+         "number": "4.2",
+         "name": "Bell B",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "memo"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "00000697-0000-4000-8000-000000000911",
+      "number": "5",
+      "name": "Enter scene",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "osc": null
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "group",
+       "mode": {
+        "type": "start_first_and_enter"
+       },
+       "children": [
+        {
+         "id": "00000697-0000-4000-8000-00000000090f",
+         "number": "5.1",
+         "name": "Lights up",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "memo"
+         }
+        },
+        {
+         "id": "00000697-0000-4000-8000-000000000910",
+         "number": "5.2",
+         "name": "Door",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "memo"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "00000697-0000-4000-8000-000000000913",
+      "number": "6",
+      "name": "Start first",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "osc": null
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "group",
+       "mode": {
+        "type": "start_first_and_go_to_next"
+       },
+       "children": [
+        {
+         "id": "00000697-0000-4000-8000-000000000912",
+         "number": "6.1",
+         "name": "Sequence",
+         "notes": "",
+         "color": "none",
+         "flagged": false,
+         "armed": true,
+         "pre_wait": 0.0,
+         "post_wait": 0.0,
+         "continue_mode": "do_not_continue",
+         "triggers": {
+          "hotkey": null,
+          "osc": null
+         },
+         "second_trigger": "nothing",
+         "second_trigger_on_release": false,
+         "kind": {
+          "type": "memo"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "id": "00000697-0000-4000-8000-000000000914",
+      "number": "7",
+      "name": "Empty timeline",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "osc": null
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "group",
+       "mode": {
+        "type": "timeline"
+       },
+       "children": []
+      }
+     },
+     {
+      "id": "00000697-0000-4000-8000-000000000915",
+      "number": "8",
+      "name": "After the groups",
+      "notes": "",
+      "color": "red",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "osc": null
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     }
+    ]
+   }
+  ]
+ }
+}

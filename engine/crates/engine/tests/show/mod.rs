@@ -16,8 +16,8 @@ use openlab_core::protocol::{
 use openlab_core::{
     ContinueMode, Crosspoint, Cue, CueColor, CueId, CueKind, CueLevels, CueList, CueListId,
     CueOutput, DeviceInfo, FadeCurve, FadeSpec, MachineSettings, MediaRef, OutputPatch, PatchId,
-    PatchMapping, PatchOutput, SecondTrigger, SliceMarker, TransportHotkeys, Triggers, Workspace,
-    WorkspaceId, WorkspaceSettings,
+    PatchMapping, PatchOutput, PlayCount, SecondTrigger, SliceMarker, TransportHotkeys, Triggers,
+    Workspace, WorkspaceId, WorkspaceSettings,
 };
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
@@ -68,6 +68,7 @@ pub fn cue(n: u128, kind: CueKind) -> Cue {
         triggers: Triggers {
             hotkey: None,
             hotkey_enabled: true,
+            wall_clock: Default::default(),
         },
         second_trigger: SecondTrigger::Nothing,
         second_trigger_on_release: false,
@@ -95,7 +96,7 @@ pub fn audio(n: u128, path: &Path, out: u32) -> Cue {
                 curve: FadeCurve::Linear,
             },
             slices: vec![],
-            last_slice_play_count: 1,
+            last_slice_play_count: 1.into(),
             levels: CueLevels {
                 master_db: 0.0,
                 outputs: vec![
@@ -118,8 +119,14 @@ pub fn audio(n: u128, path: &Path, out: u32) -> Cue {
     )
 }
 
-/// Sets an audio cue's slice markers.
-pub fn with_slices(mut c: Cue, markers: &[(f64, u32)], last: u32) -> Cue {
+/// Sets an audio cue's slice markers; a count is a stored number (0: until devamped).
+pub fn with_slices(c: Cue, markers: &[(f64, u32)], last: u32) -> Cue {
+    let markers: Vec<(f64, PlayCount)> = markers.iter().map(|&(t, n)| (t, n.into())).collect();
+    with_counts(c, &markers, last.into())
+}
+
+/// Sets an audio cue's slice markers and how each slice plays.
+pub fn with_counts(mut c: Cue, markers: &[(f64, PlayCount)], last: PlayCount) -> Cue {
     if let CueKind::Audio {
         slices,
         last_slice_play_count,
@@ -150,8 +157,15 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             auto_number_start: 1.0,
             auto_number_increment: 1.0,
             new_cues_auto_load: false,
+            auto_number_new_cues: true,
+            lock_playhead: true,
+            go_needs_key_up: false,
+            osc_enabled: true,
+            copy_media_on_add: true,
         },
         patches: vec![OutputPatch {
+            crosspoints: Vec::new(),
+            device_outputs: Vec::new(),
             id: patch_id(),
             name: "Main".into(),
             master_db: 0.0,
@@ -217,6 +231,7 @@ pub fn config_at(ws: &Workspace, rate: u32, block: u64) -> ControlConfig {
             PatchMapping {
                 device: "Offline".into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();
@@ -337,15 +352,15 @@ fn process_dir() -> &'static Path {
             .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
             .unwrap()
             .keep();
-        prune_old_process_dirs(&dir);
+        prune_old_process_dirs(&dir, "control-");
         dir
     })
 }
 
-/// Removes earlier runs' `control-*` folders (each run keeps its own, and they add up). Only
-/// folders untouched for an hour go: a test process running alongside this one is younger.
+/// Removes earlier runs' folders named `prefix...` (each run keeps its own, and they add up).
+/// Only folders untouched for an hour go: a test process running alongside this one is younger.
 /// Best effort; nothing here fails a test.
-fn prune_old_process_dirs(own: &Path) {
+pub fn prune_old_process_dirs(own: &Path, prefix: &str) {
     let Ok(entries) = std::fs::read_dir(env!("CARGO_TARGET_TMPDIR")) else {
         return;
     };
@@ -355,7 +370,7 @@ fn prune_old_process_dirs(own: &Path) {
         let named = entry
             .file_name()
             .to_str()
-            .is_some_and(|n| n.starts_with("control-"));
+            .is_some_and(|n| n.starts_with(prefix));
         let old = entry
             .metadata()
             .and_then(|m| m.modified())
@@ -595,6 +610,7 @@ pub fn statuses(msgs: Vec<ServerMessage>) -> Vec<openlab_core::protocol::SystemS
 pub struct HandClock {
     ms: std::sync::Arc<AtomicU64>,
     pings: std::sync::Arc<AtomicU64>,
+    wakes: std::sync::Arc<AtomicU64>,
 }
 
 impl HandClock {
@@ -602,10 +618,11 @@ impl HandClock {
         Self {
             ms: std::sync::Arc::new(AtomicU64::new(0)),
             pings: std::sync::Arc::new(AtomicU64::new(0)),
+            wakes: std::sync::Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Runs `host`'s supervisor on this clock, counting its pings.
+    /// Runs `host`'s supervisor on this clock, counting its pings and wakes.
     pub fn drive(&self, host: &mut openlab_engine::stage::StageHostConfig) {
         let base = std::time::Instant::now();
         let ms = std::sync::Arc::clone(&self.ms);
@@ -613,12 +630,18 @@ impl HandClock {
             base + std::time::Duration::from_millis(ms.load(Ordering::SeqCst))
         });
         host.pings_sent = Some(std::sync::Arc::clone(&self.pings));
+        host.wakes = Some(std::sync::Arc::clone(&self.wakes));
     }
 
     /// Moves the clock on by `seconds` and has the supervisor look at it.
     pub fn advance(&self, s: &mut OfflineShow, seconds: u64) {
         self.ms.fetch_add(seconds * 1000, Ordering::SeqCst);
         s.control().wake_stage_supervisor();
+    }
+
+    /// Times the supervisor's loop has woken.
+    pub fn wakes(&self) -> u64 {
+        self.wakes.load(Ordering::SeqCst)
     }
 
     /// Pings the supervisor has sent.

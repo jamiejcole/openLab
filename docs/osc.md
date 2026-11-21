@@ -15,7 +15,7 @@ Anything not listed here is not implemented: openLab answers it with an `error` 
 
 | What | Where |
 |---|---|
-| Messages to openLab | UDP or TCP port **53000**, on every IPv4 network interface of the show computer |
+| Messages to openLab | UDP or TCP port **53000** (changed on the workspace settings' OSC page), on every IPv4 network interface of the show computer |
 | Replies and updates over UDP | the sender's IP address, port **53001** (whatever port it sent from), unless it asked for another with `/udpReplyPort` |
 | Replies and updates over TCP | back on the same connection |
 
@@ -216,10 +216,21 @@ needs View; changing needs Edit (notes: View).
 | `/cue/{number}/isRunning` | read only | true while waiting, playing, fading or stopping |
 | `/cue/{number}/isPaused` | read only | |
 | `/cue/{number}/isBroken` | read only | |
+| `/cue/{number}/opacity` | 0 to 1 | Video cues only (as are the rows below) |
+| `/cue/{number}/layer` | whole number, 0 (bottom) to 1000 (top) | |
+| `/cue/{number}/fillStage` | 1 or 0, or true or false | fill the stage (true) or custom geometry |
+| `/cue/{number}/fillStyle` | 0 fit, 1 fill, 2 stretch | an int |
+| `/cue/{number}/smooth` | 1 or 0, or true or false | smooth scaling; off draws hard pixel edges |
+| `/cue/{number}/preserveAspectRatio` | 1 or 0, or true or false | the scale lock |
+| `/cue/{number}/cropTop` | pixels, 0 to 16384 | likewise `cropBottom`, `cropLeft`, `cropRight` |
+| `/cue/{number}/cropBottom` | pixels, 0 to 16384 | |
+| `/cue/{number}/cropLeft` | pixels, 0 to 16384 | |
+| `/cue/{number}/cropRight` | pixels, 0 to 16384 | |
 
 A value of the wrong type, out of range, or a property the cue does not have (a duration on an
-Audio cue) gets an `error` reply and changes nothing. A Load cue's load time has no OSC address
-(as in QLab 5); set it in the app.
+Audio cue, an opacity on anything but a Video cue) gets an `error` reply and changes nothing. A
+Load cue's load time has no OSC address (as in QLab 5); set it in the app. A Video cue's
+position, scale, rotation and anchor have no OSC address yet; set them in the app.
 Every change is one step in the workspace's undo history, as if made in the app.
 
 Examples:

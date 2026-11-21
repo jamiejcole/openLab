@@ -80,6 +80,9 @@ pub struct StageHostConfig {
     /// out before it moves the clock past its answer time.
     #[cfg(feature = "test-support")]
     pub pings_sent: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Test support: counts the supervisor's wakes, so a test sees it sleeps between checks.
+    #[cfg(feature = "test-support")]
+    pub wakes: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl StageHostConfig {
@@ -96,6 +99,8 @@ impl StageHostConfig {
             clock: StageClock::system(),
             #[cfg(feature = "test-support")]
             pings_sent: None,
+            #[cfg(feature = "test-support")]
+            wakes: None,
         }
     }
 }
@@ -136,6 +141,10 @@ pub enum StageEvent {
         picture: u64,
         reason: String,
     },
+    /// The operator closed the stage's monitor window (or it could not be drawn).
+    MonitorClosed {
+        stage: StageId,
+    },
     /// Test support: a probe's answer.
     #[cfg(feature = "test-support")]
     Probed {
@@ -151,6 +160,7 @@ pub enum StageEvent {
 pub enum Probed {
     Stage(StageId),
     Display(String),
+    Monitor(StageId),
 }
 
 pub type EventSink = Arc<dyn Fn(StageEvent) + Send + Sync>;
@@ -173,6 +183,8 @@ enum Order {
     /// Test support: nothing; the supervisor looks at its (hand-moved) clock again.
     #[cfg(feature = "test-support")]
     Wake,
+    /// The control thread runs: the next ping may go.
+    Alive,
     Quit,
 }
 
@@ -198,6 +210,14 @@ impl StageHost {
         let _ = self.commands.send(Order::Picture(message));
     }
 
+    /// Brings the stage's monitor window to the front (opened again if the operator closed it);
+    /// with no stage host running it is dropped (the stage set opens the monitors of the next).
+    pub fn raise_monitor(&self, stage: StageId) {
+        let _ = self
+            .commands
+            .send(Order::Picture(ToStage::RaiseMonitor { stage }));
+    }
+
     /// Sends the stage host a routine clock, dropped if it is behind (see `Order::Clock`).
     pub fn routine_clock(&self, message: ToStage) {
         let _ = self.commands.send(Order::Clock(message));
@@ -207,6 +227,13 @@ impl StageHost {
     #[cfg(feature = "test-support")]
     pub fn send(&self, message: ToStage) {
         let _ = self.commands.send(Order::Send(message));
+    }
+
+    /// The control thread is running. Pings go only after this was said since the last one,
+    /// so a stage host hears nothing from a hung engine (its stage on the menu bar's display
+    /// then lets the operator back in) however healthy this thread is.
+    pub fn alive(&self) {
+        let _ = self.commands.send(Order::Alive);
     }
 
     /// Test support: has the supervisor look at its clock again (a test moved it by hand).
@@ -219,6 +246,23 @@ impl StageHost {
 impl Drop for StageHost {
     fn drop(&mut self) {
         let _ = self.commands.send(Order::Quit);
+    }
+}
+
+/// When the supervisor must look again at a stage host that answered `hello`: its ping's answer
+/// time, or the next ping once the control thread has said it runs. While the control thread is
+/// hung no ping can go, so the next one is no deadline (it would be in the past and the supervisor
+/// would never sleep); the control thread's next `Order::Alive` wakes it and the ping goes then.
+/// Generic over the time so its test needs no clock.
+fn ping_deadline<T: std::ops::Add<Duration, Output = T>>(
+    ping_sent: Option<T>,
+    next_ping: T,
+    alive: bool,
+    answer_within: Duration,
+) -> Option<T> {
+    match ping_sent {
+        Some(sent) => Some(sent + answer_within),
+        None => alive.then_some(next_ping),
     }
 }
 
@@ -268,6 +312,8 @@ struct Supervisor {
     /// A stage host of another link version: never started again.
     incompatible: bool,
     seq: u64,
+    /// The control thread said it runs since the last ping went (`Order::Alive`).
+    alive: bool,
 }
 
 impl Supervisor {
@@ -282,11 +328,16 @@ impl Supervisor {
             paused_until: None,
             incompatible: false,
             seq: 0,
+            alive: false,
         }
     }
 
     fn run(mut self) {
         loop {
+            #[cfg(feature = "test-support")]
+            if let Some(count) = &self.config.wakes {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             let now = self.config.clock.now();
             if self.running.is_none() && self.may_start(now) {
                 self.start(now);
@@ -312,6 +363,7 @@ impl Supervisor {
                     Ok(Order::Send(message)) => self.write(&message),
                     #[cfg(feature = "test-support")]
                     Ok(Order::Wake) => {}
+                    Ok(Order::Alive) => self.alive = true,
                     // Only once it has its stages: the engine sends every picture again when
                     // a stage host starts.
                     Ok(Order::Picture(message)) => {
@@ -362,10 +414,12 @@ impl Supervisor {
     fn next_deadline(&self, now: Instant) -> Option<Instant> {
         match &self.running {
             Some(r) if !r.hello => Some(r.started + self.config.hello_within),
-            Some(r) => Some(match r.ping {
-                Some((_, sent)) => sent + self.config.answer_within,
-                None => r.next_ping,
-            }),
+            Some(r) => ping_deadline(
+                r.ping.map(|(_, sent)| sent),
+                r.next_ping,
+                self.alive,
+                self.config.answer_within,
+            ),
             None => self.paused_until.or(Some(now + self.config.retry_after)),
         }
     }
@@ -490,6 +544,15 @@ impl Supervisor {
                 return;
             }
             FromStage::StageStatus { stage, state } => StageEvent::Status { stage, state },
+            FromStage::MonitorClosed { stage }
+                if !self
+                    .stages
+                    .as_ref()
+                    .is_some_and(|s| s.iter().any(|o| o.id == stage)) =>
+            {
+                return;
+            }
+            FromStage::MonitorClosed { stage } => StageEvent::MonitorClosed { stage },
             FromStage::PictureOpened { picture } => StageEvent::PictureOpened { picture },
             FromStage::PictureFailed { picture, reason } => {
                 StageEvent::PictureFailed { picture, reason }
@@ -522,6 +585,16 @@ impl Supervisor {
                 frame,
                 colours,
             },
+            #[cfg(feature = "test-support")]
+            FromStage::MonitorProbed {
+                stage,
+                frame,
+                colours,
+            } => StageEvent::Probed {
+                target: Probed::Monitor(stage),
+                frame,
+                colours,
+            },
         };
         (self.events)(event);
     }
@@ -541,7 +614,8 @@ impl Supervisor {
                 self.stop("it stopped answering".into());
             }
             Some(_) => {}
-            None if now >= r.next_ping => {
+            None if now >= r.next_ping && self.alive => {
+                self.alive = false;
                 self.seq = self.seq.wrapping_add(1);
                 r.ping = Some((self.seq, now));
                 r.next_ping = now + self.config.ping_every;
@@ -691,7 +765,7 @@ fn spawn(config: &StageHostConfig, events: &EventSink) -> std::io::Result<Spawne
     // Its own process group: a terminal's Ctrl-C reaches the engine, which decides.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let mut child = command.spawn()?;
+    let mut child = crate::platform::spawn::spawn(&mut command)?;
     let (stdin, stdout, stderr) =
         match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
             (Some(i), Some(o), Some(e)) => (i, o, e),
@@ -780,14 +854,32 @@ fn forward_stderr(stderr: impl std::io::Read, events: &EventSink) {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::process::ExitStatusExt;
+
+    /// #789: with the control thread hung (no alive mark since the last ping) the next ping is
+    /// not a deadline, however far in the past it is, so the supervisor sleeps; a ping waiting
+    /// for its answer keeps its answer time, and an alive mark makes the next ping due again.
+    #[test]
+    fn a_ping_waits_for_the_control_thread_without_being_a_deadline() {
+        // Times as offsets from the supervisor's start: now is 60 s, the next ping 30 s overdue.
+        let now = Duration::from_secs(60);
+        let overdue = Duration::from_secs(30);
+        let answer = Duration::from_secs(5);
+        assert_eq!(ping_deadline(None, overdue, false, answer), None);
+        assert_eq!(ping_deadline(None, overdue, true, answer), Some(overdue));
+        assert_eq!(
+            ping_deadline(Some(now), overdue, false, answer),
+            Some(now + answer)
+        );
+    }
 
     /// A fault signal or a failing exit is a crash; a kill from outside or a clean exit is not.
+    #[cfg(unix)]
     #[test]
     fn only_a_fault_or_a_failing_exit_is_a_crash() {
+        use std::os::unix::process::ExitStatusExt;
         // Raw wait statuses: a signal in the low bits, an exit code in the next byte.
         for signal in [4, 5, 6, 8, 11] {
             assert!(crashed(ExitStatus::from_raw(signal)), "signal {signal}");

@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 71,
+  "request": {
+    "type": "set_osc_port",
+    "port": 53100
+  }
+}

@@ -12,6 +12,32 @@ use openlab_core::protocol::{
 };
 
 use super::docs::DocSource;
+
+/// The `backup_keep` answer.
+fn backup_result(id: openlab_core::protocol::RequestId, count: u32) -> ServerMessage {
+    ServerMessage::Result {
+        id,
+        outcome: Outcome::Ok(OkBody {
+            revision: None,
+            data: Some(ResultData::BackupKeep { count }),
+        }),
+    }
+}
+
+/// The `osc` answer.
+fn osc_result(id: openlab_core::protocol::RequestId, state: crate::net::OscState) -> ServerMessage {
+    ServerMessage::Result {
+        id,
+        outcome: Outcome::Ok(OkBody {
+            revision: None,
+            data: Some(ResultData::Osc {
+                port: state.port,
+                open: state.open,
+                error: state.error,
+            }),
+        }),
+    }
+}
 use super::inbox::reply;
 use super::watch::WatchAnswer;
 use super::{Control, DocCx, DocId, Flow, Inbox, ReplyTx, fail, failed, ok, refused};
@@ -63,6 +89,7 @@ impl Control {
                 }
             }
             Inbox::Doc(answer) => self.doc_answer(answer),
+            Inbox::Copy(answer) => self.copy_answer(answer),
             Inbox::Watch(WatchAnswer::Batch(batch)) => self.eng.watch_batches.push(batch),
             Inbox::Watch(WatchAnswer::BucketAnswered { bucket, healthy }) => {
                 self.eng.watch.watch_mut().answered(&bucket, healthy);
@@ -70,6 +97,13 @@ impl Control {
             Inbox::Log { level, message } => self.eng.log(level, message),
             Inbox::Trigger { source, detail } => self.eng.observe_trigger(source, detail),
             Inbox::Stage(event) => self.stage_event(event),
+            Inbox::AppsGone => {
+                self.close_monitors();
+                // No app is left to take a question down: the stage covers its display again.
+                if self.eng.stages.stand_back {
+                    self.eng.set_stand_back(false);
+                }
+            }
             Inbox::Shutdown => return Flow::Shutdown,
         }
         Flow::Continue
@@ -88,6 +122,22 @@ impl Control {
             Ok(flow) => return flow,
             Err(message) => message,
         };
+        if let Addr::Doc(Some(doc)) = from
+            && matches!(
+                message,
+                ClientMessage::Command { .. }
+                    | ClientMessage::Undo { .. }
+                    | ClientMessage::Redo { .. }
+                    | ClientMessage::Request {
+                        request: Request::SetShowMode { on: true },
+                        ..
+                    }
+            )
+        {
+            // A copy still pointing cues at their copies finishes first: it is one undo step,
+            // and the show is never left half retargeted.
+            self.flush_retargets(doc);
+        }
         match from {
             Addr::Doc(Some(doc)) => match message {
                 // Saves look at the other docs' show files: the engine's, not the doc's.
@@ -101,6 +151,14 @@ impl Control {
                     request: Request::Relink { folder, preview },
                 } if self.cx_of(doc).is_some() => {
                     self.relink(doc, id, folder, preview, to);
+                    Flow::Continue
+                }
+                // One copy runs engine-wide.
+                ClientMessage::Request {
+                    id,
+                    request: Request::CopyMedia,
+                } => {
+                    self.copy_media(doc, id, to);
                     Flow::Continue
                 }
                 // The mapping is the machine's: every doc resolves its patches again.
@@ -123,6 +181,27 @@ impl Control {
                     request: Request::SetStageMapping { stage, display },
                 } => {
                     self.set_stage_mapping(doc, id, stage, display, to);
+                    Flow::Continue
+                }
+                ClientMessage::Request {
+                    id,
+                    request: Request::SetStageMonitor { stage, open },
+                } => {
+                    self.set_stage_monitor(doc, id, stage, open, to);
+                    Flow::Continue
+                }
+                #[cfg(feature = "test-support")]
+                ClientMessage::Request {
+                    id,
+                    request:
+                        Request::MonitorProbe {
+                            stage,
+                            width,
+                            height,
+                            points,
+                        },
+                } => {
+                    self.monitor_probe(doc, id, stage, (width, height), points, to);
                     Flow::Continue
                 }
                 #[cfg(feature = "test-support")]
@@ -239,6 +318,10 @@ impl Control {
                     modified_ms,
                 } => self.discard_recovery(workspace_id, path_hash, modified_ms, id, to),
                 Request::ListDisplays => self.list_displays(id, to),
+                Request::SetStandBack { on } => {
+                    self.eng.set_stand_back(on);
+                    reply(to, ok(id, None));
+                }
                 Request::ListDevices => reply(
                     to,
                     ServerMessage::Result {
@@ -258,6 +341,45 @@ impl Control {
                         to,
                         match outcome {
                             Ok(()) => ok(id, None),
+                            Err(error) => failed(id, error),
+                        },
+                    );
+                }
+                Request::BackupKeep => {
+                    reply(to, backup_result(id, self.eng.config.machine.backup_keep))
+                }
+                Request::SetBackupKeep { count } => {
+                    let outcome = self.eng.set_backup_keep(count);
+                    reply(
+                        to,
+                        match outcome {
+                            Ok(count) => backup_result(id, count),
+                            Err(error) => failed(id, error),
+                        },
+                    );
+                }
+                Request::OscState => {
+                    let state = self.eng.osc_state();
+                    reply(
+                        to,
+                        match state {
+                            Some(state) => osc_result(id, state),
+                            None => failed(
+                                id,
+                                openlab_core::protocol::ErrorBody::new(
+                                    ErrorCode::Unsupported,
+                                    "OSC is not running",
+                                ),
+                            ),
+                        },
+                    );
+                }
+                Request::SetOscPort { port } => {
+                    let outcome = self.eng.set_osc_port(port);
+                    reply(
+                        to,
+                        match outcome {
+                            Ok(state) => osc_result(id, state),
                             Err(error) => failed(id, error),
                         },
                     );
@@ -292,9 +414,21 @@ impl Control {
                 #[cfg(feature = "test-support")]
                 Request::Advance { frames } => return Ok(self.advance(id, frames, to)),
                 #[cfg(feature = "test-support")]
-                Request::LoseDevice => return Ok(self.lose_device(id, to)),
+                Request::LoseDevice { device } => {
+                    return Ok(self.lose_device(id, device.as_deref(), to));
+                }
                 #[cfg(feature = "test-support")]
-                Request::RestoreDevice => return Ok(self.restore_device(id, to)),
+                Request::RestoreDevice { device } => {
+                    return Ok(self.restore_device(id, device.as_deref(), to));
+                }
+                #[cfg(feature = "test-support")]
+                Request::DropOut { device, count } => {
+                    return Ok(self.drop_out(id, device.as_deref(), count, to));
+                }
+                #[cfg(feature = "test-support")]
+                Request::SetDefaultDevice { device } => {
+                    return Ok(self.set_default_device(id, &device, to));
+                }
                 #[cfg(feature = "test-support")]
                 Request::DisplayProbe { display, points } => {
                     self.display_probe(id, display, points, to);
@@ -415,7 +549,12 @@ impl DocCx<'_> {
                         return Flow::Continue;
                     }
                 };
+                if let Some(e) = self.stage_removal_refused(&command) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
+                }
                 let footprint = command.footprint();
+                let sets_media = openlab_core::media_set_by(self.doc.model.ws(), &command);
                 let mut edit = self.doc.model.edit();
                 let result =
                     self.doc
@@ -429,6 +568,7 @@ impl DocCx<'_> {
                         // `model_changed`, not dirty.
                         if changed {
                             self.edited(now, &footprint);
+                            self.copy_on_add(sets_media);
                         }
                         reply(to, ok(id, Some(self.doc.revision)));
                     }
@@ -441,13 +581,18 @@ impl DocCx<'_> {
             ClientMessage::Undo { id } | ClientMessage::Redo { id } => {
                 let undo = matches!(message, ClientMessage::Undo { .. });
                 // The step about to be applied says what it changes.
-                let footprint = if undo {
+                let step = if undo {
                     self.doc.history.peek_undo()
                 } else {
                     self.doc.history.peek_redo()
+                };
+                // A step that removes a stage in use is refused as the command would be; it
+                // stays on the stack for once the cue is done.
+                if let Some(e) = step.and_then(|c| self.stage_removal_refused(c)) {
+                    reply(to, refused(id, &e));
+                    return Flow::Continue;
                 }
-                .map(Command::footprint)
-                .unwrap_or_default();
+                let footprint = step.map(Command::footprint).unwrap_or_default();
                 // A step that removes an active cue (an undo of its add, a redo of its delete)
                 // is performed, as QLab 5 does; the engine stops the cue as it stops a deleted
                 // one when it follows the edit.
@@ -472,6 +617,9 @@ impl DocCx<'_> {
             }
             ClientMessage::Request { id, request } => match request {
                 Request::Snapshot => {
+                    // The loaded cues' places are not in a snapshot: they go out again with the
+                    // next progress pass, for this client and any other.
+                    self.doc.last_loaded.clear();
                     reply(
                         to,
                         ServerMessage::Snapshot {
@@ -483,6 +631,10 @@ impl DocCx<'_> {
                 Request::SetShowMode { on } => {
                     if self.doc.show_mode != on {
                         self.doc.show_mode = on;
+                        // Nothing is copied while the show runs.
+                        if on {
+                            self.eng.copies.stop_doc(self.doc.id);
+                        }
                         self.document();
                     }
                     reply(to, ok(id, None));
@@ -515,6 +667,23 @@ impl DocCx<'_> {
                             outcome: Outcome::Ok(OkBody {
                                 revision: None,
                                 data: Some(ResultData::PatchMappings { patches }),
+                            }),
+                        },
+                    );
+                }
+                Request::SequenceSpan { cue } => {
+                    let span = self
+                        .doc
+                        .model
+                        .engine()
+                        .sequence_span(self.doc.model.ws(), cue);
+                    reply(
+                        to,
+                        ServerMessage::Result {
+                            id,
+                            outcome: Outcome::Ok(OkBody {
+                                revision: None,
+                                data: Some(ResultData::SequenceSpan { span }),
                             }),
                         },
                     );

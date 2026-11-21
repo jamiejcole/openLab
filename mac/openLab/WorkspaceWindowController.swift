@@ -70,12 +70,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
     }
     /// Find Missing Files was asked for from a Warnings row.
-    var onRelink: (() -> Void)? {
-        didSet { sidebar.onRelink = onRelink }
-    }
+    var onRelink: (() -> Void)?
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
     let findBar = FindBarView()
+    let loadBar = LoadTimeBarView()
+    /// Load to Time (`WorkspaceWindowController+LoadTime`): the bar's state.
+    var loadTime = LoadTimeState()
     /// Find (ED-09): the typed search, what it found and the bar's state (`WorkspaceWindowController+Find`).
     var find = FindState()
     let cueList: CueListViewController
@@ -85,6 +86,22 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var sub: AnyCancellable?
     private var statusSub: AnyCancellable?
     private var showModeSub: AnyCancellable?
+    private var goProtectionSub: AnyCancellable?
+    private var goBlockedSub: AnyCancellable?
+    private var mediaCopySub: AnyCancellable?
+    private var statusController: StatusWindowController?
+    /// The workspace status window if it was ever made (closing a workspace must not make one just to
+    /// close it).
+    var existingStatusWindow: StatusWindowController? { statusController }
+    /// The workspace status window, made on first use: the warnings, the log and the workspace's
+    /// info as its pages. It closes with this window.
+    var statusWindow: StatusWindowController {
+        if let statusController { return statusController }
+        let made = StatusWindowController(store: store, warnings: warningsPage, logs: logWindow)
+        made.retitle(workspaceName)
+        statusController = made
+        return made
+    }
     private var logController: LogWindowController?
     private var closeObserver: NSObjectProtocol?
     var logWindow: LogWindowController {
@@ -95,13 +112,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
     /// The log window if it was ever made (closing a workspace must not make one just to close it).
     var existingLogWindow: LogWindowController? { logController }
-    private var preshowController: PreshowWindowController?
-    /// The pre-show check panel, made on first use. It closes with this window.
-    var preshowWindow: PreshowWindowController {
-        if let pc = preshowController { return pc }
-        let pc = PreshowWindowController(store: store)
+    private var warningsController: WarningsPageController?
+    /// The Warnings page of the status window, made on first use; it lists what the footer counts.
+    var warningsPage: WarningsPageController {
+        if let pc = warningsController { return pc }
+        let pc = WarningsPageController(store: store)
         pc.onInspect = { [weak self] id, tab in self?.inspect(cue: id, tab: tab) }
-        preshowController = pc
+        pc.onRelink = { [weak self] in self?.onRelink?() }
+        pc.relinkLocked = isShowMode
+        pc.show(WarningRows.make(store: store))
+        warningsController = pc
         return pc
     }
     private var settingsController: WorkspaceSettingsWindowController?
@@ -131,6 +151,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var pickFile: @MainActor (NewCueKind) -> URL? = WorkspaceWindowController.filePanel
     let verticalSplit = NSSplitView()
     let horizontalSplit = NSSplitView()
+    /// The GO area, toolbar, Find and Load bars and the cue list, one above the next.
+    private(set) var topColumn = NSView()
     /// The preferred inspector height and sidebar width (the splits' soft constraints).
     var inspectorHeightConstraint: NSLayoutConstraint?
     var sidebarWidthConstraint: NSLayoutConstraint?
@@ -140,8 +162,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var pendingInspectorHeight: CGFloat?
     var pendingSidebarWidth: CGFloat?
     var isRestoringLayout = false
-    /// The least the cue list keeps: its height (the baseline of a minimum-size window) and width.
-    static let minCueListHeight: CGFloat = 56
+    /// What a sideways scroller that always shows takes of the list's height.
+    static let sidewaysScrollerHeight = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+    /// The least the cue list keeps: its width, and its height: the header and one whole row, with a
+    /// sideways scroller under them for systems that always show one (the columns overflow at the least
+    /// width with the sidebar shown).
+    static let minCueListHeight: CGFloat = 56 + sidewaysScrollerHeight
+    /// The least window height: the list's extra room comes out of the inspector's, which at this size keeps
+    /// its existing room (over 240 points) and not its 180 least. The masthead's standby box (its text and the
+    /// room above and below it) is counted in the 500 as it was before it gained that room: the extra is added.
+    static let minWindowHeight: CGFloat = 500 + 2 * standbyFieldInset + sidewaysScrollerHeight
     /// The least the inspector may be: enough for the Time & Loops tab's left column (Start, End,
     /// play count, Loop) below the tab strip. The smallest window leaves this much.
     /// The inspector's height until the operator drags it: room for the level faders and the notes.
@@ -164,14 +194,15 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.title = loc("window.main.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.mainWindow)
         window.isReleasedWhenClosed = false  // closing must never destroy the window
-        window.minSize = NSSize(width: 800, height: 500)
+        window.minSize = NSSize(width: 800, height: Self.minWindowHeight)
+        window.collectionBehavior.insert(.fullScreenPrimary)
         super.init(window: window)
         window.delegate = self
         // The log window belongs to this workspace: it goes when the workspace's window does.
         closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: window, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.logController?.close() }
+            MainActor.assumeIsolated { self?.statusController?.close() }
         }
         cueList.onSelectionChange = { [weak inspector, weak cueList] in
             inspector?.setSelection($0, byFollow: cueList?.followingPlayhead == true)
@@ -240,12 +271,23 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         inspector.onJumpToTarget = { [weak self] id in self?.jumpToTarget(id) }
         inspector.onEditPatch = { [weak self] id in self?.editPatch(id) }
         cueList.onChooseFile = chooseFile
+        cueList.onKindDrop = { [weak self] kind, parent, index in
+            Task { await self?.editor.add(kind, after: self?.cueList.selectedIDs(), at: (parent, index)) }
+        }
         cueToolbar.onAdd = { [weak self] kind in
             let cues = self?.cueList.selectedIDs()
             Task { await self?.editor.add(kind, after: cues) }
         }
         window.contentView = buildContent()
+        // The model is already in the store: no reset will come to move the selection to the playhead's cue.
+        cueList.followPlayheadAtOpen()
         window.initialFirstResponder = cueList.outlineView
+        // A screen smaller than the default size (a small laptop, a scaled display) gets the largest
+        // window that fits, before centring.
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+        if let visible, let fitted = WindowLayout.fit(window.frame, screens: [visible], minSize: window.minSize) {
+            window.setFrame(fitted, display: false)
+        }
         window.center()
         // Combine does not deliver in subscription order, so whatever reads the cue list's own
         // state (the shown list, its tree) waits for `onModelApplied`, which it calls once it has
@@ -268,6 +310,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         wireFind()
+        wireLoadTime()
         masthead.onEditingEnded = { [weak self] in self?.syncMasthead() }
         masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
@@ -288,11 +331,20 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         showModeSub = store.$showMode.sink { [weak self] on in
             MainActor.assumeIsolated { self?.applyShowMode(on) }
         }
+        goProtectionSub = store.$goProtected.sink { [weak self] on in
+            MainActor.assumeIsolated { self?.masthead.setGoProtection(on) }
+        }
+        goBlockedSub = store.$goBlockedCount.dropFirst().sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.masthead.flashGo() }
+        }
+        mediaCopySub = watchMediaCopies()
         footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         footer.onSettings = { [weak self] in self?.showSettings() }
-        footer.onWarnings = { [weak self] in self?.showWarnings() }
+        // The footer's warning mark opens the status window on its Warnings page.
+        footer.onWarnings = { [weak self] in self?.showStatus(.warnings) }
         setVisible(.sidebar, false)
+        refreshTitle()
         startSavingLayout()
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
@@ -314,16 +366,21 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cues.contains { $0.id == id || contains(id, in: $0.children) }
     }
 
-    func showLog() {
-        logWindow.showWindow(nil)
-        Task { await logWindow.refresh() }
+    /// Opens the status window on `page` without taking the keyboard. The task's value tells tests the
+    /// page has read what it shows (the Logs page reads the engine's tail).
+    @discardableResult
+    func showStatus(_ page: StatusWindowController.Page) -> Task<Void, Never> {
+        let status = statusWindow
+        status.retitle(workspaceName)
+        return status.present(page)
     }
 
     /// Opens the workspace settings (the footer gear, File > Workspace Settings).
     @discardableResult
-    func showSettings() -> Task<Void, Never> {
+    func showSettings(page: SettingsPage? = nil) -> Task<Void, Never> {
         let sc = settingsWindow
         sc.window?.title = String(format: loc("settings.title.workspace"), workspaceName)
+        if let page { sc.show(page: page) }
         return sc.present()
     }
 
@@ -335,19 +392,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         return settingsWindow.openPatchEditor(patch)
     }
 
-    /// The pre-show check asks the engine: without a connection there is nothing to ask (the menu
-    /// item is greyed rather than showing an empty, all-clear-looking report).
-    var canRunPreshowCheck: Bool { store.connectionState == .connected }
-
-    /// Opens the pre-show check (SM-06) and runs it. The task's value tells tests it answered.
+    /// Window > Workspace Status and View > Warnings: the status window on its Warnings page.
     @discardableResult
-    func showPreshowCheck() -> Task<Void, Never> {
-        let pc = preshowWindow
-        pc.window?.title = String(format: loc("preshow.title.workspace"), workspaceName)
-        return Task { await pc.present() }
-    }
+    func showWorkspaceStatus() -> Task<Void, Never> { showStatus(.warnings) }
 
-    /// A pre-show report entry was chosen: reveals the cue (the playhead stays) and, in Edit Mode,
+    /// A Warnings row was chosen: reveals the cue (the playhead stays) and, in Edit Mode,
     /// shows the inspector on the tab that holds what to fix, as QLab's "Inspect Cue" does.
     func inspect(cue id: ModelID, tab: String?) {
         reveal(cue: id)
@@ -402,7 +451,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         masthead.isLocked = on
         cueToolbar.isLocked = on
         cueList.isEditLocked = on
-        sidebar.relinkLocked = on
+        warningsController?.relinkLocked = on
         sidebar.listEditLocked = on
         footer.setShowMode(on)
         for area in Self.hiddenInShowMode { show(area, on ? false : wanted[area] ?? true) }
@@ -480,64 +529,89 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let alert = NSAlert()
         alert.messageText = message
         alert.addButton(withTitle: loc("edit.ok"))
-        alert.beginSheetModal(for: window)
+        StandBack.beginSheet(alert, for: window)
     }
 
-    /// Asks for the first number and increment, then renumbers the selected cues (ED-08).
+    /// Asks for the first number, the increment and an optional prefix and suffix, then renumbers the
+    /// selected cues (ED-08).
     func promptRenumber() {
         let cues = cueList.selectedIDs()
         guard !isShowMode, let window, !cues.isEmpty else { return NSSound.beep() }
         let settings = store.model?.settings
         let start = NSTextField(string: Self.plain(settings?["auto_number_start"]?.doubleValue ?? 1))
         let step = NSTextField(string: Self.plain(settings?["auto_number_increment"]?.doubleValue ?? 1))
-        let form = NSGridView(views: [
-            [NSTextField(labelWithString: loc("edit.renumber.start")), start],
-            [NSTextField(labelWithString: loc("edit.renumber.increment")), step],
-        ])
-        form.frame = NSRect(x: 0, y: 0, width: 220, height: 56)
-        start.setAccessibilityIdentifier("renumber-start")
-        step.setAccessibilityIdentifier("renumber-increment")
+        let prefix = NSTextField(string: "")
+        let suffix = NSTextField(string: "")
+        let rows: [(String, NSTextField, String)] = [
+            ("edit.renumber.start", start, "renumber-start"), ("edit.renumber.increment", step, "renumber-increment"),
+            ("edit.renumber.prefix", prefix, "renumber-prefix"), ("edit.renumber.suffix", suffix, "renumber-suffix"),
+        ]
+        let form = NSGridView(views: rows.map { [NSTextField(labelWithString: loc($0.0)), $0.1] })
+        form.frame = NSRect(x: 0, y: 0, width: 260, height: 100)
+        for row in rows {
+            row.1.setAccessibilityIdentifier(row.2)
+            row.1.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        }
         let alert = NSAlert()
         alert.messageText = loc("edit.renumber.title")
         alert.accessoryView = form
         alert.addButton(withTitle: loc("edit.renumber.ok"))
         alert.addButton(withTitle: loc("edit.cancel"))
-        alert.beginSheetModal(for: window) { [weak self] response in
+        StandBack.beginSheet(alert, for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             guard let a = Double(start.stringValue), let b = Double(step.stringValue) else {
                 return self.showNotice(loc("edit.error.renumberValues"))
             }
-            Task { await self.editor.renumberSelection(of: cues, start: a, increment: b) }
-        }
-    }
-
-    /// One text field in a sheet; `done` gets the text when the first button is chosen.
-    private func askText(title: String, label: String, ok: String, field: String, done: @escaping (String) -> Void) {
-        guard let window else { return }
-        let input = NSTextField(string: field)
-        input.placeholderString = label
-        input.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
-        input.setAccessibilityLabel(label)
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = label
-        alert.accessoryView = input
-        alert.addButton(withTitle: ok)
-        alert.addButton(withTitle: loc("edit.cancel"))
-        alert.beginSheetModal(for: window) { response in
-            if response == .alertFirstButtonReturn { done(input.stringValue) }
+            Task {
+                await self.editor.renumberSelection(
+                    of: cues, start: a, increment: b, prefix: prefix.stringValue, suffix: suffix.stringValue)
+            }
         }
     }
 
     /// View > Select Cue... / Move Playhead to Cue...: asks for a cue number and then selects that
-    /// cue as a click would (the playhead follows), or only moves the playhead.
+    /// cue as a click would (the playhead follows), or only moves the playhead. A button fills in the
+    /// playhead's cue.
     func promptCue(movePlayhead: Bool) {
+        guard let window else { return }
         let key = movePlayhead ? "menu.view.movePlayheadToCue" : "menu.view.selectCue"
-        askText(title: loc(key + ".title"), label: loc("cue.prompt.number"), ok: loc(key + ".ok"), field: "") {
-            [weak self] text in
-            guard let self, let problem = self.applyCueNumber(text, movePlayhead: movePlayhead) else { return }
+        let input = NSTextField(string: "")
+        input.placeholderString = loc("cue.prompt.number")
+        input.setAccessibilityLabel(loc("cue.prompt.number"))
+        input.setAccessibilityIdentifier(AX.cuePromptField)
+        let fill = NSButton(title: loc("cue.prompt.playhead"), target: nil, action: nil)
+        fill.bezelStyle = .rounded
+        fill.setAccessibilityIdentifier(AX.cuePromptPlayhead)
+        fill.isEnabled = playheadCueNumber != nil
+        let filler = CueNumberFiller { [weak self, weak input] in
+            guard let number = self?.playheadCueNumber else { return NSSound.beep() }
+            input?.stringValue = number
+            input?.currentEditor()?.selectAll(nil)
+        }
+        fill.target = filler
+        fill.action = #selector(CueNumberFiller.fill)
+        let form = NSStackView(views: [input, fill])
+        form.spacing = 8
+        form.frame = NSRect(x: 0, y: 0, width: 300, height: 28)
+        input.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        let alert = NSAlert()
+        alert.messageText = loc(key + ".title")
+        alert.informativeText = loc("cue.prompt.number")
+        alert.accessoryView = form
+        alert.addButton(withTitle: loc(key + ".ok"))
+        alert.addButton(withTitle: loc("edit.cancel"))
+        StandBack.beginSheet(alert, for: window) { [weak self] response in
+            _ = filler  // the button's target lives as long as the sheet
+            guard response == .alertFirstButtonReturn, let self,
+                let problem = self.applyCueNumber(input.stringValue, movePlayhead: movePlayhead)
+            else { return }
             self.showNotice(problem)
         }
+    }
+
+    /// The number of the playhead's cue in the shown list; nil with none or an unnumbered one.
+    var playheadCueNumber: String? {
+        standingByCue.flatMap { store.model?.cue($0)?.number }
     }
 
     /// The dialog's answer for Select Cue / Move Playhead to Cue. Nil: done; else the notice to show.
@@ -555,28 +629,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.selectAsUser([id])
     }
 
-    /// Tools > Load to Time...: loads the last selected cue to a typed time, the engine's `load`
-    /// command (the Transport menu's Load Selected uses 0).
-    func promptLoadToTime() {
-        guard !isShowMode, let id = cueList.selectedIDs().last else { return NSSound.beep() }
-        askText(
-            title: loc("menu.tools.loadToTime.title"), label: loc("cue.prompt.time"),
-            ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00"
-        ) {
-            [weak self] text in
-            guard let self, let problem = self.applyLoadTime(text, to: id) else { return }
-            self.showNotice(problem)
-        }
-    }
-
-    /// The dialog's answer for Load to Time. Nil: the load was sent; else the notice to show. The
-    /// engine's `load` takes 0 or more seconds, so a negative time is refused like any bad time.
-    func applyLoadTime(_ text: String, to id: ModelID) -> String? {
-        guard let seconds = CueTime.parse(text) else { return loc("cue.prompt.badTime") }
-        loadToTime(id, seconds)
-        return nil
-    }
-
     func loadToTime(_ id: ModelID, _ seconds: Double) {
         onCueAction?(.load(cue: id, at: seconds))
     }
@@ -588,9 +640,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         didSet { refreshTitle() }
     }
 
+    /// The window's title: the workspace, then the cue list it shows (QLab's "workspace — list").
     private func refreshTitle() {
-        window?.title = isShowMode ? String(format: loc("window.main.title.showMode"), workspaceName) : workspaceName
+        let list = cueList.listID.flatMap { id in store.model?.cueLists.first { $0.id == id }?.name }
+        let named = list.map { String(format: loc("window.main.title.list"), workspaceName, $0) } ?? workspaceName
+        window?.title = isShowMode ? String(format: loc("window.main.title.showMode"), named) : named
         missingFilesController?.retitle(workspaceName)
+        statusController?.retitle(workspaceName)
     }
 
     /// The footer's cue count follows the model (adds, deletes, a new snapshot).
@@ -600,10 +656,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let id = cueList.listID.flatMap { store.playheads[$0] }
         let cue = id.flatMap { store.model?.cue($0) }
         masthead.show(standby: cue, name: cue.flatMap { store.model?.listName($0) })
+        syncLoadBar()
     }
 
     /// The cue list has applied a change: the syncs that read its shown list and tree run now.
     private func cueListApplied() {
+        refreshTitle()
         syncSidebarList()
         syncMasthead()
         refreshFind()
@@ -615,7 +673,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         syncFooterWarnings()
     }
 
-    /// The footer's warnings button counts the rows the Warnings tab lists.
+    /// The footer's warnings button counts the rows the Warnings page lists, and the page, if made, is
+    /// given them: it is live.
     /// With `changed` (a runtime change), only a cue that has a row, problems or a runtime reason can
     /// change the count, so a busy show does not rescan the cue tree for every tick (as the sidebar).
     func syncFooterWarnings(changed: Set<ModelID>? = nil) {
@@ -629,13 +688,14 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let rows = WarningRows.make(store: store)
         footerWarned = Set(rows.compactMap(\.cue))
         footer.showWarnings(count: rows.count)
+        warningsController?.show(rows)
     }
 
     private var footerWarned: Set<ModelID> = []
 
-    /// The footer's warnings button: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
-    func showWarnings() {
-        sidebar.showTab(2)  // before setVisible, which saves the layout
+    /// View > Switch Sidebar Between Lists and Active Cues: shows the sidebar on the other of its two tabs.
+    func toggleSidebarTab() {
+        sidebar.showTab(sidebar.tabs.selectedSegment == 0 ? 1 : 0)
         setVisible(.sidebar, true)
     }
 
@@ -712,7 +772,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         stopSavingLayout()
         inspector.endGestures()
-        preshowController?.close()
+        // A sheet still up holds the window: it would never go. A sheet ends
+        // as its Cancel would (the app closes a workspace with one up, at Close or when the engine
+        // closes the doc).
+        if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
+        pasteSheet = nil
+        statusController?.close()
         settingsController?.close()
         missingFilesController?.close()
     }
@@ -729,6 +794,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         if isShowMode, Self.hiddenInShowMode.contains(area) { return }
         wanted[area] = visible
         show(area, visible)
+        // The footer's one button (and View > Masthead) hides the GO button, standby line and cue
+        // toolbar together; the toolbar keeps its own View menu item. Show Mode keeps the toolbar away.
+        if area == .masthead {
+            wanted[.toolbar] = visible
+            if !isShowMode { show(.toolbar, visible) }
+        }
         saveLayout()
     }
 
@@ -736,7 +807,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         switch area {
         case .toolbar:
             // While Find holds the row, the toggle only decides what comes back when it closes.
-            if find.isOpen { find.toolbarWasHidden = !visible } else { cueToolbar.isHidden = !visible }
+            if find.isOpen {
+                find.toolbarWasHidden = !visible
+            } else if loadTime.isOpen {
+                loadTime.toolbarWasHidden = !visible
+            } else {
+                cueToolbar.isHidden = !visible
+            }
         case .masthead: masthead.isHidden = !visible
         case .inspector:
             if !visible { inspector.endGestures() }
@@ -768,7 +845,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     func isVisible(_ area: LayoutArea) -> Bool {
         switch area {
-        case .toolbar: return find.isOpen ? !find.toolbarWasHidden : !cueToolbar.isHidden
+        case .toolbar:
+            if find.isOpen { return !find.toolbarWasHidden }
+            return loadTime.isOpen ? !loadTime.toolbarWasHidden : !cueToolbar.isHidden
         case .masthead: return !masthead.isHidden
         case .inspector: return !inspector.view.isHidden
         case .sidebar: return sidebar.view.superview != nil
@@ -776,10 +855,41 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func buildContent() -> NSView {
-        verticalSplit.isVertical = false
+        findBar.isHidden = true
+        loadBar.isHidden = true
+        // The GO area, toolbar and list share one column; the sidebar stands beside all of it from the
+        // window's top, and the inspector under both spans the window's width (QLab's arrangement).
+        let column = NSStackView(views: [masthead, cueToolbar, findBar, loadBar, cueList.view])
+        column.orientation = .vertical
+        column.spacing = 0
+        column.distribution = .fill
+        for v in [masthead, cueToolbar, findBar, loadBar, cueList.view] {
+            v.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        }
         cueList.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListHeight).isActive = true
+        // These views have no intrinsic height; without explicit heights the stack stretches them.
+        cueToolbar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        findBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        loadBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        for v in [masthead, cueToolbar, findBar, loadBar] {
+            v.setContentHuggingPriority(.required, for: .vertical)
+            v.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
+        cueList.view.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        topColumn = column
+
+        horizontalSplit.isVertical = true
+        column.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListWidth).isActive = true
+        horizontalSplit.dividerStyle = .thin
+        horizontalSplit.addArrangedSubview(column)
+        let sidebarWidth = sidebar.view.widthAnchor.constraint(equalToConstant: 280)
+        sidebarWidth.priority = NSLayoutConstraint.Priority(300)
+        sidebarWidth.isActive = true
+        sidebarWidthConstraint = sidebarWidth
+
+        verticalSplit.isVertical = false
         verticalSplit.dividerStyle = .thin
-        verticalSplit.addArrangedSubview(cueList.view)
+        verticalSplit.addArrangedSubview(horizontalSplit)
         verticalSplit.addArrangedSubview(inspector.view)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 0)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
@@ -790,32 +900,15 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         inspectorHeight.isActive = true
         inspectorHeightConstraint = inspectorHeight
 
-        horizontalSplit.isVertical = true
-        verticalSplit.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListWidth).isActive = true
-        horizontalSplit.dividerStyle = .thin
-        horizontalSplit.addArrangedSubview(verticalSplit)
-        let sidebarWidth = sidebar.view.widthAnchor.constraint(equalToConstant: 280)
-        sidebarWidth.priority = NSLayoutConstraint.Priority(300)
-        sidebarWidth.isActive = true
-        sidebarWidthConstraint = sidebarWidth
-
-        findBar.isHidden = true
-        let stack = NSStackView(views: [masthead, cueToolbar, findBar, horizontalSplit, footer])
+        let stack = NSStackView(views: [verticalSplit, footer])
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
-        for v in [masthead, cueToolbar, findBar, horizontalSplit, footer] {
-            v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-        // These views have no intrinsic height; without explicit heights the stack stretches them.
-        cueToolbar.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        findBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        for v in [verticalSplit, footer] { v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         footer.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        for v in [masthead, cueToolbar, findBar, footer] {
-            v.setContentHuggingPriority(.required, for: .vertical)
-            v.setContentCompressionResistancePriority(.required, for: .vertical)
-        }
-        horizontalSplit.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        footer.setContentHuggingPriority(.required, for: .vertical)
+        footer.setContentCompressionResistancePriority(.required, for: .vertical)
+        verticalSplit.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         return stack
     }
 }
@@ -831,6 +924,13 @@ extension WorkspaceWindowController {
         panel.prompt = loc("inspector.target.choosePrompt")
         let extensions = kind == .video ? CueEditor.videoExtensions : CueEditor.audioExtensions
         panel.allowedContentTypes = extensions.sorted().compactMap { UTType(filenameExtension: $0) }
-        return panel.runModal() == .OK ? panel.url : nil
+        return StandBack.runModal(panel) == .OK ? panel.url : nil
     }
+}
+
+/// The Select Cue sheet's button target.
+@MainActor final class CueNumberFiller: NSObject {
+    private let action: () -> Void
+    init(_ action: @escaping () -> Void) { self.action = action }
+    @objc func fill() { action() }
 }

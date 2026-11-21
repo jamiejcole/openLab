@@ -30,7 +30,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{Notify, Semaphore, mpsc};
 use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until, timeout};
 
-use super::hub::Tap;
+use super::hub::{Tap, TapSlot};
 use super::osc_mirror::{Applied, Mirror, MirrorShow, Update, UpdateId};
 use super::refusals::Refusals;
 use crate::control::{Inbox, Outgoing, ReplyRx, ReplyTx, reply_channel};
@@ -1942,9 +1942,214 @@ fn access_changed(old: &OscAccess, new: &OscAccess) -> bool {
         || old.passcodes.iter().any(|row| !new.passcodes.contains(row))
 }
 
+// ---------------------------------------------------------------------------------------------
+// The server and its port
+
+/// What the OSC settings page shows (QLab 5, Network, OSC Access): the port OSC listens on, whether
+/// its sockets are open, and why not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OscState {
+    /// The port in use while `open`; else the port asked for and not opened.
+    pub port: u16,
+    pub open: bool,
+    /// Why the last start or change of port failed (cleared by the next success).
+    pub error: Option<String>,
+}
+
+/// The OSC sockets and their tasks, which live on a runtime of their own so a change of port can
+/// stop them without touching the UI's WebSocket server.
+struct Live {
+    runtime: tokio::runtime::Runtime,
+    running: Running,
+}
+
+struct Inner {
+    live: Option<Live>,
+    port: u16,
+    error: Option<String>,
+}
+
+/// The OSC server: starts it, and changes its port. A new port is bound first: if that fails the
+/// old sockets go on serving and the failure is reported; if it works the new server takes over
+/// the tap and the old one is stopped (its sockets close with its runtime), so no port is ever
+/// half open.
+pub struct OscServer {
+    inbox: Sender<Inbox>,
+    config: OscConfig,
+    slot: TapSlot,
+    inner: Mutex<Inner>,
+}
+
+impl std::fmt::Debug for OscServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OscServer").finish_non_exhaustive()
+    }
+}
+
+impl OscServer {
+    /// Tries to open `config`'s port. A failure is logged and the server stays off (the UI protocol
+    /// is unaffected); `state` says so.
+    pub fn start(config: OscConfig, inbox: Sender<Inbox>, slot: TapSlot) -> Arc<Self> {
+        let first = open(&config, &inbox);
+        let (live, error) = match first {
+            Ok((live, tap)) => {
+                *crate::lock(&slot) = Some(tap);
+                (Some(live), None)
+            }
+            Err(why) => {
+                let _ = inbox.send(Inbox::Log {
+                    level: LogLevel::Warn,
+                    message: format!("OSC server is off: {why}"),
+                });
+                (None, Some(why))
+            }
+        };
+        Arc::new(Self {
+            inbox,
+            inner: Mutex::new(Inner {
+                live,
+                port: config.port,
+                error,
+            }),
+            config,
+            slot,
+        })
+    }
+
+    pub fn state(&self) -> OscState {
+        let inner = crate::lock(&self.inner);
+        OscState {
+            port: inner
+                .live
+                .as_ref()
+                .map_or(inner.port, |l| l.running.ports.udp),
+            open: inner.live.is_some(),
+            error: inner.error.clone(),
+        }
+    }
+
+    pub fn ports(&self) -> Option<OscPorts> {
+        crate::lock(&self.inner)
+            .live
+            .as_ref()
+            .map(|l| l.running.ports)
+    }
+
+    pub fn stats(&self) -> Option<OscListenerStats> {
+        crate::lock(&self.inner)
+            .live
+            .as_ref()
+            .map(|l| l.running.stats())
+    }
+
+    /// Listens on `port` from now on. The same port as now is a no-op. On failure nothing changes
+    /// but `state().error`.
+    pub fn set_port(&self, port: u16) -> Result<OscState, String> {
+        let mut inner = crate::lock(&self.inner);
+        if port == 0 {
+            return Err("an OSC port is a number from 1 to 65535".into());
+        }
+        if inner
+            .live
+            .as_ref()
+            .is_some_and(|l| l.running.ports.udp == port)
+        {
+            inner.error = None;
+            drop(inner);
+            return Ok(self.state());
+        }
+        let mut config = self.config.clone();
+        config.port = port;
+        match open(&config, &self.inbox) {
+            Ok((live, tap)) => {
+                *crate::lock(&self.slot) = Some(tap);
+                let old = inner.live.replace(live);
+                inner.port = port;
+                inner.error = None;
+                drop(inner);
+                // Its sockets close as its tasks are dropped.
+                if let Some(old) = old {
+                    old.runtime.shutdown_background();
+                }
+                Ok(self.state())
+            }
+            Err(why) => {
+                inner.error = Some(why.clone());
+                if inner.live.is_none() {
+                    inner.port = port;
+                }
+                Err(why)
+            }
+        }
+    }
+
+    /// Stops the server (the engine is going down).
+    pub fn stop(&self) {
+        let old = crate::lock(&self.inner).live.take();
+        *crate::lock(&self.slot) = None;
+        if let Some(old) = old {
+            old.runtime.shutdown_background();
+        }
+    }
+}
+
+/// Windows' WSAEACCES: a bind refused because another socket holds the port for its exclusive use
+/// (system services bind UDP ports that way) or the port is in a range the system reserves.
+const WSAEACCES: i32 = 10013;
+
+/// Why a bind failed, in words an operator who picked the port can act on. A taken port reads the
+/// same on every platform; `windows` says how to read the raw OS error.
+fn bind_failure(e: &io::Error, windows: bool) -> String {
+    if e.kind() == io::ErrorKind::AddrInUse {
+        "it is already in use".to_owned()
+    } else if windows && e.raw_os_error() == Some(WSAEACCES) {
+        "it is already in use or reserved by the system".to_owned()
+    } else {
+        e.to_string()
+    }
+}
+
+/// Binds `config`'s port and starts the server on a runtime of its own.
+fn open(config: &OscConfig, inbox: &Sender<Inbox>) -> Result<(Live, Tap), String> {
+    let bound = bind(config).map_err(|e| {
+        format!(
+            "could not listen on {}:{}: {}",
+            config.bind,
+            config.port,
+            bind_failure(&e, cfg!(windows))
+        )
+    })?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("openlab-osc")
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|e| format!("could not start the OSC runtime: {e}"))?;
+    let (running, tap) = start(&runtime, bound, config.clone(), inbox.clone())
+        .ok_or_else(|| "the OSC sockets could not be registered".to_owned())?;
+    Ok((Live { runtime, running }, tap))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_port_taken_for_exclusive_use_on_windows_reads_as_in_use() {
+        let in_use = io::Error::from(io::ErrorKind::AddrInUse);
+        assert_eq!(bind_failure(&in_use, false), "it is already in use");
+        assert_eq!(bind_failure(&in_use, true), "it is already in use");
+        let exclusive = io::Error::from_raw_os_error(WSAEACCES);
+        assert_eq!(
+            bind_failure(&exclusive, true),
+            "it is already in use or reserved by the system"
+        );
+        // Elsewhere the number means something else, so the OS's own words are kept.
+        assert_eq!(bind_failure(&exclusive, false), exclusive.to_string());
+        let other = io::Error::other("no route");
+        assert_eq!(bind_failure(&other, true), "no route");
+    }
 
     #[tokio::test]
     async fn accepted_connections_have_keepalive_on() {

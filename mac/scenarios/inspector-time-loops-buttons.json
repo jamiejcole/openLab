@@ -1,0 +1,24 @@
+{
+  "about": "An Audio cue's Time & Loops tab: slice buttons in the left column; reset and preview buttons beside zoom; the first ruler label whole beside the start marker while idle, while the cue plays, zoomed in and scrolled.",
+  "show": "Demo",
+  "media": {"media/a.wav": 60},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 1},
+    {"shot": "idle"},
+    {"click": "time-loops-preview"},
+    {"advance": 3},
+    {"shot": "previewing"},
+    {"magnify": "time-loops-waveform", "by": 3, "at": [0, 0.5]},
+    {"advance": 1},
+    {"shot": "playing-zoomed"},
+    {"scroll": "time-loops-waveform", "dx": -200, "dy": 0},
+    {"advance": 1},
+    {"shot": "playing-zoomed-scrolled"},
+    {"click": "time-loops-reset"},
+    {"advance": 1},
+    {"shot": "after-reset"}
+  ]
+}

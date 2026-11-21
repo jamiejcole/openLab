@@ -1,12 +1,13 @@
 # Fade cues and live level edits
 
-Audio levels only (video fades are later). Sources: `fade.rs`, `level.rs`, `live_levels.rs`.
+Audio levels, and a Video cue's picture values (below, "Picture values"). A Video cue's sound has levels as an Audio cue's and is faded, edited and limited by the same code (`CueKind::levels()`); "audio cue" below includes it. Sources: `fade.rs`, `level.rs`, `live_levels.rs`.
 
 ## Fade cues (CT-10)
 - A Fade of an audio cue is absolute unless its `mode` is `relative` (then it moves the cue's levels as a Fade of a group does, below): over its duration, with its curve, it moves the target's levels from their current values to the Fade's values.
 - A Fade of a group is relative: each level of each audio cue in it moves by the Fade's value (current + Fade's dB, i.e. gain times the Fade's gain), never above `MAX_DB` (+12 dB, `cue.rs`). Relative to the level on the ramp's first sample `S`, including where an earlier Fade has put or is moving it; stacking of concurrent relative fades is not modelled. A level silent then (an unlisted crosspoint) stays silent and gets no ramp.
 - What it fades: at its action start `A`, every playing audio cue it targets (the target, or every audio cue inside a group, any depth). Playing = in its action with a started voice (running, fading, paused, stopping), not broken. Cues that start later are not faded.
 - Which levels: `master_db`, each set `output_db[o]`, each listed crosspoint, per target. Indices beyond the target's outputs (and crosspoint inputs of 64 or more; a cue has at most 128 outputs) are ignored. A muted output or crosspoint is not faded (a fade never changes mutes). An unlisted crosspoint of an absolute fade is silent and fades up from silence.
+- The target's outputs are its patch's (`level::cue_outputs`; its levels' count where that is more or the patch is gone, at most 128). One its levels do not list is silent and fades up from silence, as an unlisted crosspoint does (QLab p. 204).
 - Ramps: per target and level `Ramp { cue, run, at: S, param, gain, frames: E - S, curve }`. `S = max(A, now, voice start, the voice's last committed command)`, `E = A + duration` (minus a load-to-time offset). A ramp never names a voice before the mixer has it; a late fade starts late but still ends on `E`. `gain` is linear (`db_to_gain`). Duration 0 sets the levels on `S`.
 - Ownership: each level is moved by the Fade that last ramped it. A later Fade takes it over; the earlier one no longer touches it (pausing or stopping it sends nothing for that level).
 - Completion: the action completes on `E` (auto-follow fires then). With stop-target-when-done, the target (a group: with everything in it) is hard-stopped on `E`, on the sample the ramp ends, before the auto-follow, whatever it is doing then. A duration edit moves `E` (`broken-and-edits.md`); a level edit completes it at once without stopping the target (below).
@@ -15,6 +16,15 @@ Audio levels only (video fades are later). Sources: `fade.rs`, `level.rs`, `live
 - Not playing: if nothing targeted is playing at `A`, `TargetNotRunning` and nothing happens, but it still runs its duration (timing and continue apply; stop-target-when-done then stops the target on `E` if it is running by then). Other kind: `TargetWrongKind`; none or missing: `NoTarget`/`TargetMissing`.
 - A Fade that sets no level has static problem `nothing_to_fade`: broken like any cue with problems (GO/Start skip it, stop-target-when-done does not fire; timing and continue run). The target need not be set for it to show (`no_target` is listed first). Setting any one level fixes it.
 - Feedback never breaks a Fade cue (no voice). Control and Fade cues read target and settings when their action starts.
+
+### Picture values (VID-05)
+- A Fade whose own target is a Video cue also moves the picture values its `geometry` ticks (opacity, position x and y, scale x and y, rotation; `FadeGeometry::targets`), as levels of the run: `LevelParam::Picture(PictureParam)`, one `Level` each in `Run::levels`, one `Ramp` action each (`gain` is the value). So ownership and takeover, pause and resume, stop, a shortened duration, completion, stop-target-when-done and the `fading` state are the levels' own code, unchanged.
+  - A group's Fade moves no picture.
+- From: the value the run's `Level` has on `S`, else the cue's own geometry value (`PictureParam::of`). Absolute: to the Fade's value. Relative (QLab 5 manual p. 246): opacity and scale times it, position and rotation plus it, within the value's range (`PictureParam::relative`); a multiplied value at 0 is left alone, as a silent level.
+- Not a gain: no de-zipper (a 0-frame ramp, a hold, is at once from its sample, and the `Level` is tracked so), no volume limits (`follow_limits` and a re-timed or resumed Fade skip them), no duck. The binary sends them to the stage host, never the mixer (skill `video`).
+- An edit of the Video cue's geometry value that a Fade set or moves on a playing picture takes it over as a level edit does (`follow_geometry_edits`: `Run::geometry` is the model's geometry as of the last comparison; the value goes to the model's over the 10 ms edit ramp and its Fade completes at once without stopping the target).
+  - The value's `Level` is kept, owned by no Fade, so every later edit of it goes out the same way while the run lasts (the binary draws a value a Fade has touched by its ramps). An untouched value is drawn from the model by the binary.
+- Ticked picture values count against `nothing_to_fade` only when the target is a Video cue, or not set or missing (its target problem shows); aimed at an Audio cue or a Group, a Fade with only picture values is broken. The fact reads the target's kind, so it follows a retarget or the target's kind changing.
 
 ### Engine-side level tracking
 - The mixer starts every ramp from the gain's value on its first sample, so interrupted fades continue without a jump. The engine tracks the same: each running audio cue keeps the gains Fade cues set or are moving as `from -> to over frames from start`, evaluated with the mixer's formula (`ramp_gain`, `curve_shape`, `db_to_gain`).

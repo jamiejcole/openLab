@@ -54,9 +54,9 @@ use super::{
     Scope, fail, notice, ok,
 };
 use crate::persist::{
-    AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, RecoveryEntry, SaveReport,
-    SaveWriter, ScanLimits, check_recovery, file_key, find_in_folder, lexical_key, media_path,
-    modified_ms, path_key, read_text, scan_recovery,
+    AppDirs, BeforeWrite, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck,
+    RecoveryEntry, SaveReport, SaveWriter, ScanLimits, check_recovery, file_key, find_in_folder,
+    lexical_key, media_path, modified_ms, path_key, read_text, scan_recovery,
 };
 
 /// Most `load_repair` notices sent for one opened show; the rest are summed in one more.
@@ -205,7 +205,8 @@ fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
     // on the time; the control thread hands the engine the real time from its next call on.
     let actions = model.handle(Input::Tick, 0);
     let show_dir = path.as_deref().and_then(folder_of);
-    let indexed = index_workspace(model.ws(), show_dir.as_deref());
+    let mut indexed = index_workspace(model.ws(), show_dir.as_deref());
+    indexed.prepare();
     let mut checks = PlanChecks::default();
     checks.check_all(model.ws(), &NoProbes, config.sample_rate());
     DocParts {
@@ -440,11 +441,34 @@ struct PendingSave {
     rx: Receiver<Result<SaveReport, PersistError>>,
     revision: u64,
     path: PathBuf,
-    /// A save-as to another folder: relative media references were rebased in the copy saved.
-    rebase: bool,
-    /// Some of those were relative references (older history entries then name wrong paths).
-    respelled: bool,
+    /// A Save As into another folder, prepared on the writer thread ([`prepare_move`]).
+    moved: Option<MoveStart>,
     waiters: Vec<(RequestId, ReplyTx)>,
+}
+
+/// The doc as a Save As into another folder found it: what the writer thread prepares from the
+/// copy holds for the doc only while both are unchanged.
+struct MoveStart {
+    from: Option<PathBuf>,
+    /// [`DocModel::edits`] then.
+    edits: u64,
+}
+
+/// What the writer thread made of the copy a Save As into another folder writes
+/// ([`prepare_move`]).
+struct Moved {
+    /// The copy as written, its media references re-spelled for the new folder (`None`: none
+    /// was, or the re-spelling was refused and the copy was written as it was).
+    /// With a second copy of it, for the snapshot every client is sent once it is taken up
+    /// (cloning 2,000 cues takes the control thread a third of a millisecond).
+    workspace: Option<(Workspace, Workspace)>,
+    /// Some re-spelled reference was relative (older history entries then name wrong paths).
+    respelled: bool,
+    /// The re-spelling failed part way (logged once the save is answered).
+    failure: Option<String>,
+    /// The catalog's index of the copy as written, its paths resolved against the new folder
+    /// and its entries built ([`Indexed::prepare`]).
+    indexed: Indexed,
 }
 
 type AutosaveRx = Receiver<Result<Option<PathBuf>, PersistError>>;
@@ -524,11 +548,16 @@ pub(super) struct DocFile {
     pub(super) notices: Vec<WireWarning>,
     /// The broadcast `snapshot` did not fit the outbound channel: send a fresh one when it does.
     pub(super) resend_snapshot: bool,
+    /// Saves into another folder whose prepared copy and index were taken up (the others were
+    /// worked out again on the control thread). The wake that takes one up leaves every doc's
+    /// key changes to the next wake ([`Control::tick`]).
+    pub(super) moves_taken_up: u64,
 }
 
 impl DocFile {
     pub(super) fn new() -> Self {
         Self {
+            moves_taken_up: 0,
             saves: Vec::new(),
             autosave: None,
             autosave_path: None,
@@ -1286,6 +1315,39 @@ fn rebase(ws: &Workspace, old_dir: Option<&Path>, new_dir: &Path) -> (Vec<Relink
     (relinks, respelled)
 }
 
+/// The writer thread's part of a Save As from `old_dir` into `new_dir`, done to `copy` before
+/// it is written: its media references re-spelled for the new folder ([`rebase`], applied as
+/// the relink command it makes, so it is judged as any edit is), and the catalog's entries for
+/// the new folder built from it. The control thread then only swaps them in, if the doc has not
+/// changed meanwhile.
+fn prepare_move(copy: &mut Workspace, old_dir: Option<&Path>, new_dir: &Path) -> Moved {
+    let (relinks, respelled) = rebase(copy, old_dir, new_dir);
+    let mut rebased = false;
+    let mut failure = None;
+    if !relinks.is_empty() {
+        let original = copy.clone();
+        let command = relink_command(copy, &relinks);
+        let result = copy.apply(command);
+        rebased = result.is_ok();
+        if let Err(e @ openlab_core::CommandError::RollbackFailed { .. }) = &result {
+            failure = Some(format!("relink of the copy being saved: {e}"));
+        }
+        if !rebased {
+            // A refusal changes nothing, but a failed rollback leaves some relinks in the copy:
+            // save the workspace as it is.
+            *copy = original;
+        }
+    }
+    let mut indexed = index_workspace(copy, Some(new_dir));
+    indexed.prepare();
+    Moved {
+        workspace: rebased.then(|| (copy.clone(), copy.clone())),
+        respelled: rebased && respelled,
+        failure,
+        indexed,
+    }
+}
+
 /// Whether two paths name the same file, compared like media paths (case, NFC and `..`
 /// ignored): the same show reopened under another spelling is still the same file.
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -1457,7 +1519,21 @@ impl DocCx<'_> {
     /// Sends this doc's snapshot to its clients again (its model changed in a way no
     /// `model_changed` describes, or the first broadcast did not fit).
     pub(super) fn resend_snapshot(&mut self) {
-        let snapshot = Box::new(self.doc.snapshot());
+        self.resend_snapshot_with(None);
+    }
+
+    /// [`Self::resend_snapshot`] with a copy of the workspace made elsewhere, which is used only
+    /// if the model has not been edited since `at` (its edit count when the copy was made).
+    fn resend_snapshot_with(&mut self, prebuilt: Option<(u64, Workspace)>) {
+        self.doc.last_loaded.clear();
+        let (workspace, spare) = match prebuilt {
+            Some((at, ws)) if at == self.doc.model.edits() => (Some(ws), None),
+            other => (None, other.map(|(_, ws)| ws)),
+        };
+        if let Some(ws) = spare {
+            self.eng.docs.discard(Box::new(ws));
+        }
+        let snapshot = Box::new(self.doc.snapshot_with(workspace));
         self.doc.file.resend_snapshot = !self
             .eng
             .out
@@ -1497,27 +1573,24 @@ impl DocCx<'_> {
         let moved = self.doc.show_path.as_deref() != Some(path.as_path())
             && new_dir.is_some()
             && new_dir != old_dir;
-        let mut copy = self.doc.saved_workspace();
-        let mut rebased = false;
-        let mut respelled_relative = false;
-        let mut relink_failure = None;
-        if moved && let Some(new_dir) = &new_dir {
-            let (relinks, respelled) = rebase(&copy, old_dir.as_deref(), new_dir);
-            if !relinks.is_empty() {
-                let command = relink_command(&copy, &relinks);
-                let result = copy.apply(command);
-                rebased = result.is_ok();
-                respelled_relative = rebased && respelled;
-                if let Err(e @ openlab_core::CommandError::RollbackFailed { .. }) = &result {
-                    relink_failure = Some(format!("relink of the copy being saved: {e}"));
-                }
-                if !rebased {
-                    // A refusal changes nothing, but a failed rollback leaves some relinks in
-                    // the copy: save the workspace as it is.
-                    copy = self.doc.saved_workspace();
-                }
+        let copy = self.doc.saved_workspace();
+        // Re-spelling 2,000 references and indexing their files for the new folder would take
+        // the control thread several audio blocks: the writer thread does it on the copy.
+        let (before, moved) = match new_dir.filter(|_| moved) {
+            Some(new_dir) => {
+                let from = old_dir.clone();
+                let before: BeforeWrite = Box::new(move |copy: &mut Workspace| {
+                    Box::new(prepare_move(copy, from.as_deref(), &new_dir))
+                        as Box<dyn std::any::Any + Send>
+                });
+                let start = MoveStart {
+                    from: old_dir,
+                    edits: self.doc.model.edits(),
+                };
+                (Some(before), Some(start))
             }
-        }
+            None => (None, None),
+        };
         let rx = writer.save_unless(
             copy,
             path.clone(),
@@ -1525,16 +1598,13 @@ impl DocCx<'_> {
             self.eng.config.machine.backup_keep,
             self.doc.revision,
             others,
+            before,
         );
-        if let Some(message) = relink_failure {
-            self.log(LogLevel::Error, message);
-        }
         self.doc.file.saves.push(PendingSave {
             rx,
             revision: self.doc.revision,
             path,
-            rebase: rebased,
-            respelled: respelled_relative,
+            moved,
             waiters: vec![(id, to.clone())],
         });
     }
@@ -1566,7 +1636,7 @@ impl DocCx<'_> {
                 for warning in report.warnings {
                     self.log(LogLevel::Warn, warning);
                 }
-                self.saved(&save);
+                self.saved(&save, report.prepared);
                 for (id, to) in &save.waiters {
                     reply(to, ok(*id, None));
                 }
@@ -1584,8 +1654,16 @@ impl DocCx<'_> {
         }
     }
 
-    /// A save of this workspace is on disk.
-    fn saved(&mut self, save: &PendingSave) {
+    /// A save of this workspace is on disk; `prepared` is what the writer thread made of a Save
+    /// As into another folder ([`prepare_move`]).
+    fn saved(&mut self, save: &PendingSave, prepared: Option<Box<dyn std::any::Any + Send>>) {
+        let mut moved = prepared.and_then(|p| match p.downcast::<Moved>() {
+            Ok(moved) => Some(moved),
+            Err(other) => {
+                self.eng.docs.discard(Box::new(other));
+                None
+            }
+        });
         let clean_before = self.doc.revision == save.revision;
         self.doc.saved_revision = save.revision;
         self.record(
@@ -1615,13 +1693,13 @@ impl DocCx<'_> {
             );
             self.doc.warnings_dirty = true;
             if self.show_dir() != old_dir {
-                self.moved_folder(
-                    old_dir.as_deref(),
-                    save.rebase,
-                    save.respelled,
-                    clean_before,
-                );
+                let start = save.moved.as_ref();
+                self.moved_folder(old_dir.as_deref(), moved.take(), start, clean_before);
             }
+        }
+        // A Save As that, by the time it was answered, moved the doc nowhere new.
+        if let Some(unused) = moved {
+            self.eng.docs.discard(unused);
         }
         // The save removed the recovery file of its path (and wrote none).
         self.doc
@@ -1644,16 +1722,77 @@ impl DocCx<'_> {
     /// they still name the same files (as in the copy just saved), and the files are probed
     /// again from the new place. That is not an edit the operator made, so history is cleared
     /// (an undo would bring back a reference that is now wrong) and every client gets a snapshot.
+    /// When the doc is as it was when the save began (`start`), what the writer thread made of
+    /// the copy (`moved`) is taken up as it is: the copy as written becomes the workspace and its
+    /// index the catalog's. Otherwise (an edit, an undo or another save's move came between) the
+    /// re-spelling and the index are worked out again here from the doc as it is now.
     fn moved_folder(
         &mut self,
         old_dir: Option<&Path>,
-        rebase_refs: bool,
-        respelled: bool,
+        moved: Option<Box<Moved>>,
+        start: Option<&MoveStart>,
         clean_before: bool,
     ) {
+        let Some(moved) = moved else {
+            self.rebase_here(old_dir, false, clean_before);
+            return;
+        };
+        if let Some(failure) = &moved.failure {
+            self.log(LogLevel::Error, failure.clone());
+        }
+        let unchanged = start.is_some_and(|start| {
+            start.edits == self.doc.model.edits() && start.from.as_deref() == old_dir
+        });
+        if unchanged {
+            self.take_up_move(*moved, old_dir, clean_before);
+        } else {
+            let respelled = moved.respelled;
+            self.eng.docs.discard(moved);
+            self.rebase_here(old_dir, respelled, clean_before);
+        }
+    }
+
+    /// [`Self::moved_folder`] from what the writer thread prepared, the doc unchanged since.
+    fn take_up_move(&mut self, moved: Moved, old_dir: Option<&Path>, clean_before: bool) {
+        let Moved {
+            workspace,
+            respelled,
+            indexed,
+            ..
+        } = moved;
+        self.doc.file.moves_taken_up += 1;
+        let changed = workspace.is_some();
+        let mut prebuilt = None;
+        if let Some((mut ws, mut snapshot_ws)) = workspace {
+            // The copy is the workspace with the relinks applied, but for the Show Mode flag,
+            // which a save writes from the doc's own.
+            let mut edit = self.doc.model.edit();
+            ws.show_mode = edit.show_mode;
+            let old = std::mem::replace(&mut *edit, ws);
+            drop(edit);
+            self.eng.docs.discard(Box::new(old));
+            // The snapshot's copy is the same workspace, show mode included.
+            snapshot_ws.show_mode = self.doc.model.ws().show_mode;
+            prebuilt = Some((self.doc.model.edits(), snapshot_ws));
+        }
+        let gone = self.doc.media.reset_indexed(self.show_dir(), indexed);
+        self.eng.docs.discard(gone);
+        self.after_move(
+            changed,
+            respelled || old_dir.is_some(),
+            clean_before,
+            prebuilt,
+        );
+    }
+
+    /// [`Self::moved_folder`] worked out on the control thread from the doc as it is now
+    /// (`respelled`: the copy written had a relative reference re-spelled). The live references
+    /// are re-spelled from `old_dir` whatever the copy needed: an edit made while it was written,
+    /// or a save of the doc as an earlier one left it, may hold references the copy did not.
+    fn rebase_here(&mut self, old_dir: Option<&Path>, respelled: bool, clean_before: bool) {
         let mut changed = false;
         let mut respelled = respelled;
-        if rebase_refs && let Some(new_dir) = self.show_dir() {
+        if let Some(new_dir) = self.show_dir() {
             let (relinks, now_respelled) = rebase(self.doc.model.ws(), old_dir, &new_dir);
             respelled |= now_respelled;
             if !relinks.is_empty() {
@@ -1671,15 +1810,30 @@ impl DocCx<'_> {
                 }
             }
         }
-        self.doc.media.reset(self.show_dir(), self.doc.model.ws());
+        let gone = self.doc.media.reset(self.show_dir(), self.doc.model.ws());
+        self.eng.docs.discard(gone);
+        self.after_move(changed, respelled || old_dir.is_some(), clean_before, None);
+    }
+
+    /// The rest of [`Self::moved_folder`] once the workspace and its catalog have moved:
+    /// `changed`, references were re-spelled; `clear_history`, older history entries may then
+    /// name wrong files.
+    fn after_move(
+        &mut self,
+        changed: bool,
+        clear_history: bool,
+        clean_before: bool,
+        prebuilt: Option<(u64, Workspace)>,
+    ) {
         self.doc.waveforms.reset();
         self.eng.waveform_reader.forget(self.doc.id);
         if changed {
             // An undo can restore an old relative spelling that now resolves against the new
             // folder, so history goes on any move from a known folder. Only the first save of an
             // untitled show keeps it: its references were all absolute and still name their files.
-            if respelled || old_dir.is_some() {
-                self.doc.history = History::new();
+            if clear_history {
+                let old = std::mem::replace(&mut self.doc.history, History::new());
+                self.eng.docs.discard(Box::new(old));
             }
             self.doc.revision += 1;
             // The copy on disk has the same references; it lacks only edits made meanwhile.
@@ -1693,7 +1847,7 @@ impl DocCx<'_> {
             self.feed(input, now);
         }
         if changed {
-            self.resend_snapshot();
+            self.resend_snapshot_with(prebuilt);
         }
     }
 
@@ -2035,6 +2189,7 @@ impl Engine {
             seed,
         );
         self.add_display_stages(&mut ws);
+        self.add_device_patches(&mut ws);
         ws
     }
 }
@@ -2485,7 +2640,8 @@ impl Control {
             show_dir,
             self.eng.config.preload_budget,
         );
-        media.sync_indexed(indexed);
+        let leftover = media.sync_indexed(indexed);
+        self.eng.docs.discard(leftover);
         // The checks walked the workspace already, and no file has answered since: what the
         // catalog noted for them is in them.
         let _ = media.take_plan_changes();
@@ -2591,6 +2747,7 @@ impl Control {
                 },
             );
         }
+        self.eng.copies.stop_doc(doc);
         let mut closed = self.docs.remove(index);
         self.eng.drop_doc_pictures(doc);
         self.docs_changed();
@@ -2603,8 +2760,8 @@ impl Control {
         self.mark_warnings_dirty();
         self.eng.voice_ids.retain(|_, owner| owner != doc);
         self.eng.observe.reset(doc);
-        let unwatched = self.eng.watch.leave(doc);
-        self.eng.pool.leave(doc);
+        self.eng.watch.leave(doc);
+        let claims = self.eng.pool.leave(doc);
         self.eng.waveform_reader.forget(doc);
         self.eng.mapping_warned.retain(|(d, _, _, _)| *d != doc);
         // A device only its patches played on closes.
@@ -2615,7 +2772,10 @@ impl Control {
             .orphans
             .extend(std::mem::take(&mut closed.file.saves));
         self.eng.docs.discard(Box::new(closed));
-        self.eng.docs.discard(unwatched);
+        if let Some(unwatched) = self.eng.watch.take_gone() {
+            self.eng.docs.discard(unwatched);
+        }
+        self.eng.docs.discard(claims);
         self.eng.outputs.pump();
         Ok(())
     }
@@ -2637,7 +2797,11 @@ impl Control {
         }
         for (save, result) in take_finished(&mut self.eng.docs.orphans) {
             match result {
-                Ok(_) => {
+                Ok(report) => {
+                    // A Save As's copy and index, for a doc no longer open.
+                    if let Some(prepared) = report.prepared {
+                        self.eng.docs.discard(Box::new(prepared));
+                    }
                     for (id, to) in &save.waiters {
                         reply(to, ok(*id, None));
                     }
@@ -2848,6 +3012,16 @@ impl Control {
         self.eng.docs.stuck.load(Ordering::SeqCst)
     }
 
+    /// Copies of media into show folders running or waiting.
+    pub fn copies_busy(&self) -> usize {
+        self.eng.copies.busy()
+    }
+
+    /// Copy threads given up on (stuck on a volume) that have not returned.
+    pub fn copies_stuck(&self) -> usize {
+        self.eng.copies.stuck()
+    }
+
     /// Requests, saves and autosaves still being worked on, the engine's and every doc's.
     pub fn docs_busy(&self) -> usize {
         self.eng.docs.busy() + self.docs.iter().map(|d| d.file.busy()).sum::<usize>()
@@ -2872,6 +3046,30 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::tests::memo_show;
+
+    /// A workspace copy made for the snapshot before the model was edited is not sent: the
+    /// snapshot holds the model as it is now.
+    #[test]
+    fn a_stale_prebuilt_snapshot_workspace_is_not_sent() {
+        let mut s = memo_show();
+        let mut stale = s.control().workspace().clone();
+        stale.name = "made before an edit".into();
+        s.take_outbound();
+        let c = s.control_mut();
+        let at = c.docs[0].model.edits() + 1;
+        c.first_cx().resend_snapshot_with(Some((at, stale)));
+        let sent = s.take_outbound();
+        let snap = sent
+            .iter()
+            .find_map(|m| match m {
+                ServerMessage::Snapshot { snapshot } => Some(snapshot),
+                _ => None,
+            })
+            .expect("a snapshot");
+        assert_eq!(snap.workspace, *s.control().workspace());
+        assert_ne!(snap.workspace.name, "made before an edit");
+    }
 
     /// A relink result lists whole cues until their paths reach the byte cap, and says it
     /// stopped: a folder of many same-named files cannot make a reply bigger than a frame.
@@ -2959,8 +3157,7 @@ mod tests {
                     rx,
                     revision,
                     path: PathBuf::from("/s.openlab"),
-                    rebase: false,
-                    respelled: false,
+                    moved: None,
                     waiters: vec![(RequestId(revision), to.clone())],
                 }
             };

@@ -192,9 +192,7 @@ fn settle_does_not_wait_for_a_job_a_worker_dropped_for_its_newer_copy() {
     let (mut cat, rx) = catalog(0);
     // The newer ticket was taken first, as two workers may: the older job is dropped.
     let older = cat.next_ticket + 1;
-    crate::lock(&cat.pool.gate)
-        .claimed
-        .insert((cat.pool.doc, true, key.clone()), older);
+    crate::lock(&cat.pool.gate).claim_for_test(cat.pool.doc, true, key.clone(), older);
     cat.request(key.clone());
     cat.request(key.clone());
     settle(&mut cat, &rx);
@@ -262,7 +260,7 @@ fn the_watch_follows_the_files_the_catalog_knows() {
     assert_eq!(changes.first(), Some(&KeyChange::Reset));
     watched.clear();
     for c in changes.into_iter().skip(1) {
-        let KeyChange::Watch { key, id, path } = c else {
+        let KeyChange::Watch { key, id, path, .. } = c else {
             panic!("{c:?}")
         };
         assert_eq!(path, PathBuf::from(&key));
@@ -311,7 +309,10 @@ fn an_index_resolved_elsewhere_is_resolved_against_the_catalogs_folder() {
             ProbeClock::system(),
         )
         .unwrap();
-        cat.sync_indexed(index_workspace(&ws, Some(against)));
+        // Prepared, as for a doc opening: against another folder it is not taken.
+        let mut indexed = index_workspace(&ws, Some(against));
+        indexed.prepare();
+        drop(cat.sync_indexed(indexed));
         let watched: Vec<PathBuf> = cat
             .take_key_changes()
             .into_iter()
@@ -350,7 +351,7 @@ fn a_doc_opening_counts_each_files_cues_and_a_later_sync_follows_them() {
         cue(924, "/m/b.wav", false),
     ];
     let (mut opened, _opened_rx) = catalog(0);
-    opened.sync_indexed(index_workspace(&ws, None));
+    drop(opened.sync_indexed(index_workspace(&ws, None)));
     let counts = |cat: &MediaCatalog, key: &str| {
         cat.entries
             .get(key)
@@ -374,7 +375,7 @@ fn a_doc_opening_counts_each_files_cues_and_a_later_sync_follows_them() {
         cue(923, "/m/b.wav", false),
         cue(925, "/m/c.wav", false),
     ];
-    opened.sync_indexed(index_workspace(&ws, None));
+    drop(opened.sync_indexed(index_workspace(&ws, None)));
     assert_eq!(counts(&opened, "/m/b.wav"), Some((2, 0, false)));
     assert_eq!(counts(&opened, "/m/a.wav"), None);
     assert_eq!(counts(&opened, "/m/c.wav"), Some((1, 0, false)));
@@ -391,6 +392,181 @@ fn a_doc_opening_counts_each_files_cues_and_a_later_sync_follows_them() {
             .any(|c| matches!(c, KeyChange::Watch { key, .. } if key == "/m/c.wav")),
         "{changes:?}"
     );
+}
+
+/// A doc opening takes the entries prepared off the control thread: the catalog, the probes
+/// sent (in workspace order), the watch's key changes and the references with no place on disk
+/// are what a sync works out on the control thread; a catalog that is not fresh, or reads its
+/// files against another folder, works them out as a sync does.
+#[test]
+fn a_prepared_index_gives_the_catalog_a_sync_gives() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write_wav(dir.path(), "a.wav");
+    let b = write_wav(dir.path(), "b.wav");
+    let (mut ws, template) = template();
+    let cue = |n: u128, file: &str, preload: bool| {
+        let mut c = template.clone();
+        c.id = CueId(uuid::Uuid::from_u128(n));
+        c.number = None;
+        set_media(&mut c, file, preload);
+        c
+    };
+    ws.cue_lists[0].cues = vec![
+        cue(931, &b, false),
+        cue(932, &a, true),
+        cue(933, "relative.wav", false),
+        cue(934, &b, true),
+    ];
+    let state = |cat: &MediaCatalog| {
+        let mut probes: Vec<_> = cat
+            .entries
+            .iter()
+            .map(|(k, e)| {
+                let failed = matches!(e.probe, Probe::Failed);
+                (k.clone(), e.asking, failed, e.watch, e.picture)
+            })
+            .collect();
+        probes.sort();
+        (view(cat), probes, cat.next_ticket)
+    };
+    let (mut plain, plain_rx) = catalog(0);
+    drop(plain.sync_indexed(index_workspace(&ws, None)));
+    let (mut opened, opened_rx) = catalog(0);
+    let mut indexed = index_workspace(&ws, None);
+    indexed.prepare();
+    drop(opened.sync_indexed(indexed));
+    assert_eq!(state(&opened), state(&plain));
+    assert_eq!(opened.take_key_changes(), plain.take_key_changes());
+    assert_eq!(opened.take_unresolved(), plain.take_unresolved());
+    // The same jobs, in the same order: the answers come back for the same tickets.
+    let tickets = |rx: &Receiver<Inbox>| {
+        let mut got: Vec<(String, u64)> = (0..2)
+            .map(|_| match wait_for(rx, "two probes") {
+                ProbeAnswer::Probed { key, ticket, .. } => (key, ticket),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        got.sort();
+        got
+    };
+    let answered = tickets(&opened_rx);
+    assert_eq!(answered, tickets(&plain_rx));
+    assert_eq!(answered, vec![(a.clone(), 2), (b.clone(), 1)]);
+
+    // Not fresh any more: a prepared index is followed as a sync follows it.
+    ws.cue_lists[0].cues.remove(0);
+    let mut indexed = index_workspace(&ws, None);
+    indexed.prepare();
+    drop(opened.sync_indexed(indexed));
+    drop(plain.sync_indexed(index_workspace(&ws, None)));
+    assert_eq!(state(&opened), state(&plain));
+}
+
+/// A show saved into another folder: the reset that takes up the entries prepared off the
+/// control thread for the new folder gives the catalog the reset worked out on the control
+/// thread gives (files, counts, preloads, tickets after the old ones, watch ids, key changes,
+/// probe jobs in workspace order against the new folder), and an answer to a probe asked before
+/// the reset is ignored by both.
+#[test]
+fn a_reset_from_a_prepared_index_gives_the_catalog_a_reset_gives() {
+    let old = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    for dir in [old.path(), new.path()] {
+        write_wav(dir, "a.wav");
+        write_wav(dir, "b.wav");
+    }
+    let absolute = write_wav(old.path(), "abs.wav");
+    let (mut ws, template) = template();
+    let cue = |n: u128, file: &str, preload: bool| {
+        let mut c = template.clone();
+        c.id = CueId(uuid::Uuid::from_u128(n));
+        c.number = None;
+        set_media(&mut c, file, preload);
+        c
+    };
+    ws.cue_lists[0].cues = vec![
+        cue(941, "b.wav", false),
+        cue(942, "a.wav", true),
+        cue(943, &absolute, false),
+        cue(944, "b.wav", true),
+    ];
+    let state = |cat: &MediaCatalog| {
+        let mut probes: Vec<_> = cat
+            .entries
+            .iter()
+            .map(|(k, e)| {
+                let failed = matches!(e.probe, Probe::Failed);
+                (k.clone(), e.asking, failed, e.watch, e.picture)
+            })
+            .collect();
+        probes.sort();
+        (view(cat), probes, cat.next_ticket, cat.show_dir.clone())
+    };
+    let in_old = || {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut cat = MediaCatalog::with_own_pool(
+            tx,
+            Some(old.path().to_path_buf()),
+            10_000,
+            openlab_audio::probe,
+            Duration::from_secs(60),
+            ProbeClock::system(),
+        )
+        .unwrap();
+        cat.sync(&ws);
+        settle(&mut cat, &rx);
+        // One more probe still out when the show moves: its answer must count for nothing.
+        cat.reprobe("a.wav");
+        drop(cat.take_key_changes());
+        (cat, rx)
+    };
+    let (mut plain, plain_rx) = in_old();
+    let (mut moved, moved_rx) = in_old();
+    assert!(plain.next_ticket > 0);
+    let late = |rx: &Receiver<Inbox>| match wait_for(rx, "the probe asked before the reset") {
+        a @ ProbeAnswer::Probed { .. } => a,
+        other => panic!("{other:?}"),
+    };
+    let (plain_late, moved_late) = (late(&plain_rx), late(&moved_rx));
+    drop(plain.reset(Some(new.path().to_path_buf()), &ws));
+    let mut indexed = index_workspace(&ws, Some(new.path()));
+    indexed.prepare();
+    drop(moved.reset_indexed(Some(new.path().to_path_buf()), indexed));
+    assert_eq!(state(&moved), state(&plain));
+    let changes = moved.take_key_changes();
+    assert_eq!(changes, plain.take_key_changes());
+    assert_eq!(changes.first(), Some(&KeyChange::Reset));
+    assert_eq!(moved.take_unresolved(), plain.take_unresolved());
+    assert!(plain.answer(plain_late).is_none());
+    assert!(moved.answer(moved_late).is_none());
+    // The same jobs, against the new folder, for the same tickets.
+    let jobs = |rx: &Receiver<Inbox>| {
+        let mut got: Vec<(String, u64)> = (0..3)
+            .map(|_| match wait_for(rx, "three probes") {
+                ProbeAnswer::Probed { key, ticket, .. } => (key, ticket),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        got.sort();
+        got
+    };
+    let answered = jobs(&moved_rx);
+    assert_eq!(answered, jobs(&plain_rx));
+    let watched: Vec<PathBuf> = changes
+        .iter()
+        .filter_map(|c| match c {
+            KeyChange::Watch { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    let want = |name: &str| media_path(&MediaRef::new(name), Some(new.path())).unwrap();
+    assert_eq!(
+        watched,
+        [want("b.wav"), want("a.wav"), PathBuf::from(&absolute)]
+    );
+    for (_, ticket) in &answered {
+        assert!(*ticket > moved.next_ticket - 3, "{answered:?}");
+    }
 }
 
 #[test]
@@ -947,7 +1123,7 @@ fn a_preload_answer_that_arrives_after_its_release_is_ignored() {
 // ----- slice-plan checks followed from the catalog's notes -----
 
 use crate::control::checks::PlanChecks;
-use openlab_core::SliceMarker;
+use openlab_core::{PlayCount, SliceMarker, SliceProblem};
 use std::num::NonZeroU32;
 
 const PLAN_RATE: NonZeroU32 = NonZeroU32::new(48_000).unwrap();
@@ -974,10 +1150,10 @@ fn plan_edit(ws: &Workspace, rng: &mut Rng) -> Option<Command> {
             0 => vec![],
             n => vec![SliceMarker {
                 time: 0.3,
-                play_count: u32::try_from(n).unwrap(),
+                play_count: [PlayCount::Skip, PlayCount::ONCE][n - 1],
             }],
         };
-        *last_slice_play_count = [1, 2][rng.below(2)];
+        *last_slice_play_count = [1.into(), 2.into(), PlayCount::Skip][rng.below(3)];
     }
     Some(Command::SetCueProperty {
         id: cue.id,
@@ -1005,9 +1181,9 @@ fn plan_checks_following_changes_equal_a_full_walk() {
         let (mut ws, mut history, mut next) = (base.clone(), History::new(), 20_000u128);
         cat.sync(&ws);
         let mut checks = PlanChecks::default();
-        let mut last: std::collections::BTreeMap<CueId, String> = Default::default();
+        let mut last: std::collections::BTreeMap<CueId, SliceProblem> = Default::default();
         // What the cue engine has been told (`take_changes().slices`), applied in order.
-        let mut told: std::collections::BTreeMap<CueId, String> = Default::default();
+        let mut told: std::collections::BTreeMap<CueId, SliceProblem> = Default::default();
         for step in 0..80 {
             let footprint = match rng.below(12) {
                 0 => history

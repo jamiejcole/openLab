@@ -112,16 +112,17 @@ extension InspectorViewController {
             return s
         }
         let heading = small(loc("inspector.others.heading"))
-        let fadeRow = line([
-            fadeOthersCheck, fadeOthersScopePopup, small(loc("inspector.others.over")), fadeOthersTimeField,
-        ])
+        // Two lines, so the tab fits an inspector narrowed by the sidebar at the least window size.
+        let fadeRow = line([fadeOthersCheck, fadeOthersScopePopup])
+        let fadeOver = line([small(loc("inspector.others.over")), fadeOthersTimeField])
+        fadeOver.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
         let duckBy = line([
             small(loc("inspector.duckOthers.by")), duckDbField, small(loc("inspector.duckOthers.dbOver")),
             duckTimeField,
         ])
         duckBy.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
         let column = NSStackView(views: [
-            heading, fadeRow, duckCheck, duckBy, row(loc("inspector.secondTrigger"), secondTriggerPopup),
+            heading, fadeRow, fadeOver, duckCheck, duckBy, row(loc("inspector.secondTrigger"), secondTriggerPopup),
         ])
         column.orientation = .vertical
         column.alignment = .leading

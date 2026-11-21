@@ -63,8 +63,11 @@ pub(super) struct Loaded {
     pub action_offset: SampleTime,
     /// The whole pre-wait at load, so its countdown shows how much of it the load skipped.
     pub pre_wait_total: SampleTime,
-    /// A `LoadVoice` was sent for this run.
+    /// A `LoadVoice` (or `LoadVoiceAt`) was sent for this run.
     pub voice: bool,
+    /// Loaded by a seek: the action starts at this file frame (device rate), not at
+    /// `action_offset`, which is then 0.
+    pub seek: Option<SampleTime>,
 }
 
 /// Where the cue is between its start and its action's end.
@@ -108,6 +111,9 @@ pub(super) struct Run {
     pub phase: Phase,
     /// Samples into the action it starts from (load-to-time past the pre-wait).
     pub action_offset: SampleTime,
+    /// The action starts at this file frame (device rate) instead: loaded by a seek, or seeked
+    /// in its pre-wait. Taken when the voice starts.
+    pub seek: Option<SampleTime>,
     /// The whole pre-wait (also the part a load to time skipped), for its countdown
     /// (`CueEngine::timers`).
     pub pre_wait_total: SampleTime,
@@ -164,8 +170,15 @@ pub(super) struct Run {
     pub faders: BTreeSet<CueId>,
     /// Audio cues with a started voice: what the voice has been given (`live_levels.rs`).
     pub given: Option<Given>,
+    /// Video cues whose picture a Fade has moved: the cue's geometry in the model as of the
+    /// last comparison, so an edit of a value a Fade holds takes it over (`live_levels.rs`).
+    pub geometry: Option<crate::video_geometry::VideoGeometry>,
     /// Audio cues: a devamp sent for its voice and not yet carried out.
     pub devamp: Option<DevampWait>,
+    /// Its patch moved to another device while a devamp sent was not answered yet
+    /// (`Input::DeviceMoved`): the voice moves once it is (scheduled or ignored), so the loop it
+    /// is leaving is not played again on the new device.
+    pub move_pending: bool,
     /// Fade cues, from their action start: what the fade is doing.
     pub fade: Option<FadeRun>,
     /// Wait and Fade cues in their action: the duration (samples) the action is timed by, so
@@ -370,6 +383,7 @@ impl Run {
             seq,
             phase,
             action_offset: 0,
+            seek: None,
             pre_wait_total: 0,
             post_wait: None,
             post_wait_total: 0,
@@ -391,7 +405,9 @@ impl Run {
             levels: BTreeMap::new(),
             faders: BTreeSet::new(),
             given: None,
+            geometry: None,
             devamp: None,
+            move_pending: false,
             fade: None,
             duration: None,
             duck: DuckLevel::NONE,

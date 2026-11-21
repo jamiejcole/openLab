@@ -21,7 +21,8 @@ The address space follows QLab 5's OSC dictionary so existing remotes work. Anyt
 - A Network cue is never broken for an unresolved host name or an unreachable destination (see `network-cue` reference).
 
 ## Transport
-- UDP and TCP on port **53000**, IPv4, all interfaces (as QLab; set a passcode on a network you do not control).
+- UDP and TCP on port **53000** (or the machine's `osc_port`, set on the OSC settings page with `set_osc_port`), IPv4, all interfaces (as QLab; set a passcode on a network you do not control). `OscServer` (`net/osc.rs`) runs the sockets on a runtime of its own; a new port is bound first, the tap swapped, the old runtime stopped, and a port that cannot be bound leaves the old listeners serving with `state().error` set.
+- UDP is bound before TCP. A taken port's reason says it is in use on every platform; on Windows a port held for another socket's exclusive use or reserved by the system (WSAEACCES) reads "already in use or reserved by the system" (`bind_failure`).
 - UDP replies and updates go to the peer's IP on port **53001** whatever port it sent from, unless it set another with `/udpReplyPort`. A datagram is never answered on its source port.
 - TCP carries OSC 1.1 SLIP frames (END `0xC0` at both ends; `0xDB 0xDC` is a literal END, `0xDB 0xDD` a literal ESC). OSC 1.0 length-prefixed framing is not supported.
 - A UDP peer is identified by its IP, a TCP peer by its connection.
@@ -80,6 +81,7 @@ A message that succeeds gets **no reply** (actions, writes, `/updates`). A failu
 | `/cue/{number}/preWait`, `/postWait` | one number, 0 to 86400 (a day) | `command set_cue_property`. A Wait cue's post-wait is its duration: read as the duration, and core writes the duration (Q350) |
 | `/cue/{number}/duration` | one number, 0 to 86400 | `command set_cue_property` `duration`, Wait and Fade cues only (`error` for others). Read: a Wait or Fade cue's duration, an Audio cue's action length from the media durations the copy follows (`error` while unknown), 0 for an instant cue, `error` for a Group (Q356) |
 | `/cue/{number}/armed`, `/flagged` | int 0/1 or OSC boolean | `command set_cue_property` |
+| `/cue/{number}/opacity`, `/layer`, `/fillStage`, `/fillStyle`, `/smooth`, `/preserveAspectRatio`, `/cropTop` ... `/cropRight` | opacity 0 to 1; layer whole 0 to 1000; fill style int 0 fit, 1 fill, 2 stretch; flags 0/1 or boolean; crop pixels 0 to 16384 | Video cues only (`error` for others): `kind_fields` with the one field (a crop edge sends `crop` with that edge alone; core merges it, so edges sent back to back all hold). Position, scale, rotation and anchor have no address yet (Q446) |
 | `/cue/{number}/{property}` | none | reply with current value. Also readable, read-only: `uniqueID`, `isLoaded`, `isRunning`, `isPaused`, `isBroken` (a write is `error`) |
 | `/cue_id/{ID}/...` | as `/cue/{number}/...` | cue found by id (UUID, upper case) |
 | `/cue/selected/{verb}`, `/cue/playhead/{verb}` | as the verb | cue at the active list's playhead: reads, writes and actions (QLab 5.6.5 measured, Q359) |
@@ -114,12 +116,13 @@ The cue-number part of `/cue/{number}/{verb}` is a pattern when it has `*`, `?`,
 - A connected UDP peer is only an IP, so any packet from that IP, forged included, can switch its `/updates` on or off; it cannot disconnect it.
 
 ## Rights
+- `settings.osc_enabled` off (Workspace Settings, OSC): that doc is judged by a table that grants nothing, so every message to it is `denied` (`/connect` included) and sessions made before end when its copy sees the change. Other docs and the app's own engine connection are unaffected.
 Every message except `/connect`, `/version`, `/workspaces` and `/updates` needs a right in the doc it reaches. A peer lacking it gets a `denied` reply over **both** UDP and TCP: `address`, `status`, and `workspace_id` (application messages such as `/udpReplyPort`: no `workspace_id`). A UDP `denied` to a peer without View is held to the strict byte budget and 1400 bytes.
 
 | Right | Allows |
 |---|---|
 | View | every read (`/cue/{n}/{prop}` without argument, `selected|playhead|active`, `/cueLists`, `/runningCues`, `/runningOrPausedCues`, `/selectedCues`, `/playheadID`), writing `notes`, `/udpReplyPort`. A peer without View has the strict reply budget and the 4 KiB frame limit |
-| Edit | writing `name`, `number`, `preWait`, `postWait`, `duration`, `armed`, `flagged`; `/select/...`. (A read-only property write is refused as `error` once allowed) |
+| Edit | writing `name`, `number`, `preWait`, `postWait`, `duration`, `armed`, `flagged`, a Video cue's geometry fields; `/select/...`. (A read-only property write is refused as `error` once allowed) |
 | Control | `/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, `/reset`, `/playhead/...`, cue verbs (start, stop, hardStop, panic, pause, resume, load, reset, preview; by number, id or pattern), and any address nothing answers to |
 
 - An address nothing answers to is classed with transport and needs Control: a peer without it gets `denied`, any other peer `error`.

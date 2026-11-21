@@ -1,0 +1,10 @@
+# UI tests that pass on a Mac but cannot pass on the hosted CI runners, because of the runner, not openLab:
+# their XCUITest drags do not register on the hosted macOS VM, and its 1024x768 screen is too small for the
+# Geometry show's layout (#769, each test's reason there). CI skips them (`make test-mac-ui-full` with CI
+# set); run them on a Mac with `make test-mac-local-only` before the PR that lands a milestone merges. A test goes here only once investigation shows the failure is the runner's (CLAUDE.md "Tests").
+# scripts/check-repo.sh fails if an entry names a test that does not exist.
+openLabUITests/CueListLayoutUITests/testASidewaysScrollKeepsTitlesOverTheirColumns
+openLabUITests/CueListLayoutUITests/testGroupClosedAndOpenedByTriangleAndArrowsWhileACuePlaysAndTheWindowIsResized
+openLabUITests/ListToolsUITests/testAToolbarButtonDraggedIntoTheListMakesACueWhereItLandsAndInAnOpenGroupJoinsIt
+openLabUITests/VideoUITests/testGeometryFieldsTypedThumbnailDraggedEachUndoneAndRedone
+openLabUITests/VideoUITests/testGeometryTabOrderBringsAFieldBelowTheScrolledAreaIntoView

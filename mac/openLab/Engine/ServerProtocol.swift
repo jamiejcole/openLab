@@ -8,8 +8,6 @@ import Foundation
 
 /// `MAX_SERVER_FRAME_BYTES`: the largest frame the engine sends (a whole snapshot).
 let maxServerFrameBytes = 32 * 1024 * 1024
-/// 2: connections bind to one of several open workspaces.
-let protocolVersion: UInt32 = 4
 
 /// A tagged object the UI shows but does not branch on yet (warnings, problems, resolutions).
 /// Kept as data so a new variant is displayed, not fatal.
@@ -59,6 +57,10 @@ enum RuntimeChange: Sendable, Decodable {
     /// The cue was started since it was last reset (`true`) or a reset undid that: a played cue shows
     /// its second colour.
     case played(cue: ModelID, played: Bool)
+    /// The child a Playlist group plays next (nil: none), marked on the group's box.
+    case playlistNext(group: ModelID, cue: ModelID?)
+    /// Double-GO protection began (a GO now is ignored) or ended.
+    case goProtection(active: Bool)
     case warning(WireWarning)
     /// Every field nil: the cue's lengths are not known now (drop what is held).
     case mediaDuration(CueMediaDuration)
@@ -88,6 +90,12 @@ enum RuntimeChange: Sendable, Decodable {
         case "played":
             self = .played(
                 cue: try c.decode(ModelID.self, forKey: "cue"), played: try c.decode(Bool.self, forKey: "played"))
+        case "playlist_next":
+            self = .playlistNext(
+                group: try c.decode(ModelID.self, forKey: "group"),
+                cue: try c.decodeIfPresent(ModelID.self, forKey: "cue"))
+        case "go_protection":
+            self = .goProtection(active: try c.decode(Bool.self, forKey: "active"))
         case "warning":
             self = .warning(try c.decode(WireWarning.self, forKey: "warning"))
         case "media_duration":
@@ -109,6 +117,11 @@ struct CueProblems: Sendable, Decodable {
     let problems: [WireProblem]
 }
 
+struct PlaylistNextEntry: Sendable, Decodable {
+    let group: ModelID
+    let cue: ModelID
+}
+
 struct PlayheadEntry: Sendable, Decodable {
     let list: ModelID
     let cue: ModelID?
@@ -126,6 +139,8 @@ struct Snapshot: Sendable, Decodable {
     var previewing: [ModelID]
     /// Cues started since they were last reset (absent: none).
     var played: [ModelID]?
+    /// Each Playlist group's next child (absent: none).
+    var playlistNext: [PlaylistNextEntry]?
     var warnings: [WireWarning]
     /// Absent (none known): nil.
     var mediaDurations: [CueMediaDuration]?
@@ -134,6 +149,7 @@ struct Snapshot: Sendable, Decodable {
         case runtimeSeq = "runtime_seq"
         case cueStates = "cue_states"
         case groupWarnings = "group_warnings"
+        case playlistNext = "playlist_next"
         case mediaDurations = "media_durations"
     }
 }
@@ -161,7 +177,29 @@ struct WaitProgress: Hashable, Sendable, Decodable {
 
 struct OutputMeter: Sendable, Decodable {
     let patch: ModelID
+    /// One per cue output: the device output this machine maps it to.
     let peaks: [Float]
+    /// One per cue output: the cue output itself after its level and mute in the patch, before
+    /// the crosspoints (empty from an engine that predates it).
+    let cueOutputs: [Float]
+
+    init(patch: ModelID, peaks: [Float], cueOutputs: [Float] = []) {
+        self.patch = patch
+        self.peaks = peaks
+        self.cueOutputs = cueOutputs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case patch, peaks
+        case cueOutputs = "cue_outputs"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        patch = try c.decode(ModelID.self, forKey: .patch)
+        peaks = try c.decode([Float].self, forKey: .peaks)
+        cueOutputs = try c.decodeIfPresent([Float].self, forKey: .cueOutputs) ?? []
+    }
 }
 
 struct CueMeter: Sendable, Decodable {
@@ -235,6 +273,54 @@ struct StageState: Hashable, Sendable, Decodable {
     let reason: String?
 }
 
+/// WS-04: a copy of media into the show folder under way (`media_copy_progress`).
+struct MediaCopyProgress: Hashable, Sendable, Decodable {
+    let cues: [ModelID]
+    let filesDone: UInt64
+    let filesTotal: UInt64
+    let bytesDone: UInt64
+    let bytesTotal: UInt64
+    let onDemand: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case cues
+        case filesDone = "files_done"
+        case filesTotal = "files_total"
+        case bytesDone = "bytes_done"
+        case bytesTotal = "bytes_total"
+        case onDemand = "on_demand"
+    }
+}
+
+/// WS-04: how a copy of media into the show folder ended (`media_copied`).
+struct MediaCopyReport: Hashable, Sendable, Decodable {
+    let onDemand: Bool
+    let copied: UInt64
+    let reused: UInt64
+    let inFolder: UInt64
+    let failed: [MediaCopyFailure]
+    let failedCount: UInt64
+    let cancelled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case onDemand = "on_demand"
+        case copied, reused
+        case inFolder = "in_folder"
+        case failed
+        case failedCount = "failed_count"
+        case cancelled
+    }
+}
+
+struct MediaCopyFailure: Hashable, Sendable, Decodable {
+    let cue: ModelID
+    /// The file as the cue holds it.
+    let file: String
+    /// `missing`, `unreadable`, `disk_full`, `read_only`, `not_responding`, `bad_name`, `other`.
+    let reason: String
+    let message: String
+}
+
 /// VID-01: what `video_outputs` carries (and `list_displays` with `list_stage_mappings`): the
 /// displays, whether this machine has video output (nil: the stage host has not said), and each
 /// stage's display choice and state.
@@ -249,6 +335,30 @@ struct StageMappingEntry: Hashable, Sendable, Decodable {
     let mapping: StageMapping?
     /// Nil while the stage host has not said.
     let state: StageState?
+    /// A keep-black stage whose black a panic took down: hidden between cues until a cue plays
+    /// on it again (absent: false).
+    var panicked: Bool = false
+    /// Its monitor window is open (absent: false).
+    var monitor: Bool = false
+
+    init(stage: ModelID, mapping: StageMapping?, state: StageState?, panicked: Bool = false, monitor: Bool = false) {
+        self.stage = stage
+        self.mapping = mapping
+        self.state = state
+        self.panicked = panicked
+        self.monitor = monitor
+    }
+
+    private enum CodingKeys: String, CodingKey { case stage, mapping, state, panicked, monitor }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        stage = try c.decode(ModelID.self, forKey: .stage)
+        mapping = try c.decodeIfPresent(StageMapping.self, forKey: .mapping)
+        state = try c.decodeIfPresent(StageState.self, forKey: .state)
+        panicked = try c.decodeIfPresent(Bool.self, forKey: .panicked) ?? false
+        monitor = try c.decodeIfPresent(Bool.self, forKey: .monitor) ?? false
+    }
 }
 
 struct DeviceEntry: Hashable, Sendable, Decodable {
@@ -556,6 +666,11 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// playing now is the status message's `device`.
     case devices([DeviceEntry], selected: String?)
     case patchMappings([PatchMappingEntry])
+    /// `osc_state` and `set_osc_port`: the OSC listening port (the one in use while open), whether its
+    /// sockets are open, and why the last start or change failed.
+    case osc(port: UInt16, open: Bool, error: String?)
+    /// `backup_keep` and `set_backup_keep`: how many backups of each workspace are kept.
+    case backupKeep(count: UInt32)
     case relink(RelinkResult)
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
     case recoveryEntries([RecoveryEntryInfo])
@@ -569,6 +684,8 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// VID-01: `video` is false where this machine has no video output, nil before the stage host started.
     case displays([StageDisplay], video: Bool?)
     case stageMappings([StageMappingEntry])
+    /// Seconds a cue's sequence lasts; nil when its end is not known.
+    case sequenceSpan(Double?)
     #if DEBUG
         /// Test support: the test card's frame number the stage shows, and the RGBA colour at each point.
         case stageProbe(frame: UInt16?, colours: [[UInt8]])
@@ -584,6 +701,11 @@ enum ResultData: Sendable, Equatable, Decodable {
             self = .devices(
                 try c.decode([DeviceEntry].self, forKey: "devices"),
                 selected: try c.decodeIfPresent(String.self, forKey: "selected"))
+        case "backup_keep": self = .backupKeep(count: try c.decode(UInt32.self, forKey: "count"))
+        case "osc":
+            self = .osc(
+                port: try c.decode(UInt16.self, forKey: "port"), open: try c.decode(Bool.self, forKey: "open"),
+                error: try c.decodeIfPresent(String.self, forKey: "error"))
         case "patch_mappings": self = .patchMappings(try c.decode([PatchMappingEntry].self, forKey: "patches"))
         case "relink":
             self = .relink(
@@ -614,6 +736,7 @@ enum ResultData: Sendable, Equatable, Decodable {
                 try c.decode([StageDisplay].self, forKey: "displays"),
                 video: try c.decodeIfPresent(Bool.self, forKey: "video"))
         case "stage_mappings": self = .stageMappings(try c.decode([StageMappingEntry].self, forKey: "stages"))
+        case "sequence_span": self = .sequenceSpan(try c.decodeIfPresent(Double.self, forKey: "span"))
         #if DEBUG
             case "stage_probe":
                 self = .stageProbe(
@@ -724,6 +847,10 @@ enum ServerMessage: Sendable, Decodable {
     case closed(doc: ModelID)
     /// VID-01: the displays and where each of the workspace's stages is, whenever that changes.
     case videoOutputs(VideoOutputs)
+    /// WS-04: media is being copied into the show folder.
+    case mediaCopyProgress(MediaCopyProgress)
+    /// WS-04: the copy ended.
+    case mediaCopied(MediaCopyReport)
     /// A `type` this client does not know: logged and dropped by the client.
     case unknown(type: String)
 
@@ -766,6 +893,8 @@ enum ServerMessage: Sendable, Decodable {
                 VideoOutputs(
                     displays: try d("displays"), video: try c.decodeIfPresent(Bool.self, forKey: "video"),
                     stages: try d("stages")))
+        case "media_copy_progress": self = .mediaCopyProgress(try MediaCopyProgress(from: decoder))
+        case "media_copied": self = .mediaCopied(try d("report"))
         default: self = .unknown(type: type)
         }
     }

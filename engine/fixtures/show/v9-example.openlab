@@ -170,7 +170,12 @@
       },
       "auto_number_start": 1.0,
       "auto_number_increment": 0.5,
-      "new_cues_auto_load": false
+      "new_cues_auto_load": false,
+      "auto_number_new_cues": true,
+      "lock_playhead": true,
+      "go_needs_key_up": false,
+      "osc_enabled": true,
+      "copy_media_on_add": true
     },
     "patches": [
       {
@@ -188,6 +193,35 @@
             "level_db": -1.5,
             "mute": false,
             "polarity_inverted": true
+          }
+        ],
+        "crosspoints": [
+          {
+            "output": 0,
+            "device_output": 2,
+            "db": -6.0
+          },
+          {
+            "output": 1,
+            "device_output": 1,
+            "db": -120.0
+          },
+          {
+            "output": 1,
+            "device_output": 3,
+            "db": 0.0
+          }
+        ],
+        "device_outputs": [
+          {
+            "device_output": 2,
+            "level_db": -3.0,
+            "mute": false
+          },
+          {
+            "device_output": 3,
+            "level_db": 0.0,
+            "mute": true
           }
         ]
       }
@@ -274,7 +308,21 @@
                   "command": true
                 }
               },
-              "hotkey_enabled": true
+              "hotkey_enabled": true,
+              "wall_clock": {
+                "enabled": true,
+                "hours": 19,
+                "minutes": 25,
+                "seconds": 0,
+                "days": [
+                  "tuesday",
+                  "wednesday",
+                  "thursday",
+                  "friday",
+                  "saturday"
+                ],
+                "twelve_hour": true
+              }
             },
             "second_trigger": "panic",
             "second_trigger_on_release": false,
@@ -399,7 +447,24 @@
                 ]
               },
               "stop_target_when_done": true,
-              "mode": "absolute"
+              "mode": "absolute",
+              "geometry": {
+                "fade_opacity": false,
+                "opacity": 1.0,
+                "fade_translation": false,
+                "translation": {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                "fade_scale": false,
+                "scale": {
+                  "x": 1.0,
+                  "y": 1.0
+                },
+                "scale_locked": true,
+                "fade_rotation": false,
+                "rotation": 0.0
+              }
             }
           },
           {
@@ -919,6 +984,42 @@
             }
           },
           {
+            "id": "00000000-0000-0000-0000-00000000001f",
+            "number": "14",
+            "name": "Start points at the welcome",
+            "notes": "",
+            "color": "none",
+            "second_color": "none",
+            "flagged": false,
+            "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "hotkey_enabled": true
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
+            "kind": {
+              "type": "target",
+              "target": "00000000-0000-0000-0000-000000000005",
+              "new_target": "00000000-0000-0000-0000-000000000001"
+            }
+          },
+          {
             "id": "00000000-0000-0000-0000-00000000001d",
             "number": "20",
             "name": "",
@@ -952,7 +1053,84 @@
               "type": "video",
               "media": "Media/Backdrop.mov",
               "stage": "00000000-0000-0000-0000-000000000001",
-              "duration": null
+              "duration": null,
+              "fill_stage": true,
+              "fill_style": "fit",
+              "translation": {
+                "x": 0.0,
+                "y": 0.0
+              },
+              "scale": {
+                "x": 1.0,
+                "y": 1.0
+              },
+              "scale_locked": true,
+              "rotation": 0.0,
+              "crop": {
+                "top": 0.0,
+                "bottom": 0.0,
+                "left": 0.0,
+                "right": 0.0
+              },
+              "anchor": {
+                "x": 0.0,
+                "y": 0.0
+              },
+              "opacity": 1.0,
+              "layer": 1000,
+              "smooth": true,
+              "start_time": 1.5,
+              "end_time": 9.0,
+              "fade_in": {
+                "duration": 0.5,
+                "curve": "s_curve"
+              },
+              "fade_out": {
+                "duration": 1.0,
+                "curve": "s_curve"
+              },
+              "slices": [
+                {
+                  "time": 4.0,
+                  "play_count": 0
+                },
+                {
+                  "time": 6.0,
+                  "play_count": "skip"
+                }
+              ],
+              "last_slice_play_count": 1,
+              "hold_at_end": true,
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "levels": {
+                "master_db": -3.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [
+                  {
+                    "input": 0,
+                    "output": 0,
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "input": 1,
+                    "output": 1,
+                    "db": -6.0,
+                    "mute": false
+                  }
+                ],
+                "gangs": []
+              },
+              "audio_track": 1
             }
           },
           {
@@ -989,7 +1167,53 @@
               "type": "video",
               "media": "Media/Title.png",
               "stage": "00000000-0000-0000-0000-000000000001",
-              "duration": 5.0
+              "duration": 5.0,
+              "fill_stage": false,
+              "fill_style": "fill",
+              "translation": {
+                "x": -120.0,
+                "y": 40.5
+              },
+              "scale": {
+                "x": 0.5,
+                "y": 0.75
+              },
+              "scale_locked": false,
+              "rotation": 12.5,
+              "crop": {
+                "top": 4.0,
+                "bottom": 0.0,
+                "left": 10.0,
+                "right": 2.0
+              },
+              "anchor": {
+                "x": -32.0,
+                "y": 16.0
+              },
+              "opacity": 0.8,
+              "layer": 20,
+              "smooth": false,
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 1,
+              "hold_at_end": false,
+              "patch": null,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "audio_track": 0
             }
           }
         ]

@@ -3,11 +3,15 @@
 //! Cues and their kinds. Times are seconds (f64), levels are dB (f64).
 
 use std::borrow::Cow;
+use std::num::NonZeroU32;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::media_path::file_name;
 use crate::model::{CueId, NetworkPatchId, PatchId, StageId};
+use crate::video_geometry::VideoGeometry;
+use crate::video_sound::VideoSound;
+use crate::video_timing::VideoTiming;
 
 /// Levels at or below this are silence (−∞). The file writes this value for silence.
 pub const SILENCE_DB: f64 = -120.0;
@@ -72,6 +76,9 @@ pub const MAX_CHANNELS: u32 = 64;
 /// Most cue outputs a patch (and so a cue's levels, crosspoint outputs and gangs) may have
 /// (AUD-07; QLab 5 allows 1 to 128).
 pub const MAX_CUE_OUTPUTS: u32 = 128;
+/// Most device outputs a patch can route to: the audio engine opens at most this many outputs
+/// of a device (AUD-03). The engine crate tests that the two limits agree.
+pub const MAX_DEVICE_OUTPUTS: u32 = 64;
 /// Most slice markers an Audio cue may hold. The audio engine plays at most 256 slice entries
 /// (`openlab_audio::MAX_SLICES`): n markers make n + 1 slices, and a start offset inside a slice
 /// splits it in two. The engine crate tests that the two limits agree.
@@ -376,10 +383,149 @@ pub struct Triggers {
     /// a file: on (a show from before the switch had only working hotkeys).
     #[serde(default = "enabled")]
     pub hotkey_enabled: bool,
+    /// Starts the cue at a time of day (TRG-05). Left out when it is a new cue's (off, at
+    /// midnight, every day); absent in a file: that.
+    #[serde(default, skip_serializing_if = "WallClockTrigger::is_default")]
+    pub wall_clock: WallClockTrigger,
 }
 
 fn enabled() -> bool {
     true
+}
+
+/// "Wall clock trigger" (QLab 5 Triggers tab, manual p. 129): starts the cue when the computer's
+/// local time reaches `hours:minutes:seconds` on one of `days`, while the workspace is open.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WallClockTrigger {
+    pub enabled: bool,
+    /// 0 to 23 (validation turns a trigger with a time out of range off).
+    pub hours: u8,
+    /// 0 to 59.
+    pub minutes: u8,
+    /// 0 to 59.
+    pub seconds: u8,
+    /// The days of the week it starts the cue on; absent in a file: every day.
+    #[serde(default)]
+    pub days: Weekdays,
+    /// The inspector shows the time on a 12-hour clock with AM or PM, instead of 0 to 23. Only
+    /// how the time is shown and typed; `hours` is always 0 to 23.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub twelve_hour: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl Default for WallClockTrigger {
+    /// Off, at midnight, every day: what a new cue has.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+            days: Weekdays::EVERY_DAY,
+            twelve_hour: false,
+        }
+    }
+}
+
+impl WallClockTrigger {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Seconds after local midnight it fires at; `None` when the time is out of range.
+    pub fn second_of_day(&self) -> Option<u32> {
+        (self.hours < 24 && self.minutes < 60 && self.seconds < 60).then(|| {
+            u32::from(self.hours) * 3600 + u32::from(self.minutes) * 60 + u32::from(self.seconds)
+        })
+    }
+}
+
+/// A day of the week, as the file names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Weekday {
+    Sunday,
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+}
+
+impl Weekday {
+    pub const ALL: [Self; 7] = [
+        Self::Sunday,
+        Self::Monday,
+        Self::Tuesday,
+        Self::Wednesday,
+        Self::Thursday,
+        Self::Friday,
+        Self::Saturday,
+    ];
+
+    /// The day of local day number `day` (days since 1970-01-01, a Thursday).
+    pub fn of_day(day: i64) -> Self {
+        // rem_euclid(7) is 0..=6, so the index is always in range.
+        let index = usize::try_from((day + 4).rem_euclid(7)).unwrap_or(0);
+        Self::ALL.get(index).copied().unwrap_or(Self::Sunday)
+    }
+
+    fn bit(self) -> u8 {
+        1 << (self as u8)
+    }
+}
+
+/// A set of days of the week; in the file a list of day names (repeats count once).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "Vec<Weekday>", into = "Vec<Weekday>")]
+pub struct Weekdays(u8);
+
+impl Weekdays {
+    pub const EVERY_DAY: Self = Self(0b111_1111);
+    pub const NONE: Self = Self(0);
+
+    pub fn contains(self, day: Weekday) -> bool {
+        self.0 & day.bit() != 0
+    }
+
+    pub fn with(self, day: Weekday, on: bool) -> Self {
+        if on {
+            Self(self.0 | day.bit())
+        } else {
+            Self(self.0 & !day.bit())
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl Default for Weekdays {
+    fn default() -> Self {
+        Self::EVERY_DAY
+    }
+}
+
+impl From<Vec<Weekday>> for Weekdays {
+    fn from(days: Vec<Weekday>) -> Self {
+        days.into_iter()
+            .fold(Self::NONE, |set, day| set.with(day, true))
+    }
+}
+
+impl From<Weekdays> for Vec<Weekday> {
+    fn from(set: Weekdays) -> Self {
+        Weekday::ALL
+            .into_iter()
+            .filter(|d| set.contains(*d))
+            .collect()
+    }
 }
 
 impl Triggers {
@@ -453,12 +599,97 @@ impl<'de> Deserialize<'de> for MediaRef {
     }
 }
 
-/// End of a slice. The slice that ends here plays `play_count` times; 0 = loop until devamped.
+/// How a slice plays (QLab 5 manual p. 179: a number of times, without end, or not at all).
+///
+/// Stored as a number for a count, the number 0 for [`PlayCount::Endless`] and the string
+/// `"skip"` for [`PlayCount::Skip`] (docs/file-format.md §5.3). The stored 0 is not the 0 a user
+/// types for a skipped slice: it is what "loop until devamped" was written as before a slice
+/// could be skipped, so those shows still mean what they meant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlayCount {
+    /// Plays this many times in a row.
+    Times(NonZeroU32),
+    /// Loops until devamped or stopped.
+    Endless,
+    /// Not played: playback goes from the end of the slice before it straight to the start of
+    /// the next slice that plays.
+    Skip,
+}
+
+impl PlayCount {
+    /// Played once: a new slice's count.
+    pub const ONCE: Self = Self::Times(NonZeroU32::MIN);
+
+    /// The count a stored number means: 0 is [`PlayCount::Endless`].
+    pub fn from_stored(n: u32) -> Self {
+        NonZeroU32::new(n).map_or(Self::Endless, Self::Times)
+    }
+}
+
+impl From<u32> for PlayCount {
+    /// As [`PlayCount::from_stored`].
+    fn from(n: u32) -> Self {
+        Self::from_stored(n)
+    }
+}
+
+/// What a skipped slice's play count is stored as.
+const STORED_SKIP: &str = "skip";
+
+impl Serialize for PlayCount {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Times(n) => serializer.serialize_u32(n.get()),
+            Self::Endless => serializer.serialize_u32(0),
+            Self::Skip => serializer.serialize_str(STORED_SKIP),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PlayCount {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Stored;
+        impl serde::de::Visitor<'_> for Stored {
+            type Value = PlayCount;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "a whole number from 0 to {} or \"{STORED_SKIP}\"",
+                    u32::MAX
+                )
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<PlayCount, E> {
+                u32::try_from(n)
+                    .map(PlayCount::from_stored)
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Unsigned(n), &self))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, n: i64) -> Result<PlayCount, E> {
+                u64::try_from(n)
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Signed(n), &self))
+                    .and_then(|n| self.visit_u64(n))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<PlayCount, E> {
+                if s == STORED_SKIP {
+                    Ok(PlayCount::Skip)
+                } else {
+                    Err(E::invalid_value(serde::de::Unexpected::Str(s), &self))
+                }
+            }
+        }
+        deserializer.deserialize_any(Stored)
+    }
+}
+
+/// End of a slice. The slice that ends here plays as `play_count` says.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SliceMarker {
     /// Seconds from the start of the file.
     pub time: f64,
-    pub play_count: u32,
+    pub play_count: PlayCount,
 }
 
 /// A routing-matrix crosspoint: file channel `input` → cue output `output`, both 0-based.
@@ -505,10 +736,12 @@ impl CueKind {
             }
         };
         match self {
-            Self::Audio { levels, .. } => {
-                set(&mut levels.master_db);
-                levels.outputs.iter_mut().for_each(|o| set(&mut o.db));
-                levels.crosspoints.iter_mut().for_each(|c| set(&mut c.db));
+            Self::Audio { .. } | Self::Video { .. } => {
+                if let Some(levels) = self.levels_mut() {
+                    set(&mut levels.master_db);
+                    levels.outputs.iter_mut().for_each(|o| set(&mut o.db));
+                    levels.crosspoints.iter_mut().for_each(|c| set(&mut c.db));
+                }
             }
             Self::Fade { levels, .. } if fades => {
                 levels.master_db.iter_mut().for_each(&mut set);
@@ -594,8 +827,8 @@ pub enum CueKind {
         fade_in: FadeSpec,
         fade_out: FadeSpec,
         slices: Vec<SliceMarker>,
-        /// Play count of the slice after the last marker; 0 = loop until devamped.
-        last_slice_play_count: u32,
+        /// How the slice after the last marker plays.
+        last_slice_play_count: PlayCount,
         levels: CueLevels,
         /// Decode the whole file into memory when loaded (AUD-05).
         preload: bool,
@@ -611,6 +844,10 @@ pub enum CueKind {
         /// file: absolute.
         #[serde(default)]
         mode: FadeMode,
+        /// What it does to a Video target's picture (VID-05), read in `mode` as the levels are.
+        /// Absent in a file: nothing.
+        #[serde(default)]
+        geometry: crate::video_geometry::FadeGeometry,
     },
     Group {
         mode: GroupMode,
@@ -655,6 +892,15 @@ pub enum CueKind {
     Disarm {
         target: Option<CueId>,
     },
+    /// Gives its target (a cue that acts on a cue, not a Fade) a temporary target when it runs
+    /// (CT-18; QLab 5 manual p. 686): `new_target`, until that cue is reset, Reset All or the
+    /// show is reopened. Never changes the model.
+    Target {
+        target: Option<CueId>,
+        /// The cue the target acts on after this cue ran; `None` = not set (broken). Set by its
+        /// number, which it must have.
+        new_target: Option<CueId>,
+    },
     Wait {
         duration: f64,
     },
@@ -676,6 +922,15 @@ pub enum CueKind {
         /// How long a still image shows, seconds (0 to [`MAX_TIME`]); `None` = until stopped.
         /// Not used by a video file, whose length is its own.
         duration: Option<f64>,
+        /// How its picture sits on the stage (VID-04), stored as fields of the kind.
+        #[serde(flatten)]
+        geometry: VideoGeometry,
+        /// Its trims, loops, fades and hold at end (VID-07), stored as fields of the kind.
+        #[serde(flatten)]
+        timing: Box<VideoTiming>,
+        /// Its sound's patch, levels and audio track (VID-06), stored as fields of the kind.
+        #[serde(flatten)]
+        sound: Box<VideoSound>,
     },
 }
 
@@ -684,6 +939,35 @@ impl CueKind {
     pub fn media(&self) -> Option<&MediaRef> {
         match self {
             Self::Audio { media, .. } | Self::Video { media, .. } => media.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The levels of a cue that can sound: an Audio cue's, or a Video cue's (used when its
+    /// file has an audio track).
+    pub fn levels(&self) -> Option<&CueLevels> {
+        match self {
+            Self::Audio { levels, .. } => Some(levels),
+            Self::Video { sound, .. } => Some(&sound.levels),
+            _ => None,
+        }
+    }
+
+    /// [`Self::levels`], to change.
+    pub fn levels_mut(&mut self) -> Option<&mut CueLevels> {
+        match self {
+            Self::Audio { levels, .. } => Some(levels),
+            Self::Video { sound, .. } => Some(&mut sound.levels),
+            _ => None,
+        }
+    }
+
+    /// The output patch a cue that can sound plays on: an Audio cue's, or a Video cue's when
+    /// it has one set.
+    pub fn sound_patch(&self) -> Option<PatchId> {
+        match self {
+            Self::Audio { patch, .. } => Some(*patch),
+            Self::Video { sound, .. } => sound.patch,
             _ => None,
         }
     }
@@ -708,7 +992,8 @@ impl CueKind {
             | Self::Devamp { target, .. }
             | Self::GoTo { target, .. }
             | Self::Arm { target }
-            | Self::Disarm { target } => {
+            | Self::Disarm { target }
+            | Self::Target { target, .. } => {
                 *target = new;
                 true
             }
@@ -746,13 +1031,22 @@ impl CueKind {
             | Self::Devamp { target, .. }
             | Self::GoTo { target, .. }
             | Self::Arm { target }
-            | Self::Disarm { target } => *target,
+            | Self::Disarm { target }
+            | Self::Target { target, .. } => *target,
             Self::Audio { .. }
             | Self::Group { .. }
             | Self::Wait { .. }
             | Self::Memo
             | Self::Network { .. }
             | Self::Video { .. } => None,
+        }
+    }
+
+    /// A Target cue's new target, if one is set.
+    pub fn new_target(&self) -> Option<CueId> {
+        match self {
+            Self::Target { new_target, .. } => *new_target,
+            _ => None,
         }
     }
 }

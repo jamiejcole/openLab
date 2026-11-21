@@ -1,0 +1,18 @@
+{
+  "about": "A show whose two-output patch also routes to device outputs 3, 5 and 6 opened where the device has two (light): the routing is kept, the columns past the device drawn in red with a note, the device outputs past it listed with their level and mute, and the device's entry in the warnings.",
+  "show": "patch-routing-beyond.openlab",
+  "appearance": "light",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "audio"},
+    {"shot": "table"},
+    {"click": "settings-patch-edit-1"},
+    {"focus": "patch-editor"},
+    {"tab": "routing"},
+    {"shot": "routing-beyond"},
+    {"tab": "deviceOutputs"},
+    {"shot": "device-outputs-beyond"},
+    {"focus": "workspace"},
+    {"shot": "workspace-warnings"}
+  ]
+}

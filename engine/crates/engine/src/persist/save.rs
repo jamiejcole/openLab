@@ -24,6 +24,8 @@ pub struct SaveReport {
     /// Things that went wrong without losing the save: a failed backup, a leftover recovery
     /// file that could not be removed.
     pub warnings: Vec<String>,
+    /// What the save's [`super::BeforeWrite`] made of the copy, on the writer thread.
+    pub prepared: Option<Box<dyn std::any::Any + Send>>,
 }
 
 /// Saves `workspace` to `path`. On error the file at `path` is exactly as it was: the new

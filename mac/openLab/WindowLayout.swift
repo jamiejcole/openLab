@@ -15,7 +15,7 @@ struct WindowLayout: Equatable {
 
     /// Sizes beyond this are nonsense, whatever the stored data says.
     static let sizeLimit: CGFloat = 20_000
-    static let sidebarTabCount = 3
+    static let sidebarTabCount = 2
 
     init() {}
 

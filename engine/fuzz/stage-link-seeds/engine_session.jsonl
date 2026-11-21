@@ -1,4 +1,4 @@
-{"type":"hello","version":1}
+{"type":"hello","version":3}
 {"type":"stages","stages":[{"id":"00000000-0000-0000-0000-000000000001","width":1920,"height":1080,"display":"D1","keep_black":true},{"id":"00000000-0000-0000-0000-000000000002","width":640,"height":480,"keep_black":false}]}
 {"type":"ping","seq":7}
 {"type":"test_card","stage":"00000000-0000-0000-0000-000000000001","frame":42}
@@ -7,3 +7,14 @@
 {"type":"probe_display","display":"V1","points":[[0.5,0.5]]}
 {"type":"hang"}
 {"type":"quit"}
+{"type":"load","picture":1,"stage":"00000000-0000-0000-0000-000000000001","file":"/show/a.mov","still":false,"offset":0,"geometry":{"fill_stage":false,"fill_style":"fill","translation":{"x":10,"y":-5},"scale":{"x":2,"y":2},"scale_locked":true,"rotation":45,"crop":{"top":1,"bottom":2,"left":3,"right":4},"anchor":{"x":0,"y":0},"opacity":0.5,"layer":7,"smooth":false}}
+{"type":"geometry","picture":1,"geometry":{"opacity":2,"layer":1001}}
+{"type":"play","picture":1,"at":480,"offset":1.0,"action":0.5,"into":0.5,"plan":[{"from":1.0,"length":2.0,"plays":0},{"from":3.0,"length":1.0,"plays":1}],"fades":{"fade_in":{"duration":0.5,"curve":"s_curve"},"fade_out":{"duration":1.0,"curve":"linear"},"end":null}}
+{"type":"pause","picture":1,"at":960,"offset":1.5,"action":1.0}
+{"type":"play","picture":1,"at":0,"offset":0,"action":-1,"into":0,"plan":[{"from":0,"length":0,"plays":1}],"fades":{"fade_in":{"duration":0,"curve":"linear"},"fade_out":{"duration":0,"curve":"linear"},"end":1e300}}
+{"type":"ramp","picture":1,"param":"opacity","ramp":{"from":1.0,"to":0.0,"at":48000,"frames":144000,"curve":"s_curve"}}
+{"type":"ramp","picture":1,"param":"rotation","ramp":{"from":0.0,"to":90.0,"at":0,"frames":0,"curve":"linear"}}
+{"type":"stop","picture":1,"at":960,"fade":480}
+{"type":"stop","picture":1,"at":960,"fade":480,"cut":1200}
+{"type":"stages","stages":[{"id":"00000000-0000-0000-0000-000000000001","width":1920,"height":1080,"keep_black":false,"monitor":"Stage 1"}]}
+{"type":"raise_monitor","stage":"00000000-0000-0000-0000-000000000001"}

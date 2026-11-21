@@ -44,21 +44,45 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var previewing: Set<ModelID> = []
     /// Cues started since they were last reset: their rows show the second colour, if they have one.
     @Published private(set) var played: Set<ModelID> = []
+    /// Each Playlist group's next child, by group: the list marks it on the group's box.
+    @Published private(set) var playlistNext: [ModelID: ModelID] = [:]
     @Published private(set) var progress: [ModelID: ProgressItem] = [:]
+    /// Where each loaded cue stands, as the engine's progress says: Load to Time or a Load cue's
+    /// time into its action, a click in a timeline's point of its file. Only loaded cues are here;
+    /// a cue leaving that state leaves.
+    private(set) var loadedAt: [ModelID: LoadedStand] = [:]
+    /// The progress of each cue previewing with no run of its own counting, kept apart from
+    /// `progress` so a cue's earlier runs (an idle state) never hide it. Cleared when the preview ends.
+    private(set) var previews: [ModelID: ProgressItem] = [:]
     /// Audio cues' media lengths as the engine probed them (`media_durations`, `media_duration`).
-    @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:]
+    @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:] {
+        didSet { mediaDurationsVersion &+= 1 }
+    }
+    /// Counts changes to `mediaDurations`, so a view can tell a length changed without comparing them.
+    private(set) var mediaDurationsVersion: UInt64 = 0
     /// Pre-wait and post-wait countdowns in progress (`progress.waits`), by cue.
     @Published private(set) var waits: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
     /// The displays and where each stage is (VID-01), replaced by each `video_outputs` push or
     /// list answer; views observe it as a published property.
     @Published private(set) var videoOutputs = VideoOutputs()
+    /// WS-04: the cues whose files are being copied into the show folder now (empty: none).
+    @Published private(set) var copyingMedia: Set<ModelID> = []
+    /// WS-04: the on-demand copy is running (the command is off meanwhile).
+    @Published private(set) var copyOnDemandRunning = false
+    /// WS-04: each copy's end, as the engine reports it (the window shows the notice).
+    let mediaCopied = PassthroughSubject<MediaCopyReport, Never>()
     /// Workspace-level notices in force (replaced by each `warnings` message).
     @Published private(set) var warnings: [WireWarning] = []
     /// Notices the app raises itself for this workspace (a key-map key that took a menu command's
-    /// key), listed in the Warnings tab after the engine's. Replaced as a whole.
+    /// key), listed in the Warnings list after the engine's. Replaced as a whole.
     @Published private(set) var appNotices: [String] = []
     /// Warnings that arrived as runtime changes, newest last.
     @Published private(set) var runtimeWarnings: [WireWarning] = []
+    /// Double-GO protection is in force: the GO button shows its border (the engine says when it
+    /// begins and ends, on its own clock).
+    @Published private(set) var goProtected = false
+    /// How many GOs double-GO protection has ignored: the GO area flashes on each.
+    @Published private(set) var goBlockedCount = 0
     static let unlistedWarnings: Set<String> = ["trigger_ignored", "target_not_running"]
 
     /// The states in which a cue's progress is shown: an ended cue reads its duration again.
@@ -113,6 +137,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// The engine closed this workspace (`closed` on its connection): its window goes at once.
     var onClosed: (() -> Void)?
 
+    /// Marks the cues being copied; their rows draw again.
+    private func setCopying(_ cues: Set<ModelID>, onDemand: Bool) {
+        let touched = copyingMedia.symmetricDifference(cues)
+        copyingMedia = cues
+        if copyOnDemandRunning != onDemand { copyOnDemandRunning = onDemand }
+        if !touched.isEmpty { changes.send(.runtime(cues: touched, playheads: [])) }
+    }
+
     init(client: EngineClient) {
         self.client = client
         client.delegate = self
@@ -122,12 +154,23 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             if state != .connected {
                 self?.clearPreviewing()
                 self?.meters.reset()
+                // A copy does not outlive its engine connection's view of it.
+                self?.setCopying([], onDemand: false)
             }
         }
     }
 
+    /// A cue's progress as the cue list and inspector show it: its run's, or else its preview's (a
+    /// preview counts as a play does).
+    func shownProgress(_ cue: ModelID) -> ProgressItem? {
+        progress[cue] ?? previews[cue]
+    }
+
     /// A dropped connection leaves nothing known to be previewing (the next snapshot says what is).
     private func clearPreviewing() {
+        let ticking = Set(previews.keys)
+        previews = [:]
+        if !ticking.isEmpty { changes.send(.progress(ticking)) }
         guard !previewing.isEmpty else { return }
         let old = previewing
         previewing = []
@@ -140,11 +183,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func clearRuntime() {
         meters.reset()
         let live = Set(cueStates.filter { $0.value.state.isActive }.keys).union(previewing)
-        let ticking = Set(progress.keys)
+        let ticking = Set(progress.keys).union(previews.keys)
         let waiting = Set(waits.keys)
         cueStates = cueStates.filter { !$0.value.state.isActive }
         previewing = []
         progress = [:]
+        previews = [:]
         waits = [:]
         if !live.isEmpty { changes.send(.runtime(cues: live, playheads: [])) }
         if !ticking.isEmpty { changes.send(.progress(ticking)) }
@@ -207,6 +251,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func searchMissingFiles(in folder: String) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .relink(folder: folder, preview: true)) }
     }
+    /// WS-04: copies every file the cues target that is not in the show folder into it. Answered as
+    /// the copy starts; `copyingMedia` and `mediaCopied` follow it (the engine refuses a second
+    /// while one runs).
+    func copyMediaIntoShowFolder() async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .copyMedia) }
+    }
     /// The newest show-log entries the engine holds (oldest first); `max` nil: all of them.
     func logTail(max: UInt32? = nil) async -> Result<
         (entries: [ShowLogEntry], dropped: UInt64, seq: UInt64), EngineError
@@ -231,6 +281,15 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             return .failure(.encoding("waveform result has no waveform data"))
         case .failure(let e): return .failure(e)
         }
+    }
+
+    /// How long the sequence that starts at `cue` lasts, seconds (its auto-continue and auto-follow
+    /// chain, as the engine times it); nil when its end is not known or the engine did not answer.
+    func sequenceSpan(_ cue: ModelID) async -> Double? {
+        guard case .success(let ok) = await client.send({ .request(id: $0, .sequenceSpan(cue: cue)) }),
+            case .sequenceSpan(let span)? = ok.data
+        else { return nil }
+        return span
     }
 
     /// The pre-show check (SM-06): one report of what would keep the show from running.
@@ -280,6 +339,17 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
 
     func listDevices() async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .listDevices) }
+    }
+
+    /// The port OSC listens on and whether it is open (an app-scope request).
+    func oscState() async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .oscState) }
+    }
+
+    /// Listens for OSC on `port` from now on; refused, with the old port still listening, when it
+    /// cannot be opened.
+    func setOscPort(_ port: UInt16) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setOscPort(port: port)) }
     }
 
     /// Chooses the output device for the engine's next start (nil: the system default).
@@ -347,15 +417,29 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             if engineChanged, d.showMode != showMode, !showModeUnsent { showMode = d.showMode }
         case .progress(let items, let w):
             let old = progress
+            let oldPreviews = previews
             let oldWaits = waits
+            // A previewing cue with no run of its own counting: the item is the preview's (the engine
+            // sends it in place of a loaded cue's point), whatever state an earlier run left.
+            let running = { (cue: ModelID) in self.cueStates[cue].map { Self.keepsProgress($0.state) } ?? false }
+            let previewed = items.filter { previewing.contains($0.cue) && !running($0.cue) }
+            let shown = items.filter { !previewing.contains($0.cue) || running($0.cue) }
+            previews = Dictionary(previewed.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
             // A voice fading out after its cue has ended (a panic) is still reported; the engine sends
             // nothing once all is quiet, so an item taken for an ended cue would never be cleared.
-            let live = items.filter { item in cueStates[item.cue].map { Self.keepsProgress($0.state) } ?? true }
+            let live = shown.filter { item in cueStates[item.cue].map { Self.keepsProgress($0.state) } ?? true }
             progress = Dictionary(live.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
+            let oldLoaded = loadedAt
+            loadedAt = Dictionary(
+                shown.compactMap { item in
+                    guard cueStates[item.cue]?.state == .loaded else { return nil }
+                    return (item.cue, LoadedStand(time: item.elapsed, position: item.position))
+                }, uniquingKeysWith: { $1 })
             var next: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
             for wait in w { next[wait.cue, default: [:]][wait.wait] = wait }
             waits = next
-            let touched = Set(old.keys).union(progress.keys)
+            let touched = Set(old.keys).union(progress.keys).union(oldLoaded.keys).union(loadedAt.keys)
+                .union(oldPreviews.keys).union(previews.keys)
             if !touched.isEmpty { changes.send(.progress(touched)) }
             let waited = Set(oldWaits.keys).union(next.keys)
             if !waited.isEmpty { changes.send(.waits(waited)) }
@@ -388,6 +472,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             meters.ingest(outputs: outputs, cues: cues)
         case .videoOutputs(let v):
             setVideoOutputs(v)
+        case .mediaCopyProgress(let p):
+            setCopying(Set(p.cues), onDemand: p.onDemand)
+        case .mediaCopied(let report):
+            setCopying([], onDemand: false)
+            mediaCopied.send(report)
         case .result, .error, .appWelcome, .workspaces, .unknown:
             // These belong to the client or session.
             break
@@ -407,11 +496,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         playheads = Dictionary(s.playheads.compactMap { e in e.cue.map { (e.list, $0) } }, uniquingKeysWith: { $1 })
         previewing = Set(s.previewing)
         played = Set(s.played ?? [])
+        playlistNext = Dictionary((s.playlistNext ?? []).map { ($0.group, $0.cue) }, uniquingKeysWith: { $1 })
         mediaDurations = Dictionary((s.mediaDurations ?? []).map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
         warnings = s.warnings
         progress = [:]
+        previews = [:]
         waits = [:]
         runtimeWarnings = []
+        goProtected = false
         // A new connection's health is unknown until its first `status`.
         status = nil
         reconcileShowMode(engine: s.document.showMode)
@@ -538,6 +630,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 cues.insert(cue)
                 // A paused or stopping cue keeps its (frozen or elapsed) progress: the engine still
                 // reports it, and dropping it here would only have the next `progress` put it back.
+                if state != .loaded, loadedAt[cue] != nil {
+                    loadedAt[cue] = nil
+                    progressEnded.insert(cue)
+                }
                 if !Self.keepsProgress(state), progress[cue] != nil {
                     progress[cue] = nil
                     progressEnded.insert(cue)
@@ -560,10 +656,26 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .preview(let cue, let active):
                 if active { previewing.insert(cue) } else { previewing.remove(cue) }
                 cues.insert(cue)
+                // The preview's line and count go with it (its fading voice may still be reported).
+                if !active, previews.removeValue(forKey: cue) != nil { progressEnded.insert(cue) }
             case .played(let cue, let on):
                 if on { played.insert(cue) } else { played.remove(cue) }
                 cues.insert(cue)
+            case .playlistNext(let group, let next):
+                // The mark leaves one child's row for another's.
+                if let old = playlistNext[group] { cues.insert(old) }
+                playlistNext[group] = next
+                if let next { cues.insert(next) }
+                cues.insert(group)
+            case .goProtection(let active):
+                goProtected = active
             case .warning(let w):
+                // A GO inside the protection time is the protection working, not a fault: the GO
+                // button flashes instead of a warning being listed.
+                if w.type == "go_ignored", w.json["reason"]?.stringValue == "double_go" {
+                    goBlockedCount += 1
+                    continue
+                }
                 // Nothing went wrong in these: the operator pressed a key twice, or a fade ran with
                 // nothing to fade. QLab shows nothing for them, so they are not listed or counted.
                 if Self.unlistedWarnings.contains(w.type) { continue }
@@ -580,10 +692,27 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 engineLog.notice("ignoring unknown runtime change \(type, privacy: .public)")
             }
         }
+        // A refusal to start a broken cue is past once the cue can play again: a later break
+        // counts its own refusals afresh. The show log keeps every one.
+        let playable = cues.filter { problems[$0] == nil && cueStates[$0]?.reason == nil }
+        if !playable.isEmpty {
+            let before = runtimeWarnings.count
+            runtimeWarnings.removeAll { w in
+                w.type == "cue_broken" && w.json["cue"]?.stringValue.map { playable.contains(ModelID($0)) } == true
+            }
+            if runtimeWarnings.count != before { noticed = true }
+        }
         if !cues.isEmpty || !heads.isEmpty { self.changes.send(.runtime(cues: cues, playheads: heads)) }
         if !progressEnded.isEmpty { self.changes.send(.progress(progressEnded)) }
         if !waitsEnded.isEmpty { self.changes.send(.waits(waitsEnded)) }
         if noticed { self.changes.send(.notices) }
         return .applied
     }
+}
+
+/// Where a loaded cue stands until it starts: seconds into its action (0 when loaded by a click in
+/// its timeline, or inside its pre-wait), and, for Audio and Video, the point of its file.
+struct LoadedStand: Equatable, Sendable {
+    let time: Double
+    let position: Double?
 }

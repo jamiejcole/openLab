@@ -10,7 +10,7 @@
 //! against a stand-in control thread, plus one run in front of the real control loop. Waits are
 //! on the sockets or on a notification; the timeouts are hang guards only.
 
-use crate::common::{rights, text};
+use crate::common::{rights, test_port, text};
 use crate::show;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -179,6 +179,7 @@ fn snapshot(ws: &Workspace, revision: u64) -> Snapshot {
         playheads: vec![],
         previewing: vec![],
         played: vec![],
+        playlist_next: vec![],
         warnings: vec![],
         media_durations: vec![],
     }
@@ -292,6 +293,7 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
                 c.triggers.lock().unwrap().push((source, detail));
                 c.changed.notify_one();
             }
+            Inbox::AppsGone => {}
             _ => break,
         }
     }
@@ -1216,6 +1218,138 @@ async fn a_new_passcode_in_a_snapshot_ends_every_session() {
     assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
 }
 
+/// Workspace Settings, OSC: the access switch off answers every message with `denied` and starts
+/// nothing, and switching it off ends the sessions of peers that had connected.
+#[tokio::test]
+async fn the_osc_switch_off_denies_every_message_and_ends_sessions() {
+    let f = fixture(with_passcode("sesame")).await;
+    let mut t = f.tcp().await;
+    t.send(&msg("/connect", vec![text("sesame")])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "ok");
+    t.send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("the GO while the switch is on", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 1
+        })
+        .await;
+    {
+        let mut guard = f.control.workspace.lock().unwrap();
+        guard.as_mut().unwrap().settings.osc_enabled = false;
+    }
+    f.out
+        .send(ServerMessage::ModelChanged {
+            revision: 9,
+            upserts: vec![],
+            deletes: vec![],
+        })
+        .await
+        .unwrap();
+    // Each probe is a different message: an identical one within 100 ms is dropped unanswered.
+    guard("the connection to lose its rights", async {
+        let mut n = 10;
+        loop {
+            n += 1;
+            t.send(&msg(&format!("/cue/{n}/name"), vec![])).await;
+            if body(&t.recv().await.unwrap())["status"] == "denied" {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    // The right passcode no longer helps: /connect is refused too, and a GO over UDP as well.
+    t.send(&msg("/connect", vec![text("sesame")])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "denied");
+    t.send(&msg("/go", vec![])).await;
+    assert_eq!(body(&t.recv().await.unwrap())["status"], "denied");
+    f.udp_send(&msg("/go", vec![])).await;
+    assert_eq!(body(&f.udp_recv().await)["status"], "denied");
+}
+
+/// Workspace Settings, OSC: a changed port moves both listeners; the old port stops answering, the
+/// new one reaches control, and the choice is the state the page reads.
+#[tokio::test]
+async fn changing_the_osc_port_moves_the_listeners_and_closes_the_old_ones() {
+    let f = fixture(test_workspace()).await;
+    let osc = f.server.osc_server().unwrap();
+    assert!(osc.state().open);
+    let old = f.tcp_port;
+    let new = test_port(false).port;
+    let state = osc.set_port(new).unwrap();
+    assert_eq!((state.port, state.open, state.error), (new, true, None));
+    assert_eq!(
+        f.server.osc_ports().map(|p| (p.udp, p.tcp)),
+        Some((new, new))
+    );
+    f.udp
+        .send_to(
+            &encode_message(&msg("/go", vec![])).unwrap(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, new)),
+        )
+        .await
+        .unwrap();
+    f.control
+        .wait_seen("a GO on the new port", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 1
+        })
+        .await;
+    let t = TcpStream::connect((Ipv4Addr::LOCALHOST, new))
+        .await
+        .unwrap();
+    t.set_nodelay(true).unwrap();
+    // The old TCP port is closed (its listener goes with the old runtime, which is stopped in the
+    // background: the refusal may take a moment).
+    guard("the old port to close", async {
+        loop {
+            if TcpStream::connect((Ipv4Addr::LOCALHOST, old))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    // The same port again changes nothing, and port 0 is refused.
+    assert_eq!(osc.set_port(new).unwrap().port, new);
+    assert!(osc.set_port(0).is_err());
+    assert_eq!(osc.state().port, new);
+}
+
+/// Workspace Settings, OSC: a port that is in use is refused with its reason, the old port goes on
+/// serving, and nothing is left half open (the UDP socket bound before the TCP one failed is
+/// closed again).
+#[tokio::test]
+async fn an_osc_port_in_use_is_refused_and_the_old_one_keeps_serving_with_nothing_half_open() {
+    let f = fixture(test_workspace()).await;
+    let osc = f.server.osc_server().unwrap();
+    let old = f.udp_port;
+    // Taken for TCP only (its UDP side known free): the UDP bind comes first and must be undone.
+    let taken = test_port(false);
+    let port = taken.port;
+    let why = osc.set_port(port).unwrap_err();
+    assert!(why.contains("already in use"), "{why}");
+    let state = osc.state();
+    assert_eq!((state.port, state.open), (old, true));
+    assert_eq!(state.error.as_deref(), Some(why.as_str()));
+    assert!(
+        std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_ok(),
+        "the UDP socket of the failed attempt was closed"
+    );
+    // Still serving on the old port.
+    f.udp_send(&msg("/go", vec![])).await;
+    f.control
+        .wait_seen("a GO on the old port", |seen| {
+            seen.iter().filter(|m| is_input(m)).count() == 1
+        })
+        .await;
+    // A free port then works and clears the reason.
+    let free = test_port(false).port;
+    let state = osc.set_port(free).unwrap();
+    assert_eq!((state.port, state.open, state.error), (free, true, None));
+}
+
 #[tokio::test]
 async fn updates_to_a_subscriber_are_not_held_to_the_byte_budget_of_a_stranger() {
     let f = fixture(test_workspace()).await;
@@ -1512,6 +1646,7 @@ async fn an_osc_client_sets_and_reads_a_duration_by_number() {
         },
         stop_target_when_done: false,
         mode: Default::default(),
+        geometry: Default::default(),
     };
     let ws = workspace(vec![
         cue(1, CueKind::Wait { duration: 2.0 }),
@@ -3220,13 +3355,20 @@ async fn held_input_is_bounded_and_goes_once_the_copy_is_in() {
     f.control
         .wait_for("the first snapshot request", |c| c.snapshot_requests() == 1)
         .await;
-    for _ in 0..(MAX_HELD_INPUTS * 3) {
-        f.udp_send(&msg("/go", vec![])).await;
-    }
-    f.wait_stats("held input to fill and the queue to overflow", |s| {
-        s.held_inputs == MAX_HELD_INPUTS && s.udp_dropped > 0
+    // A fixed burst can outrun a slow listener: its queue then drops most of the burst before
+    // the held list is full, and nothing is left to fill it. So send until both have happened.
+    let full = |s: &OscListenerStats| s.held_inputs == MAX_HELD_INPUTS && s.udp_dropped > 0;
+    let filled = tokio::time::timeout(GUARD, async {
+        while !full(&f.stats()) {
+            f.udp_send(&msg("/go", vec![])).await;
+        }
     })
     .await;
+    assert!(
+        filled.is_ok(),
+        "hang: held input to fill and the queue to overflow: {:?}",
+        f.stats()
+    );
     f.control.release();
     f.control
         .wait_seen("the held GOs", |seen| {
@@ -3239,4 +3381,118 @@ async fn held_input_is_bounded_and_goes_once_the_copy_is_in() {
         s.held_inputs == 0
     })
     .await;
+}
+
+/// Flow: an OSC client sets and reads a Video cue's geometry (VID-04) by number: opacity,
+/// layer, fill stage and style, smoothing, the scale lock and each crop edge. A value out of
+/// range or of the wrong type, or a geometry field on a cue that is not a Video cue, gets an
+/// error reply and changes nothing.
+#[tokio::test]
+async fn an_osc_client_sets_and_reads_a_video_cues_geometry_and_out_of_range_is_refused() {
+    let video = CueKind::Video {
+        media: None,
+        stage: None,
+        duration: None,
+        geometry: Default::default(),
+        timing: Default::default(),
+        sound: Default::default(),
+    };
+    let ws = workspace(vec![cue(1, video), cue(2, CueKind::Memo)]);
+    let real = RealLoop::start(ws.clone()).await;
+    real.send(msg("/updates", vec![OscType::Int(1)])).await;
+    let updated = format!("/update/workspace/{}/cue_id/{}", ws_id(), id(1));
+    let write = async |number: &str, field: &str, arg: OscType| {
+        real.send(msg(&format!("/cue/{number}/{field}"), vec![arg]))
+            .await;
+    };
+    assert_eq!(real.read("1", "opacity").await["data"], json!(1.0));
+    assert_eq!(real.read("1", "layer").await["data"], json!(1000));
+    for (field, arg, read) in [
+        ("opacity", OscType::Float(0.25), json!(0.25)),
+        ("layer", OscType::Int(7), json!(7)),
+        ("fillStage", OscType::Bool(false), json!(false)),
+        ("fillStyle", OscType::Int(2), json!(2)),
+        ("smooth", OscType::Int(0), json!(false)),
+        ("preserveAspectRatio", OscType::Bool(false), json!(false)),
+        ("cropTop", OscType::Int(4), json!(4.0)),
+        ("cropRight", OscType::Double(2.5), json!(2.5)),
+    ] {
+        write("1", field, arg).await;
+        real.recv_at(&updated).await;
+        assert_eq!(real.read("1", field).await["data"], read, "{field}");
+    }
+    // One crop edge leaves the others as they were.
+    assert_eq!(real.read("1", "cropTop").await["data"], json!(4.0));
+    assert_eq!(real.read("1", "cropLeft").await["data"], json!(0.0));
+    for (number, field, arg) in [
+        ("1", "opacity", OscType::Float(1.5)),
+        ("1", "opacity", OscType::Float(-0.1)),
+        ("1", "layer", OscType::Int(1001)),
+        ("1", "layer", OscType::Float(2.5)),
+        ("1", "fillStyle", OscType::Int(3)),
+        ("1", "cropLeft", OscType::Int(-1)),
+        ("1", "cropLeft", OscType::Int(16_385)),
+        ("1", "smooth", OscType::String("yes".into())),
+        ("2", "opacity", OscType::Float(0.5)),
+    ] {
+        write(number, field, arg.clone()).await;
+        let reply = body(&real.recv_at(&format!("/reply/cue/{number}/{field}")).await);
+        assert_eq!(reply["status"], json!("error"), "{number} {field} {arg:?}");
+    }
+    assert_eq!(real.read("1", "opacity").await["data"], json!(0.25));
+    assert_eq!(real.read("1", "layer").await["data"], json!(7));
+    assert_eq!(real.read("1", "cropLeft").await["data"], json!(0.0));
+    assert_eq!(real.read("2", "opacity").await["status"], json!("error"));
+    real.stop();
+}
+
+/// Two crop edges sent back to back, or in one bundle, both hold: each message changes its
+/// edge alone, whatever the OSC copy of the show holds when the second arrives.
+#[tokio::test]
+async fn crop_edges_sent_back_to_back_or_in_one_bundle_both_hold() {
+    let video = CueKind::Video {
+        media: None,
+        stage: None,
+        duration: None,
+        geometry: Default::default(),
+        timing: Default::default(),
+        sound: Default::default(),
+    };
+    let ws = workspace(vec![cue(1, video)]);
+    let real = RealLoop::start(ws.clone()).await;
+    real.send(msg("/updates", vec![OscType::Int(1)])).await;
+    let updated = format!("/update/workspace/{}/cue_id/{}", ws_id(), id(1));
+    real.send(msg("/cue/1/cropTop", vec![OscType::Int(4)]))
+        .await;
+    real.send(msg("/cue/1/cropLeft", vec![OscType::Int(3)]))
+        .await;
+    real.recv_at(&updated).await;
+    real.recv_at(&updated).await;
+    assert_eq!(real.read("1", "cropTop").await["data"], json!(4.0));
+    assert_eq!(real.read("1", "cropLeft").await["data"], json!(3.0));
+    let bundle = rosc::OscPacket::Bundle(rosc::OscBundle {
+        timetag: rosc::OscTime {
+            seconds: 0,
+            fractional: 1,
+        },
+        content: vec![
+            rosc::OscPacket::Message(msg("/cue/1/cropBottom", vec![OscType::Int(2)])),
+            rosc::OscPacket::Message(msg("/cue/1/cropRight", vec![OscType::Int(1)])),
+        ],
+    });
+    real.client
+        .send_to(&rosc::encoder::encode(&bundle).unwrap(), real.target)
+        .await
+        .unwrap();
+    real.recv_at(&updated).await;
+    real.recv_at(&updated).await;
+    for (edge, value) in [
+        ("cropTop", 4.0),
+        ("cropBottom", 2.0),
+        ("cropLeft", 3.0),
+        ("cropRight", 1.0),
+    ] {
+        assert_eq!(real.read("1", edge).await["data"], json!(value), "{edge}");
+    }
+    real.stop();
 }

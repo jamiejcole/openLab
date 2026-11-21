@@ -15,6 +15,8 @@ enum MainMenu {
         let transport: NSMenu
         let windows: NSMenu
         let help: NSMenu
+        /// The app menu's Services submenu, which the system fills (`NSApp.servicesMenu`).
+        let services: NSMenu
     }
 
     static func make(keys: TransportKeys = TransportKeys(settings: nil)) -> Menus {
@@ -31,8 +33,7 @@ enum MainMenu {
                 .separator(),
                 launcherItem(),
                 .separator(),
-                logItem(),
-                preshowItem(),
+                statusItem(),
                 item("menu.window.overrides", #selector(AppDelegate.showOverrideControls(_:)), "O"),
                 item("menu.window.bringAllToFront", #selector(NSApplication.arrangeInFront(_:))),
             ]
@@ -46,27 +47,32 @@ enum MainMenu {
             ])
         let transport = transportMenu(keys)
         let bar = NSMenu()
-        for submenu in [appMenu(), file, edit, cues, tools, view, transport, windows, help] {
+        let services = NSMenu(title: localized("menu.app.services"))
+        for submenu in [appMenu(services), file, edit, cues, tools, view, transport, windows, help] {
             let holder = NSMenuItem()
             holder.submenu = submenu
             bar.addItem(holder)
         }
         return Menus(
             bar: bar, edit: edit, openRecent: openRecent, cues: cues, tools: tools, view: view, transport: transport,
-            windows: windows, help: help
+            windows: windows, help: help, services: services
         )
     }
 
-    private static func appMenu() -> NSMenu {
+    private static func appMenu(_ services: NSMenu) -> NSMenu {
         let hideOthers = item(
             "menu.app.hideOthers", #selector(NSApplication.hideOtherApplications(_:)), "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
+        let servicesItem = NSMenuItem(title: services.title, action: nil, keyEquivalent: "")
+        servicesItem.submenu = services
         return menu(
             "menu.app",
             [
-                item("menu.app.about", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+                item("menu.app.about", #selector(AppDelegate.showAbout(_:))),
                 .separator(),
                 item("menu.app.preferences", #selector(AppDelegate.showPreferences(_:))),
+                .separator(),
+                servicesItem,
                 .separator(),
                 item("menu.app.hide", #selector(NSApplication.hide(_:)), "h"),
                 hideOthers,
@@ -77,7 +83,8 @@ enum MainMenu {
         )
     }
 
-    /// QLab's File menu order: New, Open, Open Recent, Close, Save, Save As. The Open Recent
+    /// QLab's File menu order: New, Open, Open Recent, Close, Save, Save As, then the workspace's
+    /// files and settings. The Open Recent
     /// submenu is filled when it opens (`AppDelegate.menuNeedsUpdate`).
     private static func fileMenu() -> (file: NSMenu, openRecent: NSMenu) {
         let recent = NSMenu(title: localized("menu.file.openRecent"))
@@ -91,15 +98,54 @@ enum MainMenu {
                 recentItem,
                 item("menu.file.recover", #selector(AppDelegate.recoverAutosaves(_:))),
                 .separator(),
-                item("menu.file.workspaceSettings", #selector(AppDelegate.showWorkspaceSettings(_:)), ","),
-                .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
                 closeAllItem(),
                 item("menu.file.save", #selector(AppDelegate.saveWorkspace(_:)), "s"),
                 item("menu.file.saveAs", #selector(AppDelegate.saveWorkspaceAs(_:)), "S"),
+                .separator(),
+                showFilesItem(),
+                workspaceSettingsItem(),
             ]
         )
         return (file, recent)
+    }
+
+    /// File > Show Files, where QLab 5 keeps its workspace-files commands (manual p. 101): copy the
+    /// media the cues target into the show folder (WS-04), then show the show file in Finder.
+    private static func showFilesItem() -> NSMenuItem {
+        let submenu = NSMenu(title: localized("menu.file.showFiles"))
+        submenu.addItem(item("menu.file.copyMedia", #selector(AppDelegate.copyMediaIntoShowFolder(_:))))
+        submenu.addItem(.separator())
+        submenu.addItem(item("menu.file.showInFinder", #selector(AppDelegate.showWorkspaceInFinder(_:))))
+        let top = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+        top.submenu = submenu
+        return top
+    }
+
+    /// File > Workspace Settings: the settings window (Command-comma), then each category with its
+    /// pages, which open the window on that page.
+    private static func workspaceSettingsItem() -> NSMenuItem {
+        let submenu = NSMenu(title: localized("menu.file.workspaceSettings"))
+        submenu.addItem(
+            item("menu.file.workspaceSettings.window", #selector(AppDelegate.showWorkspaceSettings(_:)), ","))
+        submenu.addItem(.separator())
+        func page(_ page: SettingsPage) -> NSMenuItem {
+            let entry = NSMenuItem(
+                title: localized(page.titleKey), action: #selector(AppDelegate.showWorkspaceSettingsPage(_:)),
+                keyEquivalent: "")
+            entry.representedObject = page.rawValue
+            return entry
+        }
+        for category in SettingsCategory.allCases {
+            let entry = NSMenuItem(title: localized(category.titleKey), action: nil, keyEquivalent: "")
+            let pages = NSMenu(title: entry.title)
+            for p in category.pages { pages.addItem(page(p)) }
+            entry.submenu = pages
+            submenu.addItem(entry)
+        }
+        let top = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+        top.submenu = submenu
+        return top
     }
 
     /// The items of the Open Recent submenu for `urls`: one per workspace, then Clear Menu.
@@ -164,10 +210,10 @@ enum MainMenu {
     }
 
     /// The Cues menu's kinds in QLab's order: media (Group, Audio, Video), Fade, the control cues, then
-    /// Wait and Memo. Kinds QLab has but openLab lacks are absent; Target has no model cue.
+    /// Wait and Memo. Kinds QLab has but openLab lacks are absent.
     static let cueMenuGroups: [[NewCueKind]] = [
         [.group, .audio, .video], [.fade],
-        [.network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm, .disarm],
+        [.network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .target, .arm, .disarm],
         [.wait, .memo],
     ]
 
@@ -191,7 +237,7 @@ enum MainMenu {
     }
 
     /// QLab's Tools menu, the parts openLab has: Load to Time (Cmd-T), Renumber (Cmd-R), Delete
-    /// Numbers (Cmd-D), Reveal Target File in Finder, Find Missing Files (after Reveal, as QLab
+    /// Numbers (Cmd-D), Jump to Targets (Opt-Cmd-J), Reveal Target File in Finder, Find Missing Files (after Reveal, as QLab
     /// places its file search).
     private static func toolsMenu() -> NSMenu {
         menu(
@@ -200,10 +246,11 @@ enum MainMenu {
                 item("menu.tools.loadToTime", #selector(AppDelegate.loadToTime(_:)), "t"),
                 item("menu.cues.renumber", #selector(AppDelegate.renumberCues(_:)), "r"),
                 item("menu.cues.deleteNumbers", #selector(AppDelegate.deleteNumbers(_:)), "d"),
+                jumpToTargetsItem(),
                 .separator(),
                 item("menu.tools.revealTarget", #selector(AppDelegate.revealTargetFile(_:))),
                 item("menu.tools.findMissingFiles", #selector(AppDelegate.findMissingFiles(_:))),
-                jumpToTargetsItem(),
+                item("menu.tools.pasteLevels", #selector(AppDelegate.pasteLevels(_:))),
             ])
     }
 
@@ -232,11 +279,16 @@ enum MainMenu {
         return menu(
             "menu.view",
             [
+                chord(
+                    item("menu.view.enterFullScreen", #selector(AppDelegate.toggleWorkspaceFullScreen(_:)), "f"),
+                    shiftCmd),
+                .separator(),
                 area("menu.view.inspector", .inspector, "i"),
                 area("menu.view.toolbar", .toolbar),
                 area("menu.view.masthead", .masthead),
                 area("menu.view.sidebar", .sidebar, "l"),
-                item("menu.view.warnings", #selector(AppDelegate.showWarnings(_:)), "b"),
+                chord(item("menu.view.sidebarTab", #selector(AppDelegate.toggleSidebarTab(_:)), "l"), shiftCmd),
+                item("menu.view.warnings", #selector(AppDelegate.showWorkspaceStatus(_:)), "b"),
                 .separator(),
                 chord(item("menu.view.selectCue", #selector(AppDelegate.selectCue(_:)), "j"), cmd),
                 chord(item("menu.view.selectNext", #selector(AppDelegate.selectNextCue(_:)), down), cmd),
@@ -248,6 +300,9 @@ enum MainMenu {
                 chord(item("menu.view.playheadNext", #selector(AppDelegate.movePlayheadNext(_:)), down), shiftCmd),
                 chord(
                     item("menu.view.playheadPrevious", #selector(AppDelegate.movePlayheadPrevious(_:)), up), shiftCmd),
+                // Their keys, = and -, are fixed keys of the workspace (`AppController.handleKeyDown`).
+                item("menu.view.nextSequence", #selector(AppDelegate.movePlayheadNextSequence(_:))),
+                item("menu.view.previousSequence", #selector(AppDelegate.movePlayheadPreviousSequence(_:))),
                 .separator(),
                 chord(item("menu.view.moveDown", #selector(AppDelegate.moveCuesDown(_:)), down), [.command, .option]),
                 chord(item("menu.view.moveUp", #selector(AppDelegate.moveCuesUp(_:)), up), [.command, .option]),
@@ -339,16 +394,9 @@ enum MainMenu {
         return launcher
     }
 
-    private static func logItem() -> NSMenuItem {
-        let log = item("menu.window.log", #selector(AppDelegate.showLog(_:)), "l")
-        log.keyEquivalentModifierMask = [.command, .option]
-        return log
-    }
-
-    /// QLab keeps its warnings in Workspace Status (Window menu, shift-cmd-W); the pre-show check
-    /// takes that place and key.
-    private static func preshowItem() -> NSMenuItem {
-        item("menu.window.preshowCheck", #selector(AppDelegate.showPreshowCheck(_:)), "W")
+    /// QLab's workspace status window (Window menu, shift-cmd-W): Warnings, Logs and Info.
+    private static func statusItem() -> NSMenuItem {
+        item("menu.window.status", #selector(AppDelegate.showWorkspaceStatus(_:)), "W")
     }
 
     private static func menu(_ key: String, _ items: [NSMenuItem]) -> NSMenu {

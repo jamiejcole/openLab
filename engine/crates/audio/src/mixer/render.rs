@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 use crate::meter::track_all;
 
-use super::voice::{Move, ReadOutcome, Remaining, Target, Voice};
+use super::voice::{Move, ReadOutcome, Target, Voice};
 use super::{Event, FinishReason, Mixer, Outbox, Patch, SampleTime, Scratch, Stage};
 
 impl Mixer {
@@ -40,33 +40,7 @@ impl Mixer {
             if *panic_voice == Some(v.id) {
                 panic!("injected voice fault");
             }
-            // A paused voice past its declick tail contributes nothing and is not visited; a
-            // move it was making is over, there is nothing left to crossfade.
-            if v.paused.is_some_and(|p| p.done >= p.len) {
-                if v.moving.is_some() {
-                    v.advance_move(usize::MAX);
-                    let (voice, moves) = (v.id, v.moves);
-                    outbox.emit(Event::MoveEnded {
-                        voice,
-                        at: t0,
-                        moves,
-                    });
-                }
-                continue;
-            }
-            if let Some(m) = v.moving {
-                render_moving(v, m, len, t0, block, patches, move_bus, scratch, outbox);
-                continue;
-            }
-            let Some(p) = patches.get_mut(v.patch) else {
-                continue;
-            };
-            p.reach(v.width, block, len);
-            if v.paused.is_some() {
-                render_tail(v, len, block, &mut p.bus, scratch);
-            } else {
-                render_voice(v, len, t0, block, &mut p.bus, scratch, outbox);
-            }
+            render_one(v, len, t0, block, patches, move_bus, scratch, outbox);
         }
         stage.enter(Stage::Idle);
 
@@ -101,6 +75,10 @@ impl Mixer {
                 }
                 continue;
             }
+            for (pk, bo) in p.peak.iter_mut().zip(p.bus.chunks_exact(block)).take(mixed) {
+                track_all(pk, bo.get(..len).unwrap_or_default());
+            }
+            p.peak_rows = p.peak_rows.max(mixed);
             for (d, dv) in dev.chunks_exact_mut(block).enumerate() {
                 for (o, bo) in p.bus.chunks_exact(block).enumerate().take(mixed) {
                     let Some(g) = p.gains.get_mut(o * outs + d) else {
@@ -164,6 +142,45 @@ impl Mixer {
     }
 }
 
+/// Renders `len` frames of one active voice from sample `t0` into its patch's bus (both patches
+/// of a move), and notes that it has played them.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_one(
+    v: &mut Voice,
+    len: usize,
+    t0: SampleTime,
+    block: usize,
+    patches: &mut [Patch],
+    move_bus: &mut [f32],
+    s: &mut Scratch,
+    outbox: &mut Outbox,
+) {
+    if v.tail_over() {
+        // A paused voice past its declick tails contributes nothing; a move it was making is
+        // over, there is nothing left to crossfade.
+        if v.moving.is_some() {
+            v.advance_move(usize::MAX);
+            let (voice, moves) = (v.id, v.moves);
+            outbox.emit(Event::MoveEnded {
+                voice,
+                at: t0,
+                moves,
+            });
+        }
+    } else if let Some(m) = v.moving {
+        render_moving(v, m, len, t0, block, patches, move_bus, s, outbox);
+    } else if let Some(p) = patches.get_mut(v.patch) {
+        p.reach(v.width, block, len);
+        if v.paused.is_some() {
+            render_tail(v, len, t0, block, &mut p.bus, s, outbox);
+        } else {
+            render_voice(v, len, t0, block, &mut p.bus, s, outbox);
+        }
+    }
+    // Last: a voice whose render faulted has not played these frames.
+    v.upto = t0.saturating_add(len as u64);
+}
+
 /// Renders a moving voice ([`Move`]) into `move_bus`, then shares it out: `1 - g` of it to the
 /// patch it leaves, `g` to the one it moves to.
 #[allow(clippy::too_many_arguments)]
@@ -182,11 +199,12 @@ fn render_moving(
     if let Some(b) = move_bus.get_mut(..width * block) {
         clear(b, block, len);
     }
-    if v.paused.is_some() {
-        render_tail(v, len, block, move_bus, s);
+    let tail = if v.paused.is_some() {
+        Some(render_tail(v, len, t0, block, move_bus, s, outbox))
     } else {
         render_voice(v, len, t0, block, move_bus, s, outbox);
-    }
+        None
+    };
     for (k, leaving) in [(m.from, true), (v.patch, false)] {
         let Some(p) = patches.get_mut(k) else {
             continue;
@@ -204,10 +222,21 @@ fn render_moving(
             }
         }
     }
-    v.advance_move(len);
+    // A paused voice whose last tail ended in this segment has nothing left to crossfade: the
+    // move is over on that sample, wherever the segment ends.
+    let played = match tail {
+        Some(sounded) if v.tail_over() => {
+            v.advance_move(usize::MAX);
+            sounded
+        }
+        _ => {
+            v.advance_move(len);
+            len
+        }
+    };
     // A voice that ended meanwhile was reported finished instead.
     if v.moving.is_none() && v.is_active() {
-        let at = t0.saturating_add(len as u64);
+        let at = t0.saturating_add(played as u64);
         let (voice, moves) = (v.id, v.moves);
         outbox.emit(Event::MoveEnded { voice, at, moves });
     }
@@ -229,15 +258,9 @@ fn render_voice(
             .min(len)
     });
     let pos0 = v.pos;
-    // The crossfaded tail is peeked before the read moves the voice on.
-    let xfade = v.xfade.map(|x| {
-        let n = usize::try_from(x.tail.len.saturating_sub(x.tail.done))
-            .unwrap_or(usize::MAX)
-            .min(len);
-        let from = x.tail.done.saturating_sub(v.pos.saturating_sub(x.pos_at));
-        (x, n, v.peek(from, n, Target::Xfade))
-    });
     let (got, outcome, rem) = v.read(live, len, block, t0, outbox);
+    // The voice has moved on: a fault from here on must not make it play these frames again.
+    v.upto = t0.saturating_add(len as u64);
     let (Some(vg), Some(og), Some(tmp), Some(acc)) = (
         s.vgain.get_mut(..len),
         s.og.get_mut(..len),
@@ -277,35 +300,46 @@ fn render_voice(
         v.stop.fill(tmp, shapes);
         vg.iter_mut().zip(tmp.iter()).for_each(|(g, t)| *g *= t);
     }
-    // The declick acts on the input, so the tail it crossfades with shares the voice's gains.
+    // The declick acts on the input, so the tails it crossfades with share the voice's gains.
     if v.declick.is_ramping() || v.declick.current() != 1.0 {
         v.declick.fill(tmp, shapes);
+        for inp in v.input.chunks_mut(block).take(v.channels) {
+            inp.iter_mut().zip(tmp.iter()).for_each(|(x, d)| *x *= d);
+        }
+    }
+    // On the samples a kept tail still sounds on, the voice's envelope goes on its input and not
+    // on the gain the tail shares: the tail has its own, of the frames it plays.
+    let xn = v.xlen.saturating_sub(v.xdone).min(len);
+    let kept = match (og.get_mut(..xn), tmp.get_mut(..xn), vg.get(..xn)) {
+        (Some(env), Some(plain), Some(g)) if xn > 0 => {
+            env.fill(1.0);
+            v.apply_envelope(env, pos0, got, &rem);
+            plain.copy_from_slice(g);
+            Some((env, plain))
+        }
+        _ => None,
+    };
+    v.apply_envelope(vg, pos0, got, &rem);
+    if let Some((env, plain)) = kept {
+        vg.iter_mut().zip(plain.iter()).for_each(|(g, p)| *g = *p);
         let Voice {
             input,
             xbuf,
             xstride,
+            xdone,
             channels,
             ..
         } = v;
-        for c in 0..*channels {
-            let Some(inp) = input.get_mut(c * block..c * block + len) else {
-                continue;
-            };
-            inp.iter_mut().zip(tmp.iter()).for_each(|(x, d)| *x *= d);
-            if let Some((x, _, xgot)) = xfade
-                && let Some(tail) = xbuf.get(c * *xstride..c * *xstride + xgot)
-            {
-                for (j, (y, t)) in inp.iter_mut().zip(tail).enumerate() {
-                    *y += t * x.scale * x.tail.gain(x.tail.done + j as u64);
-                }
+        let tails = xbuf
+            .chunks(*xstride)
+            .map(|b| b.get(*xdone..).unwrap_or_default());
+        for (inp, tail) in input.chunks_mut(block).zip(tails).take(*channels) {
+            for ((x, e), t) in inp.iter_mut().zip(env.iter()).zip(tail) {
+                *x = *x * e + t;
             }
         }
+        *xdone += xn;
     }
-    if let Some((mut x, n, _)) = xfade {
-        x.tail.done += n as u64;
-        v.xfade = (x.tail.done < x.tail.len).then_some(x);
-    }
-    v.apply_envelope(vg, pos0, got, &rem);
 
     let Voice {
         cue_out,
@@ -366,6 +400,7 @@ fn render_voice(
                 .shared
                 .underrun_frames
                 .fetch_add((live - got) as u64, Ordering::Relaxed);
+            v.missed = v.missed.saturating_add((live - got) as u64);
             if !v.underrunning {
                 v.underrunning = true;
                 outbox.emit(Event::Underrun {
@@ -376,6 +411,19 @@ fn render_voice(
             None
         }
         ReadOutcome::Full => {
+            // What the voice missed is told until the queue takes it, with what it missed
+            // since: a picture that follows this voice is put back by this count, and one
+            // lost with a full queue would leave it ahead of the sound for the rest of the run.
+            if v.missed > 0 {
+                let end = Event::UnderrunEnded {
+                    voice: v.id,
+                    at: t0,
+                    frames: v.missed,
+                };
+                if outbox.try_emit(end, v.underrunning) {
+                    v.missed = 0;
+                }
+            }
             v.underrunning = false;
             None
         }
@@ -393,45 +441,87 @@ fn render_voice(
 
 /// Renders the declick fade-out of a paused voice: the frames after its pause point, peeked
 /// without consuming them, at the gains it had when it paused (none of them advance), times the
-/// falling declick ramp and the integrated fade envelope those frames would have had.
-fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut Scratch) {
-    let Some(p) = v.paused else { return };
+/// falling declick ramp and the integrated fade envelope those frames would have had; and what
+/// is left of the tails earlier resumes cut short. A voice stopped meanwhile ends with the last
+/// of them. Returns the frames of this segment a tail sounded on.
+fn render_tail(
+    v: &mut Voice,
+    len: usize,
+    t0: SampleTime,
+    block: usize,
+    bus: &mut [f32],
+    s: &mut Scratch,
+    outbox: &mut Outbox,
+) -> usize {
+    let Some(p) = v.paused else { return 0 };
     let n = usize::try_from(p.len.saturating_sub(p.done))
         .unwrap_or(usize::MAX)
         .min(len);
     let got = v.peek(p.done, n, Target::Input(block));
-    let (Some(vg), Some(acc)) = (s.vgain.get_mut(..n), s.acc.get_mut(..n)) else {
-        return;
-    };
-    let shapes = &mut s.shapes;
     let (m, d) = (v.master.current(), v.duck.current());
     let ducked = if d > 1.0 {
         (m * d).min(v.duck_cap.current().max(m))
     } else {
         m * d
     };
-    let g = ducked * v.stop.current() * v.declick.current();
-    for (j, x) in vg.iter_mut().enumerate() {
-        *x = g * p.gain(p.done + j as u64);
+    let g = ducked * v.stop.current();
+    if let Some(vg) = s.vgain.get_mut(..n) {
+        v.tail_gain(p, p.done, got, g * v.declick.current(), vg);
+        mix_frozen(v, false, got, n, block, bus, s);
     }
-    let rem = Remaining {
-        first: v.remaining().map(|r| r.saturating_sub(p.done)),
-        split: usize::MAX,
-        after: None,
-        refade_first: v.refade,
-        refade_after: None,
-    };
-    v.apply_envelope(vg, v.pos.saturating_add(p.done), got, &rem);
+    // The kept tails carry their own declick and envelope.
+    let xn = v.xlen.saturating_sub(v.xdone).min(len);
+    if xn > 0
+        && let Some(vg) = s.vgain.get_mut(..xn)
+    {
+        vg.fill(g);
+        mix_frozen(v, true, xn, xn, block, bus, s);
+    }
+    v.xdone += xn;
+    if let Some(p) = v.paused.as_mut() {
+        p.done += n as u64;
+    }
+    let sounded = n.max(xn);
+    if p.stopped && v.tail_over() {
+        let at = t0.saturating_add(sounded as u64);
+        v.finish(at, FinishReason::Stopped, outbox);
+    }
+    sounded
+}
 
+/// Mixes `got` frames of a paused voice into its outputs at the gains it paused with (none of
+/// them advance), times the first `n` per-frame gains in `s.vgain`: frames of `xbuf` from
+/// `xdone` (`kept`), or of `input`.
+fn mix_frozen(
+    v: &mut Voice,
+    kept: bool,
+    got: usize,
+    n: usize,
+    block: usize,
+    bus: &mut [f32],
+    s: &mut Scratch,
+) {
+    let (Some(vg), Some(acc)) = (s.vgain.get(..n), s.acc.get_mut(..n)) else {
+        return;
+    };
+    let shapes = &mut s.shapes;
     let Voice {
         cue_out,
         xp,
         input,
+        xbuf,
+        xstride,
+        xdone,
         channels,
         meter,
         width,
         ..
     } = v;
+    let (src, stride, from) = if kept {
+        (&*xbuf, *xstride, *xdone)
+    } else {
+        (&*input, block, 0)
+    };
     let (outs, ch) = (cue_out.len(), *channels);
     for (o, co) in cue_out.iter().enumerate().take(*width) {
         let co = co.current_in(shapes);
@@ -448,7 +538,10 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         let Some(bo) = bus.get_mut(o * block..o * block + got) else {
             continue;
         };
-        let inputs = input.chunks(block).take(ch);
+        let inputs = src
+            .chunks(stride)
+            .take(ch)
+            .map(|c| c.get(from..).unwrap_or_default());
         mix_output(bo, acc, &mut [], inputs, vg, meter.get_mut(o), |i, _| {
             let g = xp.get(i * outs + o).map_or(0.0, |x| x.current_in(shapes)) * co;
             if g == 0.0 {
@@ -461,9 +554,6 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         {
             s.metered += acc.len() as u64;
         }
-    }
-    if let Some(p) = v.paused.as_mut() {
-        p.done += n as u64;
     }
 }
 

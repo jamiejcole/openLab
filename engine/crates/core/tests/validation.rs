@@ -278,6 +278,9 @@ fn a_video_cues_missing_stage_warns_and_none_is_quiet() {
                 media: Some(MediaRef::new("v.mov")),
                 stage,
                 duration: None,
+                geometry: Default::default(),
+                timing: Default::default(),
+                sound: Default::default(),
             },
         )
     };
@@ -306,6 +309,9 @@ fn a_video_cues_still_duration_is_clamped_like_any_time() {
                 media: Some(MediaRef::new("still.png")),
                 stage: None,
                 duration,
+                geometry: Default::default(),
+                timing: Default::default(),
+                sound: Default::default(),
             },
         )
     };
@@ -328,6 +334,196 @@ fn a_video_cues_still_duration_is_clamped_like_any_time() {
         [duration(1), duration(2), duration(3), duration(4)],
         [Some(0.0), Some(MAX_TIME), None, Some(5.0)]
     );
+}
+
+/// A Video cue's trims, fades and slices (VID-07) load as an Audio cue's do: times out of
+/// range clamped, an end before the start cleared, slices outside the trims dropped, each with
+/// its warning; time-and-loops keys missing from a file are the defaults (whole file, once).
+#[test]
+fn a_video_cues_trims_fades_and_slices_load_checked_as_an_audio_cues() {
+    let timed = |n: u128, edit: &dyn Fn(&mut VideoTiming)| {
+        let mut timing = VideoTiming::default();
+        edit(&mut timing);
+        cue(
+            n,
+            CueKind::Video {
+                media: Some(MediaRef::new("v.mov")),
+                stage: None,
+                duration: None,
+                geometry: Default::default(),
+                timing: Box::new(timing),
+                sound: Default::default(),
+            },
+        )
+    };
+    let mut ws = workspace(vec![
+        timed(1, &|t| {
+            t.start_time = -2.0;
+            t.fade_in.duration = f64::NAN;
+        }),
+        timed(2, &|t| {
+            t.start_time = 4.0;
+            t.end_time = Some(3.0);
+        }),
+        timed(3, &|t| {
+            t.start_time = 1.0;
+            t.end_time = Some(1.01);
+        }),
+        timed(4, &|t| {
+            t.end_time = Some(10.0);
+            t.slices = vec![slice(12.0, 0), slice(5.0, 2)];
+            t.fade_out.duration = 1e9;
+        }),
+    ]);
+    let time = |field| IssueKind::InvalidTime { field };
+    assert_eq!(
+        repair(&mut ws),
+        vec![
+            warning(1, time("start_time")),
+            warning(1, time("fade_in.duration")),
+            warning(2, IssueKind::InvalidEndTime),
+            warning(3, IssueKind::EndTimeTooShort { end: 1.05 }),
+            warning(4, time("fade_out.duration")),
+            warning(4, IssueKind::SliceOutsideTrim { time: 12.0 }),
+        ]
+    );
+    let timing = |n| match &ws.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Video { timing, .. } => (**timing).clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(timing(1).start_time, 0.0);
+    assert_eq!(timing(2).end_time, None);
+    assert_eq!(timing(3).end_time, Some(1.05));
+    assert_eq!(timing(4).slices, vec![slice(5.0, 2)]);
+    assert_eq!(timing(4).fade_out.duration, MAX_TIME);
+    // Missing keys are the defaults, and a saved cue reads back as it was.
+    let mut doc: serde_json::Value = serde_json::from_str(&show_text(&ws)).unwrap();
+    let kind = &mut doc["workspace"]["cue_lists"][0]["cues"][0]["kind"];
+    for key in [
+        "start_time",
+        "end_time",
+        "fade_in",
+        "fade_out",
+        "slices",
+        "last_slice_play_count",
+        "hold_at_end",
+    ] {
+        kind.as_object_mut().unwrap().remove(key);
+    }
+    let loaded = load_show(&doc.to_string()).unwrap();
+    match &loaded.workspace.cue_lists[0].cues[0].kind {
+        CueKind::Video { timing, .. } => assert_eq!(**timing, VideoTiming::default()),
+        other => panic!("{other:?}"),
+    }
+    let again = load_show(&show_text(&ws)).unwrap();
+    assert_eq!(again.workspace, ws);
+}
+
+/// A show file's Video cue geometry out of range is put at the end of its range with a
+/// warning per field; geometry keys missing from the file are the defaults; a layer that is
+/// not a whole number from 0 to 65535 refuses the file as a wrong type.
+#[test]
+fn a_video_cues_geometry_out_of_range_loads_clamped_with_a_warning_each() {
+    let mut ws = workspace(vec![cue(1, video()), cue(2, video())]);
+    ws.stages = vec![Stage::new(stage_id(1), "Stage 1", 1920, 1080)];
+    let mut doc: serde_json::Value = serde_json::from_str(&show_text(&ws)).unwrap();
+    let cues = |doc: &mut serde_json::Value| -> Vec<serde_json::Value> {
+        doc["workspace"]["cue_lists"][0]["cues"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let mut list = cues(&mut doc);
+    let k = list[0]["kind"].as_object_mut().unwrap();
+    k.insert("opacity".into(), serde_json::json!(3.0));
+    k.insert("layer".into(), serde_json::json!(5000));
+    k.insert("rotation".into(), serde_json::json!(-720.0));
+    k.insert(
+        "crop".into(),
+        serde_json::json!({"top": -4, "bottom": 1e9, "left": 0, "right": 0}),
+    );
+    let k = list[1]["kind"].as_object_mut().unwrap();
+    for key in [
+        "fill_stage",
+        "translation",
+        "scale",
+        "opacity",
+        "layer",
+        "smooth",
+    ] {
+        k.remove(key);
+    }
+    doc["workspace"]["cue_lists"][0]["cues"] = serde_json::Value::Array(list.clone());
+    let loaded = load_show(&doc.to_string()).unwrap();
+    let value = |field| warning(1, IssueKind::InvalidValue { field });
+    assert_eq!(
+        loaded.warnings,
+        vec![
+            value("rotation"),
+            value("crop.top"),
+            value("crop.bottom"),
+            value("opacity"),
+            value("layer")
+        ]
+    );
+    let geometry = |n| match loaded.workspace.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Video { geometry, .. } => geometry,
+        ref other => panic!("{other:?}"),
+    };
+    let g = geometry(1);
+    assert_eq!(
+        (g.opacity, g.layer, g.rotation, g.crop.top, g.crop.bottom),
+        (1.0, MAX_CUE_LAYER, -MAX_ROTATION, 0.0, MAX_CROP)
+    );
+    assert_eq!(geometry(2), VideoGeometry::default());
+    for layer in [
+        serde_json::json!(-1),
+        serde_json::json!(65536),
+        serde_json::json!(2.5),
+    ] {
+        list[0]["kind"]["layer"] = layer;
+        doc["workspace"]["cue_lists"][0]["cues"] = serde_json::Value::Array(list.clone());
+        assert!(load_show(&doc.to_string()).is_err());
+    }
+}
+
+/// A show file's Fade cue picture values out of range load at the end of their range (not
+/// finite: the untouched value) with a warning each; a Fade with no `geometry` loads with none
+/// ticked.
+#[test]
+fn a_fade_cues_picture_values_out_of_range_load_clamped_with_a_warning_each() {
+    let mut ws = workspace(vec![cue(1, video()), cue(2, fade(1)), cue(3, fade(1))]);
+    ws.stages = vec![Stage::new(stage_id(1), "Stage 1", 1920, 1080)];
+    let mut doc: serde_json::Value = serde_json::from_str(&show_text(&ws)).unwrap();
+    let cues = &mut doc["workspace"]["cue_lists"][0]["cues"];
+    cues[1]["kind"]["geometry"] = serde_json::json!({
+        "fade_opacity": true,
+        "opacity": 7.0,
+        "translation": {"x": -1e9, "y": 0.0},
+        "rotation": 400.0
+    });
+    cues[2]["kind"].as_object_mut().unwrap().remove("geometry");
+    let loaded = load_show(&doc.to_string()).unwrap();
+    let value = |field| warning(2, IssueKind::InvalidValue { field });
+    assert_eq!(
+        loaded.warnings,
+        vec![
+            value("geometry.opacity"),
+            value("geometry.translation.x"),
+            value("geometry.rotation")
+        ]
+    );
+    let geometry = |n| match loaded.workspace.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Fade { geometry, .. } => geometry,
+        ref other => panic!("{other:?}"),
+    };
+    let g = geometry(2);
+    assert!(g.fade_opacity && !g.fade_scale);
+    assert_eq!(
+        (g.opacity, g.translation.x, g.rotation, g.scale),
+        (1.0, -MAX_TRANSLATION, MAX_ROTATION, Pair { x: 1.0, y: 1.0 })
+    );
+    assert_eq!(geometry(3), FadeGeometry::default());
 }
 
 #[test]
@@ -556,6 +752,64 @@ fn patch_levels_are_clamped() {
     );
 }
 
+/// AUD-07: a loaded patch's crosspoints and device outputs are sorted (no warning: same
+/// meaning); entries naming a cue output past 128 or a device output past 64, and repeated
+/// pairs, are removed with a warning naming the patch; levels are clamped as other patch
+/// levels are. A device output past this machine's device but within 64 is kept.
+#[test]
+fn patch_crosspoints_and_device_outputs_are_repaired_on_load() {
+    let mut ws = workspace(vec![]);
+    let xp = |output, device_output, db| PatchCrosspoint {
+        output,
+        device_output,
+        db,
+    };
+    let dev = |device_output, level_db| DeviceOutputLevel {
+        device_output,
+        level_db,
+        mute: false,
+    };
+    let p = &mut ws.patches[0];
+    p.crosspoints = vec![
+        xp(1, 63, -6.0),
+        xp(0, 1, 50.0),
+        xp(128, 0, 0.0),
+        xp(0, 64, 0.0),
+        xp(1, 63, -12.0),
+        xp(0, 0, -70.0),
+    ];
+    p.device_outputs = vec![dev(9, -3.0), dev(64, 0.0), dev(2, f64::NAN), dev(9, 0.0)];
+    let bad = |field| {
+        issue(
+            Severity::Warning,
+            None,
+            IssueKind::InvalidPatchValue {
+                patch: patch_id(1),
+                field,
+            },
+        )
+    };
+    let mut issues = repair(&mut ws);
+    issues.retain(|i| !matches!(i.kind, IssueKind::LevelsBelowMinimum));
+    assert_eq!(
+        issues,
+        vec![
+            bad("crosspoints"),
+            bad("crosspoints.db"),
+            bad("device_outputs"),
+            bad("device_outputs.level_db"),
+        ]
+    );
+    let p = &ws.patches[0];
+    assert_eq!(
+        p.crosspoints,
+        vec![xp(0, 0, SILENCE_DB), xp(0, 1, MAX_DB), xp(1, 63, -6.0)]
+    );
+    assert_eq!(p.device_outputs, vec![dev(2, SILENCE_DB), dev(9, -3.0)]);
+    // Repaired once, it stays: nothing more to say.
+    assert!(repair(&mut ws).is_empty());
+}
+
 fn audio_with(
     edit: impl FnOnce(&mut CueLevels, &mut Vec<SliceMarker>, &mut f64, &mut Option<f64>),
 ) -> CueKind {
@@ -581,7 +835,10 @@ fn audio_parts(ws: &Workspace, n: u128) -> (CueLevels, Vec<SliceMarker>) {
 }
 
 fn slice(time: f64, play_count: u32) -> SliceMarker {
-    SliceMarker { time, play_count }
+    SliceMarker {
+        time,
+        play_count: play_count.into(),
+    }
 }
 
 #[test]
@@ -691,6 +948,7 @@ fn routing_beyond_128_outputs_or_64_channels_is_dropped() {
         },
         stop_target_when_done: false,
         mode: Default::default(),
+        geometry: Default::default(),
     };
     let mut ws = workspace(vec![cue(1, a), cue(2, f)]);
     ws.patches = vec![patch(1, 128)];
@@ -762,6 +1020,7 @@ fn repeated_crosspoints_and_gang_members_are_removed() {
         },
         stop_target_when_done: false,
         mode: Default::default(),
+        geometry: Default::default(),
     };
     let mut ws = workspace(vec![cue(1, a), cue(2, f)]);
     let repeated = |n, field, count| warning(n, IssueKind::DuplicateEntries { field, count });
@@ -806,6 +1065,49 @@ fn invalid_hotkey_names_warn() {
             bad(Some(1), "triggers.hotkey"),
         ]
     );
+}
+
+/// A wall-clock trigger with a time past 23:59:59 or no day to fire on is switched off with a
+/// warning, its time put in range and its days set to every day: it never fires on a time the
+/// file did not mean.
+#[test]
+fn a_wall_clock_time_out_of_range_or_with_no_day_warns_and_is_switched_off() {
+    let clocked = |n: u128, h: u8, m: u8, s: u8, days: Weekdays| {
+        let mut c = cue(n, CueKind::Memo);
+        c.triggers.wall_clock = WallClockTrigger {
+            enabled: true,
+            hours: h,
+            minutes: m,
+            seconds: s,
+            days,
+            twelve_hour: false,
+        };
+        c
+    };
+    let ws = workspace(vec![
+        clocked(1, 24, 0, 0, Weekdays::EVERY_DAY),
+        clocked(2, 23, 60, 0, Weekdays::EVERY_DAY),
+        clocked(3, 23, 59, 255, Weekdays::EVERY_DAY),
+        clocked(4, 10, 0, 0, Weekdays::NONE),
+        clocked(5, 23, 59, 59, Weekdays::NONE.with(Weekday::Sunday, true)),
+    ]);
+    let bad = |cue: u128| {
+        issue(
+            Severity::Warning,
+            Some(cue),
+            IssueKind::InvalidValue {
+                field: "triggers.wall_clock",
+            },
+        )
+    };
+    assert_eq!(validate(&ws), vec![bad(1), bad(2), bad(3), bad(4)]);
+    let loaded = load_show(&show_text(&ws)).unwrap();
+    let cues = &loaded.workspace.cue_lists[0].cues;
+    let t = |i: usize| &cues[i].triggers.wall_clock;
+    assert!((0..4).all(|i| !t(i).enabled));
+    assert_eq!((t(0).hours, t(1).minutes, t(2).seconds), (23, 59, 59));
+    assert_eq!(t(3).days, Weekdays::EVERY_DAY);
+    assert!(t(4).enabled);
 }
 
 #[test]
@@ -1012,7 +1314,7 @@ fn invalid_audio_times_and_levels_are_clamped() {
         fade_in.duration = f64::NAN;
         slices.push(SliceMarker {
             time: -3.0,
-            play_count: 2,
+            play_count: 2.into(),
         });
         levels.master_db = f64::NAN;
         levels.outputs = [f64::INFINITY, 20.0, -200.0, f64::NEG_INFINITY, -6.0]

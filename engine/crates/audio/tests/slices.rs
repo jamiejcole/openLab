@@ -352,3 +352,95 @@ fn bad_slice_tables_are_rejected() {
         .collect();
     assert_eq!(rejected, (1..=n).collect::<Vec<_>>());
 }
+
+fn end_at(ctl: &mut MixerController, at: u64, entry: usize, frames: u64) {
+    ctl.send(
+        at,
+        CommandKind::EndAt {
+            voice: ID,
+            entry,
+            frames,
+        },
+    );
+}
+
+/// A paused voice whose end moves: the new end holds on the resume. Ahead of where it paused,
+/// it plays on from there to the new end; behind it, it ends on the resume sample.
+#[test]
+fn an_end_moved_while_paused_holds_on_the_resume() {
+    for (frames, ends) in [(1_600u64, 2_600u64), (800, 2_000)] {
+        let (mut ctl, mut r) = setup(config(1));
+        let slices = vec![Slice {
+            index: 0,
+            start: 0,
+            frames: 5_000,
+            plays: Plays::Times(1),
+        }];
+        let ring = unrolled(&slices);
+        start_sliced(&mut ctl, 0, &ring, slices, Fade::NONE);
+        ctl.send(1_000, CommandKind::PauseVoice { voice: ID });
+        end_at(&mut ctl, 1_500, 0, frames);
+        let resumed = VoiceId(2);
+        ctl.send(
+            2_000,
+            CommandKind::ResumeVoice {
+                voice: ID,
+                new_id: resumed,
+            },
+        );
+        let out = render(&mut r, 6_000);
+        // Past the resume's declick, the frames after the pause point up to the new end.
+        let heard = ends.saturating_sub(2_300) as usize;
+        let want: Vec<f32> = (1_300..1_300 + heard as u64).map(marker).collect();
+        assert_eq!(&out[2_300..2_300 + heard], &want[..], "end {frames}");
+        assert!(
+            out[ends as usize..].iter().all(|&s| s == 0.0),
+            "end {frames}"
+        );
+        let ev = events(&mut ctl);
+        assert_eq!(
+            ev.last(),
+            Some(&Event::VoiceFinished {
+                voice: resumed,
+                at: ends,
+                reason: FinishReason::OutPoint,
+            }),
+            "end {frames}: {ev:?}"
+        );
+    }
+}
+
+/// An end moved into or during the integrated fade-out: the fade goes on from the gain the
+/// voice has, reaching silence exactly on the new last frame, so the gain never jumps.
+#[test]
+fn an_end_moved_into_the_fade_out_fades_on_from_where_it_is() {
+    // (sample of the move, new end): before the fade-out starts, and inside it.
+    for (at, end) in [(3_000u64, 3_500u64), (4_500, 4_700)] {
+        let (mut ctl, mut r) = setup(config(1));
+        let slices = vec![Slice {
+            index: 0,
+            start: 0,
+            frames: 5_000,
+            plays: Plays::Times(1),
+        }];
+        start_sliced(
+            &mut ctl,
+            0,
+            &[0.5; 5_000],
+            slices,
+            Fade::new(1_000, Curve::Linear),
+        );
+        end_at(&mut ctl, at, 0, end);
+        let out = render(&mut r, 6_000);
+        let last = end as usize - 1;
+        assert_eq!(out[last], 0.0, "move at {at}: last frame");
+        assert!(out[last..].iter().all(|&s| s == 0.0));
+        assert!(out[last - 1] > 0.0);
+        // Never a step bigger than a linear fade from full level over what is left.
+        let max_step = 0.5 / (end - at) as f32 * 1.01;
+        for i in 0..last {
+            let step = (out[i + 1] - out[i]).abs();
+            assert!(step <= max_step, "move at {at}: step {step} at frame {i}");
+        }
+    }
+}

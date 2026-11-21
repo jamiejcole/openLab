@@ -123,12 +123,19 @@ impl Workspace {
                 auto_number_start: 1.0,
                 auto_number_increment: 1.0,
                 new_cues_auto_load: false,
+                auto_number_new_cues: true,
+                lock_playhead: true,
+                go_needs_key_up: false,
+                osc_enabled: true,
+                copy_media_on_add: true,
             },
             patches: vec![OutputPatch {
                 id: patch,
                 name: "Main Outputs".to_owned(),
                 master_db: 0.0,
                 outputs: vec![output; 2],
+                crosspoints: Vec::new(),
+                device_outputs: Vec::new(),
             }],
             network_patches: vec![NetworkPatch {
                 id: network,
@@ -208,6 +215,21 @@ pub struct OutputPatch {
     ///
     /// [`MAX_CUE_OUTPUTS`]: crate::MAX_CUE_OUTPUTS
     pub outputs: Vec<PatchOutput>,
+    /// The crosspoints set in the patch editor's routing matrix, sorted by cue output then
+    /// device output, each pair at most once. A cue output with no crosspoint listed for a device
+    /// output goes to the device output this machine maps it to (WS-07) at 0 dB, and to no
+    /// other; a listed one sets that pair's level ([`SILENCE_DB`]: not routed), so a patch with
+    /// none plays as its mapping says. Device outputs are 0-based device channels, below
+    /// [`MAX_DEVICE_OUTPUTS`]; ones the device lacks are kept and not heard.
+    ///
+    /// [`SILENCE_DB`]: crate::SILENCE_DB
+    /// [`MAX_DEVICE_OUTPUTS`]: crate::MAX_DEVICE_OUTPUTS
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crosspoints: Vec<PatchCrosspoint>,
+    /// Level and mute of device outputs, sorted by device output, each at most once. A device
+    /// output not listed is at 0 dB, unmuted. Applies to everything the patch sends there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_outputs: Vec<DeviceOutputLevel>,
 }
 
 impl OutputPatch {
@@ -217,6 +239,66 @@ impl OutputPatch {
         for output in &mut self.outputs {
             output.level_db = limits.limit(output.level_db);
         }
+        for crosspoint in &mut self.crosspoints {
+            crosspoint.db = limits.limit(crosspoint.db);
+        }
+        for device_output in &mut self.device_outputs {
+            device_output.level_db = limits.limit(device_output.level_db);
+        }
+    }
+
+    /// The level listed for cue output `output` to device output `device_output`, if any.
+    pub fn crosspoint(&self, output: u32, device_output: u32) -> Option<f64> {
+        self.crosspoints
+            .binary_search_by_key(&(output, device_output), PatchCrosspoint::key)
+            .ok()
+            .and_then(|i| self.crosspoints.get(i))
+            .map(|c| c.db)
+    }
+
+    /// The level and mute of device output `device_output` (0 dB, unmuted when not listed).
+    pub fn device_output(&self, device_output: u32) -> DeviceOutputLevel {
+        self.device_outputs
+            .binary_search_by_key(&device_output, |d| d.device_output)
+            .ok()
+            .and_then(|i| self.device_outputs.get(i))
+            .cloned()
+            .unwrap_or(DeviceOutputLevel {
+                device_output,
+                level_db: 0.0,
+                mute: false,
+            })
+    }
+}
+
+/// One crosspoint of a patch's routing matrix: cue output `output` to device output
+/// `device_output` (both 0-based) at `db`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PatchCrosspoint {
+    pub output: u32,
+    pub device_output: u32,
+    pub db: f64,
+}
+
+impl PatchCrosspoint {
+    /// What the list is sorted by.
+    pub fn key(&self) -> (u32, u32) {
+        (self.output, self.device_output)
+    }
+}
+
+/// The level and mute of one device output of a patch (0-based). Muting keeps `level_db`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeviceOutputLevel {
+    pub device_output: u32,
+    pub level_db: f64,
+    pub mute: bool,
+}
+
+impl DeviceOutputLevel {
+    /// 0 dB and unmuted: what a device output not listed has.
+    pub fn is_default(&self) -> bool {
+        self.level_db == 0.0 && !self.mute
     }
 }
 
@@ -272,6 +354,32 @@ pub struct WorkspaceSettings {
     /// p. 128). Cues already in the workspace are not changed. Absent in a file: off.
     #[serde(default)]
     pub new_cues_auto_load: bool,
+    /// Whether a cue made with `AddCue { auto_number }` gets the next number (QLab 5, Workspace
+    /// Settings, General; manual p. 100). Absent in a file: on. Paste and OSC never number.
+    #[serde(default = "default_true")]
+    pub auto_number_new_cues: bool,
+    /// Whether the app keeps the selection and the playhead together (manual p. 100). Absent in
+    /// a file: on. The engine only stores it; the app acts on it.
+    #[serde(default = "default_true")]
+    pub lock_playhead: bool,
+    /// Whether the app accepts another GO from the GO key only after the key was released
+    /// (manual p. 100). Absent in a file: off. The engine only stores it; the app acts on it.
+    #[serde(default)]
+    pub go_needs_key_up: bool,
+    /// Whether OSC may reach this workspace at all (QLab 5, Network, OSC Access; manual p. 112).
+    /// Off: every OSC message to it is refused with `denied`, whoever the peer, and peers
+    /// connected before lose their rights. Absent in a file: on.
+    #[serde(default = "default_true")]
+    pub osc_enabled: bool,
+    /// Whether a file set as a cue's target is copied into the show folder (`audio` or
+    /// `video`) and the cue pointed at the copy (QLab 5, Workspace Settings, General, File
+    /// Management; manual p. 100). Absent in a file: on. The engine does the copying.
+    #[serde(default = "default_true")]
+    pub copy_media_on_add: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl WorkspaceSettings {

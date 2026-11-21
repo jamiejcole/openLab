@@ -21,6 +21,11 @@ targets:
     platform: macOS
     sources:
       - openLab
+      # The licence and the third-party notices travel inside the app (scripts/third-party-notices.py).
+      - path: ../LICENSE
+        buildPhase: resources
+      - path: ../THIRD-PARTY-NOTICES.txt
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLab
@@ -85,6 +90,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLabTests
+        INFOPLIST_KEY_NSPrincipalClass: OpenLabTestObserver
         # XCTest itself requires macOS 14; the app stays at 12.0.
         MACOSX_DEPLOYMENT_TARGET: "14.0"
   openLabUITests:
@@ -92,6 +98,10 @@ targets:
     platform: macOS
     sources:
       - openLabUITests
+      # The test media writers, shared with the unit tests.
+      - path: openLabTests/TestMedia.swift
+      # The protocol version the app speaks, for the tests' own engine requests.
+      - path: openLab/Engine/ProtocolVersion.swift
       - path: TestShows
         type: folder
         buildPhase: resources
@@ -100,5 +110,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLabUITests
+        INFOPLIST_KEY_NSPrincipalClass: OpenLabUITestObserver
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         TEST_TARGET_NAME: openLab

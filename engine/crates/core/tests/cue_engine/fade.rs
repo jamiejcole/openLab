@@ -27,6 +27,7 @@ fn fade_to(
             levels,
             stop_target_when_done: stop,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }
@@ -466,7 +467,8 @@ fn a_fade_on_a_group_fades_its_playing_audio_cues() {
         vec![
             (id(2), M),
             (id(2), LevelParam::Output(1)),
-            // Cue 4 has a single output: its output 1 is ignored.
+            // Cue 4's levels list one output: its output 1 is silent, and a relative fade leaves
+            // a silent level alone.
             (id(4), M),
         ]
     );
@@ -551,6 +553,7 @@ fn fade_with_missing_or_wrong_targets_is_broken() {
                 levels: master(0.0),
                 stop_target_when_done: false,
                 mode: Default::default(),
+                geometry: Default::default(),
             },
         ),
         fade_to(4, 99, 1.0, FadeCurve::Linear, master(0.0), true),
@@ -899,4 +902,62 @@ fn a_lengthened_fade_resumed_after_a_pause_keeps_its_rate() {
         assert!(ramps(&end).is_empty(), "{case}: {end:?}");
         assert_eq!(changes(&end, 3)[0], (CueState::PreWaiting, 6000), "{case}");
     }
+}
+
+/// A Fade of a cue on a 128-output patch whose levels list two outputs (a cue made before its
+/// patch grew): its output 100 exists, silent, and the Fade moves it and a crosspoint to it from
+/// silence. An output beyond the patch is still ignored.
+#[test]
+fn a_fade_moves_an_output_of_the_targets_patch_its_levels_do_not_list() {
+    let to_output_100 = || {
+        let mut output_db = vec![None; 100];
+        output_db[99] = Some(-20.0);
+        output_db.push(None);
+        FadeLevels {
+            master_db: None,
+            output_db,
+            crosspoints: vec![
+                FadeCrosspoint {
+                    input: 0,
+                    output: 99,
+                    db: 0.0,
+                },
+                FadeCrosspoint {
+                    input: 0,
+                    output: 128,
+                    db: 0.0,
+                },
+            ],
+        }
+    };
+    let fade = || fade_to(2, 1, 1.0, FadeCurve::Linear, to_output_100(), false);
+    let mut ws = workspace(vec![sound(1), fade()]);
+    ws.patches = vec![patch(1, 128)];
+    let mut rig = Rig::on(ws, EngineConfig::new(RATE, 0, 1).unwrap());
+    rig.start(0, 1);
+    let go = rig.start(100, 2);
+    let xp = LevelParam::Crosspoint {
+        input: 0,
+        output: 99,
+    };
+    assert_eq!(
+        ramps(&go),
+        vec![
+            ramp(1, 100, LevelParam::Output(99), db_to_gain(-20.0), 1000),
+            ramp(1, 100, xp, 1.0, 1000),
+        ]
+    );
+    // Both start from silence.
+    assert_eq!(rig.level(1, LevelParam::Output(99), 100), Some(0.0));
+    assert_eq!(rig.level(1, xp, 100), Some(0.0));
+    assert_eq!(
+        rig.level(1, LevelParam::Output(99), 1100),
+        Some(db_to_gain(-20.0))
+    );
+    assert_eq!(rig.state(1), CueState::Fading);
+
+    // On a patch of two outputs the same Fade has nothing there to move.
+    let mut rig = Rig::new(vec![sound(1), fade()]);
+    rig.start(0, 1);
+    assert!(ramps(&rig.start(100, 2)).is_empty());
 }

@@ -28,6 +28,8 @@ final class CueRowView: NSTableRowView {
     var isPlayhead = false { didSet { if isPlayhead != oldValue { needsDisplay = true } } }
     /// Disarmed or skipped: drawn over the colour, and over the highlight of a selected row.
     var pattern: RowPattern? { didSet { if pattern != oldValue { needsDisplay = true } } }
+    /// The parts of the group boxes that cross this row's Name cell (`GroupBoxes`).
+    var boxes: [GroupBoxPart] = [] { didSet { if boxes != oldValue { needsDisplay = true } } }
     static let pointerWidth: CGFloat = 10
     /// The distance between a pattern's lines.
     static let patternPitch: CGFloat = 8
@@ -41,6 +43,7 @@ final class CueRowView: NSTableRowView {
         if !isSelected {
             drawPattern()
             drawPointer()
+            drawBoxes()
         }
     }
 
@@ -48,6 +51,26 @@ final class CueRowView: NSTableRowView {
         super.drawSelection(in: dirtyRect)
         drawPattern()
         drawPointer()
+        drawBoxes()
+    }
+
+    /// The Name column's rect in this row's coordinates and the outline's indentation per level, from
+    /// the table the row is in; nil outside one.
+    var nameColumn: (rect: NSRect, indent: CGFloat)? {
+        var view = superview
+        while let v = view, !(v is NSOutlineView) { view = v.superview }
+        guard let table = view as? NSOutlineView else { return nil }
+        let index = table.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
+        guard index >= 0 else { return nil }
+        let rect = convert(table.rect(ofColumn: index), from: table)
+        return (
+            NSRect(x: rect.minX, y: bounds.minY, width: rect.width, height: bounds.height), table.indentationPerLevel
+        )
+    }
+
+    private func drawBoxes() {
+        guard !boxes.isEmpty, let column = nameColumn else { return }
+        GroupBoxes.draw(boxes, rowBounds: bounds, column: column.rect, indent: column.indent, flipped: isFlipped)
     }
 
     private func drawPattern() {
@@ -133,15 +156,50 @@ final class TargetDropOutline: NSView {
 /// The list's outline view: it tells the list when a drag leaves it.
 final class CueOutlineView: NSOutlineView {
     var onDragExit: (() -> Void)?
+    /// A plain press in the first (status) column on a row: the row's index. True: handled, so the
+    /// press selects nothing (QLab moves only the playhead there).
+    var onStatusPress: ((Int) -> Bool)?
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = row(at: point)
+        if event.clickCount == 1, row >= 0, column(at: point) == 0,
+            event.modifierFlags.intersection([.command, .shift, .control, .option]).isEmpty,
+            onStatusPress?(row) == true
+        {
+            return
+        }
+        super.mouseDown(with: event)
+    }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         super.draggingExited(sender)
         onDragExit?()
     }
+
+    // A group opens and closes at once, its disclosure triangle included. While AppKit's slide runs, a
+    // change of the columns (the window resized, the sidebar or Show Mode toggled) does not reach the
+    // rows outside the slide: their cells stayed where the old columns were, over the new ones, and
+    // a running cue's time was drawn twice.
+    override func expandItem(_ item: Any?, expandChildren: Bool) {
+        withoutAnimation { super.expandItem(item, expandChildren: expandChildren) }
+    }
+
+    override func collapseItem(_ item: Any?, collapseChildren: Bool) {
+        withoutAnimation { super.collapseItem(item, collapseChildren: collapseChildren) }
+    }
+
+    private func withoutAnimation(_ body: () -> Void) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            body()
+        }
+    }
 }
 
-/// A running cue's progress behind its Duration text: the cell filled and outlined from the left up
-/// to `fraction` of its width (nothing drawn when nil).
+/// A running cue's progress behind its Duration text: the cell faintly outlined, filled and outlined in
+/// the colour from the left up to `fraction` of its width (nothing drawn when nil).
 final class ProgressFillView: NSView {
     var progress: (fraction: Double, colour: NSColor)? {
         didSet {
@@ -152,16 +210,42 @@ final class ProgressFillView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSBezierPath.clip(bounds)
         guard let progress, progress.fraction > 0 else { return }
-        let box = bounds.insetBy(dx: 1, dy: 2)
+        let box = bounds.insetBy(dx: 1, dy: 3)
         let rect = NSRect(
             x: box.minX, y: box.minY, width: box.width * CGFloat(min(1, progress.fraction)), height: box.height)
+        // The whole cell is drawn very faintly under the fill, so a part-way fill reads as progress along a bar
+        // and not as a box round the first digits.
+        let track = NSBezierPath(roundedRect: box, xRadius: 3, yRadius: 3)
+        NSColor.labelColor.withAlphaComponent(0.12).setStroke()
+        track.lineWidth = 0.5
+        track.stroke()
         guard rect.width >= 1 else { return }
         let path = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
-        progress.colour.withAlphaComponent(0.3).setFill()
+        progress.colour.withAlphaComponent(0.25).setFill()
         path.fill()
-        progress.colour.setStroke()
+        progress.colour.withAlphaComponent(0.6).setStroke()
         path.lineWidth = 1
         path.stroke()
+    }
+}
+
+/// A label that truncates at the tail, and draws nothing where not even one letter and the ellipsis fit.
+/// AppKit's own tail truncation, given less than that, draws the first letter cut through its middle.
+final class WholeGlyphLabel: NSTextField {
+    /// Whether `width` holds the first letter and an ellipsis (the least a truncated text can show).
+    static func fits(_ text: NSAttributedString, in width: CGFloat) -> Bool {
+        if width >= text.size().width { return true }
+        guard text.length > 0 else { return true }
+        let first = text.attributedSubstring(from: NSRange(location: 0, length: 1)).mutableCopy()
+        guard let shown = first as? NSMutableAttributedString else { return true }
+        shown.append(NSAttributedString(string: "\u{2026}", attributes: text.attributes(at: 0, effectiveRange: nil)))
+        // The cell insets its text a little on each side.
+        return width - 4 >= shown.size().width
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if !Self.fits(attributedStringValue, in: bounds.width) { return }
+        super.draw(dirtyRect)
     }
 }
 
@@ -169,6 +253,11 @@ final class ProgressFillView: NSView {
 /// a fixed slot (`statusSlots`): playhead (0), state (1), the cue's type icon (4), preview or flag (2, 3).
 /// Duration column: `progress` behind the label.
 final class CueCell: NSTableCellView {
+    /// How far in from the cell's right side the text ends, so the group boxes' right edges never cross
+    /// it (`GroupBoxes.textInset`).
+    var textInset: CGFloat = 0 { didSet { trailing?.constant = -2 - textInset } }
+    private var trailing: NSLayoutConstraint?
+
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView(), NSImageView()]
     /// The first column's slots, left to right, as (image, x from the cell's left edge, width). Each mark
     /// has its own place whether or not the others are shown, so every row's marks line up down the list:
@@ -176,13 +265,13 @@ final class CueCell: NSTableCellView {
     /// icon beside it (as in QLab), then one slot the preview or override mark and the flag share: QLab shows
     /// a flag in the status area, not a place of its own.
     static let statusSlots: [(image: Int, x: CGFloat, width: CGFloat)] = [
-        (0, 0, 12), (1, 14, 16), (4, 32, 16), (2, 50, 16), (3, 50, 16),
+        (0, 0, 10), (1, 10, 16), (4, 28, 16), (2, 46, 16), (3, 46, 16),
     ]
     /// The first column's width: the last slot and a margin. The column cannot be resized.
-    static let statusWidth: CGFloat = 70
+    static let statusWidth: CGFloat = 64
     /// The colours of the tinted images, kept so a highlighted row can draw them in its text colour.
-    private var tints: [Int: (image: NSImage, tint: NSColor, label: String)] = [:]
-    let label = NSTextField(labelWithString: "")
+    private var tints: [Int: (icon: Icon, image: NSImage, tint: NSColor, label: String)] = [:]
+    let label = WholeGlyphLabel(labelWithString: "")
     let progress = ProgressFillView()
     /// An Audio cue's button in the Target cell, with or without a file; clicking it calls `onChoose`.
     let chooseButton = NSButton(title: "", target: nil, action: nil)
@@ -220,6 +309,7 @@ final class CueCell: NSTableCellView {
             // contradicts the stack's own minimum ("Conflicting constraints detected").
             let trailing = stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
             trailing.priority = .defaultHigh
+            self.trailing = trailing
             NSLayoutConstraint.activate([
                 stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
                 trailing,
@@ -267,14 +357,18 @@ final class CueCell: NSTableCellView {
     @objc private func chooseClicked() { onChoose?() }
 
     /// Shows the Target cell's button.
-    func showChoose(missing: Bool, onChoose: @escaping () -> Void) {
-        let label = loc(missing ? "cuelist.target.fileMissing" : "inspector.target.choose")
-        let image = (missing ? Icon.targetFileMissing : Icon.targetFile).image(label, compact: true)
+    /// `file`: the cue's file as the show holds it, its tooltip under the label. `copying`: the file is
+    /// being copied into the show folder (WS-04), drawn as such until the cue switches to the copy.
+    func showChoose(missing: Bool, copying: Bool = false, file: String? = nil, onChoose: @escaping () -> Void) {
+        let label = loc(
+            copying ? "cuelist.target.copying" : missing ? "cuelist.target.fileMissing" : "inspector.target.choose")
+        let icon: Icon = copying ? .targetFileCopying : missing ? .targetFileMissing : .targetFile
+        let image = icon.image(label, compact: true)
         // Plain, not a template, for the same reason as `setImage`.
         chooseButton.image = TimeHeaderCell.tinted(
-            image, .secondaryLabelColor, size: image.size, description: label)
+            image, copying ? MarkColour.caution : .secondaryLabelColor, size: image.size, description: label)
         chooseButton.setAccessibilityLabel(label)
-        chooseButton.toolTip = label
+        chooseButton.toolTip = file.map { "\(label)\n\($0)" } ?? label
         chooseButton.isHidden = false
         self.onChoose = onChoose
     }
@@ -293,7 +387,7 @@ final class CueCell: NSTableCellView {
         let image = icon.image(label, compact: true)
         // A tinted icon is drawn as a plain image in its colour, and in the selection's text colour on a
         // highlighted row (QLab draws a selected row's marks so). A clear one only keeps its slot.
-        if let tint, tint != .clear { tints[i] = (image, tint, label) }
+        if let tint, tint != .clear { tints[i] = (icon, image, tint, label) }
         view.image = tint.map { tinted(image, $0, label) } ?? image
         view.contentTintColor = nil
         view.setAccessibilityLabel(label)
@@ -301,9 +395,21 @@ final class CueCell: NSTableCellView {
     }
 
     private func tinted(_ image: NSImage, _ tint: NSColor, _ label: String) -> NSImage {
-        let colour = tint != .clear && backgroundStyle == .emphasized ? NSColor.alternateSelectedControlTextColor : tint
-        return TimeHeaderCell.tinted(image, colour, size: image.size, description: label)
+        TimeHeaderCell.tinted(image, drawnColour(tint), size: image.size, description: label)
     }
+
+    private func drawnColour(_ tint: NSColor) -> NSColor {
+        tint != .clear && backgroundStyle == .emphasized ? NSColor.alternateSelectedControlTextColor : tint
+    }
+
+    #if DEBUG
+        /// Test seam, not in a Release build: the icon of tinted mark `i` and the colour it is drawn in now; nil
+        /// for a hidden or untinted mark. A tinted copy keeps no drawing name, so a test reads it here.
+        func drawnMark(_ i: Int) -> (icon: Icon, colour: NSColor)? {
+            guard let mark = tints[i], !images[i].isHidden else { return nil }
+            return (mark.icon, drawnColour(mark.tint))
+        }
+    #endif
 
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet {
@@ -326,14 +432,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// QLab order. The first and last columns carry no title. The first holds the playhead, the state and
     /// the cue's type icon; it has no type column of its own.
     static let columns: [(id: String, titleKey: String?, width: CGFloat)] = [
-        ("status", nil, CueCell.statusWidth), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
-        ("target", "cuelist.col.target", 60), ("preWait", "cuelist.col.preWait", 80),
-        ("duration", "cuelist.col.duration", 120), ("postWait", "cuelist.col.postWait", 80),
-        ("continue", nil, 36),
+        ("status", nil, CueCell.statusWidth), ("number", "cuelist.col.number", 46), ("name", "cuelist.col.name", 280),
+        ("target", "cuelist.col.target", 42), ("preWait", "cuelist.col.preWait", 72),
+        ("duration", "cuelist.col.duration", 84), ("postWait", "cuelist.col.postWait", 72),
+        ("continue", nil, 26),
     ]
     static let rowHeight: CGFloat = 24
+    static let indentationPerLevel: CGFloat = 8
     /// The least the Name column shrinks to; a narrower list scrolls sideways.
     static let nameMinWidth: CGFloat = 60
+    /// The least width of the Name editor, whatever the cell's.
+    static let nameEditorMinWidth: CGFloat = 180
 
     let store: WorkspaceStore
     let outlineView: NSOutlineView
@@ -345,8 +454,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var nodes: [ModelID: CueNode] = [:]
     /// Cues that point at a cue, so a rename refreshes their Target cell.
     private var targeters: [ModelID: Set<ModelID>] = [:]
-    /// The playhead's cue and every group around it: those groups show that it is inside.
-    private var playheadAncestors: Set<ModelID> = []
     /// Internal so a test can detach it and deliver changes in a chosen order.
     var sub: AnyCancellable?
     /// The engine's network output override (PB-10): Network cues show a red circle while it is on.
@@ -387,6 +494,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         sub = store.changes.sink { [weak self] change in
             MainActor.assumeIsolated { self?.handle(change) }
         }
+        (outlineView as? CueOutlineView)?.onStatusPress = { [weak self] row in self?.statusPressed(row) ?? false }
         // Published before it changes: use the delivered value.
         overrideSub = store.$status.map { $0?.networkOutputDisabled ?? false }.removeDuplicates().sink {
             [weak self] disabled in
@@ -409,6 +517,38 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     override func viewDidLayout() {
         super.viewDidLayout()
         fitNameColumn()
+        solidHeader()
+        keepSelectionInViewWhenShorter()
+    }
+
+    private var lastVisibleHeight: CGFloat?
+
+    /// A list made shorter (the window or the inspector resized, a divider moved) keeps its selected row in
+    /// view, as a selection change does: the clip view keeps its scroll position, so the row slid out below.
+    /// Only a shrink that cut off a selected row that was in view moves the list: a list the operator
+    /// scrolled away from the selection, or one that grows, is left where it is.
+    private func keepSelectionInViewWhenShorter() {
+        let clip = outlineView.enclosingScrollView?.contentView
+        // The rows' visible part: where scroll bars always show, the sideways scroller lies over the clip
+        // view's lower edge as an inset, so its appearing shortens the list without the clip view changing.
+        let insets = clip?.contentInsets ?? NSEdgeInsets()
+        let height = (clip?.bounds.height ?? 0) - insets.top - insets.bottom
+        defer { lastVisibleHeight = height }
+        guard let clip, let was = lastVisibleHeight, height < was, outlineView.selectedRow >= 0 else { return }
+        let row = outlineView.rect(ofRow: outlineView.selectedRow)
+        let top = clip.bounds.minY + insets.top
+        guard row.minY >= top - 0.5, row.maxY <= top + was + 0.5 else { return }
+        outlineView.scrollRowToVisible(outlineView.selectedRow)
+    }
+
+    /// The header's row is solid, so the rows scrolled up behind it never show through it: AppKit leaves
+    /// a table's header clear over a blur of the rows, and a list squeezed to one row (the least window
+    /// with the inspector shown) showed them through its titles. The header sits in a clip view of the
+    /// scroll view's own, made once the table is in it, which fills its area with the list's colour.
+    private func solidHeader() {
+        guard let clip = outlineView.headerView?.superview as? NSClipView, !clip.drawsBackground else { return }
+        clip.backgroundColor = outlineView.backgroundColor
+        clip.drawsBackground = true
     }
 
     /// The width is worked out from the scroll view's own frame, with room always kept for a vertical scroll
@@ -423,10 +563,102 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             borderType: scroll.borderType, controlSize: .regular, scrollerStyle: .legacy
         ).width
         let room = inside - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
-        let columns = outlineView.tableColumns
-        let others = columns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
-        let width = max(name.minWidth, (room - others - tableExtra(name, others: others)).rounded(.down))
+        let others = outlineView.tableColumns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
+        let extra = tableExtra(name, others: others)
+        let left = (room - fitTimeColumns(room: room, extra: extra, name: name) - extra).rounded(.down)
+        let width = max(name.minWidth, left)
         if abs(name.width - width) >= 1 { name.width = width }
+        // The sideways scroller only while the columns are wider than the list. Where scroll bars always
+        // show, a scroller kept for nothing took the room of the least list's one row. The
+        // vertical scroller is left as it is (its room is always kept above).
+        let overflows = left < name.minWidth
+        if scroll.hasHorizontalScroller != overflows { scroll.hasHorizontalScroller = overflows }
+    }
+
+    /// The widths the operator (or the spec) gave the time columns, kept apart from what fits shows.
+    private var preferredTimeWidths: [String: CGFloat] = [:]
+    /// Time columns the operator dragged: they keep that width (the list scrolls sideways instead), as
+    /// QLab keeps a resized column.
+    private var draggedTimeColumns: Set<String> = []
+    private var fitting = false
+    /// What the Name column is kept at while the time columns can still give width: room for the
+    /// indent of a nested cue and the first letters of its name.
+    static let nameComfortWidth: CGFloat = 160
+
+    /// Gives the time columns the operator has not dragged up to their slack (down to their least, a
+    /// header and the widest time the list shows) so the Name column keeps `nameComfortWidth` where it
+    /// can; with room they go back to the widths they were given. Returns the width of every column but
+    /// Name.
+    private func fitTimeColumns(room: CGFloat, extra: CGFloat, name: NSTableColumn) -> CGFloat {
+        let columns = outlineView.tableColumns
+        let timed = columns.filter { Self.timeColumns.contains($0.identifier.rawValue) }
+        for c in timed where preferredTimeWidths[c.identifier.rawValue] == nil {
+            preferredTimeWidths[c.identifier.rawValue] = c.width
+        }
+        func preferred(_ c: NSTableColumn) -> CGFloat {
+            max(preferredTimeWidths[c.identifier.rawValue] ?? c.width, c.minWidth)
+        }
+        let giving = timed.filter { !draggedTimeColumns.contains($0.identifier.rawValue) }
+        let fixed = columns.filter { $0 !== name && !giving.contains($0) }.reduce(0) { $0 + $1.width }
+        let wanted = giving.reduce(0) { $0 + preferred($1) }
+        let timeWidth = widestTimeWidth()
+        func least(_ c: NSTableColumn) -> CGFloat { max(c.minWidth, (timeWidth + 5).rounded(.up)) }
+        let slack = giving.reduce(0) { $0 + max(0, preferred($1) - least($1)) }
+        let deficit = max(0, Self.nameComfortWidth - (room - fixed - wanted - extra))
+        let take = slack > 0 ? min(1, deficit / slack) : 0
+        fitting = true
+        defer { fitting = false }
+        var total = fixed
+        for c in giving {
+            let slackHere = max(0, preferred(c) - least(c))
+            let width = (preferred(c) - slackHere * take).rounded(.up)
+            if abs(c.width - width) >= 1 { c.width = width }
+            total += c.width
+        }
+        return total
+    }
+
+    /// Whether a time in the list reaches an hour (its cell then reads `h:mm:ss.cc`). Kept up to date as
+    /// cues change, so a layout does not scan the list; a change lays the columns out again.
+    private var listHasHours = false
+
+    private func longestTime(_ node: CueNode) -> Double {
+        // A running time with no stored end (a looping group, a still held on screen) can pass an hour
+        // while it counts: the columns widen when it does, once, and narrow when it stops.
+        max(
+            node.cue.raw["pre_wait"]?.doubleValue ?? 0, node.cue.postWait, restingDuration(node) ?? 0,
+            shownDurationSeconds(node) ?? 0)
+    }
+
+    private func updateHoursShown(touched: Set<ModelID>? = nil) {
+        let hourLong = 3599.995
+        let now: Bool
+        if let touched, touched.contains(where: { nodes[$0].map { longestTime($0) >= hourLong } ?? false }) {
+            now = true
+        } else if touched != nil, !listHasHours {
+            now = false
+        } else {
+            now = nodes.values.contains { longestTime($0) >= hourLong }
+        }
+        guard now != listHasHours else { return }
+        listHasHours = now
+        view.needsLayout = true
+    }
+
+    /// The width of the widest time a time column can show: `h:mm:ss.cc` where a time in the list
+    /// reaches an hour, else `mm:ss.cc`, in the widest digit the font has (its digits are not all alike).
+    func widestTimeWidth() -> CGFloat {
+        let font = WholeGlyphLabel(labelWithString: "").font ?? .systemFont(ofSize: NSFont.systemFontSize)
+        func width(_ text: String) -> CGFloat { (text as NSString).size(withAttributes: [.font: font]).width }
+        let digit = "0123456789".max { width(String($0)) < width(String($1)) }.map(String.init) ?? "0"
+        let hours = listHasHours
+        let pattern = hours ? "d:dd:dd.dd" : "dd:dd.dd"
+        return width(pattern.replacingOccurrences(of: "d", with: digit))
+    }
+
+    /// The narrowest a time column goes: its header and the widest time the list shows.
+    func timeLeast(of column: NSTableColumn) -> CGFloat {
+        max(column.minWidth, (widestTimeWidth() + 5).rounded(.up))
     }
 
     private var measuredExtra: CGFloat?
@@ -453,6 +685,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 column.headerCell = TimeHeaderCell(textCell: column.title)
                 updateTimeHeader(column)
             }
+            if spec.id == "continue" { column.headerCell = ContinueHeaderCell(textCell: "") }
             // No column is narrower than its header's text, so a header never truncates.
             let least = max(24, column.headerCell.cellSize.width.rounded(.up))
             switch spec.id {
@@ -483,6 +716,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.usesAlternatingRowBackgroundColors = true
         // Rows reach both edges of the list, so the playhead's pointer sits at the window's edge.
         if #available(macOS 11.0, *) { outlineView.style = .fullWidth }
+        // The system's own 17-point gap between columns is blank width the least window cannot spare: the
+        // columns sit close, as QLab's do. Set after the style, which sets the gap.
+        outlineView.intercellSpacing = NSSize(width: 3, height: outlineView.intercellSpacing.height)
+        // The least Name column (its neighbours at their least, each header whole) still shows a letter of
+        // a cue five groups deep: a nesting level takes only what its disclosure triangle needs.
+        outlineView.indentationPerLevel = Self.indentationPerLevel
         outlineView.allowsMultipleSelection = true
         // Letters are cue hotkeys and edit keys here; none may jump the selection, and with it the playhead.
         outlineView.allowsTypeSelect = false
@@ -491,8 +730,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.setAX(AX.cueList, label: loc("cuelist.label"))
-        (outlineView as? CueOutlineView)?.onDragExit = { [weak self] in self?.showTargetOutline(nil) }
-        outlineView.registerForDraggedTypes([Self.dragType, .fileURL])
+        (outlineView as? CueOutlineView)?.onDragExit = { [weak self] in
+            self?.showTargetOutline(nil)
+        }
+        outlineView.registerForDraggedTypes([Self.dragType, CueToolbarView.dragType, .fileURL])
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         outlineView.target = self
         outlineView.action = #selector(clicked)
@@ -510,6 +751,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.menu = menu
         cellEditor.delegate = self
         cellEditor.usesSingleLineMode = true
+        cellEditor.cell?.isScrollable = true
         cellEditor.font = .systemFont(ofSize: NSFont.systemFontSize)
         let scroll = NSScrollView()
         scroll.documentView = outlineView
@@ -599,7 +841,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     var onMove: (([ModelID], ModelID?, Int) -> Void)?
     /// A validated drop on a Target cell: the cues to set, and the cue they now target.
     var onDropTarget: (([ModelID], ModelID) -> Void)?
-    private var dragged: [CueNode] = []
+    var dragged: [CueNode] = []
     static let dragType = NSPasteboard.PasteboardType("dev.openlab.cue-id")
 
     /// Select Next / Previous: selects the visible row `delta` rows from the last selected one (from
@@ -642,7 +884,23 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// after the update and not before it, whatever order the store's subscribers run in.
     var onModelApplied: (() -> Void)?
 
+    /// The playhead was put on a cue by a press in its status column, and the selection was left where it
+    /// is: the playhead's echo and later moves to this cue are not followed, until the selection is
+    /// changed by the user or the playhead moves on.
+    private var unlinkedHead: ModelID?
+
+    /// A press in a row's status column (QLab 5): the playhead goes there, the selection stays.
+    private func statusPressed(_ row: Int) -> Bool {
+        guard let node = outlineView.item(atRow: row) as? CueNode else { return false }
+        // Typing in the inspector or a cell ends here, as a click on a row would end it.
+        _ = view.window?.makeFirstResponder(outlineView)
+        unlinkedHead = node.id
+        sendPlayhead(node.id)
+        return true
+    }
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        if !restoringSelection, !batching, !followingPlayhead { unlinkedHead = nil }
         // Programmatic restores (select, rebuild, batches) are not the user's choice.
         if !restoringSelection && !batching { onSelectionChange?(selectedIDs()) }
         let selected = selectedIDs()
@@ -650,7 +908,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         lastSelection = Set(selected)
         let lastRow = outlineView.selectedRow >= 0 ? outlineView.selectedRow : nil
         let latest = lastRow.flatMap { (outlineView.item(atRow: $0) as? CueNode)?.id }
-        guard !restoringSelection, !batching, !followingPlayhead,
+        guard !restoringSelection, !batching, !followingPlayhead, locksPlayhead,
             let id = Self.playheadTarget(selected: selected, previous: previous, latest: latest)
         else { return }
         sendPlayhead(id)
@@ -702,11 +960,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func rowClicked(_ row: Int) {
-        guard row >= 0, let node = outlineView.item(atRow: row) as? CueNode, selectedIDs() == [node.id] else {
-            return
-        }
+        guard row >= 0, locksPlayhead, let node = outlineView.item(atRow: row) as? CueNode,
+            selectedIDs() == [node.id]
+        else { return }
         sendPlayhead(node.id)
     }
+
+    /// Workspace Settings, General, "lock playhead to selection" (on by default): the selection and
+    /// the playhead move together. Off, a click or an arrow key moves only the selection and a GO
+    /// or an OSC move of the playhead only the playhead. A new workspace window still opens on the
+    /// playhead's cue.
+    private var locksPlayhead: Bool { store.isOn(.lockPlayhead) != false }
 
     /// Moves the playhead to `id` for the selection. Compared only with what was last sent: A, B, A
     /// within one round trip must still end on A, and the store's playhead can be behind the engine's
@@ -774,7 +1038,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let moved = headMovedWhileSending
         headMovedWhileSending = false
         // The list changed meanwhile: its follow waited for this answer.
-        guard list == listID else { return followPlayhead() }
+        guard list == listID else { return followPlayhead(force: true) }
         // On the cue sent last: its echo is in and the selection is already there. Elsewhere, it
         // moved on by itself after the click (a GO straight after it, another client): follow.
         if moved, store.playheads[list] != lastSentHead { followPlayhead() }
@@ -784,9 +1048,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// the selection goes to the list's playhead, as for any other move, and the inspector is told
     /// even if that moves nothing, as a rebuild's own restore of the selection does not tell it.
     private func followAfterLoad() {
-        if playheadSends > 0 { headMovedWhileSending = true } else { followPlayhead() }
+        unlinkedHead = nil
+        if playheadSends > 0 { headMovedWhileSending = true } else { followPlayhead(force: true) }
         onSelectionChange?(selectedIDs())
     }
+
+    /// A window opened on a store that already holds the workspace: the selection goes to the playhead's cue.
+    func followPlayheadAtOpen() { followAfterLoad() }
 
     /// This list's playhead may have moved (a runtime change): follow it if it did.
     private func playheadChanged() {
@@ -794,6 +1062,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let head = store.playheads[list]
         guard head != seenHead else { return }
         seenHead = head
+        if head != unlinkedHead { unlinkedHead = nil }
         if playheadSends > 0 {
             headMovedWhileSending = true
         } else {
@@ -839,8 +1108,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// that already holds the playhead's cue (several selected by hand) is left as it is. While text
     /// is being typed in the window, or a `FollowHold` lasts, the selection stays, and follows once
     /// that ends.
-    private func followPlayhead() {
-        guard playheadSends == 0, let list = listID else { return }
+    private func followPlayhead(force: Bool = false) {
+        guard playheadSends == 0, force || locksPlayhead, let list = listID else { return }
         if isTextEditing || !followHolds.isEmpty {
             followHeld = true
             return
@@ -848,6 +1117,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         followHeld = false
         let selected = selectedIDs()
         let head = store.playheads[list]
+        if let head, head == unlinkedHead { return }
         if let head {
             guard !selected.contains(head), let node = nodes[head] else { return }
             followingPlayhead = true
@@ -865,7 +1135,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func isPlayheadRow(_ id: ModelID) -> Bool { listID.flatMap { store.playheads[$0] } == id }
-    func isPlayheadInside(_ id: ModelID) -> Bool { playheadAncestors.contains(id) && !isPlayheadRow(id) }
 
     // MARK: Store changes
 
@@ -879,7 +1148,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             applyModel(upserts: upserts, deletes: deletes)
             onModelApplied?()
         case .runtime(let cues, let heads):
-            refresh(cues, playheads: heads)
+            refresh(cues.union(heads))
             if !heads.isEmpty { playheadChanged() }
         case .progress(let ids):
             // A Wait cue's post-wait counts with its action.
@@ -897,6 +1166,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         defer { rebuilding = false }
         let selected = selectedIDs()
         let known = Set(nodes.keys)
+        defer { updateHoursShown() }
         let expanded = Set(nodes.values.filter { $0.isGroup && outlineView.isItemExpanded($0) }.map(\.id))
         nodes = [:]
         targeters = [:]
@@ -905,7 +1175,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         chosenList = list?.id
         seenHead = list.flatMap { store.playheads[$0.id] }
         roots = (list?.cues ?? []).map { makeNode($0, parent: nil) }
-        updatePlayheadAncestors()
         outlineView.reloadData()
         func expand(_ node: CueNode) {
             // Groups the list has not shown before open expanded.
@@ -949,7 +1218,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard shownList()?.id == listID else { return rebuild() }
         guard let listID else { return }
         let selected = selectedIDs()
-        let oldAncestors = playheadAncestors
         var expanded = Set<ModelID>()
         batching = true
         batchTouched = []
@@ -980,7 +1248,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 return rebuild()  // the engine's tree and ours disagree: resync from the store
             }
         }
-        updatePlayheadAncestors()
         for case .cue(_, _, _, let cue) in upserts { noteAncestors(cue.id) }
         for id in expanded.union(batchNewGroups.subtracting(batchCollapsed)) {
             if let n = nodes[id] { outlineView.expandItem(n) }
@@ -995,10 +1262,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             for t in targeters[id] ?? [] where pointing.insert(t).inserted { pending.append(t) }
         }
         if !pointing.isEmpty { refresh(pointing, columns: ["target", "name"]) }
-        // Groups that gained or lost the playhead show or clear their "inside" marker.
-        let flipped = oldAncestors.symmetricDifference(playheadAncestors)
-        let flagRows = flagGroups.union(flipped).filter { nodes[$0] != nil }
+        let flagRows = flagGroups.filter { nodes[$0] != nil }
         if !flagRows.isEmpty { refresh(flagRows, columns: ["status"]) }
+        updateHoursShown(touched: deletes.isEmpty ? batchTouched : nil)
+        refreshBoxes()
         placeCellEditor()
     }
 
@@ -1103,19 +1370,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     // MARK: Runtime display
 
-    private func updatePlayheadAncestors() {
-        var set = Set<ModelID>()
-        var node = listID.flatMap { store.playheads[$0] }.flatMap { nodes[$0] }
-        while let n = node {
-            set.insert(n.id)
-            node = n.parent
-        }
-        playheadAncestors = set
-    }
-
-    /// Redraws only the rows of `ids` (and the groups around `playheads`), only `columns` of them.
-    private func refresh(_ ids: Set<ModelID>, playheads: Set<ModelID> = [], columns: [String]? = nil) {
-        if !playheads.isEmpty { updatePlayheadAncestors() }
+    /// Redraws only the rows of `ids`, only `columns` of them.
+    private func refresh(_ ids: Set<ModelID>, columns: [String]? = nil) {
         var rows = IndexSet()
         func add(_ node: CueNode) {
             let row = outlineView.row(forItem: node)
@@ -1124,12 +1380,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             configureRow(node, row: row)
         }
         for id in ids { if let node = nodes[id] { add(node) } }
-        for id in playheads {
-            var node = nodes[id]
-            while let n = node {
-                add(n)
-                node = n.parent
-            }
+        if columns == nil || !Set(columns ?? []).isDisjoint(with: Self.timeColumns) {
+            updateHoursShown(touched: ids)
         }
         guard !rows.isEmpty else { return }
         let all = outlineView.tableColumns
@@ -1148,6 +1400,28 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         view.tint = CueKindStyle.colours[colour]?.tint
         view.pattern = RowPattern.of(node.cue)
         view.isPlayhead = isPlayheadRow(node.id)
+        view.boxes = boxParts(node)
+    }
+
+    /// The group boxes `node`'s row draws: every open group around it, and its own when it is an open
+    /// or empty group, with the Playlist groups' next children marked.
+    func boxParts(_ node: CueNode) -> [GroupBoxPart] {
+        GroupBoxes.parts(
+            for: node, expanded: { [outlineView] in outlineView.isItemExpanded($0) },
+            next: { [store] in store.playlistNext[$0] })
+    }
+
+    /// Opening, closing, adding, removing or moving rows changes which row each box ends on, so every
+    /// shown row looks again (only the rows on screen have views).
+    private func refreshBoxes() {
+        outlineView.enumerateAvailableRowViews { view, row in
+            guard let view = view as? CueRowView, let node = outlineView.item(atRow: row) as? CueNode else { return }
+            view.boxes = boxParts(node)
+            let name = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
+            guard name >= 0 else { return }
+            (outlineView.view(atColumn: name, row: row, makeIfNecessary: false) as? CueCell)?.textInset =
+                GroupBoxes.textInset(view.boxes)
+        }
     }
 
     // MARK: NSOutlineViewDataSource
@@ -1276,6 +1550,15 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case insert([URL], ModelID?, Int)
     }
 
+    /// A toolbar button was dropped: a new cue of that kind goes at that place (parent nil: the list's top
+    /// level).
+    var onKindDrop: ((NewCueKind, ModelID?, Int) -> Void)?
+
+    /// The kind a drag from the toolbar carries.
+    private func draggedKind(_ info: NSDraggingInfo) -> NewCueKind? {
+        info.draggingPasteboard.string(forType: CueToolbarView.dragType).flatMap(NewCueKind.init(rawValue:))
+    }
+
     /// The plan, and how many of the dragged files it leaves out (not audio).
     var onFileDrop: ((FileDrop, Int) -> Void)?
     /// The Target cell's button of an Audio cue was clicked.
@@ -1314,6 +1597,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         _ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?,
         proposedChildIndex index: Int
     ) -> NSDragOperation {
+        if draggedKind(info) != nil {
+            guard !isEditLocked else { return [] }
+            // The outline draws its insertion line where the drop is set.
+            let place = dropTarget(item, index)
+            outlineView.setDropItem(place.parent, dropChildIndex: place.index)
+            return .copy
+        }
         let files = fileURLs(info)
         showTargetOutline(targetOutlineFor(dragged, at: outlineView.convert(info.draggingLocation, from: nil)))
         if !files.isEmpty {
@@ -1336,6 +1626,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         _ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int
     ) -> Bool {
         showTargetOutline(nil)
+        if let kind = draggedKind(info) {
+            guard !isEditLocked else { return false }
+            let place = dropTarget(item, index)
+            onKindDrop?(kind, place.parent?.id, place.index)
+            return true
+        }
         let files = fileURLs(info)
         if !files.isEmpty {
             guard let plan = fileDropPlan(files, item: item, index: index) else { return false }
@@ -1482,7 +1778,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cellEditor.isEditable = true
         editingCell = (id, column)
         cellEditor.stringValue = InspectorEdit.display(
-            field, cue: node.cue, model: model, media: store.mediaDurations[node.id])
+            field, cue: node.cue, model: model, media: store.mediaDurations[node.id], inList: true)
         // An unnamed cue's editor starts empty, with the name it follows as a hint.
         cellEditor.placeholderString = column == "name" ? node.cue.targetDefaultName(lookup: cueLookup) : nil
         switch column {
@@ -1558,10 +1854,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
         refreshFlag(notification)
+        refreshBoxes()
         replaceEditorAfterLayoutChange()
     }
     func outlineViewItemDidExpand(_ notification: Notification) {
         refreshFlag(notification)
+        refreshBoxes()
         replaceEditorAfterLayoutChange()
     }
 
@@ -1584,7 +1882,15 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineViewColumnDidResize(_ notification: Notification) {
         // Not while the Name column itself is being measured or set.
         let resized = notification.userInfo?["NSTableColumn"] as? NSTableColumn
+        if let id = resized?.identifier.rawValue, !fitting, Self.timeColumns.contains(id), let resized {
+            preferredTimeWidths[id] = resized.width
+            draggedTimeColumns.insert(id)
+        }
         if resized?.identifier.rawValue != "name" { fitNameColumn() }
+        // The group boxes are drawn by the rows at the Name column's edges.
+        outlineView.enumerateAvailableRowViews { view, _ in
+            if let view = view as? CueRowView, !view.boxes.isEmpty { view.needsDisplay = true }
+        }
         replaceEditorAfterLayoutChange()
     }
     func outlineViewColumnDidMove(_ notification: Notification) { replaceEditorAfterLayoutChange() }
@@ -1605,7 +1911,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         else { return cancelCellEdit() }
         let row = outlineView.row(forItem: node)
         guard row >= 0 else { return cancelCellEdit() }
-        cellEditor.frame = outlineView.frameOfCell(atColumn: column, row: row)
+        var frame = outlineView.frameOfCell(atColumn: column, row: row)
+        if cell.column == "name" {
+            // A deeply nested row leaves its Name cell too narrow to see what is typed: the editor is at
+            // least `nameEditorMinWidth` wide, reaching over the columns to its right, and kept inside the list.
+            frame.size.width = max(frame.width, Self.nameEditorMinWidth)
+            frame.origin.x = max(0, min(frame.minX, outlineView.bounds.maxX - frame.width))
+        }
+        cellEditor.frame = frame
         exposeCellEditor()
     }
 
@@ -1692,18 +2005,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cell.chooseButton.isHidden = true
         cell.onChoose = nil
         cell.progress.progress = nil
+        cell.textInset = 0
         func text(_ s: String) {
             cell.label.isHidden = false
             cell.label.stringValue = s
         }
         switch column {
         case "status":
+            // The row draws the pointer at its left edge; this slot keeps the room and the label. A closed group
+            // around the playhead shows nothing here, as in QLab.
             if isPlayheadRow(node.id) {
-                // The row draws the pointer at its left edge; this slot keeps the room and the label.
                 cell.setImage(0, icon: .playhead, label: loc("cue.playhead"), tint: .clear)
-            } else if isPlayheadInside(node.id) {
-                cell.setImage(
-                    0, icon: .playheadInside, label: loc("cue.playhead.inside"), tint: PlayheadStyle.colour)
             }
             let (state, detail) = displayState(node.id)
             let style = CueStateStyle.style(for: state)
@@ -1715,7 +2027,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             // A preview is outside the show, so it has its own mark next to the cue's state.
             cell.images[2].setAccessibilityIdentifier("cue-preview")
             if store.previewing.contains(node.id) {
-                cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemTeal)
+                cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemBlue)
             } else if cue.kindType == "network" && networkOutputDisabled {
                 // A Network cue's preview holds no state, so it never takes that slot for a preview mark.
                 cell.images[2].setAccessibilityIdentifier("cue-override")
@@ -1728,9 +2040,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             let mark = cell.images[2]
             switch flag {
             case .solid where mark.isHidden:
-                cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemYellow)
+                cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemOrange)
             case .hollow where mark.isHidden:
-                cell.setImage(3, icon: .flaggedInside, label: loc("cue.flagged.inside"), tint: .systemYellow)
+                cell.setImage(3, icon: .flaggedInside, label: loc("cue.flagged.inside"), tint: .systemOrange)
             case .solid, .hollow:
                 let flagText = loc(flag == .solid ? "cue.flagged" : "cue.flagged.inside")
                 let label = String(format: loc("cue.markWithFlag"), mark.accessibilityLabel() ?? "", flagText)
@@ -1743,14 +2055,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             }
         case "number": text(cue.number ?? "")
         case "name":
-            let kind = cue.kindType
-            let shown = shownName(cue)
-            if shown.isEmpty {
-                text(CueKindStyle.kindLabel(kind))
-                cell.label.textColor = .secondaryLabelColor
-            } else {
-                text(shown)
-            }
+            // An unnamed cue with no default name shows an empty cell (QLab 5, manual p. 93).
+            text(shownName(cue))
+            cell.textInset = GroupBoxes.textInset(boxParts(node))
         case "target":
             if cue.takesFile {
                 fillFileTargetButton(cell, cue)
@@ -1808,7 +2115,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         // Drawn in Show Mode too, so the column does not change with the mode; the click does nothing there.
         // A file that is gone shows a trash can until it is back (the engine re-checks, so it clears itself).
         let missing = (store.problems[id] ?? []).contains { $0.type == "media_missing" }
-        cell.showChoose(missing: missing) { [weak self] in
+        let file = cue.raw["kind"]?["media"]?.stringValue
+        cell.showChoose(missing: missing, copying: store.copyingMedia.contains(id), file: file) { [weak self] in
             guard let self, !self.isEditLocked else { return }
             self.onChooseFile?(id)
         }
@@ -1823,35 +2131,51 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return target.listName(lookup: cueLookup)
     }
 
-    /// The Duration column's text: the cue's duration; while it runs, the time gone, or the time
-    /// left when the column shows that. A cue looping a slice with no end counts inside the slice
+    /// The Duration column's text: the cue's duration; while it runs or previews, the time gone, or
+    /// the time left when the column shows that. A cue looping a slice with no end counts inside the slice
     /// and starts again each pass. Instantaneous cues (and Audio cues whose file is unknown) have none.
     private func durationText(_ node: CueNode) -> String {
+        shownDurationSeconds(node).map(CueTime.running) ?? ""
+    }
+
+    /// The seconds the Duration cell reads, nil for none; the column widths are worked out from the same.
+    private func shownDurationSeconds(_ node: CueNode) -> Double? {
         let remaining = timeShown["duration"] == .remaining
-        if let p = store.progress[node.id] {
-            if let left = p.remaining { return CueTime.running(remaining ? left : p.elapsed) }
-            if let pass = loopPass(node, p) { return CueTime.running(remaining ? pass.length - pass.gone : pass.gone) }
-            return CueTime.running(p.elapsed)
+        // A cue loaded to a time stands there like a paused one: its Duration reads the point.
+        if let stand = loadedStand(node) {
+            guard let length = stand.length else { return stand.at }
+            return remaining ? length - stand.at : stand.at
         }
-        if let seconds = restingDuration(node) { return CueTime.running(seconds) }
-        return ""
+        if let p = store.shownProgress(node.id) { return shownRunningTime(node, p) }
+        return restingDuration(node)
     }
 
-    /// For a cue with no end whose voice is inside a slice: how far into the slice it is, and the
-    /// slice's length.
+    /// The time the Duration cell reads for a running cue: the time gone, or the time left when the column
+    /// shows that; inside the pass for a cue looping with no end.
+    private func shownRunningTime(_ node: CueNode, _ p: ProgressItem) -> Double {
+        let remaining = timeShown["duration"] == .remaining
+        if let left = p.remaining { return remaining ? left : p.elapsed }
+        if let pass = loopPass(node, p) { return remaining ? pass.length - pass.gone : pass.gone }
+        return p.elapsed
+    }
+
+    /// Where a loaded cue stands in its action (Load to Time, a Load cue, a click in its timeline), and
+    /// its length when known; nil for one loaded at its start.
+    private func loadedStand(_ node: CueNode) -> (at: Double, length: Double?)? {
+        guard store.cueStates[node.id]?.state == .loaded, let stand = store.loadedAt[node.id] else { return nil }
+        // A click in the timeline stands at a point of the file; the cue's own time starts at its start trim.
+        let fromFile = stand.position.map { $0 - (node.cue.raw["kind"]?["start_time"]?.doubleValue ?? 0) } ?? 0
+        let at = stand.time > 0 ? stand.time : fromFile
+        guard at > 0 else { return nil }
+        guard let length = restingDuration(node), length > 0 else { return (at, nil) }
+        return (min(at, length), length)
+    }
+
     private func loopPass(_ node: CueNode, _ p: ProgressItem) -> (gone: Double, length: Double)? {
-        guard p.remaining == nil, let position = p.position, node.cue.kindType == "audio" else { return nil }
-        let kind = node.cue.raw["kind"] ?? .null
-        let start = kind["start_time"]?.doubleValue ?? 0
-        let end = kind["end_time"]?.doubleValue ?? store.mediaDurations[node.id]?.file ?? position
-        let marks = (kind["slices"]?.arrayValue ?? []).compactMap { $0["time"]?.doubleValue }.sorted()
-        let from = marks.last { $0 <= position } ?? start
-        let to = marks.first { $0 > position } ?? end
-        guard to > from else { return nil }
-        return (min(max(0, position - from), to - from), to - from)
+        LoopPass.of(node.cue, p, fileDuration: store.mediaDurations[node.id]?.file)
     }
 
-    private func restingDuration(_ node: CueNode) -> Double? {
+    func restingDuration(_ node: CueNode) -> Double? {
         switch node.cue.kindType {
         case "fade", "wait": return node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0
         case "audio": return store.mediaDurations[node.id]?.shownDuration
@@ -1860,12 +2184,16 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
-    /// How far a running or paused cue is, drawn in its Duration cell: green running, yellow paused
-    /// (the Active Cues bar's colours).
+    /// How far a running, paused or previewing cue is, drawn in its Duration cell: green running,
+    /// yellow paused (the Active Cues bar's colours).
     private func durationProgress(_ node: CueNode) -> (fraction: Double, colour: NSColor)? {
-        guard let p = store.progress[node.id] else { return nil }
+        if let stand = loadedStand(node) {
+            guard let length = stand.length else { return nil }
+            return (stand.at / length, MarkColour.caution)
+        }
+        guard let p = store.shownProgress(node.id) else { return nil }
         let paused = displayState(node.id).state == .paused
-        let colour: NSColor = paused ? .systemYellow : .systemGreen
+        let colour: NSColor = paused ? MarkColour.caution : .systemGreen
         guard let left = p.remaining else {
             return loopPass(node, p).map { ($0.gone / $0.length, colour) }
         }

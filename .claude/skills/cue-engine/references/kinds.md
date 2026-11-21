@@ -12,9 +12,9 @@ A control cue is a cue like any other. At its action start `A` (after its own pr
 | Start | Start operation on the target dated `A`: idle/loaded starts; paused resumes (whatever its option); other active: its second-trigger option; broken: `CueBroken`; disarmed target skipped as on GO |
 | Stop | Stop with the cue's `fade_out` (duration 0 = hard) |
 | Pause | Pause (a paused or idle target is left) |
-| Load | Load to `load_to_time` (active target: `LoadIgnored`; broken: `CueBroken`). Negative: that long before the target's end, its nominal span (pre-wait + action, as a playlist times it, audio from `CueLengths`); an Audio cue that loops forever ends after one pass (`CuePassLengths`); further back than the start or no known end (unprobed audio, an endless group): the start (QLab 5 pp. 680-681, measured 5.6.5, Q351-Q352) |
+| Load | Load to `load_to_time` (active target: `LoadIgnored`; broken: `CueBroken`). Negative: that long before the target's end, its nominal span (pre-wait + action, as a playlist times it, audio from `CueLengths`); an Audio or Video cue that loops forever ends after one pass (`CuePassLengths`); further back than the start or no known end (unprobed audio, an endless group): the start (QLab 5 pp. 680-681, measured 5.6.5, Q351-Q352) |
 | Reset | Reset (clears broken) of the target and its descendants, which also become unplayed (first colour again, `panic-transport.md` "Played"). Does not undo Arm/Disarm |
-| Devamp, GoTo, Arm, Disarm | below |
+| Devamp, GoTo, Target, Arm, Disarm | below |
 | Wait | nothing; action lasts its `duration`. Its post-wait is its duration whatever `post_wait` stores (`Cue::effective_post_wait`; a `PostWait` command on it sets the duration; QLab 5 p. 688, measured 5.6.5, Q350) |
 | Memo | nothing; action completes at once |
 
@@ -23,6 +23,12 @@ A running Wait takes an edited duration (`broken-and-edits.md`); its pending aut
 ## GoTo
 - Moves the playhead of the target's cue list (any list, not only its own) to the target, at any depth.
 - With "and GO" it then GOes on that list dated `A`: the target starts and the playhead moves past its continue chain (or into an armed enter group), as an operator GO, except double-GO protection does not block it and it does not restart the interval.
+
+## Target (CT-18)
+- Its target acts on `new_target` from then on: the engine keeps it in `temp_targets` (runtime only, `temp_target(cue)`), never in the model, so the show is not edited and a reopened show has none. Every control cue reads `acts_on` = its temporary target, else its own, when its action starts; a Fade is never given one.
+- A reset of the target (`reset_tree`: an operator or Reset cue reset, also of a group around it) and Reset All drop it. Setting the saved target again drops the entry.
+- A run already in its action keeps what it acted on (a Devamp's pending devamp stays with its loop); one in its pre-wait takes the new target at its action start (Q712).
+- Run-time checks (stale problems, or the Target cue's own temporary target): new target gone `TargetMissing`, wrong kind `TargetWrongKind`; nothing changes. A temporary target deleted later: the retargeted cue warns `TargetMissing` and does nothing.
 
 ## Arm and Disarm
 - The engine cannot change the `&Workspace`. The cue emits `SetArmed { cue, armed }` and records an override honoured for the rest of that call: a Disarm followed by a trigger of the target in the same chain sees it disarmed (action skipped, Load sends no `LoadVoice`, GO does not enter a disarmed enter group).
@@ -34,8 +40,9 @@ A running Wait takes an edited duration (`broken-and-edits.md`); its pending aut
 - Without start-next-cue, or on a disarmed or broken Devamp cue, its own continue mode applies as usual, also for the playhead. A broken Devamp cue sends no devamp, so start-next-cue never fires.
 - Modes (`devamp_mode`): `current_slice` leaves whatever loop the audio target is playing and goes to the next slice; `looping_cue` leaves the cue's own loop.
   - No whole-cue play count exists: a cue without slice markers loops as a whole through `last_slice_play_count`, and both modes leave that.
+  - A play count is `PlayCount`: `Times(n)`, `Endless` (until devamped) or `Skip` (the slice is not played; QLab's count 0). A devamp leaves the loop for the next slice that plays; skipped slices after it are passed over, and with none left the cue ends on the loop's boundary.
   - With slice markers every loop is a slice's, so `looping_cue` does nothing but warn `DevampIgnored { cue: target }` (nothing pending, so start-next-cue never fires and a later devamp can act). A looping playlist is devamped the same in both modes; the `Devamp` second trigger acts as `current_slice`.
-- Audio target that is playing (in its action with a started voice; not paused, stopping or broken): emits `DevampVoice { cue, run, at: max(A, now, voice start), stop }` (`stop` = stop target when slice ends). Answers:
+- Audio or Video target that is playing (in its action with a started voice; not paused, stopping or broken; a Video cue's slices are its `timing`'s, and the binary carries the devamp out on its picture's plan): emits `DevampVoice { cue, run, at: max(A, now, voice start), stop }` (`stop` = stop target when slice ends). Answers:
   - `DevampScheduled { at: L }`: the voice leaves its loop on `L`. With start-next-cue the cue after the Devamp cue (looked up as for any continue when it fires) starts exactly on `L`: a deadline, inside the window on `L`, late at `now` otherwise. The target plays into its next slice (or ends there with `stop`) and completes on its end report.
   - If the target's end arrives before that deadline ran (ended at `T <= L`), the next cue starts on `min(L, T)`: it never waits past the end of the cue it follows.
   - `DevampIgnored` (nothing to leave, e.g. no slice table): `DevampIgnored` warning, no next cue.
@@ -55,11 +62,13 @@ A running Wait takes an edited duration (`broken-and-edits.md`); its pending aut
 - Sending rules, limits, workers, host look-ups and "never break for an unresolved host": skill `osc`.
 
 ## Video cue (core side)
-- Its picture is a voice: GO, load, load to time, pause, resume, stop, panic and the second-trigger options emit the same voice actions as for an Audio cue (`LoadVoice`, `StartVoice`, `PauseVoice`, `ResumeVoice`, `StopVoice` with the panic fade). The binary plays a Video cue's voice on the stage host, not the mixer; level actions for it (`Ramp`, `DuckVoice`) have nothing to act on until it has sound.
+- Its picture is a voice: GO, load, load to time, pause, resume, stop, panic and the second-trigger options emit the same voice actions as for an Audio cue (`LoadVoice`, `StartVoice`, `PauseVoice`, `ResumeVoice`, `StopVoice` with the panic fade).
+- The binary plays a Video cue's voice on the stage host, not the mixer; level actions for it (`Ramp`, `DuckVoice`) act on the sound of its movie's audio track, when it has one (skill `video`, Sound; the levels are its `sound.levels`, read through `CueKind::levels()`).
 - Its length comes from the binary as for audio (`ActionLength`, `CueLengths`): a video file's length, a still's typed `duration`, none for a still without one (it runs until stopped).
 - Problems: `no_media`, `media_missing`, `media_unsupported` from the media status of its file (shared with Audio cues on the same file), `no_stage` when its stage is none, `stage_missing` when the stage is not in the workspace (a change to the stage ids rebuilds every cue's problems).
 - A picture that fails mid-show is `ActionFailed { decode_failed }`: only that cue breaks.
-- Fade and Devamp cues cannot target it (`TargetWrongKind`); preview is `NotAudio`.
+- A Fade cue may target it (it fades its sound's levels as an Audio cue's; a cue without sound has no voice to fade) and so may a Devamp cue; preview is `NotAudio`.
+- Its sound's patch problems (`no_patch`, `patch_missing`, `device_unavailable`) count only while the binary has told its file has sound (`Input::MediaSound`).
 
 ## Display name
 `Cue::display_name`: the stored `name` if non-empty; else for an Audio or Video cue with media, the file name with its extension (last `/`-separated component of the stored `MediaRef`, as stored: no case or Unicode-form change; a backslash is a file-name character); else empty.

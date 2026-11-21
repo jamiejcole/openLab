@@ -10,7 +10,7 @@ audio thread: voice reads ring -> trims/loops/slices -> integrated fades -> chan
 - Fades are per-voice gain ramps evaluated per sample from a curve id plus start/end gain and sample; no per-sample allocation and no table rebuilds on the audio thread.
 - Loops, slices and devamp are resolved on the audio thread from a preloaded slice table (skill `audio-streaming`).
 - The mixer sees voices and patch matrices, not documents. Several workspaces share one mixer; the engine maps `(DocId, PatchId)` to patch slots and `VoiceId` to owner (skill `engine-control`).
-- A patch matrix's gains are patch master x output level; a workspace has no global master, so the mixer master stays at unity.
+- A patch matrix's gains are patch master x cue output level x crosspoint x device output level, computed on the control thread (skill `engine-control`, patch slots); a workspace has no global master, so the mixer master stays at unity.
 - There is no per-output delay (QLab 5 has none; speaker alignment belongs in a processor or the interface).
 
 ## Signal path
@@ -24,7 +24,7 @@ out[d]       = dev[d] * global_master(t)
 ```
 - `t` is sample time; `p` is the voice's frame position after the skip.
 - Each patch's bus is shared by all voices routed through it, so a patch costs nothing per voice. Patches no voice uses in a block are skipped.
-- A patch output's level, mute and polarity (AUD-07) are gains in the patch matrix; a device output has no stage of its own.
+- A patch output's level, mute and polarity, its crosspoints and its device outputs' levels and mutes (AUD-07) are all folded into the patch matrix; a device output has no stage of its own in the mixer.
 - Silent (constant 0) crosspoints, cue outputs and patch entries are skipped per block, so cost scales with routes in use.
 
 ## Commands
@@ -43,6 +43,7 @@ out[d]       = dev[d] * global_master(t)
 **MoveVoice**
 - For the de-zipper time the voice plays into both patches, crossfading linearly old to new, so neither set of outputs clicks and the two always add up to the voice.
 - A voice not heard yet (moved on its start sample, or paused past its declick tail) moves at once.
+- A voice moved while its pause tail still sounds crossfades the tail; the move is over on the first sample after the last tail (`MoveEnded` there), whatever the block sizes, so a later resume plays on the new patch only.
 - A move requested during a crossfade waits for it and starts with the next segment rendered (at most a block later; latest wins).
 - Ignored for an unknown voice, a patch out of range, or the patch the voice is on.
 - Each move taken is counted (out-of-range patch included). `MoveEnded { voice, at, moves }` reports the voice settled on one patch once no crossfade is left: at once for a move with no crossfade, else from the end of the segment its last crossfade ends in, and not while another move waits.
@@ -50,7 +51,7 @@ out[d]       = dev[d] * global_master(t)
 **Gains**
 - Gains are linear `f32`. Use `db_to_linear` and `linear_to_db`; -120 dB and below is exactly 0.0.
 - Every gain the mixer applies is clamped to +-`MAX_GAIN` (+24 dB, `MAX_GAIN_DB`); NaN counts as 0.0. The show model stops at +12 dB, so the clamp is a safety net.
-- A patch-matrix gain carries patch master x output level, so the clamp applies to their sum in dB: two settings of +12 dB each are heard at +24 dB.
+- A patch-matrix gain carries patch master x output level x crosspoint x device output level, so the clamp applies to their sum in dB: two settings of +12 dB each are heard at +24 dB, four at +24 dB too.
 - Commands naming an unknown voice, an out-of-range index, or an input beyond the voice's channel count are ignored.
 
 ## De-zipper

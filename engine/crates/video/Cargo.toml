@@ -26,20 +26,22 @@ test-support = ["openlab-core/test-support"]
 
 [dependencies]
 openlab-core = { version = "0.0.1", path = "../core" }
+# HAP movie frames are packed with Snappy (approved 2026-11-13, design #641).
+snap = "1.1.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The system frameworks' bindings, default features off: only the headers used are built.
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std"] }
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-quartz-core", "NSApplication", "NSColor", "NSGraphics", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-quartz-core", "NSApplication", "NSColor", "NSGraphics", "NSPanel", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFData", "CFString", "CFURL", "CFUUID"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "libc", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGImage"] }
 # Video files and still images: AVFoundation reads movies, ImageIO stills (approved 2026-11-13).
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-media", "objc2-core-graphics", "objc2-core-video", "AVAsset", "AVAssetImageGenerator", "AVAssetReader", "AVAssetReaderOutput", "AVAssetTrack", "AVAssetWriter", "AVAssetWriterInput", "AVMediaFormat", "AVVideoSettings"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
-objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-video", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMTimeRange"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-video", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMTimeRange"] }
 objc2-image-io = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-graphics", "CGImageDestination", "CGImageSource"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSGeometry", "NSString", "NSURL", "NSValue"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSString", "NSURL", "NSValue"] }
 objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "objc2-metal", "objc2-core-foundation", "CALayer", "CAMetalLayer"] }
 
@@ -53,3 +55,7 @@ uuid = { version = "1.29.0", default-features = false }
 # Used by the engine's control-test helpers the stage tests share (`engine/tests/show`).
 crossbeam-channel = "0.5.17"
 tempfile = "3.27.0"
+serde_json = "1.0.154"
+# A blocking WebSocket client for the test that drops the app's connections to a real engine
+# process; the engine's own WebSocket crate, so nothing new in the tree.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }

@@ -65,8 +65,13 @@ cue, and the cue shows as broken where it cannot run.
 | `second_trigger` is `"play_next"` or `"play_previous"` on a cue that is not a Playlist group | Warning; kept, but a second trigger does nothing until the cue is a Playlist group |
 | An empty `number` (`""`) | Treated as `null`, no warning |
 | A target that does not exist, targets the cue itself, or is the wrong kind of cue | Warning; the target is kept and the cue shows as broken |
+| A Target cue's `new_target` that does not exist, or that its target cannot act on | Warning; it is kept and the cue shows as broken (also without a number or with none set, which load without a warning) |
 | An Audio cue's `patch` or a Network cue's `destination` does not exist | Warning; the cue shows as broken |
+| A play count (§5) that is not a whole number 0 to 4294967295 or `"skip"` | Refused (wrong type) |
+| Every slice of an Audio or Video cue inside its trims has the play count `"skip"` | Loads as it is, no warning; the cue shows as broken (`nothing_plays`) once its file is read |
 | A Video cue's `stage` does not exist | Warning (`StageMissing`); kept, and the cue shows as broken. A `stage` of `null` ("none") loads quietly and the cue shows as broken |
+| A Video cue's geometry number outside its range (§5 `video`) | Warning (`InvalidValue`, the field); clamped. A `layer` that is not a whole number 0 to 65535 refuses the file (wrong type) |
+| A Fade cue's `geometry` number outside its range or not finite (§5 `fade`) | Warning (`InvalidValue`, `geometry.<field>`); clamped (not finite: the untouched value) |
 | A time below its minimum or above its maximum (24 h unless stated) | Warning; clamped |
 | A level above `+12` | Warning; set to `+12` |
 | A level below `-120` | Set to `-120` silently (same meaning) |
@@ -75,14 +80,16 @@ cue, and the cue shows as broken where it cannot run.
 | `output_max_db` or `output_min_db` outside its range | Warning; clamped into it |
 | An OSC `float` argument too large for 32 bits | Warning; set to `0` |
 | A Network cue's `address` is not a valid OSC address, or its arguments are too many or too large (skill `osc`) | Kept; the cue shows as broken until it is edited |
-| An Audio cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
-| An Audio cue's `end_time` less than 50 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` moved to `start_time` + 50 ms (QLab 5's shortest trim) |
+| An Audio or Video cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
+| An Audio or Video cue's `end_time` less than 50 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` moved to `start_time` + 50 ms (QLab 5's shortest trim) |
 | Slice markers out of order | Warning; sorted |
 | A slice marker at or before `start_time`, or at or after `end_time` | Warning; removed |
 | Two slice markers at the same time | Warning; the second is removed |
 | A slice marker less than 50 ms (`MIN_SLICE_SECONDS`) after `start_time` or the marker before it, or before `end_time` | Warning; every slice, and so every loop, is at least 50 ms long. The marker moves to make the short slice exactly 50 ms (keeping its play count, so a stutter or vamp stays one); only when the neighbouring slice cannot give the room is the marker removed and the two slices become one, playing as the longer did. Without an `end_time` the last slice meets only the audio engine's loop floor (`MIN_LOOP_MS`) at voice planning |
 | More than 254 slice markers (`MAX_SLICE_MARKERS`; the audio engine plays at most 256 slice entries, and a start offset inside a slice splits it) | Warning (`TooManySlices`); the markers after the 254th are removed. An edit, paste or duplicate that would exceed it is refused |
 | A patch with no outputs, or more than 128 | Warning; one output added, or the extras removed |
+| A patch crosspoint naming cue output 128 or more or device output 64 or more, a device-output entry naming device output 64 or more, or a pair (or device output) listed twice | Warning (`InvalidPatchValue`, naming the patch); those entries removed, the first of a repeat kept. Listed out of order: sorted silently |
+| A patch crosspoint or device output naming a device output this machine's device lacks | Loads unchanged; while the show plays, a `patch_routing_beyond_device` notice says which, and that routing is not heard |
 | More Audio cue outputs than its patch has | Warning; kept, but the extra outputs are silent until the patch has them again |
 | More than 128 cue outputs; a crosspoint naming channel 64 or more or output 128 or more; a gang naming output 128 or more; Fade levels naming output 128 or more or channel 64 or more | Warning; those entries are removed |
 | The same crosspoint (input and output) listed twice, or a cue output in more than one gang or twice in one | Warning; the first is kept, the repeats removed |
@@ -97,8 +104,9 @@ cue, and the cue shows as broken where it cannot run.
 | A workspace, cue list, patch or network patch name over 1024 characters or with a control character other than a newline, or a network host over 253 bytes or with one | Warning (`InvalidName`, one per kind of field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
-Valid targets: a Fade cue targets an Audio or Group cue; a Devamp cue targets an Audio cue or a
-Playlist group; every other targeting cue may target any cue except itself.
+Valid targets: a Fade cue targets an Audio, Video or Group cue; a Devamp cue targets an Audio cue or a
+Playlist group; a Target cue targets a cue that targets a cue, other than a Fade; every other
+targeting cue may target any cue except itself.
 
 ## 4. The workspace
 
@@ -131,6 +139,11 @@ patch plays through, are stored on each machine, not in the show file (WS-07).
 | `hotkeys` | object | The workspace key map (TRG-01, TRG-07). Transport keys `go`, `stop_all`, `pause_all`, `resume_all`; selected-cue keys `load_selected`, `pause_resume_selected`, `start_selected`, `stop_selected`, `reset_selected`, `preview_selected`, `panic_selected`; cue-editing keys `edit_number`, `edit_name`, `edit_notes`, `edit_target`, `edit_pre_wait`, `edit_duration`, `edit_post_wait`, `cycle_continue`, `toggle_flag` (they act on the cues selected in the app; the engine only keeps them from cue hotkeys). Each is `null` or a hotkey object (§5.1). New workspaces get Space, none, `[`, `]`, `l`, `p`, none, none, none, `v`, `s`, then `n`, `q`, `o`, `t`, `e`, `d`, `w`, `c`, `f`. A file older than v9 gets each key the v9 step added (`preview_selected` onward) unless a cue hotkey or another key of its map is that chord, which then keeps it and the action gets none. Panic All (Esc) is outside the map; there is no Next / Previous Cue key. **Reserved** (refused by the edit command): Esc with any modifiers, Up / Down with any modifiers. A cue hotkey equal to any key of the map never starts the cue (`HotkeyUsedByWorkspace`, §3). The loader keeps a reserved or repeated key a hand edit put here; the app binds no reserved key and only the first of a repeated one. |
 | `auto_number_start` | number, 0–1 000 000 | Number given to the first auto-numbered cue. |
 | `auto_number_increment` | number, above 0 up to 1 000 000 | Step between auto-numbered cues. |
+| `auto_number_new_cues` | bool | Optional (absent: `true`). Whether `AddCue` with `auto_number` numbers the new cue (QLab 5: Auto-number new cues). A paste and OSC never number. |
+| `lock_playhead` | bool | Optional (absent: `true`). The app keeps the selection and the playhead together; off, they move apart. |
+| `go_needs_key_up` | bool | Optional (absent: `false`). The app accepts another GO from the GO key only after the key was released. |
+| `osc_enabled` | bool | Optional (absent: `true`). Off: every OSC message to this workspace is refused with `denied`. |
+| `copy_media_on_add` | bool | Optional (absent: `true`). A file set as a cue's target (a new cue with a file, a replaced file; not a paste) is copied into the show folder's `audio` or `video` folder and the cue pointed at the copy (QLab 5: copy files into the project folder when adding). A show never saved copies nothing. |
 | `new_cues_auto_load` | bool | Optional (absent: `false`). A cue made while it is on (`AddCue`, not a paste or an undo) gets `auto_load`, a group's children too; cues already there keep theirs. |
 
 ### 4.3 Media paths
@@ -150,8 +163,11 @@ openLab writes the paths it creates in Unicode NFC (macOS reports names decompos
 
 ### 4.4 Output patches
 
-A patch is a named set of logical outputs that Audio cues play to. Which device channels those
-outputs reach is configured per machine.
+A patch is a named set of logical outputs that Audio cues play to. Which device a patch plays on,
+and the device output each cue output goes to by default, are configured per machine; the
+crosspoints and device-output levels below travel with the show. A new workspace starts with one
+two-output patch for each output device connected then (QLab 5 manual p. 106); a file loads with
+the patches it has.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -159,6 +175,8 @@ outputs reach is configured per machine.
 | `name` | string | |
 | `master_db` | level | Patch master. |
 | `outputs` | array of outputs | 1 to 128 entries (QLab 5's patch range); the patch's channel count is the length. Each is `{"name"?: string, "level_db": level, "mute": bool, "polarity_inverted": bool}`; `name` is what a cue's Levels tab shows under that output (absent or empty: its number), checked like a patch name. |
+| `crosspoints` | array of `{"output", "device_output", "db"}` | Optional (absent: none). The routing matrix's crosspoints set in the patch editor: cue output `output` (0-based) to device output `device_output` (0-based device channel, below 64) at `db`. Sorted by output then device output, each pair once. A cue output goes, at 0 dB, to the device output this machine maps it to unless a listed crosspoint names that pair, and to every other listed device output at its level; `-120` means not routed. So a patch with none plays as its mapping says. Entries for cue outputs past the patch's count are kept and silent. |
+| `device_outputs` | array of `{"device_output", "level_db": level, "mute": bool}` | Optional (absent: none). Level and mute of the patch's device outputs, sorted, each once; one not listed is at 0 dB, unmuted. Applies to everything the patch sends to that device output. |
 
 ### 4.5 Network patches
 
@@ -189,7 +207,7 @@ A stage is a named raster Video cues are drawn on (VID-01; QLab 5 manual pp. 207
 | `id` | UUID | Two stages with one id refuse the file. |
 | `name` | string | |
 | `width`, `height` | integer 1–16384 | Pixel size. 0 or a size above 16384 (up to 4294967295) is clamped with a warning (`StageSize`); a negative, fractional or larger number, or null, is a wrong type and refuses the file (§3). |
-| `keep_black` | boolean, optional | `true`: the stage's display shows black while no cue plays on it (QLab's "keep rendering between cues", p. 227). `false` (the default when absent, as in QLab): its window is hidden then and the desktop shows, so a stage on the operator's own display never covers it between cues. |
+| `keep_black` | boolean, optional | `true` (the default when absent): once a picture has played on the stage, its display shows black while no cue plays on it, until a panic (QLab's "keep rendering between cues", p. 227); before the first picture after the workspace opens, and after a panic, nothing covers the display. `false`: its window is hidden while nothing plays and the desktop shows. |
 | `layer` | integer 0–1000, optional | Stacking order among stages on the same display (QLab 5 manual p. 227): a higher layer is drawn on top; on the same layer the stage whose name sorts first is on top. Default 1. A value from 1001 to 65535 is clamped to 1000 with a warning (`StageLayer`); a negative, fractional or larger number, or null, is a wrong type and refuses the file (§3). |
 
 At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyStages`).
@@ -213,7 +231,7 @@ At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyS
 | `pre_wait` | seconds | Delay between the cue being triggered and its action starting. |
 | `post_wait` | seconds | Delay used by `auto_continue` before the next cue, counted from the start of the action. Ignored otherwise, and on a Wait cue, whose post-wait is its `duration`. |
 | `continue_mode` | `"do_not_continue"` \| `"auto_continue"` \| `"auto_follow"` | `auto_continue`: start the next cue `post_wait` after this one's action starts (after its pre-wait). `auto_follow`: start the next cue when this one's action finishes. Semantics: skill `cue-engine`. |
-| `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `hotkey_enabled` (bool, optional, absent: `true`): whether the hotkey starts the cue; off keeps the key. A cue has no OSC address of its own (OSC starts it by number or id); an `osc` key from an older file is ignored. |
+| `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `hotkey_enabled` (bool, optional, absent: `true`): whether the hotkey starts the cue; off keeps the key. A cue the app creates stores `false` with no key, as QLab's hotkey box starts unticked: the operator ticks it, then types the key. A cue has no OSC address of its own (OSC starts it by number or id); an `osc` key from an older file is ignored. `wall_clock` (optional; absent: off at 00:00:00 every day, and written only when it differs from that): `enabled` (bool), `hours` 0-23, `minutes` 0-59, `seconds` 0-59 (integers, the computer's local time), `days` (list of `sunday` ... `saturday`; absent: all seven; repeats count once), `twelve_hour` (bool, optional, absent: `false`: the time is shown with AM/PM; `hours` is still 0-23). A time out of range or an empty `days` loads with an `InvalidValue` warning (`triggers.wall_clock`), the trigger off, the time put in range and the days set to every day; a value of the wrong type or past what an integer field holds refuses the file. |
 | `second_trigger` | `"nothing"` \| `"panic"` \| `"stop"` \| `"hard_stop"` \| `"hard_stop_and_restart"` \| `"devamp"` \| `"play_next"` \| `"play_previous"` | What a trigger does while the cue is already active; semantics in skill `cue-engine`. `play_next`/`play_previous` are for Playlist groups only. |
 | `second_trigger_on_release` | bool | Releasing the hotkey or MIDI key that triggers the cue counts as a second trigger. |
 | `fade_and_stop_others` | object | Optional (absent: off, `peers`, 1 s). `{"enabled": bool, "scope": "peers" \| "list" \| "all", "duration": seconds}`: when the cue's action starts, the other active cues of its level (each with what is inside it), of its list, or of the workspace fade out over `duration` and stop. Kept while off. A bad `duration` is put in range with `InvalidTime`. Semantics: skill `cue-engine`. |
@@ -243,26 +261,29 @@ Option on macOS).
 | `start_time` | seconds | Trim in point, from the start of the file. |
 | `end_time` | seconds or `null` | Trim out point; `null` = end of file. Must be at least 50 ms after `start_time`. |
 | `fade_in`, `fade_out` | fade spec | Fades built into the cue. |
-| `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points, each slice at least 50 ms long. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
-| `last_slice_play_count` | integer | Play count of the slice after the last marker (or of the whole file when there are none). `0` = loop until devamped. |
+| `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points, each slice at least 50 ms long. Each marker ends a slice; `play_count` says how that slice plays (below). |
+| `last_slice_play_count` | play count | How the slice after the last marker plays (the whole file when there are none). |
 | `levels.master_db` | level | Cue master. |
 | `levels.outputs` | array of `{"db": level, "mute": bool}` | One per cue output, at most 128. Cue output `i` feeds output `i` of the patch; outputs beyond the patch's are silent but kept. |
 | `levels.crosspoints` | array of crosspoints | Routing matrix from file channels to cue outputs. Sparse: a crosspoint not listed is silent. Each input/output pair appears at most once. |
 | `levels.gangs` | array of arrays of cue output indices | Outputs in the same set move together when edited. An output is in at most one gang. |
 | `preload` | bool | Decode the whole file into memory when the cue loads. |
 
-**`fade`** — moves a target's levels: an Audio cue's **to** its values (absolute), each audio cue in a Group **by** them (relative, capped at +12 dB).
+**Play count** (`play_count`, `last_slice_play_count`): a whole number from 1 to 4294967295 = the slice plays that many times in a row; the number `0` = it loops until devamped or stopped; the string `"skip"` = it is not played, and playback goes from the end of the slice before it straight to the start of the next slice that plays (QLab 5 manual p. 179). The stored `0` is not the 0 a user types for a skipped slice: it is what "until devamped" has always been written as, so a show saved before slices could be skipped means what it meant. Any other value (a negative or fractional number, another string, `null`) is a model error: the file is refused (§3), and an edit carrying it is refused. A cue every slice of which inside its trims is skipped loads and saves as it is and shows broken (`nothing_plays`, docs/protocol.md).
+
+**`fade`** — moves a target's levels: an Audio or Video cue's **to** its values (absolute), each audio cue in a Group **by** them (relative, capped at +12 dB); and a Video target's picture values (`geometry`).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `target` | target | An Audio or Group cue (fading a group moves each audio cue in it, at any depth, relative to its own level). |
+| `target` | target | An Audio, Video or Group cue (fading a group moves each cue with sound in it, at any depth, relative to its own level; never a picture). |
 | `duration` | seconds | |
 | `curve` | curve | |
 | `levels.master_db` | level or `null` | `null` = leave the master alone. |
 | `levels.output_db` | array of level or `null` | Indexed by cue output; `null` entries are left alone. |
 | `levels.crosspoints` | array of `{"input", "output", "db"}` | Listed crosspoints fade to their `db` (by it, for a Group target; a silent crosspoint stays silent); others are left alone. Mutes are never changed by a fade. |
 | `stop_target_when_done` | bool | Stop the target when the fade completes. |
-| `mode` | `"absolute"` \| `"relative"` | For an Audio target: `absolute` ends the target's levels at the Fade's; `relative` moves each by the Fade's dB from where it is when the Fade starts (a silent level stays silent), within the workspace limits. A Group target always moves by them. Absent: `absolute`. |
+| `mode` | `"absolute"` \| `"relative"` | For an Audio or Video target: `absolute` ends the target's levels (and picture values) at the Fade's; `relative` moves each level by the Fade's dB from where it is when the Fade starts (a silent level stays silent), within the workspace limits, and each picture value by `geometry` (below). A Group target always moves by them. Absent: `absolute`. |
+| `geometry` | object | A Video target's picture values (VID-05): `fade_opacity` (bool) with `opacity` (0 to 1), `fade_translation` with `translation` (`{x, y}` pixels, -65536 to 65536), `fade_scale` with `scale` (`{x, y}`, -100 to 100) and `scale_locked` (bool, the app edits x and y together), `fade_rotation` with `rotation` (degrees, -360 to 360). Only the ticked (`fade_*` true) values are faded, along `curve` over `duration`: absolute, to the value; relative, opacity and scale times it and position and rotation plus it, from where the picture is when the Fade starts, within each range (a value at 0 that is multiplied stays 0). An unticked value is kept. Absent, or a key missing: nothing ticked, the values of an untouched picture (opacity 1, no move, scale 1, locked, no rotation). Out of range: clamped (not finite: that default) with an `InvalidValue` warning naming `geometry.<field>`. A ticked value makes a Fade with no levels set not broken when its target is a Video cue (or not set or missing); aimed at an Audio or Group cue such a Fade is broken (`nothing_to_fade`). |
 
 **`group`** — contains cues.
 
@@ -280,10 +301,11 @@ Option on macOS).
 | `pause` | `target` | Pauses the target. |
 | `load` | `target`, `load_to_time` (seconds, -86400 to 86400) | Loads the target, cued to `load_to_time`. A negative time counts back from the target's end (pre-wait and action); further back than its start, or with no known end, it loads to the start. |
 | `reset` | `target` | Returns the target to its saved state. |
-| `devamp` | `target`, `start_next_cue` (bool), `stop_target_when_slice_ends` (bool), `devamp_mode` (`"current_slice"` \| `"looping_cue"`) | Leaves the target's loop at the end of the pass; semantics in skill `cue-engine`. Target must be an Audio cue or a Playlist group. |
+| `devamp` | `target`, `start_next_cue` (bool), `stop_target_when_slice_ends` (bool), `devamp_mode` (`"current_slice"` \| `"looping_cue"`) | Leaves the target's loop at the end of the pass; semantics in skill `cue-engine`. Target must be an Audio cue, a Video cue or a Playlist group. |
 | `go_to` | `target`, `then_go` (bool) | Moves the playhead to the target; `then_go` also fires GO. |
 | `arm` | `target` | Arms the target. |
 | `disarm` | `target` | Disarms the target. |
+| `target` | `target`, `new_target` (cue id or `null`) | Gives the target a temporary target, `new_target`, until the target is reset, Reset All or the show is reopened; never written to the file. `target` must be a cue that acts on a cue, other than a `fade`; `new_target` must have a number and be a cue the target can act on (not the target itself). Otherwise it loads and shows broken (`no_new_target`, `new_target_missing`, `new_target_unnumbered`, `new_target_wrong_kind`, docs/protocol.md). |
 
 **`wait`** — `duration` (seconds). Does nothing for that long.
 
@@ -297,6 +319,24 @@ manual p. 209). A video's length is not stored; it comes from the file.
 | `media` | path or `null` | §4.3. A video file or a still image. `null` until a file is assigned. |
 | `stage` | stage id or `null` | The stage (§4.7) the cue is drawn on. `null` is "none": the cue shows as broken and does not play. |
 | `duration` | seconds or `null` | How long a still image shows; `null` = until the cue is stopped. Not used by a video file. Out of range: clamped with `InvalidTime`. |
+| `fill_stage` | bool | Geometry (VID-04, QLab 5 manual pp. 212-214): `true` fills the stage in `fill_style`; `false` (custom) draws the picture at its own pixel size placed by the fields below. |
+| `fill_style` | `"fit"`, `"fill"` or `"stretch"` | Fit: the whole picture as large as the stage allows, shape kept (the rest shows what is below). Fill: the stage covered, shape kept, the overflow not drawn. Stretch: the stage's shape. |
+| `translation` | `{x, y}` pixels | Custom: where the anchor is moved to from the stage's centre, y up. -65536 to 65536. |
+| `scale` | `{x, y}` | Custom: times the picture's own size, -100 to 100 (negative mirrors). |
+| `scale_locked` | bool | The app edits `scale.x` and `scale.y` together. |
+| `rotation` | degrees | Custom: anticlockwise about the anchor, -360 to 360. |
+| `crop` | `{top, bottom, left, right}` pixels | Custom: cut off each edge of the picture, 0 to 16384 each. |
+| `anchor` | `{x, y}` pixels | Custom: the point scaled and rotated about and moved by, from the picture's centre, y up. -65536 to 65536. |
+| `opacity` | 0 to 1 | 1 is opaque; the file's own transparency is kept. |
+| `layer` | whole number 0 to 1000 | Stacking among the cues on its stage: higher on top; on one layer the later-started on top. |
+| `smooth` | bool | Smooth scaling; `false` is nearest-neighbour (hard pixel edges). |
+| `start_time`, `end_time`, `fade_in`, `fade_out`, `slices`, `last_slice_play_count` | as `audio` | Time and loops (VID-07, QLab 5 manual p. 214), stored, loaded and checked exactly as an Audio cue's fields of the same names (trims, slice markers, play counts). Used by a video file; a still ignores them. The fades are of the picture's opacity: in from the action's start, out to its end (none while it loops for ever). |
+| `hold_at_end` | bool | At the last frame the picture stays up and the cue stays active until it is stopped; `false`: the cue ends there and its picture leaves the stage. |
+| `patch` | patch id or `null` | Sound (VID-06, QLab 5 manual pp. 211-212): the output patch (§4.4) the movie's audio track plays on. `null` is "none". Used only when the file has an audio track: such a cue with `null`, a patch the workspace lacks or a patch with no device is broken, and a file without sound (or a still) is never broken by it. A patch the workspace lacks warns `PatchMissing` on load, as an Audio cue's. |
+| `levels` | as `audio` | The sound's levels and routing (AUD-06), stored, loaded and checked exactly as an Audio cue's `levels` (file channels are those of the chosen audio track). Kept when the file has no sound. |
+| `audio_track` | whole number, 0 or more | Which of the file's audio tracks plays, counted from 0 in file order. A number the file does not have plays its first track, with an `audio_track_missing` warning. |
+
+A sound key missing from a file is its default (`patch` `null`, `levels` at unity with no outputs or crosspoints, `audio_track` 0). A geometry key missing from a file is its default (fill stage, fit, no move, scale 1, locked, no rotation or crop, anchor at the centre, opacity 1, layer 1000, smooth). Out of range: clamped (not finite: the default) with an `InvalidValue` warning naming the field. A time-and-loops key missing from a file is its default (no trims, no fades or slices, played once, not held); out of range they warn and are repaired as an Audio cue's (§3).
 
 **`network`** — sends one OSC message.
 

@@ -136,6 +136,107 @@ final class BasicsTriggersRuleTests: XCTestCase {
             XCTAssertNotEqual(loc(p.titleKey), p.titleKey)
         }
     }
+
+    // MARK: Wall-clock trigger
+
+    /// Hours, minutes and seconds are read from the right (`10:30` is 00:10:30, QLab 5 manual p. 129);
+    /// the 12-hour clock takes 1 to 12 in the half its AM or PM says; anything else is refused.
+    func testATypedWallClockTimeIsReadFromTheRightOnEitherClock() {
+        typealias T = WallClockTrigger
+        XCTAssertTrue(T.parse("10:30", twelveHour: false, pm: false)! == (0, 10, 30))
+        XCTAssertTrue(T.parse("5", twelveHour: false, pm: false)! == (0, 0, 5))
+        XCTAssertTrue(T.parse(" 19:25:00 ", twelveHour: false, pm: false)! == (19, 25, 0))
+        XCTAssertTrue(T.parse("7:25:00", twelveHour: true, pm: true)! == (19, 25, 0))
+        XCTAssertTrue(T.parse("12:00:00", twelveHour: true, pm: false)! == (0, 0, 0), "12 AM is midnight")
+        XCTAssertTrue(T.parse("12:00:00", twelveHour: true, pm: true)! == (12, 0, 0), "12 PM is noon")
+        for bad in ["", "24:00:00", "1:60:00", "0:0:60", "1:2:3:4", "a:00", "1::2", "-1:00", "13:00:00x", "123"] {
+            XCTAssertNil(T.parse(bad, twelveHour: false, pm: false), bad)
+        }
+        XCTAssertNil(T.parse("13:00:00", twelveHour: true, pm: false))
+        XCTAssertNil(T.parse("١٢:٠٠", twelveHour: false, pm: false), "digits are ASCII")
+    }
+
+    /// The trigger as the file holds it, shown and summarised; absent, a new cue's.
+    func testTheWallClockTriggerReadsAndWritesTheFileFormAndNamesItsDays() throws {
+        let bare = WallClockTrigger(json: nil)
+        XCTAssertEqual(bare, WallClockTrigger())
+        XCTAssertFalse(bare.enabled)
+        XCTAssertEqual(bare.display, "00:00:00")
+        XCTAssertEqual(bare.daysSummary, loc("inspector.wallClock.everyDay"))
+        var t = WallClockTrigger()
+        t.enabled = true
+        t.hours = 19
+        t.minutes = 25
+        t.days = [1, 3, 5]
+        t.twelveHour = true
+        XCTAssertEqual(WallClockTrigger(json: t.json), t, "round trip")
+        XCTAssertEqual(t.json["days"], .array([.string("monday"), .string("wednesday"), .string("friday")]))
+        XCTAssertEqual(t.display, "7:25:00")
+        XCTAssertTrue(t.isPM)
+        XCTAssertEqual(
+            t.daysSummary,
+            ["monday", "wednesday", "friday"].map { loc("inspector.wallClock.short.\($0)") }
+                .joined(separator: ", "))
+        t.days = Set(1...5)
+        XCTAssertEqual(t.daysSummary, loc("inspector.wallClock.weekdays"))
+        t.days = [0, 6]
+        XCTAssertEqual(t.daysSummary, loc("inspector.wallClock.weekend"))
+        for key in ["enabled", "time", "format", "days", "everyDay", "lastDay"] {
+            XCTAssertNotEqual(loc("inspector.wallClock.\(key)"), "inspector.wallClock.\(key)", key)
+        }
+    }
+
+    /// Paste Cue Properties lists the time-of-day trigger under Triggers (QLab 5, manual p. 154: its
+    /// sheet has a Triggers category); pasted, it replaces the cue's own and the cue keeps its hotkey.
+    func testPastePropertiesCarriesTheWallClockTriggerAndKeepsTheTargetsHotkey() throws {
+        var t = WallClockTrigger()
+        t.enabled = true
+        t.hours = 19
+        t.days = [5, 6]
+        let source = try Cue(json: memo("s", ["triggers": .object(["hotkey": .null, "wall_clock": t.json])]))
+        let k = try XCTUnwrap(KeyChord("k", []).hotkeyJSON)
+        let target = try Cue(
+            json: memo("t", ["triggers": .object(["hotkey": k, "hotkey_enabled": .bool(true)])]))
+        let offered = PasteProperty.offered(from: source, to: [target])
+        XCTAssertTrue(offered.contains { $0.category == .triggers && $0.properties.contains(.wallClock) })
+        let sent = PasteProperty.commands([.wallClock], from: source, to: [target])
+        XCTAssertEqual(sent.count, 1)
+        let value = sent.first?.json["property"]?["value"]
+        XCTAssertEqual(value?["wall_clock"], t.json)
+        XCTAssertEqual(value?["hotkey"], k, "the target keeps its hotkey")
+        XCTAssertEqual(value?["hotkey_enabled"], .bool(true))
+        XCTAssertNotEqual(loc(PasteProperty.wallClock.titleKey), PasteProperty.wallClock.titleKey)
+    }
+
+    /// Editing the hotkey keeps the cue's wall-clock trigger, and a wall-clock edit keeps the hotkey:
+    /// the triggers go to the engine whole.
+    func testAHotkeyEditKeepsTheWallClockTriggerAndAWallClockEditKeepsTheHotkey() throws {
+        var t = WallClockTrigger()
+        t.enabled = true
+        t.hours = 8
+        let k = KeyChord("k", []).hotkeyJSON
+        let cue = try Cue(
+            json: memo(
+                "a", ["triggers": .object(["hotkey": k ?? .null, "hotkey_enabled": .bool(true), "wall_clock": t.json])])
+        )
+        let hotkey = InspectorEdit.setTriggers(cue, hotkey: .some(nil))
+        XCTAssertEqual(hotkey.json["property"]?["value"]?["wall_clock"], t.json)
+        let clock = try XCTUnwrap(InspectorEdit.setWallClock(cue) { $0.minutes = 5 })
+        XCTAssertEqual(clock.json["property"]?["value"]?["hotkey"], k)
+        XCTAssertEqual(clock.json["property"]?["value"]?["wall_clock"]?["minutes"], .int(5))
+        XCTAssertNil(InspectorEdit.setWallClock(cue) { $0.minutes = 0 }, "no change, nothing sent")
+        XCTAssertThrowsError(try InspectorEdit.wallClockCommand(text: "25:00:00", cue: cue).get())
+        XCTAssertEqual(
+            try InspectorEdit.wallClockCommand(text: "10:30", cue: cue).get()?.json["property"]?["value"]?[
+                "wall_clock"],
+            {
+                var u = t
+                u.hours = 0
+                u.minutes = 10
+                u.seconds = 30
+                return u.json
+            }())
+    }
 }
 
 /// The Basics and Triggers flows of #633, each done as the operator does them in a workspace window
@@ -426,15 +527,39 @@ extension PlayheadFlowTests {
         XCTAssertEqual(try tint(cue), colour("red"), "reopened: the first colour")
     }
 
+    /// A new cue's hotkey is unticked with an empty field, on every path that makes a cue (the add menu and toolbar,
+    /// dropped files); a pasted copy keeps the switch it was copied with.
+    func testANewCueStoresItsHotkeyOffOnEveryCreationPath() async throws {
+        let memo = try await memos(1)
+        let dropped = try await tones(1)
+        for id in memo + dropped {
+            XCTAssertEqual(raw(id, "triggers")?["hotkey_enabled"], .bool(false), "a new cue's switch is off")
+            XCTAssertEqual(raw(id, "triggers")?["hotkey"], .null)
+        }
+        await select(memo)
+        inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off)
+        tick(inspector.hotkeyEnableCheck, true)
+        await assertEventually { self.raw(memo[0], "triggers")?["hotkey_enabled"] == .bool(true) }
+        await select(memo)
+        let before = Set(wc.cueList.roots.map(\.id))
+        _ = await wc.editor.copySelection(of: memo)
+        await wc.editor.paste(after: memo)
+        await assertEventually("the copy is added") { self.wc.cueList.roots.count == before.count + 1 }
+        let copy = try XCTUnwrap(wc.cueList.roots.map(\.id).first { !before.contains($0) })
+        XCTAssertEqual(raw(copy, "triggers")?["hotkey_enabled"], .bool(true), "a pasted copy keeps its source's switch")
+    }
+
     func testEachTriggerHasAnEnableBoxAnUntickedHotkeyKeepsItsKeyAndDoesNotFire() async throws {
         let cues = try await tones(3, seconds: 5)
         // Ticked first, then the key typed (QLab 5, manual p. 128): the key fires.
         await select([cues[2]])
         inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
         XCTAssertTrue(inspector.hotkeyEnableCheck.isEnabled, "usable before there is a key")
-        tick(inspector.hotkeyEnableCheck, false)
-        await assertEventually { self.raw(cues[2], "triggers")?["hotkey_enabled"] == .bool(false) }
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off, "a new cue's hotkey is unticked, its field empty")
+        XCTAssertEqual(inspector.hotkeyField.stringValue, "")
         tick(inspector.hotkeyEnableCheck, true)
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .on, "the tick stays while there is no key yet")
         await assertEventually { self.raw(cues[2], "triggers")?["hotkey_enabled"] == .bool(true) }
         XCTAssertTrue(inspector.record(KeyChord("j", [])))
         await assertEventually("J is set") { self.store.model?.cueHotkeys.map(\.cue) == [cues[2]] }
@@ -445,15 +570,21 @@ extension PlayheadFlowTests {
         // Unticked first, then the key typed: kept, faint, and it does not fire.
         await select([cues[0]])
         inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
-        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .on, "a new cue's trigger is on")
-        tick(inspector.hotkeyEnableCheck, false)
-        await assertEventually("switched off") { self.raw(cues[0], "triggers")?["hotkey_enabled"] == .bool(false) }
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off, "a new cue's trigger is off")
+        XCTAssertEqual(raw(cues[0], "triggers")?["hotkey_enabled"], .bool(false), "a new cue stores it off")
         XCTAssertTrue(inspector.record(KeyChord("k", [])))
         await assertEventually("K is kept") { self.raw(cues[0], "triggers")?["hotkey"] != .null }
         XCTAssertEqual(raw(cues[0], "triggers")?["hotkey_enabled"], .bool(false), "the key keeps the box's switch")
         XCTAssertEqual(inspector.hotkeyField.stringValue, "K", "the key is kept and shown")
         XCTAssertEqual(inspector.hotkeyField.textColor, .disabledControlTextColor, "drawn faint")
         XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off)
+        // Typing another key over a key that is off keeps it off.
+        XCTAssertTrue(inspector.record(KeyChord("u", [])))
+        await assertEventually("U replaces K") { self.raw(cues[0], "triggers")?["hotkey"]?["key"] == .string("u") }
+        XCTAssertEqual(raw(cues[0], "triggers")?["hotkey_enabled"], .bool(false), "a re-recorded key stays off")
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .off)
+        XCTAssertTrue(inspector.record(KeyChord("k", [])))
+        await assertEventually("K is back") { self.raw(cues[0], "triggers")?["hotkey"]?["key"] == .string("k") }
         // K is not a cue key now: the app does not take it and nothing starts.
         let sentBefore = wire.sent.count
         XCTAssertNotNil(app.handleKeyDown(try key("k", code: 40)), "the key is not taken")
@@ -462,6 +593,8 @@ extension PlayheadFlowTests {
         XCTAssertNil(state(cues[0]), "the cue did not start")
         // Nor does it clash: another cue may take K, and then the first cannot be switched back on.
         await select([cues[1]])
+        tick(inspector.hotkeyEnableCheck, true)
+        await assertEventually { self.raw(cues[1], "triggers")?["hotkey_enabled"] == .bool(true) }
         XCTAssertTrue(inspector.record(KeyChord("k", [])), "no clash with a key that is off")
         await assertEventually { self.store.model?.cueHotkeys.map(\.cue) == [cues[1], cues[2]] }
         await select([cues[0]])
@@ -612,7 +745,8 @@ extension PlayheadFlowTests {
         XCTAssertEqual(Double(again / full), 1, accuracy: 0.05, "no duck left behind")
     }
 
-    /// The Triggers tab holds the hotkey, its box and the others' controls: no OSC address field.
+    /// The Triggers tab holds the hotkey, its box, the time-of-day trigger's time and the others'
+    /// controls: no OSC address field.
     func testThePerCueOscAddressFieldIsGoneFromTheTriggersTab() async throws {
         let cues = try await memos(1)
         await select(cues)
@@ -624,8 +758,8 @@ extension PlayheadFlowTests {
         XCTAssertEqual(
             Set(fields(tab).map { $0.accessibilityIdentifier() }),
             [
-                AX.inspectorHotkey, "inspector-fade-others-time", "inspector-duck-others-db",
-                "inspector-duck-others-time",
+                AX.inspectorHotkey, AX.inspectorWallClockTime, "inspector-fade-others-time",
+                "inspector-duck-others-db", "inspector-duck-others-time",
             ])
     }
 
@@ -675,6 +809,9 @@ extension PlayheadFlowTests {
             else { return XCTFail("switch") }
         }
         let third = try await memos(1)
+        // The third has no key but its box is ticked (ticked first, the key typed after).
+        guard case .success = await store.send(command: .setProperty(third[0], .triggers(hotkey: nil, enabled: true)))
+        else { return XCTFail("switch") }
         await select(cues + third)
         inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
         XCTAssertEqual(inspector.hotkeyEnableCheck.state, .mixed)
@@ -728,5 +865,204 @@ extension PlayheadFlowTests {
         let after = cues.compactMap { store.model?.cue($0) }.map(InspectorEdit.fadeOthers)
         XCTAssertEqual(after.map(\.duration), [1, 4], "each keeps its own time")
         XCTAssertEqual(after.map(\.enabled), [false, true], "and its own box")
+    }
+}
+
+/// The wall-clock trigger's flows (#784), on the real engine's stepped virtual device: its clock reads
+/// 2026-01-01 00:00:00 (a Thursday) plus the device time the test plays, in UTC, so a time of a few
+/// seconds past midnight is reached by playing that long.
+extension PlayheadFlowTests {
+    private var wallInspector: InspectorViewController { wc.inspector }
+
+    private func waits(_ count: Int) async throws -> [ModelID] {
+        var ids: [ModelID] = []
+        for _ in 0..<count {
+            let made = await wc.editor.add(.wait, after: ids.last.map { [$0] })
+            ids.append(try XCTUnwrap(made, "wait added"))
+        }
+        for id in ids {
+            guard case .success = await store.send(command: .setProperty(id, .duration(600))) else {
+                throw TestEngineError.refused("duration")
+            }
+        }
+        await assertEventually("the rows are drawn") { ids.allSatisfy { self.wc.cueList.node($0) != nil } }
+        return ids
+    }
+
+    private func showTriggers(_ ids: [ModelID]) async {
+        wc.cueList.selectAsUser(ids)
+        await assertEventually("the inspector shows them") { self.wallInspector.selection == ids }
+        wallInspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+    }
+
+    private func typeTime(_ text: String) throws {
+        let field = wallInspector.wallClockField
+        XCTAssertTrue(field.isEnabled)
+        XCTAssertFalse(field.isHiddenOrHasHiddenAncestor || field.window == nil, "the field is on screen")
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(field))
+        if field.currentEditor() == nil { field.selectText(nil) }
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        editor.selectAll(nil)
+        editor.insertText(text, replacementRange: editor.selectedRange())
+        editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+    }
+
+    private func clock(_ id: ModelID) -> WallClockTrigger {
+        WallClockTrigger(json: store.model?.cue(id)?.raw["triggers"]?["wall_clock"])
+    }
+
+    private func rowState(_ id: ModelID) -> String? {
+        let ov = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
+        guard let cell = ov.view(atColumn: col, row: ov.row(forItem: node), makeIfNecessary: true) as? CueCell,
+            !cell.images[1].isHidden
+        else { return nil }
+        return cell.images[1].accessibilityLabel()
+    }
+
+    /// A day chosen from the days menu, as the operator picks it.
+    private func chooseDay(_ day: Int) throws {
+        let popup = wallInspector.wallClockDaysPopup
+        let item = try XCTUnwrap(popup.itemArray.dropFirst().first { $0.representedObject as? Int == day })
+        popup.select(item)
+        XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+    }
+
+    /// Flow: a cue selected, Triggers tab: the box, the time, the clock and the days button are there,
+    /// the box off, every day.
+    func testACueSelectedTriggersTabAWallClockControlIsPresentAndOffByDefault() async throws {
+        let ids = try await waits(1)
+        await showTriggers(ids)
+        let i = wallInspector
+        for c in [i.wallClockCheck, i.wallClockField, i.wallClockFormatPopup, i.wallClockDaysPopup] as [NSControl] {
+            XCTAssertFalse(c.isHiddenOrHasHiddenAncestor, "\(c) is on the tab")
+            XCTAssertTrue(c.isEnabled)
+        }
+        XCTAssertEqual(i.wallClockCheck.state, .off)
+        XCTAssertEqual(i.wallClockField.stringValue, "00:00:00")
+        XCTAssertEqual(i.wallClockField.textColor, .disabledControlTextColor, "drawn faint while off")
+        XCTAssertEqual(i.wallClockFormatPopup.titleOfSelectedItem, loc("inspector.wallClock.format.24h"))
+        XCTAssertEqual(
+            i.wallClockDaysPopup.titleOfSelectedItem ?? i.wallClockDaysPopup.title,
+            loc("inspector.wallClock.everyDay"))
+        XCTAssertNil(store.model?.cue(ids[0])?.raw["triggers"]?["wall_clock"], "a new cue stores none: off")
+    }
+
+    /// Flow: the trigger enabled for a time one minute ahead: at that second the cue starts as GO
+    /// would and the row shows it running; it is not started again in that second or after.
+    func testEnableItForATimeOneMinuteAheadTheCueStartsAtThatSecondAndOnlyOnce() async throws {
+        let ids = try await waits(2)
+        await showTriggers([ids[1]])
+        try typeTime("1:00")
+        await assertEventually("the time is stored") { self.clock(ids[1]).minutes == 1 }
+        wallInspector.wallClockCheck.performClick(nil)
+        await assertEventually("the trigger is on") { self.clock(ids[1]).enabled }
+        let playhead = store.playheads[list]
+        try await play(59.5)
+        XCTAssertNil(rowState(ids[1]), "not before its second")
+        try await play(0.6)
+        await assertEventually("the row shows it running") { self.rowState(ids[1]) == loc("cue.state.running") }
+        XCTAssertNil(rowState(ids[0]), "the other cue is left alone")
+        XCTAssertEqual(store.playheads[list], playhead, "the playhead does not move")
+        // A second on it still runs (the engine's tests count its one voice).
+        try await play(1)
+        XCTAssertEqual(rowState(ids[1]), loc("cue.state.running"))
+    }
+
+    /// Flow: days limited to other days: at the time the cue does not start; on a chosen day it does.
+    /// The virtual clock's day is a Thursday.
+    func testDayOfWeekLimitedToOtherDaysTheCueDoesNotStartOnAChosenDayItDoes() async throws {
+        let ids = try await waits(2)
+        for id in ids {
+            await showTriggers([id])
+            try typeTime("0:30")
+            await assertEventually { self.clock(id).seconds == 30 }
+            wallInspector.wallClockCheck.performClick(nil)
+            await assertEventually { self.clock(id).enabled }
+        }
+        // The first fires on Thursdays only; the second on every day but Thursday.
+        await showTriggers([ids[0]])
+        for day in [0, 1, 2, 3, 5, 6] {
+            try chooseDay(day)
+            await assertEventually("\(day) off") { !self.clock(ids[0]).days.contains(day) }
+        }
+        XCTAssertEqual(
+            wallInspector.wallClockDaysPopup.itemArray.first?.title, loc("inspector.wallClock.short.thursday"))
+        // Its last day cannot be unticked.
+        try chooseDay(4)
+        XCTAssertEqual(wallInspector.messageLabel.stringValue, loc("inspector.wallClock.lastDay"))
+        await showTriggers([ids[1]])
+        try chooseDay(4)
+        await assertEventually("Thursday off") { self.clock(ids[1]).days == [0, 1, 2, 3, 5, 6] }
+        try await play(31)
+        await assertEventually("the Thursday cue runs") { self.rowState(ids[0]) == loc("cue.state.running") }
+        XCTAssertNil(rowState(ids[1]), "the cue for other days did not start")
+    }
+
+    /// Flow: 10:30 typed is ten minutes thirty seconds past midnight: the field shows 00:10:30 and
+    /// keeps it when the cue is shown again. A time out of range is refused and the field put back.
+    func testTimeTypedAs1030IsReadAs001030AndTheInspectorKeepsItAfterReselecting() async throws {
+        let ids = try await waits(2)
+        await showTriggers([ids[0]])
+        try typeTime("10:30")
+        XCTAssertEqual(wallInspector.wallClockField.stringValue, "00:10:30", "shown as read at once")
+        await assertEventually("stored") { self.clock(ids[0]).minutes == 10 && self.clock(ids[0]).seconds == 30 }
+        await showTriggers([ids[1]])
+        XCTAssertEqual(wallInspector.wallClockField.stringValue, "00:00:00")
+        await showTriggers([ids[0]])
+        XCTAssertEqual(wallInspector.wallClockField.stringValue, "00:10:30")
+        try typeTime("25:00:00")
+        XCTAssertEqual(wallInspector.messageLabel.stringValue, loc("inspector.invalid.wallClock"))
+        XCTAssertEqual(wallInspector.wallClockField.stringValue, "00:10:30", "put back")
+        // PM puts it in the afternoon, shown on the 12-hour clock; 24-hour shows 12:10:30.
+        let pm = try XCTUnwrap(InspectorViewController.wallClockFormats.firstIndex(of: "pm"))
+        wallInspector.wallClockFormatPopup.selectItem(at: pm)
+        XCTAssertTrue(
+            wallInspector.wallClockFormatPopup.sendAction(
+                wallInspector.wallClockFormatPopup.action, to: wallInspector.wallClockFormatPopup.target))
+        await assertEventually("afternoon") { self.clock(ids[0]).hours == 12 && self.clock(ids[0]).twelveHour }
+        XCTAssertEqual(wallInspector.wallClockField.stringValue, "12:10:30")
+        try typeTime("7:25:00")
+        await assertEventually("7:25 PM") { self.clock(ids[0]).hours == 19 }
+        XCTAssertEqual(wallInspector.wallClockField.stringValue, "7:25:00")
+        wallInspector.wallClockFormatPopup.selectItem(at: 0)
+        _ = wallInspector.wallClockFormatPopup.sendAction(
+            wallInspector.wallClockFormatPopup.action, to: wallInspector.wallClockFormatPopup.target)
+        await assertEventually { !self.clock(ids[0]).twelveHour }
+        XCTAssertEqual(wallInspector.wallClockField.stringValue, "19:25:00")
+    }
+
+    /// Several cues: the box shows mixed and sets every cue; a typed time goes to each; one undo puts
+    /// them back. Show Mode locks every wall-clock control, and the trigger still fires in it.
+    func testSeveralCuesShowModeLocksAndUndoForTheWallClockTrigger() async throws {
+        let ids = try await waits(2)
+        await showTriggers([ids[0]])
+        wallInspector.wallClockCheck.performClick(nil)
+        await assertEventually { self.clock(ids[0]).enabled }
+        await showTriggers(ids)
+        XCTAssertEqual(wallInspector.wallClockCheck.state, .mixed)
+        wallInspector.wallClockCheck.performClick(nil)
+        await assertEventually("both on") { ids.allSatisfy { self.clock($0).enabled } }
+        try typeTime("0:20")
+        await assertEventually("both at 00:00:20") { ids.allSatisfy { self.clock($0).seconds == 20 } }
+        await wc.editor.undo()
+        await assertEventually("one undo puts both back") { ids.allSatisfy { self.clock($0).seconds == 0 } }
+        await wc.editor.redo()
+        await assertEventually { ids.allSatisfy { self.clock($0).seconds == 20 } }
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        await showTriggers([ids[0]])
+        for c in [
+            wallInspector.wallClockCheck, wallInspector.wallClockField, wallInspector.wallClockFormatPopup,
+            wallInspector.wallClockDaysPopup,
+        ] as [NSControl] {
+            XCTAssertFalse(c.isEnabled, "locked in Show Mode")
+        }
+        try await play(21)
+        await assertEventually("fired in Show Mode") {
+            ids.allSatisfy { self.rowState($0) == loc("cue.state.running") }
+        }
+        await wc.requestShowMode(false)
     }
 }

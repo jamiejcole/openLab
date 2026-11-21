@@ -8,14 +8,15 @@ use openlab_core::protocol::{
     DeviceEntry, ErrorBody, ErrorCode, LogLevel, RuntimeChange, WireWarning,
 };
 use openlab_core::{
-    BrokenReason, CueId, CueKind, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES,
-    MIN_BUFFER_FRAMES, PatchResolution,
+    BrokenReason, CueId, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES, MIN_BUFFER_FRAMES,
+    PatchId, PatchResolution, RunId, SYSTEM_OUTPUT, SampleTime,
 };
 
 use super::devices::{Device, DeviceAnswer, DeviceEvent, OutputKey};
 use super::outputs::Output;
+use super::transport::Scope;
 use super::voices::Effects;
-use super::{Backend, Control, DocCx, Engine, notice};
+use super::{Backend, Control, DocCx, Engine, device_notice, notice};
 
 impl Control {
     pub(super) fn poll_device(&mut self) {
@@ -70,6 +71,7 @@ impl Control {
                 DeviceEvent::Restored => {
                     // It plays: no reason it could not be used holds any more.
                     self.eng.unusable.remove(&name);
+                    self.eng.drop_held_meters(key);
                     self.device_restored(&name, "is back");
                     self.eng.check_buffer(key);
                 }
@@ -130,7 +132,14 @@ impl Control {
                         self.eng
                             .unusable
                             .insert(name.clone(), format!("it could not be opened ({error})"));
-                        self.each_doc(|cx| cx.doc.warnings_dirty = true);
+                        // A cue waiting to move there stops, as on a lost device.
+                        self.each_doc(|cx| {
+                            cx.doc.warnings_dirty = true;
+                            let now = cx.now();
+                            for input in cx.follow_devices(now) {
+                                cx.feed(input, now);
+                            }
+                        });
                     }
                     self.eng.log_device(
                         LogLevel::Warn,
@@ -217,7 +226,7 @@ impl Control {
         self.each_doc(|cx| {
             let n = counts.next().unwrap_or(0);
             cx.runtime(vec![RuntimeChange::Warning {
-                warning: notice("device_lost", text(n), None),
+                warning: device_notice("device_lost", text(n), name),
             }]);
         });
     }
@@ -241,13 +250,31 @@ impl Control {
     /// Opens, as outputs of their own, the listed devices patch mappings name that are not
     /// open yet (after a mapping or list change). A device opens on its own thread without
     /// holding up the loop; its patches resolve `device_missing` until it plays. It runs at the
-    /// primary's rate: a device that cannot is not opened (warned once), and its patches stay
-    /// `device_missing`. Only a device-backed engine with an output mixer configured opens
-    /// further devices.
+    /// primary's rate when it can, else at a rate of its own, with as many outputs as it has (at
+    /// most 64): its mixer is built for it. A device that offers no rate openLab can play is not
+    /// opened (warned once), and its patches stay `device_missing`. Only a device-backed engine
+    /// with an output mixer configured opens further devices.
     pub(super) fn open_outputs(&mut self) {
         if !std::mem::take(&mut self.eng.outputs_dirty) {
             return;
         }
+        let mut before: Vec<String> = self.eng.unusable.keys().cloned().collect();
+        self.open_wanted_outputs();
+        // A device found unusable now: a cue waiting to move there stops, as on a lost device.
+        let mut after: Vec<String> = self.eng.unusable.keys().cloned().collect();
+        before.sort();
+        after.sort();
+        if after.iter().any(|n| !before.contains(n)) {
+            self.each_doc(|cx| {
+                let now = cx.now();
+                for input in cx.follow_devices(now) {
+                    cx.feed(input, now);
+                }
+            });
+        }
+    }
+
+    fn open_wanted_outputs(&mut self) {
         let Some(mixer_config) = self.eng.config.output_mixer else {
             return;
         };
@@ -255,15 +282,20 @@ impl Control {
             return;
         };
         let listed = primary.listed().to_vec();
+        let system = self.eng.system_output();
         let mut wanted: Vec<String> = Vec::new();
         for doc in &self.docs {
             let ws = doc.model.ws();
             for patch in &ws.patches {
-                if let Some(m) = self.eng.config.machine.patch_entry(ws.id, patch.id)
-                    && !m.device.is_empty()
-                    && !wanted.contains(&m.device)
+                if let Some(name) = self
+                    .eng
+                    .config
+                    .machine
+                    .patch_entry(ws.id, patch.id)
+                    .and_then(|m| m.device_for(system.as_deref()))
+                    && !wanted.iter().any(|w| w == name)
                 {
-                    wanted.push(m.device.clone());
+                    wanted.push(name.to_owned());
                 }
             }
         }
@@ -276,25 +308,28 @@ impl Control {
             };
             // Tried again: a reason from an earlier try no longer holds unless it is found again.
             self.eng.unusable.remove(&name);
-            let rate = mixer_config.sample_rate;
-            if !device
-                .configs
-                .iter()
-                .any(|c| (c.min_rate..=c.max_rate).contains(&rate))
+            let primary_rate = mixer_config.sample_rate;
+            let (rate, channels) = match openlab_audio::choose_output(&device.configs, primary_rate)
             {
-                self.output_warning(
-                    &name,
-                    format!(
-                        "audio device \"{name}\" cannot play at {rate} Hz, the rate of the \
-                         primary device: the patches mapped to it cannot play"
-                    ),
-                );
-                self.eng.unusable.insert(
-                    name.clone(),
-                    format!("it cannot play at {rate} Hz, the rate of the clock device"),
-                );
-                continue;
-            }
+                Ok(chosen) => chosen,
+                Err(e) => {
+                    let why = match e {
+                        openlab_audio::NegotiateError::SampleRate { .. } => {
+                            "it offers no sample rate openLab can play at (8 to 384 kHz)"
+                        }
+                        _ => "it offers no output format openLab can play",
+                    };
+                    self.output_warning(
+                        &name,
+                        format!(
+                            "audio device \"{name}\" cannot be used: {why}: the patches mapped \
+                             to it cannot play"
+                        ),
+                    );
+                    self.eng.unusable.insert(name.clone(), why.to_owned());
+                    continue;
+                }
+            };
             if self.eng.outputs.len() >= super::outputs::MAX_OUTPUTS {
                 self.output_warning(
                     &name,
@@ -313,7 +348,12 @@ impl Control {
                 );
                 continue;
             }
-            let (ctl, mixer) = match openlab_audio::Mixer::new(mixer_config) {
+            let config = openlab_audio::MixerConfig {
+                sample_rate: rate,
+                output_channels: usize::from(channels),
+                ..mixer_config
+            };
+            let (ctl, mixer) = match openlab_audio::Mixer::new(config) {
                 Ok(m) => m,
                 Err(e) => {
                     self.output_warning(
@@ -347,11 +387,23 @@ impl Control {
                         mixer: ctl,
                         backend: Backend::Device(Box::new(d)),
                     };
-                    if self.eng.outputs.add(output).is_some() {
+                    if let Some(key) = self.eng.outputs.add(output) {
+                        self.eng.patches.set_width(key, usize::from(channels));
                         self.eng.size_meters();
+                        let at = if rate == primary_rate {
+                            String::new()
+                        } else {
+                            format!(
+                                " at {rate} Hz (it cannot play at the primary device's \
+                                 {primary_rate} Hz)"
+                            )
+                        };
                         self.eng.log_device(
                             LogLevel::Info,
-                            format!("opening audio device \"{name}\" for the patches mapped to it"),
+                            format!(
+                                "opening audio device \"{name}\"{at} with {channels} outputs for \
+                                 the patches mapped to it"
+                            ),
                         );
                     }
                 }
@@ -451,7 +503,9 @@ impl Control {
                 let voices = cx.eng.outputs.on_output(key, cx.doc.voices.playing_ids());
                 let mut fx = Effects::default();
                 for voice in voices {
-                    cx.doc.voices.lost(voice, at, &mut fx);
+                    let model = &cx.doc.model;
+                    let held = |cue, run| model.holds_run(cue, run);
+                    cx.doc.voices.lost(voice, at, &held, &mut fx);
                 }
                 let now = cx.now();
                 cx.follow(fx, now);
@@ -478,12 +532,17 @@ impl Control {
     /// engine takes the new lookahead before the engine's block changes (seams note (b)); if
     /// one cannot, they all keep the old one.
     fn follow_block(&mut self) {
+        // In frames of the master clock: a device at another rate has blocks as long in time.
+        let master = self.eng.rate.get();
         let Some(b) = self
             .eng
             .outputs
             .iter()
             .filter(|(key, o)| *key == 0 || o.is_up())
-            .filter_map(|(_, o)| o.block())
+            .filter_map(|(_, o)| {
+                o.block()
+                    .map(|b| master_block(b, o.mixer.sample_rate(), master))
+            })
             .max()
             .filter(|&b| b > 0 && b != self.eng.block)
         else {
@@ -525,11 +584,13 @@ impl DocCx<'_> {
     /// [`Control::device_lost`]): the patches on it are reported missing (loaded cues on them
     /// unload, starts are refused as broken, idle cues show broken), every audio run with a
     /// voice on it, or whose patch is on it, ends at once with `ActionFailed { device_lost }`
-    /// (hard stop, no fade; the voice and its stream are released, auto-follow never fires),
-    /// and every voice the doc has in that device's mixer is stopped, so nothing sounds, or
-    /// resumes, when the device returns. When it was the `last` device that played, every
-    /// audio run fails and every other active run stops too (`Input::DeviceLost`): nothing
-    /// scheduled before the loss may fire after it. Returns the runs stopped.
+    /// (hard stop, no fade; the voice and its stream are released, auto-follow never fires;
+    /// a voice of such a cue the engine no longer owns is stopped on whichever device it
+    /// plays), and every voice the doc has in that device's mixer is stopped, so nothing
+    /// sounds, or resumes, when the device returns. When it was the `last` device that
+    /// played, every audio run fails and every other active run stops too
+    /// (`Input::DeviceLost`): nothing scheduled before the loss may fire after it. Returns the
+    /// runs stopped.
     fn device_lost(&mut self, key: OutputKey, name: &str, last: bool) -> usize {
         let now = self.now();
         for input in self.sync_patches(false) {
@@ -559,10 +620,7 @@ impl DocCx<'_> {
                     | CueState::Fading
                     | CueState::Stopping
             ) && let Some(run) = self.doc.model.engine().run_of(cue)
-                && matches!(
-                    self.doc.model.ws().find_cue(cue).map(|c| &c.kind),
-                    Some(CueKind::Audio { .. })
-                )
+                && self.cue_patch(cue).is_some()
                 && (last || self.cue_on_device(cue, name))
                 && !runs.contains(&(cue, run))
             {
@@ -586,6 +644,9 @@ impl DocCx<'_> {
                 },
                 now,
             );
+            // The end of its sound the engine no longer owns (`fail_on_unplayable`), when it
+            // plays on another device than the lost one: the cue was moved here from there.
+            self.silence_orphans(Scope::Cue(cue), now);
         }
         for item in stood {
             if self.doc.model.engine().is_lost(item.0) {
@@ -611,6 +672,11 @@ impl DocCx<'_> {
             .eng
             .outputs
             .on_output(key, self.doc.voices.playing_ids());
+        self.doc.voices.unmeter(&voices);
+        // A voice whose end was handled since the last meter read still has its last peaks
+        // there, to be reported once more: rendered before the loss, they are not.
+        let ended = (self.eng.outputs).on_output(key, self.doc.voices.gone_ids());
+        self.doc.voices.unmeter(&ended);
         let commands = voices
             .into_iter()
             .map(|voice| {
@@ -624,23 +690,187 @@ impl DocCx<'_> {
         failed
     }
 
-    /// Whether audio cue `cue`'s patch is mapped to device `name` on this machine.
+    /// A show voice whose cue's patch now plays on another device than the voice (its device
+    /// was changed, the cue put on a patch on another device, or a patch on the system output
+    /// followed a new system default) moves there at once: returns `Input::DeviceMoved` for
+    /// each, to feed after the patch resolutions. One whose new device is still opening plays
+    /// on where it is until it plays (a later sync moves it). One whose new device is not
+    /// connected or cannot be used stops as on a lost device, with the reason: its cue shows
+    /// paused with its time standing still (as QLab 5).
+    pub(super) fn follow_devices(&mut self, now: SampleTime) -> Vec<Input> {
+        let doc = self.doc.id;
+        let mut moved = Vec::new();
+        let mut lost: Vec<(CueId, RunId, String, Option<String>)> = Vec::new();
+        for (voice, cue, run) in self.doc.voices.sounding() {
+            // A voice whose run has ended or failed (its stop on its way) is no one's to move or
+            // stop again: it would only repeat the notice.
+            if self.doc.model.engine().run_of(cue) != Some(run) {
+                continue;
+            }
+            let Some(patch) = self.cue_patch(cue) else {
+                continue;
+            };
+            let patch = &patch;
+            let here = self.eng.outputs.output_of(voice);
+            match self.eng.patches.resolution(doc, *patch) {
+                Some(PatchResolution::Mapped { .. }) => {
+                    let there = self
+                        .eng
+                        .patches
+                        .mixer_patch(doc, *patch)
+                        .and_then(|slot| self.eng.patches.slot_output(slot));
+                    if there.is_some_and(|t| t != here) {
+                        moved.push(Input::DeviceMoved { cue, run });
+                    }
+                }
+                Some(
+                    r @ (PatchResolution::DeviceMissing { device }
+                    | PatchResolution::ChannelsMissing { device, .. }),
+                ) => {
+                    // Its own device away: the loss deals with it.
+                    if self
+                        .eng
+                        .outputs
+                        .get(here)
+                        .is_some_and(|o| &o.name == device)
+                    {
+                        continue;
+                    }
+                    let listed = self.eng.device_list().iter().any(|d| &d.name == device);
+                    let why = match r {
+                        PatchResolution::ChannelsMissing {
+                            needed, available, ..
+                        } => Some(format!(
+                            "the patch needs output {needed}, openLab can use {available}"
+                        )),
+                        _ => self.eng.unusable.get(device).cloned(),
+                    };
+                    // Listed with nothing against it: its first open is under way.
+                    if listed && why.is_none() {
+                        continue;
+                    }
+                    let why = if listed { why } else { None };
+                    lost.push((cue, run, device.clone(), why));
+                }
+                _ => {}
+            }
+        }
+        if !lost.is_empty() {
+            self.fail_on_unplayable(lost, now);
+        }
+        moved
+    }
+
+    /// Runs whose voice was to move to a device that is not connected or cannot be used stop
+    /// as on a lost device (`ActionFailed { device_lost }`: a hard stop, the cue shows paused
+    /// with its time frozen, and any voice of its the engine no longer owns is stopped too),
+    /// with a `device_lost` notice and log naming the device and why.
+    fn fail_on_unplayable(
+        &mut self,
+        lost: Vec<(CueId, RunId, String, Option<String>)>,
+        now: SampleTime,
+    ) {
+        let stood = self.doc.voices.progress(self.eng.rendered());
+        let engine = self.doc.model.engine();
+        self.doc
+            .lost_progress
+            .retain(|(cue, ..)| engine.is_lost(*cue));
+        let mut devices: Vec<(String, Option<String>, usize)> = Vec::new();
+        for (cue, run, device, why) in lost {
+            self.feed(
+                Input::ActionFailed {
+                    cue,
+                    run,
+                    reason: BrokenReason::DeviceLost,
+                },
+                now,
+            );
+            // The engine ends an action whose length it knows up to a block ahead: a cue in
+            // its post-wait can still have the end of its sound playing, on a device that is
+            // still there, which the engine has no voice left to stop for.
+            self.silence_orphans(Scope::Cue(cue), now);
+            match devices.iter_mut().find(|(d, ..)| *d == device) {
+                Some((.., n)) => *n += 1,
+                None => devices.push((device, why, 1)),
+            }
+        }
+        for item in stood {
+            if self.doc.model.engine().is_lost(item.0) {
+                self.doc.lost_progress.retain(|(cue, ..)| *cue != item.0);
+                self.doc.lost_progress.push(item);
+            }
+        }
+        self.doc.last_progress = None;
+        for (device, why, n) in devices {
+            let state = match why {
+                Some(why) => format!("cannot be used ({why})"),
+                None => "is not connected".to_owned(),
+            };
+            let place = if device == SYSTEM_OUTPUT {
+                "the system output, with no output device selected on the Mac,".to_owned()
+            } else {
+                format!("audio device \"{device}\", which {state},")
+            };
+            let text = format!(
+                "{n} cue(s) playing on a patch moved to {place} stopped; they start again from \
+                 the beginning with GO once it plays"
+            );
+            self.eng.log_device(LogLevel::Error, text.clone());
+            self.runtime(vec![RuntimeChange::Warning {
+                warning: device_notice("device_lost", text, &device),
+            }]);
+        }
+        self.doc.warnings_dirty = true;
+    }
+
+    /// Whether audio cue `cue`'s patch is mapped to device `name` on this machine (by name, or
+    /// on the system output while `name` is the default output device).
     fn cue_on_device(&self, cue: CueId, name: &str) -> bool {
         let ws = self.doc.model.ws();
-        match ws.find_cue(cue).map(|c| &c.kind) {
-            Some(CueKind::Audio { patch, .. }) => self
-                .eng
-                .config
-                .machine
-                .patch_entry(ws.id, *patch)
-                .is_some_and(|m| m.device == name),
-            _ => false,
+        let system = self.eng.system_output();
+        match self.cue_patch(cue) {
+            Some(patch) => {
+                self.eng
+                    .config
+                    .machine
+                    .patch_entry(ws.id, patch)
+                    .and_then(|m| m.device_for(system.as_deref()))
+                    == Some(name)
+            }
+            None => false,
         }
     }
 
+    /// Whether one of this workspace's patches plays on output `key`: mapped to a device that
+    /// is there, its mixer patch on that output.
+    fn plays_on(&self, key: OutputKey) -> bool {
+        let (doc, patches) = (self.doc.id, &self.eng.patches);
+        self.doc.model.ws().patches.iter().any(|p| {
+            matches!(
+                patches.resolution(doc, p.id),
+                Some(PatchResolution::Mapped { .. })
+            ) && patches
+                .mixer_patch(doc, p.id)
+                .and_then(|slot| patches.slot_output(slot))
+                == Some(key)
+        })
+    }
+
+    /// Whether some cue's sound plays on `patch`: an Audio cue, or a Video cue not known to
+    /// have nothing to hear (as the pre-show check counts a patch's users).
+    fn patch_in_use(&self, patch: PatchId) -> bool {
+        self.doc
+            .model
+            .engine()
+            .cues_on_patch(patch)
+            .any(|c| !self.known_silent(c))
+    }
+
     /// The device's notices: an outage, a mixer that could not be recovered, patches that map
-    /// more device channels than the device has (`outputs_dropped`), patches with no free mixer
-    /// slot (`mixer_patches_exhausted`).
+    /// more device channels than the device has (`outputs_dropped`), patches whose crosspoints
+    /// or device-output levels name device outputs it lacks (`patch_routing_beyond_device`),
+    /// patches with no free mixer slot (`mixer_patches_exhausted`). Every notice about one
+    /// patch names it in `patch`.
     pub(super) fn device_warnings(&self, list: &mut Vec<WireWarning>) {
         let eng = &*self.eng;
         eng.stage_faults
@@ -651,32 +881,32 @@ impl DocCx<'_> {
             };
             let name = &output.name;
             if let Some(why) = d.unrecoverable() {
-                list.push(notice(
+                list.push(device_notice(
                     "device_unrecoverable",
                     format!(
                         "audio device \"{name}\": {why}; sound cannot come back: restart \
                          openLab"
                     ),
-                    None,
+                    name,
                 ));
             } else if d.is_down() && d.has_opened() && !d.is_resuming() {
-                list.push(notice(
+                list.push(device_notice(
                     "device_lost",
                     format!(
                         "audio device \"{name}\" is lost: the cues that played on it were \
                          stopped, and cues on it cannot start; reconnecting"
                     ),
-                    None,
+                    name,
                 ));
             }
             if d.is_stalled() && !d.is_down() {
-                list.push(notice(
+                list.push(device_notice(
                     "device_stalled",
                     format!(
                         "audio device \"{name}\" has stopped calling back: it is treated as \
                          lost if it stays silent"
                     ),
-                    None,
+                    name,
                 ));
             }
             if d.list_stuck() {
@@ -689,20 +919,49 @@ impl DocCx<'_> {
                 ));
             }
             if d.info().outputs_dropped && !d.is_down() && d.has_opened() {
-                list.push(notice(
+                list.push(device_notice(
                     "outputs_dropped",
                     format!(
                         "audio device \"{name}\" has {} output channel(s), fewer than the {} \
                          the show was opened with: the others are not heard",
                         d.info().channels,
-                        self.eng.device_outputs
+                        output.mixer.device_outputs()
                     ),
-                    None,
+                    name,
                 ));
             }
         }
+        // Dropouts on a device this workspace plays on: one entry per device while they go
+        // on, with how many so far.
+        for (key, output) in self.eng.outputs.iter() {
+            let Some(count) = self
+                .eng
+                .observe
+                .sound
+                .dropouts
+                .get(&key)
+                .and_then(|d| d.count())
+            else {
+                continue;
+            };
+            if !self.plays_on(key) {
+                continue;
+            }
+            let name = &output.name;
+            list.push(WireWarning::Notice {
+                code: "audio_dropouts".to_owned(),
+                message: format!(
+                    "audio device \"{name}\" dropped out {count} time(s): gaps in its sound"
+                ),
+                cue: None,
+                device: Some(name.clone()),
+                patch: None,
+                count: Some(count),
+            });
+        }
         let ws_id = self.doc.model.ws().id;
         for patch in &self.doc.model.ws().patches {
+            let from = list.len();
             match self.eng.patches.resolution(self.doc.id, patch.id) {
                 // A listed device that cannot be used: the patch says why. One still opening
                 // (no reason yet) resolves the same way for a moment, and is not a problem.
@@ -710,11 +969,32 @@ impl DocCx<'_> {
                     if self.eng.unusable.contains_key(device) =>
                 {
                     let why = self.eng.unusable.get(device).cloned().unwrap_or_default();
-                    list.push(notice(
+                    list.push(device_notice(
                         "patch_device_unusable",
                         format!(
                             "patch \"{}\": audio device \"{device}\" cannot be used: {why}: its \
                              cues cannot play",
+                            patch.name
+                        ),
+                        device,
+                    ));
+                }
+                // On the system output with no output device selected: no device to name, so
+                // not a device's entry (the settings table words it the same).
+                Some(PatchResolution::DeviceMissing { device })
+                    if device == SYSTEM_OUTPUT
+                        && self
+                            .eng
+                            .config
+                            .machine
+                            .patch_entry(ws_id, patch.id)
+                            .is_some_and(|m| m.system) =>
+                {
+                    list.push(notice(
+                        "patch_no_system_output",
+                        format!(
+                            "Patch \"{}\" is on the system output, but the Mac has no output \
+                             device selected: its cues cannot play",
                             patch.name
                         ),
                         None,
@@ -723,24 +1003,26 @@ impl DocCx<'_> {
                 Some(PatchResolution::DeviceMissing { device })
                     if !self.eng.device_list().iter().any(|d| &d.name == device) =>
                 {
-                    list.push(notice(
+                    list.push(device_notice(
                         "patch_device_missing",
                         format!(
                             "patch \"{}\": audio device \"{device}\" is not connected: its cues \
                              cannot play",
                             patch.name
                         ),
-                        None,
+                        device,
                     ));
                 }
-                // The operator chose no device for it (a patch never mapped gets the default).
+                // The operator chose no device for it (a patch never mapped gets the default),
+                // and some cue plays on it: a spare patch with no device stops nothing.
                 Some(PatchResolution::Unmapped)
                     if self
                         .eng
                         .config
                         .machine
                         .patch_entry(ws_id, patch.id)
-                        .is_some_and(|m| m.device.is_empty()) =>
+                        .is_some_and(|m| m.is_none())
+                        && self.patch_in_use(patch.id) =>
                 {
                     list.push(notice(
                         "patch_no_device",
@@ -759,8 +1041,8 @@ impl DocCx<'_> {
                 available,
             }) = self.eng.patches.resolution(self.doc.id, patch.id)
             {
-                // The device itself may have the channels: every device's mixer has only as
-                // many outputs as the primary's (#654), so channels beyond those cannot be used.
+                // The device itself may have the channels: openLab uses at most 64 outputs of a
+                // device (the offline driver, as many as its mixer has).
                 let has = self
                     .eng
                     .device_list()
@@ -770,8 +1052,7 @@ impl DocCx<'_> {
                 let message = if has >= *needed {
                     format!(
                         "patch \"{}\" maps channel {needed} of \"{device}\", but openLab uses \
-                         only its first {available} outputs (as many as the primary device \
-                         has): its cues cannot play",
+                         only its first {available} outputs: its cues cannot play",
                         patch.name
                     )
                 } else {
@@ -781,8 +1062,28 @@ impl DocCx<'_> {
                         patch.name
                     )
                 };
-                list.push(notice("outputs_dropped", message, None));
+                list.push(device_notice("outputs_dropped", message, device));
             }
+            about_patch(list, from, patch.id);
+        }
+        for patch in &self.doc.model.ws().patches {
+            let (Some((needed, available)), Some(PatchResolution::Mapped { device, .. })) = (
+                self.eng.patches.routing_beyond(self.doc.id, patch.id),
+                self.eng.patches.resolution(self.doc.id, patch.id),
+            ) else {
+                continue;
+            };
+            let from = list.len();
+            list.push(device_notice(
+                "patch_routing_beyond_device",
+                format!(
+                    "patch \"{}\" routes to device output {needed}, but \"{device}\" has \
+                     {available} here: that routing is kept and not heard",
+                    patch.name
+                ),
+                device,
+            ));
+            about_patch(list, from, patch.id);
         }
         for &id in self.eng.patches.exhausted(self.doc.id) {
             let name = self
@@ -793,6 +1094,7 @@ impl DocCx<'_> {
                 .iter()
                 .find(|p| p.id == id)
                 .map_or("", |p| p.name.as_str());
+            let from = list.len();
             list.push(notice(
                 "mixer_patches_exhausted",
                 format!(
@@ -801,6 +1103,17 @@ impl DocCx<'_> {
                 ),
                 None,
             ));
+            about_patch(list, from, id);
+        }
+    }
+}
+
+/// Names output patch `patch` on the notices from index `from` on: what the pre-show check reads
+/// to leave out the trouble of a patch no cue plays on.
+fn about_patch(list: &mut [WireWarning], from: usize, patch: PatchId) {
+    for warning in list.iter_mut().skip(from) {
+        if let WireWarning::Notice { patch: about, .. } = warning {
+            *about = Some(patch);
         }
     }
 }
@@ -841,6 +1154,16 @@ impl Engine {
             );
             self.log_device(LogLevel::Warn, message);
         }
+    }
+
+    /// The device the system's default output is now, by the last list read (the system output
+    /// of a patch plays there); `None` when the list marks none, and for the offline driver.
+    pub(super) fn system_output(&self) -> Option<String> {
+        let d = self.outputs.primary().backend.device()?;
+        d.listed()
+            .iter()
+            .find(|l| l.is_default)
+            .map(|l| l.name.clone())
     }
 
     /// The output devices for a `list_devices` request.
@@ -894,5 +1217,30 @@ pub(super) fn playable_device(d: &Device) -> DeviceInfo {
     DeviceInfo {
         name: d.info().name.clone(),
         output_channels: u32::from(d.info().channels),
+    }
+}
+
+/// A block of `frames` at a device's rate `local` in frames of the master clock (`master`),
+/// rounded up: the lookahead must never be shorter than any device's block.
+pub(super) fn master_block(frames: u64, local: u32, master: u32) -> u64 {
+    if local == master || local == 0 {
+        return frames;
+    }
+    let (l, m) = (u128::from(local), u128::from(master));
+    u64::try_from((u128::from(frames) * m).div_ceil(l)).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::master_block;
+
+    /// The lookahead in master frames is never shorter than a device's block at its own rate.
+    #[test]
+    fn a_device_block_at_another_rate_is_rounded_up_in_master_frames() {
+        assert_eq!(master_block(512, 48_000, 48_000), 512);
+        assert_eq!(master_block(512, 44_100, 48_000), 558);
+        assert_eq!(master_block(96, 12_000, 8_000), 64);
+        assert_eq!(master_block(97, 12_000, 8_000), 65);
+        assert_eq!(master_block(512, 0, 48_000), 512);
     }
 }

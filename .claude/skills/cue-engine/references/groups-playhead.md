@@ -30,6 +30,12 @@ A Group is a cue like any other (pre-wait, post-wait, continue, operations, seco
 - Unshuffled: the next child is the one after the current as the group stands when the trigger fires (a reorder applies; a removed current child is followed by the one that took its place).
 - A pass in which no child could start ends the playlist; so does the chain limit.
 - Paused playlist: if the current child's end (or a failure before it played) arrives dated before the pause, the playlist moves on at the resume (next child on the resume sample; if it was the last, the group completes there). A failure while playing that arrives during the pause halts it as below, counted from the resume. A pause never ends a playlist early or skips children.
+- Next child (`playlist_mark.rs`, the cue list's mark), idle: the first child a start plays, by `start_path` (the one decision `start` also follows). A run of its own is kept as the playing child (also a broken one, or one fading out in a panic) unless it is playing or waiting and its second trigger ends it (stop, hard stop, or a panic that stops it at once, by the panic's own `panic_keeps`); hard stop and restart counts as a new run; a paused run resumes.
+- Next child, looping: it goes round as `playlist_next` does: a running one at the end of its pass, and again after every pass that plays none but started a run, the runs it ended counting as new; a round that ended no run plays none.
+- Next child, idle, passed over: `Slot::Broken`, `Slot::Lost` unless `lost_may_clear`, skipped, and a new run with static problems (it keeps only its timing); none if shuffled, disarmed or loaded past its span (`playlist_spent`; looked at again when a child's `CueLengths` changes). Playing: the one after the current as `playlist_next` picks it (wrapping on loop, the current child as a new run; shuffled: the pass's next); none while stopping, devamped, halted, post-waiting, past the last child.
+- The marks are checked at the end of each call for the groups with a run, lost or broken cues and their groups (a device's return or a broken run settling change no state), the groups around a run whose voice start or a committed command is ahead (the panic test reads `now`), the cues whose state or arming changed and every group above them, and every group above a cue whose `CueLengths` changed (`playlist_spent` counts nested children).
+- Marks checked after an edit: the footprint's cues, their old and new groups and the groups inside them (every group after `model_changed`).
+- A mark check costs what the call touched. Changes are reported in group id order.
 
 ### Halted playlist
 Trigger: the current child of a running playlist breaks while playing (`ActionFailed`, not `device_lost`, not while being stopped or panicked). The halt-and-follow rule is a measured QLab case plus decisions (skill `qlab-behaviour`).
@@ -72,9 +78,10 @@ Starting a cue inside a group (`Start`, GO on a child, a Start cue, a hotkey) do
 
 ## Skip if disarmed
 A cue is skipped when it is disarmed (`is_armed`, an Arm/Disarm cue's change in the call included) and has `skip_if_disarmed` (`Cue::skipped`, `CueEngine::is_skipped`). It is passed over as if absent (QLab 5, manual p. 128); armed, the flag does nothing.
-- A trigger (GO, Start cue, hotkey, OSC, continue) on it starts nothing: no run, no `pre-waiting`, no warning, no chain budget; its own continue never fires. A run it already had (disarmed since) keeps rule 1. Load of it does nothing (an auto-load passes over it).
+- A trigger (Start cue, hotkey, OSC, continue) on it starts nothing: no run, no `pre-waiting`, no warning, no chain budget; its own continue never fires. A run it already had (disarmed since) keeps rule 1: such a trigger is its second trigger (paused: it resumes). Load of it does nothing (an auto-load passes over it).
 - A continue starts the next sibling that is there (`next_sibling`); with none, nothing. A chain `chain_end` walks the cues that are there; the playhead goes to the next position that is there at that level (a skipped group with its children), else up a level, else past the end.
 - The playhead may rest on a skipped cue (navigation, the first cue on open or after Reset All, a cue disarmed while standing by). A GO there starts nothing: `go_on` moves the playhead to `first_present` of its path (further along its level, else after the group around it, outwards) and starts nothing; the next GO starts that cue. With no cue left it is `GoIgnored { no_cue }` (measured in QLab 5.6.5; skill `qlab-behaviour` Q295).
+  - That holds in every state of the cue: one still playing or paused from before it was disarmed takes no second trigger and no resume from that GO (Q760).
 - A cue fading out in a panic and skipped since is not restarted by a trigger (its fade goes on).
 - Groups: timeline never starts it; start-first modes start the first child that is there (the playhead enters after its chain); a playlist passes over it at once (no timing kept); a random group never picks it, also when nothing else is playable. Its nominal span is 0. A group's Load loads the first children that are there.
 - Navigation (`PlayheadNext`/`Previous`, `SetPlayhead`) can still stand on it, so it can be selected and armed again.
@@ -90,6 +97,7 @@ A cue is skipped when it is disarmed (`is_armed`, an Arm/Disarm cue's change in 
 - `GoIgnored { reason }`: `no_cue` (past the end or empty list), `unknown_list`, `double_go`, `chain_limit`.
 - GoTo-and-GO is not an operator GO: double-GO never blocks it and it does not restart the interval.
 - Double-GO: a GO less than `min_go_interval` after the previous accepted GO (samples, any list) is ignored; exactly at the interval is accepted; ignored GOs do not restart it; 0 = off; if `now` is earlier than the last accepted GO (clock restart) the GO is accepted. Read at each GO. Panic does not touch it.
+- Protection report: an accepted GO with the interval above 0 emits `GoProtection { active: true }` and keeps its end in `go_protection_ends()` and `next_wake()` (the control loop wakes for it; `next_deadline()` stays the cues' own); the first call whose horizon reaches it emits `active: false` (once, last in the call). An ignored GO neither starts nor extends it.
 - `Input::GoFrom { list, cue }` moves the playhead to `cue` and GOes as one input; a cue not a position of the list warns `NotInList` and does nothing. A GO that double-GO refuses leaves the playhead where it was.
 
 ## Playhead (PB-05, CL-06)

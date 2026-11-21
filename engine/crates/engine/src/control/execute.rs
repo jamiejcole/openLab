@@ -8,8 +8,27 @@ use std::collections::VecDeque;
 use openlab_core::protocol::{LogLevel, RuntimeChange, WireWarning};
 use openlab_core::{Action, CueId, Footprint, Input, SampleTime, Workspace};
 
-use super::voices::{Effects, Env};
+use super::voices::{Effects, Env, UNDERRUN, UNDERRUN_TEXT};
 use super::{DocCx, FEEDBACK_LIMIT, ProbeAnswer};
+
+/// A runtime notice from the binary.
+fn notice_change(
+    code: &str,
+    message: String,
+    cue: Option<CueId>,
+    count: Option<u64>,
+) -> RuntimeChange {
+    RuntimeChange::Warning {
+        warning: WireWarning::Notice {
+            patch: None,
+            code: code.to_owned(),
+            message,
+            cue,
+            device: None,
+            count,
+        },
+    }
+}
 
 impl DocCx<'_> {
     pub(super) fn probe_answer(&mut self, answer: ProbeAnswer) {
@@ -47,6 +66,12 @@ impl DocCx<'_> {
         self.doc.pending_media.extend(unresolved);
         if !self.doc.pending_media.is_empty() {
             let media = std::mem::take(&mut self.doc.pending_media);
+            // Which of the files are movies with sound, first: their cues need their patch.
+            let sound = media
+                .iter()
+                .map(|(file, _)| (file.clone(), self.doc.media.has_sound(file.as_str())))
+                .collect();
+            self.feed(Input::MediaSound { media: sound }, now);
             self.feed(
                 Input::Availability {
                     media,
@@ -66,14 +91,36 @@ impl DocCx<'_> {
                 patches: &self.eng.patches,
                 ids: &mut self.eng.voice_ids,
                 rate: self.eng.rate,
+                rates: self.eng.outputs.rates(),
                 cue_outputs: self.eng.cue_outputs,
                 now,
+                window: self.eng.block,
                 floor,
             };
             self.doc.voices.media_ready(&key, &mut env, &mut fx);
             self.follow(fx, now);
             self.release_pictures(&key, now);
         }
+    }
+
+    /// Swaps in the seeks whose streams are ready (each tick; see `Voices::start_seeks`).
+    pub(super) fn start_seeks(&mut self, now: SampleTime, fx: &mut Effects) {
+        let floor = self.stop_floor();
+        let mut env = Env {
+            doc: self.doc.id,
+            ws: self.doc.model.ws(),
+            media: &self.doc.media,
+            streamer: &mut self.eng.streamer,
+            patches: &self.eng.patches,
+            ids: &mut self.eng.voice_ids,
+            rate: self.eng.rate,
+            rates: self.eng.outputs.rates(),
+            cue_outputs: self.eng.cue_outputs,
+            now,
+            window: self.eng.block,
+            floor,
+        };
+        self.doc.voices.start_seeks(&mut env, fx);
     }
 
     pub(super) fn deliver_deferred(&mut self, now: SampleTime) {
@@ -112,6 +159,13 @@ impl DocCx<'_> {
                     format!("cue engine saw {unsignalled} model change(s) nobody signalled"),
                 );
             }
+            // A Target cue ran, or a reset dropped what one set: the cue a retargeted cue
+            // will act on is primed instead of the one it acted on before.
+            let retargets = self.doc.model.engine().temp_target_changes();
+            if retargets != self.doc.seen_temp_targets {
+                self.doc.seen_temp_targets = retargets;
+                self.doc.primes_dirty = true;
+            }
             queue.extend(self.execute(&actions, now));
         }
     }
@@ -124,6 +178,8 @@ impl DocCx<'_> {
         let mut fx = Effects::default();
         // A Video cue's picture is a voice of the stage host's, not the mixer's.
         let pictures: Vec<bool> = actions.iter().map(|a| self.is_picture_action(a)).collect();
+        // Sound starts of a call that starts a picture wait with it (one GO's sequence).
+        let (group, hold) = self.begin_sequence(actions, &pictures);
         {
             let floor = self.stop_floor();
             let mut env = Env {
@@ -134,20 +190,33 @@ impl DocCx<'_> {
                 patches: &self.eng.patches,
                 ids: &mut self.eng.voice_ids,
                 rate: self.eng.rate,
+                rates: self.eng.outputs.rates(),
                 cue_outputs: self.eng.cue_outputs,
                 now,
+                window: self.eng.block,
                 floor,
             };
-            for (action, picture) in actions.iter().zip(&pictures) {
+            for ((action, picture), held) in actions.iter().zip(&pictures).zip(&hold) {
                 if let Some(change) = RuntimeChange::from_action(action, self.doc.model.engine()) {
                     changes.push(change);
                 }
                 if matches!(action, Action::PlayheadChanged { .. }) {
                     self.doc.primes_dirty = true;
                 }
-                if !picture {
-                    self.doc.voices.apply(action, &mut env, &mut fx);
+                match (picture, group) {
+                    (false, Some(group)) if *held => {
+                        self.doc
+                            .voices
+                            .apply_gated(action, group, &mut env, &mut fx);
+                    }
+                    (false, _) => self.doc.voices.apply(action, &mut env, &mut fx),
+                    (true, _) => {}
                 }
+            }
+        }
+        for action in actions {
+            if let Action::RelocateVoice { run, from, .. } = *action {
+                self.relocate_picture(run, from, &mut fx);
             }
         }
         for (action, picture) in actions.iter().zip(&pictures) {
@@ -155,7 +224,9 @@ impl DocCx<'_> {
                 self.picture_action(action, &mut fx);
             }
         }
+        self.end_sequence(&mut fx);
         self.end_pictures(actions);
+        self.end_sounds(actions);
         for action in actions {
             match action {
                 Action::SetArmed { cue, armed: value } => {
@@ -197,27 +268,81 @@ impl DocCx<'_> {
             deferred,
             notices,
             reprobe,
+            warnings,
+            late,
+            pictured,
         } = fx;
+        // Of a Video cue's voice only failures are passed on: its run's length, end and
+        // devamp are its picture's to tell. Dropped here, where every report of the voices
+        // passes, whichever way it was made (an event, a lost event made up for, a device
+        // closed).
+        let (mut feedback, mut deferred) = (feedback, deferred);
+        feedback.retain(|i| !self.pictures_report(i));
+        deferred.retain(|(_, i)| !self.pictures_report(i));
+        for (at, input) in pictured {
+            match at {
+                Some(at) => deferred.push((at, input)),
+                None => feedback.push(input),
+            }
+        }
+        for (run, at, frames) in late {
+            self.picture_late(run, at, frames, &mut feedback);
+        }
+        for message in warnings {
+            self.log(LogLevel::Warn, message);
+        }
         self.send_commands(commands);
         self.doc.deferred.extend(deferred);
         for key in reprobe {
             self.doc.media.reprobe(&key);
         }
         if !notices.is_empty() {
+            let now_ms = self.eng.config.clock.now_ms();
             let changes = notices
                 .into_iter()
-                .map(|(code, message, cue)| RuntimeChange::Warning {
-                    warning: WireWarning::Notice {
-                        code: code.to_owned(),
-                        message,
-                        cue,
-                    },
+                .filter_map(|(code, message, cue)| {
+                    // A starved cue can underrun many times a second: told at once, then at
+                    // most once per ten seconds with the number since.
+                    let count = match (code, cue) {
+                        (UNDERRUN, Some(c)) => {
+                            Some(self.doc.underruns.entry(c).or_default().hit(now_ms, 1)?)
+                        }
+                        _ => None,
+                    };
+                    Some(notice_change(code, message, cue, count))
                 })
                 .collect::<Vec<_>>();
-            self.observe_changes(&changes);
-            self.runtime(changes);
+            if !changes.is_empty() {
+                self.observe_changes(&changes);
+                self.runtime(changes);
+            }
         }
         feedback
+    }
+
+    /// Each cue's underruns held back whose notice is due, told with their number; a cue
+    /// quiet for ten seconds is forgotten.
+    pub(super) fn flush_underruns(&mut self) {
+        if self.doc.underruns.is_empty() {
+            return;
+        }
+        let now_ms = self.eng.config.clock.now_ms();
+        let mut due = Vec::new();
+        self.doc.underruns.retain(|&cue, t| {
+            if let Some(n) = t.due(now_ms) {
+                due.push(notice_change(
+                    UNDERRUN,
+                    UNDERRUN_TEXT.to_owned(),
+                    Some(cue),
+                    Some(n),
+                ));
+            }
+            !t.idle(now_ms)
+        });
+        if !due.is_empty() {
+            self.observe_changes(&due);
+            self.runtime(due);
+        }
     }
 
     /// [`Self::after`], then hands the feedback to the engine (outside a `feed`).

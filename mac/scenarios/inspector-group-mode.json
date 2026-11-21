@@ -1,0 +1,17 @@
+{
+  "about": "A Group's Mode tab: one choice per mode with a line saying what it does; the playlist's loop and shuffle only when it is a playlist.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
+  "window": {"width": 1400, "height": 900},
+  "steps": [
+    {"select": "4"},
+    {"tab": "mode"},
+    {"shot": "timeline"},
+    {"select": "14"},
+    {"tab": "mode"},
+    {"shot": "playlist"},
+    {"select": "15"},
+    {"shot": "random"},
+    {"resize": [800, 520]},
+    {"shot": "least-window"}
+  ]
+}

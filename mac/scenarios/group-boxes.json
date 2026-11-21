@@ -1,0 +1,67 @@
+{
+  "about": "Each Group mode's box around the group's Name cell and its children's, nested boxes inside their parent's, and a Playlist's next-child mark moving as it plays and back on its first child when it ends.",
+  "show": "Groups",
+  "window": {
+    "width": 1200,
+    "height": 800
+  },
+  "appearance": "dark",
+  "steps": [
+    {
+      "shot": "every-mode"
+    },
+    {
+      "scroll": "cue-list",
+      "dy": -300
+    },
+    {
+      "shot": "every-mode-scrolled"
+    },
+    {
+      "scroll": "cue-list",
+      "dy": 300
+    },
+    {
+      "select": "3"
+    },
+    {
+      "key": "space"
+    },
+    {
+      "advance": 0.5
+    },
+    {
+      "shot": "playlist-first-child-playing"
+    },
+    {
+      "advance": 3
+    },
+    {
+      "shot": "playlist-second-child-playing"
+    },
+    {
+      "advance": 3
+    },
+    {
+      "shot": "playlist-last-child-playing"
+    },
+    {
+      "advance": 3
+    },
+    {
+      "shot": "playlist-ended"
+    },
+    {
+      "select": "2.3"
+    },
+    {
+      "key": "space"
+    },
+    {
+      "advance": 0.5
+    },
+    {
+      "shot": "nested-playlist-playing"
+    }
+  ]
+}

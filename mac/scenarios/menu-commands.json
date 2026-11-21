@@ -1,0 +1,21 @@
+{
+  "about": "Edit-menu commands sent through the responder chain: Copy and Paste of a cue, Delete, Undo and Redo. Each shot shows the cue list as the operator sees it after the command.",
+  "show": "Demo",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"shot": "start"},
+    {"menu_command": "copy"},
+    {"select": "2"},
+    {"menu_command": "paste"},
+    {"shot": "pasted-after-2"},
+    {"menu_command": "undo"},
+    {"shot": "undone"},
+    {"menu_command": "redo"},
+    {"shot": "redone"},
+    {"menu_command": "delete"},
+    {"shot": "deleted"},
+    {"menu_command": "undo"},
+    {"shot": "delete-undone"}
+  ]
+}

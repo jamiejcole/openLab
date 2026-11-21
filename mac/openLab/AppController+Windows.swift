@@ -53,6 +53,9 @@ extension AppController {
             if let path = doc.flatMap({ session.takeOpenedPath($0) }) ?? listed?.path, let defaults = layoutDefaults {
                 wc.restoreLayout(from: WindowLayoutStore(defaults: defaults), path: path)
             }
+            #if DEBUG
+                if let size = EngineMode.testWindowSize() { wc.placeForTest(size) }
+            #endif
             show(wc)
             if !previousRunAnnounced {
                 previousRunAnnounced = true
@@ -61,6 +64,7 @@ extension AppController {
         }
         let liveIDs = Set(live.map(ObjectIdentifier.init))
         for id in controllers.keys where !liveIDs.contains(id) { dropWindow(id) }
+        backstop.follow(live, waiting: Set(session.detached.map { ObjectIdentifier($0.store) }))
         showLauncherIfNoWindows()
     }
 
@@ -110,7 +114,7 @@ extension AppController {
     }
 
     func showLauncher() {
-        launcher.reload(recents: existingRecentURLs())
+        reloadLauncher()
         launcher.window?.makeKeyAndOrderFront(nil)
     }
 
@@ -126,6 +130,7 @@ extension AppController {
     func closeAllWindows() {
         for wc in controllers.values { wc.window?.close() }
         launcher.window?.close()
+        overrides.panel?.close()
     }
 
     // MARK: Front-window routing
@@ -152,6 +157,21 @@ extension AppController {
             logs.appendingPathComponent("openLab/Crashes", isDirectory: true),
             logs.appendingPathComponent("DiagnosticReports", isDirectory: true),
         ]
+    }
+
+    /// The front workspace's file, when it was saved and is still there.
+    private var frontWorkspaceURL: URL? {
+        guard let path = frontController?.store.document?.path, FileManager.default.fileExists(atPath: path) else {
+            return nil
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    var canShowFrontWorkspaceInFinder: Bool { frontWorkspaceURL != nil }
+
+    /// File > Show Workspace in Finder.
+    func showFrontWorkspaceInFinder() {
+        if let url = frontWorkspaceURL { revealInFinder([url]) }
     }
 
     /// Shows the crash folders that exist in Finder, so a report can be attached by hand; says so

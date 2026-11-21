@@ -9,8 +9,8 @@ use std::ops::ControlFlow;
 
 use openlab_core::protocol::{ClientMessage, DocId, RequestId, TransportAction};
 use openlab_core::{
-    Command, CueId, CueListId, CueProperty, MAX_TIME, NumberAssignment, OscAccess, OscRight,
-    WorkspaceId,
+    Command, CueId, CueListId, CueProperty, FillStyle, MAX_CROP, MAX_CUE_LAYER, MAX_TIME,
+    NumberAssignment, OscAccess, OscRight, WorkspaceId,
 };
 use rosc::{OscMessage, OscType};
 use serde_json::{Map, Value, json};
@@ -36,6 +36,11 @@ pub trait OscShow {
     }
     /// The passcode table: what a peer may do without `/connect` and with each passcode.
     fn access(&self) -> &OscAccess;
+    /// Whether OSC may reach this workspace at all (Workspace Settings, OSC): off, every message
+    /// to it, `/connect` included, is `denied`.
+    fn enabled(&self) -> bool {
+        true
+    }
     /// The cue list `/go` and `/playhead` act on: the one whose playhead was last moved (QLab:
     /// the list on display).
     fn active_list(&self) -> Option<CueListId>;
@@ -138,6 +143,19 @@ pub enum CueField {
     IsRunning,
     IsPaused,
     IsBroken,
+    /// A Video cue's geometry (VID-04; QLab 5's video cue messages, manual pp. 518-526):
+    /// opacity 0 to 1, layer 0 to 1000, fill stage and its style (0 fit, 1 fill, 2 stretch),
+    /// smoothing, the scale lock, and the crop of each edge in pixels.
+    Opacity,
+    Layer,
+    FillStage,
+    FillStyle,
+    Smooth,
+    PreserveAspectRatio,
+    CropTop,
+    CropBottom,
+    CropLeft,
+    CropRight,
 }
 
 /// What an accepted message asks the engine to do: the same inputs the UI sends.
@@ -232,6 +250,16 @@ impl CueField {
             Self::IsRunning => "isRunning",
             Self::IsPaused => "isPaused",
             Self::IsBroken => "isBroken",
+            Self::Opacity => "opacity",
+            Self::Layer => "layer",
+            Self::FillStage => "fillStage",
+            Self::FillStyle => "fillStyle",
+            Self::Smooth => "smooth",
+            Self::PreserveAspectRatio => "preserveAspectRatio",
+            Self::CropTop => "cropTop",
+            Self::CropBottom => "cropBottom",
+            Self::CropLeft => "cropLeft",
+            Self::CropRight => "cropRight",
         }
     }
 }
@@ -453,6 +481,16 @@ pub const CUE_VERBS: &[Verb] = &[
     Verb::Field(CueField::IsRunning),
     Verb::Field(CueField::IsPaused),
     Verb::Field(CueField::IsBroken),
+    Verb::Field(CueField::Opacity),
+    Verb::Field(CueField::Layer),
+    Verb::Field(CueField::FillStage),
+    Verb::Field(CueField::FillStyle),
+    Verb::Field(CueField::Smooth),
+    Verb::Field(CueField::PreserveAspectRatio),
+    Verb::Field(CueField::CropTop),
+    Verb::Field(CueField::CropBottom),
+    Verb::Field(CueField::CropLeft),
+    Verb::Field(CueField::CropRight),
 ];
 
 /// Application-level addresses: answered by the engine, not a workspace, so never under
@@ -950,6 +988,21 @@ fn cue_verb(show: &dyn OscShow, cue: CueId, verb: Verb, args: &[OscType], out: &
 fn set_field(cue: CueId, field: CueField, args: &[OscType]) -> Option<Command> {
     let [arg] = args else { return None };
     let set = |property| Command::SetCueProperty { id: cue, property };
+    // One field of a Video cue's kind; the engine refuses a value out of range too, but
+    // without a word to the peer, so the range is answered here.
+    let kind_field = |key: &str, value: Value| {
+        let mut fields = Map::new();
+        fields.insert(key.to_owned(), value);
+        set(CueProperty::KindFields { value: fields })
+    };
+    // One crop edge alone: the engine changes that edge only, so edges sent back to back (or in
+    // one bundle) each hold, whatever this copy of the show holds yet.
+    let crop = |edge: &str| -> Option<Command> {
+        let value = number_arg(arg).filter(|v| (0.0..=MAX_CROP).contains(v))?;
+        let mut crop = Map::new();
+        crop.insert(edge.to_owned(), json!(value));
+        Some(kind_field("crop", Value::Object(crop)))
+    };
     Some(match field {
         CueField::Name => set(CueProperty::Name {
             value: string_arg(arg)?,
@@ -989,6 +1042,34 @@ fn set_field(cue: CueId, field: CueField, args: &[OscType]) -> Option<Command> {
         CueField::Flagged => set(CueProperty::Flagged {
             value: flag_arg(arg)?,
         }),
+        CueField::Opacity => kind_field(
+            "opacity",
+            json!(number_arg(arg).filter(|v| (0.0..=1.0).contains(v))?),
+        ),
+        CueField::Layer => kind_field(
+            "layer",
+            json!(
+                number_arg(arg)
+                    .filter(|v| v.fract() == 0.0 && (0.0..=f64::from(MAX_CUE_LAYER)).contains(v))?
+                    as u16
+            ),
+        ),
+        CueField::FillStage => kind_field("fill_stage", json!(flag_arg(arg)?)),
+        CueField::FillStyle => kind_field(
+            "fill_style",
+            json!(match arg {
+                OscType::Int(0) => FillStyle::Fit,
+                OscType::Int(1) => FillStyle::Fill,
+                OscType::Int(2) => FillStyle::Stretch,
+                _ => return None,
+            }),
+        ),
+        CueField::Smooth => kind_field("smooth", json!(flag_arg(arg)?)),
+        CueField::PreserveAspectRatio => kind_field("scale_locked", json!(flag_arg(arg)?)),
+        CueField::CropTop => crop("top")?,
+        CueField::CropBottom => crop("bottom")?,
+        CueField::CropLeft => crop("left")?,
+        CueField::CropRight => crop("right")?,
         // Read-only.
         CueField::UniqueId
         | CueField::IsLoaded

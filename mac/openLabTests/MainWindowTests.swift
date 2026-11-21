@@ -151,8 +151,8 @@ final class MainWindowTests: XCTestCase {
         for id in [
             AX.masthead, AX.goButton, AX.standbyField, AX.standbyNotes, AX.cueToolbar, AX.cueList,
             AX.inspector, AX.sidebar, AX.sidebarTabs, AX.transportReset, AX.transportPause,
-            AX.transportResume, AX.transportPanic, AX.footer, AX.modeSwitch, AX.statusLabel,
-            AX.settingsButton, AX.toggleToolbar, AX.toggleMasthead, AX.toggleInspector, AX.toggleSidebar,
+            AX.transportResume, AX.transportPanic, AX.footer, AX.modeSwitch,
+            AX.settingsButton, AX.toggleMasthead, AX.toggleInspector, AX.toggleSidebar,
         ] {
             XCTAssertNotNil(ax(root, id), id)
         }
@@ -224,7 +224,8 @@ final class MainWindowTests: XCTestCase {
 
     func testEachFooterToggleHidesAndReshowsItsArea() throws {
         let wc = try controller()
-        for area in LayoutArea.allCases {
+        // The cue toolbar has no footer button of its own: the masthead's hides it with the GO area.
+        for area in LayoutArea.allCases where area != .toolbar {
             let button = try XCTUnwrap(wc.footer.toggles[area])
             let before = wc.isVisible(area)
             button.performClick(nil)
@@ -236,6 +237,7 @@ final class MainWindowTests: XCTestCase {
 
     func testInspectorShowsNoCueSelected() throws {
         let wc = try controller()
+        wc.cueList.outlineView.deselectAll(nil)
         XCTAssertEqual(wc.inspector.emptyLabel.stringValue, "No cue selected")
         XCTAssertFalse(wc.inspector.emptyLabel.isHidden)
     }
@@ -269,51 +271,125 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(FooterBar.countText(cues: 0, lists: 2), "0 cues in 2 lists")
     }
 
-    func testEveryIconAndFallbackResolves() {
+    func testEveryIconResolves() {
         for icon in Icon.allCases {
-            guard let e = icon.entry else {
-                // One of openLab's own drawings: in the bundle, a template, on the 16-point grid.
-                let image = icon.image("label")
-                XCTAssertTrue(icon.resolvesToSymbol, "\(icon)")
-                XCTAssertTrue(image.isTemplate, "\(icon)")
-                XCTAssertEqual(image.size, NSSize(width: 16, height: 16), "\(icon)")
-                XCTAssertEqual(image.accessibilityDescription, "label", "\(icon)")
-                continue
-            }
-            XCTAssertNotNil(NSImage(systemSymbolName: e.symbol, accessibilityDescription: nil), "\(icon) \(e.symbol)")
             XCTAssertTrue(icon.resolvesToSymbol, "\(icon)")
-            if let fb = e.fallback {
-                XCTAssertNotNil(NSImage(systemSymbolName: fb, accessibilityDescription: nil), "\(icon) fallback \(fb)")
+            let image = icon.image("label")
+            XCTAssertEqual(image.accessibilityDescription, "label", "\(icon)")
+            XCTAssertTrue(image.isTemplate, "\(icon)")
+            if let symbol = icon.symbol {
+                XCTAssertNil(icon.drawing, "\(icon)")
+                XCTAssertNotNil(NSImage(systemSymbolName: symbol, accessibilityDescription: nil), "\(icon) \(symbol)")
+            } else if icon != .transportPanic {
+                // One of openLab's own drawings: in the bundle, a template, on the 16-point grid.
+                XCTAssertNotNil(icon.drawing, "\(icon)")
+                XCTAssertEqual(image.size, NSSize(width: 16, height: 16), "\(icon)")
+                XCTAssertEqual(IconLookup.drawingName(of: image), icon.drawing, "\(icon)")
             }
-            // Deployment target is macOS 12: a newer symbol must come with a fallback, and no row
-            // may need more than 12 without one.
-            XCTAssertLessThanOrEqual(e.minMacOS, 12, "\(icon) needs macOS \(e.minMacOS)")
-            if e.minMacOS > 10 { XCTAssertNotNil(e.fallback, "\(icon) has no fallback") }
         }
         // The call sites that expose their icons use only table rows.
         XCTAssertFalse((CueToolbarView.icons + SidebarViewController.icons + FooterBar.icons).isEmpty)
     }
 
-    func testMissingSymbolFallsBackThenShowsTheLocalisedNameAndLogsOnce() {
+    /// Flow (#698): each of the 34 approved drawings replaces its SF Symbol: the concept names its image set,
+    /// and no symbol is left in the table for it (the table's source names only the symbols still in use).
+    func testEachApprovedConceptDrawsItsOwnImageSetAndNoSymbolRemains() throws {
+        let approved: [Icon: String] = [
+            .stateRunning: "state-running", .statePaused: "state-paused", .stateLoaded: "state-loaded",
+            .stateBroken: "state-broken", .stateFading: "state-fading", .stateStopping: "state-stopping",
+            .flagged: "flagged", .flaggedInside: "flagged-inside", .warningMarker: "warning-marker",
+            .outputOverridden: "output-overridden", .preview: "preview", .continueAuto: "continue-auto",
+            .continueFollow: "continue-follow", .transportReset: "transport-reset", .transportPause: "transport-pause",
+            .transportResume: "transport-resume", .activeCuePanic: "active-cue-panic",
+            .layoutMasthead: "layout-masthead", .layoutInspector: "layout-inspector", .layoutSidebar: "layout-sidebar",
+            .settings: "settings",
+            .statusWarning: "status-warning", .statusAlarm: "status-alarm", .playhead: "playhead",
+            .timeToggle: "time-toggle", .timeToggleUp: "time-toggle-up", .targetFile: "target-file",
+            .targetFileCopying: "target-file-copying",
+            .fieldClear: "field-clear", .fieldChoose: "field-choose", .fieldJump: "field-jump",
+            .reservedPopOut: "reserved-pop-out",
+        ]
+        XCTAssertEqual(approved.count, 32)
+        for (icon, name) in approved {
+            XCTAssertEqual(icon.drawing, name, "\(icon)")
+            XCTAssertNil(icon.symbol, "\(icon) keeps a symbol")
+            XCTAssertEqual(IconLookup.drawingName(of: icon.image("label")), name, "\(icon) draws its image set")
+        }
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("openLab/Icons.swift")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        let regex = try NSRegularExpression(pattern: "\"([a-z][a-z0-9]*(?:\\.[a-z0-9]+)*)\"")
+        let symbols = Set(
+            regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { m in
+                Range(m.range(at: 1), in: text).map { String(text[$0]) }
+            }.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil })
+        XCTAssertEqual(symbols, Set(Icon.allCases.compactMap(\.symbol)), "only the rows still in use name symbols")
+        XCTAssertEqual(symbols, ["pause.fill", "play.fill", "exclamationmark.triangle.fill", "trash"])
+    }
+
+    func testAMissingSymbolOrDrawingShowsTheLocalisedNameAndLogsOnce() {
         defer { IconLookup.shared.setLookup(nil) }
-        // The primary name vanishes: the fallback symbol shows.
-        IconLookup.shared.setLookup { $0 != "gearshape" }
-        XCTAssertNotNil(Icon.settings.image("Settings").accessibilityDescription)
-        XCTAssertTrue(Icon.settings.resolvesToSymbol)
-        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape"])
-        // Both vanish: a text image carrying the label, logged once per name.
         IconLookup.shared.setLookup { _ in false }
-        let text = Icon.settings.image("Settings")
-        XCTAssertEqual(text.accessibilityDescription, "Settings")
+        let text = Icon.engineAlarm.image("Alarm")
+        XCTAssertEqual(text.accessibilityDescription, "Alarm")
         XCTAssertTrue(text.isTemplate)
-        XCTAssertGreaterThan(text.size.width, Icon.settings.image("S", compact: true).size.width)
+        XCTAssertGreaterThan(text.size.width, Icon.engineAlarm.image("A", compact: true).size.width)
+        _ = Icon.engineAlarm.image("Alarm")
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["exclamationmark.triangle.fill"])
         _ = Icon.settings.image("Settings")
-        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape"])
-        _ = Icon.kindAudio.image("Audio")
-        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape", "kind-audio"])
-        XCTAssertEqual(Icon.kindAudio.image("Audio").accessibilityDescription, "Audio")
-        XCTAssertFalse(Icon.kindAudio.resolvesToSymbol)
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["exclamationmark.triangle.fill", "settings"])
+        XCTAssertEqual(Icon.settings.image("Settings").accessibilityDescription, "Settings")
         XCTAssertFalse(Icon.settings.resolvesToSymbol)
+        XCTAssertFalse(Icon.engineAlarm.resolvesToSymbol)
+    }
+
+    /// Flow (#698): the footer, the inspector's Target field buttons and the transport strip show the approved
+    /// drawings: Reset, Pause and Resume All the circle outline, Panic All its own picture, and the footer's
+    /// all-well mark green while its words keep the text colour.
+    func testTheFooterFieldButtonsAndTransportShowTheApprovedDrawings() async throws {
+        let (wc, rig) = try await demoController()
+        _ = rig
+        wc.window?.layoutIfNeeded()
+        let footer = wc.footer
+        for (area, name) in [
+            (LayoutArea.masthead, "layout-masthead"), (.inspector, "layout-inspector"),
+            (.sidebar, "layout-sidebar"),
+        ] {
+            XCTAssertEqual(IconLookup.drawingName(of: footer.toggles[area]?.image), name, "\(area)")
+        }
+        XCTAssertEqual(IconLookup.drawingName(of: footer.settingsButton.image), "settings")
+        footer.showWarnings(count: 2)
+        XCTAssertEqual(IconLookup.drawingName(of: footer.warningsButton.image), "status-warning")
+        XCTAssertEqual(footer.warningsButton.contentTintColor, MarkColour.caution, "yellow, as in the list")
+        let inspector = wc.inspector
+        inspector.loadViewIfNeeded()
+        XCTAssertEqual(IconLookup.drawingName(of: inspector.clearTargetButton.image), "field-clear")
+        XCTAssertEqual(IconLookup.drawingName(of: inspector.jumpTargetButton.image), "field-jump")
+        XCTAssertEqual(IconLookup.drawingName(of: inspector.chooseButton.image), "field-choose")
+        wc.sidebar.loadViewIfNeeded()
+        let strip = wc.sidebar.transportButtons
+        XCTAssertEqual(IconLookup.drawingName(of: strip[AX.transportReset]?.image), "transport-reset")
+        XCTAssertEqual(IconLookup.drawingName(of: strip[AX.transportPause]?.image), "transport-pause")
+        XCTAssertEqual(IconLookup.drawingName(of: strip[AX.transportResume]?.image), "transport-resume")
+        let panic = try XCTUnwrap(strip[AX.transportPanic]?.image)
+        XCTAssertNil(IconLookup.drawingName(of: panic), "Panic All keeps its own picture")
+        XCTAssertEqual(panic.accessibilityDescription, loc("transport.panic"))
+        XCTAssertEqual(IconLookup.drawingName(of: ActiveCueCell().panicButton.image), "active-cue-panic")
+        // Each drawing is shown at the 16 points it is drawn on, never scaled down until its shapes run together.
+        wc.cueList.selectAsUser([TestSnapshots.fade])
+        await assertEventually { !inspector.jumpTargetButton.isHidden }
+        wc.window?.layoutIfNeeded()
+        let buttons: [(String, NSButton)] =
+            [
+                ("clear", inspector.clearTargetButton), ("jump", inspector.jumpTargetButton),
+                ("settings", footer.settingsButton),
+            ] + footer.toggles.map { ("\($0.key)", $0.value) }
+        for (name, button) in buttons {
+            let cell = try XCTUnwrap(button.cell as? NSButtonCell, name)
+            let drawn = cell.imageRect(forBounds: button.bounds).size
+            XCTAssertGreaterThanOrEqual(drawn.width, 16, "\(name) drawn \(drawn)")
+            XCTAssertGreaterThanOrEqual(drawn.height, 16, "\(name) drawn \(drawn)")
+        }
     }
 
     func testEveryDottedStringLiteralInSourcesIsLocalised() throws {
@@ -379,7 +455,7 @@ final class MainWindowTests: XCTestCase {
         try await standBy(rig, TestSnapshots.fade)
         XCTAssertEqual(wc.masthead.cueID, TestSnapshots.fade)
         XCTAssertEqual(
-            wc.masthead.standbyField.stringValue, "Fade and stop Intro",
+            wc.masthead.standbyField.stringValue, "fade and stop Intro",
             "an unnamed Fade is named after the cue it fades")
     }
 
@@ -849,6 +925,33 @@ final class MainWindowTests: XCTestCase {
             MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
     }
 
+    /// A workspace just opened has its playhead on the first cue; that cue is selected and the inspector shows it,
+    /// not "no cue selected" (the playhead and the selection are locked together).
+    func testAnOpenedWorkspaceSelectsThePlayheadCueAndTheInspectorShowsIt() async throws {
+        let (wc, rig) = try await demoController()
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        let head = try XCTUnwrap(rig.store.playheads[TestSnapshots.mainList], "the playhead is on a cue")
+        await assertEventually("the playhead's cue is selected") { wc.cueList.selectedIDs() == [head] }
+        await assertEventually("the inspector shows a cue") { wc.inspector.emptyLabel.isHidden }
+    }
+
+    /// The standby line's box is as tall as its text and the room above and below it, in both modes, so the
+    /// letters' tails are not cut off.
+    func testStandbyLineBoxHoldsItsWholeText() async throws {
+        let (wc, rig) = try await demoController()
+        try await standBy(rig, TestSnapshots.intro)
+        for show in [false, true] {
+            wc.setShowMode(show)
+            wc.window?.contentView?.layoutSubtreeIfNeeded()
+            let field = wc.masthead.standbyField
+            let font = try XCTUnwrap(field.font)
+            let line = ceil(font.ascender - font.descender + font.leading)
+            XCTAssertGreaterThanOrEqual(
+                field.frame.height, line + 2 * standbyFieldInset,
+                "show mode \(show): the box holds the text's whole line")
+        }
+    }
+
     /// A cue with a 120-character name standing by: the window keeps its width and the name is cut short
     /// inside the masthead, in Show Mode at 1200 pt and in Edit Mode at the smallest width the window allows.
     func testALongStandbyNameIsCutShortAndNeverWidensTheWindow() async throws {
@@ -925,30 +1028,6 @@ final class MainWindowTests: XCTestCase {
         }
         try check("the default size", size: window.frame.size)
         try check("the least size", size: window.minSize)
-    }
-
-    func testShowModePaletteMeetsContrastTargets() {
-        typealias P = ShowModePalette
-        // WCAG AAA (7:1) for the text a performer reads at a distance, 3:1 for the GO button's edge.
-        XCTAssertGreaterThanOrEqual(P.contrast(P.standbyText, P.background), 7)
-        XCTAssertGreaterThanOrEqual(P.contrast(P.notesText, P.background), 7)
-        XCTAssertGreaterThanOrEqual(P.contrast(P.goText, P.goFill), 7)
-        XCTAssertGreaterThanOrEqual(P.contrast(P.goFill, P.background), 3)
-        XCTAssertEqual(P.contrast(P.RGB(r: 1, g: 1, b: 1), P.RGB(r: 0, g: 0, b: 0)), 21, accuracy: 0.001)
-        XCTAssertEqual(P.contrast(P.background, P.background), 1, accuracy: 0.001)
-    }
-
-    func testMastheadAppliesThePaletteInShowModeOnly() async throws {
-        let (wc, _) = try await demoController()
-        wc.setShowMode(true)
-        let c = try XCTUnwrap(
-            wc.masthead.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
-        XCTAssertEqual(c.redComponent, 0, accuracy: 0.001)
-        let go = try XCTUnwrap(
-            wc.masthead.goButton.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
-        XCTAssertEqual(Double(go.greenComponent), ShowModePalette.goFill.g, accuracy: 0.001)
-        wc.setShowMode(false)
-        XCTAssertNil(wc.masthead.layer?.backgroundColor)
     }
 }
 
@@ -1060,6 +1139,224 @@ final class InspectorWindowFrameTests: XCTestCase {
         XCTAssertEqual(window.frame, small)
         try clickTab("curve")
         XCTAssertEqual(window.frame, small, "the window neither grows nor shrinks")
+    }
+
+    /// Opening the sidebar (the footer's toggle) on each tab of each kind at the least window size: the
+    /// window keeps the size the user gave it, the sidebar is shown and the inspector's content stays
+    /// inside the inspector.
+    func testOpeningTheSidebarAtTheLeastSizeKeepsTheWindowOnEveryTab() async throws {
+        let video = try await addVideoCue()
+        let fadeOnVideo = try await addFade(aimedAt: video)
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let least = window.frame
+        XCTAssertEqual(least.size, window.minSize)
+        let sidebar = try XCTUnwrap(wc.footer.toggles[.sidebar])
+        for cue in [audio, video, fade, fadeOnVideo, group, memo] {
+            await select(cue)
+            // The tabs the cue shows (a Fade aimed at a Video cue has a Geometry tab).
+            let ids = wc.inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }
+            XCTAssertFalse(ids.isEmpty)
+            if cue == fadeOnVideo { XCTAssertTrue(ids.contains("fadeGeometry"), "\(ids)") }
+            for id in ids {
+                // Each tab from the same start: the least window with the sidebar closed.
+                if wc.isVisible(.sidebar) { sidebar.performClick(nil) }
+                window.setFrame(least, display: true)
+                try clickTab(id)
+                settleLayout()
+                let before = window.frame
+                XCTAssertFalse(wc.isVisible(.sidebar), "the sidebar starts closed")
+                sidebar.performClick(nil)
+                settleLayout()
+                XCTAssertTrue(wc.isVisible(.sidebar), "the sidebar opens (tab \(id))")
+                XCTAssertEqual(window.frame, before, "the window keeps its frame with the sidebar open on tab \(id)")
+                // Nothing is cut or overlapping sideways: what a tab lays out sits inside its width and
+                // no two things side by side share a place.
+                let content = try XCTUnwrap(wc.inspector.tabView.selectedTabViewItem?.view)
+                XCTAssertEqual(sideways(content, depth: 3), [], "tab \(id) of cue \(cue) is cut or overlapping")
+                XCTAssertGreaterThan(wc.sidebar.view.frame.width, 150, "the sidebar has its room")
+                if id == "fadeGeometry" { try assertStageShape(wc.inspector.fadeGeometry.thumbnail, tab: id) }
+                if id == "geometry" { try assertStageShape(wc.inspector.geometry.thumbnail, tab: id) }
+            }
+        }
+    }
+
+    /// An Audio cue's Levels tab shown at the least window size, with and without the sidebar: the window
+    /// keeps its frame and the tab's content stays inside the inspector (it scrolls if it needs more room).
+    func testTheLevelsTabAtTheLeastSizeKeepsTheWindow() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let least = window.frame
+        XCTAssertEqual(least.size, window.minSize)
+        await select(audio)
+        for sidebarOpen in [false, true] {
+            if wc.isVisible(.sidebar) != sidebarOpen { try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil) }
+            try clickTab("basics")
+            try clickTab("levels")
+            XCTAssertEqual(window.frame, least, "the window keeps its frame (sidebar open: \(sidebarOpen))")
+            let content = try XCTUnwrap(wc.inspector.tabView.selectedTabViewItem?.view)
+            XCTAssertEqual(sideways(content, depth: 3), [], "the Levels tab is cut or overlapping")
+            // The column of controls is whole in what the user sees of it: nothing scrolled out of its area,
+            // with overlay scrollers and with always-visible ones (which take room beside the column).
+            let levels = wc.inspector.audioLevels
+            for style in [NSScroller.Style.overlay, .legacy] {
+                levels.sideScroll.scrollerStyle = style
+                settleLayout()
+                let clip = levels.sideScroll.contentView
+                let column = try XCTUnwrap(levels.sideScroll.documentView)
+                let what = "\(style == .legacy ? "legacy" : "overlay") scrollers, sidebar open: \(sidebarOpen)"
+                XCTAssertLessThanOrEqual(column.frame.height, clip.bounds.height + 0.5, "the column fits: \(what)")
+                XCTAssertLessThanOrEqual(column.frame.width, clip.bounds.width + 0.5, "no scroller over it: \(what)")
+                XCTAssertTrue(levels.board.bounds.contains(levels.meter.frame), "the meters lie on the board: \(what)")
+                for control in [
+                    levels.defaultButton, levels.silentButton, levels.gangsButton, levels.clearMutesButton,
+                    levels.editPatchButton,
+                ] {
+                    let frame = control.convert(control.bounds, to: clip)
+                    XCTAssertTrue(clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "\(control.title): \(what)")
+                }
+            }
+            levels.sideScroll.scrollerStyle = .overlay
+        }
+    }
+
+    /// A control in the Basics target row wider than here (as on another macOS, whose controls and fonts
+    /// measure differently), so wide that the path would need less than its preferred 90 pt: at the least
+    /// window size, with the sidebar open, the file's path gives way, not the sidebar or the window. The
+    /// inspector spans the window under the sidebar, so the row has the window's width; the control is
+    /// widened by what the path has beyond 90 pt and 16 pt more.
+    func testTheBasicsTargetRowGivesWayWhenItsControlsAreWider() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let least = window.frame
+        await select(audio)
+        try clickTab("basics")
+        let path = wc.inspector.targetPath
+        XCTAssertFalse(path.isHidden, "an Audio cue's target is its file's path")
+        if !wc.isVisible(.sidebar) { try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil) }
+        settleLayout()
+        XCTAssertTrue(wc.isVisible(.sidebar))
+        let spare = path.frame.width - 90
+        XCTAssertGreaterThan(spare, 0, "the path has its preferred width to begin with")
+        let choose = wc.inspector.chooseButton
+        let wider = choose.widthAnchor.constraint(equalToConstant: choose.frame.width + spare + 16)
+        wider.isActive = true
+        defer { wider.isActive = false }
+        settleLayout()
+        XCTAssertEqual(window.frame, least, "the window keeps its frame")
+        XCTAssertEqual(wc.sidebar.view.frame.width, 280, accuracy: 3, "the sidebar keeps its width")
+        XCTAssertLessThan(path.frame.width, 90, "the path gave way")
+        XCTAssertGreaterThanOrEqual(path.frame.width, 40, "and keeps a usable width")
+        let content = try XCTUnwrap(wc.inspector.tabView.selectedTabViewItem?.view)
+        XCTAssertEqual(sideways(content, depth: 3), [], "nothing is cut or overlapping")
+    }
+
+    /// The sidebar's tabs naming more than they do here (a busy show's "12 Active Cues", or the same
+    /// labels on another macOS, whose segmented controls measure wider): opening the sidebar at the least
+    /// window size on the Basics tab keeps the sidebar's width and the window's frame; the tabs fit the
+    /// sidebar instead.
+    func testTheSidebarKeepsItsWidthWhenItsTabsAreWider() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let least = window.frame
+        await select(audio)
+        try clickTab("basics")
+        let tabs = wc.sidebar.tabs
+        // Two tabs share the row, so labels this long stand for a busy show on a macOS that measures
+        // segmented controls wider.
+        tabs.setLabel("12 Cue Lists, carts and groups", forSegment: 0)
+        tabs.setLabel("12 Active Cues running now", forSegment: 1)
+        // The tabs ask for more than the sidebar's 280 pt, less its 10 pt margins, by more than the 12 pt
+        // a newer macOS adds to the shorter labels.
+        XCTAssertGreaterThan(tabs.intrinsicContentSize.width, 280 - 20 + 12)
+        try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil)
+        settleLayout()
+        XCTAssertTrue(wc.isVisible(.sidebar))
+        XCTAssertEqual(window.frame, least, "the window keeps its frame")
+        XCTAssertEqual(wc.sidebar.view.frame.width, 280, accuracy: 1, "the sidebar keeps its width")
+        let inSidebar = tabs.convert(tabs.bounds, to: wc.sidebar.view)
+        XCTAssertTrue(wc.sidebar.view.bounds.contains(inSidebar), "the tabs fit the sidebar: \(inSidebar)")
+        XCTAssertEqual(tabs.label(forSegment: 1), "12 Active Cues running now")
+    }
+
+    /// The Triggers tab at the least window size with the sidebar open: the hotkey field's prompt stays on
+    /// one line (cut short), so the field is as tall as the Clear button beside it, not two lines tall.
+    func testTheHotkeyPromptStaysOnOneLineInTheNarrowTriggersTab() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        await select(audio)
+        try clickTab("triggers")
+        if !wc.isVisible(.sidebar) { try XCTUnwrap(wc.footer.toggles[.sidebar]).performClick(nil) }
+        settleLayout()
+        let field = wc.inspector.hotkeyField
+        XCTAssertEqual(field.stringValue, "", "no key: the prompt shows")
+        XCTAssertEqual(field.frame.width, 130, accuracy: 0.5)
+        let prompt = (field.placeholderString ?? "") as NSString
+        let font = try XCTUnwrap(field.font)
+        let promptWidth = prompt.size(withAttributes: [.font: font]).width
+        XCTAssertGreaterThan(promptWidth, field.frame.width - 10, "the prompt is cut")
+        XCTAssertLessThanOrEqual(field.frame.height, wc.inspector.hotkeyClear.frame.height + 4, "one line tall")
+    }
+
+    /// The Geometry tab's preview draws its stage (and the black round it) in the stage's shape, inside
+    /// the view, whatever the view's own shape.
+    private func assertStageShape(_ t: GeometryThumbnail, tab: String, line: UInt = #line) throws {
+        let aspect = t.stage.width / t.stage.height
+        for (name, r) in [("stage", t.stageRect), ("backdrop", t.backdropRect)] {
+            XCTAssertGreaterThan(r.height, 0, "\(tab): the \(name) is drawn", line: line)
+            XCTAssertEqual(
+                r.width / max(r.height, 1), aspect, accuracy: 0.05, "\(tab): the \(name) keeps the stage's shape",
+                line: line)
+            let inside = t.bounds.insetBy(dx: -0.5, dy: -0.5).contains(r)
+            XCTAssertTrue(inside, "\(tab): the \(name) is inside the view", line: line)
+        }
+        XCTAssertTrue(t.backdropRect.contains(t.stageRect), "\(tab): the stage is on its black", line: line)
+    }
+
+    /// Where `view`'s visible children (down `depth` levels) run past it on the left or right, or lie
+    /// over one another, as text.
+    private func sideways(_ view: NSView, depth: Int) -> [String] {
+        let kids = view.subviews.filter { !$0.isHidden && $0.frame.width > 0 && $0.frame.height > 0 }
+        var found: [String] = []
+        for (n, kid) in kids.enumerated() {
+            if kid.frame.minX < -3 || kid.frame.maxX > view.bounds.width + 3 {
+                found.append("\(type(of: kid)) \(kid.frame) runs outside \(view.bounds.width) pt")
+            }
+            for other in kids.dropFirst(n + 1) {
+                let over = kid.frame.intersection(other.frame)
+                if over.width > 0.5, over.height > 0.5, !(kid is NSScrollView), !(other is NSScrollView) {
+                    found.append("\(type(of: kid)) \(kid.frame) overlaps \(type(of: other)) \(other.frame)")
+                }
+            }
+            if depth > 1, !(kid is NSControl), !(kid is NSScrollView) {
+                found += sideways(kid, depth: depth - 1)
+            }
+        }
+        return found
+    }
+
+    /// A Fade cue aimed at `target`, after the others.
+    private func addFade(aimedAt target: ModelID) async throws -> ModelID {
+        let id: ModelID = "00000000-0000-0000-0000-0000000000e3"
+        let list = try XCTUnwrap(rig.store.model?.cueLists.first?.id)
+        var cue = try XCTUnwrap(NewCueKind.fade.cueJSON(id: id, patch: nil))
+        var kind = try XCTUnwrap(cue["kind"])
+        kind.set("target", .string(target.raw))
+        cue.set("kind", kind)
+        let added = await rig.store.send(command: .addCue(cue, list: list, parent: nil, index: 5))
+        guard case .success = added else { return try XCTUnwrap(nil as ModelID?, "the engine adds the fade") }
+        await assertEventually { self.rig.store.model?.cue(id) != nil }
+        return id
+    }
+
+    private func addVideoCue() async throws -> ModelID {
+        let id: ModelID = "00000000-0000-0000-0000-0000000000e2"
+        let list = try XCTUnwrap(rig.store.model?.cueLists.first?.id)
+        let cue = try XCTUnwrap(NewCueKind.video.cueJSON(id: id, patch: nil))
+        guard case .success = await rig.store.send(command: .addCue(cue, list: list, parent: nil, index: 4)) else {
+            throw XCTSkip("no video cue")
+        }
+        await assertEventually { self.rig.store.model?.cue(id) != nil }
+        return id
     }
 
     func testSelectingACueWithoutTheCurveTabKeepsTheWindow() async throws {
@@ -1223,7 +1520,7 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertEqual(again.sidebar.view.frame.width, sidebar, accuracy: 1)
         let split = again.horizontalSplit
         XCTAssertEqual(
-            again.verticalSplit.frame.width + split.dividerThickness + again.sidebar.view.frame.width,
+            again.topColumn.frame.width + split.dividerThickness + again.sidebar.view.frame.width,
             split.bounds.width, accuracy: 1, "the cue list keeps the rest of the width")
     }
 
@@ -1245,6 +1542,37 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertEqual(again.sidebar.tabs.selectedSegment, 1)
         XCTAssertFalse(try XCTUnwrap(again.sidebar.activeTable.enclosingScrollView).isHidden, "the active cues show")
         XCTAssertTrue(try XCTUnwrap(again.sidebar.listTable.enclosingScrollView).isHidden)
+    }
+
+    /// View > Cue Toolbar is remembered on its own beside the GO-area toggle, which also hides the
+    /// toolbar: the toolbar hidden alone stays hidden, and the toolbar shown again under a hidden GO
+    /// area stays shown.
+    func testTheCueToolbarChoiceComesBackApartFromTheGoArea() async throws {
+        let url = try showFile("Toolbar")
+        let (doc, wc) = try await open(url)
+        app.keyWindow = { wc.window }
+        app.toggleLayout(.toolbar)
+        XCTAssertTrue(wc.cueToolbar.isHidden)
+        XCTAssertFalse(wc.masthead.isHidden)
+        await close(doc)
+
+        let (doc2, again) = try await open(url)
+        XCTAssertTrue(again.cueToolbar.isHidden, "the toolbar hidden alone stays hidden")
+        XCTAssertFalse(again.masthead.isHidden, "the GO area stays")
+        XCTAssertFalse(again.isVisible(.toolbar))
+
+        // The reverse: the GO area hidden (which hides the toolbar too), then the toolbar shown alone.
+        app.keyWindow = { again.window }
+        try toggle(.masthead, in: again)
+        XCTAssertTrue(again.masthead.isHidden)
+        app.toggleLayout(.toolbar)
+        XCTAssertFalse(again.cueToolbar.isHidden)
+        await close(doc2)
+
+        let (_, third) = try await open(url)
+        XCTAssertTrue(third.masthead.isHidden, "the GO area stays hidden")
+        XCTAssertFalse(third.cueToolbar.isHidden, "the toolbar shown alone stays shown")
+        XCTAssertEqual(third.footer.toggles[.masthead]?.state, .off)
     }
 
     func testShowModeIsNotSavedAsLayout() async throws {
@@ -1345,7 +1673,7 @@ final class WindowLayoutTests: XCTestCase {
         let (doc, wc) = try await open(old)
         let oldFrame = frame(wc)
         wc.window?.setFrame(oldFrame, display: true)
-        app.pickSaveURL = { _ in new }
+        app.pickSaveURL = { _, _ in SaveTarget(url: new) }
         let saved = await app.saveWorkspace(wc.store, asNew: true)
         XCTAssertTrue(saved)
         await assertEventually { self.app.session.workspaces.first { $0.doc == doc }?.path == new.path }
@@ -1369,7 +1697,7 @@ final class WindowLayoutTests: XCTestCase {
         wc.window?.setFrame(arranged, display: true)
         try toggle(.inspector, in: wc)
         let url = engine.folder.appendingPathComponent("first-\(UUID().uuidString).openlab")
-        app.pickSaveURL = { _ in url }
+        app.pickSaveURL = { _, _ in SaveTarget(url: url) }
         let saved = await app.saveWorkspace(wc.store)
         XCTAssertTrue(saved)
         await assertEventually { self.app.session.workspaces.first { $0.doc == doc }?.path == url.path }
@@ -1512,7 +1840,7 @@ final class WindowLayoutTests: XCTestCase {
         wc.verticalSplit.setPosition(room - tall, ofDividerAt: 0)
         settle(wc)
         try toggle(.inspector, in: wc)
-        app.pickSaveURL = { _ in new }
+        app.pickSaveURL = { _, _ in SaveTarget(url: new) }
         let saved = await app.saveWorkspace(wc.store, asNew: true)
         XCTAssertTrue(saved)
         await assertEventually { self.app.session.workspaces.first { $0.doc == doc }?.path == new.path }
@@ -1562,7 +1890,7 @@ final class WindowLayoutTests: XCTestCase {
         let (_, wc) = try await open(try showFile("Small"))
         wc.window?.setFrame(NSRect(origin: frame(wc).origin, size: wc.window?.minSize ?? .zero), display: true)
         settle(wc)
-        XCTAssertGreaterThanOrEqual(wc.cueList.view.frame.height, 56)
+        XCTAssertGreaterThanOrEqual(wc.cueList.view.frame.height, WorkspaceWindowController.minCueListHeight)
         // The least window has no room for the inspector's usual height: it keeps what the list leaves.
         XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, 240)
     }
@@ -1586,14 +1914,37 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertNil(WindowLayout.fit(good, screens: [], minSize: minSize))
     }
 
+    func testDefaultFrameFitsASmallScreenAndKeepsALargeOneAtDefaultSize() {
+        let minSize = NSSize(width: 800, height: 500)
+        let default1200 = NSRect(x: 0, y: 0, width: 1200, height: 828)
+        let small = NSRect(x: 0, y: 0, width: 1024, height: 768 - 25)
+        XCTAssertEqual(
+            WindowLayout.fit(default1200, screens: [small], minSize: minSize),
+            NSRect(x: 0, y: 0, width: 1024, height: 743), "the largest size that fits")
+        let large = NSRect(x: 0, y: 0, width: 2560, height: 1415)
+        XCTAssertEqual(WindowLayout.fit(default1200, screens: [large], minSize: minSize)?.size, default1200.size)
+    }
+
+    func testANewWorkspaceWindowOpensInsideItsScreensVisibleFrame() async throws {
+        let (_, wc) = try await open(try showFile("Fits"))
+        let window = try XCTUnwrap(wc.window)
+        let visible = try XCTUnwrap((window.screen ?? NSScreen.main)?.visibleFrame)
+        XCTAssertTrue(visible.insetBy(dx: -1, dy: -1).contains(window.frame), "\(window.frame) not in \(visible)")
+    }
+
     func testStoredLayoutRoundTripsAndDropsOnlyItsBadFields() {
         var layout = WindowLayout()
         layout.frame = NSRect(x: 1, y: 2, width: 900, height: 600)
         layout.inspectorHeight = 300
         layout.sidebarWidth = 350
         layout.shown = [.inspector: false, .sidebar: true]
-        layout.sidebarTab = 2
+        layout.sidebarTab = 1
         XCTAssertEqual(WindowLayout(stored: layout.stored), layout)
+        // A layout saved when the sidebar had a third tab (Warnings) names a tab that is gone: it is
+        // dropped, and the sidebar opens on its first tab.
+        var old = layout.stored
+        old["sidebarTab"] = 2
+        XCTAssertNil(WindowLayout(stored: old).sidebarTab)
         var damaged = layout.stored
         damaged["frame"] = [Double.nan, 0, 10, 10]
         damaged["sidebarTab"] = -1
@@ -1629,5 +1980,224 @@ final class ToolTipDelayTests: XCTestCase {
         XCTAssertEqual(defaults.integer(forKey: ToolTipDelay.defaultsKey), 650)
         defaults.set(100, forKey: ToolTipDelay.defaultsKey)
         XCTAssertEqual(defaults.integer(forKey: ToolTipDelay.defaultsKey), 100)
+    }
+}
+
+// MARK: Workspace window layout (QLab 5 comparison, UI map workspace.window / workspace.footer)
+
+extension MainWindowTests {
+    private func laidOut(_ wc: WorkspaceWindowController, width: CGFloat = 1200, height: CGFloat = 800) {
+        wc.window?.setContentSize(NSSize(width: width, height: height))
+        for _ in 0..<3 { wc.window?.layoutIfNeeded() }
+    }
+
+    private func inWindow(_ view: NSView) -> NSRect { view.convert(view.bounds, to: nil) }
+
+    /// Flow: sidebar open → it starts at the top of the window beside the GO area and ends above the
+    /// inspector; the inspector spans the window's width.
+    func testTheSidebarStartsBesideTheGoAreaAndEndsAboveTheInspectorWhichSpansTheWindow() async throws {
+        let (wc, _) = try await demoController()
+        laidOut(wc)
+        wc.setVisible(.sidebar, true)
+        laidOut(wc)
+        let content = try XCTUnwrap(wc.window?.contentView)
+        let side = inWindow(wc.sidebar.view)
+        let go = inWindow(wc.masthead)
+        let inspector = inWindow(wc.inspector.view)
+        XCTAssertEqual(side.maxY, go.maxY, accuracy: 0.5, "the sidebar starts where the GO area starts")
+        XCTAssertGreaterThanOrEqual(side.minX, go.maxX - 0.5, "beside the GO area, not under it")
+        XCTAssertGreaterThanOrEqual(side.minY, inspector.maxY - 0.5, "and ends above the inspector")
+        XCTAssertEqual(inspector.width, inWindow(content).width, accuracy: 0.5, "the inspector spans the window")
+        XCTAssertEqual(inspector.minX, 0, accuracy: 0.5)
+        let toolbar = inWindow(wc.cueToolbar)
+        XCTAssertLessThanOrEqual(toolbar.maxX, side.minX + 0.5, "the toolbar row is beside it too")
+        wc.setVisible(.sidebar, false)
+        laidOut(wc)
+        XCTAssertEqual(inWindow(wc.masthead).width, inWindow(content).width, accuracy: 0.5, "the GO area spans again")
+    }
+
+    /// Flow: the footer's warning mark sits with the right-hand buttons; one button hides the GO area and
+    /// toolbar together; no audio text or clock while all is well.
+    func testTheFooterKeepsTheWarningMarkWithTheRightButtonsAndOneButtonHidesTheGoAreaAndToolbar() async throws {
+        let (wc, rig) = try await demoController()
+        laidOut(wc)
+        let footer = wc.footer
+        footer.showWarnings(count: 2)
+        laidOut(wc)
+        let warn = footer.convert(footer.warningsButton.bounds, from: footer.warningsButton)
+        let inspector = try XCTUnwrap(footer.toggles[.inspector])
+        let sidebar = try XCTUnwrap(footer.toggles[.sidebar])
+        let inspectorFrame = footer.convert(inspector.bounds, from: inspector)
+        let sidebarFrame = footer.convert(sidebar.bounds, from: sidebar)
+        let settings = footer.convert(footer.settingsButton.bounds, from: footer.settingsButton)
+        let count = footer.convert(footer.countLabel.bounds, from: footer.countLabel)
+        XCTAssertLessThanOrEqual(warn.maxX, inspectorFrame.minX, "the warning mark is left of the inspector button")
+        XCTAssertLessThan(inspectorFrame.maxX, sidebarFrame.minX + 1)
+        XCTAssertLessThan(sidebarFrame.maxX, settings.minX + 1)
+        XCTAssertLessThan(inspectorFrame.minX - warn.maxX, 24, "and beside the right-hand buttons")
+        XCTAssertGreaterThan(warn.minX, count.maxX, "not among the centre text")
+        XCTAssertNil(footer.toggles[.toolbar], "no separate toolbar button")
+        // The one button.
+        let masthead = try XCTUnwrap(footer.toggles[.masthead])
+        masthead.performClick(nil)
+        XCTAssertTrue(wc.masthead.isHidden)
+        XCTAssertTrue(wc.cueToolbar.isHidden)
+        masthead.performClick(nil)
+        XCTAssertFalse(wc.masthead.isHidden)
+        XCTAssertFalse(wc.cueToolbar.isHidden)
+        // The openLab-only audio line and wall clock are gone while all is well.
+        await assertEventually("the engine's status arrives") {
+            try? await rig.advance(1)
+            return rig.store.status != nil
+        }
+        XCTAssertTrue(footer.alarmButton.isHidden, "all well: the footer says nothing about the audio")
+        XCTAssertFalse(
+            footer.subviews.flatMap(\.subviews).contains {
+                $0 is NSTextField && $0.accessibilityIdentifier() == "wall-clock"
+            })
+    }
+
+    /// Flow: the window at its least width with the sidebar open → every list column is whole; the first
+    /// column gave up its blank width.
+    func testAtTheLeastWidthWithTheSidebarOpenEveryListColumnIsWhole() async throws {
+        let (wc, _) = try await demoController()
+        laidOut(wc)
+        wc.setVisible(.sidebar, true)
+        let least = try XCTUnwrap(wc.window?.minSize)
+        laidOut(wc, width: least.width, height: 700)
+        let scroll = try XCTUnwrap(wc.cueList.view as? NSScrollView)
+        let outline = wc.cueList.outlineView
+        XCTAssertEqual(
+            wc.window?.frame.width ?? 0, least.width, accuracy: 0.5, "the sidebar and the bars do not widen the window")
+        let widest = outline.tableColumns.map(\.width).reduce(0, +)
+        XCTAssertFalse(
+            scroll.hasHorizontalScroller,
+            "the columns fit: nothing to scroll sideways (outline frame \(outline.frame.width), spacing \(outline.intercellSpacing)) \(outline.tableColumns.map { "\($0.identifier.rawValue)=\($0.width)/\($0.minWidth)" }) in \(scroll.frame.width) inside \(scroll.contentView.bounds.width)"
+        )
+        XCTAssertLessThanOrEqual(widest, scroll.contentView.bounds.width, "every column is inside the list")
+        for column in outline.tableColumns {
+            XCTAssertGreaterThanOrEqual(column.width, column.minWidth, column.identifier.rawValue)
+            XCTAssertGreaterThanOrEqual(
+                column.width, column.headerCell.cellSize.width - 0.5, "\(column.identifier.rawValue)'s header is whole")
+        }
+        for id in ["preWait", "duration", "postWait"] {
+            let column = outline.column(withIdentifier: NSUserInterfaceItemIdentifier(id))
+            for row in 0..<outline.numberOfRows {
+                guard let cell = outline.view(atColumn: column, row: row, makeIfNecessary: true) as? CueCell,
+                    !cell.label.isHidden
+                else { continue }
+                XCTAssertLessThanOrEqual(
+                    cell.label.attributedStringValue.size().width, outline.tableColumns[column].width - 4,
+                    "\(id) row \(row) is whole: \(cell.label.stringValue)")
+            }
+        }
+        // Every cue-type button is inside the toolbar row, none cut off at the sidebar's edge.
+        let bar = wc.cueToolbar
+        for control in bar.segmentedControls {
+            let frame = bar.convert(control.bounds, from: control)
+            XCTAssertLessThanOrEqual(
+                frame.maxX, bar.bounds.maxX + 0.5, "a toolbar group reaches past the row: \(frame)")
+            XCTAssertGreaterThanOrEqual(frame.minX, 0)
+        }
+        XCTAssertGreaterThanOrEqual(
+            bar.segmentedControls.first?.width(forSegment: 0) ?? 0, CueToolbarView.leastSegmentWidth)
+        let slotsEnd = CueCell.statusSlots.map { $0.x + $0.width }.max() ?? 0
+        XCTAssertLessThanOrEqual(CueCell.statusWidth - slotsEnd, 4, "no blank width left in the first column")
+    }
+
+    /// Flow: the GO button and standby line are drawn alike in Edit and Show Mode, which only enlarges
+    /// them; readable in light and dark appearance.
+    func testTheGoButtonAndStandbyLineLookTheSameInShowModeJustLargerAndReadInLightAndDark() async throws {
+        let (wc, _) = try await demoController()
+        laidOut(wc)
+        let m = wc.masthead
+        func fill() -> CGColor? { m.goButton.layer?.backgroundColor }
+        let editFill = fill()
+        let editSize = m.goButton.frame.size
+        let editFont = m.standbyField.font?.pointSize ?? 0
+        let editBorder = m.goButton.layer?.borderColor
+        XCTAssertEqual(m.goButton.layer?.borderWidth, 3, "a green edge")
+        XCTAssertEqual(
+            NSColor(cgColor: try XCTUnwrap(editBorder))?.usingColorSpace(.sRGB)?.greenComponent ?? 0,
+            NSColor.systemGreen.usingColorSpace(.sRGB)?.greenComponent ?? 1, accuracy: 0.2)
+        wc.setShowMode(true)
+        laidOut(wc)
+        XCTAssertEqual(fill(), editFill, "the same face")
+        XCTAssertEqual(m.goButton.layer?.borderColor, editBorder)
+        XCTAssertGreaterThan(m.goButton.frame.width, editSize.width)
+        XCTAssertGreaterThan(m.goButton.frame.height, editSize.height)
+        XCTAssertGreaterThan(m.standbyField.font?.pointSize ?? 0, editFont)
+        // Contrast of the texts on their boxes, in each appearance.
+        func luminance(_ c: NSColor) -> Double {
+            let c = c.usingColorSpace(.sRGB) ?? c
+            func lin(_ v: CGFloat) -> Double {
+                Double(v) <= 0.03928 ? Double(v) / 12.92 : pow((Double(v) + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * lin(c.redComponent) + 0.7152 * lin(c.greenComponent) + 0.0722 * lin(c.blueComponent)
+        }
+        func contrast(_ a: NSColor, _ b: NSColor) -> Double {
+            let (x, y) = (luminance(a), luminance(b))
+            return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+        }
+        XCTAssertGreaterThanOrEqual(contrast(MastheadView.goText, MastheadView.goFill), 4.5)
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            appearance.performAsCurrentDrawingAppearance {
+                XCTAssertGreaterThanOrEqual(contrast(.labelColor, MastheadView.boxFill), 4.5, "\(name)")
+            }
+        }
+    }
+
+    /// Flow: a press in a row's status column moves the playhead there and the selection does not change.
+    func testAPressInTheStatusColumnMovesThePlayheadAndLeavesTheSelection() async throws {
+        let (wc, rig) = try await demoController()
+        laidOut(wc)
+        let intro: ModelID = "00000000-0000-0000-0000-00000000000a"
+        let rain: ModelID = "00000000-0000-0000-0000-000000000022"
+        let list = wc.cueList
+        await assertEventually { rig.store.playheads[TestSnapshots.mainList] == intro }
+        list.selectAsUser([intro])
+        let outline = list.outlineView
+        let node = try XCTUnwrap(list.node(rain))
+        let row = outline.row(forItem: node)
+        XCTAssertGreaterThanOrEqual(row, 0, "Rain is listed")
+        let cell = outline.frameOfCell(atColumn: 0, row: row)
+        let point = outline.convert(NSPoint(x: cell.midX, y: cell.midY), to: nil)
+        let down = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: wc.window?.windowNumber ?? 0, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        outline.mouseDown(with: down)
+        await assertEventually("the playhead moved to Rain") { rig.store.playheads[TestSnapshots.mainList] == rain }
+        try await rig.advance()
+        XCTAssertEqual(list.selectedIDs(), [intro], "the selection did not change")
+        XCTAssertTrue(list.isPlayheadRow(rain))
+        XCTAssertTrue(wc.masthead.standbyField.stringValue.contains("Rain"), "the GO area stands by on Rain")
+        // The user's own click on a row selects it, as ever.
+        list.selectAsUser([rain])
+        XCTAssertEqual(list.selectedIDs(), [rain])
+    }
+
+    /// Flow: the window title names the shown cue list.
+    func testTheWindowTitleNamesTheShownCueList() async throws {
+        let (wc, rig) = try await demoController()
+        XCTAssertEqual(wc.window?.title, "openLab \u{2014} Main", "Edit Mode names the list from the start")
+        wc.workspaceName = "Demo"
+        XCTAssertEqual(wc.window?.title, "Demo \u{2014} Main")
+        let other = ModelID(UUID().uuidString.lowercased())
+        guard case .success = await rig.store.send(command: .addCueList(id: other, name: "Other", index: 1)) else {
+            return XCTFail("add list")
+        }
+        await assertEventually { rig.store.model?.cueLists.contains { $0.id == other } == true }
+        wc.cueList.showList(other)
+        await assertEventually("the title follows the shown list") { wc.window?.title == "Demo \u{2014} Other" }
+        guard case .success = await rig.store.send(command: .renameCueList(id: other, name: "Cart")) else {
+            return XCTFail("rename list")
+        }
+        await assertEventually("and its rename") { wc.window?.title == "Demo \u{2014} Cart" }
+        wc.setShowMode(true)
+        await assertEventually {
+            wc.window?.title == String(format: loc("window.main.title.showMode"), "Demo \u{2014} Cart")
+        }
     }
 }

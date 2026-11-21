@@ -121,6 +121,50 @@ fn unsupported_media_is_broken_with_its_reason() {
     assert_eq!(changes(&forget, 1), vec![(CueState::Idle, 10)]);
 }
 
+/// The binary reports an Audio cue every slice of which is skipped: the cue is broken before
+/// any GO with a problem of its own, a start plays nothing, and a slice that plays again
+/// (reported, or the edit alone) clears it.
+#[test]
+fn a_cue_whose_slices_are_all_skipped_is_broken_with_its_own_problem() {
+    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    let told = |problem: Option<SliceProblem>| Input::SliceProblems {
+        cues: vec![(id(1), problem)],
+    };
+    let broken = rig.at(100, told(Some(SliceProblem::NothingPlays)));
+    let problem = vec![CueProblem::NothingPlays];
+    assert_eq!(problem_reports(&broken), vec![(id(1), problem.clone())]);
+    assert_eq!(changes(&broken, 1), vec![(CueState::Broken, 100)]);
+    assert_eq!(
+        problem[0].to_string(),
+        "every slice is skipped, so no part of its file plays"
+    );
+    assert!(voice_starts(&rig.start(120, 1)).is_empty());
+    assert_eq!(rig.state(2), CueState::Idle);
+    // A report of another kind replaces it; the first again brings it back.
+    let other = SliceProblem::Unplayable {
+        reason: "a looping slice is too short".into(),
+    };
+    rig.at(130, told(Some(other.clone())));
+    assert_eq!(rig.problems(1), vec![other.problem()]);
+    rig.at(140, told(Some(SliceProblem::NothingPlays)));
+    assert_eq!(rig.problems(1), problem);
+    // An edit of a play count drops the report at once: a GO in the same burst plays.
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut rig.find_mut(1).kind
+    {
+        *last_slice_play_count = PlayCount::Skip;
+    }
+    rig.tick(150);
+    assert!(rig.problems(1).is_empty());
+    rig.at(160, told(Some(SliceProblem::NothingPlays)));
+    assert_eq!(rig.problems(1), problem);
+    let fixed = rig.at(200, told(None));
+    assert_eq!(problem_reports(&fixed), vec![(id(1), vec![])]);
+    assert_eq!(voice_starts(&rig.start(300, 1)), vec![(id(1), 300)]);
+}
+
 /// The binary reports an Audio cue whose slices cannot be played with its probed file (a
 /// looping slice too short): the cue is broken before any GO, a GO skips it, and it is fixed
 /// when the binary says so. A media problem takes its place while the file cannot be played.
@@ -128,7 +172,12 @@ fn unsupported_media_is_broken_with_its_reason() {
 fn unplayable_slices_break_the_cue_until_the_binary_clears_them() {
     let mut rig = Rig::new(vec![sound(1), sound(2)]);
     let slices = |cue: u128, reason: Option<&str>| Input::SliceProblems {
-        cues: vec![(id(cue), reason.map(str::to_owned))],
+        cues: vec![(
+            id(cue),
+            reason.map(|reason| SliceProblem::Unplayable {
+                reason: reason.to_owned(),
+            }),
+        )],
     };
     let broken = rig.at(100, slices(1, Some("a looping slice is too short")));
     let problem = vec![CueProblem::SlicesUnplayable {
@@ -172,7 +221,7 @@ fn unplayable_slices_break_the_cue_until_the_binary_clears_them() {
     if let CueKind::Audio { slices, .. } = &mut rig.find_mut(2).kind {
         slices.push(SliceMarker {
             time: 0.5,
-            play_count: 1,
+            play_count: 1.into(),
         });
     }
     assert_eq!(voice_starts(&rig.start(420, 2)), vec![(id(2), 420)]);
@@ -887,6 +936,60 @@ fn problem_work_is_proportional_to_what_changed() {
 }
 
 #[test]
+fn a_mapped_patch_report_recomputes_no_cue_on_it() {
+    // A 2,000-cue doc opening reports its patch mapped for the first time: nothing its cues
+    // show changes, so none is recomputed (it once cost most of the open's control wake).
+    let ws = many(2000);
+    let mut engine = CueEngine::new(EngineConfig::new(RATE, 5, 1).unwrap());
+    engine.handle(&ws, Input::Tick, 0);
+    assert_eq!(engine.problem_checks(), 2000);
+    let status = |resolution| Input::PatchStatus {
+        patch: patch_id(1),
+        resolution,
+    };
+    let other = PatchResolution::Mapped {
+        device: "Other".into(),
+        channels: vec![2, 3],
+    };
+    engine.handle(&ws, status(mapped()), 10);
+    engine.handle(&ws, status(other), 20);
+    assert_eq!(
+        engine.problem_checks(),
+        2000,
+        "mapped, then mapped elsewhere"
+    );
+    let missing = PatchResolution::DeviceMissing {
+        device: "Interface".into(),
+    };
+    engine.handle(&ws, status(missing.clone()), 30);
+    assert_eq!(
+        engine.problem_checks(),
+        4000,
+        "its cues show the missing device"
+    );
+    assert_eq!(engine.broken_cues().len(), 2000);
+    engine.handle(&ws, status(PatchResolution::Unmapped), 40);
+    assert_eq!(engine.problem_checks(), 6000, "another reason shown");
+    engine.handle(&ws, status(mapped()), 50);
+    assert_eq!(engine.problem_checks(), 8000, "mapped again: none broken");
+    assert!(engine.broken_cues().is_empty());
+}
+
+#[test]
+fn a_cue_its_lost_device_broke_comes_back_on_the_first_mapped_report() {
+    // No status was reported before the loss: the first one, mapped, is the device back.
+    let mut rig = Rig::new(vec![sound(1)]);
+    rig.start(0, 1);
+    rig.at(5, Input::Pause { cue: id(1) });
+    lose_device(&mut rig, 10, 1);
+    rig.tick(100);
+    assert_eq!(rig.state(1), CueState::Broken);
+    let back = rig.device(1000, 1, mapped());
+    assert_eq!(changes(&back, 1), vec![(CueState::Idle, 1000)]);
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
 fn a_batch_reports_media_and_patches_together() {
     let mut rig = Rig::new(vec![sound(1), sound_of(2, "media/b.wav", 1)]);
     let missing = PatchResolution::DeviceMissing { device: "X".into() };
@@ -1106,6 +1209,7 @@ fn fade_with(n: u128, levels: FadeLevels, stop: bool) -> Cue {
             levels,
             stop_target_when_done: stop,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     )
 }
@@ -1131,7 +1235,7 @@ fn a_fade_that_sets_no_level_is_broken_and_go_skips_it_even_with_stop_target() {
     assert_eq!(rig.state(2), CueState::Broken);
     assert_eq!(
         CueProblem::NothingToFade.to_string(),
-        "no levels set to fade"
+        "no levels or picture values set to fade"
     );
     // Cue 1 plays; GO on the broken Fade does not stop it, even with "stop target when done".
     rig.go(0);
@@ -1626,6 +1730,38 @@ fn a_device_lost_failure_fires_no_continue_of_a_plain_cue() {
 }
 
 #[test]
+fn a_device_lost_in_the_last_samples_of_a_sound_ended_ahead_finds_no_voice_to_stop() {
+    // With lookahead the engine carries out a known end up to the window ahead: the cue is in
+    // its post-wait while its sound's last samples still play. A device lost then leaves the
+    // cue paused with its post-wait standing still and cancelled; the engine owns no voice by
+    // then, so it sends no stop (a command for the voice would come after its end was
+    // committed) and the binary stops what still sounds.
+    let mut rig = Rig::with_lookahead(vec![timed(sound(1), 0.0, 1.0, AC), sound(2)], 301);
+    rig.device(0, 1, mapped());
+    rig.start(0, 1);
+    let run = rig.run(1);
+    let (cue, frames) = (id(1), 300);
+    let told = rig.at(0, Input::ActionLength { cue, run, frames });
+    assert_eq!(changes(&told, 1), vec![(CueState::PostWaiting, 300)]);
+    rig.device(5, 1, missing());
+    let failed = lose_device(&mut rig, 5, 1);
+    assert_eq!(changes(&failed, 1), vec![(CueState::Paused, 5)]);
+    assert!(rig.engine.is_lost(id(1)));
+    assert_eq!(rig.engine.run_of(id(1)), None);
+    assert!(voice_stops(&failed).is_empty(), "{failed:?}");
+    assert_eq!(
+        frozen(&rig, 1, 5),
+        vec![(Timer::PostWait, 5, Some(995))],
+        "its post-wait stands still"
+    );
+    // Nothing it scheduled comes after the loss, and the mixer's end report is stale.
+    let ended = rig.at(300, Input::ActionEnded { cue, run, at: 300 });
+    let later = rig.tick(5_000);
+    assert!(starts(&ended).is_empty() && starts(&later).is_empty());
+    assert_eq!(rig.state(1), CueState::Paused);
+}
+
+#[test]
 fn a_group_whose_playing_children_its_device_lost_shows_paused_with_them() {
     // Assumed (QLab 5 measured for cues only): a running group whose playing children the
     // loss left paused reads paused too, its time standing still, and keeps the mark after the
@@ -1749,4 +1885,37 @@ fn a_group_paused_by_the_operator_is_not_marked_when_a_child_resumed_alone_is_lo
     rig.at(50, Input::Resume { cue: id(10) });
     assert!(!rig.engine.is_lost(id(10)));
     assert_ne!(rig.state(10), CueState::Paused);
+}
+
+/// The cue list's mark on a playlist whose children a lost device left paused: once the device
+/// is back, a start clears them and plays the first, so the mark is on the first child again.
+#[test]
+fn a_playlists_mark_after_its_device_returns_is_the_child_its_start_plays() {
+    let mut rig = Rig::new(vec![playlist_of(1, false, vec![sound(2), sound(3)])]);
+    rig.device(0, 1, mapped());
+    rig.at(
+        0,
+        Input::CueLengths {
+            lengths: vec![(id(2), Some(100_000)), (id(3), Some(100_000))],
+        },
+    );
+    rig.start(10, 1);
+    rig.device(20, 1, missing());
+    lose_device(&mut rig, 30, 2);
+    assert!(rig.engine.is_lost(id(2)));
+    rig.device(50, 1, mapped());
+    assert_eq!(rig.engine.next_in_playlist(id(1)), Some(id(2)));
+    let go = rig.start(100, 1);
+    let started: Vec<CueId> = go
+        .iter()
+        .filter_map(|a| match a {
+            Action::StartVoice { cue, .. } => Some(*cue),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        started,
+        vec![id(2)],
+        "the marked child is the one the start plays"
+    );
 }

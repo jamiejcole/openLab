@@ -6,7 +6,7 @@
 
 use openlab_core::stage_link::Display;
 
-use crate::host::{Layer, Platform};
+use crate::host::{Layer, Platform, Presented};
 
 pub const NO_VIDEO: &str = "this computer's openLab has no video output";
 
@@ -21,7 +21,7 @@ impl Platform for NoVideo {
         Vec::new()
     }
 
-    fn present(&mut self, _: &Display, _: &[Layer]) -> Result<(), String> {
+    fn present(&mut self, _: &Display, _: &[Layer]) -> Result<Presented, String> {
         Err(NO_VIDEO.into())
     }
 
@@ -66,6 +66,7 @@ mod tests {
             display: None,
             keep_black: true,
             stack: 0,
+            monitor: Some("Stage".into()),
         };
         host.handle(
             ToStage::Stages {
@@ -79,6 +80,21 @@ mod tests {
                 state: StageState::Failed { .. },
                 ..
             }
+        ));
+        // No monitor either: nothing to draw it with.
+        out.clear();
+        host.handle(
+            ToStage::ProbeMonitor {
+                stage: id,
+                width: 64,
+                height: 48,
+                points: vec![[0.5, 0.5]],
+            },
+            &mut out,
+        );
+        assert!(matches!(
+            out.last(),
+            Some(FromStage::MonitorProbed { colours, .. }) if colours.is_empty()
         ));
     }
 }

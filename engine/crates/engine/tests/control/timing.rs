@@ -325,6 +325,7 @@ fn a_fade_cue_ramps_a_running_voice() {
             },
             stop_target_when_done: false,
             mode: Default::default(),
+            geometry: Default::default(),
         },
     );
     let mut s = show(workspace(vec![audio(1, &a, 0), fade]));
@@ -578,7 +579,7 @@ fn a_load_cue_with_a_negative_time_plays_an_audio_target_from_before_its_end() {
             ..
         } = &mut target.kind
         {
-            *last_slice_play_count = play_count;
+            *last_slice_play_count = play_count.into();
         }
         let load = cue(
             1,
@@ -611,9 +612,10 @@ fn a_load_cue_with_a_negative_time_plays_an_audio_target_from_before_its_end() {
     }
 }
 
-/// A load past the end of an audio cue's length loads it to its end (QLab 5). Starting it
-/// plays nothing and ends on its start sample, so its auto-follow successor starts on that
-/// sample too, with no `late_start` warning.
+/// A load past the end of an audio cue's length loads it to its end (QLab 5), and the rest of
+/// the time carries into the cue it auto-follows into. Starting it plays nothing and ends on its
+/// start sample, so its successor starts on that sample too, from its loaded point, with no
+/// `late_start` warning.
 #[test]
 fn load_past_the_end_starts_the_successor_on_time() {
     let a = wav(&dc(500, 0.25));
@@ -621,27 +623,30 @@ fn load_past_the_end_starts_the_successor_on_time() {
     let mut c1 = audio(1, &a, 0);
     c1.continue_mode = ContinueMode::AutoFollow;
     let mut s = show(workspace(vec![c1, audio(2, &b, 1)]));
+    // 700 frames: cue 1's 500 and 200 into cue 2.
     s.transport(TransportAction::Load {
         cue: id(1),
-        at: secs(10_000),
+        at: secs(700),
     });
     s.run(BLOCK * 2);
     // Loaded, not complete: nothing has played and nothing followed.
-    assert_eq!(
-        s.control().engine().state(id(1)),
-        openlab_core::CueState::Loaded
-    );
-    assert_eq!(
-        s.control().engine().state(id(2)),
-        openlab_core::CueState::Idle
-    );
+    for n in [1, 2] {
+        assert_eq!(
+            s.control().engine().state(id(n)),
+            openlab_core::CueState::Loaded
+        );
+    }
     let at = start(&mut s, 1) as usize;
     s.run(4000);
     let ch0 = s.channel(0);
     let ch1 = s.channel(1);
     assert_eq!(first_nonzero(&ch0), None);
     assert_eq!(first_nonzero(&ch1), Some(at));
-    assert_eq!(last_nonzero(&ch1), Some(at + 499));
+    assert_eq!(
+        last_nonzero(&ch1),
+        Some(at + 299),
+        "the last 300 frames of cue 2"
+    );
     let msgs = s.take_outbound();
     assert!(
         !warnings(&msgs)

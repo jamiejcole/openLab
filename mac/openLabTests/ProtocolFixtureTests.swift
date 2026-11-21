@@ -26,6 +26,8 @@ final class ProtocolFixtureTests: XCTestCase {
         case .workspaces: return "workspaces"
         case .closed: return "closed"
         case .videoOutputs: return "video_outputs"
+        case .mediaCopyProgress: return "media_copy_progress"
+        case .mediaCopied: return "media_copied"
         case .unknown(_): return "?"
         }
     }
@@ -73,6 +75,15 @@ final class ProtocolFixtureTests: XCTestCase {
             ])
     }
 
+    /// A `seek` transport (a click in a cue's waveform) decodes to its cue and file position.
+    func testSeekTransportDecodesItsCueAndPosition() throws {
+        let m = try JSONDecoder().decode(
+            ClientMessage.self, from: Data(try Fixtures.text("client", "transport_seek").utf8))
+        guard case .transport(_, .seek(let cue, let position)) = m else { return XCTFail("seek") }
+        XCTAssertEqual(cue, "00000000-0000-0000-0000-00000000000a")
+        XCTAssertEqual(position, 3.5)
+    }
+
     func testOutputDeviceAndPatchMappingMessagesDecodeFromTheirFixtures() throws {
         guard
             case .request(_, .setOutputDevice(let device)) = try JSONDecoder().decode(
@@ -91,10 +102,13 @@ final class ProtocolFixtureTests: XCTestCase {
         guard case .result(_, .ok(let ok)) = try ServerMessage.decode(mappingsText),
             case .patchMappings(let entries)? = ok.data
         else { return XCTFail("patch_mappings") }
-        XCTAssertEqual(entries.count, 3)
+        XCTAssertEqual(entries.count, 4)
         XCTAssertEqual(entries[0].mapping, PatchMapping(device: "Scarlett 2i2", channels: [0, 1]))
         XCTAssertNil(entries[1].mapping)
-        XCTAssertEqual(entries.map { $0.resolution?.type }, ["mapped", "unmapped", "device_missing"])
+        // #685: a patch on the system output, resolved to the device that is now.
+        XCTAssertEqual(entries[2].mapping, .systemOutput(channels: [0, 1]))
+        XCTAssertEqual(entries[2].resolution?.json["device"]?.stringValue, "MacBook Pro Speakers")
+        XCTAssertEqual(entries.map { $0.resolution?.type }, ["mapped", "unmapped", "mapped", "device_missing"])
     }
 
     /// VID-01: the display list, the stage mappings and the stage display choice decode from their
@@ -123,6 +137,29 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertNil(entries[1].mapping)
     }
 
+    /// The Load to Time slider's span: `sequence_span` and its answer, with and without an end.
+    func testSequenceSpanRequestAndResultMatchTheFixtures() throws {
+        guard
+            case .request(_, .sequenceSpan(let cue)) = try JSONDecoder().decode(
+                ClientMessage.self, from: Data(try Fixtures.text("client", "request_sequence_span").utf8))
+        else { return XCTFail("sequence_span") }
+        XCTAssertEqual(cue, "00000000-0000-0000-0000-00000000000a")
+        for (file, span) in [("result_sequence_span", 9.5 as Double?), ("result_sequence_span_unknown", nil)] {
+            guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", file)),
+                case .sequenceSpan(let got)? = ok.data
+            else { return XCTFail(file) }
+            XCTAssertEqual(got, span, file)
+        }
+    }
+
+    /// A cue loaded to a time: how far into its action it stands, and a voice's file point beside it.
+    func testLoadedProgressCarriesTheTimeIntoTheAction() throws {
+        guard case .progress(let items, _) = try ServerMessage.decode(try Fixtures.text("server", "progress_loaded"))
+        else { return XCTFail("progress_loaded") }
+        XCTAssertEqual(items.map(\.elapsed), [2.5, 4.0])
+        XCTAssertEqual(items.map(\.position), [32.5, nil])
+    }
+
     /// AUD-02: `status` describes every open output device, the primary first.
     func testStatusListsEveryOutputDevice() throws {
         guard case .status(let ok) = try ServerMessage.decode(try Fixtures.text("server", "status")) else {
@@ -149,6 +186,19 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertNil(cleared)
         // A clear is sent as an explicit null, as the fixture has it.
         XCTAssertTrue(try clear.text().contains("\"mapping\":null"))
+        // #685: the system output is sent as the fixture has it; a named device sends no `system`.
+        let system = try JSONDecoder().decode(
+            ClientMessage.self,
+            from: Data(try Fixtures.text("client", "request_set_patch_mapping_system_output").utf8))
+        XCTAssertEqual(
+            system,
+            .request(
+                id: 65,
+                .setPatchMapping(
+                    patch: "00000000-0000-0000-0000-000000000071",
+                    mapping: .systemOutput(channels: [0, 1]))))
+        XCTAssertTrue(try system.text().contains("\"system\":true"))
+        XCTAssertFalse(try set.text().contains("system"))
     }
 
     /// AUD-14: the `waveform` request is sent as the fixture has it and its answer decodes.
@@ -252,6 +302,27 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertNil(d[TestSnapshots.intro]?.duration, "a cue that loops until devamped has no duration")
         XCTAssertEqual(d[TestSnapshots.rain]?.file, 2.0)
         XCTAssertNil(d[TestSnapshots.radio], "its file is missing")
+    }
+
+    func testMediaCopyMessagesDecode() throws {
+        guard
+            case .mediaCopyProgress(let p) = try ServerMessage.decode(
+                try Fixtures.text("server", "media_copy_progress"))
+        else { return XCTFail("media_copy_progress") }
+        XCTAssertEqual(p.cues.count, 2)
+        XCTAssertEqual(p.filesDone, 1)
+        XCTAssertEqual(p.filesTotal, 2)
+        XCTAssertEqual(p.bytesTotal, 3_145_728)
+        XCTAssertTrue(p.onDemand)
+        guard case .mediaCopied(let r) = try ServerMessage.decode(try Fixtures.text("server", "media_copied"))
+        else { return XCTFail("media_copied") }
+        XCTAssertEqual(r.copied, 3)
+        XCTAssertEqual(r.reused, 1)
+        XCTAssertEqual(r.inFolder, 2)
+        XCTAssertEqual(r.failedCount, 1)
+        XCTAssertEqual(r.failed.first?.reason, "missing")
+        XCTAssertEqual(r.failed.first?.file, "/Volumes/Library/Thunder.wav")
+        XCTAssertFalse(r.cancelled)
     }
 
     func testDecodedValuesAreRight() throws {
@@ -406,7 +477,17 @@ final class ProtocolFixtureTests: XCTestCase {
             (.autoLoad(true), "command_set_cue_auto_load"),
             (.skipIfDisarmed(true), "command_set_cue_skip_if_disarmed"),
             (
-                .triggers(hotkey: KeyChord("j", []).hotkeyJSON, enabled: false),
+                .triggers(
+                    hotkey: KeyChord("j", []).hotkeyJSON, enabled: false,
+                    wallClock: {
+                        var t = WallClockTrigger()
+                        t.enabled = true
+                        t.hours = 19
+                        t.minutes = 25
+                        t.days = Set(1...6)
+                        t.twelveHour = true
+                        return t.json
+                    }()),
                 "command_set_cue_triggers"
             ),
         ]

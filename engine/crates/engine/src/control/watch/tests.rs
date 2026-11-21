@@ -506,6 +506,7 @@ fn a_batch_of_an_older_generation_is_dropped() {
             key: A.into(),
             path: A.into(),
             id: 1,
+            hashes: Default::default(),
         },
     ]);
     let batch = w.manual_pass().unwrap();
@@ -546,6 +547,7 @@ fn a_watcher_that_ends_is_restarted_once_then_the_watch_stops() {
         key: A.into(),
         path: A.into(),
         id: 1,
+        hashes: Default::default(),
     }]);
     wait_finished(&w);
     w.supervise();

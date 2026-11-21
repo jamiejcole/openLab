@@ -46,6 +46,7 @@ pub fn cue(n: u128, kind: CueKind) -> Cue {
         triggers: Triggers {
             hotkey: None,
             hotkey_enabled: true,
+            wall_clock: Default::default(),
         },
         second_trigger: SecondTrigger::Nothing,
         second_trigger_on_release: false,
@@ -79,7 +80,7 @@ pub fn audio() -> CueKind {
         fade_in: no_fade(),
         fade_out: no_fade(),
         slices: vec![],
-        last_slice_play_count: 1,
+        last_slice_play_count: 1.into(),
         levels: CueLevels {
             master_db: 0.0,
             outputs: vec![out(0.0), out(0.0)],
@@ -100,6 +101,9 @@ pub fn video() -> CueKind {
         media: Some(MediaRef::new("media/v.mov")),
         stage: Some(stage_id(1)),
         duration: None,
+        geometry: Default::default(),
+        timing: Default::default(),
+        sound: Default::default(),
     }
 }
 
@@ -115,6 +119,7 @@ pub fn fade(target: u128) -> CueKind {
         },
         stop_target_when_done: true,
         mode: Default::default(),
+        geometry: Default::default(),
     }
 }
 
@@ -133,6 +138,8 @@ pub fn patch_output() -> PatchOutput {
 
 pub fn patch(n: u128, outputs: usize) -> OutputPatch {
     OutputPatch {
+        crosspoints: Vec::new(),
+        device_outputs: Vec::new(),
         id: patch_id(n),
         name: "Main".into(),
         master_db: 0.0,
@@ -163,6 +170,11 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             auto_number_start: 1.0,
             auto_number_increment: 1.0,
             new_cues_auto_load: false,
+            auto_number_new_cues: true,
+            lock_playhead: true,
+            go_needs_key_up: false,
+            osc_enabled: true,
+            copy_media_on_add: true,
         },
         patches: vec![patch(1, 2)],
         network_patches: vec![NetworkPatch {

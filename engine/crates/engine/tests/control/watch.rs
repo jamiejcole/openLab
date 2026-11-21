@@ -346,6 +346,14 @@ fn an_unchanged_pass_over_two_thousand_files_costs_control_nothing() {
     let mut c = manual(&ws, &fs);
     c.probe = fake_probe;
     let mut s = show_with(ws, c);
+    // The watch takes up a doc's files a few hundred a wake.
+    for _ in 0..10 {
+        if s.control().watched_files() == 2000 {
+            break;
+        }
+        s.tick();
+    }
+    assert_eq!(s.control().watched_files(), 2000);
     assert!(!s.watch_pass());
     s.take_outbound();
     let (read, builds, stats) = (
@@ -622,4 +630,459 @@ fn a_file_that_appears_after_its_probe_failed_unbreaks_its_cue() {
         assert!(s.control().engine().problems(id(1)).is_empty());
         assert!(!s.watch_pass());
     }
+}
+
+// ----- a doc taking up a file another doc watches -----
+
+static PROBED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// [`fake_probe`] that notes each path it probes in [`PROBED`].
+fn noting_probe(path: &Path) -> Result<Probed, MediaError> {
+    PROBED.lock().unwrap().push(path.to_path_buf());
+    fake_probe(path)
+}
+
+fn probes_of(path: &Path) -> usize {
+    PROBED.lock().unwrap().iter().filter(|p| *p == path).count()
+}
+
+/// Doc A open on `shared` (cue 1), then doc B opened beside it on 2,000 files of its own and
+/// `shared` last (cue 9000), its probes answered: the media watch takes up B's files a few
+/// hundred a wake, so `shared` is not yet B's.
+fn shared_beside_a_big_doc(
+    fs: &FakeFs,
+    shared: &Path,
+) -> (OfflineShow, openlab_core::protocol::DocId) {
+    fs.put(shared, 1);
+    let a = workspace(vec![audio(1, shared, 0)]);
+    let mut c = manual(&a, fs);
+    c.probe = noting_probe;
+    let mut s = show_with(a, c);
+    assert!(!s.watch_pass());
+    let dir = shared.parent().unwrap();
+    let mut cues: Vec<_> = (0..2000)
+        .map(|n| {
+            let p = dir.join(format!("own-{n:04}.wav"));
+            fs.put(&p, 1);
+            audio(10_000 + n, &p, 0)
+        })
+        .collect();
+    cues.push(audio(9000, shared, 0));
+    let mut b = workspace(cues);
+    b.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(7));
+    let doc = s
+        .open_doc(openlab_engine::control::DocSource::Workspace(Box::new(b)))
+        .unwrap();
+    s.settle_media();
+    assert!(
+        s.control().watched_files() < 2001,
+        "the share has not taken up all of B's files yet"
+    );
+    (s, doc)
+}
+
+/// Passes and wakes until the watch has every file and has seen the change.
+fn follow(s: &mut OfflineShow) {
+    for _ in 0..20 {
+        s.watch_pass();
+        s.tick();
+    }
+    s.settle_media();
+    s.tick();
+}
+
+fn problems_in(s: &OfflineShow, doc: openlab_core::protocol::DocId, n: u128) -> Vec<CueProblem> {
+    s.control()
+        .doc(doc)
+        .unwrap()
+        .engine()
+        .problems(id(n))
+        .to_vec()
+}
+
+#[test]
+fn a_doc_that_takes_up_a_watched_file_late_hears_it_went_missing() {
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-gone/shared.wav");
+    let (mut s, b) = shared_beside_a_big_doc(&fs, &shared);
+    // The file goes before B's change for it was handled: only A hears it at once.
+    fs.remove(&shared);
+    follow(&mut s);
+    assert_eq!(s.control().watched_files(), 2001);
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::MediaMissing { .. }]
+    ));
+    assert!(
+        matches!(
+            problems_in(&s, b, 9000)[..],
+            [CueProblem::MediaMissing { .. }]
+        ),
+        "B hears the shared file is gone: {:?}",
+        problems_in(&s, b, 9000)
+    );
+}
+
+#[test]
+fn a_doc_that_takes_up_a_watched_file_late_probes_it_again_once_replaced() {
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-replaced/shared.wav");
+    let (mut s, _) = shared_beside_a_big_doc(&fs, &shared);
+    assert_eq!(probes_of(&shared), 2, "one probe per doc");
+    // Another file takes its place before B's change for it was handled.
+    fs.put(&shared, 2);
+    follow(&mut s);
+    assert_eq!(probes_of(&shared), 4, "each doc probes the new file");
+}
+
+#[test]
+fn a_doc_closing_while_another_takes_up_their_shared_file_leaves_it_heard() {
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-closing/shared.wav");
+    let (mut s, b) = shared_beside_a_big_doc(&fs, &shared);
+    let a = s.control().doc_ids()[0];
+    // A closes while B's files are still being taken up, and the file goes.
+    s.close_doc(a, false).unwrap();
+    fs.remove(&shared);
+    follow(&mut s);
+    assert_eq!(
+        s.control().watched_files(),
+        2001,
+        "B's own and the shared file"
+    );
+    assert!(
+        matches!(
+            problems_in(&s, b, 9000)[..],
+            [CueProblem::MediaMissing { .. }]
+        ),
+        "{:?}",
+        problems_in(&s, b, 9000)
+    );
+}
+
+#[test]
+fn a_doc_beside_one_that_lets_go_of_a_replaced_shared_file_probes_it_again() {
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-released/shared.wav");
+    let (mut s, _) = shared_beside_a_big_doc(&fs, &shared);
+    assert_eq!(probes_of(&shared), 2, "one probe per doc");
+    // Replaced: seen the same on two passes, then A closes before B's other files are all
+    // taken up. Each doc probed the new file.
+    fs.put(&shared, 2);
+    assert!(!s.watch_pass());
+    assert!(s.watch_pass());
+    s.settle_media();
+    let a = s.control().doc_ids()[0];
+    s.close_doc(a, false).unwrap();
+    follow(&mut s);
+    assert_eq!(probes_of(&shared), 4, "B probed the new file too");
+}
+
+#[test]
+fn a_shared_file_gone_and_back_while_a_doc_opens_beside_it_is_present_for_both() {
+    use openlab_engine::control::watch::WatchAnswer;
+    let fs = FakeFs::new();
+    let shared = PathBuf::from("/late-back/shared.wav");
+    let (mut s, b) = shared_beside_a_big_doc(&fs, &shared);
+    fs.remove(&shared);
+    assert!(s.watch_pass(), "A hears it is gone");
+    fs.put(&shared, 1);
+    assert!(s.watch_pass_batch().is_none(), "seen once: not back yet");
+    let back = s.watch_pass_batch().expect("back on the second pass");
+    // B's last files are taken up in the wake that hears the file is back.
+    while 2001 - s.control().watched_files() > 256 {
+        s.tick();
+    }
+    s.deliver(Inbox::Watch(WatchAnswer::Batch(back)));
+    s.tick();
+    follow(&mut s);
+    assert_eq!(s.control().watched_files(), 2001);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert!(
+        problems_in(&s, b, 9000).is_empty(),
+        "{:?}",
+        problems_in(&s, b, 9000)
+    );
+}
+
+#[test]
+fn two_docs_opened_back_to_back_on_the_same_files_both_hear_them_go() {
+    use openlab_engine::control::DocSource;
+    let fs = FakeFs::new();
+    let first = PathBuf::from("/two-docs/first.wav");
+    fs.put(&first, 1);
+    let ws = workspace(vec![audio(1, &first, 0)]);
+    let mut c = manual(&ws, &fs);
+    c.probe = fake_probe;
+    let mut s = show_with(ws, c);
+    let paths: Vec<PathBuf> = (0..2000)
+        .map(|n| PathBuf::from(format!("/two-docs/sounds/{n:04}.wav")))
+        .collect();
+    for p in &paths {
+        fs.put(p, 1);
+    }
+    // Two shows on the same 2,000 files, the second opened before the watch has the first's.
+    let mut docs = Vec::new();
+    for n in 0..2u128 {
+        let cues = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| audio(20_000 + i as u128, p, 0))
+            .collect();
+        let mut ws = workspace(cues);
+        ws.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(40 + n));
+        let rid = s.request_id();
+        let (tx, _rx) = openlab_engine::control::reply_channel();
+        s.control_mut()
+            .open_doc(DocSource::Workspace(Box::new(ws)), rid, &tx);
+        let answer = s.next_doc_answer().expect("the document worker answers");
+        s.deliver(answer);
+        let (_, doc) = s.control_mut().take_opened().pop().expect("opened");
+        docs.push(doc);
+    }
+    s.settle_media();
+    for _ in 0..20 {
+        if s.control().watched_files() == 2001 {
+            break;
+        }
+        s.tick();
+    }
+    assert_eq!(s.control().watched_files(), 2001);
+    for p in &paths {
+        fs.remove(p);
+    }
+    s.watch_pass();
+    follow(&mut s);
+    for doc in docs {
+        let missing = (0..2000u128)
+            .filter(|i| {
+                problems_in(&s, doc, 20_000 + i)
+                    .iter()
+                    .any(|p| matches!(p, CueProblem::MediaMissing { .. }))
+            })
+            .count();
+        assert_eq!(missing, 2000, "doc {doc}: cues with their file missing");
+    }
+}
+
+/// A file two docs share goes while one of them is being saved into another folder (after the
+/// Save As is asked, before it is answered): both docs hear it is gone, the saved one under its
+/// reference re-spelled for the new folder too, and both hear it come back.
+#[test]
+fn a_shared_file_gone_during_a_save_as_elsewhere_is_heard_by_both_docs() {
+    use openlab_core::{CueKind, MediaRef, save_show};
+    use openlab_engine::control::{DocSource, SaveHook, reply_channel};
+    use openlab_engine::persist::JobKind;
+    let env = common::env();
+    let show_dir = env.show_dir();
+    let shared = show_dir.join("shared.wav");
+    std::fs::copy(wav(&dc(400, 0.5)), &shared).unwrap();
+    let fs = FakeFs::new();
+    fs.put(&shared, 1);
+    let a = workspace(vec![audio(1, &shared, 0)]);
+    // B is saved beside the file and names it relative to its folder.
+    let mut b = workspace(vec![audio(2, &shared, 0)]);
+    b.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(8));
+    if let CueKind::Audio { media, .. } = &mut b.cue_lists[0].cues[0].kind {
+        *media = Some(MediaRef::new("shared.wav"));
+    }
+    let b_show = show_dir.join("b.openlab");
+    std::fs::write(&b_show, save_show(&b).unwrap()).unwrap();
+    // The writer holds B's save until the test lets it go.
+    let (go, held) = std::sync::mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Save {
+            let _ = held.lock().unwrap().recv();
+        }
+    }));
+    let mut c = manual(&a, &fs);
+    c.app_dirs = Some(env.dirs.clone());
+    c.save_hook = Some(hook);
+    let mut s = show_with(a, c);
+    // Dropped before the show, so a failing test lets the held writer go at once.
+    let go = go;
+    let b_doc = s
+        .open_doc(DocSource::Open {
+            path: b_show,
+            recovery: None,
+        })
+        .unwrap();
+    follow(&mut s);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert!(problems_in(&s, b_doc, 2).is_empty());
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (tx, mut replies) = reply_channel();
+    let rid = s.request_id();
+    s.control_mut().handle_doc(
+        b_doc,
+        ClientMessage::Request {
+            id: rid,
+            request: Request::SaveAs {
+                path: elsewhere
+                    .path()
+                    .join("b.openlab")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        },
+        &tx,
+    );
+    // The file goes while B is being written.
+    let aside = show_dir.join("aside.wav");
+    std::fs::rename(&shared, &aside).unwrap();
+    fs.remove(&shared);
+    assert!(s.watch_pass(), "the watch hears it is gone");
+    go.send(()).unwrap();
+    s.settle_docs();
+    let answers: Vec<ServerMessage> = std::iter::from_fn(|| replies.try_recv().ok()).collect();
+    assert!(
+        answers.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{answers:?}"
+    );
+    follow(&mut s);
+    let view = s.control().doc(b_doc).unwrap();
+    assert_eq!(view.moves_taken_up(), 1);
+    let CueKind::Audio { media, .. } = &view.workspace().cue_lists[0].cues[0].kind else {
+        panic!("not an audio cue");
+    };
+    assert_eq!(
+        media.as_ref().map(|m| Path::new(m.as_str())),
+        Some(shared.as_path())
+    );
+    let gone = |p: &[CueProblem]| matches!(p, [CueProblem::MediaMissing { .. }]);
+    assert!(gone(s.control().engine().problems(id(1))));
+    assert!(
+        gone(&problems_in(&s, b_doc, 2)),
+        "{:?}",
+        problems_in(&s, b_doc, 2)
+    );
+
+    // Put back: both hear it.
+    std::fs::rename(&aside, &shared).unwrap();
+    fs.put(&shared, 1);
+    follow(&mut s);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert!(
+        problems_in(&s, b_doc, 2).is_empty(),
+        "{:?}",
+        problems_in(&s, b_doc, 2)
+    );
+    // Gone again, now only the watch can tell B: B hears it under its new reference.
+    std::fs::rename(&shared, &aside).unwrap();
+    fs.remove(&shared);
+    follow(&mut s);
+    assert!(gone(s.control().engine().problems(id(1))));
+    assert!(
+        gone(&problems_in(&s, b_doc, 2)),
+        "{:?}",
+        problems_in(&s, b_doc, 2)
+    );
+    assert_eq!(s.stalls(), 0);
+}
+
+/// A file two docs share goes in the wake after a Save As elsewhere was answered, before the
+/// moved doc's new keys have reached the watch share (they are handed over at the start of the
+/// next wake, before any batch is read): the batch the watch made then reaches the moved doc
+/// under its new key, so its cue is broken as the other doc's is.
+#[test]
+fn a_shared_file_gone_before_the_new_keys_of_a_moved_doc_are_handed_over_is_heard_by_both() {
+    use openlab_core::{CueKind, MediaRef, save_show};
+    use openlab_engine::control::{DocSource, SaveHook, reply_channel};
+    use openlab_engine::persist::JobKind;
+    let env = common::env();
+    let show_dir = env.show_dir();
+    let shared = show_dir.join("shared.wav");
+    std::fs::copy(wav(&dc(400, 0.5)), &shared).unwrap();
+    let fs = FakeFs::new();
+    fs.put(&shared, 1);
+    let a = workspace(vec![audio(1, &shared, 0)]);
+    // B is saved beside the file and names it relative to its folder.
+    let mut b = workspace(vec![audio(2, &shared, 0)]);
+    b.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(8));
+    if let CueKind::Audio { media, .. } = &mut b.cue_lists[0].cues[0].kind {
+        *media = Some(MediaRef::new("shared.wav"));
+    }
+    let b_show = show_dir.join("b.openlab");
+    std::fs::write(&b_show, save_show(&b).unwrap()).unwrap();
+    // The writer holds B's save until the test lets it go.
+    let (go, held) = std::sync::mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Save {
+            let _ = held.lock().unwrap().recv();
+        }
+    }));
+    let mut c = manual(&a, &fs);
+    c.app_dirs = Some(env.dirs.clone());
+    c.save_hook = Some(hook);
+    let mut s = show_with(a, c);
+    // Dropped before the show, so a failing test lets the held writer go at once.
+    let go = go;
+    let b_doc = s
+        .open_doc(DocSource::Open {
+            path: b_show,
+            recovery: None,
+        })
+        .unwrap();
+    follow(&mut s);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert!(problems_in(&s, b_doc, 2).is_empty());
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let (tx, _replies) = reply_channel();
+    let rid = s.request_id();
+    s.control_mut().handle_doc(
+        b_doc,
+        ClientMessage::Request {
+            id: rid,
+            request: Request::SaveAs {
+                path: elsewhere
+                    .path()
+                    .join("b.openlab")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        },
+        &tx,
+    );
+    go.send(()).unwrap();
+    // Wake by wake until the answer is taken up: B's new keys wait for the next wake.
+    for _ in 0..500 {
+        s.tick();
+        if s.control().doc(b_doc).unwrap().moves_taken_up() == 1 {
+            break;
+        }
+        s.wait_step();
+    }
+    assert_eq!(s.control().doc(b_doc).unwrap().moves_taken_up(), 1);
+    assert!(s.control().doc(b_doc).unwrap().key_changes_pending() > 0);
+    let aside = show_dir.join("aside.wav");
+    std::fs::rename(&shared, &aside).unwrap();
+    fs.remove(&shared);
+    let batch = s
+        .control_mut()
+        .watch_pass_unfollowed()
+        .expect("the watch hears it is gone");
+    s.deliver(Inbox::Watch(
+        openlab_engine::control::watch::WatchAnswer::Batch(batch),
+    ));
+    s.tick();
+    s.settle_media();
+    s.tick();
+    let gone = |p: &[CueProblem]| matches!(p, [CueProblem::MediaMissing { .. }]);
+    assert!(gone(s.control().engine().problems(id(1))));
+    assert!(
+        gone(&problems_in(&s, b_doc, 2)),
+        "{:?}",
+        problems_in(&s, b_doc, 2)
+    );
+    assert_eq!(s.stalls(), 0);
 }

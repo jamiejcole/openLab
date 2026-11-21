@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 67,
+  "request": {
+    "type": "restore_device",
+    "device": "openlab:virtual-2"
+  }
+}

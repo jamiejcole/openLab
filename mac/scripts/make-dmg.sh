@@ -15,9 +15,30 @@ trap 'rm -rf "$stage"' EXIT
 # ditto keeps the signature's extended attributes and symlinks.
 ditto "$app" "$stage/openLab $version.app"
 ln -s /Applications "$stage/Applications"
+# The licence texts sit beside the app (the notices are also inside it).
+cp "$app/Contents/Resources/LICENSE" "$stage/LICENSE.txt"
+cp "$app/Contents/Resources/THIRD-PARTY-NOTICES.txt" "$stage/THIRD-PARTY-NOTICES.txt"
 codesign --verify --deep --strict "$stage/openLab $version.app"
 dmg="$out/openLab-$version.dmg"
 rm -f "$dmg"
-hdiutil create -quiet -volname "openLab $version" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
-hdiutil verify -quiet "$dmg"
+# Not -quiet, so a failure shows its reason. On CI runners hdiutil fails now and then with
+# "Resource busy" while the system still holds the image or the folder (run 44368937589); only that
+# failure is tried again, up to three times. Any other failure stops here.
+attempt=1
+while :; do
+  rm -f "$dmg"
+  if result=$(hdiutil create -volname "openLab $version" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg" 2>&1); then
+    printf '%s\n' "$result"
+    break
+  fi
+  printf '%s\n' "$result" >&2
+  case "$result" in
+    *"Resource busy"*) [ "$attempt" -lt 3 ] || exit 1 ;;
+    *) exit 1 ;;
+  esac
+  attempt=$((attempt + 1))
+  echo "make-dmg: hdiutil was busy; trying again ($attempt of 3)" >&2
+  sleep 5
+done
+hdiutil verify "$dmg"
 echo "make-dmg: $dmg"

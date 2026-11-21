@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 73,
+  "request": {
+    "type": "drop_out",
+    "count": 3
+  }
+}

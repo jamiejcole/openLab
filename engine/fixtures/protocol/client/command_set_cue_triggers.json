@@ -16,7 +16,22 @@
             "command": false
           }
         },
-        "hotkey_enabled": false
+        "hotkey_enabled": false,
+        "wall_clock": {
+          "enabled": true,
+          "hours": 19,
+          "minutes": 25,
+          "seconds": 0,
+          "days": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday"
+          ],
+          "twelve_hour": true
+        }
       }
     }
   }

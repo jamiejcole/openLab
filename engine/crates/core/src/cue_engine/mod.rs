@@ -19,10 +19,12 @@ mod live_levels;
 mod operations;
 mod others;
 mod playhead;
+mod playlist_mark;
 mod preview;
 mod rng;
 mod run;
 mod second;
+mod seek;
 mod shape;
 mod time;
 mod timers;
@@ -34,7 +36,9 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-pub use level::{EDIT_RAMP_SECONDS, LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain};
+pub use level::{
+    EDIT_RAMP_SECONDS, LevelParam, LevelRamp, curve_shape, db_to_gain, ramp_gain, ramp_value,
+};
 pub use preview::{PREVIEW_RUN_BASE, PREVIEW_STOP_FADE_SECONDS};
 pub use time::*;
 pub use timers::{Timer, TimerProgress};
@@ -70,6 +74,8 @@ pub struct CueEngine {
     slots: BTreeMap<CueId, Slot>,
     playheads: BTreeMap<CueListId, Playhead>,
     last_go: Option<SampleTime>,
+    /// When double-GO protection ends, while it is in force (reported as `GoProtection`).
+    go_protect_until: Option<SampleTime>,
     next_run: u64,
     next_seq: u64,
     /// Random groups and shuffled playlists draw from this, seeded from the config.
@@ -80,6 +86,8 @@ pub struct CueEngine {
     /// or of a group around it, Reset All): they show their second colour (QLab 5, manual
     /// p. 127). Runtime only, never saved: a reopened show starts with none.
     played: BTreeSet<CueId>,
+    /// Each Playlist group's next child, as last reported (`playlist_mark.rs`).
+    playlist_marks: BTreeMap<CueId, CueId>,
     /// Ducks and boosts in force, by the cue doing them (`others.rs`).
     ducks: BTreeMap<CueId, others::Duck>,
     /// Some voice may play at a duck gain other than 1.0: `sync_ducks` has work while this is
@@ -97,6 +105,12 @@ pub struct CueEngine {
     continued: BTreeSet<CueId>,
     /// Arm/Disarm cue changes made in this call (see `Action::SetArmed`).
     armed: BTreeMap<CueId, bool>,
+    /// Temporary targets set by Target cues, by the cue that acts on them (QLab 5 manual
+    /// p. 686): runtime only, never in the model or the file; a reset of the cue or Reset All
+    /// drops one, and a reopened show starts with none.
+    temp_targets: BTreeMap<CueId, CueId>,
+    /// Counts changes to `temp_targets`, so the binary knows what it primes ahead has moved.
+    temp_target_changes: u64,
     /// Static problems (CUE-06) and what they are computed from.
     problems: broken::Problems,
     /// The panic fade under way: the sample it came on and the one it ends on.
@@ -120,6 +134,9 @@ pub struct CueEngine {
     /// Nominal action lengths of Audio cues, from the binary (`Input::CueLengths`); a cue not
     /// here has none known.
     lengths: BTreeMap<CueId, SampleTime>,
+    /// Cues whose length `Input::CueLengths` changed in this call: a playlist around one may be
+    /// loaded past its span now (`sync_playlist_marks`).
+    lengths_changed: Vec<CueId>,
     /// One pass of each Audio cue's trimmed range, from the binary (`Input::CuePassLengths`).
     pass_lengths: BTreeMap<CueId, SampleTime>,
     /// How many such passes have run (a cost measure, see `model_syncs`).
@@ -172,17 +189,21 @@ impl CueEngine {
             slots: BTreeMap::new(),
             playheads: BTreeMap::new(),
             last_go: None,
+            go_protect_until: None,
             next_run: 1,
             next_seq: 0,
             rng: SplitMix64::new(config.seed()),
             random_cycles: BTreeMap::new(),
             played: BTreeSet::new(),
+            playlist_marks: BTreeMap::new(),
             ducks: BTreeMap::new(),
             duck_live: false,
             duck_held: 0,
             duck_owed: Vec::new(),
             continued: BTreeSet::new(),
             armed: BTreeMap::new(),
+            temp_targets: BTreeMap::new(),
+            temp_target_changes: 0,
             problems: broken::Problems::default(),
             panic: None,
             model_dirty: true,
@@ -195,6 +216,7 @@ impl CueEngine {
             last_now: 0,
             limits: LevelLimits::default(),
             lengths: BTreeMap::new(),
+            lengths_changed: Vec::new(),
             pass_lengths: BTreeMap::new(),
             model_syncs: 0,
             whole_show_passes: 0,
@@ -332,6 +354,7 @@ impl CueEngine {
         if self.panic.is_none() {
             self.panicked_previews.clear();
         }
+        let marks_edit = follow_edits.then(|| self.marks_edit_before_sync());
         // Before the runtimes follow the edits, so a deleted cue loses its problems while its
         // runtime still gives its state, and reports idle once. Only does work after
         // `model_changed`.
@@ -359,6 +382,9 @@ impl CueEngine {
         self.advance(&mut cx);
         self.settle_groups(&mut cx);
         self.sync_ducks(&mut cx);
+        self.sync_playlist_marks(marks_edit, &mut cx);
+        // Last: whatever this call went on to do, its protection is judged on the call's horizon.
+        self.end_go_protection(&mut cx);
         // `limit - budget` is what this call and the earlier ones at `now` started (a raised
         // limit raises the budget by as much, see `budget_left`).
         self.spent = (now, cx.limit.saturating_sub(cx.budget));
@@ -371,6 +397,10 @@ impl CueEngine {
     /// device reopen), so this guards the API: samples dated on the old clock mean nothing on the
     /// new one, and must not hold back what is dated from now on.
     fn clock_went_back(&mut self, now: SampleTime) {
+        // Protection dated on the old clock ends at the next call.
+        if self.go_protect_until.is_some() {
+            self.go_protect_until = Some(now);
+        }
         for slot in self.slots.values_mut() {
             let Slot::Active(run) = slot else { continue };
             run.committed = run.committed.min(now);
@@ -393,6 +423,20 @@ impl CueEngine {
         }
     }
 
+    /// When double-GO protection ends, while it is in force.
+    pub fn go_protection_ends(&self) -> Option<SampleTime> {
+        self.go_protect_until
+    }
+
+    /// The earliest sample the control loop must wake for: [`CueEngine::next_deadline`] or the end
+    /// of double-GO protection (which no cue owns).
+    pub fn next_wake(&self) -> Option<SampleTime> {
+        self.next_deadline()
+            .into_iter()
+            .chain(self.go_protect_until)
+            .min()
+    }
+
     /// The earliest sample at which a timer of a cue expires, if any.
     pub fn next_deadline(&self) -> Option<SampleTime> {
         self.slots
@@ -408,7 +452,7 @@ impl CueEngine {
     /// deadline is due once it falls inside the call's window (`..now + lookahead`, end excluded,
     /// and always `now` itself, so with lookahead 0 a deadline at `now` is due at `now`).
     pub fn is_due(&self, now: SampleTime) -> bool {
-        self.next_deadline()
+        self.next_wake()
             .is_some_and(|d| d <= self.config.horizon(now))
     }
 
@@ -458,6 +502,33 @@ impl CueEngine {
     /// `broken`, but its timers are frozen until it is resumed).
     pub fn is_paused(&self, cue: CueId) -> bool {
         matches!(self.slots.get(&cue), Some(Slot::Active(run)) if run.paused_at.is_some())
+    }
+
+    /// Each loaded cue standing inside its action (loaded to a time past its pre-wait), with
+    /// how far into its action it stands, in id order: what its row shows until it starts. A
+    /// cue loaded by a seek stands at a point of its file instead, which the binary knows.
+    pub fn loaded_offsets(&self) -> impl Iterator<Item = (CueId, SampleTime)> + '_ {
+        self.slots.iter().filter_map(|(id, slot)| match slot {
+            Slot::Loaded(l) if l.action_offset > 0 => Some((*id, l.action_offset)),
+            _ => None,
+        })
+    }
+
+    /// How long the sequence that starts at `cue` lasts, seconds: its pre-waits and actions as
+    /// a run would time them through its auto-continue and auto-follow chain (what a negative
+    /// load time counts back from). `None` when unknown or endless, or for an unknown cue.
+    pub fn sequence_span(&self, ws: &Workspace, cue: CueId) -> Option<f64> {
+        let cx = Ctx {
+            ws,
+            now: 0,
+            horizon: 0,
+            budget: 0,
+            limit: 0,
+            limit_verified: false,
+            out: Vec::new(),
+            vacated: Vec::new(),
+        };
+        self.sequence(cue, &cx).end.map(|end| self.seconds(end))
     }
 
     /// The Audio cue's nominal action length as the binary last told it (`Input::CueLengths`).
@@ -512,6 +583,24 @@ impl CueEngine {
             Slot::Active(run) if !run.is_broken() => Some(run.run),
             Slot::Active(_) | Slot::Broken(_) | Slot::Lost(_) => None,
         }
+    }
+
+    /// Whether `run` of `cue` still has its action's sound ahead or under way: loaded, or not
+    /// broken and before or in its action with a voice (paused included), or the cue's preview.
+    /// A run whose action this engine has ended (on its known length, perhaps dated a lookahead
+    /// ahead) has none: what its voice still plays is the tail of an ended action.
+    pub fn runs_action(&self, cue: CueId, run: RunId) -> bool {
+        let shown = match self.slots.get(&cue) {
+            Some(Slot::Loaded(loaded)) => loaded.run == run,
+            Some(Slot::Active(r)) => {
+                r.run == run
+                    && !r.is_broken()
+                    && r.phase != Phase::Done
+                    && !(matches!(r.phase, Phase::Action { .. }) && r.voice == Voice::None)
+            }
+            Some(Slot::Broken(_) | Slot::Lost(_)) | None => false,
+        };
+        shown || self.preview_run(cue) == Some(run)
     }
 
     /// The list's playhead: the standing-by cue's id, `None` past the end or for an empty list.
@@ -591,9 +680,11 @@ impl CueEngine {
             }
             Input::Load { cue, time } => {
                 if self.known(cue, cx) {
-                    self.load_tree(cue, time, cx);
+                    let time = self.load_time(cue, time, cx);
+                    self.load_tree(cue, time, true, cx);
                 }
             }
+            Input::Seek { cue, position } => self.seek(cue, position, cx),
             Input::Reset { cue } => {
                 if self.known(cue, cx) {
                     self.reset_tree(cue, cx);
@@ -609,10 +700,13 @@ impl CueEngine {
             Input::ActionLength { cue, run, frames } => self.action_length(cue, run, frames),
             Input::CueLengths { lengths } => {
                 for (cue, length) in lengths {
-                    match length {
+                    let old = match length {
                         Some(frames) => self.lengths.insert(cue, frames),
                         None => self.lengths.remove(&cue),
                     };
+                    if old != length {
+                        self.lengths_changed.push(cue);
+                    }
                 }
             }
             Input::CuePassLengths { lengths } => {
@@ -630,8 +724,9 @@ impl CueEngine {
             Input::StartFailed { cue, run, reason } => {
                 self.action_failed(cue, run, reason, true, cx);
             }
-            Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at),
+            Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at, cx),
             Input::DevampIgnored { cue, run } => self.devamp_ignored(cue, run, cx),
+            Input::DeviceMoved { cue, run } => self.device_moved(cue, run, cx),
             Input::Preview { cue } => self.preview(cue, cx),
             Input::StopPreview { cue } => self.stop_previews(cue, false, cx),
             Input::Panic => self.panic(cx),
@@ -659,6 +754,7 @@ impl CueEngine {
             Input::Availability { media, patches } => {
                 self.availability(media, patches, cx);
             }
+            Input::MediaSound { media } => self.media_sound(media, cx),
             Input::DeviceLost => self.device_lost(cx),
         }
     }

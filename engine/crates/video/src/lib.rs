@@ -7,9 +7,10 @@
 
 #[cfg(feature = "test-support")]
 pub mod card;
+pub mod hap;
 pub mod host;
 mod platform;
 
 pub use platform::run;
 #[cfg(all(target_os = "macos", feature = "test-support"))]
-pub use platform::{WindowReport, window_report};
+pub use platform::{MonitorReport, WindowReport, window_report};

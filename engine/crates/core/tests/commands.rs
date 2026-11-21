@@ -345,7 +345,7 @@ fn add_refuses_bad_slices_and_hotkeys() {
     if let CueKind::Audio { slices, .. } = &mut kind {
         slices.push(SliceMarker {
             time: f64::NAN,
-            play_count: 1,
+            play_count: 1.into(),
         });
     }
     assert!(matches!(
@@ -399,6 +399,47 @@ fn references_are_not_checked_so_undo_can_restore_broken_states() {
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].severity, Severity::Warning);
     assert!(matches!(issues[0].kind, IssueKind::TargetMissing { .. }));
+    save_show(&ws).unwrap();
+}
+
+#[test]
+fn a_target_cues_missing_or_unusable_new_target_is_a_warning_and_still_saves() {
+    let retarget = |n: u128, new: u128| {
+        cue(
+            n,
+            CueKind::Target {
+                target: Some(cue_id(1)),
+                new_target: Some(cue_id(new)),
+            },
+        )
+    };
+    let mut ws = workspace(vec![
+        numbered(
+            1,
+            "1",
+            CueKind::Devamp {
+                target: None,
+                start_next_cue: false,
+                stop_target_when_slice_ends: false,
+                devamp_mode: DevampMode::CurrentSlice,
+            },
+        ),
+        numbered(2, "2", CueKind::Memo),
+    ]);
+    round_trip(&mut ws, add(pos(None, 2), retarget(10, 99)));
+    round_trip(&mut ws, add(pos(None, 3), retarget(11, 2)));
+    let issues = validate(&ws);
+    let kinds: Vec<_> = issues.iter().map(|i| (i.cue_id, i.kind.clone())).collect();
+    assert!(kinds.contains(&(
+        Some(cue_id(10)),
+        IssueKind::TargetMissing { target: cue_id(99) }
+    )));
+    // A Devamp cannot act on a Memo.
+    assert!(kinds.contains(&(
+        Some(cue_id(11)),
+        IssueKind::TargetWrongKind { target: cue_id(2) }
+    )));
+    assert!(issues.iter().all(|i| i.severity == Severity::Warning));
     save_show(&ws).unwrap();
 }
 
@@ -490,6 +531,97 @@ fn auto_number_replaces_the_cues_own_number_and_survives_undo_and_redo() {
     assert_eq!(ws, before);
     assert!(history.redo(&mut ws).unwrap());
     assert_eq!(ws, after);
+}
+
+/// QLab 5, manual p. 100: with an increment of 1 and cues 2, 4 and 6, a cue added after 6 is 7,
+/// one between 2 and 4 is 3, and one then added between 2 and 3 is 2.5.
+#[test]
+fn auto_number_new_cue_between_neighbours_takes_the_gap() {
+    let mut ws = workspace(vec![
+        numbered(1, "2", CueKind::Memo),
+        numbered(2, "4", CueKind::Memo),
+        numbered(3, "6", CueKind::Memo),
+    ]);
+    let add = |n: u128, index: usize| Command::AddCue {
+        at: pos(None, index),
+        cue: memo(n),
+        auto_number: true,
+    };
+    ws.apply(add(10, 3)).unwrap();
+    assert_eq!(number(&ws, 10).as_deref(), Some("7"));
+    ws.apply(add(11, 1)).unwrap();
+    assert_eq!(number(&ws, 11).as_deref(), Some("3"));
+    ws.apply(add(12, 1)).unwrap();
+    assert_eq!(number(&ws, 12).as_deref(), Some("2.5"));
+    assert_clean(&ws);
+}
+
+/// A list whose numbers do not ascend (5 then 1) numbers a new cue between them above the highest
+/// number, as before; the cues added at the same place after it take the gap, and no add is refused.
+#[test]
+fn auto_number_in_a_list_that_does_not_ascend_numbers_above_the_highest() {
+    let mut ws = workspace(vec![
+        numbered(1, "5", CueKind::Memo),
+        numbered(2, "1", CueKind::Memo),
+    ]);
+    let add = |n: u128| Command::AddCue {
+        at: pos(None, 1),
+        cue: memo(n),
+        auto_number: true,
+    };
+    for n in 10..14 {
+        ws.apply(add(n)).unwrap();
+    }
+    let numbers: Vec<_> = (10..14).map(|n| number(&ws, n).unwrap()).collect();
+    assert_eq!(numbers, ["6", "5.5", "5.25", "5.125"]);
+    assert_clean(&ws);
+}
+
+/// With auto-numbering off a cue made with `auto_number` keeps the number it has (none for a
+/// new cue); paste and the clipboard never number.
+#[test]
+fn auto_number_off_leaves_a_new_cue_without_a_number_and_a_paste_is_never_numbered() {
+    let mut ws = workspace(vec![numbered(1, "3", CueKind::Memo)]);
+    ws.settings.auto_number_new_cues = false;
+    ws.apply(Command::AddCue {
+        at: pos(None, 1),
+        cue: memo(2),
+        auto_number: true,
+    })
+    .unwrap();
+    assert_eq!(number(&ws, 2), None);
+    ws.settings.auto_number_new_cues = true;
+    ws.apply(Command::Paste {
+        at: pos(None, 2),
+        cues: vec![memo(3)],
+    })
+    .unwrap();
+    assert_eq!(number(&ws, 3), None, "a paste is not auto-numbered");
+}
+
+/// The workspace switches that only the app and OSC read are plain settings: set, undone and
+/// kept.
+#[test]
+fn the_general_switches_are_workspace_settings_with_undo() {
+    let mut ws = workspace(vec![]);
+    let before = ws.clone();
+    let mut history = History::new();
+    for setting in [
+        WorkspaceSetting::AutoNumberNewCues { value: false },
+        WorkspaceSetting::LockPlayhead { value: false },
+        WorkspaceSetting::GoNeedsKeyUp { value: true },
+        WorkspaceSetting::OscEnabled { value: false },
+        WorkspaceSetting::CopyMediaOnAdd { value: false },
+    ] {
+        history
+            .execute(&mut ws, Command::SetWorkspaceSetting { setting })
+            .unwrap();
+    }
+    assert!(!ws.settings.auto_number_new_cues && !ws.settings.lock_playhead);
+    assert!(ws.settings.go_needs_key_up && !ws.settings.osc_enabled);
+    assert!(!ws.settings.copy_media_on_add);
+    while history.undo(&mut ws).unwrap() {}
+    assert_eq!(ws, before);
 }
 
 /// Workspace Settings, General, "new cues auto-load" (QLab 5, manual p. 128): a cue made
@@ -920,6 +1052,21 @@ fn every_common_property_can_be_set_and_undone() {
             value: Triggers {
                 hotkey: Some(hotkey),
                 hotkey_enabled: false,
+                wall_clock: Default::default(),
+            },
+        },
+        CueProperty::Triggers {
+            value: Triggers {
+                hotkey: None,
+                hotkey_enabled: true,
+                wall_clock: WallClockTrigger {
+                    enabled: true,
+                    hours: 23,
+                    minutes: 59,
+                    seconds: 59,
+                    days: Weekdays::NONE.with(Weekday::Saturday, true),
+                    twelve_hour: true,
+                },
             },
         },
     ];
@@ -1057,13 +1204,116 @@ fn kind_fields_keep_the_kind_fields_not_named() {
             ..
         } => {
             assert_eq!((start_time, end_time), (0.5, Some(2.0)));
-            assert_eq!(last_slice_play_count, 4);
+            assert_eq!(last_slice_play_count, 4.into());
         }
         other => panic!("{other:?}"),
     }
     ws.apply(inverse).unwrap();
     assert_eq!(ws, before, "undo restores the kind");
     assert_clean(&ws);
+}
+
+#[test]
+fn a_target_cues_new_target_is_set_and_cleared_by_its_kind_field_and_undone() {
+    let mut ws = workspace(vec![
+        cue(
+            1,
+            CueKind::Target {
+                target: None,
+                new_target: None,
+            },
+        ),
+        numbered(2, "2", CueKind::Memo),
+    ]);
+    let before = ws.clone();
+    let inverse = ws
+        .apply(set(
+            1,
+            fields(serde_json::json!({ "new_target": cue_id(2) })),
+        ))
+        .unwrap();
+    assert_eq!(kind_of(&ws, 1).new_target(), Some(cue_id(2)));
+    ws.apply(set(1, fields(serde_json::json!({ "new_target": null }))))
+        .unwrap();
+    assert_eq!(kind_of(&ws, 1).new_target(), None);
+    ws.apply(set(
+        1,
+        fields(serde_json::json!({ "new_target": cue_id(2) })),
+    ))
+    .unwrap();
+    ws.apply(inverse).unwrap();
+    assert_eq!(ws, before, "undo restores it");
+    // Not a field of another kind.
+    assert!(
+        ws.apply(set(
+            2,
+            fields(serde_json::json!({ "new_target": cue_id(1) }))
+        ))
+        .is_err()
+    );
+}
+
+/// A play count set by an edit of the kind's fields (what the app's count field sends) is a
+/// count, until devamped or skipped; a value that is none of them is refused and the cue keeps
+/// what it had. Every slice skipped is accepted: the cue is then broken, not the edit.
+#[test]
+fn kind_fields_set_a_play_count_to_a_number_endless_or_skip_and_refuse_the_rest() {
+    let mut ws = workspace(vec![cue(1, audio())]);
+    ws.apply(set(1, fields(serde_json::json!({ "end_time": 2.0 }))))
+        .unwrap();
+    let counts = |ws: &Workspace| match kind_of(ws, 1) {
+        CueKind::Audio {
+            slices,
+            last_slice_play_count,
+            ..
+        } => (
+            slices.iter().map(|m| m.play_count).collect::<Vec<_>>(),
+            last_slice_play_count,
+        ),
+        other => panic!("{other:?}"),
+    };
+    for (stored, value) in [
+        (serde_json::json!(3), PlayCount::from_stored(3)),
+        (serde_json::json!(0), PlayCount::Endless),
+        (serde_json::json!("skip"), PlayCount::Skip),
+    ] {
+        let before = ws.clone();
+        let inverse = ws
+            .apply(set(
+                1,
+                fields(serde_json::json!({
+                    "slices": [{ "time": 1.0, "play_count": stored }],
+                    "last_slice_play_count": stored,
+                })),
+            ))
+            .unwrap();
+        assert_eq!(counts(&ws), (vec![value], value), "{stored}");
+        assert_clean(&ws);
+        ws.apply(inverse).unwrap();
+        assert_eq!(ws, before, "{stored}: undo");
+    }
+    let before = ws.clone();
+    for bad in [
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!(4_294_967_296u64),
+        serde_json::json!("loop"),
+        serde_json::Value::Null,
+    ] {
+        for edit in [
+            serde_json::json!({ "last_slice_play_count": bad }),
+            serde_json::json!({ "slices": [{ "time": 1.0, "play_count": bad }] }),
+        ] {
+            assert!(
+                matches!(
+                    refused(&mut ws, set(1, fields(edit.clone()))),
+                    CommandError::InvalidValue(_)
+                ),
+                "{edit}"
+            );
+            assert_eq!(ws, before, "{edit}");
+        }
+    }
 }
 
 #[test]
@@ -1169,12 +1419,47 @@ fn set_property_refuses_non_finite_and_out_of_range_values() {
                             modifiers: Modifiers::default()
                         }),
                         hotkey_enabled: true,
+                        wall_clock: Default::default(),
                     },
                 }
             )
         ),
         CommandError::InvalidCue(_)
     ));
+    // A wall-clock time past 23:59:59, or no day to fire on, even with the trigger off.
+    for (enabled, hours, minutes, seconds, days) in [
+        (true, 24, 0, 0, Weekdays::EVERY_DAY),
+        (false, 0, 60, 0, Weekdays::EVERY_DAY),
+        (true, 0, 0, 60, Weekdays::EVERY_DAY),
+        (true, 12, 0, 0, Weekdays::NONE),
+    ] {
+        let wall_clock = WallClockTrigger {
+            enabled,
+            hours,
+            minutes,
+            seconds,
+            days,
+            twelve_hour: false,
+        };
+        let before = ws.clone();
+        assert!(matches!(
+            refused(
+                &mut ws,
+                set(
+                    2,
+                    CueProperty::Triggers {
+                        value: Triggers {
+                            hotkey: None,
+                            hotkey_enabled: false,
+                            wall_clock,
+                        },
+                    }
+                )
+            ),
+            CommandError::InvalidCue(_)
+        ));
+        assert_eq!(ws, before);
+    }
 }
 
 #[test]
@@ -1424,6 +1709,8 @@ fn renumber(ids: &[u128], start: f64, increment: f64) -> Command {
         ids: ids.iter().map(|&n| cue_id(n)).collect(),
         start,
         increment,
+        prefix: String::new(),
+        suffix: String::new(),
     }
 }
 
@@ -1472,18 +1759,59 @@ fn renumber_uses_whatever_start_and_increment_it_is_given() {
     );
 }
 
+/// Flow: a number a cue outside the selection already has is skipped, like a prefix and a suffix
+/// around the number (QLab 5 manual p. 150: cue 11 elsewhere gives 10, 12, 13).
 #[test]
-fn renumber_refuses_numbers_used_by_cues_outside_the_selection() {
-    let mut ws = workspace(vec![memo(1), memo(2), numbered(3, "2", CueKind::Memo)]);
-    assert_eq!(
-        refused(&mut ws, renumber(&[1, 2], 1.0, 1.0)),
-        CommandError::DuplicateNumber {
-            number: "2".into(),
-            used_by: cue_id(2)
-        }
-    );
-    // Selecting every cue is fine: the old numbers are all replaced.
-    round_trip(&mut ws, renumber(&[1, 2, 3], 1.0, 1.0));
+fn renumber_skips_numbers_used_by_cues_outside_the_selection() {
+    let mut ws = workspace(vec![
+        memo(1),
+        memo(2),
+        memo(3),
+        numbered(4, "11", CueKind::Memo),
+    ]);
+    round_trip(&mut ws, renumber(&[1, 2, 3], 10.0, 1.0));
+    let numbers: Vec<_> = [1, 2, 3, 4].map(|n| number(&ws, n).unwrap()).to_vec();
+    assert_eq!(numbers, ["10", "12", "13", "11"]);
+    // The selection's own old numbers are free again.
+    let mut ws = workspace(vec![numbered(1, "2", CueKind::Memo), memo(2)]);
+    round_trip(&mut ws, renumber(&[1, 2], 1.0, 1.0));
+    assert_eq!(number(&ws, 1).unwrap(), "1");
+    assert_eq!(number(&ws, 2).unwrap(), "2");
+}
+
+#[test]
+fn renumber_puts_the_prefix_and_suffix_around_each_number_and_skips_by_full_text() {
+    let mut ws = workspace(vec![
+        memo(1),
+        memo(2),
+        memo(3),
+        numbered(4, "Test-11bak", CueKind::Memo),
+        numbered(5, "12", CueKind::Memo),
+    ]);
+    let command = Command::Renumber {
+        ids: vec![cue_id(1), cue_id(2), cue_id(3)],
+        start: 10.0,
+        increment: 1.0,
+        prefix: "Test-".into(),
+        suffix: "bak".into(),
+    };
+    round_trip(&mut ws, command);
+    let numbers: Vec<_> = [1, 2, 3].map(|n| number(&ws, n).unwrap()).to_vec();
+    assert_eq!(numbers, ["Test-10bak", "Test-12bak", "Test-13bak"]);
+    assert_eq!(number(&ws, 5).unwrap(), "12");
+    assert_clean(&ws);
+    // Too long an affix is refused on this path.
+    let long = Command::Renumber {
+        ids: vec![cue_id(1)],
+        start: 1.0,
+        increment: 1.0,
+        prefix: "x".repeat(65),
+        suffix: String::new(),
+    };
+    assert!(matches!(
+        refused(&mut ws, long),
+        CommandError::InvalidNumbering(_)
+    ));
 }
 
 #[test]
@@ -1515,7 +1843,7 @@ fn renumber_refuses_bad_arguments() {
     // So small an increment that rounding would give two cues the same number.
     assert!(matches!(
         refused(&mut ws, renumber(&[1, 2], 1.0, 1e-12)),
-        CommandError::DuplicateNumber { .. }
+        CommandError::InvalidNumbering(_)
     ));
 }
 
@@ -1646,6 +1974,36 @@ fn paste_points_copied_targets_at_the_copies_and_clears_numbers_in_use() {
         },
     );
     assert_clean(&ws);
+}
+
+#[test]
+fn paste_points_a_target_cues_new_target_at_the_copy_or_keeps_or_clears_it() {
+    let ws = workspace(vec![
+        numbered(1, "1", CueKind::Start { target: None }),
+        numbered(2, "2", CueKind::Memo),
+    ]);
+    let retarget = |new: u128| {
+        cue(
+            10,
+            CueKind::Target {
+                target: Some(cue_id(1)),
+                new_target: Some(cue_id(new)),
+            },
+        )
+    };
+    // Copied with it: the copy; in the workspace: kept; neither: cleared.
+    let copy = prepare_paste(
+        &ws,
+        &[retarget(11), numbered(11, "9", CueKind::Memo)],
+        fresh_ids(1000),
+    )
+    .unwrap();
+    assert_eq!(copy[0].kind.new_target(), Some(cue_id(1002)));
+    let copy = prepare_paste(&ws, &[retarget(2)], fresh_ids(2000)).unwrap();
+    assert_eq!(copy[0].kind.new_target(), Some(cue_id(2)));
+    let copy = prepare_paste(&ws, &[retarget(99)], fresh_ids(3000)).unwrap();
+    assert_eq!(copy[0].kind.new_target(), None);
+    assert_eq!(copy[0].kind.target(), Some(cue_id(1)));
 }
 
 #[test]
@@ -1952,6 +2310,8 @@ fn a_transaction_is_one_undo_step() {
                 ids: vec![cue_id(1), cue_id(10)],
                 start: 1.0,
                 increment: 1.0,
+                prefix: String::new(),
+                suffix: String::new(),
             },
         ],
     };
@@ -2050,6 +2410,8 @@ fn a_session_of_edits_still_saves_and_loads_back_unchanged() {
             ids: vec![cue_id(1), cue_id(3), cue_id(11)],
             start: 1.0,
             increment: 1.0,
+            prefix: String::new(),
+            suffix: String::new(),
         },
         reparent(10, pos(None, 0)),
         Command::MoveCue {

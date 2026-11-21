@@ -90,6 +90,8 @@ fn lengths(cue: u128, file: f64, trimmed: f64, duration: Option<f64>) -> CueMedi
         duration,
         channels: Some(1),
         picture: None,
+        audio_tracks: Vec::new(),
+        audio_track: None,
     }
 }
 
@@ -101,6 +103,8 @@ fn unknown(cue: u128) -> CueMediaDuration {
         duration: None,
         channels: None,
         picture: None,
+        audio_tracks: Vec::new(),
+        audio_track: None,
     }
 }
 
@@ -238,7 +242,7 @@ fn trims_and_play_counts_change_the_playable_length() {
             ..
         } = k
         {
-            *last_slice_play_count = 3;
+            *last_slice_play_count = 3.into();
         }
     });
     assert_eq!(durations(&msgs), vec![lengths(1, 1.0, 0.5, Some(1.5))]);
@@ -249,7 +253,7 @@ fn trims_and_play_counts_change_the_playable_length() {
             ..
         } = k
         {
-            *last_slice_play_count = 0;
+            *last_slice_play_count = 0.into();
         }
     });
     assert_eq!(durations(&msgs), vec![lengths(1, 1.0, 0.5, None)]);

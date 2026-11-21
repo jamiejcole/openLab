@@ -139,7 +139,8 @@ impl Hub {
             | ServerMessage::Meters { .. }
             | ServerMessage::Log { .. }
             | ServerMessage::LogEntry { .. }
-            | ServerMessage::Status { .. } => Kind::Lossy,
+            | ServerMessage::Status { .. }
+            | ServerMessage::MediaCopyProgress { .. } => Kind::Lossy,
             _ => Kind::State,
         };
         // Encoded before the lock: a multi-MiB message must not hold up `register`/`unregister`.
@@ -220,14 +221,17 @@ impl Tap {
 }
 
 /// The fan-out task: runs until the control side hangs up (or the runtime stops).
-pub async fn distribute(hub: Arc<Hub>, mut outbound: OutboundRx, tap: Option<Tap>) {
+pub async fn distribute(hub: Arc<Hub>, mut outbound: OutboundRx, tap: TapSlot) {
     while let Some(out) = outbound.recv().await {
-        if let Some(tap) = &tap {
+        if let Some(tap) = crate::lock(&tap).as_ref() {
             tap.offer(&out);
         }
         hub.deliver(&out);
     }
 }
+
+/// The OSC server's tap, which a change of its port replaces while the fan-out runs.
+pub type TapSlot = Arc<std::sync::Mutex<Option<Tap>>>;
 
 #[cfg(test)]
 mod tests {
@@ -323,6 +327,43 @@ mod tests {
         );
     }
 
+    /// A copy's progress is dropped for a slow client like `progress`, never making it lag; the
+    /// copy's end is state, kept.
+    #[test]
+    fn media_copy_progress_is_lossy_and_its_end_is_not() {
+        let hub = Hub::default();
+        let mut r = hub.register(None);
+        for n in 0..CLIENT_QUEUE / 2 {
+            hub.deliver(&Outgoing::all(state(n)));
+        }
+        hub.deliver(&Outgoing::all(ServerMessage::MediaCopyProgress {
+            cues: Vec::new(),
+            files_done: 0,
+            files_total: 1,
+            bytes_done: 0,
+            bytes_total: 0,
+            on_demand: true,
+        }));
+        hub.deliver(&Outgoing::all(ServerMessage::MediaCopied {
+            report: Box::new(openlab_core::protocol::MediaCopyReport {
+                on_demand: true,
+                copied: 1,
+                reused: 0,
+                in_folder: 0,
+                failed: Vec::new(),
+                failed_count: 0,
+                cancelled: false,
+            }),
+        }));
+        let kinds = drain(&mut r.rx);
+        assert_eq!(
+            kinds.len(),
+            CLIENT_QUEUE / 2 + 1,
+            "the progress dropped, the end kept"
+        );
+        assert!(!r.lagged.load(Ordering::Acquire));
+    }
+
     /// A burst of `log` notices fills no queue past half and marks no client lagged.
     #[test]
     fn log_notices_are_lossy_and_never_mark_a_client_lagged() {
@@ -394,6 +435,7 @@ mod tests {
                 playheads: vec![],
                 previewing: vec![],
                 played: vec![],
+                playlist_next: vec![],
                 warnings: vec![],
                 media_durations: vec![],
             }),
@@ -505,6 +547,7 @@ mod tap_tests {
             playheads: vec![],
             previewing: vec![],
             played: vec![],
+            playlist_next: vec![],
             warnings: vec![],
             media_durations: vec![],
         }

@@ -15,12 +15,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::StageId;
 use crate::video::{MAX_STAGES, side_ok};
+use crate::video_geometry::{PictureParam, PictureRamp, VideoGeometry};
+use crate::video_timing::{PictureFades, PlanPass, picture_run_ok};
 
 /// The link version both ends speak; a stage host answering another version is not used.
-pub const LINK_VERSION: u32 = 1;
+pub const LINK_VERSION: u32 = 5;
 /// Longest line either end accepts, newline excluded: enough for a `stages` set of
-/// [`MAX_LINK_STAGES`] stages whose display ids are all [`MAX_TEXT_BYTES`] long.
-pub const MAX_LINE_BYTES: usize = 512 * 1024;
+/// [`MAX_LINK_STAGES`] stages whose display ids and monitor titles are all [`MAX_TEXT_BYTES`]
+/// long.
+pub const MAX_LINE_BYTES: usize = 1024 * 1024;
 /// Most displays one `displays` message lists.
 pub const MAX_DISPLAYS: usize = 32;
 /// Longest display id, display name or log message, in bytes.
@@ -48,6 +51,13 @@ pub enum ToStage {
     Ping { seq: u64 },
     /// Close every window and exit.
     Quit,
+    /// The stage's monitor window (it has one in the `stages` set) comes to the front, opened
+    /// again if the operator closed it since.
+    RaiseMonitor { stage: StageId },
+    /// While `on`, the window on the display with the menu bar stands back under every app's
+    /// windows (over the desktop), so the operator can see the app's question; what it draws
+    /// is unchanged.
+    StandBack { on: bool },
     /// The engine's sample clock: `sample` is now, at `rate` samples a second. Every picture's
     /// position follows it; the stage host moves it on by its own clock between messages.
     Clock { sample: u64, rate: u32 },
@@ -60,14 +70,56 @@ pub enum ToStage {
         file: String,
         still: bool,
         offset: f64,
+        /// How it sits on its stage, how opaque and on which layer (VID-04).
+        geometry: VideoGeometry,
+    },
+    /// The picture's geometry changed (an edit while it is up): it is drawn so from the next
+    /// frame, its run untouched.
+    Geometry {
+        picture: u64,
+        geometry: VideoGeometry,
+    },
+    /// One value of the picture's geometry moves (a Fade cue, VID-05): drawn as `ramp` says
+    /// from its sample on, over the geometry's own value, until the picture goes or the next
+    /// `ramp` of that value (from its own sample; before it, this one still applies).
+    Ramp {
+        picture: u64,
+        param: PictureParam,
+        ramp: PictureRamp,
     },
     /// The picture plays from sample `at` (engine clock), `offset` seconds into the file then;
-    /// a picture not loaded is ignored.
-    Play { picture: u64, at: u64, offset: f64 },
-    /// The picture holds the frame at `offset` seconds from sample `at`.
-    Pause { picture: u64, at: u64, offset: f64 },
-    /// The picture fades out over `fade` samples from sample `at` (0: gone on `at`), then goes.
-    Stop { picture: u64, at: u64, fade: u64 },
+    /// a picture not loaded is ignored. A movie follows its `plan` (its trims, slices and loops
+    /// from the top of its action), `into` seconds into the plan on `at`, held just before the
+    /// end of the plan's last pass once it is over; a movie with no plan holds at `offset` (it
+    /// never runs on past its range). A still ignores both. `action` is how far into its cue's
+    /// action it is on `at`, which the integrated `fades` are counted in.
+    Play {
+        picture: u64,
+        at: u64,
+        offset: f64,
+        action: f64,
+        plan: Vec<PlanPass>,
+        into: f64,
+        fades: PictureFades,
+    },
+    /// The picture holds the frame at `offset` seconds from sample `at`, `action` seconds into
+    /// its cue's action (its fades held there).
+    Pause {
+        picture: u64,
+        at: u64,
+        offset: f64,
+        action: f64,
+    },
+    /// The picture fades out over `fade` samples from sample `at` (0: gone on `at`), then goes;
+    /// with `cut`, it goes on that sample if the fade is not over by then (its cue's action
+    /// ends there, mid-fade).
+    Stop {
+        picture: u64,
+        at: u64,
+        fade: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cut: Option<u64>,
+    },
     /// The picture goes now.
     Unload { picture: u64 },
     /// Test support: draw the test card for `frame` on `stage` (a 16-bit frame-number barcode
@@ -88,6 +140,19 @@ pub enum ToStage {
         display: String,
         points: Vec<[f32; 2]>,
     },
+    /// Test support: read what the stage's monitor window would show at a content size of
+    /// `width` x `height` pixels (the stage fitted, black bars elsewhere) at `points` (fractions
+    /// of the window from the top left), answered by `monitor_probed`.
+    #[cfg(feature = "test-support")]
+    ProbeMonitor {
+        stage: StageId,
+        width: u32,
+        height: u32,
+        points: Vec<[f32; 2]>,
+    },
+    /// Test support: the operator closes the stage's monitor window (its close button).
+    #[cfg(feature = "test-support")]
+    CloseMonitorWindow { stage: StageId },
     /// Test support: stop reading and answering, as a hung stage host would.
     #[cfg(feature = "test-support")]
     Hang,
@@ -117,6 +182,10 @@ pub struct StageOutput {
     /// rank is drawn on top (the engine ranks them by layer, then name).
     #[serde(default)]
     pub stack: u32,
+    /// The title of the stage's monitor window (a live copy of the stage, drawn whether or not
+    /// the stage is shown on a display) while the operator has it open; `None`: no monitor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<String>,
 }
 
 /// A message from the stage host to the engine.
@@ -157,6 +226,11 @@ pub enum FromStage {
         picture: u64,
         reason: String,
     },
+    /// The operator closed the stage's monitor window: it stays closed until the engine asks
+    /// for it again.
+    MonitorClosed {
+        stage: StageId,
+    },
     /// Test support: the answer to `probe`: the frame number read from the barcode, if the
     /// stage shows one, and the colour (RGBA, 0-255) at each point asked for.
     #[cfg(feature = "test-support")]
@@ -170,6 +244,15 @@ pub enum FromStage {
     #[cfg(feature = "test-support")]
     DisplayProbed {
         display: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame: Option<u16>,
+        colours: Vec<[u8; 4]>,
+    },
+    /// Test support: the answer to `probe_monitor`, as `probed` is to `probe`; no colours when
+    /// the stage has no monitor window open.
+    #[cfg(feature = "test-support")]
+    MonitorProbed {
+        stage: StageId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         frame: Option<u16>,
         colours: Vec<[u8; 4]>,
@@ -275,6 +358,25 @@ fn text_ok(text: &str) -> bool {
     !text.is_empty() && text.len() <= MAX_TEXT_BYTES && !text.chars().any(char::is_control)
 }
 
+/// `text` (a stage's name, say) as the link takes a title: control characters as spaces, cut
+/// to [`MAX_TEXT_BYTES`] on a character boundary, `fallback` when nothing is left. A title the
+/// link refuses would cost the whole stage set its line.
+pub fn link_text(text: &str, fallback: &str) -> String {
+    let mut out = String::with_capacity(text.len().min(MAX_TEXT_BYTES));
+    for c in text.chars().map(|c| if c.is_control() { ' ' } else { c }) {
+        if out.len() + c.len_utf8() > MAX_TEXT_BYTES {
+            break;
+        }
+        out.push(c);
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        fallback.chars().take(MAX_TEXT_BYTES / 4).collect()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 /// Log text may be empty; it is otherwise held to the same limits as names.
 fn message_ok(text: &str) -> bool {
     text.len() <= MAX_TEXT_BYTES && !text.chars().any(|c| c.is_control() && c != '\n')
@@ -328,8 +430,28 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
         {
             Err(LinkError::Invalid("bad picture file or offset"))
         }
+        ToStage::Load { geometry, .. } | ToStage::Geometry { geometry, .. }
+            if !geometry.is_valid() =>
+        {
+            Err(LinkError::Invalid("picture geometry out of range"))
+        }
+        ToStage::Ramp { param, ramp, .. } if !ramp.ok(*param) => {
+            Err(LinkError::Invalid("picture value out of range"))
+        }
         ToStage::Play { offset, .. } | ToStage::Pause { offset, .. } if !offset_ok(*offset) => {
             Err(LinkError::Invalid("picture offset out of range"))
+        }
+        ToStage::Play {
+            action,
+            plan,
+            fades,
+            into,
+            ..
+        } if !picture_run_ok(plan, *action, fades) || !offset_ok(*into) => {
+            Err(LinkError::Invalid("picture plan or fades out of range"))
+        }
+        ToStage::Pause { action, .. } if !offset_ok(*action) => {
+            Err(LinkError::Invalid("picture action time out of range"))
         }
         ToStage::Stages { stages } => {
             if stages.len() > MAX_LINK_STAGES {
@@ -342,8 +464,23 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
                 if stage.display.as_deref().is_some_and(|d| !text_ok(d)) {
                     return Err(LinkError::Invalid("bad display id"));
                 }
+                if stage.monitor.as_deref().is_some_and(|t| !text_ok(t)) {
+                    return Err(LinkError::Invalid("bad monitor title"));
+                }
             }
             Ok(())
+        }
+        #[cfg(feature = "test-support")]
+        ToStage::ProbeMonitor {
+            width,
+            height,
+            points,
+            ..
+        } => {
+            if !side_ok(*width) || !side_ok(*height) {
+                return Err(LinkError::Invalid("monitor size out of range"));
+            }
+            check_points(points)
         }
         #[cfg(feature = "test-support")]
         ToStage::SetDisplays { displays } => check_displays(displays),
@@ -394,6 +531,10 @@ fn check_from_stage(message: &FromStage) -> Result<(), LinkError> {
         } if colours.len() > MAX_PROBE_POINTS || !text_ok(display) => {
             Err(LinkError::Invalid("bad display probe"))
         }
+        #[cfg(feature = "test-support")]
+        FromStage::MonitorProbed { colours, .. } if colours.len() > MAX_PROBE_POINTS => {
+            Err(LinkError::Invalid("too many probe colours"))
+        }
         _ => Ok(()),
     }
 }
@@ -416,7 +557,12 @@ pub fn read_line(input: &mut impl BufRead, buf: &mut Vec<u8>) -> std::io::Result
     let mut total = 0usize;
     let mut saw_any = false;
     loop {
-        let chunk = input.fill_buf()?;
+        // A read a signal interrupted has read nothing: read again (the link is not over).
+        let chunk = match input.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         if chunk.is_empty() {
             return Ok(match (saw_any, total > MAX_LINE_BYTES) {
                 (false, _) => Line::End,
@@ -452,6 +598,37 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
+    /// A pipe read that a signal interrupts is read again: the line comes through whole and
+    /// the link is not taken to be over.
+    #[test]
+    fn a_read_a_signal_interrupts_is_read_again() {
+        struct Interrupted<'a> {
+            left: u32,
+            data: &'a [u8],
+        }
+        impl std::io::Read for Interrupted<'_> {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                if self.left > 0 {
+                    self.left -= 1;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let n = out.len().min(self.data.len()).min(3);
+                out[..n].copy_from_slice(&self.data[..n]);
+                self.data = &self.data[n..];
+                Ok(n)
+            }
+        }
+        let mut input = std::io::BufReader::new(Interrupted {
+            left: 2,
+            data: b"{\"a\":1}\n",
+        });
+        let mut line = Vec::new();
+        assert!(matches!(read_line(&mut input, &mut line), Ok(Line::Read)));
+        assert_eq!(line, b"{\"a\":1}");
+        line.clear();
+        assert!(matches!(read_line(&mut input, &mut line), Ok(Line::End)));
+    }
+
     fn stage(n: u128) -> StageId {
         StageId(Uuid::from_u128(n))
     }
@@ -470,10 +647,44 @@ mod tests {
                     display: Some("D1".into()),
                     keep_black: true,
                     stack: 3,
+                    monitor: Some("Stage 1".into()),
                 }],
             },
             ToStage::Ping { seq: 7 },
             ToStage::Quit,
+            ToStage::RaiseMonitor { stage: stage(1) },
+            ToStage::StandBack { on: true },
+            ToStage::Load {
+                picture: 4,
+                stage: stage(1),
+                file: "/show/a.mov".into(),
+                still: false,
+                offset: 1.5,
+                geometry: VideoGeometry::default(),
+            },
+            ToStage::Geometry {
+                picture: 4,
+                geometry: VideoGeometry {
+                    fill_stage: false,
+                    rotation: -30.0,
+                    opacity: 0.25,
+                    layer: 0,
+                    smooth: false,
+                    ..VideoGeometry::default()
+                },
+            },
+            ToStage::Stop {
+                picture: 4,
+                at: 100,
+                fade: 50,
+                cut: None,
+            },
+            ToStage::Stop {
+                picture: 4,
+                at: 100,
+                fade: 50,
+                cut: Some(120),
+            },
         ];
         for m in to {
             let line = encode(&m).unwrap();
@@ -481,6 +692,12 @@ mod tests {
             assert!(line.ends_with('\n'));
             assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), m);
         }
+        // A stop with no cut is written without one, as before the cut existed.
+        let plain = br#"{"type":"stop","picture":4,"at":100,"fade":50}"#;
+        assert!(matches!(
+            decode_to_stage(plain),
+            Ok(ToStage::Stop { cut: None, .. })
+        ));
         let from = [
             FromStage::Hello {
                 version: 1,
@@ -503,6 +720,7 @@ mod tests {
             },
             FromStage::Pong { seq: 7 },
             FromStage::PictureOpened { picture: 3 },
+            FromStage::MonitorClosed { stage: stage(1) },
             FromStage::PictureFailed {
                 picture: 3,
                 reason: "the file is damaged".into(),
@@ -530,12 +748,172 @@ mod tests {
                 display: Some("d".repeat(MAX_TEXT_BYTES)),
                 keep_black: true,
                 stack: u32::MAX,
+                monitor: Some("m".repeat(MAX_TEXT_BYTES)),
             })
             .collect();
         let message = ToStage::Stages { stages };
         let line = encode(&message).unwrap();
         assert!(line.len() <= MAX_LINE_BYTES + 1, "{} bytes", line.len());
         assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), message);
+    }
+
+    /// A picture value's ramp (VID-05) reads back; one with an end outside the value's range,
+    /// or not a number, is refused.
+    #[test]
+    fn a_picture_ramp_reads_back_and_one_out_of_range_is_refused() {
+        let ramp = |param, from, to| ToStage::Ramp {
+            picture: 3,
+            param,
+            ramp: PictureRamp {
+                from,
+                to,
+                at: 48_000,
+                frames: 144_000,
+                curve: crate::FadeCurve::SCurve,
+            },
+        };
+        let good = ramp(PictureParam::TranslationX, -300.5, 1200.0);
+        let line = encode(&good).unwrap();
+        assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), good);
+        for bad in [
+            ramp(PictureParam::Opacity, 1.0, 1.01),
+            ramp(PictureParam::Rotation, 361.0, 0.0),
+            ramp(PictureParam::ScaleY, 1.0, -101.0),
+        ] {
+            let line = serde_json::to_string(&bad).unwrap();
+            assert!(matches!(
+                decode_to_stage(line.as_bytes()),
+                Err(LinkError::Invalid(_))
+            ));
+        }
+        for line in [
+            r#"{"type":"ramp","picture":1,"param":"opacity","ramp":{"from":1,"to":null,"at":0,"frames":0,"curve":"linear"}}"#,
+            r#"{"type":"ramp","picture":1,"param":"crop","ramp":{"from":1,"to":1,"at":0,"frames":0,"curve":"linear"}}"#,
+            r#"{"type":"ramp","picture":1,"param":"opacity","ramp":{"from":1,"to":1,"at":-1,"frames":0,"curve":"linear"}}"#,
+            r#"{"type":"ramp","picture":1,"param":"scale_x","ramp":{"from":1e999,"to":1,"at":0,"frames":0,"curve":"linear"}}"#,
+        ] {
+            assert!(decode_to_stage(line.as_bytes()).is_err(), "{line}");
+        }
+    }
+
+    /// Geometry out of range is refused on the link as everywhere else (VID-04).
+    #[test]
+    fn picture_geometry_out_of_range_is_refused() {
+        let bad = |geometry| ToStage::Geometry {
+            picture: 1,
+            geometry,
+        };
+        for geometry in [
+            VideoGeometry {
+                opacity: 1.5,
+                ..VideoGeometry::default()
+            },
+            VideoGeometry {
+                layer: 1001,
+                ..VideoGeometry::default()
+            },
+            VideoGeometry {
+                scale: crate::Pair { x: 1e6, y: 1.0 },
+                ..VideoGeometry::default()
+            },
+        ] {
+            let line = serde_json::to_string(&bad(geometry)).unwrap();
+            assert!(matches!(
+                decode_to_stage(line.as_bytes()),
+                Err(LinkError::Invalid(_))
+            ));
+        }
+        let load = concat!(
+            r#"{"type":"load","picture":1,"stage":"00000000-0000-0000-0000-000000000001","#,
+            r#""file":"/a.mov","still":false,"offset":0,"geometry":{"opacity":-1}}"#
+        );
+        assert!(matches!(
+            decode_to_stage(load.as_bytes()),
+            Err(LinkError::Invalid(_))
+        ));
+    }
+
+    /// A play with a plan and fades reads back; one out of the link's limits is refused (VID-07),
+    /// and the largest plan fits one line.
+    #[test]
+    fn a_picture_plan_reads_back_and_one_out_of_range_is_refused() {
+        let fade = crate::FadeSpec {
+            duration: 0.5,
+            curve: crate::FadeCurve::SCurve,
+        };
+        let play = |plan: Vec<PlanPass>, action: f64, end: Option<f64>| ToStage::Play {
+            picture: 2,
+            at: 480,
+            offset: 1.0,
+            action,
+            plan,
+            into: action,
+            fades: PictureFades {
+                fade_in: fade,
+                fade_out: fade,
+                end,
+            },
+        };
+        let pass = |from, length, plays| PlanPass {
+            from,
+            length,
+            plays,
+        };
+        let good = play(vec![pass(1.0, 2.0, 0), pass(3.0, 1.0, 1)], 0.25, None);
+        let line = encode(&good).unwrap();
+        assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), good);
+        let pause = ToStage::Pause {
+            picture: 2,
+            at: 9,
+            offset: 1.5,
+            action: 3.0,
+        };
+        assert_eq!(
+            decode_to_stage(encode(&pause).unwrap().as_bytes()).unwrap(),
+            pause
+        );
+        let largest = play(
+            vec![pass(crate::MAX_TIME / 3.0, 1.0 / 3.0, u32::MAX); crate::MAX_PLAN_PASSES],
+            crate::MAX_TIME / 7.0,
+            Some(crate::MAX_TIME / 9.0),
+        );
+        let line = encode(&largest).unwrap();
+        assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), largest);
+        for bad in [
+            play(vec![pass(-1.0, 2.0, 1)], 0.0, None),
+            play(vec![pass(0.0, 0.0, 1)], 0.0, None),
+            play(vec![pass(0.0, 1.0, 1)], -0.5, None),
+            play(vec![pass(0.0, 1.0, 1)], 0.0, Some(1e12)),
+            play(
+                vec![pass(0.0, 1.0, 1); crate::MAX_PLAN_PASSES + 1],
+                0.0,
+                None,
+            ),
+            ToStage::Pause {
+                picture: 2,
+                at: 9,
+                offset: 1.5,
+                action: f64::MAX,
+            },
+            ToStage::Play {
+                picture: 2,
+                at: 9,
+                offset: 1.5,
+                action: 0.0,
+                plan: vec![pass(0.0, 1.0, 1)],
+                into: -1.0,
+                fades: PictureFades::NONE,
+            },
+        ] {
+            let line = encode(&bad).unwrap();
+            assert!(
+                matches!(decode_to_stage(line.as_bytes()), Err(LinkError::Invalid(_))),
+                "{bad:?}"
+            );
+        }
+        // NaN is not JSON: a line carrying one in a plan is unreadable, never accepted.
+        let nan = r#"{"type":"play","picture":1,"at":0,"offset":0,"action":0,"into":0,"plan":[{"from":NaN,"length":1,"plays":1}],"fades":{"fade_in":{"duration":0,"curve":"linear"},"fade_out":{"duration":0,"curve":"linear"},"end":null}}"#;
+        assert!(decode_to_stage(nan.as_bytes()).is_err());
     }
 
     #[test]
@@ -607,6 +985,7 @@ mod tests {
                 display: None,
                 keep_black: true,
                 stack: 0,
+                monitor: None,
             }],
         };
         let line = encode(&big).unwrap();
@@ -614,8 +993,44 @@ mod tests {
             decode_to_stage(line.as_bytes()),
             Err(LinkError::Invalid("stage size out of range"))
         );
+        for title in ["", "a\u{7}b", &"t".repeat(MAX_TEXT_BYTES + 1)] {
+            let titled = ToStage::Stages {
+                stages: vec![StageOutput {
+                    id: stage(1),
+                    width: 1920,
+                    height: 1080,
+                    display: None,
+                    keep_black: false,
+                    stack: 0,
+                    monitor: Some(title.to_owned()),
+                }],
+            };
+            let line = encode(&titled).unwrap();
+            assert_eq!(
+                decode_to_stage(line.as_bytes()),
+                Err(LinkError::Invalid("bad monitor title")),
+                "{title:?}"
+            );
+        }
         let log = r#"{"type":"log","level":"warn","message":"a\u0000b"}"#;
         assert!(decode_from_stage(log.as_bytes()).is_err());
+    }
+
+    /// Any stage name becomes a title the link takes: control characters go, a long name is cut
+    /// on a character boundary, an empty one takes the fallback.
+    #[test]
+    fn any_name_becomes_a_title_the_link_takes() {
+        let ok = |t: &str| text_ok(t);
+        assert_eq!(link_text("Stage 1", "Stage"), "Stage 1");
+        assert_eq!(link_text("a\tb\nc", "Stage"), "a b c");
+        assert_eq!(link_text("  \u{7} ", "Stage"), "Stage");
+        let long = "é".repeat(MAX_TEXT_BYTES);
+        let cut = link_text(&long, "Stage");
+        assert!(ok(&cut) && cut.len() == MAX_TEXT_BYTES, "{}", cut.len());
+        assert!(ok(&link_text(
+            &format!("{}x", "y".repeat(MAX_TEXT_BYTES)),
+            "S"
+        )));
     }
 
     #[cfg(feature = "test-support")]
@@ -635,10 +1050,31 @@ mod tests {
         let line = encode(&FromStage::Probed {
             stage: stage(1),
             frame: None,
+            colours: colours.clone(),
+        })
+        .unwrap();
+        assert!(decode_from_stage(line.as_bytes()).is_err());
+        let line = encode(&FromStage::MonitorProbed {
+            stage: stage(1),
+            frame: None,
             colours,
         })
         .unwrap();
         assert!(decode_from_stage(line.as_bytes()).is_err());
+        let monitor = |w: u32, points: Vec<[f32; 2]>| ToStage::ProbeMonitor {
+            stage: stage(1),
+            width: w,
+            height: 300,
+            points,
+        };
+        let good = monitor(400, vec![[0.5, 0.5]]);
+        assert_eq!(
+            decode_to_stage(encode(&good).unwrap().as_bytes()).unwrap(),
+            good
+        );
+        for bad in [monitor(0, vec![[0.5, 0.5]]), monitor(400, vec![[2.0, 0.5]])] {
+            assert!(decode_to_stage(encode(&bad).unwrap().as_bytes()).is_err());
+        }
     }
 
     /// Test support: a media clock step reads back; one over a day is refused.

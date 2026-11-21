@@ -37,6 +37,9 @@ fn fixture_cases() {
                 media: case.media.as_deref().map(MediaRef::new),
                 stage: None,
                 duration: None,
+                geometry: Default::default(),
+                timing: Default::default(),
+                sound: Default::default(),
             }
         } else if case.audio {
             let mut kind = audio();

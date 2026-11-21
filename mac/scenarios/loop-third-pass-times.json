@@ -1,0 +1,19 @@
+{
+  "about": "An audio cue (4 s file) that loops until devamped, on its third pass with Active Cues open: the Duration cell and the cue's Active Cues row show the same time, the time into the pass.",
+  "show": "Demo",
+  "media": {"media/a.wav": 4},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"click": "toggle-sidebar"},
+    {"click": "sidebar-tabs", "at": [0.5, 0.5]},
+    {"key": "space"},
+    {"select": "1"},
+    {"advance": 1},
+    {"shot": "pass-1"},
+    {"advance": 4},
+    {"shot": "pass-2"},
+    {"advance": 4},
+    {"shot": "pass-3"}
+  ]
+}

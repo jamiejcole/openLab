@@ -47,6 +47,12 @@ impl Control {
         self.eng.watch.watched_files()
     }
 
+    /// Key changes and closed docs' keys the media watch share still has to handle in the wakes
+    /// to come.
+    pub fn watch_waiting(&self) -> usize {
+        self.eng.watch.waiting()
+    }
+
     /// Voice ids whose owner is recorded (a leak measure: it follows the voices alive).
     pub fn voice_owners(&self) -> usize {
         self.eng.voice_ids.recorded()
@@ -79,6 +85,7 @@ impl Control {
                 playheads: Vec::new(),
                 previewing: Vec::new(),
                 played: Vec::new(),
+                playlist_next: Vec::new(),
                 warnings: Vec::new(),
                 media_durations: Vec::new(),
             },
@@ -90,6 +97,13 @@ impl Control {
     /// found nothing.
     pub fn watch_pass(&mut self) -> Option<WatchBatch> {
         self.follow_key_changes();
+        self.eng.watch.watch_mut().manual_pass()
+    }
+
+    /// [`Self::watch_pass`] without first handing the catalogs' key changes to the watch (a test
+    /// of a batch the watch thread made before they were handed over).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn watch_pass_unfollowed(&mut self) -> Option<WatchBatch> {
         self.eng.watch.watch_mut().manual_pass()
     }
 
@@ -289,6 +303,27 @@ impl Control {
         self.eng.pictures_opened()
     }
 
+    /// Pictures opened ahead for cues standing by, and of those the ones the stage host has
+    /// open, every doc's.
+    pub fn pictures_primed(&self) -> (usize, usize) {
+        self.eng.primes_up()
+    }
+
+    /// Pictures being tried alone after stage host crashes, every doc's.
+    pub fn picture_trials(&self) -> usize {
+        self.eng.picture_trials()
+    }
+
+    /// Pictures' opens asked ahead so far, for the cues standing by.
+    pub fn picture_opens_ahead(&self) -> u64 {
+        self.eng.primes_asked()
+    }
+
+    /// Video cue starts waiting for their pictures' files to open (not paused), every doc's.
+    pub fn pictures_waiting(&self) -> usize {
+        self.eng.pictures_waiting()
+    }
+
     /// Memory taken from the first doc's preload budget.
     pub fn preload_reserved(&self) -> u64 {
         self.first().map_or(0, |d| d.media.preload_reserved())
@@ -373,7 +408,7 @@ impl Control {
             if !matches!(handle.wait_cut_seen(timeout), Ok(true) | Err(_)) {
                 stalls += 1;
             }
-            if !matches!(handle.wait_written(needed, timeout), Ok(true) | Err(_)) {
+            if !matches!(handle.wait_fed(needed, timeout), Ok(true) | Err(_)) {
                 stalls += 1;
             }
         }
@@ -449,6 +484,23 @@ impl<'a> DocView<'a> {
     /// Probes still running.
     pub fn probes_pending(&self) -> usize {
         self.doc.media.pending()
+    }
+
+    /// Saves into another folder whose copy and index, prepared on the writer thread, the doc
+    /// took up as they were.
+    pub fn moves_taken_up(&self) -> u64 {
+        self.doc.file.moves_taken_up
+    }
+
+    /// Watch changes of the doc's catalog the media watch share has not been handed yet.
+    pub fn key_changes_pending(&self) -> usize {
+        self.doc.media.key_changes_pending()
+    }
+
+    /// Media jobs (probes, preloads) the doc has asked for so far.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn media_tickets(&self) -> u64 {
+        self.doc.media.tickets_issued()
     }
 
     /// The workspace-level notices in force.

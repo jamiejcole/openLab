@@ -1,0 +1,35 @@
+{
+  "about": "The clock device chosen earlier is unplugged: still listed as missing (#773).",
+  "show": "Demo",
+  "appearance": "dark",
+  "steps": [
+    {
+      "focus": "preferences"
+    },
+    {
+      "tab": "audio"
+    },
+    {
+      "choose": "preferences-clock-popup",
+      "item": "openLab Virtual Output"
+    },
+    {
+      "focus": "workspace"
+    },
+    {
+      "device": "lose"
+    },
+    {
+      "advance": 2
+    },
+    {
+      "focus": "preferences"
+    },
+    {
+      "tab": "audio"
+    },
+    {
+      "shot": "missing"
+    }
+  ]
+}

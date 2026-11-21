@@ -200,7 +200,7 @@ impl CueEngine {
         });
     }
 
-    fn new_preview_run(&mut self) -> RunId {
+    pub(super) fn new_preview_run(&mut self) -> RunId {
         let run = RunId(PREVIEW_RUN_BASE.saturating_add(self.next_preview));
         self.next_preview = self.next_preview.saturating_add(1);
         run

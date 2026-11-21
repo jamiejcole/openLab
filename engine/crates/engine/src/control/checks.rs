@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Which audio cues' slices cannot be played with their file (the cue engine's
+//! Which Audio and Video cues' slices cannot be played with their file (the cue engine's
 //! `slices_unplayable` problem, `Input::SliceProblems`, #410), kept per
 //! cue and recomputed only when the cue's trims and markers or its file's probe change: an edit
 //! of one cue in a show of thousands builds one plan, not thousands.
@@ -24,11 +24,14 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use openlab_audio::total_frames;
-use openlab_core::protocol::CueMediaDuration;
-use openlab_core::{Cue, CueId, CueKind, MAX_CHANNELS, SampleTime, SliceMarker, Workspace};
+use openlab_core::protocol::{AudioTrackFormat, CueMediaDuration};
+use openlab_core::{
+    Cue, CueId, CueKind, MAX_CHANNELS, PlayCount, SampleTime, SliceMarker, SliceProblem,
+    VideoTiming, Workspace, seconds_to_samples,
+};
 
 use super::media::{MediaCatalog, PictureReady, PlanChanges, Ready};
-use super::plan::{PlanFailure, PlanSpec, cue_slices};
+use super::plan::{PlanSpec, cue_slices, picture_info};
 use openlab_core::video_probe::ProbeReport;
 
 /// Where the checks find a file's probe: the doc's catalog, or [`NoProbes`] for a workspace
@@ -60,7 +63,8 @@ impl Probes for NoProbes {
     }
 }
 
-/// A Video cue's lengths, as its file's probe and its own duration give them.
+/// A Video cue's lengths, as its file's probe, its own duration and its time and loops give
+/// them.
 #[derive(Clone, Debug, PartialEq)]
 struct Picture {
     key: String,
@@ -68,15 +72,49 @@ struct Picture {
     report: Option<ProbeReport>,
     /// A still's typed duration, seconds.
     duration: Option<f64>,
+    /// A movie's trims, slices and play counts (VID-07).
+    timing: VideoTiming,
+    /// A movie's audio tracks, and the one the cue chose (VID-06).
+    tracks: Vec<AudioTrackFormat>,
+    track: u32,
+}
+
+/// A Video cue's lengths at the engine's rate: its action from the top (`None` if it loops for
+/// ever, or a still shown until stopped) and one pass of its trimmed range, in samples.
+struct PictureLengths {
+    action: Option<SampleTime>,
+    pass: Option<SampleTime>,
 }
 
 impl Picture {
-    /// The action's length in seconds: a video's own, a still's typed duration.
-    fn length(&self) -> Option<f64> {
-        match self.report.as_ref()? {
-            ProbeReport::Video { duration, .. } => Some(*duration),
-            ProbeReport::Still { .. } => self.duration,
-            ProbeReport::Missing | ProbeReport::Unsupported { .. } => None,
+    /// Its lengths, or why its plan cannot be played. A movie is planned as an Audio cue is,
+    /// on its file's length; a still's action is its typed duration.
+    fn lengths(&self, rate: NonZeroU32) -> Result<PictureLengths, SliceProblem> {
+        let none = PictureLengths {
+            action: None,
+            pass: None,
+        };
+        match self.report.as_ref() {
+            Some(ProbeReport::Video { duration, .. }) => {
+                let t = &self.timing;
+                let spec = PlanSpec {
+                    start_time: t.start_time,
+                    end_time: t.end_time,
+                    slices: &t.slices,
+                    last_slice_play_count: t.last_slice_play_count,
+                };
+                let table = cue_slices(&spec, &picture_info(*duration, rate), rate, 0)
+                    .map_err(|e| e.problem())?;
+                Ok(PictureLengths {
+                    action: total_frames(&table),
+                    pass: Some(table.iter().fold(0u64, |a, s| a.saturating_add(s.frames))),
+                })
+            }
+            Some(ProbeReport::Still { .. }) => Ok(PictureLengths {
+                action: self.duration.map(|d| seconds_to_samples(d, rate)),
+                pass: None,
+            }),
+            Some(ProbeReport::Missing | ProbeReport::Unsupported { .. }) | None => Ok(none),
         }
     }
 }
@@ -87,9 +125,9 @@ struct Entry {
     probe: Arc<Ready>,
     start: u64,
     end: Option<u64>,
-    marks: Vec<(u64, u32)>,
-    last: u32,
-    error: Option<String>,
+    marks: Vec<(u64, PlayCount)>,
+    last: PlayCount,
+    error: Option<SliceProblem>,
     /// The action's length from the top; `None` if it loops forever or has no plan.
     length: Option<u64>,
     /// One pass of the trimmed range (every slice once); `None` if there is no plan.
@@ -125,7 +163,7 @@ pub struct PlanChecks {
     /// The cues of `cues` on each file, for a probe change.
     by_key: HashMap<String, BTreeSet<CueId>>,
     /// The cues whose slices cannot be played, with why.
-    errors: BTreeMap<CueId, String>,
+    errors: BTreeMap<CueId, SliceProblem>,
     /// The rate the checks were made at.
     rate: Option<NonZeroU32>,
     builds: u64,
@@ -138,7 +176,7 @@ pub struct PlanChecks {
     /// The media lengths clients were last told (`take_changes`), for the snapshot.
     sent: BTreeMap<CueId, CueMediaDuration>,
     /// The slice problems the cue engine was last told (`take_changes`).
-    told_errors: BTreeMap<CueId, String>,
+    told_errors: BTreeMap<CueId, SliceProblem>,
     /// Cues whose plan was rebuilt or dropped since then, so the change costs what it touched.
     stale: BTreeSet<CueId>,
 }
@@ -151,7 +189,7 @@ impl PlanChecks {
         ws: &Workspace,
         media: &mut MediaCatalog,
         rate: NonZeroU32,
-    ) -> &BTreeMap<CueId, String> {
+    ) -> &BTreeMap<CueId, SliceProblem> {
         let changes = media.take_plan_changes();
         if changes.all || self.rate != Some(rate) || media.index().has_duplicates() {
             return self.check_all(ws, media, rate);
@@ -197,7 +235,7 @@ impl PlanChecks {
         ws: &Workspace,
         media: &impl Probes,
         rate: NonZeroU32,
-    ) -> &BTreeMap<CueId, String> {
+    ) -> &BTreeMap<CueId, SliceProblem> {
         self.walks += 1;
         if self.rate != Some(rate) {
             // Every plan depends on the rate.
@@ -235,7 +273,7 @@ impl PlanChecks {
     /// Brings what is kept about `id` in line with `cue` (`None`: gone) and its file's probe.
     fn update(&mut self, id: CueId, cue: Option<&Cue>, media: &impl Probes, rate: NonZeroU32) {
         self.examined += 1;
-        if let Some((key, duration)) = cue.and_then(video_spec) {
+        if let Some((key, duration, timing, track)) = cue.and_then(video_spec) {
             if self.pictures.get(&id).is_none_or(|p| p.key != key) {
                 self.forget(id);
                 self.by_key.entry(key.to_owned()).or_default().insert(id);
@@ -244,8 +282,24 @@ impl PlanChecks {
                 key: key.to_owned(),
                 report: media.picture(key).map(|p| p.report.clone()),
                 duration,
+                timing: timing.clone(),
+                tracks: media.picture(key).map_or_else(Vec::new, |p| {
+                    (p.sound.iter())
+                        .map(|t| AudioTrackFormat {
+                            codec: t.codec.clone(),
+                            channels: t.ready.probed.info.channels,
+                            sample_rate: t.ready.probed.info.sample_rate,
+                        })
+                        .collect()
+                }),
+                track,
             };
             if self.pictures.get(&id) != Some(&now) {
+                self.builds += 1;
+                match now.lengths(rate) {
+                    Err(e) => self.errors.insert(id, e),
+                    Ok(_) => self.errors.remove(&id),
+                };
                 self.pictures.insert(id, now);
                 self.stale.insert(id);
             }
@@ -291,7 +345,7 @@ impl PlanChecks {
                         total_frames(&table),
                         Some(table.iter().fold(0u64, |a, s| a.saturating_add(s.frames))),
                     ),
-                    Err(PlanFailure::Plan(e)) => (Some(e.to_string()), None, None),
+                    Err(e) => (Some(e.problem()), None, None),
                 };
                 tracked.entry = Some(Entry {
                     probe: Arc::clone(ready),
@@ -356,7 +410,8 @@ impl PlanChecks {
         let rate = self.rate;
         for id in std::mem::take(&mut self.stale) {
             if let Some(p) = self.pictures.get(&id) {
-                self.picture_changes(id, p.clone(), rate, &mut out);
+                let error = self.errors.get(&id).cloned();
+                self.picture_changes(id, p.clone(), error, rate, &mut out);
                 continue;
             }
             let entry = self.cues.get(&id).and_then(|t| t.entry.as_ref());
@@ -397,6 +452,8 @@ impl PlanChecks {
                     // The probe already refuses other counts; a wrong one is dropped, not sent.
                     channels: Some(info.channels).filter(|c| (1..=MAX_CHANNELS as u16).contains(c)),
                     picture: None,
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }
             });
             if self.sent.get(&id) == media.as_ref() {
@@ -416,6 +473,8 @@ impl PlanChecks {
                         duration: None,
                         channels: None,
                         picture: None,
+                        audio_tracks: Vec::new(),
+                        audio_track: None,
                     });
                 }
             }
@@ -423,19 +482,26 @@ impl PlanChecks {
         out
     }
 
-    /// [`Self::take_changes`] for a Video cue: its length for the cue engine, and its lengths
-    /// and format for clients.
+    /// [`Self::take_changes`] for a Video cue: its slice problem, its lengths for the cue
+    /// engine, and its lengths and format for clients (the Duration column shows the length
+    /// its time and loops give, as an Audio cue's).
     fn picture_changes(
         &mut self,
         id: CueId,
         p: Picture,
+        error: Option<SliceProblem>,
         rate: Option<NonZeroU32>,
         out: &mut CheckChanges,
     ) {
-        let length = p
-            .length()
-            .zip(rate)
-            .map(|(s, r)| openlab_core::seconds_to_samples(s, r));
+        if error.is_some() || self.told_errors.get(&id) != error.as_ref() {
+            match &error {
+                Some(e) => self.told_errors.insert(id, e.clone()),
+                None => self.told_errors.remove(&id),
+            };
+            out.slices.push((id, error));
+        }
+        let lengths = rate.and_then(|r| p.lengths(r).ok());
+        let length = lengths.as_ref().and_then(|l| l.action);
         if self.told.get(&id).copied() != length {
             match length {
                 Some(l) => self.told.insert(id, l),
@@ -443,21 +509,42 @@ impl PlanChecks {
             };
             out.lengths.push((id, length));
         }
+        let pass = lengths.as_ref().and_then(|l| l.pass);
+        if self.told_passes.get(&id).copied() != pass {
+            match pass {
+                Some(l) => self.told_passes.insert(id, l),
+                None => self.told_passes.remove(&id),
+            };
+            out.passes.push((id, pass));
+        }
+        let in_seconds = |f: Option<SampleTime>| f.zip(rate).and_then(|(f, r)| seconds(f, r.get()));
         let media = CueMediaDuration {
             cue: id,
             file: match &p.report {
                 Some(ProbeReport::Video { duration, .. }) => Some(*duration),
                 _ => None,
             },
-            trimmed: None,
-            duration: p.report.as_ref().and(p.length()),
-            channels: None,
+            trimmed: in_seconds(pass),
+            duration: in_seconds(length),
+            channels: p.played_track().map(|(_, t)| t.channels),
             picture: p.report.clone(),
+            audio_track: p.played_track().map(|(n, _)| n),
+            audio_tracks: p.tracks,
         };
         if self.sent.get(&id) != Some(&media) {
             self.sent.insert(id, media.clone());
             out.media.push(media);
         }
+    }
+
+    /// Video cues whose chosen audio track their movie does not have (they play its first),
+    /// with the number chosen, counted from 1.
+    pub fn missing_tracks(&self) -> Vec<(CueId, u32)> {
+        self.pictures
+            .iter()
+            .filter(|(_, p)| p.played_track().is_some_and(|(n, _)| n != p.track))
+            .map(|(id, p)| (*id, p.track.saturating_add(1)))
+            .collect()
     }
 
     /// The media lengths clients were last told, by cue id (the snapshot's `media_durations`).
@@ -484,7 +571,7 @@ impl PlanChecks {
 /// What [`PlanChecks::take_changes`] found.
 #[derive(Debug, Default)]
 pub struct CheckChanges {
-    pub slices: Vec<(CueId, Option<String>)>,
+    pub slices: Vec<(CueId, Option<SliceProblem>)>,
     pub lengths: Vec<(CueId, Option<SampleTime>)>,
     /// One pass of the trimmed range for the cue engine (`Input::CuePassLengths`), told like
     /// `lengths`.
@@ -503,15 +590,32 @@ fn seconds(frames: u64, rate: u32) -> Option<f64> {
     Some(u64::try_from(ms).unwrap_or(u64::MAX) as f64 / 1000.0)
 }
 
-/// The file of a Video cue with one, and its still duration.
-fn video_spec(c: &Cue) -> Option<(&str, Option<f64>)> {
+/// The file of a Video cue with one, its still duration, its time and loops and the audio
+/// track it chose.
+fn video_spec(c: &Cue) -> Option<(&str, Option<f64>, &VideoTiming, u32)> {
     match &c.kind {
         CueKind::Video {
             media: Some(m),
             duration,
+            timing,
+            sound,
             ..
-        } => Some((m.as_str(), *duration)),
+        } => Some((m.as_str(), *duration, timing, sound.audio_track)),
         _ => None,
+    }
+}
+
+impl Picture {
+    /// The audio track the cue plays and its number: the one it chose, or the first when the
+    /// movie has no such track; `None` for a file without sound.
+    fn played_track(&self) -> Option<(u32, &AudioTrackFormat)> {
+        let chosen = usize::try_from(self.track)
+            .ok()
+            .and_then(|n| self.tracks.get(n));
+        match chosen {
+            Some(t) => Some((self.track, t)),
+            None => self.tracks.first().map(|t| (0, t)),
+        }
     }
 }
 
@@ -544,7 +648,7 @@ fn each_cue<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
     openlab_core::descendants(cues).for_each(f);
 }
 
-fn marks(slices: &[SliceMarker]) -> Vec<(u64, u32)> {
+fn marks(slices: &[SliceMarker]) -> Vec<(u64, PlayCount)> {
     slices
         .iter()
         .map(|m| (m.time.to_bits(), m.play_count))

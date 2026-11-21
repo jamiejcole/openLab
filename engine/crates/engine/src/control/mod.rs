@@ -21,6 +21,7 @@
 
 mod checks;
 mod client;
+mod copy_media;
 mod device_events;
 pub mod devices;
 mod docs;
@@ -38,6 +39,7 @@ mod observe;
 pub mod offline;
 mod outputs;
 mod patches;
+mod picture_sound;
 mod pictures;
 pub mod plan;
 mod preshow;
@@ -52,6 +54,7 @@ pub mod virtual_device;
 mod voice_ids;
 mod voices;
 mod wake;
+pub mod wall_clock;
 pub mod watch;
 mod watch_share;
 mod waveform_reader;
@@ -71,14 +74,15 @@ use openlab_audio::{
 };
 use openlab_core::protocol::{
     CueProblems, CueStateEntry, DocumentState, ErrorBody, ErrorCode, LogKind, LogLevel, OkBody,
-    Outcome, PlayheadEntry, Request, RuntimeChange, ServerMessage, Snapshot, WireProblem,
-    WireWarning,
+    Outcome, PlayheadEntry, PlaylistNextEntry, Request, RuntimeChange, ServerMessage, Snapshot,
+    WireProblem, WireWarning,
 };
 use openlab_core::{
     CommandError, CueEngine, CueId, CueKind, DeviceInfo, EngineConfig, EngineConfigError, History,
     Input, MachineSettings, MediaStatus, SampleTime, Workspace,
 };
 
+pub use copy_media::{COPY_PROGRESS_EVERY, CopyConfig};
 pub use docs::{
     DocAnswer, DocHook, DocSource, EpochClock, FinalWrites, Loaded, ManualClock, SaveHook,
 };
@@ -91,9 +95,11 @@ pub use media::{PROBE_WORKERS, ProbeClock};
 pub use netout::{
     Destination, LINK_QUEUE, LookupThreads, NetAnswer, NetTransport, SystemTransport, Transport,
 };
+pub use outputs::MAX_OUTPUTS;
 pub use transport::transport_input;
 pub use wake::{stall_floor, wake_frames};
 
+use crate::diag::health::Throttle;
 use crate::persist::AppDirs;
 use checks::PlanChecks;
 use device_events::playable_device;
@@ -109,6 +115,10 @@ use patches::Patches;
 use transport::Scope;
 use voice_ids::VoiceIds;
 use voices::Voices;
+
+/// Where a loaded cue stands: the cue, seconds into its action, and the point of its media
+/// file (seconds) for a voice or picture.
+type LoadedPoint = (CueId, f64, Option<f64>);
 use watch::{MediaWatch, WatchBatch};
 use watch_share::WatchShare;
 
@@ -212,8 +222,12 @@ pub struct ControlConfig {
     /// Where backups, autosaves and the settings file live. `None`: nothing can be saved
     /// (saves answer `io`), autosave and recovery are off.
     pub app_dirs: Option<AppDirs>,
-    /// Wall-clock milliseconds for backup names and autosave pacing (tests inject one).
+    /// Wall-clock milliseconds for backup names, autosave pacing and wall-clock triggers
+    /// (tests inject one).
     pub clock: EpochClock,
+    /// The computer's time zone, for wall-clock triggers: the host sets the system's; tests
+    /// and the offline driver have UTC or one of their own.
+    pub local_zone: wall_clock::LocalZone,
     /// Called on the writer thread before each save (tests only).
     pub save_hook: Option<SaveHook>,
     /// Called on the document worker before each read (tests only).
@@ -223,6 +237,8 @@ pub struct ControlConfig {
     pub doc_timeout: Duration,
     /// Bounds on a `relink` folder walk (WS-03); tests shrink them.
     pub relink_limits: crate::persist::ScanLimits,
+    /// How copies of media into the show folder are paced (tests drop the pause and add holds).
+    pub copy: copy_media::CopyConfig,
     /// Test support (feature `test-support`, not in the shipping engine): the `relink` folder
     /// walk's thread fails to start, as when the process is out of threads.
     #[cfg(any(test, feature = "test-support"))]
@@ -262,6 +278,8 @@ pub struct ControlConfig {
     /// Where the loop says whether the computer must stay awake (SM-07: a doc in Show Mode or
     /// a cue running; `platform::power`). `None`: nobody listens (offline tests).
     pub awake: Option<Sender<bool>>,
+    /// The OSC server, for the settings page's port and state (`None`: no OSC).
+    pub osc: Option<std::sync::Arc<crate::net::OscServer>>,
     /// The stage host the engine runs for video output (docs/protocol.md section 5); `None`: no video
     /// output (tests that do not need it).
     pub stage_host: Option<crate::stage::StageHostConfig>,
@@ -269,8 +287,13 @@ pub struct ControlConfig {
     /// (a test wraps the real probe to hold an answer back).
     #[cfg(feature = "test-support")]
     pub picture_probe: Option<crate::stage_probe::PictureProbeFn>,
-    /// The virtual device the backend's stream runs on (`--virtual-device`): it answers the
-    /// test-only `advance`, `lose_device` and `restore_device` requests.
+    /// Test support: how long a Video cue's file's probe process may take
+    /// ([`crate::stage_probe::PROBE_PROCESS_LIMIT`] unless a test lengthens it for a machine
+    /// whose media framework is slow).
+    #[cfg(feature = "test-support")]
+    pub picture_probe_limit: Duration,
+    /// The virtual devices the backend's streams run on (`--virtual-device`): they answer the
+    /// test-only `advance`, `lose_device`, `restore_device`, `set_default_device` and `drop_out` requests.
     #[cfg(feature = "test-support")]
     pub virtual_device: Option<virtual_device::VirtualDevice>,
 }
@@ -291,10 +314,12 @@ impl ControlConfig {
             preload_budget: openlab_audio::DEFAULT_PRELOAD_BUDGET,
             app_dirs: None,
             clock: EpochClock::system(),
+            local_zone: wall_clock::LocalZone::fixed(0),
             save_hook: None,
             doc_hook: None,
             doc_timeout: DOC_TIMEOUT,
             relink_limits: crate::persist::ScanLimits::default(),
+            copy: copy_media::CopyConfig::default(),
             #[cfg(any(test, feature = "test-support"))]
             fail_relink_spawn: false,
             shutdown_wait: SHUTDOWN_WAIT,
@@ -314,9 +339,12 @@ impl ControlConfig {
             net: NetTransport::default(),
             watch: watch::WatchConfig::default(),
             awake: None,
+            osc: None,
             stage_host: None,
             #[cfg(feature = "test-support")]
             picture_probe: None,
+            #[cfg(feature = "test-support")]
+            picture_probe_limit: crate::stage_probe::PROBE_PROCESS_LIMIT,
             #[cfg(feature = "test-support")]
             virtual_device: None,
         }
@@ -423,6 +451,8 @@ struct Engine {
     out: Outbound,
     /// The document worker (one read at a time, engine-wide) and the save writer.
     docs: Docs,
+    /// Copies of media into show folders (one at a time, engine-wide).
+    copies: copy_media::Copies,
     config: ControlConfig,
     rate: NonZeroU32,
     /// Frames per device block: the lookahead and the `now` offset. It follows the open
@@ -434,9 +464,12 @@ struct Engine {
     /// `samples_rendered` at the last tick, and whether that tick saw it unchanged.
     last_tick_rendered: SampleTime,
     last_tick_stalled: bool,
+    /// The UTC second and the local second it is, at this wake (`wall_clock`).
+    local_time: (Option<i64>, Option<i64>),
     /// The mixers' cue outputs: the most a patch can have, the stride of a voice-meter read.
     cue_outputs: usize,
-    /// The mixers' device outputs (every device runs at the primary's channel count).
+    /// The most device outputs of any output's mixer (each device has its own count): the
+    /// stride of `out_peaks`.
     device_outputs: usize,
     seen: Seen,
     /// Mixer stage fault reports handled ([`Control::stage_faulted`]).
@@ -449,6 +482,9 @@ struct Engine {
     /// This wake's meter read, while the docs take their parts of it.
     meter_round: Option<MeterRound>,
     out_peaks: Vec<f32>,
+    /// Each output's patch bus meters, `[output][slot][cue output]`: what each cue output of a
+    /// patch carries before its matrix.
+    bus_peaks: Vec<f32>,
     meter_ids: Vec<VoiceId>,
     meter_peaks: Vec<f32>,
     /// Show-log and status bookkeeping (`observe.rs`).
@@ -539,6 +575,8 @@ struct Doc {
     events_routed: u64,
     /// Model changes nobody signalled, already reported (seams note (c)).
     seen_unsignalled: u64,
+    /// The cue engine's temporary-target changes already primed for.
+    seen_temp_targets: u64,
     voices: Voices,
     checks: PlanChecks,
     /// The show file, if saved: relative media references resolve against its folder.
@@ -564,6 +602,8 @@ struct Doc {
     resend_document: bool,
     resend_warnings: bool,
     last_progress: Option<SampleTime>,
+    /// The loaded cues' places the last progress message carried.
+    last_loaded: Vec<LoadedPoint>,
     /// Where the voices of cues a lost device left paused stood when it went (`progress`'s
     /// values): their time is shown as a paused voice's, the loop pass and file position
     /// included. Kept while the cue shows the mark.
@@ -575,6 +615,15 @@ struct Doc {
     /// saved or autosaved copy (`saved_workspace`); changing it does not mark the doc unsaved.
     /// Holds off sleep (SM-07).
     show_mode: bool,
+    /// Underruns per cue in the last ten seconds: each cue's `underrun` notice goes out at
+    /// most once per ten seconds with how many since its previous one.
+    underruns: std::collections::HashMap<CueId, Throttle>,
+    /// The wall-clock triggers' look at the clock (TRG-05): new with the doc, so a time passed
+    /// before it opened does not fire.
+    wall_clock: openlab_core::WallClockWatch,
+    /// Since when (UTC second) the local time has been unknown, and whether the operator was
+    /// told; `None` while it is known.
+    wall_clock_unknown: Option<(i64, bool)>,
 }
 
 /// Counters already reported, so each increase is reported once.
@@ -606,6 +655,7 @@ impl Control {
     ) -> Result<Self, ControlError> {
         // The doc's from here on (a save-as moves it); the config keeps only engine settings.
         let show_path = config.show_path.take();
+        let ws_stages: Vec<openlab_core::StageId> = ws.stages.iter().map(|s| s.id).collect();
         let mut control = Self::empty(mixer, backend, config, inbox, outbound)?;
         let id = control.eng.take_doc_id().unwrap_or(DocId(0));
         let show_dir = show_path
@@ -625,6 +675,12 @@ impl Control {
             show_path,
             media,
         );
+        // This way in stands for a show already running (tests, the offline driver): its stages
+        // keep black as if a picture had played on each. A workspace the engine opens
+        // (`open_doc`) starts with every stage's black down until its first picture.
+        for stage in &ws_stages {
+            control.eng.arm_stage(*stage);
+        }
         control.docs.push(doc);
         control.eng.open_docs = control.docs.len();
         // Before the doc's first reports: the app connections (and the OSC side, which follows
@@ -674,6 +730,7 @@ impl Control {
         // Only a doc has a show path ([`Self::new`]).
         config.show_path = None;
         let docs = Docs::new(&config, inbox.clone())?;
+        let copies = copy_media::Copies::new(inbox.clone(), config.copy.apply_per_wake);
         let watch = WatchShare::new(MediaWatch::new(&config.watch, inbox.clone())?);
         let waveform_reader = waveform_reader::WaveformReader::new(
             inbox.clone(),
@@ -681,9 +738,13 @@ impl Control {
             config.waveform_timeout,
             config.probe_clock.clone(),
         );
+        #[cfg(feature = "test-support")]
+        let picture_limit = config.picture_probe_limit;
+        #[cfg(not(feature = "test-support"))]
+        let picture_limit = crate::stage_probe::PROBE_PROCESS_LIMIT;
         let picture = crate::stage_probe::picture_probe(
             config.stage_host.as_ref().map(|h| h.program.clone()),
-            crate::stage_probe::PROBE_PROCESS_LIMIT,
+            picture_limit,
         );
         #[cfg(feature = "test-support")]
         let picture: crate::stage_probe::PictureProbe = match config.picture_probe {
@@ -750,12 +811,14 @@ impl Control {
             unwritable_warned: false,
             out: Outbound::new(outbound),
             docs,
+            copies,
             config,
             rate,
             block,
             now_floor: 0,
             last_tick_rendered: 0,
             last_tick_stalled: false,
+            local_time: (None, None),
             cue_outputs,
             device_outputs,
             seen: Seen::default(),
@@ -765,6 +828,7 @@ impl Control {
             last_meter_read: None,
             meter_round: None,
             out_peaks: vec![0.0; device_outputs],
+            bus_peaks: Vec::new(),
             meter_ids: Vec::new(),
             meter_peaks: Vec::new(),
             observe,
@@ -891,16 +955,24 @@ impl Engine {
         self.playable = playable;
     }
 
-    /// Voice-meter buffers for every output's mixer.
+    /// Voice-meter and output-meter buffers for every output's mixer.
     fn size_meters(&mut self) {
         let cap: usize = self
             .outputs
             .iter()
             .map(|(_, o)| o.mixer.voice_meter_capacity())
             .sum();
+        self.device_outputs = self
+            .outputs
+            .iter()
+            .map(|(_, o)| o.mixer.device_outputs())
+            .max()
+            .unwrap_or(1);
         self.meter_ids = vec![VoiceId(0); cap];
         self.meter_peaks = vec![0.0; cap * self.cue_outputs.max(1)];
         self.out_peaks = vec![0.0; self.device_outputs * self.outputs.len()];
+        self.bus_peaks =
+            vec![0.0; self.outputs.len() * self.patches.capacity() * self.cue_outputs.max(1)];
     }
 
     /// Reads every mixer's voice meters into `meter_ids`/`meter_peaks`, one after another.
@@ -920,14 +992,59 @@ impl Engine {
         n
     }
 
-    /// Reads every mixer's output meters into `out_peaks`, output `k`'s at `k * device_outputs`.
+    /// Reads every mixer's output meters into `out_peaks`, output `k`'s at `k * device_outputs`
+    /// (as many as its mixer has), and its patch bus meters into `bus_peaks`.
     fn read_output_meters(&mut self) {
+        for key in 0..self.outputs.len() {
+            self.read_output_meters_of(key);
+        }
+    }
+
+    /// [`Self::read_output_meters`] of output `key` alone; returns whether it exists.
+    fn read_output_meters_of(&mut self, key: OutputKey) -> bool {
         let n = self.device_outputs;
-        for (k, o) in self.outputs.iter_mut().enumerate() {
-            if let Some(out) = self.out_peaks.get_mut(k * n..(k + 1) * n) {
-                o.mixer.read_output_meters_into(out);
+        let (slots, rows) = (self.patches.capacity(), self.cue_outputs.max(1));
+        let Some(o) = self.outputs.get_mut(key) else {
+            return false;
+        };
+        let width = o.mixer.device_outputs().min(n);
+        if let Some(out) = self.out_peaks.get_mut(key * n..key * n + width) {
+            o.mixer.read_output_meters_into(out);
+        }
+        for slot in 0..slots {
+            let at = (key * slots + slot) * rows;
+            if let Some(out) = self.bus_peaks.get_mut(at..at + rows) {
+                out.fill(0.0);
+                o.mixer.read_patch_meters_into(slot, out);
             }
         }
+        true
+    }
+
+    /// Throws away the output and patch bus peaks output `key`'s mixer still holds: what it
+    /// rendered before its device was lost, which no meter may show once the device is back.
+    fn drop_held_meters(&mut self, key: OutputKey) {
+        if !self.read_output_meters_of(key) {
+            return;
+        }
+        let n = self.device_outputs;
+        if let Some(out) = self.out_peaks.get_mut(key * n..(key + 1) * n) {
+            out.fill(0.0);
+        }
+        let (slots, rows) = (self.patches.capacity(), self.cue_outputs.max(1));
+        if let Some(out) = self
+            .bus_peaks
+            .get_mut(key * slots * rows..(key + 1) * slots * rows)
+        {
+            out.fill(0.0);
+        }
+    }
+
+    /// The bus meters of `slot` on output `key`'s mixer: one per cue output, as last read.
+    pub(super) fn bus_peaks(&self, key: OutputKey, slot: u16) -> &[f32] {
+        let (slots, rows) = (self.patches.capacity(), self.cue_outputs.max(1));
+        let at = (key * slots + usize::from(slot)) * rows;
+        self.bus_peaks.get(at..at + rows).unwrap_or(&[])
     }
 
     /// Says on `config.awake` whether the computer must stay awake, when that changes. Never
@@ -1121,6 +1238,7 @@ impl Doc {
             events: Vec::new(),
             events_routed: 0,
             seen_unsignalled: 0,
+            seen_temp_targets: 0,
             voices: Voices::new(),
             checks: PlanChecks::default(),
             show_path,
@@ -1138,10 +1256,14 @@ impl Doc {
             resend_document: false,
             resend_warnings: false,
             last_progress: None,
+            last_loaded: Vec::new(),
             lost_progress: Vec::new(),
             meters_live: false,
             waveforms: waveforms::Waveforms::default(),
             show_mode: false,
+            underruns: std::collections::HashMap::new(),
+            wall_clock: openlab_core::WallClockWatch::new(),
+            wall_clock_unknown: None,
         }
     }
 
@@ -1167,6 +1289,12 @@ impl Doc {
 
     /// Everything a client needs to draw the show (docs/protocol.md, Snapshot).
     fn snapshot(&self) -> Snapshot {
+        self.snapshot_with(None)
+    }
+
+    /// [`Self::snapshot`] with `workspace` as the snapshot's copy of the workspace when given
+    /// (the caller made it from the model as it is now, off this thread).
+    fn snapshot_with(&self, workspace: Option<Workspace>) -> Snapshot {
         let cue_states = self
             .model
             .engine()
@@ -1199,7 +1327,7 @@ impl Doc {
             revision: self.revision,
             runtime_seq: self.runtime_seq,
             document: self.document_state(),
-            workspace: self.model.ws().clone(),
+            workspace: workspace.unwrap_or_else(|| self.model.ws().clone()),
             cue_states,
             problems,
             group_warnings,
@@ -1215,6 +1343,12 @@ impl Doc {
                 .collect(),
             previewing: self.model.engine().previewing().collect(),
             played: self.model.engine().played().collect(),
+            playlist_next: self
+                .model
+                .engine()
+                .playlist_marks()
+                .map(|(group, cue)| PlaylistNextEntry { group, cue })
+                .collect(),
             warnings: self.warnings.clone(),
             media_durations: self.checks.media_durations(),
         }
@@ -1277,6 +1411,7 @@ impl Control {
     /// [`ControlConfig::shutdown_wait`]. With no doc open, only the
     /// mixer's queue is pumped.
     pub fn shutdown(&mut self) -> FinalWrites {
+        self.eng.copies.stop_all();
         self.each_doc(|cx| {
             let now = cx.now();
             // A second panic within the fade is a hard stop.
@@ -1329,9 +1464,24 @@ fn refused(id: openlab_core::protocol::RequestId, e: &CommandError) -> ServerMes
 
 fn notice(code: &str, message: String, cue: Option<CueId>) -> WireWarning {
     WireWarning::Notice {
+        patch: None,
         code: code.to_owned(),
         message,
         cue,
+        device: None,
+        count: None,
+    }
+}
+
+/// A notice about the audio device named `device`.
+fn device_notice(code: &str, message: String, device: &str) -> WireWarning {
+    WireWarning::Notice {
+        patch: None,
+        code: code.to_owned(),
+        message,
+        cue: None,
+        device: Some(device.to_owned()),
+        count: None,
     }
 }
 
@@ -1345,11 +1495,18 @@ fn request_name(r: &Request) -> &'static str {
         Request::Save => "save",
         Request::SaveAs { .. } => "save_as",
         Request::Relink { .. } => "relink",
+        Request::CopyMedia => "copy_media",
         Request::ListDevices => "list_devices",
         Request::SetOutputDevice { .. } => "set_output_device",
+        Request::BackupKeep => "backup_keep",
+        Request::SetBackupKeep { .. } => "set_backup_keep",
+        Request::OscState => "osc_state",
+        Request::SetOscPort { .. } => "set_osc_port",
+        Request::SetStandBack { .. } => "set_stand_back",
         Request::SetBufferSize { .. } => "set_buffer_size",
         Request::PreshowCheck => "preshow_check",
         Request::ListPatchMappings => "list_patch_mappings",
+        Request::SequenceSpan { .. } => "sequence_span",
         Request::SetShowMode { .. } => "set_show_mode",
         Request::SetPatchMapping { .. } => "set_patch_mapping",
         Request::LogTail { .. } => "log_tail",
@@ -1359,6 +1516,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::ListDisplays => "list_displays",
         Request::ListStageMappings => "list_stage_mappings",
         Request::SetStageMapping { .. } => "set_stage_mapping",
+        Request::SetStageMonitor { .. } => "set_stage_monitor",
         #[cfg(feature = "test-support")]
         Request::StageTestCard { .. } => "stage_test_card",
         #[cfg(feature = "test-support")]
@@ -1366,11 +1524,17 @@ fn request_name(r: &Request) -> &'static str {
         #[cfg(feature = "test-support")]
         Request::DisplayProbe { .. } => "display_probe",
         #[cfg(feature = "test-support")]
+        Request::MonitorProbe { .. } => "monitor_probe",
+        #[cfg(feature = "test-support")]
         Request::Advance { .. } => "advance",
         #[cfg(feature = "test-support")]
-        Request::LoseDevice => "lose_device",
+        Request::LoseDevice { .. } => "lose_device",
         #[cfg(feature = "test-support")]
-        Request::RestoreDevice => "restore_device",
+        Request::RestoreDevice { .. } => "restore_device",
+        #[cfg(feature = "test-support")]
+        Request::DropOut { .. } => "drop_out",
+        #[cfg(feature = "test-support")]
+        Request::SetDefaultDevice { .. } => "set_default_device",
     }
 }
 
@@ -1514,6 +1678,11 @@ mod tests {
                 auto_number_start: 1.0,
                 auto_number_increment: 1.0,
                 new_cues_auto_load: false,
+                auto_number_new_cues: true,
+                lock_playhead: true,
+                go_needs_key_up: false,
+                osc_enabled: true,
+                copy_media_on_add: true,
             },
             patches: vec![],
             network_patches: vec![],
@@ -1539,6 +1708,7 @@ mod tests {
                     triggers: openlab_core::Triggers {
                         hotkey: None,
                         hotkey_enabled: true,
+                        wall_clock: Default::default(),
                     },
                     second_trigger: openlab_core::SecondTrigger::Nothing,
                     second_trigger_on_release: false,

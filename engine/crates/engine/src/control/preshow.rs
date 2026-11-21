@@ -12,8 +12,8 @@ use openlab_core::protocol::{
     PreshowTarget, PreshowTargetStatus, WireProblem, WireResolution, WireWarning,
 };
 use openlab_core::{
-    CueId, CueKind, CueListId, CueProblem, NetworkPatchId, PatchId, PatchResolution, Workspace,
-    descendants,
+    CueId, CueKind, CueListId, CueProblem, NetworkPatchId, PatchId, PatchResolution, SYSTEM_OUTPUT,
+    Workspace, descendants,
 };
 
 use super::DocCx;
@@ -21,6 +21,20 @@ use super::DocCx;
 /// The system warning that is information, not a problem: the file is streamed instead of
 /// preloaded and plays fine. Listed in `system`, not counted, never makes the check fail.
 const INFO_CODE: &str = "preload_over_budget";
+
+/// The notices about a whole audio device rather than one patch: they count in the check only
+/// while some cue's patch is on that device.
+const DEVICE_CODES: [&str; 5] = [
+    "device_lost",
+    "device_stalled",
+    "device_unrecoverable",
+    "outputs_dropped",
+    "audio_dropouts",
+];
+
+/// The clock device's notices that stop its clock, which every timed cue runs on (waits, fades,
+/// pre- and post-waits, on any device): they count while the workspace has any cue at all.
+const CLOCK_CODES: [&str; 3] = ["device_lost", "device_stalled", "device_unrecoverable"];
 
 impl DocCx<'_> {
     /// The report, from the current state. Brings the warnings up to date first so the two
@@ -84,7 +98,12 @@ impl DocCx<'_> {
             })
             .collect();
 
-        let uses = Uses::of(ws);
+        let mut uses = Uses::of(ws);
+        // A Video cue with nothing to hear does not play on the patch it names: a patch with
+        // no device is no problem of a show whose only cues on it are stills and silent movies.
+        for cues in uses.patch.values_mut() {
+            cues.retain(|c| !self.known_silent(*c));
+        }
         let mut patches = Vec::new();
         let mut used_patches = 0u64;
         for patch in &ws.patches {
@@ -156,7 +175,38 @@ impl DocCx<'_> {
             }
         }
 
-        let mut system: Vec<WireWarning> = self.doc.warnings.to_vec();
+        // A patch's own trouble (no device, a device missing or unusable, too few channels,
+        // routing past the device, no mixer patch) stops nothing while no cue plays on it, nor
+        // does a device's own trouble while no cue's patch is on it: the warnings list keeps
+        // naming them, the check leaves them out. The clock device's stall or loss stops the
+        // clock of every timed cue, so it counts while there is any cue.
+        let played = self.devices_played(&uses);
+        let clock = ws
+            .cues()
+            .next()
+            .is_some()
+            .then(|| self.eng.outputs.primary().name.as_str());
+        let mut system: Vec<WireWarning> = self
+            .doc
+            .warnings
+            .iter()
+            .filter(|w| match w {
+                WireWarning::Notice {
+                    patch: Some(patch), ..
+                } => uses.patch.get(patch).is_some_and(|cues| !cues.is_empty()),
+                WireWarning::Notice {
+                    patch: None,
+                    device: Some(device),
+                    code,
+                    ..
+                } if DEVICE_CODES.contains(&code.as_str()) => {
+                    played.as_ref().is_none_or(|played| played.contains(device))
+                        || (clock == Some(device.as_str()) && CLOCK_CODES.contains(&code.as_str()))
+                }
+                _ => true,
+            })
+            .cloned()
+            .collect();
         system.sort_by(|a, b| notice_key(a).cmp(&notice_key(b)));
 
         let unchecked = network
@@ -190,6 +240,40 @@ impl DocCx<'_> {
             system,
         }
     }
+
+    /// The devices the cues' patches play on: each patch's device on this machine, the
+    /// system's output device now for one on the system output, and the device its resolution
+    /// names. `None` when some cue's patch has no device to name (not mapped, the system output with no device, a deleted patch): it may
+    /// play on any device, so every device's trouble counts.
+    fn devices_played(&self, uses: &Uses) -> Option<BTreeSet<String>> {
+        let ws = self.doc.model.ws().id;
+        let system = self.eng.system_output();
+        let mut played = BTreeSet::new();
+        for (&patch, cues) in &uses.patch {
+            if cues.is_empty() {
+                continue;
+            }
+            let mapped = self
+                .eng
+                .config
+                .machine
+                .patch_mapping(ws, patch)
+                .and_then(|m| m.device_for(system.as_deref()));
+            let resolved = match self.eng.patches.resolution(self.doc.id, patch) {
+                Some(
+                    PatchResolution::Mapped { device, .. }
+                    | PatchResolution::DeviceMissing { device }
+                    | PatchResolution::ChannelsMissing { device, .. },
+                ) if device != SYSTEM_OUTPUT => Some(device.as_str()),
+                _ => None,
+            };
+            if mapped.is_none() && resolved.is_none() {
+                return None;
+            }
+            played.extend(mapped.into_iter().chain(resolved).map(str::to_owned));
+        }
+        Some(played)
+    }
 }
 
 fn is_info(w: &WireWarning) -> bool {
@@ -199,7 +283,9 @@ fn is_info(w: &WireWarning) -> bool {
 /// Sort key of a system warning: its code, its cue, then its text.
 fn notice_key(w: &WireWarning) -> (&str, Option<CueId>, &str) {
     match w {
-        WireWarning::Notice { code, message, cue } => (code, *cue, message),
+        WireWarning::Notice {
+            code, message, cue, ..
+        } => (code, *cue, message),
         _ => ("", None, ""),
     }
 }
@@ -232,6 +318,12 @@ impl Uses {
         for c in ws.cues() {
             match &c.kind {
                 CueKind::Audio { patch, .. } => uses.patch.entry(*patch).or_default().push(c.id),
+                // A Video cue's patch, whatever its file holds (the caller knows the probes).
+                CueKind::Video { sound, .. } => {
+                    if let Some(patch) = sound.patch {
+                        uses.patch.entry(patch).or_default().push(c.id);
+                    }
+                }
                 CueKind::Network { destination, .. } => {
                     uses.network.entry(*destination).or_default().push(c.id);
                 }

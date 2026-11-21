@@ -5,14 +5,15 @@ import Foundation
 /// The stage edits (VID-01; docs/protocol.md, core `video.rs`): each one engine command and one
 /// undo step.
 extension Command {
-    /// `AddStage` at `index`: a new stage of `width` x `height` pixels, hidden between cues.
+    /// `AddStage` at `index`: a new stage of `width` x `height` pixels, keeping black between cues
+    /// once a picture has played on it.
     static func addStage(id: ModelID, name: String, width: Int, height: Int, index: Int) -> Command {
         Command(
             .object([
                 "type": .string("add_stage"), "index": .int(Int64(index)),
                 "stage": .object([
                     "id": .string(id.raw), "name": .string(name), "width": .int(Int64(width)),
-                    "height": .int(Int64(height)), "keep_black": .bool(false), "layer": .int(1),
+                    "height": .int(Int64(height)), "keep_black": .bool(true), "layer": .int(1),
                 ]),
             ]))
     }
@@ -51,5 +52,11 @@ extension WorkspaceStore {
     /// Shows `stage` on `display` (nil: on none) on this machine.
     func setStageMapping(_ stage: ModelID, display: String?) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .setStageMapping(stage: stage, display: display)) }
+    }
+
+    /// Opens `stage`'s monitor window (or brings it to the front), or closes it: a live copy of the
+    /// stage the stage host draws in a window of its own.
+    func setStageMonitor(_ stage: ModelID, open: Bool) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setStageMonitor(stage: stage, open: open)) }
     }
 }

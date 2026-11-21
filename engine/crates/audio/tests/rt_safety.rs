@@ -230,17 +230,25 @@ fn underrun_outputs_silence_reports_and_recovers() {
     );
     assert_eq!(ctl.underrun_frames(), 200);
 
-    // The disk thread catches up: playback resumes, then a new episode is reported.
+    // The disk thread catches up: playback resumes (the episode's end says by how much the
+    // voice is late), then a new episode is reported.
     tx.push_entire_slice(&[1.0; 100]).unwrap();
     no_alloc(|| r.render_into(&mut out, &[64]));
     assert!(out[..100].iter().all(|s| *s == 1.0));
     assert!(out[100..].iter().all(|s| *s == 0.0));
     assert_eq!(
         events(&mut ctl),
-        [Event::Underrun {
-            voice: VoiceId(1),
-            at: 400
-        }]
+        [
+            Event::UnderrunEnded {
+                voice: VoiceId(1),
+                at: 300,
+                frames: 200
+            },
+            Event::Underrun {
+                voice: VoiceId(1),
+                at: 400
+            }
+        ]
     );
 
     // End of stream: the voice finishes cleanly and its start comes back.
@@ -364,6 +372,56 @@ fn full_event_queue_drops_and_counts_without_allocating() {
     assert_eq!(ctl.dropped_events(), 2000 - 1024);
     assert_eq!(events(&mut ctl).len(), 1024);
     assert_eq!(ctl.leaked_returns(), 0);
+}
+
+/// The end of an underrun met with a full event queue is not lost: it is told once the queue
+/// has room, with every frame the voice has missed by then.
+#[test]
+fn an_underruns_end_met_by_a_full_event_queue_is_told_once_there_is_room() {
+    let cfg = MixerConfig {
+        max_voices: 1,
+        ..config(1)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    let (mut tx, rx) = open_source(1000, &[1.0; 100]);
+    start(&mut ctl, 0, 1, rx, 1);
+    let mut out = vec![0.0; 300];
+    no_alloc(|| r.render_into(&mut out, &[64]));
+    assert!(matches!(
+        events(&mut ctl).as_slice(),
+        [Event::Underrun { at: 100, .. }]
+    ));
+    // The disk catches up in the block whose rejected starts fill the queue.
+    tx.push_entire_slice(&[1.0; 500]).unwrap();
+    for i in 0..1100 {
+        start(&mut ctl, 300, 2 + i, source(&[1.0; 4]), 1);
+    }
+    let mut out = vec![0.0; 64];
+    no_alloc(|| r.render_into(&mut out, &[64]));
+    assert!(out.iter().all(|s| *s == 1.0), "the voice plays on");
+    // The rejections fill the queue's 1024 places: the underrun's end found no room.
+    let dropped = ctl.dropped_events();
+    assert!(dropped > 0);
+    let first = events(&mut ctl);
+    assert_eq!(first.len(), 1024);
+    assert!(
+        first
+            .iter()
+            .all(|e| matches!(e, Event::VoiceRejected { .. }))
+    );
+    no_alloc(|| r.render_into(&mut out, &[64]));
+    assert_eq!(
+        events(&mut ctl),
+        [Event::UnderrunEnded {
+            voice: VoiceId(1),
+            at: 364,
+            frames: 200
+        }]
+    );
+    // Told once, and the retry was not counted as another drop.
+    no_alloc(|| r.render_into(&mut out, &[64]));
+    assert!(events(&mut ctl).is_empty());
+    assert_eq!(ctl.dropped_events(), dropped);
 }
 
 #[test]
@@ -613,8 +671,8 @@ fn no_allocation_on_the_128_cue_output_paths() {
     assert_eq!(ctl.leaked_returns(), 0);
 }
 
-/// Meters (AUD-19) on 64 voices × 2 cue outputs and 64 device outputs: publishing them in every
-/// block, voice ends, slot reuse, pause and re-keying resume, xrun notes, and reading them into
+/// Meters (AUD-19) on 64 voices × 2 cue outputs and 64 device outputs, and the patch bus meters:
+/// publishing them in every block, voice ends, slot reuse, pause and re-keying resume, xrun notes, and reading them into
 /// caller buffers all run without allocating.
 #[test]
 fn no_allocation_with_meters_active_on_64_voices() {
@@ -653,6 +711,7 @@ fn no_allocation_with_meters_active_on_64_voices() {
     }
     let cap = ctl.voice_meter_capacity();
     let (mut ids, mut peaks, mut outs) = (vec![VoiceId(0); cap], vec![0.0; cap * 64], [0.0; 64]);
+    let mut bus = vec![0.0; 128];
     let mut out = vec![0.0; 64 * 300];
     let mut entries = 0;
     for _ in 0..12 {
@@ -662,6 +721,7 @@ fn no_allocation_with_meters_active_on_64_voices() {
             r.inject_xruns(1);
             assert_eq!(ctl.read_output_meters_into(&mut outs), 64);
             entries += ctl.read_voice_meters_into(&mut ids, &mut peaks);
+            assert_eq!(ctl.read_patch_meters_into(0, &mut bus), 128);
         });
         assert!(outs.iter().all(|p| p.is_finite()));
     }

@@ -13,6 +13,24 @@ final class MainMenuTests: XCTestCase {
         XCTAssertEqual(titles, ["openLab", "File", "Edit", "Cues", "Tools", "View", "Transport", "Window", "Help"])
     }
 
+    /// QLab's order: the workspace's files and settings after Save As; Jump to Targets with the
+    /// numbering tools; the system's Services in the app menu.
+    func testFileAndToolsFollowQLabsOrderAndTheAppMenuHasServices() throws {
+        let menus = MainMenu.make()
+        let file = try XCTUnwrap(menus.bar.items[1].submenu).items.map { $0.isSeparatorItem ? "-" : $0.title }
+        XCTAssertEqual(
+            Array(file.suffix(4)),
+            [loc("menu.file.saveAs"), "-", loc("menu.file.showFiles"), loc("menu.file.workspaceSettings")])
+        XCTAssertEqual(
+            menus.tools.items.prefix(5).map { $0.isSeparatorItem ? "-" : $0.title },
+            [
+                loc("menu.tools.loadToTime"), loc("menu.cues.renumber"), loc("menu.cues.deleteNumbers"),
+                loc("menu.tools.jumpToTargets"), "-",
+            ])
+        let app = try XCTUnwrap(menus.bar.items[0].submenu)
+        XCTAssertTrue(app.items.contains { $0.submenu === menus.services })
+    }
+
     private func allItems(_ menu: NSMenu) -> [NSMenuItem] {
         menu.items.flatMap { [$0] + ($0.submenu.map(allItems) ?? []) }
     }
@@ -39,11 +57,11 @@ final class MainMenuTests: XCTestCase {
         XCTAssertEqual(
             kinds,
             ["group", "audio", "video", "fade", "network", "start", "stop", "pause", "load", "reset", "devamp"]
-                + ["goto", "arm", "disarm", "wait", "memo"])
+                + ["goto", "target", "arm", "disarm", "wait", "memo"])
         let toolbar = CueToolbarView.kinds.flatMap { $0 }.compactMap { $0 }
         XCTAssertEqual(Set(kinds), Set(toolbar.map(\.rawValue)), "every toolbar button has a menu item")
         let separators = MainMenu.make().cues.items.enumerated().filter { $0.element.isSeparatorItem }.map(\.offset)
-        XCTAssertEqual(separators, [3, 5, 16])
+        XCTAssertEqual(separators, [3, 5, 17])
     }
 
     func testRenumberAndDeleteNumbersAreInTheToolsMenu() {

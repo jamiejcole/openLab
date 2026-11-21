@@ -10,6 +10,13 @@
       "type": "late_start",
       "cue": "00000000-0000-0000-0000-00000000000a",
       "late_ms": 12
+    },
+    {
+      "type": "notice",
+      "code": "patch_routing_beyond_device",
+      "message": "patch \"Main\" routes to device output 5, but \"Out\" has 2 here",
+      "device": "Out",
+      "patch": "00000000-0000-0000-0000-000000000001"
     }
   ]
 }

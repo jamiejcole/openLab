@@ -130,6 +130,18 @@ pub enum Input {
         cue: CueId,
         time: f64,
     },
+    /// Move an Audio cue's playback to `position` seconds from the start of its media file (a
+    /// click in its waveform): an idle or loaded cue is loaded there (GO plays from there); a
+    /// playing or previewing one jumps there and plays on; a paused one moves there and stays
+    /// paused; one in its pre-wait starts its action there at once. The binary keeps the point
+    /// inside the trims and plans the slices from it, so a point past a loop is reachable.
+    /// For a Video cue `position` is seconds into its action (the binary has mapped the file's
+    /// time through the cue's plan), and the same states apply: loaded there past its pre-wait,
+    /// moved there playing or paused, its action started there from a pre-wait.
+    Seek {
+        cue: CueId,
+        position: f64,
+    },
     /// Return a cue to idle, clearing a runtime failure.
     Reset {
         cue: CueId,
@@ -179,7 +191,8 @@ pub enum Input {
     /// a stop or a failure), so a continue or playlist move comes on the end sample itself, not
     /// when the mixer's report arrives. The voice's `ActionEnded` still counts if it comes
     /// first (an earlier end); after the deadline it is stale. A later `ActionLength` (after a
-    /// devamp) replaces the earlier one.
+    /// devamp, or an end time edited while it plays) replaces the earlier one; the binary never
+    /// sends one shorter than where the voice is then, so the end is never dated in the past.
     ActionLength {
         cue: CueId,
         run: RunId,
@@ -207,10 +220,10 @@ pub enum Input {
     /// From the binary: Audio cues whose trims, slice markers and play counts cannot be played
     /// with their probed file (`Some(why)`, e.g. a looping slice too short) or can again
     /// (`None`), each sent when it changes (an edit, a probe answer, a cue gone). The core cannot
-    /// plan audio; a cue told `Some` has [`CueProblem::SlicesUnplayable`] while it has a file and
-    /// no media problem.
+    /// plan audio; a cue told `Some` has the problem [`SliceProblem::problem`] gives while it
+    /// has a file and no media problem.
     SliceProblems {
-        cues: Vec<(CueId, Option<String>)>,
+        cues: Vec<(CueId, Option<SliceProblem>)>,
     },
     /// Feedback (`DevampScheduled`): the devamp sent for this run's voice was accepted; the voice
     /// leaves its loop on sample `at`.
@@ -222,6 +235,15 @@ pub enum Input {
     /// Feedback (`DevampIgnored`): the devamp sent for this run's voice cannot be carried out
     /// (no loop to leave); playback is unchanged.
     DevampIgnored {
+        cue: CueId,
+        run: RunId,
+    },
+    /// From the binary: the patch of the run's voice now plays on another output device (its
+    /// device was changed, or the cue was put on a patch on another device). A playing run's
+    /// voice moves there at once, in step (`RelocateVoice`); a paused one moves and stays
+    /// paused. A stale run, a preview, or a run stopping with a fade (it ends where it is) is
+    /// left alone.
+    DeviceMoved {
         cue: CueId,
         run: RunId,
     },
@@ -274,6 +296,12 @@ pub enum Input {
         media: MediaRef,
         status: MediaStatus,
     },
+    /// Which Video cues' files have sound (an audio track that plays), from the binary's probe:
+    /// `true` makes the cues on that file need their output patch, as an Audio cue does;
+    /// `false` (or never told) leaves them without a patch problem whatever patches there are.
+    MediaSound {
+        media: Vec<(MediaRef, bool)>,
+    },
     /// Where an output patch can play now (`resolve_patch` against the devices present, M1-C).
     /// Every resolution but `Mapped` breaks the Audio cues on that patch.
     PatchStatus {
@@ -324,6 +352,20 @@ pub enum CueProblem {
     TargetWrongKind {
         target: CueId,
     },
+    /// A Target cue with no new target set (QLab 5 manual p. 686).
+    NoNewTarget,
+    /// A Target cue's new target is not in the workspace.
+    NewTargetMissing {
+        target: CueId,
+    },
+    /// A Target cue's new target is one its target cannot act on, or its target itself.
+    NewTargetWrongKind {
+        target: CueId,
+    },
+    /// A Target cue's new target has no number (it is named by its number).
+    NewTargetUnnumbered {
+        target: CueId,
+    },
     /// A Fade cue that sets no level to fade (QLab: "No parameters set to fade").
     NothingToFade,
     /// An Audio or Video cue with no media file.
@@ -341,7 +383,9 @@ pub enum CueProblem {
         media: MediaRef,
         reason: String,
     },
-    /// An Audio cue's patch is not in the workspace.
+    /// A Video cue whose file has sound has its output patch set to "none".
+    NoPatch,
+    /// An Audio cue's patch (or the patch of a Video cue with sound) is not in the workspace.
     PatchMissing {
         patch: PatchId,
     },
@@ -369,9 +413,34 @@ pub enum CueProblem {
     SlicesUnplayable {
         reason: String,
     },
+    /// Every slice of an Audio or Video cue's file inside its trims is skipped, so no part of
+    /// the file plays (QLab 5 manual pp. 184-185: at least one slice needs a count above zero).
+    NothingPlays,
     /// It was triggered while it had problems, which have been fixed since; the run it started
     /// (its timing, without its action) has not ended yet. Gone when that run ends.
     StartedBroken,
+}
+
+/// Why the binary could not plan a cue's slices against its probed file
+/// ([`Input::SliceProblems`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SliceProblem {
+    /// Every slice inside the trims is skipped.
+    NothingPlays,
+    /// The trims, markers and counts do not fit the file. `reason` is English, for the log.
+    Unplayable { reason: String },
+}
+
+impl SliceProblem {
+    /// The cue problem this is shown as.
+    pub fn problem(&self) -> CueProblem {
+        match self {
+            Self::NothingPlays => CueProblem::NothingPlays,
+            Self::Unplayable { reason } => CueProblem::SlicesUnplayable {
+                reason: reason.clone(),
+            },
+        }
+    }
 }
 
 impl fmt::Display for CueProblem {
@@ -383,7 +452,15 @@ impl fmt::Display for CueProblem {
             Self::TargetWrongKind { target } => {
                 write!(f, "target {target} is the wrong kind of cue")
             }
-            Self::NothingToFade => write!(f, "no levels set to fade"),
+            Self::NoNewTarget => write!(f, "no new target set"),
+            Self::NewTargetMissing { target } => write!(f, "new target {target} does not exist"),
+            Self::NewTargetWrongKind { target } => {
+                write!(f, "its target cannot act on new target {target}")
+            }
+            Self::NewTargetUnnumbered { target } => {
+                write!(f, "new target {target} has no number")
+            }
+            Self::NothingToFade => write!(f, "no levels or picture values set to fade"),
             Self::NoMedia => write!(f, "no media file"),
             Self::NoStage => write!(f, "no stage"),
             Self::StageMissing { stage } => write!(f, "stage {} does not exist", stage.0),
@@ -395,6 +472,7 @@ impl fmt::Display for CueProblem {
                     media.as_str()
                 )
             }
+            Self::NoPatch => write!(f, "its file has sound and no output patch is set"),
             Self::PatchMissing { patch } => write!(f, "patch {patch} does not exist"),
             Self::DeviceUnavailable { patch, resolution } => match resolution {
                 PatchResolution::Unmapped => {
@@ -434,6 +512,7 @@ impl fmt::Display for CueProblem {
             Self::SlicesUnplayable { reason } => {
                 write!(f, "its slices cannot be played: {reason}")
             }
+            Self::NothingPlays => write!(f, "every slice is skipped, so no part of its file plays"),
         }
     }
 }
@@ -506,6 +585,39 @@ pub enum Action {
         run: RunId,
         offset: SampleTime,
     },
+    /// Prepare the run's stream so its action starts at `position`, a frame of the cue's media
+    /// file at the device rate (its slices planned from there, loops included); the binary
+    /// keeps it inside the trims. A `StartVoice` with offset 0 for the run starts it there.
+    LoadVoiceAt {
+        cue: CueId,
+        run: RunId,
+        position: SampleTime,
+    },
+    /// Move the voice of run `from` to `position` (a file frame at the device rate, as for
+    /// `LoadVoiceAt`) from sample `at`: the voice continues as `run`, a fresh id, and feedback
+    /// for `from` is stale from now on. A playing voice crossfades into the new position once
+    /// its stream is ready; a paused one moves and stays paused (a `ResumeVoice` with
+    /// `paused: run` plays it); a voice not playing yet starts there. Previews too. For a Video
+    /// cue's run `position` is samples into the action instead (its picture follows its plan
+    /// from there; its sound, if it has any, goes on from the same point of the same plan).
+    SeekVoice {
+        cue: CueId,
+        run: RunId,
+        from: RunId,
+        at: SampleTime,
+        position: SampleTime,
+    },
+    /// Move the voice of run `from` to its patch's current output device from sample `at`,
+    /// `position` samples into the action (where the run is on `at`): it continues as `run`, a
+    /// fresh id, and feedback for `from` is stale from now on. Levels, ducks and a pending
+    /// devamp follow as separate actions for `run`. A paused voice moves and stays paused.
+    RelocateVoice {
+        cue: CueId,
+        run: RunId,
+        from: RunId,
+        at: SampleTime,
+        position: SampleTime,
+    },
     /// Release a loaded run that never started.
     UnloadVoice {
         cue: CueId,
@@ -556,6 +668,10 @@ pub enum Action {
     GoIgnored {
         list: CueListId,
         reason: GoIgnoredReason,
+    },
+    /// Double-GO protection began (`active`) or ended: a GO inside it is ignored.
+    GoProtection {
+        active: bool,
     },
     /// Ramp one gain of the run's voice to `gain` (linear amplitude, as the mixer's `Ramp`) over
     /// `frames` samples from sample `at`, with `curve`. The mixer starts the ramp from the value
@@ -644,6 +760,13 @@ pub enum Action {
         cue: CueId,
         played: bool,
     },
+    /// The child a Playlist group plays next changed (`CueEngine::next_in_playlist`): the
+    /// cue list marks it on the group's box. `None`: no child is next (also sent once for a
+    /// group that had one and was deleted or left Playlist mode).
+    PlaylistNextChanged {
+        group: CueId,
+        next: Option<CueId>,
+    },
     Warning(EngineWarning),
 }
 
@@ -707,7 +830,9 @@ pub enum EngineWarning {
         cue: CueId,
         state: CueState,
     },
-    /// Load on a cue that is running (pre-waiting through stopping) does nothing.
+    /// Load on a cue that is running (pre-waiting through stopping) does nothing. Also a seek
+    /// on a cue that is not an Audio cue, that is stopping or post-waiting, or whose run plays
+    /// no voice.
     LoadIgnored {
         cue: CueId,
     },

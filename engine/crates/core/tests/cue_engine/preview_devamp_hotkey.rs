@@ -58,9 +58,9 @@ fn sliced_sound(n: u128, last: u32) -> Cue {
     {
         *slices = vec![SliceMarker {
             time: 1.0,
-            play_count: 0,
+            play_count: 0.into(),
         }];
-        *last_slice_play_count = last;
+        *last_slice_play_count = last.into();
     }
     c
 }
@@ -73,7 +73,7 @@ fn looping_sound(n: u128) -> Cue {
         ..
     } = &mut c.kind
     {
-        *last_slice_play_count = 0;
+        *last_slice_play_count = 0.into();
     }
     c
 }
@@ -888,6 +888,7 @@ fn setting_a_workspace_key_as_a_cue_hotkey_is_not_refused() {
             value: Triggers {
                 hotkey: Some(hotkey("space")),
                 hotkey_enabled: true,
+                wall_clock: Default::default(),
             },
         },
     };

@@ -3,7 +3,7 @@
 import XCTest
 
 /// The sidebar on the real engine's demo show: GO starts Intro, which is listed in Active Cues
-/// until its panic button fades it out; the broken cues are listed in Warnings.
+/// until its panic button fades it out; the Warnings list is on the status window.
 @MainActor
 final class SidebarUITests: XCTestCase {
     func testRunningCueAppearsInActiveCuesAndItsPanicButtonStopsIt() {
@@ -23,33 +23,31 @@ final class SidebarUITests: XCTestCase {
         XCTAssertEqual(cueStates("Running", in: app).count, 0, "and it stopped")
     }
 
-    /// The demo show's "Radio" cue is broken by its missing file: it is listed in Warnings with why,
-    /// and choosing the row selects the cue in the list.
-    func testBrokenCueAppearsInWarningsAndClickingItSelectsTheCue() {
+    /// CL-01: New List adds a list and shows it; there is no New Cart button (carts are not built).
+    func testNewListAddsAListAndThereIsNoNewCart() {
         let app = launchDemo()
         app.checkBoxes["toggle-sidebar"].click()
-        tabButton("Warnings", in: app).click()
-        let warnings = app.descendants(matching: .any).matching(identifier: "sidebar-warnings").firstMatch
-        XCTAssertTrue(warnings.waitForExistence(timeout: 10))
-        let row = warnings.staticTexts["2.3  Radio"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "the broken cue is listed")
-        XCTAssertTrue(
-            warnings.staticTexts.matching(NSPredicate(format: "value BEGINSWITH 'Media file not found'")).firstMatch
-                .exists, "with its reason")
-        XCTAssertTrue(app.staticTexts["warnings-count"].exists, "the count is shown")
-        row.click()
-        let selected = app.descendants(matching: .outlineRow).matching(NSPredicate(format: "selected == true"))
-        XCTAssertTrue(waitFor("count == 1", selected), "the cue is selected in the list")
-        XCTAssertTrue(selected.firstMatch.staticTexts["Radio"].exists)
-    }
-
-    /// CL-01: New List adds a list and shows it; New Cart is off (carts are not in v0.0.1).
-    func testNewListAddsAListAndNewCartIsDisabled() {
-        let app = launchDemo()
-        app.checkBoxes["toggle-sidebar"].click()
-        XCTAssertFalse(app.buttons["new-cart-button"].isEnabled)
+        XCTAssertFalse(app.buttons["New Cart"].exists)
         app.buttons["new-list-button"].click()
         let intro = app.staticTexts["Intro"]
         XCTAssertTrue(waitFor("exists == false", intro), "the new empty list is shown in place of the demo cues")
+    }
+
+    /// In Show Mode New List is off (QLab 5 manual, Show Mode); Edit Mode gives it back.
+    func testShowModeLocksNewList() {
+        let app = launchDemo()
+        app.checkBoxes["toggle-sidebar"].click()
+        let newList = app.buttons["new-list-button"]
+        XCTAssertTrue(waitFor("isEnabled == true", newList))
+        app.radioGroups["mode-switch"].radioButtons["Show"].click()
+        XCTAssertTrue(waitFor("isEnabled == false", newList), "New List is off in Show Mode")
+        newList.click()
+        let two = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == '2 Cue Lists' OR title == '2 Cue Lists'")
+        ).firstMatch
+        XCTAssertFalse(two.waitForExistence(timeout: 2), "no list was added")
+        XCTAssertTrue(tabButton("1 Cue List", in: app).exists)
+        app.radioGroups["mode-switch"].radioButtons["Edit"].click()
+        XCTAssertTrue(waitFor("isEnabled == true", newList), "and on again in Edit Mode")
     }
 }

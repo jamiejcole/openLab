@@ -3,15 +3,17 @@
 //! What the control thread broadcasts to clients as the show runs: progress reports, meters,
 //! the warnings list, state sent again after a drop, and the open-workspaces list.
 
+use std::collections::BTreeMap;
+
 use openlab_audio::VoiceId;
 use openlab_core::protocol::{
     CueMeter, OutputMeter, ProgressItem, RuntimeChange, ServerMessage, WaitProgress, WireWait,
     WorkspaceInfo,
 };
-use openlab_core::{Input, SampleTime, Timer};
+use openlab_core::{Input, SampleTime, Timer, db_to_gain};
 
 use super::voices::Effects;
-use super::{Control, DocCx, DocId, Engine, Listed, MeterRound, REPORT_HZ, notice};
+use super::{Control, DocCx, DocId, Engine, Listed, LoadedPoint, MeterRound, REPORT_HZ, notice};
 
 impl Control {
     pub(super) fn mark_warnings_dirty(&mut self) {
@@ -137,6 +139,11 @@ impl DocCx<'_> {
                 .voices
                 .progress(rendered)
                 .into_iter()
+                // A cue its device left paused shows where it stood (below), not the voice its
+                // stop is still ending.
+                .filter(|(cue, ..)| !self.doc.model.engine().is_lost(*cue))
+                // A Video cue's sound is where its picture is, reported below.
+                .filter(|(cue, ..)| !self.is_video(*cue))
                 .map(|(cue, pos, left, at)| ProgressItem {
                     cue,
                     elapsed: self.seconds(pos),
@@ -196,11 +203,53 @@ impl DocCx<'_> {
             if items.len() > voiced || pictured {
                 items.sort_by_key(|i| i.cue);
             }
-            if !items.is_empty() || !waits.is_empty() {
+            // A previewed cue (no show voice of its own sounding) counts as a play does; while
+            // it previews, its item is the preview's and not the point a Load left it at.
+            let previews: Vec<ProgressItem> = self
+                .doc
+                .voices
+                .preview_progress(rendered)
+                .into_iter()
+                .filter(|(cue, ..)| !items.iter().any(|i| i.cue == *cue))
+                .map(|(cue, pos, left, at)| ProgressItem {
+                    cue,
+                    elapsed: self.seconds(pos),
+                    remaining: left.map(|l| self.seconds(l)),
+                    position: at.map(|f| self.seconds(f)),
+                })
+                .collect();
+            // Loaded cues stand at a time (Load to Time, a Load cue) or at a point of their file
+            // (a click in the timeline): their items carry how far into the action they stand
+            // (`elapsed`) and, for Audio and Video, that `position`. They ride on the message sent
+            // for anything else, and make one of their own only when the set changed, so a
+            // standing loaded cue costs no traffic.
+            let loaded: Vec<LoadedPoint> = self
+                .loaded_points()
+                .into_iter()
+                .filter(|(cue, ..)| !previews.iter().any(|p| p.cue == *cue))
+                .collect();
+            // What stands at a point (loaded cues, then previews): one more message when it changes,
+            // so a stopped preview's item is withdrawn and the loaded point it covered comes back.
+            let mut standing = loaded.clone();
+            standing.extend(previews.iter().map(|p| (p.cue, p.elapsed, p.position)));
+            let loaded_changed = standing != self.doc.last_loaded;
+            if !items.is_empty() || !waits.is_empty() || loaded_changed || !previews.is_empty() {
+                items.extend(previews);
+                items.extend(loaded.iter().map(|&(cue, elapsed, position)| ProgressItem {
+                    cue,
+                    elapsed,
+                    remaining: None,
+                    position,
+                }));
+                items.sort_by_key(|i| i.cue);
                 self.doc.last_progress = Some(rendered);
                 let mut m = ServerMessage::Progress { items, waits };
                 m.sanitise();
-                self.eng.out.send_lossy(Some(self.doc.id), m);
+                // A message dropped for a slow client is made again next pass while the loaded
+                // set it carried is still unsent (a playing cue's progress comes again anyway).
+                if self.eng.out.send_lossy(Some(self.doc.id), m) {
+                    self.doc.last_loaded = standing;
+                }
             }
         }
         // The engine read the meters once this wake ([`Control::begin_meter_round`]): this
@@ -208,6 +257,32 @@ impl DocCx<'_> {
         if let Some(round) = self.eng.meter_round {
             self.meters(round);
         }
+    }
+
+    /// Where each loaded cue of this doc stands, by cue: seconds into its action and, for a
+    /// voice or picture, the point of its media file (seconds).
+    fn loaded_points(&self) -> Vec<LoadedPoint> {
+        let engine = self.doc.model.engine();
+        let mut points: BTreeMap<openlab_core::CueId, (f64, Option<f64>)> = engine
+            .loaded_offsets()
+            .map(|(cue, offset)| (cue, (self.seconds(offset), None)))
+            .collect();
+        let positions = self
+            .doc
+            .voices
+            .loaded_at()
+            .into_iter()
+            .filter(|(cue, _)| !self.is_video(*cue))
+            .map(|(cue, frame)| (cue, self.seconds(frame)))
+            .chain(self.eng.loaded_pictures(self.doc.id));
+        for (cue, position) in positions {
+            points.entry(cue).or_insert((0.0, None)).1 = Some(position);
+        }
+        points
+            .into_iter()
+            .filter(|(cue, _)| engine.state(*cue) == openlab_core::CueState::Loaded)
+            .map(|(cue, (elapsed, position))| (cue, elapsed, position))
+            .collect()
     }
 
     fn seconds(&self, frames: u64) -> f64 {
@@ -229,6 +304,10 @@ impl DocCx<'_> {
         let mut listed = Vec::with_capacity(n);
         for (k, id) in self.eng.meter_ids.iter().take(n).enumerate() {
             listed.push(*id);
+            // Cut by a lost device: what its mixer still holds was rendered before the loss.
+            if self.doc.voices.is_unmetered(*id) {
+                continue;
+            }
             let cue = self
                 .doc
                 .voices
@@ -237,11 +316,9 @@ impl DocCx<'_> {
             let Some(cue) = cue else { continue };
             // A cue's meter has one peak per output of its patch, not one per mixer cue output.
             let located = self.doc.media.index().locate(self.doc.model.ws(), cue);
-            let width = match located.map(|c| &c.kind) {
-                Some(openlab_core::CueKind::Audio { patch, .. }) => {
-                    self.eng.patches.outputs(self.doc.id, *patch).clamp(1, outs)
-                }
-                _ => outs,
+            let width = match located.and_then(|c| c.kind.sound_patch()) {
+                Some(patch) => self.eng.patches.outputs(self.doc.id, patch).clamp(1, outs),
+                None => outs,
             };
             let peaks = self
                 .eng
@@ -260,6 +337,7 @@ impl DocCx<'_> {
                 }),
             }
         }
+        self.doc.voices.forget_unmetered();
         self.reconcile(&listed, rendered, prev);
         let outputs: Vec<OutputMeter> = self
             .doc
@@ -270,25 +348,63 @@ impl DocCx<'_> {
             .filter_map(|p| {
                 let channels = self.eng.patches.channels(self.doc.id, p.id)?;
                 // The patch's device's meters.
-                let base = self
+                let key = self
                     .eng
                     .patches
                     .mixer_patch(self.doc.id, p.id)
                     .and_then(|slot| self.eng.patches.slot_output(slot))
-                    .unwrap_or(0)
-                    * self.eng.device_outputs;
+                    .unwrap_or(0);
+                let base = key * self.eng.device_outputs;
+                let width = self
+                    .eng
+                    .outputs
+                    .get(key)
+                    .map_or(0, |o| o.mixer.device_outputs())
+                    .min(self.eng.device_outputs);
                 let peaks = channels
                     .iter()
                     .map(|&c| {
                         usize::try_from(c)
                             .ok()
-                            .filter(|&c| c < self.eng.device_outputs)
+                            .filter(|&c| c < width)
                             .and_then(|c| self.eng.out_peaks.get(base + c))
                             .copied()
                             .unwrap_or(0.0)
                     })
                     .collect();
-                Some(OutputMeter { patch: p.id, peaks })
+                // Each cue output itself: its bus after its level and mute in the patch (the
+                // matrix carries them, so they are applied here), before crosspoints. A cue still
+                // playing on a slot the patch left when it was resized is metered there.
+                let patches = &self.eng.patches;
+                let slots = patches
+                    .mixer_patch(self.doc.id, p.id)
+                    .into_iter()
+                    .chain(patches.retired_slots(self.doc.id, p.id));
+                let mut bus = vec![0.0f32; p.outputs.len()];
+                for slot in slots {
+                    let out = patches.slot_output(slot).unwrap_or(key);
+                    for (b, x) in bus.iter_mut().zip(self.eng.bus_peaks(out, slot)) {
+                        *b = b.max(*x);
+                    }
+                }
+                let cue_outputs = p
+                    .outputs
+                    .iter()
+                    .zip(bus)
+                    .map(|(out, peak)| {
+                        let gain = if out.mute {
+                            0.0
+                        } else {
+                            db_to_gain(out.level_db)
+                        };
+                        peak * gain
+                    })
+                    .collect();
+                Some(OutputMeter {
+                    patch: p.id,
+                    peaks,
+                    cue_outputs,
+                })
             })
             .collect();
         let live = self.doc.voices.has_playing() || !cues.is_empty();
@@ -321,7 +437,9 @@ impl DocCx<'_> {
             }
             let absent = self.doc.voices.mark_absent(id, !listed.contains(&id));
             if absent >= 2 && lost_events {
-                self.doc.voices.lost(id, rendered, &mut fx);
+                let model = &self.doc.model;
+                let held = |cue, run| model.holds_run(cue, run);
+                self.doc.voices.lost(id, rendered, &held, &mut fx);
             }
         }
         let now = self.now();
@@ -381,7 +499,22 @@ impl DocCx<'_> {
         self.doc
             .checks
             .check(self.doc.model.ws(), &mut self.doc.media, self.eng.rate);
+        for (cue, track) in self.doc.checks.missing_tracks() {
+            list.push(notice(
+                "audio_track_missing",
+                format!("a Video cue's file has no audio track {track}; its first track plays"),
+                Some(cue),
+            ));
+        }
         self.device_warnings(&mut list);
+        if self.eng.observe.sound.disk_behind {
+            list.push(notice(
+                "disk_behind",
+                "disk reads are falling behind: cues streaming from disk drop out and play late"
+                    .to_owned(),
+                None,
+            ));
+        }
         self.eng.watch.watch().notices(&mut list);
         if self.eng.seen.alloc_violations > 0 {
             list.push(notice(

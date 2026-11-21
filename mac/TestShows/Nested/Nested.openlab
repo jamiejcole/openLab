@@ -1,0 +1,1102 @@
+{
+  "format_version": 7,
+  "workspace": {
+    "id": "00000000-0000-0000-0000-0000000000d7",
+    "name": "Nested",
+    "settings": {
+      "copy_media_on_add": false,
+      "min_go_interval": 0.0,
+      "panic_duration": 0.5,
+      "autosave_interval": 30.0,
+      "osc_access": {
+        "no_passcode": {
+          "view": true,
+          "edit": true,
+          "control": true
+        },
+        "passcodes": []
+      },
+      "master_db": 0.0,
+      "hotkeys": {
+        "go": {
+          "key": "space",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "stop_all": null,
+        "pause_all": {
+          "key": "[",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "resume_all": {
+          "key": "]",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "load_selected": {
+          "key": "l",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "pause_resume_selected": {
+          "key": "p",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "start_selected": null,
+        "stop_selected": null,
+        "reset_selected": null
+      },
+      "auto_number_start": 1.0,
+      "auto_number_increment": 1.0
+    },
+    "patches": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Main",
+        "master_db": 0.0,
+        "outputs": [
+          {
+            "level_db": 0.0,
+            "mute": false,
+            "polarity_inverted": false
+          },
+          {
+            "level_db": 0.0,
+            "mute": false,
+            "polarity_inverted": false
+          }
+        ]
+      }
+    ],
+    "network_patches": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Desk",
+        "host": "127.0.0.1",
+        "port": 53000,
+        "protocol": "udp"
+      }
+    ],
+    "cue_lists": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Main",
+        "cues": [
+          {
+            "id": "00000000-0000-0000-0000-0000000000ff",
+            "number": "1",
+            "name": "Group 1",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "group",
+              "mode": {
+                "type": "timeline"
+              },
+              "children": [
+                {
+                  "id": "00000000-0000-0000-0000-0000000000fe",
+                  "number": "1.1",
+                  "name": "Group 2",
+                  "notes": "",
+                  "color": "none",
+                  "flagged": false,
+                  "armed": true,
+                  "pre_wait": 0.0,
+                  "post_wait": 0.0,
+                  "continue_mode": "do_not_continue",
+                  "triggers": {
+                    "hotkey": null,
+                    "osc": null
+                  },
+                  "second_trigger": "nothing",
+                  "second_trigger_on_release": false,
+                  "kind": {
+                    "type": "group",
+                    "mode": {
+                      "type": "timeline"
+                    },
+                    "children": [
+                      {
+                        "id": "00000000-0000-0000-0000-0000000000fd",
+                        "number": "1.1.1",
+                        "name": "Group 3",
+                        "notes": "",
+                        "color": "none",
+                        "flagged": false,
+                        "armed": true,
+                        "pre_wait": 0.0,
+                        "post_wait": 0.0,
+                        "continue_mode": "do_not_continue",
+                        "triggers": {
+                          "hotkey": null,
+                          "osc": null
+                        },
+                        "second_trigger": "nothing",
+                        "second_trigger_on_release": false,
+                        "kind": {
+                          "type": "group",
+                          "mode": {
+                            "type": "timeline"
+                          },
+                          "children": [
+                            {
+                              "id": "00000000-0000-0000-0000-0000000000fc",
+                              "number": "1.1.1.1",
+                              "name": "Group 4",
+                              "notes": "",
+                              "color": "none",
+                              "flagged": false,
+                              "armed": true,
+                              "pre_wait": 0.0,
+                              "post_wait": 0.0,
+                              "continue_mode": "do_not_continue",
+                              "triggers": {
+                                "hotkey": null,
+                                "osc": null
+                              },
+                              "second_trigger": "nothing",
+                              "second_trigger_on_release": false,
+                              "kind": {
+                                "type": "group",
+                                "mode": {
+                                  "type": "timeline"
+                                },
+                                "children": [
+                                  {
+                                    "id": "00000000-0000-0000-0000-0000000000fb",
+                                    "number": "1.1.1.1.1",
+                                    "name": "Group 5",
+                                    "notes": "",
+                                    "color": "none",
+                                    "flagged": false,
+                                    "armed": true,
+                                    "pre_wait": 0.0,
+                                    "post_wait": 0.0,
+                                    "continue_mode": "do_not_continue",
+                                    "triggers": {
+                                      "hotkey": null,
+                                      "osc": null
+                                    },
+                                    "second_trigger": "nothing",
+                                    "second_trigger_on_release": false,
+                                    "kind": {
+                                      "type": "group",
+                                      "mode": {
+                                        "type": "timeline"
+                                      },
+                                      "children": [
+                                        {
+                                          "id": "00000000-0000-0000-0000-000000000100",
+                                          "number": "1.1.1.1.1.1",
+                                          "name": "Deep memo with a long name",
+                                          "notes": "",
+                                          "color": "none",
+                                          "flagged": false,
+                                          "armed": true,
+                                          "pre_wait": 0.0,
+                                          "post_wait": 0.0,
+                                          "continue_mode": "do_not_continue",
+                                          "triggers": {
+                                            "hotkey": null,
+                                            "osc": null
+                                          },
+                                          "second_trigger": "nothing",
+                                          "second_trigger_on_release": false,
+                                          "kind": {
+                                            "type": "memo"
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000200",
+            "number": "2",
+            "name": "Memo 2",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000201",
+            "number": "3",
+            "name": "Memo 3",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000202",
+            "number": "4",
+            "name": "Memo 4",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000203",
+            "number": "5",
+            "name": "Memo 5",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000204",
+            "number": "6",
+            "name": "Memo 6",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000205",
+            "number": "7",
+            "name": "Memo 7",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000206",
+            "number": "8",
+            "name": "Memo 8",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000207",
+            "number": "9",
+            "name": "Memo 9",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000208",
+            "number": "10",
+            "name": "Memo 10",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000209",
+            "number": "11",
+            "name": "Memo 11",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000020a",
+            "number": "12",
+            "name": "Memo 12",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000020b",
+            "number": "13",
+            "name": "Memo 13",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000020c",
+            "number": "14",
+            "name": "Memo 14",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000020d",
+            "number": "15",
+            "name": "Memo 15",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000020e",
+            "number": "16",
+            "name": "Memo 16",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000020f",
+            "number": "17",
+            "name": "Memo 17",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000210",
+            "number": "18",
+            "name": "Memo 18",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000211",
+            "number": "19",
+            "name": "Memo 19",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000212",
+            "number": "20",
+            "name": "Memo 20",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000213",
+            "number": "21",
+            "name": "Memo 21",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000214",
+            "number": "22",
+            "name": "Memo 22",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000215",
+            "number": "23",
+            "name": "Memo 23",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000216",
+            "number": "24",
+            "name": "Memo 24",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000217",
+            "number": "25",
+            "name": "Memo 25",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000218",
+            "number": "26",
+            "name": "Memo 26",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000219",
+            "number": "27",
+            "name": "Memo 27",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000021a",
+            "number": "28",
+            "name": "Memo 28",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000021b",
+            "number": "29",
+            "name": "Memo 29",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000021c",
+            "number": "30",
+            "name": "Memo 30",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000021d",
+            "number": "31",
+            "name": "Memo 31",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000021e",
+            "number": "32",
+            "name": "Memo 32",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000021f",
+            "number": "33",
+            "name": "Memo 33",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000220",
+            "number": "34",
+            "name": "Memo 34",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000221",
+            "number": "35",
+            "name": "Memo 35",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000222",
+            "number": "36",
+            "name": "Memo 36",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000223",
+            "number": "37",
+            "name": "Memo 37",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000224",
+            "number": "38",
+            "name": "Memo 38",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000225",
+            "number": "39",
+            "name": "Memo 39",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000226",
+            "number": "40",
+            "name": "Memo 40",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000227",
+            "number": "41",
+            "name": "Memo 41",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "memo"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

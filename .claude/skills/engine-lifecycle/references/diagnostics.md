@@ -16,7 +16,7 @@ One structured record per event, made on the control thread (`control/observe.rs
 | `cue_fail` | A cue breaks **at run time** (`voice_rejected`, `stream_failed`, `device_lost`). Static problems are not run-time failures |
 | `device` | Device lost, reopen attempts, restored, stuck list |
 | `document` | Workspace opened or created, saved, save failed |
-| `engine` | Everything else the loop reports: cue-engine warnings, faults, lost events, clients not keeping up |
+| `engine` | Everything else the loop reports: cue-engine warnings (`warn`; `target_not_running`, a Fade or Devamp of a cue that is not running, `info`, as the app lists no warning for it), faults, lost events, clients not keeping up |
 
 - **Trigger limit:** 5 per source per 10 s (wall clock); the rest are counted and one record at window end says `N more input(s) not logged`. Why: a chatty controller must not flush GO history out of the ring or rotated files. `go` records are not limited. At most 256 sources tracked; later ones share one `other sources` entry.
 - Every message the loop sends as `log` is still sent unchanged and also recorded; the other kinds are only in the log. A client reads history with `log_tail` and follows with `log_entry`.
@@ -47,6 +47,11 @@ Sent when `ControlConfig::status` is set (the host does; offline tests do not).
 - The control thread only reads counters that already exist, and only when a status is due (each tick: a few atomics, the device name and the output states packed into one number, `diag::outputs_fingerprint`, to decide). The CPU probe and the rest are gathered when one goes out.
 - `cpu_percent` is process CPU seconds (`diag::cpu`: `/proc/self/stat` on Linux, `getrusage` on macOS, `GetProcessTimes` on Windows) differenced over wall time. The macOS and Windows calls are two small `extern` declarations with `// SAFETY:` comments; only CI exercises them.
 - `engine_load` is `null` when no callback ran since the previous status (device lost) and offline (measurement in skill `devices`). `disk.healthy` is false for ten seconds after any underrun rise.
+- Both come from the sound health watch (`diag::health`, run by `Engine::sound_health` from `Control::health` every tick, whether or not `status` is set), which also tells the operator.
+- Each output device's dropouts (xruns) are an `audio_dropouts` workspace warning naming the device with its `count`, listed in each workspace with a patch mapped and playing on that device, from the first until ten seconds without one. The disk falling behind (`disk.healthy` false) is a `disk_behind` workspace warning while it lasts.
+- Each is a show-log record when it begins (`warn`), at most once per ten seconds while it goes on (with the number since), and when it ends (`info`).
+- Engine load at or above 0.8 of the block time in a one-second window, after a window below, is a `warn` record at most once per ten seconds (with the crossings since); it is no warning row.
+- A cue's runtime `underrun` notice (logged like every runtime warning) goes out at once, then at most once per ten seconds per cue with its `count` since (`Doc::underruns`, flushed on the doc's tick).
 - `device.state` (`ok`, `lost`, `failed`; `absent` offline) stays `ok` while the stall watchdog's first stage is up; the stall is a workspace warning and `warn` log only.
 - `status` is lossy like `meters`. Field list and meanings: `docs/protocol.md`.
 
@@ -69,7 +74,7 @@ Aborts and signals leave no file (no code of ours runs); the run marker catches 
 ## macOS app side
 
 - Help > Show Crash Reports in Finder reveals `~/Library/Logs/openLab/Crashes` and `~/Library/Logs/DiagnosticReports` (those that exist; a message when neither does), so a report can be attached by hand (`revealCrashReports`, `AppController+Windows.swift`).
-- When the first workspace window opens, the app reads `log_tail`; if it holds the run-marker record (kind `engine`, "previous run ended without a clean shutdown"), the footer says so, never an alert. The record stays in the Show Log window.
+- When the first workspace window opens, the app reads `log_tail`; if it holds the run-marker record (kind `engine`, "previous run ended without a clean shutdown"), the footer says so, never an alert. The record stays on the Logs page of the status window.
 
 ## Tests
 

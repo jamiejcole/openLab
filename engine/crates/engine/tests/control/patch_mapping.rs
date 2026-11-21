@@ -5,7 +5,7 @@
 //! machine. Validated against the device list, stored in the machine settings, applied live.
 //! Offline driver, virtual clock, settings in a temp folder.
 
-use crate::common::{Env, env};
+use crate::common::{Env, env, test_port};
 use crate::show::device::{DeviceShow, device, listed};
 use crate::show::*;
 use openlab_core::protocol::{
@@ -49,6 +49,7 @@ fn mapping(device: &str, channels: &[u32]) -> PatchMapping {
     PatchMapping {
         device: device.into(),
         channels: channels.to_vec(),
+        system: false,
     }
 }
 
@@ -294,7 +295,6 @@ fn invalid_mappings_are_refused_and_change_nothing() {
             mapping("Offline", &[0, 1, 2]),
             ErrorCode::BadRequest,
         ),
-        (patch_id(), mapping("Offline", &[0]), ErrorCode::BadRequest),
         (patch_id(), mapping("Offline", &[]), ErrorCode::BadRequest),
         (
             other_patch,
@@ -505,10 +505,7 @@ fn a_count_change_its_undo_and_redo_keep_the_patch_mapped_and_cues_playing() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
 
     assert_eq!(edit(&mut s, channel_count(6)), Ok(()));
-    assert_eq!(
-        stored(&s, &ws),
-        Some(mapping("Offline", &[1, 0, 2, 3, 0, 1]))
-    );
+    assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1, 0, 2, 3])));
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     undo(&mut s);
     assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1, 0])));
@@ -526,10 +523,7 @@ fn a_count_change_its_undo_and_redo_keep_the_patch_mapped_and_cues_playing() {
         "the next GO plays after an undo"
     );
     redo(&mut s);
-    assert_eq!(
-        stored(&s, &ws),
-        Some(mapping("Offline", &[1, 0, 2, 3, 0, 1]))
-    );
+    assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1, 0, 2, 3])));
     assert_eq!(edit(&mut s, channel_count(1)), Ok(()));
     assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1])));
     s.transport(TransportAction::HardStop { cue: id(2) });
@@ -543,9 +537,10 @@ fn a_count_change_its_undo_and_redo_keep_the_patch_mapped_and_cues_playing() {
     );
 }
 
-/// The patch's device is not connected when the count changes: the mapping still follows the
-/// count (counted round the outputs it already reaches), so the patch plays as soon as the
-/// device is back. An explicitly cleared entry stays cleared.
+/// The patch's device is not connected when the count changes: the mapping keeps the outputs it
+/// reaches and the new cue outputs past them get no device output (they could not be checked
+/// against the device), so the patch plays as soon as the device is back. An explicitly cleared
+/// entry stays cleared.
 #[test]
 fn a_count_change_while_the_device_is_missing_or_cleared_keeps_the_entry_consistent() {
     let env = env();
@@ -558,7 +553,7 @@ fn a_count_change_while_the_device_is_missing_or_cleared_keeps_the_entry_consist
     c.machine = machine;
     let mut s = start_show(ws.clone(), c);
     assert_eq!(edit(&mut s, channel_count(3)), Ok(()));
-    assert_eq!(stored(&s, &ws), Some(mapping("Gone", &[0, 1, 0])));
+    assert_eq!(stored(&s, &ws), Some(mapping("Gone", &[0, 1])));
 
     assert_eq!(set(&mut s, patch_id(), None), Ok(()));
     assert_eq!(edit(&mut s, channel_count(5)), Ok(()));
@@ -572,21 +567,25 @@ fn a_count_change_while_the_device_is_missing_or_cleared_keeps_the_entry_consist
     );
 }
 
+/// A two-output patch on a one-output device is mapped on that output (the other cue output has
+/// no device output of its own) and plays; a mapping naming a channel the device lacks is refused.
 #[test]
-fn a_patch_a_too_small_device_left_unmapped_can_be_mapped_by_hand() {
+fn a_patch_on_a_too_small_device_maps_its_first_outputs_and_refuses_channels_it_lacks() {
     let env = env();
     let path = wav(&dc(400, 0.5));
     let ws = workspace(vec![audio(1, &path, 0)]);
     let mut s = start_show(ws.clone(), from_disk(&env, vec![device("Mono", 1)]));
-    assert_eq!(stored(&s, &ws), None);
-    let report = preshow(&mut s);
-    assert_eq!(report.patches[0].resolution, Some(WireResolution::Unmapped));
-    // Two outputs on a one-channel device cannot be mapped, whatever the channels.
+    assert_eq!(stored(&s, &ws), Some(mapping("Mono", &[0])));
+    assert!(preshow(&mut s).patches.is_empty(), "no patch problem");
     assert_eq!(
         set(&mut s, patch_id(), Some(mapping("Mono", &[0, 1]))),
         Err(ErrorCode::BadRequest)
     );
-    assert_eq!(stored(&s, &ws), None);
+    assert_eq!(stored(&s, &ws), Some(mapping("Mono", &[0])));
+    // A mapping of the first outputs only is taken by request too.
+    assert_eq!(set(&mut s, patch_id(), None), Ok(()));
+    assert_eq!(set(&mut s, patch_id(), Some(mapping("Mono", &[0]))), Ok(()));
+    assert_eq!(stored(&s, &ws), Some(mapping("Mono", &[0])));
 }
 
 /// Sends `set_patch_mapping` to a show on the stand-in device; the error if it was refused.
@@ -775,4 +774,307 @@ fn list_patch_mappings_reports_the_stored_mapping_of_each_patch() {
     assert_eq!(listed(&mut s), entry(Some(mapping("Offline", &[2, 3]))));
     assert_eq!(set(&mut s, patch_id(), None), Ok(()));
     assert_eq!(listed(&mut s), entry(None));
+}
+
+/// Sends `request` and returns its result.
+fn ask(s: &mut OfflineShow, request: Request) -> Outcome {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request { id, request });
+    replies
+        .into_iter()
+        .find_map(|m| match m {
+            ServerMessage::Result { outcome, .. } => Some(outcome),
+            _ => None,
+        })
+        .expect("no result")
+}
+
+fn osc_data(outcome: &Outcome) -> (u16, bool, Option<String>) {
+    match outcome {
+        Outcome::Ok(ok) => match &ok.data {
+            Some(ResultData::Osc { port, open, error }) => (*port, *open, error.clone()),
+            other => panic!("not an osc answer: {other:?}"),
+        },
+        Outcome::Error(e) => panic!("refused: {e:?}"),
+    }
+}
+
+/// Workspace Settings, OSC: the page reads the port and whether it is open, a new port is opened
+/// and kept for the next start, one in use is refused (`io`) with the old port still serving and
+/// the reason in the state, port 0 is `bad_request`, and settings that cannot be kept refuse it.
+#[test]
+fn the_osc_port_is_read_changed_kept_and_refused_when_in_use() {
+    let env = env();
+    let (inbox, _rx) = crossbeam_channel::unbounded();
+    let server = openlab_engine::net::OscServer::start(
+        openlab_engine::net::OscConfig {
+            bind: std::net::Ipv4Addr::LOCALHOST.into(),
+            port: 0,
+            ..openlab_engine::net::OscConfig::default()
+        },
+        inbox,
+        openlab_engine::net::TapSlot::default(),
+    );
+    let mut c = from_disk(&env, vec![device("Offline", 4)]);
+    c.osc = Some(server.clone());
+    let mut s = start_show(workspace(vec![]), c);
+    let (port, open, error) = osc_data(&ask(&mut s, Request::OscState));
+    assert!(open && error.is_none());
+    assert_ne!(port, 0);
+
+    // A port in use is refused with `io`, the old one still serves, and the state says why. Both
+    // its sides are held here, so the engine's first bind (UDP) meets this test's own socket and
+    // not whatever else on the machine may hold, or reserve, that number's UDP side.
+    let taken = test_port(true);
+    let busy = taken.port;
+    let Outcome::Error(e) = ask(&mut s, Request::SetOscPort { port: busy }) else {
+        panic!("a port in use was accepted");
+    };
+    assert_eq!(e.code, ErrorCode::Io);
+    assert!(e.message.contains("already in use"), "{}", e.message);
+    let (now, open, error) = osc_data(&ask(&mut s, Request::OscState));
+    assert_eq!((now, open), (port, true), "the old port is kept");
+    assert!(error.unwrap().contains("already in use"));
+    assert_eq!(s.control().machine().osc_port, None, "nothing was kept");
+
+    // Port 0 is a bad request.
+    let Outcome::Error(e) = ask(&mut s, Request::SetOscPort { port: 0 }) else {
+        panic!("port 0 was accepted");
+    };
+    assert_eq!(e.code, ErrorCode::BadRequest);
+
+    // A free port is opened and kept for the next start.
+    let free = test_port(false).port;
+    let (now, open, error) = osc_data(&ask(&mut s, Request::SetOscPort { port: free }));
+    assert_eq!((now, open, error), (free, true, None));
+    assert_eq!(s.control().machine().osc_port, Some(free));
+    drop(s);
+    let (loaded, _) = load_machine_settings_checked(&env.dirs);
+    assert_eq!(loaded.settings.osc_port, Some(free));
+    server.stop();
+}
+
+/// Settings that cannot be kept refuse a new OSC port and leave the old one listening.
+#[test]
+fn an_osc_port_that_cannot_be_saved_is_refused_and_the_old_one_stays() {
+    let env = env();
+    let (inbox, _rx) = crossbeam_channel::unbounded();
+    let server = openlab_engine::net::OscServer::start(
+        openlab_engine::net::OscConfig {
+            bind: std::net::Ipv4Addr::LOCALHOST.into(),
+            port: 0,
+            ..openlab_engine::net::OscConfig::default()
+        },
+        inbox,
+        openlab_engine::net::TapSlot::default(),
+    );
+    let before = server.state();
+    let mut c = from_disk(&env, vec![device("Offline", 4)]);
+    c.machine_writable = false;
+    c.osc = Some(server.clone());
+    let mut s = start_show(workspace(vec![]), c);
+    let Outcome::Error(e) = ask(&mut s, Request::SetOscPort { port: 54321 }) else {
+        panic!("accepted");
+    };
+    assert_eq!(e.code, ErrorCode::Io);
+    assert_eq!(server.state(), before);
+    server.stop();
+}
+
+/// Preferences: the number of backups kept is read, set (0 turns backups off), kept for the next
+/// start and refused above the maximum; settings that cannot be kept refuse it.
+#[test]
+fn the_backup_count_is_read_set_kept_and_refused_above_the_maximum() {
+    let env = env();
+    let mut s = start_show(
+        workspace(vec![]),
+        from_disk(&env, vec![device("Offline", 4)]),
+    );
+    let count = |outcome: Outcome| match outcome {
+        Outcome::Ok(ok) => match ok.data {
+            Some(ResultData::BackupKeep { count }) => count,
+            other => panic!("not a backup answer: {other:?}"),
+        },
+        Outcome::Error(e) => panic!("refused: {e:?}"),
+    };
+    let before = count(ask(&mut s, Request::BackupKeep));
+    assert_eq!(before, s.control().machine().backup_keep);
+    assert_eq!(count(ask(&mut s, Request::SetBackupKeep { count: 3 })), 3);
+    assert_eq!(count(ask(&mut s, Request::SetBackupKeep { count: 0 })), 0);
+    assert_eq!(s.control().machine().backup_keep, 0, "off");
+    let Outcome::Error(e) = ask(&mut s, Request::SetBackupKeep { count: 100_000 }) else {
+        panic!("a huge count was accepted");
+    };
+    assert_eq!(e.code, ErrorCode::BadRequest);
+    assert_eq!(s.control().machine().backup_keep, 0, "nothing changed");
+    assert_eq!(count(ask(&mut s, Request::SetBackupKeep { count: 7 })), 7);
+    drop(s);
+    let (loaded, _) = load_machine_settings_checked(&env.dirs);
+    assert_eq!(loaded.settings.backup_keep, 7);
+
+    let mut c = from_disk(&env, vec![device("Offline", 4)]);
+    c.machine_writable = false;
+    let mut s = start_show(workspace(vec![]), c);
+    let Outcome::Error(e) = ask(&mut s, Request::SetBackupKeep { count: 5 }) else {
+        panic!("accepted");
+    };
+    assert_eq!(e.code, ErrorCode::Io);
+    assert_eq!(s.control().machine().backup_keep, 7);
+}
+
+/// A config for the stand-in devices whose machine settings come from the file in `env`, as
+/// the host loads them.
+fn device_from_disk(env: &Env) -> ControlConfig {
+    let mut c = ControlConfig::new(RATE, BLOCK);
+    c.seed = 7;
+    c.watch.mode = openlab_engine::control::watch::WatchMode::Manual;
+    c.mixer_patches = 4;
+    c.app_dirs = Some(env.dirs.clone());
+    let (loaded, writable) = load_machine_settings_checked(&env.dirs);
+    c.machine = loaded.settings;
+    c.machine_writable = writable;
+    c
+}
+
+/// The engine started on `devices` with the settings in `env`, and the show file `show` opened
+/// in it (beside an empty workspace of another id).
+fn open_on(
+    env: &Env,
+    devices: Vec<openlab_engine::control::devices::ListedDevice>,
+    show: &std::path::Path,
+) -> (DeviceShow, openlab_engine::control::DocId) {
+    let mut first = workspace(vec![]);
+    first.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(77));
+    let mut s = DeviceShow::new(first, devices, device_from_disk(env));
+    let doc = s.open_file(show);
+    (s, doc)
+}
+
+/// Where each of the doc's two patches plays on this machine.
+fn devices_of(s: &DeviceShow, ws: &Workspace) -> Vec<Option<String>> {
+    ws.patches
+        .iter()
+        .map(|p| {
+            let m = s.control().machine().patch_mapping(ws.id, p.id);
+            m.map(|m| m.device.clone())
+        })
+        .collect()
+}
+
+/// Starts cues 1 and 2 of `doc` and plays a while: the values each device carries.
+fn play_both(
+    s: &mut DeviceShow,
+    doc: openlab_engine::control::DocId,
+    devices: [&str; 2],
+) -> [Vec<f32>; 2] {
+    for n in [1, 2] {
+        assert!(
+            s.control()
+                .doc(doc)
+                .unwrap()
+                .engine()
+                .problems(id(n))
+                .is_empty(),
+            "cue {n} is not broken"
+        );
+        s.transport_doc(doc, TransportAction::Start { cue: id(n) });
+    }
+    s.run(1000);
+    devices.map(|d| {
+        let mut v: Vec<f32> = (s.device_channel(d, 0).into_iter())
+            .filter(|x| *x != 0.0)
+            .collect();
+        v.dedup();
+        v
+    })
+}
+
+/// Sets `patch`'s mapping in `doc`, as the patch editor does.
+fn map_in(s: &mut DeviceShow, doc: openlab_engine::control::DocId, patch: PatchId, device: &str) {
+    let id = s.request_id();
+    let replies = s.send_doc(
+        doc,
+        ClientMessage::Request {
+            id,
+            request: Request::SetPatchMapping {
+                patch,
+                mapping: Some(mapping(device, &[0, 1])),
+            },
+        },
+    );
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+}
+
+/// Checklist (WS-07): a show saved with per-patch devices reopens with the same patch-to-device
+/// mapping, each patch's cue heard on its own device. On another machine the show's patches
+/// have no mapping: they play at once on that machine's device (the default mapping), the
+/// first machine's mapping is kept as it was, and the operator maps a patch to that machine's
+/// other device once, which that machine keeps from then on.
+#[test]
+fn a_show_saved_with_per_patch_devices_reopens_with_the_same_mapping() {
+    let (here, there) = (env(), env());
+    let patch_b = PatchId(uuid::Uuid::from_u128(902));
+    let mut b = audio(2, &wav(&dc(400, 0.5)), 0);
+    if let CueKind::Audio { patch, .. } = &mut b.kind {
+        *patch = patch_b;
+    }
+    let mut ws = workspace(vec![audio(1, &wav(&dc(400, 0.25)), 0), b]);
+    let mut second = ws.patches[0].clone();
+    second.id = patch_b;
+    second.name = "B".into();
+    ws.patches.push(second);
+    let show = here.show_dir().join("Two Devices.openlab");
+    std::fs::write(&show, openlab_core::save_show(&ws).unwrap()).unwrap();
+    let fakes = || vec![listed("fake:1", "Fake 1", 2), listed("fake:2", "Fake 2", 2)];
+    let others = || {
+        vec![
+            listed("other:1", "Other 1", 2),
+            listed("other:2", "Other 2", 2),
+        ]
+    };
+    let one = |d: &str| Some(d.to_owned());
+
+    // This machine: patch B is put on the second device.
+    let (mut s, doc) = open_on(&here, fakes(), &show);
+    assert_eq!(devices_of(&s, &ws), [one("Fake 1"), one("Fake 1")]);
+    map_in(&mut s, doc, patch_b, "Fake 2");
+    drop(s);
+    // Reopened: the same mapping, each cue on its own device.
+    let (mut s, doc) = open_on(&here, fakes(), &show);
+    assert_eq!(devices_of(&s, &ws), [one("Fake 1"), one("Fake 2")]);
+    s.wait_output("Fake 2");
+    let heard = play_both(&mut s, doc, ["fake:1", "fake:2"]);
+    assert_eq!(heard, [vec![0.25], vec![0.5]]);
+    drop(s);
+
+    // Another machine: both patches play on its device until the operator maps B, once.
+    let (mut s, doc) = open_on(&there, others(), &show);
+    assert_eq!(devices_of(&s, &ws), [one("Other 1"), one("Other 1")]);
+    let heard = play_both(&mut s, doc, ["other:1", "other:2"]);
+    assert_eq!(heard, [vec![0.75], vec![]], "both cues on its device");
+    map_in(&mut s, doc, patch_b, "Other 2");
+    drop(s);
+    let (mut s, doc) = open_on(&there, others(), &show);
+    assert_eq!(devices_of(&s, &ws), [one("Other 1"), one("Other 2")]);
+    s.wait_output("Other 2");
+    let heard = play_both(&mut s, doc, ["other:1", "other:2"]);
+    assert_eq!(heard, [vec![0.25], vec![0.5]]);
+    drop(s);
+
+    // The first machine's mapping is as it was.
+    let kept = load_machine_settings_checked(&here.dirs).0.settings;
+    let on = |p: PatchId| kept.patch_mapping(ws.id, p).map(|m| m.device.clone());
+    assert_eq!(
+        [on(patch_id()), on(patch_b)],
+        [one("Fake 1"), one("Fake 2")]
+    );
 }

@@ -42,6 +42,7 @@ engine process
 - OS-specific code lives in a `platform` module per crate behind `cfg` (paths, sleep prevention, relaunch, RT priority).
 - Show-file paths are relative with forward slashes or absolute; compare them case-insensitively on Windows (NFR-31/32). The protocol is UI-agnostic, so a Windows UI does not touch the engine.
 - **The engine stays windowless** (user decision 2026-11-13, replacing "the engine will own output windows"): output windows live in the stage host, a child process the engine spawns and supervises, so picture survives an app crash and a stage host crash or hang never stops sound. Skill `video`.
+- **Pictures never travel to the app.** A stage's monitor window (a live copy of the stage for the operator) is a window of the stage host's own, drawn with the stage's frames; the app only asks the engine to open or close it (`set_stage_monitor`). No frames cross a process boundary. Skill `video`, "Monitor windows".
 
 ## Threads (who owns what)
 | Thread | Owns | May block |
@@ -55,7 +56,7 @@ engine process
 | Helpers: media probe pool, media watch (`openlab-watch`), device open/list threads, document worker, net send (one per Network-cue destination), net look-up | blocking work of one kind | Yes |
 - Every helper answers through the control inbox. A control-side watchdog abandons a stalled watch worker.
 - One document read runs at a time engine-wide; a second is `command_refused`.
-- The document worker builds an opened doc off-thread as `DocParts`, so installing it on control is an insert plus probe jobs, within one audio block. A closed doc is dropped off the control thread.
+- The document worker builds an opened doc off-thread as `DocParts` (its catalog's entries and probe jobs included), so installing it on control is an insert plus the probe jobs' sends, within one audio block. A closed doc is dropped off the control thread; what the media watch shares for it is let go over the next few wakes.
 - Saves: control only clones the workspace and polls; the writer thread writes.
 - The control loop ticks every doc and wakes on an inbox message, the earliest `wait_hint`, or a 5 ms tick. Subsystem detail: skills `engine-control`, `audio-mixer`, `audio-streaming`, `devices`, `media-files`, `persistence`, `engine-ws-server`, `osc`.
 

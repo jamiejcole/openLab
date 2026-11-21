@@ -15,15 +15,20 @@ final class TransportUITests: XCTestCase {
         XCTAssertEqual(cueStates("Running", in: app).count, 1, "and nothing else")
     }
 
-    /// The Show Log window in front never takes the keyboard: a click in it, then Space, still fires GO.
+    /// The log in front (the workspace status window on its Logs page) never takes the keyboard: a
+    /// click in it, then Space, still fires GO.
     func testSpaceSendsGoWithTheLogWindowInFront() {
         let app = launchDemo()
 
-        app.typeKey("l", modifierFlags: [.command, .option])  // Window > Show Log
-        let log = app.descendants(matching: .any).matching(identifier: "log-window").firstMatch
-        XCTAssertTrue(log.waitForExistence(timeout: 10))
+        app.menuBars.menuBarItems["Window"].click()
+        app.menuBars.menuItems["Workspace Status"].click()
+        let status = app.descendants(matching: .any).matching(identifier: "status-window").firstMatch
+        XCTAssertTrue(status.waitForExistence(timeout: 10), "the status window opens")
+        tabButton("Logs", in: app).click()
+        let log = app.tables.matching(identifier: "log-table").firstMatch
+        XCTAssertTrue(log.waitForExistence(timeout: 10), "on its Logs page")
         // The table's own area, not a label: a table view asks for key on a click.
-        app.tables.matching(identifier: "log-table").firstMatch.coordinate(
+        log.coordinate(
             withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)
         ).click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])

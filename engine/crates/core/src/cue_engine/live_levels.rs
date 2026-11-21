@@ -12,8 +12,9 @@ use std::collections::BTreeSet;
 
 use crate::cue::{CueKind, FadeCurve, LevelLimits};
 use crate::model::CueId;
+use crate::video_geometry::PictureParam;
 
-use super::level::{self, Level, LevelEdit};
+use super::level::{self, Level, LevelEdit, LevelParam};
 use super::run::{Phase, Slot, Voice};
 use super::time::SampleTime;
 use super::types::Action;
@@ -53,7 +54,7 @@ impl CueEngine {
             } else {
                 tree.locate(ws, *id)
             };
-            let Some(CueKind::Audio { levels, .. }) = cue.map(|c| &c.kind) else {
+            let Some(levels) = cue.and_then(|c| c.kind.levels()) else {
                 continue;
             };
             let Some(given) = run.given.as_mut() else {
@@ -101,7 +102,70 @@ impl CueEngine {
                 });
             }
         }
+        self.follow_geometry_edits(&mut ended, cx);
         self.complete_fades_now(&ended, cx);
+    }
+
+    /// An edit of a Video cue's geometry value that a Fade has set or is moving on its playing
+    /// picture takes that value over, as an edit of a level does (VID-05): the value leaves the
+    /// Fade (whose run goes in `ended`) and goes to the model's over the edit ramp, and so does
+    /// every later edit of it while the run lasts (the binary draws it by its ramps once a Fade
+    /// has touched it). A value no Fade has touched is the binary's to follow (it draws the
+    /// model's). Work: one comparison per run whose picture a Fade has moved.
+    fn follow_geometry_edits(&mut self, ended: &mut BTreeSet<(CueId, u64)>, cx: &mut Ctx) {
+        let ws = cx.ws;
+        let frames = level::edit_frames(self.config.sample_rate().get());
+        let tree = self.problems.tree();
+        let duplicates = tree.has_duplicates();
+        for (id, slot) in &mut self.slots {
+            let Slot::Active(run) = slot else { continue };
+            let Some(was) = run.geometry else { continue };
+            let Voice::Started { at: started, .. } = run.voice else {
+                continue;
+            };
+            let cue = if duplicates {
+                ws.find_cue(*id)
+            } else {
+                tree.locate(ws, *id)
+            };
+            let Some(CueKind::Video { geometry: now, .. }) = cue.map(|c| &c.kind) else {
+                continue;
+            };
+            if *now == was {
+                continue;
+            }
+            run.geometry = Some(*now);
+            for p in PictureParam::ALL {
+                let param = LevelParam::Picture(p);
+                if p.of(now) == p.of(&was) || !run.levels.contains_key(&param) {
+                    continue;
+                }
+                let at = run.commit(cx.now.max(started));
+                let to = p.of(now) as f32;
+                // Kept, owned by no Fade: the binary draws this value by its ramps from now on,
+                // so every later edit of it reaches the picture the same way.
+                if let Some(held) = run.levels.get_mut(&param) {
+                    ended.extend(held.owner);
+                    *held = Level {
+                        owner: None,
+                        from: held.value(at),
+                        to,
+                        start: at,
+                        frames,
+                        curve: FadeCurve::Linear,
+                    };
+                }
+                cx.out.push(Action::Ramp {
+                    cue: *id,
+                    run: run.run,
+                    at,
+                    param,
+                    gain: to,
+                    frames,
+                    curve: FadeCurve::Linear,
+                });
+            }
+        }
     }
 
     /// A narrowing of the volume limits reaches the levels Fade cues hold or are moving on playing
@@ -123,7 +187,10 @@ impl CueEngine {
             // A paused Fade's resume, and a re-timed one's end, go no further than the limits.
             if let Some(fade) = run.fade.as_mut() {
                 for ramp in &mut fade.ramps {
-                    ramp.gain = level::limit_gain(limits, ramp.gain);
+                    // A picture's value is not a level: no limit applies.
+                    if ramp.param.picture().is_none() {
+                        ramp.gain = level::limit_gain(limits, ramp.gain);
+                    }
                 }
             }
             let Voice::Started {
@@ -137,6 +204,9 @@ impl CueEngine {
             let frames = if at <= first { 0 } else { edit };
             let mut last = at;
             for (param, held) in &mut run.levels {
+                if param.picture().is_some() {
+                    continue;
+                }
                 let now = held.value(at);
                 let to = level::limit_gain(limits, held.to);
                 let left = held.end().saturating_sub(at);

@@ -14,7 +14,7 @@ Everything here runs on disk, opener or I/O threads, never on the audio thread. 
 - Seeking yields exactly the frames a decode from the start yields (AAC noise substitution is the one tolerance).
 - A hung open (dead network share, stalled USB disk) never starves a stream that is already open, never takes the last opener, and never blocks the caller.
 - A FIFO, socket, device or folder at a media path is refused at once (`NotAFile`), never opened for a blocking read.
-- A stream's error is published only after its ring producer is dropped, so the voice is certain to play out what was written.
+- A stream's error is published before its ring producer is dropped: a voice ends (`EndOfStream`) as soon as the producer is gone and the ring empty, and control must never see that end without the error readable (it would take it for a clean end: no broken cue, no new probe). The failed task writes nothing after its step failed, so the voice still plays out what was written.
 - The voice and the disk worker agree exactly on the slice table, loop boundaries, and whether a loop exit is used.
 - No sample reaching the mixer is non-finite or beyond +-16.0.
 - Memory is bounded per stream and engine-wide, allocated fallibly on the worker, and over-budget degrades (seek, refuse) rather than aborts.
@@ -28,6 +28,10 @@ Everything here runs on disk, opener or I/O threads, never on the audio thread. 
 - Samples are made safe: a non-finite sample (NaN, inf; possible in float files) becomes 0.0 and the rest clamp to +-16.0 (+24 dBFS, the mixer's gain ceiling), so one bad sample cannot poison a mix bus or the resampler.
 - Typed errors (`MediaError`): `NotFound`, `NotAFile`, `Io`, `Unsupported`, `Corrupt`, `Truncated { expected, actual }` (a stream's file became shorter than its probe), `Changed` (no longer matches its probe), `BadSlices`, `TooManyStreams`, `Worker`, `TooLarge`.
 - Every media open, probe, preload, waveform and disk stream goes through `open_regular` (`regular_file.rs`, shared with the engine's show-file reads). It opens non-blocking on Unix (Windows never waits) and checks the type on the opened handle, so a FIFO cannot hang a worker.
+- A movie's sound: `Media::Track(MovieTrack { path, track, fit })` is sound track `track` (from 0, file order) of an MP4 or QuickTime file, found by its `hdlr` type in a bounded box scan (`mp4_priming.rs` `scan_movie`), so a track in a codec symphonia does not know fails (`Unsupported`) instead of being skipped.
+  - A QuickTime file with no `ftyp` box (old files start with `moov`, `mdat`, `wide` or `free`) is read through `OldMovie`, a source that supplies the box after the file's last byte (symphonia's MP4 reader refuses a file without one; no offset in the file changes), and its reader is made directly (`open_format`), not by the format probe, which looks for `ftyp` at the start.
+  - `probe_movie(path)` probes each (at most `MAX_MOVIE_SOUND_TRACKS`) and gives its sample format's four-character code.
+  - With a `Fit { real, frames }` the track reads as exactly `frames` frames (silence after its own end, or cut), so it can follow its movie's plan; seeks, loops and the stream's length checks see only the fitted timeline. A track that ends before its probed length is never padded over: the stream fails as for any file cut short.
 - `preload(media)` decodes a whole file into memory (`Preloaded`, AUD-05) at the file's rate. Budget `DEFAULT_PRELOAD_BUDGET` (512 MiB); `preload_within(media, max_bytes)` sets another. The declared length is checked before decoding and the decoded length while decoding (a small compressed file can expand far beyond what it declares). Over budget or an allocation the system refuses is `TooLarge { bytes, limit }`. The engine decides whether the cue then streams or is reported.
 
 ## Damaged files play, with warnings
@@ -51,12 +55,13 @@ Everything here runs on disk, opener or I/O threads, never on the audio thread. 
 ## Disk streaming
 - `DiskStreamer::new(StreamerConfig)` starts disk workers (`DEFAULT_WORKERS`) that decode and resample each stream into its voice's ring, about `buffer_ms` (`DEFAULT_BUFFER_MS`, 2000) ahead, and opener threads (`DEFAULT_OPENERS`) that only open files.
 - `prepare(StreamRequest { media, info, seeking, slices })` checks the slice table against `info` and the open-stream limit (`DEFAULT_MAX_STREAMS`), creates the ring, hands the stream to a worker, and **does no I/O**. It returns a `PreparedStream`; `into_voice(voice, cue_outputs)` makes the silent `VoiceStart` (with `slices` and `link`) and keeps the `StreamHandle`. Dropping the handle cancels the stream.
+- `prepare_at(req, device_rate)` is the same for a voice on a device at another rate than `StreamerConfig::device_rate` (AUD-02: each output device runs at its own rate): the file is resampled to that rate and `slices` are frames at it. `rescale(table, from, to, total)` turns a table planned at one rate into the same table at another (bounds rounded to the nearest frame, contiguous entries kept contiguous, inside the file, no empty entry); `frames_at_rate` converts one count.
 - **Primed** (`is_primed`): the first chunk (4096 frames, or the whole stream if shorter) is in the ring; the cue counts as loaded. `is_finished`: every frame of the plan is in the ring. The blocking `wait_*` helpers are for I/O threads and tests, never the control thread.
 - Each worker step is bounded: one 4096-frame chunk, or `step_frames` of seek decoding, or one chunk of a loop exit's buffer. Streams take turns round-robin.
 - **Resampling** (`resample.rs`): rubato's synchronous FFT resampler when file rate differs from device rate, pass-through otherwise. Device frame `p` is the signal at `p / device rate` whether reached by reading or by seeking (a seek restarts the resampler on a chunk boundary one chunk early and discards its delay). Length is exactly `round(frames * device rate / file rate)` (`MediaInfo::frames_at`).
 - Preloaded media goes through the same resampler and ring, so it plays exactly as streaming does.
 - Loops are unrolled into the ring ahead of time, so a loop's own seam never waits on the disk. Trims and start offsets are seeks.
-- **Underrun** from a slow disk gives the mixer's underrun behaviour (silence, counted, resumes where it left off).
+- **Underrun** from a slow disk gives the mixer's underrun behaviour (silence, counted, resumes where it left off). The operator sees an `underrun` notice on the cue and a `disk_behind` workspace warning (skill `engine-lifecycle`, diagnostics).
 - **Failures.** A stream that cannot continue (read error, file shorter than or no longer matching its probe, worker panic) sets `StreamHandle::error` and lets go of its ring. Publication order is the invariant (see Must not break).
 - Dropping the `DiskStreamer` tells workers and openers to stop and does not wait, so a worker or opener blocked on a stalled disk cannot hang the caller.
 
@@ -69,7 +74,7 @@ A file (`Media::Path`, `Media::Reader`) is opened on the opener pool, in order, 
 - An extra only takes an open on a volume with nothing in flight, so opens queued on a dead volume never use up the extras (each dead volume holds at most one); it exits as soon as there is none. Spawn decisions are made under the queue lock and the spawns after releasing it.
 - Past the bound no thread starts: an open on yet another volume waits for a free opener, and a started cue on it breaks after the engine's start limit (skill `engine-control`). Streams already open and preloaded cues are never affected.
 - A stream whose open has not answered is neither primed nor failed. A stream dropped while its open waits in the queue is never opened.
-- `StreamerConfig::before_open` (feature `test-support` only) runs on the opener just before a path is opened, so tests can stand in a stalled volume.
+- `StreamerConfig::before_open` (feature `test-support` only) runs on the opener just before a path is opened, so tests can stand in a stalled volume. A test that stalls a cue's first open gates the file before the show is built, or sets `prime_cues = 0`: the playhead's prime queues the open at once, and a gate set later races it.
 
 ### Loop cache
 - The first play of a loop entry (`Infinite`, or `Times(n)` with plays to come) that starts at its first frame is recorded as it goes into the ring: exactly the device-rate frames written, after decoding and resampling. Later plays are written from the recording instead of seeking back, several per worker step for short loops (up to one 4096-frame chunk).
@@ -103,7 +108,17 @@ Leaving a loop early (devamp) is the one place the ring cannot be ahead: it is F
 ## Slices, loops and devamp (AUD-11, AUD-12, CT-16)
 `plan(range, marks, plays, start)` builds a slice table in device frames: the in/out range cut at `marks`, `plays[i]` (`Times(n >= 1)` or `Infinite`) for slice `i` (empty = each once), starting at `start` inside the range.
 - A start inside a looping slice splits it into a one-play entry and an entry for the remaining plays, with the same `index`. Bad input is a `PlanError`. `total_frames` is `None` if anything loops forever.
+- The engine uses that start for a seek (`control/plan.rs` `cue_slices_from`): a click in a slice played `n` times plays the rest of that pass then `n - 1` more, in a looping slice it loops on, past a loop it is reached, and a point at the out point plays the last slice's next pass, if any.
 - The same table drives the disk stream (unrolls it into the ring) and the voice (counts frames to find boundaries), so both agree exactly.
+- **Skipped slices** (a play count of `Skip`, QLab's 0) never reach this crate: the engine's `control/plan.rs` plans a skipped slice as one played once, so the checks judge only what plays, then takes its entries out of the table (all skipped: `PlanFailure::NothingPlays`, no table).
+- So a table's entries need not be contiguous in the file nor its indices consecutive: neighbouring entries of a skipped slice keep their own frames and `index`. The stream seeks whenever the next entry does not start where the decoder stands (as for a loop or a start offset), so the last frame of the slice before a skipped one is followed in the ring by the first frame of the next slice that plays: sample-exact, no gap.
+- Lengths, offsets, the fade-out and loop exits all follow the table, so they count only what plays.
+
+**A new end while it plays** (`StreamHandle::set_end(entry, frames)`, sent with the voice's `CommandKind::EndAt`): entry `entry` becomes the table's last, `frames` long, taken on the worker's next step (it is woken), the same way the voice takes it.
+- Shorter: nothing past it is written; frames already in the ring past it are never read, as the voice stops there.
+- Longer (the last entry, played once, inside the file): written on from what the ring holds of the entry, so a shortening followed by a lengthening neither repeats nor misses a frame (`last_written`).
+- A shortening that drops later entries the ring may hold seals the stream: its last entry never grows again (the engine never asks it to). A looping entry never changes length.
+- Until the worker has taken it the stream does not count as finished (`is_finished`, `wait_fed`, `wait_written`), so the offline driver never renders ahead of a lengthening.
 
 **Minimum loop length.** Every play of a loop is one `LoopReached` event and one boundary for the voice, so a loop of a few frames would flood the 1024-entry event queue and keep the mixer at its boundaries.
 - The engine builds tables with `plan_at_rate(range, marks, plays, start, device_rate)`: `plan` plus `check_loop_lengths`. Every entry that plays a slice again (more than one play, or the rest of a slice split by a start offset) must be

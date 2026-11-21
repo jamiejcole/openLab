@@ -13,42 +13,177 @@ use objc2_metal::{
     MTLBlendFactor, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
     MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat,
     MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize, MTLStoreAction, MTLTexture,
-    MTLTextureDescriptor, MTLTextureUsage,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLScissorRect, MTLSize, MTLStoreAction,
+    MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
 #[cfg(feature = "test-support")]
 use objc2_metal::{MTLBlitCommandEncoder, MTLBuffer, MTLResourceOptions, MTLStorageMode};
 
+#[cfg(all(test, feature = "test-support"))]
+use openlab_core::VideoGeometry;
+use openlab_core::{Quad, quad};
+
+use crate::hap::Variant;
 use crate::host::{CuePicture, Layer, Picture};
 
 /// A texture the stage drawing samples.
 pub type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
 
-/// Where a cue's picture comes from when a stage is drawn: its texture and pixel size at the
-/// picture's position, or `None` (not drawn; the source has noted why).
-pub type Pictures<'a> = dyn FnMut(&CuePicture) -> Option<(Texture, (u32, u32))> + 'a;
+/// How a texture holds its colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Colour {
+    /// BGRA premultiplied by its alpha, or opaque.
+    #[default]
+    Premultiplied,
+    /// Colour alone (HAP's DXT1, an RGB format): drawn opaque, whatever alpha the texture
+    /// samples (a DXT1 block in its three-colour mode samples one of its colours as
+    /// transparent black).
+    Opaque,
+    /// Colour and straight alpha (HAP Alpha): premultiplied as it is drawn.
+    Straight,
+    /// HAP Q's scaled YCoCg: Co, Cg and the block's scale in red, green and blue, luma in
+    /// alpha; turned into opaque RGB as it is drawn.
+    ScaledYCoCg,
+}
 
-/// One quad covering `rect` (x0, y0, x1, y1 in normalised device coordinates), sampling its
-/// texture with nearest-neighbour filtering, at opacity `tint.a` over what is below.
+impl Colour {
+    /// The shader's `mode` for it.
+    fn mode(self) -> f32 {
+        match self {
+            Self::Premultiplied => 0.0,
+            Self::Straight => 1.0,
+            Self::ScaledYCoCg => 2.0,
+            Self::Opaque => 3.0,
+        }
+    }
+}
+
+/// The texture format and colour a HAP flavour's frames are drawn from.
+pub fn hap_texture(variant: Variant) -> (MTLPixelFormat, Colour) {
+    match variant {
+        Variant::Hap => (MTLPixelFormat::BC1_RGBA, Colour::Opaque),
+        Variant::HapAlpha => (MTLPixelFormat::BC3_RGBA, Colour::Straight),
+        Variant::HapQ => (MTLPixelFormat::BC3_RGBA, Colour::ScaledYCoCg),
+    }
+}
+
+/// Where a cue's picture comes from when a stage is drawn: its texture, pixel size and how the
+/// texture holds its colour at the picture's position, or `None` (not drawn; the source has
+/// noted why).
+pub type Pictures<'a> = dyn FnMut(&CuePicture) -> Option<(Texture, (u32, u32), Colour)> + 'a;
+
+/// One quad: four corners (top left, top right, bottom left, bottom right; normalised device
+/// coordinates) and the texture coordinates at each, sampled smooth or nearest-neighbour. The
+/// colour sampled is made premultiplied RGBA first (`mode`, [`Colour`]): straight alpha is
+/// multiplied in, colour alone is made opaque, and HAP Q's scaled YCoCg (the format's published
+/// conversion) becomes opaque RGB. The whole colour is then scaled by the opacity and blended "over": a pixel the file
+/// leaves transparent stays so.
 const SHADER: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
-struct Quad { float4 rect; float4 tint; };
+struct Quad { float2 pos[4]; float2 uv[4]; float opacity; float smooth; float mode; float pad; };
 struct V { float4 pos [[position]]; float2 uv; };
 vertex V quad_vertex(uint vid [[vertex_id]], constant Quad& q [[buffer(0)]]) {
-    float2 corner = float2(vid & 1, vid >> 1);
     V o;
-    o.pos = float4(mix(q.rect.xy, q.rect.zw, corner), 0, 1);
-    o.uv = float2(corner.x, 1 - corner.y);
+    o.pos = float4(q.pos[vid], 0, 1);
+    o.uv = q.uv[vid];
     return o;
 }
 fragment float4 quad_fragment(V in [[stage_in]], texture2d<float> tex [[texture(0)]],
                               constant Quad& q [[buffer(0)]]) {
-    constexpr sampler s(filter::nearest, address::clamp_to_edge);
-    float4 c = tex.sample(s, in.uv);
-    return float4(c.rgb, q.tint.a);
+    constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
+    constexpr sampler linear(filter::linear, address::clamp_to_edge);
+    float4 c = q.smooth > 0.5 ? tex.sample(linear, in.uv) : tex.sample(nearest, in.uv);
+    if (q.mode > 2.5) {
+        c.a = 1.0;
+    } else if (q.mode > 1.5) {
+        float scale = c.b * (255.0 / 8.0) + 1.0;
+        float co = (c.r - 128.0 / 255.0) / scale;
+        float cg = (c.g - 128.0 / 255.0) / scale;
+        float y = c.a;
+        c = float4(saturate(float3(y + co - cg, y + cg, y - co - cg)), 1.0);
+    } else if (q.mode > 0.5) {
+        c.rgb *= c.a;
+    }
+    return c * q.opacity;
 }
 "#;
+
+/// The bytes of the shader's `Quad`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct QuadBytes {
+    pos: [[f32; 2]; 4],
+    uv: [[f32; 2]; 4],
+    opacity: f32,
+    smooth: f32,
+    mode: f32,
+    pad: f32,
+}
+
+impl QuadBytes {
+    /// A rect (x0, y0, x1, y1 in normalised device coordinates) showing a whole texture.
+    fn rect(r: [f32; 4], opacity: f32, smooth: bool) -> Self {
+        Self {
+            pos: [[r[0], r[3]], [r[2], r[3]], [r[0], r[1]], [r[2], r[1]]],
+            uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+            opacity,
+            smooth: if smooth { 1.0 } else { 0.0 },
+            mode: Colour::Premultiplied.mode(),
+            pad: 0.0,
+        }
+    }
+
+    /// `quad` (stage pixels from the top left, y down) on a stage of `size` that sits at
+    /// `stage` in normalised device coordinates.
+    fn placed(
+        quad: &Quad,
+        size: (u32, u32),
+        stage: [f32; 4],
+        opacity: f32,
+        smooth: bool,
+        colour: Colour,
+    ) -> Self {
+        let (w, h) = (f64::from(size.0.max(1)), f64::from(size.1.max(1)));
+        let (x0, y0, x1, y1) = (
+            f64::from(stage[0]),
+            f64::from(stage[1]),
+            f64::from(stage[2]),
+            f64::from(stage[3]),
+        );
+        let ndc = |[x, y]: [f64; 2]| {
+            [
+                (x0 + x / w * (x1 - x0)) as f32,
+                (y1 - y / h * (y1 - y0)) as f32,
+            ]
+        };
+        let [u0, v0, u1, v1] = quad.uv.map(|v| v as f32);
+        Self {
+            pos: quad.corners.map(ndc),
+            uv: [[u0, v0], [u1, v0], [u0, v1], [u1, v1]],
+            opacity,
+            smooth: if smooth { 1.0 } else { 0.0 },
+            mode: colour.mode(),
+            pad: 0.0,
+        }
+    }
+}
+
+/// The pixels of a target of `size` that `ndc` (normalised device coordinates) covers, as a
+/// scissor rect: a stage's pictures never draw outside their stage.
+fn scissor(ndc: [f32; 4], (w, h): (u32, u32)) -> MTLScissorRect {
+    let (w, h) = (f64::from(w), f64::from(h));
+    let px = |v: f32, side: f64| ((f64::from(v) + 1.0) / 2.0 * side).round().clamp(0.0, side);
+    let (x0, x1) = (px(ndc[0], w), px(ndc[2], w));
+    // Device y is up; the scissor's rows count down from the top.
+    let (y0, y1) = (h - px(ndc[3], h), h - px(ndc[1], h));
+    MTLScissorRect {
+        x: x0 as usize,
+        y: y0 as usize,
+        width: (x1 - x0).max(0.0) as usize,
+        height: (y1 - y0).max(0.0) as usize,
+    }
+}
 
 /// The largest offscreen probe target, in pixels a side.
 #[cfg(feature = "test-support")]
@@ -92,9 +227,9 @@ impl Gpu {
         // SAFETY: colour attachment 0 always exists on a pipeline descriptor.
         let attachment = unsafe { desc.colorAttachments().objectAtIndexedSubscript(0) };
         attachment.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
-        // A fading picture is mixed over what is below it by its opacity.
+        // Premultiplied "over": the shader has scaled the whole colour by the opacity.
         attachment.setBlendingEnabled(true);
-        attachment.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
+        attachment.setSourceRGBBlendFactor(MTLBlendFactor::One);
         attachment.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
         attachment.setSourceAlphaBlendFactor(MTLBlendFactor::One);
         attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
@@ -122,8 +257,8 @@ impl Gpu {
     }
 
     /// Encodes a clear to black and then `layers` (bottom first) into `target`, each stage
-    /// fitted to the target, shape kept, and on each stage its cues' pictures (earliest started
-    /// first), each fitted to the stage at its opacity.
+    /// fitted to the target, shape kept, and on each stage its cues' pictures (bottom first),
+    /// each placed by its geometry, clipped to the stage, at its opacity.
     pub fn draw(
         &mut self,
         target: &ProtocolObject<dyn MTLTexture>,
@@ -137,15 +272,32 @@ impl Gpu {
         let mut quads = Vec::with_capacity(layers.len());
         for layer in layers {
             let stage = fit((layer.width, layer.height), size);
-            quads.push(([stage, [1.0; 4]], self.texture_for(layer.picture)?));
+            let clip = scissor(stage, size);
+            quads.push((
+                QuadBytes::rect(stage, 1.0, false),
+                self.texture_for(layer.picture)?,
+                clip,
+            ));
             for cue in &layer.cues {
-                let Some((texture, picture)) = pictures(cue) else {
+                let Some((texture, picture, colour)) = pictures(cue) else {
                     continue;
                 };
-                let inner = within(stage, fit(picture, (layer.width, layer.height)));
+                let g = &cue.geometry;
+                let Some(quad) = quad(g, picture, (layer.width, layer.height)) else {
+                    continue;
+                };
+                let opacity = (cue.opacity * g.opacity as f32).clamp(0.0, 1.0);
                 quads.push((
-                    [inner, [1.0, 1.0, 1.0, cue.opacity.clamp(0.0, 1.0)]],
+                    QuadBytes::placed(
+                        &quad,
+                        (layer.width, layer.height),
+                        stage,
+                        opacity,
+                        g.smooth,
+                        colour,
+                    ),
                     texture,
+                    clip,
                 ));
             }
         }
@@ -169,14 +321,19 @@ impl Gpu {
             .renderCommandEncoderWithDescriptor(&pass)
             .ok_or("could not create a Metal render encoder")?;
         enc.setRenderPipelineState(&self.pipeline);
-        for (rect, texture) in &quads {
-            let bytes = NonNull::from(rect).cast::<c_void>();
-            // SAFETY: `rect` is 32 bytes of plain floats matching the shader's `Quad`, alive
-            // for the call (Metal copies inline bytes); texture index 0 is the shader's `tex`;
-            // a strip of 4 vertices is the shader's quad.
+        for (quad, texture, clip) in &quads {
+            if clip.width == 0 || clip.height == 0 {
+                continue;
+            }
+            let bytes = NonNull::from(quad).cast::<c_void>();
+            // SAFETY: `quad` is `QuadBytes`, plain `repr(C)` floats laid out as the shader's
+            // `Quad` (80 bytes), alive for the call (Metal copies inline bytes); texture index 0
+            // is the shader's `tex`; a strip of 4 vertices is the shader's quad; the scissor
+            // rect lies within the target (`scissor` clamps it).
             unsafe {
-                enc.setVertexBytes_length_atIndex(bytes, size_of::<[[f32; 4]; 2]>(), 0);
-                enc.setFragmentBytes_length_atIndex(bytes, size_of::<[[f32; 4]; 2]>(), 0);
+                enc.setScissorRect(*clip);
+                enc.setVertexBytes_length_atIndex(bytes, size_of::<QuadBytes>(), 0);
+                enc.setFragmentBytes_length_atIndex(bytes, size_of::<QuadBytes>(), 0);
                 enc.setFragmentTexture_atIndex(Some(texture), 0);
                 enc.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4);
             }
@@ -305,7 +462,21 @@ fn probe_size((w, h): (u32, u32)) -> (usize, usize) {
     )
 }
 
-/// Replaces `texture`'s pixels (of `size`) with `px`, rows of `stride` bytes.
+/// The bytes of one row of `width` pixels (of 4 x 4 blocks, for a block-compressed format)
+/// and the rows in `height`, in `format`.
+fn rows_of(format: MTLPixelFormat, width: usize, height: usize) -> (usize, usize) {
+    let blocks = |block_bytes: usize| (width.div_ceil(4) * block_bytes, height.div_ceil(4));
+    if format == MTLPixelFormat::BC1_RGBA {
+        blocks(8)
+    } else if format == MTLPixelFormat::BC3_RGBA {
+        blocks(16)
+    } else {
+        (width * 4, height)
+    }
+}
+
+/// Replaces `texture`'s pixels (of `size`) with `px`, rows of `stride` bytes (rows of 4 x 4
+/// blocks for a block-compressed texture), in the texture's own format.
 pub fn replace(
     texture: &Texture,
     size: (u32, u32),
@@ -313,7 +484,11 @@ pub fn replace(
     stride: usize,
 ) -> Result<(), String> {
     let (w, h) = (size.0 as usize, size.1 as usize);
-    if texture.width() != w || texture.height() != h || stride < w * 4 || px.len() < stride * h {
+    let (row, rows) = rows_of(texture.pixelFormat(), w, h);
+    let fits = stride
+        .checked_mul(rows)
+        .is_some_and(|need| px.len() >= need);
+    if texture.width() != w || texture.height() != h || stride < row || !fits {
         return Err("a frame of the wrong size".into());
     }
     let region = MTLRegion {
@@ -325,28 +500,33 @@ pub fn replace(
         },
     };
     let bytes = NonNull::new(px.as_mut_ptr().cast::<c_void>()).ok_or("no pixels")?;
-    // SAFETY: `px` holds at least h rows of `stride` bytes, each starting with w BGRA pixels
-    // (checked above), the texture's size and format; Metal copies them before returning.
+    // SAFETY: `px` holds at least `rows` rows of `stride` bytes, each starting with a row of
+    // the texture's format at its width (checked above: w BGRA pixels, or w / 4 blocks rounded
+    // up), the texture's size; Metal copies them before returning. The region is the whole
+    // texture, so a block-compressed one's last blocks may run past its edge.
     unsafe { texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, bytes, stride) };
     Ok(())
 }
 
-/// A shader-readable BGRA texture of `width` x `height`, its pixels not yet written.
+/// A shader-readable texture of `width` x `height` in `format` (BGRA, or a HAP frame's
+/// block-compressed one), its pixels not yet written.
 pub fn empty_texture(
     device: &ProtocolObject<dyn MTLDevice>,
     width: usize,
     height: usize,
+    format: MTLPixelFormat,
 ) -> Result<Texture, String> {
     if width == 0 || height == 0 {
         return Err("a texture of no size".into());
     }
+    let compressed = format == MTLPixelFormat::BC1_RGBA || format == MTLPixelFormat::BC3_RGBA;
+    if compressed && !device.supportsBCTextureCompression() {
+        return Err("this computer's graphics cannot draw HAP movies".into());
+    }
     // SAFETY: a plain 2D descriptor; the sizes were checked against the picture limits.
     let desc = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            MTLPixelFormat::BGRA8Unorm,
-            width,
-            height,
-            false,
+            format, width, height, false,
         )
     };
     desc.setUsage(MTLTextureUsage::ShaderRead);
@@ -390,19 +570,6 @@ fn texture(
     // above), the texture's size and format; Metal copies them before returning.
     unsafe { texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, bytes, width * 4) };
     Ok(texture)
-}
-
-/// `inner` (normalised to -1..1 within a rect) placed in `outer` (normalised device
-/// coordinates).
-fn within(outer: [f32; 4], inner: [f32; 4]) -> [f32; 4] {
-    let (cx, cy) = ((outer[0] + outer[2]) / 2.0, (outer[1] + outer[3]) / 2.0);
-    let (hw, hh) = ((outer[2] - outer[0]) / 2.0, (outer[3] - outer[1]) / 2.0);
-    [
-        cx + inner[0] * hw,
-        cy + inner[1] * hh,
-        cx + inner[2] * hw,
-        cy + inner[3] * hh,
-    ]
 }
 
 /// Where a stage of `stage` pixels sits in a display of `display` pixels: as large as fits,
@@ -501,5 +668,301 @@ mod tests {
             read[card::CELLS..],
             [card::RED, card::GREEN, card::BLUE, card::YELLOW]
         );
+    }
+
+    /// Draws stage-sized pictures over black on a stage of `stage` in a target of `target`,
+    /// and reads `points` (fractions of the target).
+    #[cfg(feature = "test-support")]
+    fn draw_pictures(
+        stage: (u32, u32),
+        target: (u32, u32),
+        cues: &[(Vec<u8>, (u32, u32), VideoGeometry)],
+        points: &[[f32; 2]],
+    ) -> Vec<[u8; 4]> {
+        let mut gpu = Gpu::new().unwrap();
+        let textures: Vec<Texture> = cues
+            .iter()
+            .map(|(px, (w, h), _)| {
+                texture(gpu.device(), *w as usize, *h as usize, &mut px.clone()).unwrap()
+            })
+            .collect();
+        let layer = Layer {
+            stage: openlab_core::StageId(uuid::Uuid::nil()),
+            width: stage.0,
+            height: stage.1,
+            picture: Picture::Black,
+            cues: cues
+                .iter()
+                .enumerate()
+                .map(|(i, (_, _, geometry))| CuePicture {
+                    picture: i as u64,
+                    position: 0.0,
+                    left: f64::INFINITY,
+                    next: None,
+                    held: false,
+                    last: false,
+                    pass: 0,
+                    opacity: 1.0,
+                    geometry: *geometry,
+                })
+                .collect(),
+        };
+        gpu.probe(target, &[layer], points, &mut |c| {
+            let i = c.picture as usize;
+            Some((textures[i].clone(), cues[i].1, Colour::Premultiplied))
+        })
+        .unwrap()
+    }
+
+    /// BGRA pixels, premultiplied, from RGBA.
+    #[cfg(feature = "test-support")]
+    fn bgra(rgba: &[[u8; 4]]) -> Vec<u8> {
+        rgba.iter()
+            .flat_map(|[r, g, b, a]| [*b, *g, *r, *a])
+            .collect()
+    }
+
+    /// A pixel the file leaves transparent stays transparent at full opacity (what is below
+    /// shows through); at half opacity an opaque pixel is half over what is below (VID-04).
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn transparent_pixels_stay_transparent_and_opacity_blends_over_what_is_below() {
+        let green = (bgra(&[[0, 255, 0, 255]]), (1, 1), VideoGeometry::default());
+        let stretch = VideoGeometry {
+            fill_style: openlab_core::FillStyle::Stretch,
+            smooth: false,
+            ..VideoGeometry::default()
+        };
+        let half_clear = bgra(&[[255, 0, 0, 255], [0, 0, 0, 0]]);
+        let points = [[0.25, 0.5], [0.75, 0.5]];
+        let read = draw_pictures(
+            (64, 64),
+            (64, 64),
+            &[green.clone(), (half_clear.clone(), (2, 1), stretch)],
+            &points,
+        );
+        assert_eq!(read, vec![[255, 0, 0, 255], [0, 255, 0, 255]]);
+        let half = VideoGeometry {
+            opacity: 0.5,
+            ..stretch
+        };
+        let read = draw_pictures(
+            (64, 64),
+            (64, 64),
+            &[green, (half_clear, (2, 1), half)],
+            &points,
+        );
+        let [r, g, _, _] = read[0];
+        assert!(
+            (126..=129).contains(&r) && (126..=129).contains(&g),
+            "{read:?}"
+        );
+        assert_eq!(read[1], [0, 255, 0, 255]);
+    }
+
+    /// Smoothing off: a scaled-up picture keeps hard pixel edges; on, the edge is blended.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn smooth_off_keeps_hard_pixel_edges() {
+        let red_blue = bgra(&[[255, 0, 0, 255], [0, 0, 255, 255]]);
+        let g = |smooth| VideoGeometry {
+            fill_style: openlab_core::FillStyle::Stretch,
+            smooth,
+            ..VideoGeometry::default()
+        };
+        let near_middle = [[0.45, 0.5]];
+        let hard = draw_pictures(
+            (64, 64),
+            (64, 64),
+            &[(red_blue.clone(), (2, 1), g(false))],
+            &near_middle,
+        );
+        assert_eq!(hard, vec![[255, 0, 0, 255]]);
+        let soft = draw_pictures(
+            (64, 64),
+            (64, 64),
+            &[(red_blue, (2, 1), g(true))],
+            &near_middle,
+        );
+        let [r, _, b, _] = soft[0];
+        assert!(r < 255 && b > 0, "{soft:?}");
+    }
+
+    /// A picture that overflows its stage (fill, or moved off it) is not drawn outside the
+    /// stage's part of the display.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_picture_never_draws_outside_its_stage() {
+        let wide_red = bgra(&[[255, 0, 0, 255]; 4]);
+        let fill = VideoGeometry {
+            fill_style: openlab_core::FillStyle::Fill,
+            ..VideoGeometry::default()
+        };
+        // A square stage in a wide display: bars at the sides stay black.
+        let read = draw_pictures(
+            (100, 100),
+            (200, 100),
+            &[(wide_red, (4, 1), fill)],
+            &[[0.1, 0.5], [0.5, 0.5], [0.9, 0.5]],
+        );
+        assert_eq!(read, vec![[0, 0, 0, 255], [255, 0, 0, 255], [0, 0, 0, 255]]);
+    }
+
+    /// Draws one picture of `size` from `texture` (holding `colour`) stretched over a 64 x 64
+    /// stage, nearest-neighbour, and reads `points`.
+    #[cfg(feature = "test-support")]
+    fn draw_texture(
+        gpu: &mut Gpu,
+        texture: &Texture,
+        size: (u32, u32),
+        colour: Colour,
+        points: &[[f32; 2]],
+    ) -> Vec<[u8; 4]> {
+        let layer = Layer {
+            stage: openlab_core::StageId(uuid::Uuid::nil()),
+            width: 64,
+            height: 64,
+            picture: Picture::Black,
+            cues: vec![CuePicture {
+                picture: 0,
+                position: 0.0,
+                left: f64::INFINITY,
+                next: None,
+                held: false,
+                last: false,
+                pass: 0,
+                opacity: 1.0,
+                geometry: VideoGeometry {
+                    fill_style: openlab_core::FillStyle::Stretch,
+                    smooth: false,
+                    ..VideoGeometry::default()
+                },
+            }],
+        };
+        gpu.probe((64, 64), &[layer], points, &mut |_| {
+            Some((texture.clone(), size, colour))
+        })
+        .unwrap()
+    }
+
+    /// HAP, HAP Alpha and HAP Q textures (made by the test writer) drawn as the stage draws a
+    /// movie's frame: each quadrant's colour, HAP Alpha's half alpha blended once over black
+    /// (premultiplied as it is drawn), HAP Q's YCoCg turned back into RGB, HAP's and HAP Q's
+    /// alpha ignored (opaque; HAP's three-colour-mode blocks:
+    /// `a_hap_dxt1_block_in_three_colour_mode_draws_opaque_black`). A size that is not a whole
+    /// number of blocks draws too.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn hap_textures_draw_their_colours() {
+        use crate::hap::write;
+        let mut gpu = Gpu::new().unwrap();
+        // A GPU without BC textures fails this test (as every gpu.rs test fails without Metal):
+        // HAP could not be drawn on such a machine, and the test must not pass there.
+        assert!(
+            gpu.device().supportsBCTextureCompression(),
+            "this GPU cannot sample BC textures: HAP movies cannot be drawn here"
+        );
+        let (w, h) = (8u32, 8u32);
+        let mut rgba = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                rgba.extend(match (x >= w / 2, y >= h / 2) {
+                    (false, false) => [255, 0, 0, 255],
+                    (true, false) => [0, 255, 0, 255],
+                    (false, true) => [0, 0, 255, 255],
+                    (true, true) => [255, 255, 0, 128],
+                });
+            }
+        }
+        let points = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+        let near = |got: &[[u8; 4]], want: &[[u8; 4]], by: u8| {
+            got.iter()
+                .zip(want)
+                .all(|(g, w)| g.iter().zip(w).all(|(a, b)| a.abs_diff(*b) <= by))
+        };
+        let opaque = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 0, 255],
+        ];
+        let half = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [128, 128, 0, 255],
+        ];
+        for (variant, want, by) in [
+            (Variant::Hap, opaque, 0),
+            (Variant::HapAlpha, half, 2),
+            (Variant::HapQ, opaque, 6),
+        ] {
+            let (format, colour) = hap_texture(variant);
+            let t = empty_texture(gpu.device(), w as usize, h as usize, format).unwrap();
+            let mut px = write::texture(variant, w, h, &rgba);
+            replace(&t, (w, h), &mut px, variant.row_bytes(w)).unwrap();
+            let read = draw_texture(&mut gpu, &t, (w, h), colour, &points);
+            assert!(near(&read, &want, by), "{variant:?}: {read:?}");
+        }
+        // 6 x 5: the last row and column of blocks run past the picture's edge.
+        let green: Vec<u8> = [0u8, 255, 0, 255].repeat(30);
+        for variant in [Variant::Hap, Variant::HapAlpha, Variant::HapQ] {
+            let (format, colour) = hap_texture(variant);
+            let t = empty_texture(gpu.device(), 6, 5, format).unwrap();
+            let mut px = write::texture(variant, 6, 5, &green);
+            replace(&t, (6, 5), &mut px, variant.row_bytes(6)).unwrap();
+            let read = draw_texture(&mut gpu, &t, (6, 5), colour, &[[0.9, 0.9]]);
+            assert!(near(&read, &[[0, 255, 0, 255]], 6), "{variant:?}: {read:?}");
+            // Too few bytes for the texture: refused, never read past.
+            assert!(replace(&t, (6, 5), &mut px[..8], variant.row_bytes(6)).is_err());
+        }
+    }
+
+    /// A HAP (DXT1) block in its three-colour mode (endpoint 0 not above endpoint 1) whose
+    /// texels all take index 3 samples as transparent black; HAP is an RGB format, so it is
+    /// drawn opaque black over a red picture beneath, never letting the red through.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_hap_dxt1_block_in_three_colour_mode_draws_opaque_black() {
+        let mut gpu = Gpu::new().unwrap();
+        let red = texture(gpu.device(), 1, 1, &mut [0, 0, 255, 255]).unwrap();
+        let (format, colour) = hap_texture(Variant::Hap);
+        let hap = empty_texture(gpu.device(), 4, 4, format).unwrap();
+        // Endpoints white then black (0xFFFF > 0x0000 would be four-colour mode: reversed
+        // here), every index 3.
+        let mut block = [0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        replace(&hap, (4, 4), &mut block, Variant::Hap.row_bytes(4)).unwrap();
+        let cue = |picture| CuePicture {
+            picture,
+            position: 0.0,
+            left: f64::INFINITY,
+            next: None,
+            held: false,
+            last: false,
+            pass: 0,
+            opacity: 1.0,
+            geometry: VideoGeometry {
+                fill_style: openlab_core::FillStyle::Stretch,
+                smooth: false,
+                ..VideoGeometry::default()
+            },
+        };
+        let layer = Layer {
+            stage: openlab_core::StageId(uuid::Uuid::nil()),
+            width: 64,
+            height: 64,
+            picture: Picture::Black,
+            cues: vec![cue(0), cue(1)],
+        };
+        let read = gpu
+            .probe((64, 64), &[layer], &[[0.5, 0.5]], &mut |c| {
+                Some(if c.picture == 0 {
+                    (red.clone(), (1, 1), Colour::Premultiplied)
+                } else {
+                    (hap.clone(), (4, 4), colour)
+                })
+            })
+            .unwrap();
+        assert_eq!(read, vec![[0, 0, 0, 255]]);
     }
 }

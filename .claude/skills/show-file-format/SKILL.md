@@ -23,5 +23,6 @@ The contract is `docs/file-format.md` (conventions, ยง3 load/validation table, ย
 - Refuse only what makes the show ambiguous; the refuse/warn/repair table is `docs/file-format.md` section 3. Everything else loads with a warning naming the cue, and the cue shows broken where it cannot run. Oversize names and text are kept so the show opens; commands refuse new oversize values.
 - A limit or validation applies on every path that creates the data (load, command, paste, import) and is tested on each.
 - Unknown keys are ignored; missing required keys are an error (except `settings.hotkeys` keys).
+- A slice's play count (`PlayCount`, `cue.rs`) is written as a number of plays, the number `0` for "until devamped" (what it has always been) and the string `"skip"` for a skipped slice; the user's typed 0 (skip) is never the stored 0. Its own `Serialize`/`Deserialize` refuse every other value on every path that carries a cue (load, commands, paste), so no path needs a check of its own.
 - Media paths are stored with forward slashes, relative only when literally inside the show folder (byte for byte after NFC). Matching rules and relink are in skills `media-files` and `persistence`.
 - Output is deterministic: fixed field order, so saving twice gives identical bytes.

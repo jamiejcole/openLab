@@ -7,10 +7,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, Write};
 use std::time::Instant;
 
-use openlab_core::StageId;
 use openlab_core::stage_link::{
     Display, FromStage, LINK_VERSION, Line, LinkLevel, StageOutput, StageState, ToStage,
     decode_to_stage, encode, read_line,
+};
+use openlab_core::{
+    HOLD_BEFORE_END, PictureFades, PictureParam, PictureRamp, PlanPass, StageId, VideoGeometry,
+    fade_factor, plan_point,
 };
 
 /// What a stage shows.
@@ -29,8 +32,59 @@ pub struct CuePicture {
     pub picture: u64,
     /// Seconds into the file (a still ignores it).
     pub position: f64,
-    /// 0 (gone) to 1.
+    /// Seconds until the pass of its plan under way ends (infinite without one).
+    pub left: f64,
+    /// Where it goes when that pass ends, when not straight on (a loop's start): the decoder
+    /// gets that frame ready while the pass ends ([`PRIME_AHEAD`] before).
+    pub next: Option<f64>,
+    /// It stands still: paused, loaded, without a plan, or its plan is over (it holds its last
+    /// frame). The frame at `position` is the one shown, however far ahead it is asked for.
+    pub held: bool,
+    /// Its plan ends with the pass under way: nothing past that pass's end is ever shown.
+    pub last: bool,
+    /// The number of the plan's pass it is in (`PlanPoint::pass`): a new number is a seam.
+    pub pass: u64,
+    /// Its integrated fades times how far its stop's fade has gone (1 until it stops, then
+    /// down to 0, gone). Drawn times the geometry's opacity.
     pub opacity: f32,
+    /// Where it sits on its stage, how opaque, its layer and its sampling.
+    pub geometry: VideoGeometry,
+}
+
+/// How long before a jump in a picture's plan (the end of a loop's pass) its decoder is told
+/// where the next pass starts, so it can have that frame ready at the seam.
+pub const PRIME_AHEAD: f64 = 1.0;
+
+impl CuePicture {
+    /// Where in its file the picture is `ahead` seconds later (a frame shown at the display's
+    /// next refresh): past the end of the pass under way, in the next pass; held when its plan
+    /// is over, and where that plan will hold when it ends within `ahead` (the frame after its
+    /// range is never asked for, so it is neither flashed nor held).
+    pub fn position_after(&self, ahead: f64) -> f64 {
+        if self.held || ahead <= 0.0 {
+            return self.position;
+        }
+        match self.next {
+            Some(next) if ahead >= self.left => next + (ahead - self.left),
+            None if self.last => {
+                let end = self.position + self.left - HOLD_BEFORE_END;
+                (self.position + ahead).min(end).max(self.position)
+            }
+            _ => self.position + ahead,
+        }
+    }
+
+    /// The plan's pass the picture is in `ahead` seconds later: the next once the pass under way
+    /// ends (never past a plan that is over, or about to be).
+    pub fn pass_after(&self, ahead: f64) -> u64 {
+        let crosses = !self.held && !self.last && ahead > 0.0 && ahead >= self.left;
+        self.pass.saturating_add(u64::from(crosses))
+    }
+
+    /// The jump the decoder may get ready for now, if one is near.
+    pub fn upcoming(&self) -> Option<f64> {
+        self.next.filter(|_| self.left <= PRIME_AHEAD)
+    }
 }
 
 /// One stage as a display draws it: its pixel size, what it shows behind its cues, and its
@@ -45,14 +99,39 @@ pub struct Layer {
 }
 
 /// Where a picture is in its run.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Run {
     /// Loaded at `offset`, not playing yet.
     Held { offset: f64 },
-    /// Playing from sample `at`, `offset` seconds into the file then.
-    Playing { at: u64, offset: f64 },
-    /// Holding the frame at `offset` from sample `at`.
-    Paused { at: u64, offset: f64 },
+    /// Playing from sample `at`, `offset` seconds into the file, `action` seconds into its
+    /// cue's action and `into` seconds into `plan` then; held at `offset` without a plan.
+    Playing {
+        at: u64,
+        offset: f64,
+        action: f64,
+        plan: Vec<PlanPass>,
+        into: f64,
+    },
+    /// Holding the frame at `offset` from sample `at`, `action` seconds into its cue's action,
+    /// in pass `pass` of the plan it was playing (so its decoder sees no seam at the pause).
+    Paused {
+        at: u64,
+        offset: f64,
+        action: f64,
+        pass: u64,
+    },
+}
+
+/// Where a run is at a sample: its file position, the pass's time left and next jump, whether
+/// its plan is over, and how far into its cue's action it is.
+struct Place {
+    position: f64,
+    left: f64,
+    next: Option<f64>,
+    held: bool,
+    last: bool,
+    action: f64,
+    pass: u64,
 }
 
 /// One Video cue run's picture on the stage host.
@@ -65,18 +144,99 @@ struct Pic {
     before: Option<Run>,
     /// The sample it first played on: drawn from then on.
     since: Option<u64>,
-    /// Fading out from sample `.0` over `.1` samples, then gone.
-    stop: Option<(u64, u64)>,
+    /// Fading out from sample `.0` over `.1` samples; gone on sample `.2` (the fade's end, or
+    /// the stop's cut if that comes first).
+    stop: Option<(u64, u64, u64)>,
     /// When it first played, for the stacking (later on top): (sample, arrival order).
     order: (u64, u64),
+    geometry: VideoGeometry,
+    /// Its integrated fades, as its last play gave them.
+    fades: PictureFades,
+    /// The geometry values Fade cues move (VID-05), drawn over `geometry`'s: per value, its
+    /// ramps by start sample, each in force from its sample until the next one's.
+    ramps: BTreeMap<PictureParam, Vec<PictureRamp>>,
 }
 
+/// Most ramps of one value kept at once: the one in force and those dated ahead of the clock
+/// (a lookahead holds one or two; a hostile engine cannot grow the list past this).
+const MAX_RAMPS: usize = 8;
+
 impl Pic {
-    fn position(run: Run, clock: u64, rate: u32) -> f64 {
+    /// Takes `ramp` for `param` from its sample on: a ramp dated at or after it is replaced,
+    /// and ramps the clock (`clock`) has left behind for a later one are dropped.
+    fn ramp(&mut self, param: PictureParam, ramp: PictureRamp, clock: u64) {
+        let list = self.ramps.entry(param).or_default();
+        list.retain(|r| r.at < ramp.at);
+        list.push(ramp);
+        // The last one started by the clock is in force; those before it are over.
+        let current = list.iter().rposition(|r| r.at <= clock).unwrap_or(0);
+        list.drain(..current);
+        if list.len() > MAX_RAMPS {
+            let over = list.len() - MAX_RAMPS;
+            list.drain(..over);
+        }
+    }
+
+    /// Its geometry on sample `clock`: the values Fade cues move as their ramps have them, the
+    /// rest its own.
+    fn geometry_at(&self, clock: u64) -> VideoGeometry {
+        let mut g = self.geometry;
+        for (param, list) in &self.ramps {
+            let value = match list.iter().rev().find(|r| r.at <= clock) {
+                Some(r) => r.value(clock),
+                None => match list.first() {
+                    Some(r) => r.from,
+                    None => continue,
+                },
+            };
+            param.set(&mut g, value);
+        }
+        g
+    }
+
+    fn place(run: &Run, clock: u64, rate: u32) -> Place {
+        // Standing still, it is asked for its own frame whatever the look-ahead: a frame due a
+        // refresh later is the same one, and never one past the range it was held in.
+        let still = |offset, action, pass| Place {
+            position: offset,
+            left: f64::INFINITY,
+            next: None,
+            held: true,
+            last: false,
+            action,
+            pass,
+        };
         match run {
-            Run::Held { offset } | Run::Paused { offset, .. } => offset,
-            Run::Playing { at, offset } => {
-                offset + clock.saturating_sub(at) as f64 / f64::from(rate.max(1))
+            Run::Held { offset } => still(*offset, 0.0, 0),
+            Run::Paused {
+                offset,
+                action,
+                pass,
+                ..
+            } => still(*offset, *action, *pass),
+            Run::Playing {
+                at,
+                offset,
+                action,
+                plan,
+                into,
+            } => {
+                let elapsed = clock.saturating_sub(*at) as f64 / f64::from(rate.max(1));
+                let action = action + elapsed;
+                match plan_point(plan, into + elapsed) {
+                    Some(p) => Place {
+                        position: p.position,
+                        left: p.left,
+                        next: p.next,
+                        held: p.ended,
+                        last: p.last,
+                        action,
+                        pass: p.pass,
+                    },
+                    // No plan: held where it is (a still has no position; a movie never runs
+                    // on past the range it was given).
+                    None => still(*offset, action, 0),
+                }
             }
         }
     }
@@ -92,13 +252,14 @@ impl Pic {
             Run::Playing { at, .. } | Run::Paused { at, .. } => clock >= at,
         };
         let run = if due {
-            self.run
+            &self.run
         } else {
-            self.before.unwrap_or(self.run)
+            self.before.as_ref().unwrap_or(&self.run)
         };
-        let opacity = match self.stop {
-            Some((at, _)) if clock < at => 1.0,
-            Some((at, fade)) => {
+        let stopping = match self.stop {
+            Some((_, _, end)) if clock >= end => return None,
+            Some((at, _, _)) if clock < at => 1.0,
+            Some((at, fade, _)) => {
                 let gone = clock - at;
                 if gone >= fade {
                     return None;
@@ -107,12 +268,29 @@ impl Pic {
             }
             None => 1.0,
         };
+        let place = Self::place(run, clock, rate);
+        let faded = fade_factor(&self.fades, place.action) as f32;
         Some(CuePicture {
             picture,
-            position: Self::position(run, clock, rate),
-            opacity,
+            position: place.position,
+            left: place.left,
+            next: place.next,
+            held: place.held,
+            last: place.last,
+            pass: place.pass,
+            opacity: stopping * faded,
+            geometry: self.geometry_at(clock),
         })
     }
+}
+
+/// What became of one display's frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presented {
+    Drawn,
+    /// The window is up but could not take this frame (the system gave no drawable for it in
+    /// time, as under heavy GPU load): it keeps showing what it showed.
+    Skipped,
 }
 
 /// The windows and the drawing of one platform.
@@ -122,8 +300,8 @@ pub trait Platform {
     /// The displays connected now.
     fn displays(&mut self) -> Vec<Display>;
     /// Draws `layers` (bottom first, each stage fitted to the display) on `display`, opening
-    /// or moving its window as needed.
-    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<(), String>;
+    /// or moving its window as needed. An error: the display's stages cannot be drawn.
+    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<Presented, String>;
     /// Takes the window of display `display` down, if it has one.
     fn close(&mut self, display: &str);
     /// Draws `layers` (bottom first, each fitted) on a target of `size` pixels and reads the
@@ -158,8 +336,8 @@ pub trait Platform {
     }
     /// Lets the picture's file go.
     fn close_picture(&mut self, _picture: u64) {}
-    /// What happened to pictures since the last call: opened, or failed (could not be opened,
-    /// decoded or drawn, or took too long) with why.
+    /// What happened to pictures since the last call: opened, opened again after its reader
+    /// failed, or failed (could not be opened, decoded or drawn, or took too long) with why.
     fn take_picture_events(&mut self) -> Vec<PictureEvent> {
         Vec::new()
     }
@@ -168,6 +346,55 @@ pub trait Platform {
     fn live(&self) -> bool {
         false
     }
+    /// Draws `layer` (one stage) fitted to its monitor window titled `title`, black bars
+    /// where the shapes differ, opening the window (at the stage's shape) if it is not open.
+    /// Called after every display has been drawn; a monitor never holds the displays up, so
+    /// one that cannot take a frame now skips it.
+    fn present_monitor(&mut self, _title: &str, _layer: &Layer) -> Result<(), String> {
+        Ok(())
+    }
+    /// Brings the stage's monitor window to the front, if it is open.
+    fn raise_monitor(&mut self, _stage: StageId) {}
+    /// Takes the stage's monitor window down, if it has one.
+    fn close_monitor(&mut self, _stage: StageId) {}
+    /// The stages whose monitor window the operator closed since the last call.
+    fn take_closed_monitors(&mut self) -> Vec<StageId> {
+        Vec::new()
+    }
+    /// The display with the menu bar (the operator's; a laptop's only one), if it is one of
+    /// the displays listed.
+    fn menu_bar_display(&self) -> Option<String> {
+        None
+    }
+    /// The window on `display` (none: on no display) stands back under every app's windows,
+    /// over the desktop, from its next present; every other window covers its display.
+    fn stand_back(&mut self, _display: Option<&str>) {}
+}
+
+/// How long the stage host may hear nothing at all from the engine (it pings every second while
+/// its control thread runs, and sends the clock while pictures play) before the window on the
+/// display with the menu bar stands back under the app's windows: four missed pings, so one
+/// late or slow tick never does, and the operator of a hung engine sees the app again within
+/// about five seconds.
+pub const ENGINE_SILENCE: std::time::Duration = std::time::Duration::from_secs(4);
+/// How long a display may give no drawable, frame after frame, before its stages fail: three of
+/// macOS's one-second drawable timeouts, past a burst of GPU load, while a frozen picture on the
+/// audience's display is still told to the engine and the operator within seconds.
+pub const SKIP_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long after its stages failed for lack of drawables a display is tried again (and again
+/// after each try that finds none): a try with no drawable can hold the stage host up to
+/// macOS's one-second drawable timeout, stalling every other display, so it is not made every
+/// frame; every 3 s holds the others at most a second in four while the display is dead, and
+/// brings a keep-black stage back within a few seconds of drawables returning with nothing
+/// else to draw it.
+pub const SKIP_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// One stage's monitor window as the engine asked for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Monitor {
+    title: String,
+    /// The operator closed it: it stays closed until the engine raises it again or drops it.
+    closed: bool,
 }
 
 /// How far past the last clock message the stage host moves the clock on by itself: three of
@@ -179,6 +406,8 @@ const CLOCK_HOLD: std::time::Duration = std::time::Duration::from_millis(30);
 #[derive(Clone, Debug, PartialEq)]
 pub enum PictureEvent {
     Opened(u64),
+    /// Its movie's reader failed and the movie was opened again, and why: it plays on.
+    Reopened(u64, String),
     Failed(u64, String),
 }
 
@@ -213,6 +442,27 @@ pub struct Host<P: Platform> {
     clock: Option<Clock>,
     /// Displays with a window up.
     presented: BTreeSet<String>,
+    /// Displays whose last frame was skipped, with when the stretch of skips began (warned once
+    /// for the stretch).
+    skipping: BTreeMap<String, Instant>,
+    /// Displays whose stages failed for lack of drawables ([`SKIP_LIMIT`]), with when they were
+    /// last tried: not presented again until [`SKIP_RETRY`] after that, when the next poll tries
+    /// once (a display change tries at once).
+    starved: BTreeMap<String, Instant>,
+    /// When the engine last sent anything.
+    heard: Instant,
+    /// The engine has been silent past `silence_limit`: the window on the display with the menu
+    /// bar stands back, so a hung engine never locks the operator out of their own display.
+    silent: bool,
+    /// The app asked the window on the display with the menu bar to stand back (a question of
+    /// its own is up).
+    stand_back: bool,
+    silence_limit: std::time::Duration,
+    /// A failed picture was dropped since the stages were last drawn: the next poll draws them
+    /// again, so its last frame never stays in a window.
+    redraw_due: bool,
+    /// Monitor windows the engine asked for, by stage.
+    monitors: BTreeMap<StageId, Monitor>,
 }
 
 impl<P: Platform> Host<P> {
@@ -227,6 +477,14 @@ impl<P: Platform> Host<P> {
             plays: 0,
             clock: None,
             presented: BTreeSet::new(),
+            skipping: BTreeMap::new(),
+            starved: BTreeMap::new(),
+            heard: Instant::now(),
+            silent: false,
+            stand_back: false,
+            silence_limit: ENGINE_SILENCE,
+            redraw_due: false,
+            monitors: BTreeMap::new(),
         }
     }
 
@@ -260,14 +518,14 @@ impl<P: Platform> Host<P> {
     /// Draws again (the clock moved) and drops pictures whose fade is over; reports any that
     /// failed.
     pub fn redraw(&mut self, out: &mut Vec<FromStage>) {
-        if self.pics.is_empty() {
+        if self.pics.is_empty() && !self.redraw_due {
             return;
         }
         self.apply(out);
     }
 
     fn picture_message(&mut self, message: ToStage, out: &mut Vec<FromStage>) {
-        let (sample, _) = self.now();
+        let (sample, rate) = self.now();
         match message {
             ToStage::Clock { sample, rate } => {
                 // Drawn by the platform's own frame loop (or a probe), not on every clock.
@@ -284,6 +542,7 @@ impl<P: Platform> Host<P> {
                 file,
                 still,
                 offset,
+                geometry,
             } => {
                 self.drop_picture(picture);
                 if !self.stages.iter().any(|s| s.id == stage) {
@@ -308,6 +567,9 @@ impl<P: Platform> Host<P> {
                                     since: None,
                                     stop: None,
                                     order: (u64::MAX, 0),
+                                    geometry,
+                                    fades: PictureFades::NONE,
+                                    ramps: BTreeMap::new(),
                                 },
                             );
                         }
@@ -322,12 +584,26 @@ impl<P: Platform> Host<P> {
                 picture,
                 at,
                 offset,
+                action,
+                plan,
+                into,
+                fades,
             } => {
                 self.plays += 1;
                 let plays = self.plays;
                 if let Some(p) = self.pics.get_mut(&picture) {
-                    p.before = p.since.is_some().then_some(p.run);
-                    p.run = Run::Playing { at, offset };
+                    let run = Run::Playing {
+                        at,
+                        offset,
+                        action,
+                        plan,
+                        into,
+                    };
+                    let was = std::mem::replace(&mut p.run, run);
+                    p.before = p.since.is_some().then_some(was);
+                    // Taken at once: a play dated ahead (a devamp's continuation) changes the
+                    // fades only where the run before it ends anyway.
+                    p.fades = fades;
                     if p.since.is_none() {
                         p.since = Some(at);
                         p.order = (at, plays);
@@ -338,18 +614,33 @@ impl<P: Platform> Host<P> {
                 picture,
                 at,
                 offset,
+                action,
             } => {
                 if let Some(p) = self.pics.get_mut(&picture) {
-                    p.before = Some(p.run);
-                    p.run = Run::Paused { at, offset };
+                    // The pass it pauses in, so its decoder holds the frame shown rather than
+                    // reading again as at a loop's seam.
+                    let pass = Pic::place(&p.run, at, rate).pass;
+                    let paused = Run::Paused {
+                        at,
+                        offset,
+                        action,
+                        pass,
+                    };
+                    p.before = Some(std::mem::replace(&mut p.run, paused));
                 }
             }
-            ToStage::Stop { picture, at, fade } => {
+            ToStage::Stop {
+                picture,
+                at,
+                fade,
+                cut,
+            } => {
+                let end = at.saturating_add(fade).min(cut.unwrap_or(u64::MAX));
                 let gone = match self.pics.get_mut(&picture) {
-                    // Never shown, or a stop with no fade that is due: gone now.
-                    Some(p) if p.since.is_none() || (fade == 0 && at <= sample) => true,
+                    // Never shown, or a stop that ends by now: gone now.
+                    Some(p) if p.since.is_none() || end <= sample => true,
                     Some(p) => {
-                        p.stop = Some((at, fade));
+                        p.stop = Some((at, fade, end));
                         false
                     }
                     None => false,
@@ -359,6 +650,19 @@ impl<P: Platform> Host<P> {
                 }
             }
             ToStage::Unload { picture } => self.drop_picture(picture),
+            // Drawn so from the next frame; its run (and the decoder) are untouched.
+            ToStage::Geometry { picture, geometry } => match self.pics.get_mut(&picture) {
+                Some(p) => p.geometry = geometry,
+                None => return,
+            },
+            ToStage::Ramp {
+                picture,
+                param,
+                ramp,
+            } => match self.pics.get_mut(&picture) {
+                Some(p) => p.ramp(param, ramp, sample),
+                None => return,
+            },
             _ => return,
         }
         self.apply(out);
@@ -373,7 +677,13 @@ impl<P: Platform> Host<P> {
                     out.push(FromStage::PictureOpened { picture });
                 }
                 PictureEvent::Opened(_) => {}
+                // One line in the show log; the cue is not told, as it plays on.
+                PictureEvent::Reopened(_, why) => out.push(FromStage::Log {
+                    level: LinkLevel::Warn,
+                    message: short(why),
+                }),
                 PictureEvent::Failed(picture, reason) => {
+                    self.redraw_due |= self.pics.contains_key(&picture);
                     self.drop_picture(picture);
                     out.push(FromStage::PictureFailed {
                         picture,
@@ -385,17 +695,71 @@ impl<P: Platform> Host<P> {
     }
 
     /// Between messages: reports what became of pictures' files (an open that ended, a decode
-    /// that failed or fell behind).
+    /// that failed or fell behind) and the monitor windows the operator closed.
     pub fn poll(&mut self, out: &mut Vec<FromStage>) {
+        let now = Instant::now();
+        self.check_silence(now, out);
         self.report_failures(out);
+        // A picture that failed leaves its display now, whether or not others still play:
+        // nothing else would draw a stage left with none. A display starved of drawables is
+        // tried again when due, likewise.
+        let retry =
+            (self.starved.values()).any(|&t| now.saturating_duration_since(t) >= SKIP_RETRY);
+        if self.redraw_due || retry {
+            self.apply(out);
+        }
+        for stage in self.platform.take_closed_monitors() {
+            self.monitor_closed(stage, out);
+        }
     }
 
-    /// One message from [`serve`], or (`None`) a poll between messages.
+    /// The stage's monitor window is gone (the operator closed it, or it could not be drawn):
+    /// the engine is told, and it stays closed until the engine raises it again.
+    fn monitor_closed(&mut self, stage: StageId, out: &mut Vec<FromStage>) {
+        if let Some(m) = self.monitors.get_mut(&stage)
+            && !m.closed
+        {
+            m.closed = true;
+            self.platform.close_monitor(stage);
+            out.push(FromStage::MonitorClosed { stage });
+        }
+    }
+
+    /// Follows a new stage set's monitors: one no longer asked for goes, a new one opens, a
+    /// title follows its stage's name. One the operator closed stays closed.
+    fn follow_monitors(&mut self, stages: &[StageOutput]) {
+        let wanted: BTreeMap<StageId, &str> = stages
+            .iter()
+            .filter_map(|s| Some((s.id, s.monitor.as_deref()?)))
+            .collect();
+        let gone: Vec<StageId> = self
+            .monitors
+            .keys()
+            .filter(|id| !wanted.contains_key(id))
+            .copied()
+            .collect();
+        for stage in gone {
+            self.monitors.remove(&stage);
+            self.platform.close_monitor(stage);
+        }
+        for (stage, title) in wanted {
+            let m = self.monitors.entry(stage).or_insert_with(|| Monitor {
+                title: String::new(),
+                closed: false,
+            });
+            title.clone_into(&mut m.title);
+        }
+    }
+
+    /// One message from [`serve`], or (`None`) a poll between messages, which also draws
+    /// playing pictures again as a display's frame loop does: a picture whose stop is over
+    /// goes, and a stage left with nothing to show is hidden or kept black.
     pub fn step(&mut self, message: Option<ToStage>, out: &mut Vec<FromStage>) -> Flow {
         match message {
             Some(message) => self.handle(message, out),
             None => {
                 self.poll(out);
+                self.redraw(out);
                 Flow::Continue
             }
         }
@@ -407,13 +771,17 @@ impl<P: Platform> Host<P> {
         }
     }
 
-    /// The pictures drawn on `stage` at `clock`, earliest started first.
+    /// The pictures drawn on `stage` at `clock`, bottom first: the lowest layer first, and on
+    /// one layer the earliest started first (QLab 5 manual p. 213).
     fn cues_on(&self, stage: StageId, (clock, rate): (u64, u32)) -> Vec<CuePicture> {
-        let mut on: Vec<((u64, u64), CuePicture)> = self
+        let mut on: Vec<((u16, u64, u64), CuePicture)> = self
             .pics
             .iter()
             .filter(|(_, p)| p.stage == stage)
-            .filter_map(|(id, p)| Some((p.order, p.at(*id, clock, rate)?)))
+            .filter_map(|(id, p)| {
+                let order = (p.geometry.layer, p.order.0, p.order.1);
+                Some((order, p.at(*id, clock, rate)?))
+            })
             .collect();
         on.sort_by_key(|(order, _)| *order);
         on.into_iter().map(|(_, c)| c).collect()
@@ -424,10 +792,7 @@ impl<P: Platform> Host<P> {
         let done: Vec<u64> = self
             .pics
             .iter()
-            .filter(|(_, p)| {
-                p.stop
-                    .is_some_and(|(at, fade)| clock >= at.saturating_add(fade))
-            })
+            .filter(|(_, p)| p.stop.is_some_and(|(_, _, end)| clock >= end))
             .map(|(id, _)| *id)
             .collect();
         for id in done {
@@ -439,8 +804,45 @@ impl<P: Platform> Host<P> {
         &mut self.platform
     }
 
-    /// Handles one message from the engine; the answers go to `out`.
+    /// Test support: how long the engine may be silent (`--engine-silence-ms`).
+    #[cfg(feature = "test-support")]
+    pub fn set_engine_silence(&mut self, limit: std::time::Duration) {
+        self.silence_limit = limit;
+    }
+
+    /// Stands the window on the display with the menu bar back once the engine has said nothing
+    /// for `silence_limit` at `now` (a hung engine: its pings stop when its control thread
+    /// does). What every display shows is unchanged.
+    pub fn check_silence(&mut self, now: Instant, out: &mut Vec<FromStage>) {
+        if self.silent || now.saturating_duration_since(self.heard) < self.silence_limit {
+            return;
+        }
+        self.silent = true;
+        if let Some(display) = self.platform.menu_bar_display() {
+            out.push(FromStage::Log {
+                level: LinkLevel::Warn,
+                message: format!(
+                    "the engine has not answered for {} s: the stage window on the display with the menu bar ({display}) stands back under the app's windows until it does",
+                    self.silence_limit.as_secs_f64()
+                ),
+            });
+        }
+        self.apply(out);
+    }
+
+    /// Handles one message from the engine; the answers go to `out`. The engine is heard: a
+    /// window standing back for its silence covers its display again.
     pub fn handle(&mut self, message: ToStage, out: &mut Vec<FromStage>) -> Flow {
+        self.heard = Instant::now();
+        let back = std::mem::take(&mut self.silent);
+        let flow = self.handle_message(message, out);
+        if back && flow == Flow::Continue {
+            self.apply(out);
+        }
+        flow
+    }
+
+    fn handle_message(&mut self, message: ToStage, out: &mut Vec<FromStage>) -> Flow {
         match message {
             ToStage::Hello { version } => {
                 out.push(FromStage::Hello {
@@ -470,6 +872,7 @@ impl<P: Platform> Host<P> {
                         reason: "its stage was removed".into(),
                     });
                 }
+                self.follow_monitors(&stages);
                 self.stages = stages;
                 // Every stage's state is reported after a new set, changed or not, so the
                 // engine knows each stage it sent has been dealt with.
@@ -481,7 +884,49 @@ impl<P: Platform> Host<P> {
                 for display in std::mem::take(&mut self.presented) {
                     self.platform.close(&display);
                 }
+                for stage in std::mem::take(&mut self.monitors).into_keys() {
+                    self.platform.close_monitor(stage);
+                }
                 return Flow::Quit;
+            }
+            ToStage::StandBack { on } => {
+                if std::mem::replace(&mut self.stand_back, on) != on
+                    && let Some(display) = self.platform.menu_bar_display()
+                {
+                    out.push(FromStage::Log {
+                        level: LinkLevel::Info,
+                        message: if on {
+                            format!(
+                                "the stage window on {display} stands back for the app's question"
+                            )
+                        } else {
+                            format!("the stage window on {display} covers its display again")
+                        },
+                    });
+                }
+                self.apply(out);
+            }
+            ToStage::RaiseMonitor { stage } => {
+                if let Some(m) = self.monitors.get_mut(&stage) {
+                    // Closed by the operator: drawn (so opened) again by the next apply.
+                    m.closed = false;
+                    self.platform.raise_monitor(stage);
+                    self.apply(out);
+                }
+            }
+            #[cfg(feature = "test-support")]
+            ToStage::CloseMonitorWindow { stage } => self.monitor_closed(stage, out),
+            #[cfg(feature = "test-support")]
+            ToStage::ProbeMonitor {
+                stage,
+                width,
+                height,
+                points,
+            } => {
+                self.redraw(out);
+                let probed = self.probe_monitor(stage, (width, height), &points, out);
+                self.report_failures(out);
+                out.push(probed);
             }
             #[cfg(feature = "test-support")]
             ToStage::TestCard { stage, frame } => {
@@ -492,15 +937,27 @@ impl<P: Platform> Host<P> {
             }
             #[cfg(feature = "test-support")]
             ToStage::Probe { stage, points } => {
+                // As a frame drawn now would: pictures whose stop is over go and the stages'
+                // states follow, reported ahead of the answer.
+                self.redraw(out);
                 let probed = self.probe_stage(stage, &points, out);
-                out.push(probed);
+                // A picture that failed as the probe drew it is reported first, so the engine
+                // has it (and a test that finds nothing on a stage can say why) once it has the
+                // probe's answer.
                 self.report_failures(out);
+                out.push(probed);
             }
             #[cfg(feature = "test-support")]
             ToStage::ProbeDisplay { display, points } => {
+                // As a frame drawn now would: pictures whose stop is over go and the stages'
+                // states follow, reported ahead of the answer.
+                self.redraw(out);
                 let probed = self.probe_display(display, &points, out);
-                out.push(probed);
+                // A picture that failed as the probe drew it is reported first, so the engine
+                // has it (and a test that finds nothing on a stage can say why) once it has the
+                // probe's answer.
                 self.report_failures(out);
+                out.push(probed);
             }
             #[cfg(feature = "test-support")]
             ToStage::Hang => return Flow::Hang,
@@ -525,6 +982,8 @@ impl<P: Platform> Host<P> {
     pub fn displays_changed(&mut self, out: &mut Vec<FromStage>) {
         let mut displays = self.platform.displays();
         displays.truncate(openlab_core::stage_link::MAX_DISPLAYS);
+        // The system's displays changed: one starved of drawables is tried again at once.
+        self.starved.clear();
         if displays != self.displays {
             self.displays = displays.clone();
             out.push(FromStage::Displays { displays });
@@ -532,16 +991,47 @@ impl<P: Platform> Host<P> {
         self.apply(out);
     }
 
+    /// `display` could not take this frame. Its window stays up with its last frame and the next
+    /// poll draws again (nothing else might: no picture may be playing), warning once per
+    /// stretch so a GPU under load does not flood the show log. Past [`SKIP_LIMIT`] of skips
+    /// the display counts as failed.
+    fn skipped(&mut self, display: &str, out: &mut Vec<FromStage>) -> Result<(), String> {
+        let now = Instant::now();
+        let began = *self.skipping.entry(display.to_owned()).or_insert_with(|| {
+            out.push(FromStage::Log {
+                level: LinkLevel::Warn,
+                message: short(format!(
+                    "display {display} skipped frames: the system gave no picture to draw into"
+                )),
+            });
+            now
+        });
+        if now.saturating_duration_since(began) >= SKIP_LIMIT {
+            self.starved.insert(display.to_owned(), now);
+            return Err(starved_reason());
+        }
+        self.redraw_due = true;
+        Ok(())
+    }
+
     /// Shows, hides or redraws each stage and reports each state that changed. The stages
     /// shown on one display are drawn in one window, bottom first by their `stack`.
     fn apply(&mut self, out: &mut Vec<FromStage>) {
+        self.redraw_due = false;
         let now = self.now();
         self.prune(now);
         let mut states: Vec<(StageId, StageState)> = Vec::new();
         let mut on: BTreeMap<String, Vec<(u32, Layer)>> = BTreeMap::new();
+        // A monitor shows what its stage draws, shown on a display or not.
+        let mut watched: Vec<(String, Layer)> = Vec::new();
         for stage in &self.stages {
             let picture = self.picture(stage.id);
             let cues = self.cues_on(stage.id, now);
+            if let Some(m) = self.monitors.get(&stage.id).filter(|m| !m.closed)
+                && self.platform.video()
+            {
+                watched.push((m.title.clone(), layer_of(stage, picture, cues.clone())));
+            }
             let state = match &stage.display {
                 _ if !self.platform.video() => StageState::Failed {
                     reason: "this computer's openLab has no video output".into(),
@@ -566,8 +1056,18 @@ impl<P: Platform> Host<P> {
             };
             states.push((stage.id, state));
         }
+        // A question of the app's, or a hung engine: the operator's display's window stands back.
+        let back = (self.stand_back || self.silent)
+            .then(|| self.platform.menu_bar_display())
+            .flatten();
+        self.platform.stand_back(back.as_deref());
+        // A window closed since starts a new stretch.
+        let presented = &self.presented;
+        self.skipping.retain(|d, _| presented.contains(d));
+        let instant = Instant::now();
         for display in self.displays.clone() {
             let Some(mut layers) = on.remove(&display.id) else {
+                self.starved.remove(&display.id);
                 if self.presented.remove(&display.id) {
                     self.platform.close(&display.id);
                 }
@@ -575,11 +1075,38 @@ impl<P: Platform> Host<P> {
             };
             layers.sort_by_key(|(stack, _)| *stack);
             let layers: Vec<Layer> = layers.into_iter().map(|(_, l)| l).collect();
-            match self.platform.present(&display, &layers) {
+            let tried = self.starved.get(&display.id).copied();
+            let presented = match tried {
+                // Starved of drawables, not due a try: still failed, nothing presented.
+                Some(t) if instant.saturating_duration_since(t) < SKIP_RETRY => {
+                    Err(starved_reason())
+                }
+                _ => match self.platform.present(&display, &layers) {
+                    Ok(Presented::Drawn) => {
+                        self.skipping.remove(&display.id);
+                        self.starved.remove(&display.id);
+                        Ok(())
+                    }
+                    // A try that finds none fails it again at once (already said), until the
+                    // next try; the window the try opened closes again.
+                    Ok(Presented::Skipped) if tried.is_some() => {
+                        self.starved.insert(display.id.clone(), instant);
+                        self.platform.close(&display.id);
+                        Err(starved_reason())
+                    }
+                    Ok(Presented::Skipped) => self.skipped(&display.id, out),
+                    Err(reason) => {
+                        self.starved.remove(&display.id);
+                        Err(reason)
+                    }
+                },
+            };
+            match presented {
                 Ok(()) => {
                     self.presented.insert(display.id.clone());
                 }
                 Err(reason) => {
+                    self.skipping.remove(&display.id);
                     for (id, state) in &mut states {
                         if layers.iter().any(|l| l.stage == *id) {
                             *state = StageState::Failed {
@@ -604,6 +1131,16 @@ impl<P: Platform> Host<P> {
             self.presented.remove(&id);
             self.platform.close(&id);
         }
+        // After every display: a monitor never holds an output up.
+        for (title, layer) in watched {
+            if let Err(why) = self.platform.present_monitor(&title, &layer) {
+                out.push(FromStage::Log {
+                    level: LinkLevel::Warn,
+                    message: short(format!("the monitor of a stage could not be drawn: {why}")),
+                });
+                self.monitor_closed(layer.stage, out);
+            }
+        }
         self.report_failures(out);
         self.states
             .retain(|id, _| states.iter().any(|(s, _)| s == id));
@@ -626,12 +1163,32 @@ impl<P: Platform> Host<P> {
         size: (u32, u32),
         layers: &[Layer],
         points: &[[f32; 2]],
-    ) -> Result<(Option<u16>, Vec<[u8; 4]>), String> {
-        let mut all: Vec<[f32; 2]> = crate::card::barcode_points().to_vec();
+    ) -> Result<Read, String> {
+        self.read_in(size, layers, points, [0.0, 0.0, 1.0, 1.0])
+    }
+
+    /// [`Self::read`] with the test card's barcode read inside `card` (left, top, right,
+    /// bottom: fractions of the target), where a stage fitted to a target of another shape is.
+    #[cfg(feature = "test-support")]
+    fn read_in(
+        &mut self,
+        size: (u32, u32),
+        layers: &[Layer],
+        points: &[[f32; 2]],
+        [left, top, right, bottom]: [f32; 4],
+    ) -> Result<Read, String> {
+        let mut all: Vec<[f32; 2]> = crate::card::barcode_points()
+            .iter()
+            .map(|[x, y]| [left + x * (right - left), top + y * (bottom - top)])
+            .collect();
         all.extend_from_slice(points);
         let colours = self.platform.probe(size, layers, &all)?;
         let (code, asked) = colours.split_at(colours.len().min(crate::card::CELLS));
-        Ok((crate::card::read_frame(code), asked.to_vec()))
+        Ok(Read {
+            frame: crate::card::read_frame(code),
+            colours: asked.to_vec(),
+            code: code.to_vec(),
+        })
     }
 
     /// One stage's own picture, at its own size.
@@ -658,6 +1215,45 @@ impl<P: Platform> Host<P> {
         };
         let (frame, colours) = probe_answer(read, cues, now, out);
         FromStage::Probed {
+            stage: id,
+            frame,
+            colours,
+        }
+    }
+
+    /// What the stage's monitor window shows at a content size of `size`: the stage fitted,
+    /// black bars elsewhere. No colours when it has no monitor window open.
+    #[cfg(feature = "test-support")]
+    fn probe_monitor(
+        &mut self,
+        id: StageId,
+        size: (u32, u32),
+        points: &[[f32; 2]],
+        out: &mut Vec<FromStage>,
+    ) -> FromStage {
+        let open = self.platform.video() && self.monitors.get(&id).is_some_and(|m| !m.closed);
+        let now = self.now();
+        let layer = self
+            .stages
+            .iter()
+            .find(|s| s.id == id)
+            .filter(|_| open)
+            .map(|s| layer_of(s, self.picture(id), self.cues_on(id, now)));
+        let Some(layer) = layer else {
+            return FromStage::MonitorProbed {
+                stage: id,
+                frame: None,
+                colours: Vec::new(),
+            };
+        };
+        let cues = (
+            layer.cues.len(),
+            self.pics.values().filter(|p| p.stage == id).count(),
+        );
+        let card = fitted((layer.width, layer.height), size);
+        let read = self.read_in(size, std::slice::from_ref(&layer), points, card);
+        let (frame, colours) = probe_answer(read, cues, now, out);
+        FromStage::MonitorProbed {
             stage: id,
             frame,
             colours,
@@ -709,29 +1305,58 @@ impl<P: Platform> Host<P> {
     }
 }
 
+/// Where a stage of `stage` pixels sits when fitted to a target of `target` pixels, its shape
+/// kept and centred: left, top, right, bottom, as fractions of the target.
+pub fn fitted((sw, sh): (u32, u32), (tw, th): (u32, u32)) -> [f32; 4] {
+    let s = f64::from(sw.max(1)) / f64::from(sh.max(1));
+    let t = f64::from(tw.max(1)) / f64::from(th.max(1));
+    let (w, h) = if s > t { (1.0, t / s) } else { (s / t, 1.0) };
+    let (x, y) = ((1.0 - w) / 2.0, (1.0 - h) / 2.0);
+    [x as f32, y as f32, (x + w) as f32, (y + h) as f32]
+}
+
+/// Test support: what a probe drew: the test card's frame read from its barcode cells, if
+/// they make one, the colours at the points asked, and the cells' own colours.
+#[cfg(feature = "test-support")]
+struct Read {
+    frame: Option<u16>,
+    colours: Vec<[u8; 4]>,
+    code: Vec<[u8; 4]>,
+}
+
 /// Test support: a probe's frame and colours. A probe that could not be drawn, or that read no
 /// frame with cue pictures loaded (`loaded`, of which `due` were drawn at the clock), is said
-/// in the show log, so a test that finds
-/// nothing on a stage shows why (a GPU failure, or no frame decoded at that clock).
+/// in the show log with the barcode cells' colours, so a test that finds nothing on a stage
+/// shows why (a GPU failure, no frame decoded at that clock: black cells, or a frame drawn
+/// that is not a whole test card: other colours).
 #[cfg(feature = "test-support")]
 fn probe_answer(
-    read: Result<(Option<u16>, Vec<[u8; 4]>), String>,
+    read: Result<Read, String>,
     (due, loaded): (usize, usize),
     (clock, rate): (u64, u32),
     out: &mut Vec<FromStage>,
 ) -> (Option<u16>, Vec<[u8; 4]>) {
     match read {
-        Ok((None, colours)) if loaded > 0 => {
+        Ok(Read {
+            frame: None,
+            colours,
+            code,
+        }) if loaded > 0 => {
+            let cells: Vec<String> = code
+                .iter()
+                .map(|[r, g, b, _]| format!("{r:02x}{g:02x}{b:02x}"))
+                .collect();
             out.push(FromStage::Log {
                 level: LinkLevel::Info,
                 message: short(format!(
                     "probe at sample {clock} ({rate} Hz): {loaded} picture(s) loaded, {due} due, \
-                     no frame read"
+                     no frame read; cells {}",
+                    cells.join(" ")
                 )),
             });
             (None, colours)
         }
-        Ok(answer) => answer,
+        Ok(Read { frame, colours, .. }) => (frame, colours),
         Err(why) => {
             out.push(FromStage::Log {
                 level: LinkLevel::Warn,
@@ -771,6 +1396,14 @@ fn short(reason: String) -> String {
 
 /// How often the loop looks at pictures between messages.
 pub const POLL_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// Why a display's stages failed when it gave no drawable for [`SKIP_LIMIT`].
+fn starved_reason() -> String {
+    format!(
+        "the system gave no picture to draw into for {} s",
+        SKIP_LIMIT.as_secs()
+    )
+}
 
 /// What the reader thread hands the loop: a message, a warning about a line it skipped, or the
 /// end of input.
@@ -865,19 +1498,37 @@ pub fn write_all(output: &mut impl Write, answers: &mut Vec<FromStage>) -> std::
     output.flush()
 }
 
+/// Also used by the platforms' tests, to drive a host down to their decoders.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use openlab_core::stage_link::MAX_LINE_BYTES;
 
     /// A platform with displays given by the test and no drawing.
-    struct Fake {
+    pub(crate) struct Fake {
         displays: Vec<Display>,
         /// Each display's layers as last presented, bottom first.
         shown: HashMap<String, Vec<StageId>>,
+        /// Each display's pictures as last presented, over all its layers.
+        pictures_drawn: HashMap<String, Vec<u64>>,
+        /// The display with the menu bar.
+        menu_bar: Option<String>,
+        /// The display whose window stands back, as last told.
+        stood_back: Option<String>,
         fail: bool,
+        /// Each frame is skipped (no drawable), the window staying up.
+        skip: bool,
+        /// Presents asked for, drawn or not.
+        presents: u32,
         live: bool,
         events: Vec<PictureEvent>,
+        /// Each monitor window up: its title and the stage drawn in it last, with its cues.
+        monitors: HashMap<StageId, (String, Layer)>,
+        /// Monitor windows the operator closed, not yet taken.
+        user_closed: Vec<StageId>,
+        /// Monitor windows brought to the front.
+        raised: Vec<StageId>,
+        fail_monitors: bool,
     }
 
     impl Platform for Fake {
@@ -887,16 +1538,25 @@ mod tests {
         fn displays(&mut self) -> Vec<Display> {
             self.displays.clone()
         }
-        fn present(&mut self, d: &Display, layers: &[Layer]) -> Result<(), String> {
+        fn present(&mut self, d: &Display, layers: &[Layer]) -> Result<Presented, String> {
+            self.presents += 1;
             if self.fail {
                 return Err("no GPU".into());
             }
+            if self.skip {
+                // The window is up (opened if it was not), its last frame kept.
+                self.shown.entry(d.id.clone()).or_default();
+                return Ok(Presented::Skipped);
+            }
             self.shown
                 .insert(d.id.clone(), layers.iter().map(|l| l.stage).collect());
-            Ok(())
+            let pictures = layers.iter().flat_map(|l| l.cues.iter().map(|c| c.picture));
+            self.pictures_drawn.insert(d.id.clone(), pictures.collect());
+            Ok(Presented::Drawn)
         }
         fn close(&mut self, display: &str) {
             self.shown.remove(display);
+            self.pictures_drawn.remove(display);
         }
         #[cfg(feature = "test-support")]
         fn probe(
@@ -930,28 +1590,76 @@ mod tests {
         fn take_picture_events(&mut self) -> Vec<PictureEvent> {
             std::mem::take(&mut self.events)
         }
+        fn present_monitor(&mut self, title: &str, layer: &Layer) -> Result<(), String> {
+            if self.fail_monitors {
+                return Err("no drawable".into());
+            }
+            self.monitors
+                .insert(layer.stage, (title.to_owned(), layer.clone()));
+            Ok(())
+        }
+        fn raise_monitor(&mut self, stage: StageId) {
+            self.raised.push(stage);
+        }
+        fn close_monitor(&mut self, stage: StageId) {
+            self.monitors.remove(&stage);
+        }
+        fn menu_bar_display(&self) -> Option<String> {
+            self.menu_bar.clone()
+        }
+        fn stand_back(&mut self, display: Option<&str>) {
+            self.stood_back = display.map(str::to_owned);
+        }
+        fn take_closed_monitors(&mut self) -> Vec<StageId> {
+            let closed = std::mem::take(&mut self.user_closed);
+            for stage in &closed {
+                self.monitors.remove(stage);
+            }
+            closed
+        }
     }
 
     /// What stage `n` draws for its cues, by picture: position and opacity.
     fn cues(host: &mut Host<Fake>, n: u8) -> Vec<(u64, f64, f32)> {
-        let now = host.now();
-        host.cues_on(id(n), now)
+        drawn(host, n)
             .into_iter()
             .map(|c| (c.picture, c.position, c.opacity))
             .collect()
     }
 
-    fn send(host: &mut Host<Fake>, m: ToStage) -> Vec<FromStage> {
+    pub(crate) fn drawn(host: &mut Host<Fake>, n: u8) -> Vec<CuePicture> {
+        let now = host.now();
+        host.cues_on(id(n), now)
+    }
+
+    fn plain_play(picture: u64, at: u64, offset: f64) -> ToStage {
+        ToStage::Play {
+            picture,
+            at,
+            offset,
+            action: offset,
+            // One long pass from the offset: it runs on as the clock moves.
+            plan: vec![PlanPass {
+                from: offset,
+                length: 3600.0,
+                plays: 1,
+            }],
+            into: 0.0,
+            fades: PictureFades::NONE,
+        }
+    }
+
+    pub(crate) fn send(host: &mut Host<Fake>, m: ToStage) -> Vec<FromStage> {
         let mut out = Vec::new();
         host.handle(m, &mut out);
         out
     }
 
-    fn clock(host: &mut Host<Fake>, sample: u64) {
+    pub(crate) fn clock(host: &mut Host<Fake>, sample: u64) {
         send(host, ToStage::Clock { sample, rate: 1000 });
     }
 
-    fn load(host: &mut Host<Fake>, picture: u64, n: u8) -> Vec<FromStage> {
+    pub(crate) fn load(host: &mut Host<Fake>, picture: u64, n: u8) -> Vec<FromStage> {
         send(
             host,
             ToStage::Load {
@@ -960,8 +1668,20 @@ mod tests {
                 file: "clip.mov".into(),
                 still: false,
                 offset: 0.0,
+                geometry: VideoGeometry::default(),
             },
         )
+    }
+
+    fn on_layer(layer: u16) -> VideoGeometry {
+        VideoGeometry {
+            layer,
+            ..VideoGeometry::default()
+        }
+    }
+
+    fn play(host: &mut Host<Fake>, picture: u64, at: u64) {
+        send(host, plain_play(picture, at, 0.0));
     }
 
     fn logs(out: &[FromStage]) -> Vec<(LinkLevel, String)> {
@@ -993,8 +1713,11 @@ mod tests {
         clock(&mut h, 1000);
         load(&mut h, 7, 1);
         let said = logs(&send(&mut h, probe.clone()));
+        // With the barcode cells' colours: here all black, nothing drawn.
+        let black = ["000000"; crate::card::CELLS].join(" ");
         assert!(
-            matches!(said.as_slice(), [(LinkLevel::Info, m)] if m.contains("1 picture(s) loaded, 0 due")),
+            matches!(said.as_slice(), [(LinkLevel::Info, m)]
+                if m.contains("1 picture(s) loaded, 0 due") && m.ends_with(&format!("cells {black}"))),
             "{said:?}"
         );
         h.platform_mut().fail = true;
@@ -1008,6 +1731,81 @@ mod tests {
                 .any(|m| matches!(m, FromStage::Probed { frame: None, .. })),
             "still answered: {out:?}"
         );
+    }
+
+    /// A picture that fails as a probe draws it (its decoder failed while the probe waited for
+    /// its frame) is reported before the probe's answer, so the engine knows why the probe found
+    /// nothing once it has that answer.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_picture_that_fails_as_a_probe_draws_it_is_reported_before_the_answer() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 1000);
+        load(&mut h, 7, 1);
+        send(&mut h, plain_play(7, 1000, 0.0));
+        h.platform_mut().events.push(PictureEvent::Failed(
+            7,
+            "the movie could not be read".into(),
+        ));
+        let out = send(
+            &mut h,
+            ToStage::Probe {
+                stage: id(1),
+                points: vec![[0.5, 0.5]],
+            },
+        );
+        let failed = out
+            .iter()
+            .position(|m| matches!(m, FromStage::PictureFailed { picture: 7, .. }));
+        let probed = out
+            .iter()
+            .position(|m| matches!(m, FromStage::Probed { .. }));
+        assert!(
+            matches!((failed, probed), (Some(f), Some(p)) if f < p),
+            "{out:?}"
+        );
+    }
+
+    /// A movie opened again after its reader failed is one warning line for the show log and
+    /// plays on: no failure is reported and it is still drawn.
+    #[test]
+    fn a_movie_opened_again_is_one_log_line_and_stays_drawn() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 1000);
+        load(&mut h, 7, 1);
+        send(&mut h, plain_play(7, 1000, 0.0));
+        h.platform_mut().events.push(PictureEvent::Reopened(
+            7,
+            "reading clip.mov failed (Cannot Decode); opened it again at 1.20 s".into(),
+        ));
+        let mut out = Vec::new();
+        h.poll(&mut out);
+        assert_eq!(
+            logs(&out),
+            vec![(
+                LinkLevel::Warn,
+                "reading clip.mov failed (Cannot Decode); opened it again at 1.20 s".into()
+            )]
+        );
+        assert!(
+            !out.iter()
+                .any(|m| matches!(m, FromStage::PictureFailed { .. })),
+            "{out:?}"
+        );
+        clock(&mut h, 2000);
+        assert_eq!(cues(&mut h, 1).len(), 1, "still drawn");
     }
 
     /// A picture is drawn from its play's sample, its position following the clock; a pause
@@ -1024,14 +1822,7 @@ mod tests {
         clock(&mut h, 1000);
         load(&mut h, 7, 1);
         assert_eq!(cues(&mut h, 1), vec![], "loaded is not drawn");
-        send(
-            &mut h,
-            ToStage::Play {
-                picture: 7,
-                at: 1500,
-                offset: 2.0,
-            },
-        );
+        send(&mut h, plain_play(7, 1500, 2.0));
         assert_eq!(cues(&mut h, 1), vec![], "not before its sample");
         clock(&mut h, 2000);
         assert_eq!(cues(&mut h, 1), vec![(7, 2.5, 1.0)]);
@@ -1041,6 +1832,7 @@ mod tests {
                 picture: 7,
                 at: 2500,
                 offset: 3.0,
+                action: 3.0,
             },
         );
         clock(&mut h, 2400);
@@ -1051,20 +1843,14 @@ mod tests {
         );
         clock(&mut h, 4000);
         assert_eq!(cues(&mut h, 1), vec![(7, 3.0, 1.0)]);
-        send(
-            &mut h,
-            ToStage::Play {
-                picture: 7,
-                at: 4000,
-                offset: 3.0,
-            },
-        );
+        send(&mut h, plain_play(7, 4000, 3.0));
         send(
             &mut h,
             ToStage::Stop {
                 picture: 7,
                 at: 4000,
                 fade: 1000,
+                cut: None,
             },
         );
         clock(&mut h, 4500);
@@ -1079,6 +1865,162 @@ mod tests {
         );
         h.redraw(&mut Vec::new());
         assert!(!h.playing(), "gone once its fade is over");
+
+        // A stop cut short (its cue's action ends mid-fade): it fades as the stop says until
+        // the cut, then it is gone.
+        load(&mut h, 8, 1);
+        send(&mut h, plain_play(8, 5000, 0.0));
+        send(
+            &mut h,
+            ToStage::Stop {
+                picture: 8,
+                at: 5000,
+                fade: 1000,
+                cut: Some(5600),
+            },
+        );
+        clock(&mut h, 5500);
+        assert_eq!(cues(&mut h, 1), vec![(8, 0.5, 0.5)], "fading, not cut yet");
+        clock(&mut h, 5600);
+        assert_eq!(cues(&mut h, 1), vec![], "gone on the cut");
+        h.redraw(&mut Vec::new());
+        assert!(!h.playing(), "dropped on the cut");
+        // A cut already passed when the stop comes: gone at once.
+        load(&mut h, 9, 1);
+        send(&mut h, plain_play(9, 5600, 0.0));
+        let stop = ToStage::Stop {
+            picture: 9,
+            at: 5600,
+            fade: 1000,
+            cut: Some(5600),
+        };
+        send(&mut h, stop);
+        assert!(!h.playing(), "gone at once");
+    }
+
+    /// A movie's plan (VID-07): the picture follows its passes (a trimmed range played twice),
+    /// says where the next pass starts as a seam nears, and holds just before the plan's end
+    /// once it is over; its integrated fades scale its opacity by its action time.
+    #[test]
+    fn a_picture_follows_its_plan_through_a_loop_fades_and_holds_at_its_end() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 7, 1);
+        let linear = |duration| openlab_core::FadeSpec {
+            duration,
+            curve: openlab_core::FadeCurve::Linear,
+        };
+        send(
+            &mut h,
+            ToStage::Play {
+                picture: 7,
+                at: 0,
+                offset: 1.0,
+                action: 0.0,
+                plan: vec![PlanPass {
+                    from: 1.0,
+                    length: 2.0,
+                    plays: 2,
+                }],
+                into: 0.0,
+                fades: PictureFades {
+                    fade_in: linear(1.0),
+                    fade_out: linear(1.0),
+                    end: Some(4.0),
+                },
+            },
+        );
+        let at = |h: &mut Host<Fake>, sample| {
+            clock(h, sample);
+            drawn(h, 1).first().copied().unwrap()
+        };
+        let p = at(&mut h, 500);
+        assert_eq!((p.position, p.opacity, p.held), (1.5, 0.5, false));
+        assert_eq!(p.upcoming(), None, "the seam is far");
+        let p = at(&mut h, 1990);
+        assert!((p.position - 2.99).abs() < 1e-9);
+        assert_eq!(p.upcoming(), Some(1.0), "the loop's start, primed ahead");
+        // A frame shown a refresh later is in the next pass.
+        assert!((p.position_after(0.02) - 1.01).abs() < 1e-9);
+        assert_eq!(p.pass_after(0.02), p.pass + 1);
+        let p = at(&mut h, 2500);
+        assert_eq!((p.position, p.opacity), (1.5, 1.0));
+        assert_eq!(p.upcoming(), None, "the last pass jumps nowhere");
+        let p = at(&mut h, 3500);
+        assert_eq!(p.opacity, 0.5, "fading out to the end");
+        // A frame shown a refresh later than the plan's end is the one it will hold there,
+        // in the same pass: nothing past the range is asked for.
+        let p = at(&mut h, 3990);
+        let ahead = p.position_after(0.02);
+        assert!(ahead > p.position && ahead < 3.0, "{ahead}");
+        assert_eq!(p.pass_after(0.02), p.pass);
+        let p = at(&mut h, 9000);
+        assert!(p.held && p.position < 3.0 && p.position > 2.999);
+        assert_eq!(p.position_after(0.5), p.position, "held");
+        assert_eq!(p.opacity, 0.0, "held where its fade ended");
+        // A pause holds its action time's fade.
+        send(
+            &mut h,
+            ToStage::Pause {
+                picture: 7,
+                at: 9000,
+                offset: 1.5,
+                action: 0.25,
+            },
+        );
+        let p = at(&mut h, 9500);
+        assert_eq!((p.position, p.opacity), (1.5, 0.25));
+    }
+
+    /// A play with no plan holds at its offset: whatever sends one, a movie never runs on into
+    /// its file past the range it was given; one `into` its plan follows the plan from there.
+    #[test]
+    fn a_play_without_a_plan_holds_and_one_into_its_plan_starts_there() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 7, 1);
+        let mut empty = plain_play(7, 0, 1.16);
+        if let ToStage::Play { plan, .. } = &mut empty {
+            plan.clear();
+        }
+        send(&mut h, empty);
+        clock(&mut h, 3000);
+        assert_eq!(cues(&mut h, 1), vec![(7, 1.16, 1.0)], "held, not run on");
+        send(
+            &mut h,
+            ToStage::Play {
+                picture: 7,
+                at: 3000,
+                offset: 1.5,
+                action: 2.5,
+                plan: vec![PlanPass {
+                    from: 1.0,
+                    length: 1.0,
+                    plays: 3,
+                }],
+                into: 2.5,
+                fades: PictureFades::NONE,
+            },
+        );
+        clock(&mut h, 3200);
+        let p = drawn(&mut h, 1)[0];
+        assert!((p.position - 1.7).abs() < 1e-9, "{}", p.position);
+        assert_eq!(p.pass, 2, "its third pass");
+        clock(&mut h, 9000);
+        let p = drawn(&mut h, 1)[0];
+        assert!(p.held && p.position < 2.0 && p.position > 1.999);
     }
 
     /// On real displays the clock runs on between the engine's messages, but no further than
@@ -1116,25 +2058,191 @@ mod tests {
         clock(&mut h, 0);
         load(&mut h, 9, 1);
         load(&mut h, 3, 1);
-        send(
-            &mut h,
-            ToStage::Play {
-                picture: 9,
-                at: 0,
-                offset: 0.0,
-            },
-        );
-        send(
-            &mut h,
-            ToStage::Play {
-                picture: 3,
-                at: 100,
-                offset: 0.0,
-            },
-        );
+        send(&mut h, plain_play(9, 0, 0.0));
+        send(&mut h, plain_play(3, 100, 0.0));
         clock(&mut h, 200);
         let order: Vec<u64> = cues(&mut h, 1).iter().map(|c| c.0).collect();
         assert_eq!(order, vec![9, 3]);
+    }
+
+    /// A higher layer is drawn on top whatever the start order; on one layer the later-started
+    /// is on top (QLab 5 manual p. 213). A layer changed while both play restacks them at once.
+    #[test]
+    fn a_higher_layer_is_on_top_whatever_the_start_order() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 1, 1);
+        load(&mut h, 2, 1);
+        load(&mut h, 3, 1);
+        let geometry = |h: &mut Host<Fake>, picture, layer| {
+            send(
+                h,
+                ToStage::Geometry {
+                    picture,
+                    geometry: on_layer(layer),
+                },
+            );
+        };
+        geometry(&mut h, 1, 10);
+        geometry(&mut h, 2, 5);
+        geometry(&mut h, 3, 5);
+        play(&mut h, 1, 0);
+        play(&mut h, 2, 10);
+        play(&mut h, 3, 20);
+        clock(&mut h, 100);
+        let order = |h: &mut Host<Fake>| -> Vec<u64> { cues(h, 1).iter().map(|c| c.0).collect() };
+        assert_eq!(order(&mut h), vec![2, 3, 1]);
+        geometry(&mut h, 2, 11);
+        assert_eq!(order(&mut h), vec![3, 1, 2]);
+        // An unknown picture's geometry is ignored.
+        geometry(&mut h, 99, 0);
+        assert_eq!(order(&mut h), vec![3, 1, 2]);
+    }
+
+    /// A geometry change reaches the picture as it plays: its position in the file runs on.
+    #[test]
+    fn a_geometry_change_keeps_the_picture_running() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 1, 1);
+        play(&mut h, 1, 0);
+        clock(&mut h, 500);
+        let g = VideoGeometry {
+            opacity: 0.5,
+            fill_stage: false,
+            ..VideoGeometry::default()
+        };
+        send(
+            &mut h,
+            ToStage::Geometry {
+                picture: 1,
+                geometry: g,
+            },
+        );
+        clock(&mut h, 1000);
+        let now = h.now();
+        let drawn = h.cues_on(id(1), now);
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0].geometry, g);
+        assert_eq!(drawn[0].position, 1.0);
+    }
+
+    fn ramp_msg(
+        picture: u64,
+        param: PictureParam,
+        from: f64,
+        to: f64,
+        at: u64,
+        frames: u64,
+    ) -> ToStage {
+        ToStage::Ramp {
+            picture,
+            param,
+            ramp: PictureRamp {
+                from,
+                to,
+                at,
+                frames,
+                curve: openlab_core::FadeCurve::Linear,
+            },
+        }
+    }
+
+    /// A Fade cue's ramp (VID-05) is drawn over the picture's own geometry along its curve from
+    /// its sample; the other values stay the picture's own, an edit of its geometry included.
+    #[test]
+    fn a_ramp_moves_one_value_of_a_playing_picture_along_its_curve() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 1, 1);
+        play(&mut h, 1, 0);
+        send(
+            &mut h,
+            ramp_msg(1, PictureParam::Opacity, 1.0, 0.0, 1000, 2000),
+        );
+        let drawn = |h: &mut Host<Fake>| drawn(h, 1)[0];
+        clock(&mut h, 500);
+        assert_eq!(drawn(&mut h).geometry.opacity, 1.0, "not before its sample");
+        clock(&mut h, 2000);
+        let d = drawn(&mut h);
+        assert_eq!(d.geometry.opacity, 0.5);
+        assert_eq!(d.position, 2.0, "the movie runs on");
+        // An edit of another value is drawn; the faded one keeps its ramp.
+        send(
+            &mut h,
+            ToStage::Geometry {
+                picture: 1,
+                geometry: VideoGeometry {
+                    opacity: 0.9,
+                    rotation: 30.0,
+                    fill_stage: false,
+                    ..VideoGeometry::default()
+                },
+            },
+        );
+        clock(&mut h, 2500);
+        let d = drawn(&mut h);
+        assert_eq!((d.geometry.opacity, d.geometry.rotation), (0.25, 30.0));
+        clock(&mut h, 9000);
+        assert_eq!(drawn(&mut h).geometry.opacity, 0.0, "held at its end");
+        // An unknown picture's ramp is ignored.
+        send(&mut h, ramp_msg(99, PictureParam::Opacity, 1.0, 0.0, 0, 0));
+    }
+
+    /// A later ramp dated ahead of the clock (a takeover inside the lookahead) leaves the one in
+    /// force drawn until its own sample, so the picture never jumps ahead.
+    #[test]
+    fn a_ramp_dated_ahead_takes_over_only_from_its_sample() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 1, 1);
+        play(&mut h, 1, 0);
+        send(
+            &mut h,
+            ramp_msg(1, PictureParam::TranslationX, 0.0, 400.0, 0, 4000),
+        );
+        clock(&mut h, 1000);
+        send(
+            &mut h,
+            ramp_msg(1, PictureParam::TranslationX, 150.0, -100.0, 1500, 1000),
+        );
+        clock(&mut h, 1200);
+        assert_eq!(drawn(&mut h, 1)[0].geometry.translation.x, 120.0);
+        clock(&mut h, 2000);
+        assert_eq!(drawn(&mut h, 1)[0].geometry.translation.x, 25.0);
+        // A burst of ramps all dated ahead keeps a bounded list.
+        for n in 0..100 {
+            send(
+                &mut h,
+                ramp_msg(1, PictureParam::ScaleX, 1.0, 2.0, 10_000 + n, 10),
+            );
+        }
+        let kept = h.pics.get(&1).map(|p| p.ramps[&PictureParam::ScaleX].len());
+        assert_eq!(kept, Some(MAX_RAMPS));
     }
 
     /// A picture whose file cannot be opened, whose stage is not there, or whose stage is
@@ -1166,25 +2274,345 @@ mod tests {
                 file: "bad".into(),
                 still: true,
                 offset: 0.0,
+                geometry: VideoGeometry::default(),
             },
         );
         assert_eq!(failed(&out), vec![(1, "cannot open this".to_owned())]);
         assert_eq!(failed(&load(&mut h, 2, 9)).len(), 1, "no such stage");
         load(&mut h, 3, 1);
-        send(
-            &mut h,
-            ToStage::Play {
-                picture: 3,
-                at: 0,
-                offset: 0.0,
-            },
-        );
+        send(&mut h, plain_play(3, 0, 0.0));
         let out = send(&mut h, ToStage::Stages { stages: vec![] });
         assert_eq!(failed(&out), vec![(3, "its stage was removed".to_owned())]);
         assert!(!h.playing());
     }
 
-    fn id(n: u8) -> StageId {
+    /// #770: a picture whose decoder fails while it plays leaves its display at once, with
+    /// nothing else to tell the stage host: the next frame-loop tick draws the display without
+    /// it (black on a stage keeping black), or takes the stage down (hidden) when it does not.
+    /// Never its last frame left in the window.
+    #[test]
+    fn a_picture_that_fails_while_playing_leaves_the_display_at_once() {
+        for keep_black in [true, false] {
+            let mut h = host(&["D"]);
+            let version = LINK_VERSION;
+            send(&mut h, ToStage::Hello { version });
+            send(
+                &mut h,
+                ToStage::Stages {
+                    stages: vec![stage(1, Some("D"), keep_black)],
+                },
+            );
+            load(&mut h, 3, 1);
+            play(&mut h, 3, 0);
+            clock(&mut h, 100);
+            h.step(None, &mut Vec::new());
+            assert_eq!(h.platform.pictures_drawn.get("D"), Some(&vec![3]));
+            h.platform.events.push(PictureEvent::Failed(
+                3,
+                "the movie could not be read".into(),
+            ));
+            // The frame loop's tick: nothing playing is left.
+            let mut out = Vec::new();
+            h.step(None, &mut out);
+            assert!(
+                out.iter()
+                    .any(|m| matches!(m, FromStage::PictureFailed { picture: 3, .. })),
+                "{out:?}"
+            );
+            if keep_black {
+                assert_eq!(
+                    h.platform.pictures_drawn.get("D"),
+                    Some(&vec![]),
+                    "drawn black"
+                );
+            } else {
+                assert_eq!(h.platform.shown.get("D"), None, "taken down");
+                assert!(
+                    states(&out).contains(&(id(1), StageState::Hidden)),
+                    "{out:?}"
+                );
+            }
+        }
+    }
+
+    /// #789: a display that gives no drawable for `SKIP_LIMIT` fails its stages and its window
+    /// closes, so the engine and operator are told; short of the limit it is still a skip. The
+    /// stretch's start is moved back by hand, as the silence test moves `heard`.
+    #[test]
+    fn a_display_skipping_frames_past_the_limit_fails_its_stages() {
+        let mut h = host(&["D1"]);
+        let mut out = Vec::new();
+        let version = LINK_VERSION;
+        send(&mut h, ToStage::Hello { version });
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D1"), true)],
+            },
+        );
+        h.platform.skip = true;
+        h.displays_changed(&mut out);
+        let move_back = |h: &mut Host<Fake>, by: std::time::Duration| {
+            let began = h.skipping.get_mut("D1").expect("a stretch of skips");
+            *began = began.checked_sub(by).expect("an earlier instant");
+        };
+        // Short of the limit (a second to spare): still skipped, the stage still shown.
+        move_back(&mut h, SKIP_LIMIT - std::time::Duration::from_secs(1));
+        out.clear();
+        h.displays_changed(&mut out);
+        assert_eq!(states(&out), vec![]);
+        assert!(h.platform.shown.contains_key("D1"));
+        // Past it: failed with the reason, the window closed.
+        move_back(&mut h, std::time::Duration::from_secs(1));
+        h.displays_changed(&mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Failed {
+                    reason: "the system gave no picture to draw into for 3 s".into()
+                }
+            )]
+        );
+        assert!(!h.platform.shown.contains_key("D1"), "the window stayed up");
+        // Drawables again: the next frame opens the window and shows the stage.
+        h.platform.skip = false;
+        out.clear();
+        h.displays_changed(&mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Shown {
+                    display: "D1".into()
+                }
+            )]
+        );
+        assert!(h.platform.shown.contains_key("D1"));
+    }
+
+    /// A keep-black stage on display D1, which gives no drawable from now on, failed past
+    /// `SKIP_LIMIT` by the next step (the stretch's start moved back by hand), with what it
+    /// said.
+    fn starved_host() -> (Host<Fake>, Vec<FromStage>) {
+        let mut h = host(&["D1"]);
+        let mut out = Vec::new();
+        let version = LINK_VERSION;
+        send(&mut h, ToStage::Hello { version });
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D1"), true)],
+            },
+        );
+        h.platform.skip = true;
+        h.displays_changed(&mut out);
+        let began = h.skipping.get_mut("D1").expect("a stretch of skips");
+        *began = began.checked_sub(SKIP_LIMIT).expect("an earlier instant");
+        h.step(None, &mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Failed {
+                    reason: "the system gave no picture to draw into for 3 s".into()
+                }
+            )]
+        );
+        assert!(!h.platform.shown.contains_key("D1"), "the window stayed up");
+        (h, out)
+    }
+
+    /// Display D1's last try after starving is moved back by `SKIP_RETRY`: the next poll tries.
+    fn retry_due(h: &mut Host<Fake>) {
+        if let Some(tried) = h.starved.get_mut("D1") {
+            *tried = tried.checked_sub(SKIP_RETRY).expect("an earlier instant");
+        }
+    }
+
+    fn warnings(out: &[FromStage]) -> usize {
+        out.iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    FromStage::Log {
+                        level: LinkLevel::Warn,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// #790 flow: a keep-black stage with nothing playing whose display stopped giving
+    /// drawables past the limit, then gives them again: with no message from the engine, the
+    /// stage shows black again by itself at the next try, `SKIP_RETRY` after it failed.
+    #[test]
+    fn a_keep_black_stage_failed_for_lack_of_drawables_shows_black_again_by_itself() {
+        let (mut h, _) = starved_host();
+        h.platform.skip = false;
+        let mut out = Vec::new();
+        h.step(None, &mut out);
+        assert_eq!(states(&out), vec![], "tried again before its time");
+        assert!(!h.platform.shown.contains_key("D1"));
+        retry_due(&mut h);
+        h.step(None, &mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Shown {
+                    display: "D1".into()
+                }
+            )]
+        );
+        assert_eq!(h.platform.pictures_drawn.get("D1"), Some(&vec![]), "black");
+        assert!(h.starved.is_empty());
+    }
+
+    /// #790 flow: while the display still gives no drawable, it is tried again only every
+    /// `SKIP_RETRY`, not every frame, though a picture plays on its stage and the engine keeps
+    /// talking; a try that finds none leaves the stage failed without a word: the failure
+    /// logged one line.
+    #[test]
+    fn a_retry_after_lack_of_drawables_is_paced_and_logs_one_line_per_failure() {
+        let (mut h, mut out) = starved_host();
+        load(&mut h, 3, 1);
+        play(&mut h, 3, 0);
+        let presents = h.platform.presents;
+        for k in 1..=50 {
+            clock(&mut h, 100 * k);
+            h.step(None, &mut out);
+        }
+        assert_eq!(h.platform.presents, presents, "presented within the pace");
+        let said = out.len();
+        retry_due(&mut h);
+        h.step(None, &mut out);
+        assert_eq!(h.platform.presents, presents + 1, "one try when due");
+        for k in 51..=100 {
+            clock(&mut h, 100 * k);
+            h.step(None, &mut out);
+        }
+        assert_eq!(
+            h.platform.presents,
+            presents + 1,
+            "one try, then paced again"
+        );
+        assert_eq!(
+            states(&out[said..]),
+            vec![],
+            "the failed try said something"
+        );
+        assert!(!h.platform.shown.contains_key("D1"), "the window reopened");
+        assert_eq!(warnings(&out), 1, "{out:?}");
+    }
+
+    /// #789: the frame that should take a failed picture down is skipped (no drawable): the
+    /// next frame-loop tick draws again, though nothing plays, so its last frame never stays up.
+    #[test]
+    fn a_skipped_frame_after_a_picture_fails_is_drawn_again_at_the_next_tick() {
+        let mut h = host(&["D"]);
+        let version = LINK_VERSION;
+        send(&mut h, ToStage::Hello { version });
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), true)],
+            },
+        );
+        load(&mut h, 3, 1);
+        play(&mut h, 3, 0);
+        clock(&mut h, 100);
+        h.step(None, &mut Vec::new());
+        assert_eq!(h.platform.pictures_drawn.get("D"), Some(&vec![3]));
+        h.platform.skip = true;
+        h.platform.events.push(PictureEvent::Failed(
+            3,
+            "the movie could not be read".into(),
+        ));
+        h.step(None, &mut Vec::new());
+        assert_eq!(
+            h.platform.pictures_drawn.get("D"),
+            Some(&vec![3]),
+            "skipped"
+        );
+        h.platform.skip = false;
+        h.step(None, &mut Vec::new());
+        assert_eq!(
+            h.platform.pictures_drawn.get("D"),
+            Some(&vec![]),
+            "the failed picture's last frame stayed up"
+        );
+    }
+
+    /// A host with displays M (the menu bar's) and D, a stage keeping black on each.
+    fn menu_bar_host() -> Host<Fake> {
+        let mut h = host(&["M", "D"]);
+        h.platform.menu_bar = Some("M".into());
+        let version = LINK_VERSION;
+        send(&mut h, ToStage::Hello { version });
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("M"), true), stage(2, Some("D"), true)],
+            },
+        );
+        h
+    }
+
+    /// #708: the app's question up (`stand_back`) → the window on the display with the menu bar
+    /// stands back, drawing what it drew, its stage still shown; the question answered → it
+    /// covers again. Other displays never stand back.
+    #[test]
+    fn the_menu_bars_window_stands_back_while_the_app_asks_and_covers_again_after() {
+        let mut h = menu_bar_host();
+        assert_eq!(h.platform.stood_back, None);
+        let out = send(&mut h, ToStage::StandBack { on: true });
+        assert_eq!(h.platform.stood_back.as_deref(), Some("M"));
+        assert_eq!(h.platform.shown.get("M"), Some(&vec![id(1)]), "still drawn");
+        assert_eq!(h.platform.shown.get("D"), Some(&vec![id(2)]));
+        assert!(states(&out).is_empty(), "no stage changed: {out:?}");
+        send(&mut h, ToStage::StandBack { on: false });
+        assert_eq!(h.platform.stood_back, None);
+    }
+
+    /// #708: a hung engine (nothing heard for `ENGINE_SILENCE`) stands the window on the display
+    /// with the menu bar (the operator's) back, and nothing else: what it draws and every stage's
+    /// state are unchanged, why goes to the log once. Any word from the engine covers again.
+    #[test]
+    fn a_silent_engine_stands_only_the_menu_bars_window_back_until_it_speaks() {
+        let mut h = menu_bar_host();
+        // Times from when the engine was last heard.
+        let heard = h.heard;
+        let mut out = Vec::new();
+        h.check_silence(heard + ENGINE_SILENCE / 2, &mut out);
+        assert!(out.is_empty() && h.platform.stood_back.is_none(), "not yet");
+        h.check_silence(heard + ENGINE_SILENCE, &mut out);
+        assert_eq!(
+            h.platform.stood_back.as_deref(),
+            Some("M"),
+            "the operator's display"
+        );
+        assert_eq!(h.platform.shown.get("M"), Some(&vec![id(1)]), "still drawn");
+        assert_eq!(
+            h.platform.shown.get("D"),
+            Some(&vec![id(2)]),
+            "the audience's kept"
+        );
+        assert!(states(&out).is_empty(), "{out:?}");
+        assert!(matches!(&logs(&out)[..], [(LinkLevel::Warn, m)] if m.contains("menu bar")));
+        // Said once; still back at the next frame-loop tick.
+        out.clear();
+        h.check_silence(heard + ENGINE_SILENCE * 2, &mut out);
+        h.step(None, &mut out);
+        assert!(logs(&out).is_empty());
+        assert_eq!(h.platform.stood_back.as_deref(), Some("M"));
+        // The engine speaks (a ping): it covers again.
+        send(&mut h, ToStage::Ping { seq: 1 });
+        assert_eq!(h.platform.stood_back, None);
+    }
+
+    pub(crate) fn id(n: u8) -> StageId {
         StageId(uuid::Uuid::from_u128(n.into()))
     }
 
@@ -1197,7 +2625,7 @@ mod tests {
         }
     }
 
-    fn stage(n: u8, display: Option<&str>, keep_black: bool) -> StageOutput {
+    pub(crate) fn stage(n: u8, display: Option<&str>, keep_black: bool) -> StageOutput {
         StageOutput {
             id: id(n),
             width: 1920,
@@ -1205,16 +2633,26 @@ mod tests {
             display: display.map(Into::into),
             keep_black,
             stack: u32::from(n),
+            monitor: None,
         }
     }
 
-    fn host(displays: &[&str]) -> Host<Fake> {
+    pub(crate) fn host(displays: &[&str]) -> Host<Fake> {
         Host::new(Fake {
             displays: displays.iter().map(|d| display(d)).collect(),
             shown: HashMap::new(),
+            pictures_drawn: HashMap::new(),
+            menu_bar: None,
+            stood_back: None,
             fail: false,
+            skip: false,
+            presents: 0,
             live: false,
             events: Vec::new(),
+            monitors: HashMap::new(),
+            user_closed: Vec::new(),
+            raised: Vec::new(),
+            fail_monitors: false,
         })
     }
 
@@ -1366,8 +2804,8 @@ mod tests {
     }
 
     /// A display change that leaves the list as it was (the menu bar moved to another display)
-    /// still presents every shown stage again, so its window takes the level for where the
-    /// menu bar now is at once.
+    /// still presents every shown stage again, so a window standing back does so on the display
+    /// that has the menu bar now, at once.
     #[test]
     fn a_display_change_with_the_same_displays_presents_the_shown_stages_again() {
         let mut h = host(&["D1", "D2"]);
@@ -1431,6 +2869,77 @@ mod tests {
         assert!(h.platform.shown.is_empty());
     }
 
+    /// #789 flow: a frame for which the display gives no drawable is skipped: the window stays
+    /// up, nothing is marked failed, one warning per stretch of skipped frames; a real failure
+    /// still fails the stage.
+    #[test]
+    fn a_frame_with_no_drawable_is_skipped_and_the_window_stays_up() {
+        let mut h = host(&["D1"]);
+        let mut out = Vec::new();
+        h.handle(
+            ToStage::Hello {
+                version: LINK_VERSION,
+            },
+            &mut out,
+        );
+        h.handle(
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D1"), true)],
+            },
+            &mut out,
+        );
+        let shown = StageState::Shown {
+            display: "D1".into(),
+        };
+        assert_eq!(states(&out), vec![(id(1), shown.clone())]);
+        let warnings = |out: &[FromStage]| {
+            logs(out)
+                .into_iter()
+                .filter(|(level, _)| *level == LinkLevel::Warn)
+                .count()
+        };
+        for stretch in 0..2 {
+            out.clear();
+            h.platform.skip = true;
+            for _ in 0..5 {
+                h.displays_changed(&mut out);
+            }
+            assert_eq!(states(&out), vec![], "stretch {stretch}: a state changed");
+            assert!(h.platform.shown.contains_key("D1"), "the window was closed");
+            assert_eq!(warnings(&out), 1, "stretch {stretch}: {out:?}");
+            h.platform.skip = false;
+            h.displays_changed(&mut out);
+            assert_eq!(states(&out), vec![]);
+            assert_eq!(warnings(&out), 1);
+        }
+        // A window closed mid-stretch: skipped frames in the next one warn again.
+        h.platform.skip = true;
+        h.displays_changed(&mut out);
+        h.handle(ToStage::Stages { stages: vec![] }, &mut out);
+        out.clear();
+        h.handle(
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D1"), true)],
+            },
+            &mut out,
+        );
+        assert_eq!(warnings(&out), 1, "{out:?}");
+        h.platform.skip = false;
+        h.platform.fail = true;
+        out.clear();
+        h.displays_changed(&mut out);
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Failed {
+                    reason: "no GPU".into()
+                }
+            )]
+        );
+        assert!(!h.platform.shown.contains_key("D1"));
+    }
+
     #[test]
     fn another_link_version_is_answered_then_the_host_quits() {
         let mut h = host(&[]);
@@ -1490,5 +2999,148 @@ mod tests {
         );
         assert_eq!(h.handle(ToStage::Quit, &mut out), Flow::Quit);
         assert!(h.platform.shown.is_empty());
+    }
+
+    /// A host that has said hello, so it knows its displays.
+    fn greeted(displays: &[&str]) -> Host<Fake> {
+        let mut h = host(displays);
+        send(
+            &mut h,
+            ToStage::Hello {
+                version: LINK_VERSION,
+            },
+        );
+        h
+    }
+
+    fn watched(n: u8, display: Option<&str>) -> StageOutput {
+        StageOutput {
+            monitor: Some(format!("Stage {n}")),
+            ..stage(n, display, false)
+        }
+    }
+
+    fn monitor_closed(out: &[FromStage]) -> Vec<StageId> {
+        out.iter()
+            .filter_map(|m| match m {
+                FromStage::MonitorClosed { stage } => Some(*stage),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #648 flows: a monitor shows its stage whether the stage is shown on a display, hidden
+    /// between cues or has no display at all, with what its cues draw; it goes when the engine
+    /// stops asking for it, and with a quit.
+    #[test]
+    fn a_monitor_draws_its_stage_shown_or_not_and_goes_with_its_stage_set() {
+        let mut h = greeted(&["D1"]);
+        let mut out = Vec::new();
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![
+                    watched(1, Some("D1")),
+                    watched(2, None),
+                    stage(3, None, true),
+                ],
+            },
+        );
+        assert_eq!(h.platform.monitors.len(), 2);
+        assert_eq!(h.platform.monitors[&id(1)].0, "Stage 1");
+        assert_eq!(h.platform.monitors[&id(2)].1.stage, id(2));
+        assert_eq!(h.states.get(&id(2)), Some(&StageState::NoDisplay));
+        assert_eq!(h.states.get(&id(1)), Some(&StageState::Hidden));
+        // A cue on the stage with no display: the monitor draws it all the same.
+        load(&mut h, 7, 2);
+        play(&mut h, 7, 0);
+        clock(&mut h, 4800);
+        let drawn = &h.platform.monitors[&id(2)].1.cues;
+        assert_eq!(drawn.iter().map(|c| c.picture).collect::<Vec<_>>(), [7]);
+        // Renamed: the title follows; dropped from the set: the window goes.
+        let mut renamed = watched(1, Some("D1"));
+        renamed.monitor = Some("Front".into());
+        h.handle(
+            ToStage::Stages {
+                stages: vec![renamed, stage(2, None, false)],
+            },
+            &mut out,
+        );
+        assert_eq!(h.platform.monitors[&id(1)].0, "Front");
+        assert!(!h.platform.monitors.contains_key(&id(2)));
+        assert!(
+            monitor_closed(&out).is_empty(),
+            "the engine's own close is not echoed"
+        );
+        assert_eq!(h.handle(ToStage::Quit, &mut out), Flow::Quit);
+        assert!(h.platform.monitors.is_empty());
+    }
+
+    /// The operator closes a monitor window: the engine is told once; a stage set sent before
+    /// the engine heard of it does not open it again; a raise does.
+    #[test]
+    fn a_monitor_the_operator_closes_stays_closed_until_raised() {
+        let mut h = greeted(&["D1"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![watched(1, Some("D1"))],
+            },
+        );
+        h.platform.user_closed.push(id(1));
+        let mut out = Vec::new();
+        h.step(None, &mut out);
+        assert_eq!(monitor_closed(&out), [id(1)]);
+        let out = send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![watched(1, Some("D1"))],
+            },
+        );
+        assert!(monitor_closed(&out).is_empty());
+        assert!(h.platform.monitors.is_empty(), "stays closed");
+        let mut out = Vec::new();
+        h.step(None, &mut out);
+        assert!(monitor_closed(&out).is_empty(), "said once");
+        send(&mut h, ToStage::RaiseMonitor { stage: id(1) });
+        assert!(h.platform.monitors.contains_key(&id(1)), "opened again");
+        assert_eq!(h.platform.raised, [id(1)]);
+        // A raise for a stage with no monitor asked for does nothing.
+        send(&mut h, ToStage::RaiseMonitor { stage: id(9) });
+        assert!(!h.platform.monitors.contains_key(&id(9)));
+    }
+
+    /// A monitor that cannot be drawn closes with one warning, and the stages' output is
+    /// untouched.
+    #[test]
+    fn a_monitor_that_cannot_be_drawn_closes_with_a_warning_and_the_stage_stays_up() {
+        let mut h = greeted(&["D1"]);
+        h.platform.fail_monitors = true;
+        let out = send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![StageOutput {
+                    keep_black: true,
+                    ..watched(1, Some("D1"))
+                }],
+            },
+        );
+        assert_eq!(monitor_closed(&out), [id(1)]);
+        assert!(
+            logs(&out)
+                .iter()
+                .any(|(l, m)| *l == LinkLevel::Warn && m.contains("monitor"))
+        );
+        assert_eq!(
+            states(&out),
+            vec![(
+                id(1),
+                StageState::Shown {
+                    display: "D1".into()
+                }
+            )]
+        );
+        let out = send(&mut h, ToStage::Ping { seq: 1 });
+        assert!(monitor_closed(&out).is_empty());
     }
 }

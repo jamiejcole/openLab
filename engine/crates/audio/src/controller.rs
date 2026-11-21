@@ -45,6 +45,7 @@ pub struct MixerController {
     shared: Arc<Shared>,
     cue_outputs: usize,
     device_outputs: usize,
+    sample_rate: u32,
     lookahead: u64,
     /// Batches waiting on the control thread, keyed by `(earliest at, first send order)`; a
     /// batch is released whole or not at all.
@@ -55,6 +56,7 @@ pub struct MixerController {
 }
 
 impl MixerController {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         commands: Producer<Command>,
         events: Consumer<Event>,
@@ -62,6 +64,7 @@ impl MixerController {
         shared: Arc<Shared>,
         cue_outputs: usize,
         device_outputs: usize,
+        sample_rate: u32,
         lookahead: u64,
     ) -> Self {
         MixerController {
@@ -72,6 +75,7 @@ impl MixerController {
             shared,
             cue_outputs,
             device_outputs,
+            sample_rate,
             lookahead,
             held: BTreeMap::new(),
             held_commands: 0,
@@ -88,6 +92,12 @@ impl MixerController {
     /// The mixer's device outputs: the columns of every patch matrix.
     pub fn device_outputs(&self) -> usize {
         self.device_outputs
+    }
+
+    /// The rate the mixer renders at ([`crate::MixerConfig::sample_rate`]): every frame count
+    /// and sample date sent to it is in frames at this rate.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
     }
 
     /// Schedules a command for sample `at`. Never drops it: if it is beyond the lookahead or the
@@ -312,6 +322,15 @@ impl MixerController {
     /// not read and keep their peaks. Never blocks the audio thread; allocates nothing.
     pub fn read_output_meters_into(&mut self, out: &mut [f32]) -> usize {
         self.meters.read_outputs(out)
+    }
+
+    /// Peak of each cue output of patch matrix `patch` since the last read: its bus as the cues
+    /// send it, before the matrix (its levels, crosspoints and device outputs). Fills `out[o]`
+    /// for cue output `o` up to the most rows the patch has ever mixed and returns how many it
+    /// filled; the rest of `out` is left alone. Unknown patch: 0. Never blocks the audio thread;
+    /// allocates nothing.
+    pub fn read_patch_meters_into(&mut self, patch: usize, out: &mut [f32]) -> usize {
+        self.meters.read_patch(patch, out)
     }
 
     /// [`MixerController::read_output_meters_into`] for every device output.

@@ -535,6 +535,60 @@ fn clock_going_backwards_does_not_block_go() {
     assert!(!double_go(&rig.go(10)));
 }
 
+fn protection(actions: &[Action]) -> Vec<bool> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::GoProtection { active } => Some(*active),
+            _ => None,
+        })
+        .collect()
+}
+
+/// QLab 5, manual p. 100: after a GO the protection is in force until the time passes, a GO
+/// inside it starts nothing and does not extend it, and the first GO after it is accepted.
+#[test]
+fn go_protection_is_reported_from_the_accepted_go_until_its_time_passes() {
+    let mut rig = double_go_rig();
+    assert_eq!(protection(&rig.go(1000)), [true]);
+    assert_eq!(
+        rig.engine.next_wake(),
+        Some(1500),
+        "the control loop wakes for the end"
+    );
+    assert_eq!(rig.engine.next_deadline(), None, "no cue owns it");
+    let ignored = rig.go(1200);
+    assert!(double_go(&ignored));
+    assert!(
+        protection(&ignored).is_empty(),
+        "an ignored GO does not extend it"
+    );
+    assert!(protection(&rig.tick(1400)).is_empty());
+    assert_eq!(protection(&rig.tick(1500)), [false]);
+    assert!(protection(&rig.tick(1600)).is_empty(), "it ends once");
+    let accepted = rig.go(1600);
+    assert!(!double_go(&accepted));
+    assert_eq!(protection(&accepted), [true]);
+}
+
+/// A clock that goes back (a device reopened) ends protection dated on the old clock at once, so
+/// the GO button's border cannot stay up.
+#[test]
+fn protection_ends_when_the_clock_goes_back() {
+    let mut rig = double_go_rig();
+    assert_eq!(protection(&rig.go(1000)), [true]);
+    let back = rig.tick(10);
+    assert_eq!(protection(&back), [false]);
+    assert!(rig.engine.next_wake().is_none());
+}
+
+#[test]
+fn a_zero_interval_reports_no_protection() {
+    let mut rig = Rig::new(vec![memo(1), memo(2)]);
+    assert!(protection(&rig.go(1000)).is_empty());
+    assert!(rig.engine.next_wake().is_none());
+}
+
 // ----- playhead navigation (PB-05, CL-06) -----
 
 fn numbered_rig() -> Rig {
@@ -996,7 +1050,8 @@ fn load_to_time_shortens_known_durations_and_post_waits() {
 #[test]
 fn load_past_the_end_sits_loaded_at_the_end() {
     // Pre-wait 1 s + a 3 s wait = a 4 s length; loading to 100 s leaves the cue loaded: it does
-    // not complete, nothing follows, and no deadline is held.
+    // not complete, nothing follows, and no deadline is held. The cue it continues into is
+    // loaded with the rest of the time (96 s), and starts nothing either.
     let mut rig = Rig::new(vec![timed(wait(1, 3.0), 1.0, 5.0, AC), memo(2)]);
     let load = rig.at(
         0,
@@ -1007,16 +1062,23 @@ fn load_past_the_end_sits_loaded_at_the_end() {
     );
     assert_eq!(
         load,
-        vec![Action::StateChanged {
-            cue: id(1),
-            state: CueState::Loaded,
-            at: 0
-        }]
+        vec![
+            Action::StateChanged {
+                cue: id(1),
+                state: CueState::Loaded,
+                at: 0
+            },
+            Action::StateChanged {
+                cue: id(2),
+                state: CueState::Loaded,
+                at: 0
+            }
+        ]
     );
     assert_eq!(rig.engine.next_deadline(), None);
     assert!(rig.tick(50_000).is_empty());
     assert_eq!(rig.state(1), CueState::Loaded);
-    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.state(2), CueState::Loaded);
 }
 
 #[test]
@@ -1714,10 +1776,11 @@ fn every_transition_table_row() {
         } else if before != expect {
             assert_eq!(last, Some(expect), "{row} report");
         }
-        // A cue left idle has nothing pending, and its continue was cancelled.
+        // A cue left idle has nothing pending, and its continue was cancelled (the next cue may
+        // stand loaded at its top, loaded with cue 1's sequence, but it never starts).
         if expect == S::Idle {
             assert!(rig.tick(100_000).is_empty(), "{row} left work behind");
-            assert_eq!(rig.state(2), S::Idle, "{row} continued");
+            assert!(!rig.state(2).is_active(), "{row} continued");
         }
     }
 }

@@ -8,6 +8,28 @@ final class ActiveCueButton: NSButton {
     var cue: ModelID?
 }
 
+/// The bar across the foot of an Active Cues row: filled from the left to `doubleValue` (0 to 1). It draws
+/// the value it is given at once; a system progress indicator eases toward it, so it lags a cue whose pass
+/// starts again.
+final class ActiveCueBar: NSView {
+    var doubleValue: Double = 0 {
+        didSet { if doubleValue != oldValue { needsDisplay = true } }
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 6) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3)
+        NSColor.quaternaryLabelColor.setFill()
+        track.fill()
+        let width = bounds.width * CGFloat(min(1, max(0, doubleValue)))
+        guard width >= 1 else { return }
+        track.addClip()
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(rect: NSRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height)).fill()
+    }
+}
+
 /// One Active Cues row, as QLab lays it out: pause/resume on the left, number and name with the
 /// times below, panic on the right, a progress bar across the bottom, a colour stripe on the edge.
 final class ActiveCueCell: NSTableCellView {
@@ -15,7 +37,7 @@ final class ActiveCueCell: NSTableCellView {
     let panicButton = ActiveCueButton()
     let title = NSTextField(labelWithString: "")
     let times = NSTextField(labelWithString: "")
-    let bar = NSProgressIndicator()
+    let bar = ActiveCueBar()
     let stripe = NSView()
 
     init() {
@@ -36,11 +58,6 @@ final class ActiveCueCell: NSTableCellView {
         times.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         times.textColor = .secondaryLabelColor
         times.setAccessibilityIdentifier(AX.activeCueTimes)
-        bar.style = .bar
-        bar.isIndeterminate = false
-        bar.minValue = 0
-        bar.maxValue = 1
-        bar.controlSize = .small
         bar.setAccessibilityElement(false)
         stripe.wantsLayer = true
         stripe.translatesAutoresizingMaskIntoConstraints = false
@@ -54,6 +71,10 @@ final class ActiveCueCell: NSTableCellView {
         // The name and times take the row's width between the two buttons.
         text.setHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         row.spacing = 6
+        // Filled: the name and times column takes all the room between the buttons. With the default
+        // gravity areas it was only as wide as its widest text, so a lone time cut the name short and
+        // the panic button sat beside the text instead of at the row's edge.
+        row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         addSubview(stripe)
@@ -110,111 +131,9 @@ final class CueListNameCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }
 
-/// One Warnings row: a marker symbol (so a warning is not told by colour alone), the title, the
-/// reasons below it and, for missing media, a button that opens Find Missing Files. Laid out by
-/// hand from the same measurements `height(of:width:)` adds up, so the row is always as tall as
-/// what it draws, however the reasons wrap.
-final class WarningCell: NSTableCellView {
-    let title = NSTextField(labelWithString: "")
-    let detail = NSTextField(wrappingLabelWithString: "")
-    let relinkButton = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
-    private let marker = NSImageView(image: WarningCell.markerImage)
-
-    private static let markerImage = Icon.warningMarker.image(loc("warnings.marker"), compact: true)
-    private static let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
-    private static let detailFont = NSFont.systemFont(ofSize: 11)
-    private static let inset: CGFloat = 6
-    private static let top: CGFloat = 4
-    private static let spacing: CGFloat = 2
-
-    init() {
-        super.init(frame: .zero)
-        identifier = NSUserInterfaceItemIdentifier("warning")
-        marker.contentTintColor = .systemOrange
-        title.font = Self.titleFont
-        title.lineBreakMode = .byTruncatingTail
-        detail.font = Self.detailFont
-        detail.textColor = .secondaryLabelColor
-        detail.maximumNumberOfLines = 0
-        relinkButton.bezelStyle = .rounded
-        relinkButton.controlSize = .small
-        relinkButton.setAccessibilityIdentifier(AX.warningRelink)
-        for v in [marker, title, detail, relinkButton] { addSubview(v) }
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
-    override var isFlipped: Bool { true }
-
-    private static let sizer: NSTextField = {
-        let f = NSTextField(wrappingLabelWithString: "")
-        f.font = detailFont
-        return f
-    }()
-    private static let titleHeight: CGFloat = {
-        let f = NSTextField(labelWithString: "Xg")
-        f.font = titleFont
-        return ceil(f.intrinsicContentSize.height)
-    }()
-    private static let buttonSize: NSSize = {
-        let b = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
-        b.bezelStyle = .rounded
-        b.controlSize = .small
-        return b.intrinsicContentSize
-    }()
-
-    /// Where the title, reasons and button start, and how wide they may be, in a cell `width` wide.
-    private static func textColumn(_ width: CGFloat) -> (x: CGFloat, width: CGFloat) {
-        let x = inset + markerImage.size.width + inset
-        return (x, max(40, width - x - inset))
-    }
-
-    /// The height `text` takes wrapped in `width`, measured as the field draws it.
-    private static func detailHeight(_ text: String, width: CGFloat) -> CGFloat {
-        guard !text.isEmpty else { return 0 }
-        sizer.stringValue = text
-        return ceil(sizer.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 100_000)).height ?? 0)
-    }
-
-    /// The height a row needs in a cell `width` wide: the reasons wrap, so they are measured at
-    /// the width they get beside the marker, not counted by line breaks.
-    static func height(of w: WarningRow, width: CGFloat) -> CGFloat {
-        let column = textColumn(width)
-        var h = top + titleHeight
-        if !w.detail.isEmpty { h += spacing + detailHeight(w.detail, width: column.width) }
-        if w.canRelink { h += spacing + buttonSize.height }
-        return ceil(max(h, top + markerImage.size.height)) + top
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        needsLayout = true
-    }
-
-    override func layout() {
-        super.layout()
-        let column = Self.textColumn(bounds.width)
-        marker.frame = NSRect(origin: NSPoint(x: Self.inset, y: Self.top), size: Self.markerImage.size)
-        var y = Self.top
-        title.frame = NSRect(x: column.x, y: y, width: column.width, height: Self.titleHeight)
-        y += Self.titleHeight
-        if !detail.isHidden {
-            let h = Self.detailHeight(detail.stringValue, width: column.width)
-            detail.frame = NSRect(x: column.x, y: y + Self.spacing, width: column.width, height: h)
-            y += Self.spacing + h
-        }
-        if !relinkButton.isHidden {
-            let size = NSSize(width: min(Self.buttonSize.width, column.width), height: Self.buttonSize.height)
-            relinkButton.frame = NSRect(origin: NSPoint(x: column.x, y: y + Self.spacing), size: size)
-        }
-    }
-}
-
 /// Collapsible right sidebar: transport strip, then QLab's tabs. "Cue Lists" picks the list the
 /// window shows (and GO addresses); "Active Cues" lists every cue that is running, paused, waiting or
-/// fading, in the order they started, with pause/resume and panic per cue; "Warnings" lists every
-/// broken cue with why, and the engine's notices (DX-01). It reads the store and
+/// fading, in the order they started, with pause/resume and panic per cue. It reads the store and
 /// reports intents through closures; it never talks to the engine.
 @MainActor
 final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
@@ -225,41 +144,35 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         (AX.transportPanic, .transportPanic, "transport.panic"),
     ]
 
-    /// The transport symbols' point size: most of the 44 pt button's height, with a margin.
-    static let transportSymbolSize: CGFloat = 18
+    /// The transport icons' side, the size Panic All's own picture is drawn at: well inside the 44 pt button.
+    static let transportIconSize: CGFloat = 20
+
+    /// The least the sidebar may be dragged to: the transport icons keep a margin in their buttons (they
+    /// need about 230 pt here, and a newer macOS draws its bezels wider); the tabs' labels are cut short.
+    static let minWidth: CGFloat = 250
 
     static var icons: [Icon] { transport.map(\.icon) + [.activeCuePause, .activeCueResume, .activeCuePanic] }
 
     let store: WorkspaceStore
     let tabs = NSSegmentedControl(
-        labels: [loc("sidebar.tab.cueLists"), loc("sidebar.tab.activeCues"), loc("sidebar.tab.warnings")],
+        labels: [loc("sidebar.tab.cueLists"), loc("sidebar.tab.activeCues")],
         trackingMode: .selectOne, target: nil, action: nil)
     let newListButton = NSButton(title: loc("sidebar.newList"), target: nil, action: nil)
-    let newCartButton = NSButton(title: loc("sidebar.newCart"), target: nil, action: nil)
     let listTable = NSTableView()
     let activeTable: NSTableView
-    let warningsTable: NSTableView
-    let warningsCount = NSTextField(labelWithString: "")
 
     /// The user picked a list.
     var onSelectList: ((ModelID) -> Void)?
     /// A per-cue control was used (pause, resume, panic).
     var onCueAction: ((TransportAction) -> Void)?
-    /// A warning row about a cue was chosen: show and select that cue.
+    /// A cue of an open list was chosen: show and select that cue.
     var onSelectCue: ((ModelID) -> Void)?
-    /// A row's Find Missing Files button was clicked (the tool searches for every missing file, so the
-    /// row does not matter).
-    var onRelink: (() -> Void)?
-    /// Show Mode: relinking rewrites cue media, so the row buttons are off.
-    var relinkLocked = false {
-        didSet {
-            guard relinkLocked != oldValue, isViewLoaded else { return }
-            warningsTable.reloadData()
-        }
+    /// Show Mode: adding, renaming and deleting lists change the workspace, so New List and the
+    /// list menu are off. A stray New List mid-show would also switch the window to an empty list
+    /// where GO fires nothing. Choosing an existing list stays on.
+    var listEditLocked = false {
+        didSet { newListButton.isEnabled = !listEditLocked }
     }
-
-    /// Show Mode: renaming and deleting lists change the workspace, so the list menu is off.
-    var listEditLocked = false
     /// Why a list edit was refused (the window shows it as a sheet).
     var onNotice: ((String) -> Void)?
 
@@ -283,37 +196,35 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     var shownProvider: () -> ModelID? = { nil }
     var shownList: ModelID? { shownProvider() }
     /// Active cues in the order they started; a snapshot starts them in list order.
-    private(set) var activeCues: [ModelID] = [] { didSet { updateTabTitles() } }
+    private(set) var activeCues: [ModelID] = [] {
+        didSet {
+            updateTabTitles()
+            updateActiveEmptyNote()
+        }
+    }
+    /// Shown over the Active Cues tab while nothing plays.
+    let activeEmptyNote = NSTextField(labelWithString: loc("sidebar.active.empty"))
+
+    private func updateActiveEmptyNote() {
+        guard isViewLoaded else { return }
+        activeEmptyNote.isHidden = activeScroll.isHidden || !activeCues.isEmpty
+    }
     /// Rows redrawn in place by updates, oldest first (tests check that only the rows that
     /// changed were touched).
     private(set) var updatedActiveRows: [ModelID] = []
-    /// The Warnings rows as shown.
-    private(set) var warningRows: [WarningRow] = []
-    /// Ids of rows redrawn in place (tests check that only changed rows were touched).
-    private(set) var updatedWarningRows: [String] = []
-    private var warnedCues: Set<ModelID> = []
     private var settingSelection = false
-    /// The store is changing the rows: any selection change is the table's, not the user's.
-    private var updatingWarnings = false
-    /// The row whose selection change already revealed its cue (its click action must not again).
-    private var revealedRow: Int?
     private var sub: AnyCancellable?
     private let listScroll = NSScrollView()
     private let activeScroll = NSScrollView()
-    private let warningsScroll = NSScrollView()
 
-    init(
-        store: WorkspaceStore, activeTable: NSTableView = NSTableView(), warningsTable: NSTableView = NSTableView()
-    ) {
+    init(store: WorkspaceStore, activeTable: NSTableView = NSTableView()) {
         self.store = store
         self.activeTable = activeTable
-        self.warningsTable = warningsTable
         super.init(nibName: nil, bundle: nil)
         lists = store.model?.cueLists ?? []
         rebuildListRows()  // no observer runs for an assignment in init
         activeCues = Self.ordered(store: store)
         updateTabTitles()
-        setWarnings(WarningRows.make(store: store))
         sub = store.changes.sink { [weak self] change in
             MainActor.assumeIsolated { self?.handle(change) }
         }
@@ -331,16 +242,16 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         strip.spacing = 6
         for entry in Self.transport {
             let name = loc(entry.key)
-            let button = NSButton(
-                image: entry.icon.image(name), target: nil, action: nil)
+            let image = entry.icon.image(name)
+            // A vector drawing, so it stays sharp at the strip's size.
+            image.size = NSSize(width: Self.transportIconSize, height: Self.transportIconSize)
+            let button = NSButton(image: image, target: nil, action: nil)
             button.setAX(entry.id, label: name)
             button.toolTip = name
             // A square bezel is drawn at the button's full height (a textured-rounded one stays
             // about 24 pt tall), so the strip is made of large buttons the glyph fills.
             button.bezelStyle = .regularSquare
             button.imageScaling = .scaleNone
-            button.symbolConfiguration = NSImage.SymbolConfiguration(
-                pointSize: Self.transportSymbolSize, weight: .regular)
             button.heightAnchor.constraint(equalToConstant: 44).isActive = true
             transportButtons[entry.id] = button
             strip.addArrangedSubview(button)
@@ -350,39 +261,28 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         tabs.setAX(AX.sidebarTabs, label: loc("sidebar.tabs.label"))
         tabs.target = self
         tabs.action = #selector(tabChanged)
+        // The tabs fit the sidebar, not the other way round: their labels ask for more than the column at
+        // 280 pt with two-digit counts, or on a macOS whose segmented controls measure wider, and resisting
+        // at the default would widen the sidebar past its 280 pt and squeeze the cue list and inspector.
+        // Below the sidebar's preferred width and the splits' holding priorities, they give up their spare
+        // padding first and truncate only after that.
+        tabs.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(240), for: .horizontal)
 
         configure(listTable, id: AX.sidebarList, label: loc("sidebar.list.label"), scroll: listScroll)
         configure(activeTable, id: AX.sidebarActive, label: loc("sidebar.active.label"), scroll: activeScroll)
         activeTable.rowHeight = 64
         activeTable.selectionHighlightStyle = .none
         activeScroll.isHidden = true
-        configure(warningsTable, id: AX.sidebarWarnings, label: loc("sidebar.warnings.label"), scroll: warningsScroll)
-        warningsTable.usesAutomaticRowHeights = false
-        // The column is kept as wide as the table: rows wrap their reasons at the column's width
-        // and are as tall as that makes them, so a column left narrower than the sidebar would
-        // wrap early and stand the text in a strip.
-        warningsTable.postsFrameChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(warningsTableResized), name: NSView.frameDidChangeNotification,
-            object: warningsTable)
-        warningsTable.target = self
-        warningsTable.action = #selector(warningClicked)
-        warningsScroll.isHidden = true
-        warningsCount.setAX(AX.warningsCount)
-        warningsCount.textColor = .secondaryLabelColor
-        warningsCount.isHidden = true
-        updateWarningsCount()
 
         newListButton.setAX(AX.newListButton)
-        newCartButton.setAX(AX.newCartButton)
-        for b in [newListButton, newCartButton] { b.bezelStyle = .rounded }
+        newListButton.bezelStyle = .rounded
         newListButton.target = self
         newListButton.action = #selector(newListClicked)
-        newCartButton.isEnabled = false  // carts are not in v0.0.1 (CL-05)
-        let bottom = NSStackView(views: [newListButton, newCartButton])
+        // Carts are not built, so there is no New Cart button.
+        let bottom = NSStackView(views: [newListButton])
         bottom.distribution = .fillEqually
 
-        let column = NSStackView(views: [strip, tabs, warningsCount, listScroll, activeScroll, warningsScroll, bottom])
+        let column = NSStackView(views: [strip, tabs, listScroll, activeScroll, bottom])
         column.orientation = .vertical
         column.spacing = 8
         column.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
@@ -393,15 +293,24 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             column.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             column.topAnchor.constraint(equalTo: root.topAnchor),
             column.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            root.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            root.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minWidth),
         ])
-        for v in [strip, tabs, warningsCount, listScroll, activeScroll, warningsScroll, bottom] {
+        for v in [strip, tabs, listScroll, activeScroll, bottom] {
             v.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -20).isActive = true
         }
+        activeEmptyNote.setAX("sidebar-active-empty")
+        activeEmptyNote.textColor = .secondaryLabelColor
+        activeEmptyNote.alignment = .center
+        activeEmptyNote.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(activeEmptyNote)
+        NSLayoutConstraint.activate([
+            activeEmptyNote.centerXAnchor.constraint(equalTo: activeScroll.centerXAnchor),
+            activeEmptyNote.centerYAnchor.constraint(equalTo: activeScroll.centerYAnchor),
+        ])
         view = root
+        updateActiveEmptyNote()
         listTable.reloadData()
         activeTable.reloadData()
-        warningsTable.reloadData()
         syncSelection()
     }
 
@@ -423,7 +332,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// Adds an empty list after the last one and shows it. The id is the client's; the engine
     /// may refuse; then nothing changes and no list is selected.
-    @objc private func newListClicked() {
+    @objc private func newListClicked() { addList() }
+
+    /// Adds an empty list after the last and shows it once the engine accepts; nothing in Show Mode.
+    func addList() {
+        guard !listEditLocked else { return }
         let id = ModelID(UUID().uuidString.lowercased())
         let index = lists.count
         let name = String(format: loc("sidebar.newList.name"), index + 1)
@@ -514,7 +427,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         alert.accessoryView = field
         alert.addButton(withTitle: loc("sidebar.list.rename.ok"))
         alert.addButton(withTitle: loc("edit.cancel"))
-        alert.beginSheetModal(for: window) { [weak self] response in
+        StandBack.beginSheet(alert, for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             Task { await self?.rename(list: list.id, to: field.stringValue) }
         }
@@ -560,8 +473,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         tabs.selectedSegment = index
         listScroll.isHidden = index != 0
         activeScroll.isHidden = index != 1
-        warningsScroll.isHidden = index != 2
-        warningsCount.isHidden = index != 2
+        updateActiveEmptyNote()
     }
 
     // MARK: Cue lists
@@ -613,8 +525,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             reloadLists()
             activeCues = Self.ordered(store: store)
             if isViewLoaded { activeTable.reloadData() }
-            setWarnings(WarningRows.make(store: store))
-            if isViewLoaded { reloadWarningTable() }
         case .model(let upserts, let deletes):
             var listsChanged = false
             var touched = Set<ModelID>()
@@ -637,24 +547,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             // A deleted cue leaves the panel; a renamed one is redrawn. A removed list takes its
             // cues with it without a delete for each.
             if listsChanged || !touched.isDisjoint(with: activeCues) { syncActive(changed: touched) }
-            // Only an edit to a warned cue (or to what its text names) can change a row.
-            let other = upserts.contains { if case .cue = $0 { return false } else { return true } }
-            let follows = warnedCues.contains { id in
-                store.model?.cue(id)?.followsName(of: touched, lookup: { store.model?.cue($0) }) ?? false
-            }
-            if other || follows || !touched.isDisjoint(with: warnedCues) { syncWarnings() }
         case .runtime(let cues, _):
             syncActive(changed: cues)
-            // Only a cue that has problems, has a runtime reason or already has a row can change
-            // the list, so a busy show does not rescan the cue tree for every change.
-            if cues.contains(where: {
-                warnedCues.contains($0) || store.problems[$0] != nil || store.cueStates[$0]?.reason != nil
-            }) {
-                syncWarnings()
-            }
         case .progress(let ids): redraw(ids)
         case .waits: break
-        case .notices: syncWarnings()
+        case .notices: break
         }
     }
 
@@ -711,123 +608,21 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     func clearUpdateLog() { updatedActiveRows = [] }
 
-    // MARK: Warnings
-
-    private func setWarnings(_ rows: [WarningRow]) {
-        warningRows = rows
-        warnedCues = Set(rows.compactMap(\.cue))
-        updateWarningsCount()
-    }
-
-    private func updateWarningsCount() {
-        let n = warningRows.count
-        warningsCount.stringValue =
-            n == 0 ? loc("warnings.none") : String(format: loc(n == 1 ? "warnings.one" : "warnings.many"), n)
-    }
-
-    /// Brings the rows up to date with the store: rows that went are removed, new ones inserted
-    /// where they belong and a row whose text changed is redrawn in place. No full reload unless
-    /// the order of the rows that stay changed.
-    func syncWarnings() {
-        let new = WarningRows.make(store: store)
-        guard new != warningRows else { return }
-        let oldIDs = Set(warningRows.map(\.id))
-        let newIDs = Set(new.map(\.id))
-        let kept = warningRows.filter { newIDs.contains($0.id) }
-        guard kept.map(\.id) == new.filter({ oldIDs.contains($0.id) }).map(\.id) else {
-            setWarnings(new)
-            if isViewLoaded { reloadWarningTable() }
-            return
-        }
-        updatingWarnings = true
-        defer { updatingWarnings = false }
-        let removed = IndexSet(warningRows.indices.filter { !newIDs.contains(warningRows[$0].id) })
-        warningRows = kept
-        if isViewLoaded, !removed.isEmpty { warningsTable.removeRows(at: removed, withAnimation: []) }
-        for (i, row) in new.enumerated() where !oldIDs.contains(row.id) {
-            warningRows.insert(row, at: i)
-            if isViewLoaded { warningsTable.insertRows(at: IndexSet(integer: i), withAnimation: []) }
-        }
-        for i in new.indices where warningRows[i] != new[i] {
-            warningRows[i] = new[i]
-            updatedWarningRows.append(new[i].id)
-            if isViewLoaded {
-                warningsTable.reloadData(forRowIndexes: IndexSet(integer: i), columnIndexes: IndexSet(integer: 0))
-                warningsTable.noteHeightOfRows(withIndexesChanged: IndexSet(integer: i))
-            }
-        }
-        setWarnings(warningRows)
-    }
-
-    private func reloadWarningTable() {
-        updatingWarnings = true
-        defer { updatingWarnings = false }
-        warningsTable.reloadData()
-    }
-
-    func clearWarningUpdateLog() { updatedWarningRows = [] }
-
-    private func chooseWarning(row: Int) {
-        guard warningRows.indices.contains(row), let cue = warningRows[row].cue else { return }
-        onSelectCue?(cue)
-    }
-
-    /// A click on the row that is already selected (no selection change to follow).
-    @objc private func warningClicked() {
-        let row = warningsTable.clickedRow
-        if revealedRow == row {
-            revealedRow = nil
-            return
-        }
-        chooseWarning(row: row)
-    }
-
-    @objc private func relinkClicked() { onRelink?() }
-
     // MARK: Table data
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        if tableView === listTable { return listRows.count }
-        return tableView === warningsTable ? warningRows.count : activeCues.count
+        tableView === listTable ? listRows.count : activeCues.count
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        if tableView === warningsTable { return warningRows.indices.contains(row) && warningRows[row].cue != nil }
-        return tableView === listTable
+        tableView === listTable
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        if tableView === activeTable { return 64 }
-        guard tableView === warningsTable, warningRows.indices.contains(row) else { return tableView.rowHeight }
-        return WarningCell.height(of: warningRows[row], width: tableView.frameOfCell(atColumn: 0, row: row).width)
-    }
-
-    @objc private func warningsTableResized() {
-        guard let column = warningsTable.tableColumns.first else { return }
-        let visible = warningsTable.enclosingScrollView?.contentView.bounds.width ?? warningsTable.bounds.width
-        // A hidden or collapsed sidebar has no width to fit; it is fitted when it shows.
-        guard visible > 40 else { return }
-        let width = max(column.minWidth, visible - warningsTable.intercellSpacing.width)
-        guard abs(column.width - width) > 0.5 else { return }
-        column.width = width
-        if warningsTable.numberOfRows > 0 {
-            warningsTable.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<warningsTable.numberOfRows))
-        }
-    }
-
-    /// A narrower or wider sidebar wraps the reasons differently.
-    func tableViewColumnDidResize(_ notification: Notification) {
-        guard (notification.object as? NSTableView) === warningsTable, warningsTable.numberOfRows > 0 else { return }
-        warningsTable.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<warningsTable.numberOfRows))
+        tableView === activeTable ? 64 : tableView.rowHeight
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        if (notification.object as? NSTableView) === warningsTable {
-            guard !updatingWarnings else { return }
-            revealedRow = warningsTable.selectedRow
-            chooseWarning(row: revealedRow ?? -1)
-            return
-        }
         guard !settingSelection, (notification.object as? NSTableView) === listTable else { return }
         let row = listTable.selectedRow
         guard listRows.indices.contains(row) else { return }
@@ -843,7 +638,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if tableView === warningsTable { return warningCell(row) }
         if tableView === listTable {
             guard listRows.indices.contains(row) else { return nil }
             let cell =
@@ -883,24 +677,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         return cell
     }
 
-    private func warningCell(_ row: Int) -> NSView? {
-        guard warningRows.indices.contains(row) else { return nil }
-        let cell =
-            (warningsTable.makeView(withIdentifier: NSUserInterfaceItemIdentifier("warning"), owner: nil)
-                as? WarningCell) ?? WarningCell()
-        let w = warningRows[row]
-        cell.title.stringValue = w.title
-        cell.detail.stringValue = w.detail
-        cell.detail.isHidden = w.detail.isEmpty
-        cell.needsLayout = true
-        cell.relinkButton.isHidden = !w.canRelink
-        cell.relinkButton.isEnabled = !relinkLocked
-        cell.relinkButton.target = self
-        cell.relinkButton.action = #selector(relinkClicked)
-        cell.setAccessibilityLabel([w.title, w.detail].filter { !$0.isEmpty }.joined(separator: ". "))
-        return cell
-    }
-
     /// Row content from the store: elapsed and remaining while the engine reports progress, else the
     /// state (waiting cues have no progress). A paused or stopping cue keeps its frozen times but
     /// leads with the state name, so a held cue never reads like a running one (QLab marks it paused).
@@ -918,11 +694,16 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         cell.pauseButton.setAccessibilityLabel(pauseName)
         cell.pauseButton.isEnabled = state != .stopping
         if let p = store.progress[id] {
-            let times = Self.timesText(elapsed: p.elapsed, remaining: p.remaining)
+            // A cue looping a slice with no end shows its pass as the cue list's Duration cell does: the
+            // time into the pass, the time left in it and a bar for how far through it is.
+            let pass = cue.flatMap { LoopPass.of($0, p, fileDuration: store.mediaDurations[id]?.file) }
+            let elapsed = pass?.gone ?? p.elapsed
+            let remaining = pass.map { $0.length - $0.gone } ?? p.remaining
+            let times = Self.timesText(elapsed: elapsed, remaining: remaining)
             cell.times.stringValue =
                 state == .paused || state == .stopping ? "\(CueStateStyle.style(for: state).label)  \(times)" : times
-            let total = p.elapsed + (p.remaining ?? 0)
-            cell.bar.doubleValue = p.remaining != nil && total > 0 ? min(1, p.elapsed / total) : 0
+            let total = elapsed + (remaining ?? 0)
+            cell.bar.doubleValue = remaining != nil && total > 0 ? min(1, elapsed / total) : 0
         } else {
             cell.times.stringValue = CueStateStyle.style(for: state).label
             cell.bar.doubleValue = 0

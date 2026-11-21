@@ -7,9 +7,6 @@ import Foundation
 /// the patch editor, so a silent patch is never a surprise at the show (QLab 5 manual p. 191).
 enum PatchProblem: Equatable {
     case unmapped
-    /// No device: the clock device has fewer outputs than the patch needs, so none was chosen
-    /// for it (the engine never maps a patch in part).
-    case unmappedDeviceTooSmall(device: String, outputs: Int, needed: Int)
     case deviceMissing(String)
     /// The device is connected but openLab cannot use it, and why (in the engine's words).
     case deviceUnusable(device: String, reason: String)
@@ -18,6 +15,8 @@ enum PatchProblem: Equatable {
     /// The patch routes to output `needed` (1-based) of a device of which openLab can use `available`.
     case channelsMissing(device: String, needed: Int, available: Int)
     case outputCountMismatch
+    /// On the system output while the Mac has no output device selected.
+    case systemOutputMissing
 }
 
 /// One output patch as the settings window lists it.
@@ -48,13 +47,41 @@ final class WorkspaceSettingsModel: ObservableObject {
     @Published var keyRefusal: KeyRefusal?
     /// The device list could not be read (engine gone): nothing here can be changed.
     @Published private(set) var loaded = false
+    /// The OSC listening port and whether it is open, as the engine last said (nil: not read, or
+    /// the engine has no OSC).
+    @Published var oscListening: OscListening?
+    /// This Mac's IPv4 addresses, read when the page is shown (`localAddresses`).
+    @Published var addresses: [String] = []
+    /// Where the addresses come from (a test gives its own).
+    var localAddresses: () -> [String] = { LocalAddresses.ipv4() }
 
     init(store: WorkspaceStore) { self.store = store }
 
     // MARK: Reading
 
+    private var rereading: Task<Void, Never>?
+    private var rereadAgain = false
+
+    /// Reads devices and resolutions again once, for a window showing them after a device was
+    /// lost, came back or opened. One read at a time; a change during it is read again after it.
+    /// What was read is published, and every window drawn from this model follows it.
+    func rereadSoon() {
+        guard rereading == nil else {
+            rereadAgain = true
+            return
+        }
+        rereading = Task {
+            repeat {
+                rereadAgain = false
+                await refresh()
+            } while rereadAgain
+            rereading = nil
+        }
+    }
+
     /// Reads the device list and the patch mappings again.
     func refresh() async {
+        await refreshOsc()
         switch await store.listDevices() {
         case .success(let ok):
             if case .devices(let list, _)? = ok.data {
@@ -136,10 +163,10 @@ final class WorkspaceSettingsModel: ObservableObject {
         return String(text.prefix(head)) + "\u{2026}" + String(text.suffix(limit - 1 - head))
     }
 
-    /// The first Audio cue, in list order, that plays through `patch`.
+    /// The first Audio or Video cue, in list order, that names `patch` as its output patch.
     private static func firstCue(in cues: [Cue], on patch: ModelID) -> Cue? {
         for cue in cues {
-            if cue.kindType == "audio", cue.raw["kind"]?["patch"]?.stringValue == patch.raw { return cue }
+            if cue.takesFile, cue.raw["kind"]?["patch"]?.stringValue == patch.raw { return cue }
             if let hit = firstCue(in: cue.children, on: patch) { return hit }
         }
         return nil
@@ -198,14 +225,23 @@ final class WorkspaceSettingsModel: ObservableObject {
         var network: [NetworkPatchRow]
         var keys: [WorkspaceKey: KeyChord]
         var keyRefusal: KeyRefusal?
+        var oscListening: OscListening?
+        var addresses: [String]
         var newCuesAutoLoad: Bool?
+        var switches: [WorkspaceSwitch: Bool]
+        var autoNumberStep: Double?
+        var autosaveInterval: Double?
+        var showMode: Bool
     }
 
     var displayState: DisplayState {
         DisplayState(
             devices: devices, patches: patches, loaded: loaded, message: message, panic: panicDuration,
             goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches, keys: keyMap.bound,
-            keyRefusal: keyRefusal, newCuesAutoLoad: newCuesAutoLoad)
+            keyRefusal: keyRefusal, oscListening: oscListening, addresses: addresses, newCuesAutoLoad: newCuesAutoLoad,
+            switches: Dictionary(
+                uniqueKeysWithValues: WorkspaceSwitch.allCases.compactMap { item in isOn(item).map { (item, $0) } }),
+            autoNumberStep: autoNumberStep, autosaveInterval: autosaveInterval, showMode: store.showMode)
     }
 
     /// What keeps the patch from playing now, as the engine resolves it (or, from an engine that
@@ -215,14 +251,9 @@ final class WorkspaceSettingsModel: ObservableObject {
             let device = r.json["device"]?.stringValue ?? row.mapping?.device ?? ""
             switch r.type {
             case "unmapped":
-                if row.mapping == nil, let clock = devices.first(where: { $0.primary }),
-                    clock.outputChannels < row.outputCount
-                {
-                    return .unmappedDeviceTooSmall(
-                        device: clock.name, outputs: clock.outputChannels, needed: row.outputCount)
-                }
                 return .unmapped
             case "device_missing":
+                if row.mapping?.system == true, systemOutputDevice == nil { return .systemOutputMissing }
                 if let reason = r.json["reason"]?.stringValue, !reason.isEmpty {
                     return .deviceUnusable(device: device, reason: reason)
                 }
@@ -236,21 +267,34 @@ final class WorkspaceSettingsModel: ObservableObject {
             }
         }
         guard let mapping = row.mapping else { return .unmapped }
-        guard devices.contains(where: { $0.name == mapping.device }) else { return .deviceMissing(mapping.device) }
-        if mapping.channels.count != row.outputCount { return .outputCountMismatch }
-        let usable = usableChannels(of: mapping.device)
+        guard let device = deviceName(of: row) else { return .systemOutputMissing }
+        guard devices.contains(where: { $0.name == device }) else { return .deviceMissing(device) }
+        if mapping.channels.count > row.outputCount { return .outputCountMismatch }
+        let usable = usableChannels(of: device)
         if let worst = mapping.channels.max(), Int(worst) >= usable {
-            return .channelsMissing(device: mapping.device, needed: Int(worst) + 1, available: usable)
+            return .channelsMissing(device: device, needed: Int(worst) + 1, available: usable)
         }
         return nil
     }
 
-    /// The devices a patch may be put on: every listed one, and the one it names (so a mapping to an
-    /// absent device still shows what it names).
+    /// The devices a patch may be named to: every listed one, and the one it names (so a mapping to
+    /// an absent device still shows what it names). The system output is a choice of its own.
     func deviceChoices(for row: PatchRow) -> [String] {
         var names = devices.map(\.name)
-        if let current = row.mapping?.device, !current.isEmpty, !names.contains(current) { names.append(current) }
+        if let current = row.mapping, !current.system, !current.device.isEmpty, !names.contains(current.device) {
+            names.append(current.device)
+        }
         return names
+    }
+
+    /// The Mac's default output device now (the system output plays there), if the list has one.
+    var systemOutputDevice: DeviceEntry? { devices.first { $0.isDefault } }
+
+    /// The device a patch plays on: the one it names, or on the system output the default output
+    /// device now (nil while there is none, and for an unmapped patch).
+    func deviceName(of row: PatchRow) -> String? {
+        guard let mapping = row.mapping else { return nil }
+        return mapping.system ? systemOutputDevice?.name : mapping.device
     }
 
     /// The outputs of `device` a patch can use: all of them on the clock device, else no more than
@@ -269,27 +313,56 @@ final class WorkspaceSettingsModel: ObservableObject {
 
     // MARK: Editing
 
-    /// Puts `row` on `device`, output i on device output `channels[i]` (default: the first
-    /// outputs); nil `device` clears it (the engine pauses the cues playing through the patch, as
-    /// QLab does). A cue that plays on keeps its device; the next start plays on the new one.
+    /// Puts `row` on `device`, output i on device output `channels[i]` (default: cue output n on
+    /// device output n for as many as the device has, the rest with none, as QLab routes them);
+    /// nil `device` clears it (the engine pauses the cues playing through the patch, as
+    /// QLab does). A cue playing through the patch moves to the new device at once.
     func setMapping(_ row: PatchRow, device: String?, channels: [UInt32]? = nil) async {
         // The popup fires its action when the same device is picked again; that must not reset
         // the routing the show was built with to the first outputs.
         // A routing of another length than the patch (it cannot play) is sent again, though.
-        if channels == nil, device == row.mapping?.device, row.mapping?.channels.count == row.outputCount {
+        if channels == nil, row.mapping?.system != true, device == row.mapping?.device,
+            let count = row.mapping?.channels.count, (1...max(1, row.outputCount)).contains(count)
+        {
             return
         }
         var mapping: PatchMapping?
         if let device {
             let usable = usableChannels(of: device)
-            let chosen = channels ?? (0..<row.outputCount).map { UInt32($0) }
-            guard chosen.count == row.outputCount, chosen.allSatisfy({ Int($0) < usable }) else {
+            let chosen = channels ?? Self.firstOutputs(row.outputCount, usable)
+            guard (1...max(1, row.outputCount)).contains(chosen.count), chosen.allSatisfy({ Int($0) < usable }) else {
                 message = String(format: loc("settings.audio.tooFewChannels"), device, row.outputCount, usable)
                 return
             }
             mapping = PatchMapping(device: device, channels: chosen)
         }
         _ = await sendMapping(row, mapping)
+    }
+
+    /// Puts `row` on the system output (QLab 5 manual p. 7): it plays on whichever device the Mac's
+    /// output is, also when that changes. Its outputs are checked against that device now.
+    func setSystemOutput(_ row: PatchRow, channels: [UInt32]? = nil) async {
+        if channels == nil, row.mapping?.system == true, let count = row.mapping?.channels.count,
+            (1...max(1, row.outputCount)).contains(count)
+        {
+            return
+        }
+        guard let device = systemOutputDevice else {
+            message = loc("settings.audio.systemOutputMissing")
+            return
+        }
+        let usable = usableChannels(of: device.name)
+        let chosen = channels ?? Self.firstOutputs(row.outputCount, usable)
+        guard (1...max(1, row.outputCount)).contains(chosen.count), chosen.allSatisfy({ Int($0) < usable }) else {
+            message = String(format: loc("settings.audio.tooFewChannels"), device.name, row.outputCount, usable)
+            return
+        }
+        _ = await sendMapping(row, .systemOutput(channels: chosen))
+    }
+
+    /// Cue output n on device output n, for as many as both have.
+    static func firstOutputs(_ count: Int, _ usable: Int) -> [UInt32] {
+        (0..<min(count, usable)).map { UInt32($0) }
     }
 
     private func sendMapping(_ row: PatchRow, _ mapping: PatchMapping?) async -> Bool {
@@ -301,16 +374,6 @@ final class WorkspaceSettingsModel: ObservableObject {
         await refresh()
         if case .success = result { return true }
         return false
-    }
-
-    /// Sends cue output `output` of the patch to device output `channel`. The whole routing goes at
-    /// once, so a cue playing through the patch moves to it at once.
-    func route(_ row: PatchRow, output: Int, to channel: UInt32) async {
-        guard var mapping = row.mapping, mapping.channels.indices.contains(output),
-            mapping.channels[output] != channel
-        else { return }
-        mapping.channels[output] = channel
-        await setMapping(row, device: mapping.device, channels: mapping.channels)
     }
 
     // MARK: General
@@ -361,7 +424,7 @@ final class WorkspaceSettingsModel: ObservableObject {
         return await setNumber(type, trimmed, range)
     }
 
-    private func setNumber(_ type: String, _ text: String, _ range: ClosedRange<Double>) async -> Bool {
+    func setNumber(_ type: String, _ text: String, _ range: ClosedRange<Double>) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard let value = Double(trimmed), value.isFinite, range.contains(value) else {
             message = String(format: loc("settings.general.outOfRange"), range.lowerBound, range.upperBound)

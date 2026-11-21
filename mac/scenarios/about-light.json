@@ -1,0 +1,9 @@
+{
+  "about": "About window (#772), light.",
+  "show": "new",
+  "appearance": "light",
+  "steps": [
+    {"focus": "about"},
+    {"shot": "about-light"}
+  ]
+}

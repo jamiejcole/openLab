@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 72,
+  "request": {
+    "type": "copy_media"
+  }
+}

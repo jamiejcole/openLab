@@ -3,10 +3,12 @@
 use super::*;
 
 impl Voices {
-    /// Turns one mixer event into feedback.
-    pub fn event(&mut self, e: Event, fx: &mut Effects) {
+    /// Turns one mixer event into feedback. `held`: as [`Self::finished`].
+    pub fn event(&mut self, e: Event, held: Held<'_>, fx: &mut Effects) {
         match e {
-            Event::VoiceFinished { voice, at, reason } => self.finished(voice, at, reason, fx),
+            Event::VoiceFinished { voice, at, reason } => {
+                self.finished(voice, at, reason, held, fx);
+            }
             Event::VoiceRejected { voice, at, .. } => {
                 let Some((id, _)) = self.resolve(voice) else {
                     return;
@@ -35,6 +37,9 @@ impl Voices {
                 }
             }
             Event::DevampScheduled { voice, at } => {
+                if self.moved_devamp_answer(voice, Some(at), fx) {
+                    return;
+                }
                 if let Some((cue, run)) = self.name(voice) {
                     fx.feedback.push(Input::DevampScheduled { cue, run, at });
                     // The voice's end is known again: where it leaves the loop plus what
@@ -51,6 +56,9 @@ impl Voices {
                 }
             }
             Event::DevampIgnored { voice, .. } => {
+                if self.moved_devamp_answer(voice, None, fx) {
+                    return;
+                }
                 if let Some((cue, run)) = self.name(voice) {
                     fx.feedback.push(Input::DevampIgnored { cue, run });
                 }
@@ -59,11 +67,20 @@ impl Voices {
                 // A starved voice does not skip what it missed: it ends
                 // later than planned by the underrun, while the cue engine keeps the planned end.
                 if let Some(cue) = self.cue_of(voice) {
-                    fx.notices.push((
-                        "underrun",
-                        "the disk could not keep up with a cue; it plays late from here".to_owned(),
-                        Some(cue),
-                    ));
+                    fx.notices
+                        .push((UNDERRUN, UNDERRUN_TEXT.to_owned(), Some(cue)));
+                }
+            }
+            Event::UnderrunEnded { voice, at, frames } => {
+                // It plays on that much later: a move to another device goes on from there.
+                if let Some((id, _)) = self.resolve(voice)
+                    && let Some(r) = self.recs.get_mut(&id)
+                {
+                    r.late = r.late.saturating_add(frames);
+                }
+                if let Some((_, run)) = self.name(voice) {
+                    fx.late
+                        .push((run, at, i64::try_from(frames).unwrap_or(i64::MAX)));
                 }
             }
             Event::MoveEnded { voice, moves, .. } => {
@@ -85,6 +102,70 @@ impl Voices {
         }
     }
 
+    /// The answer (`at`: where it leaves its loop; `None`: ignored) to a devamp sent to `voice`
+    /// while a move to another device waits to take over its run (`Self::command`): it is the
+    /// moved run's. The move is planned again from where `voice` is on its swap with the cut
+    /// (nothing left by then: given up, so `voice` keeps the run); a move paused since plays on
+    /// from the pause with it. Whether the answer was one; one whose move has gone (stopped,
+    /// given up) is `voice`'s own.
+    fn moved_devamp_answer(
+        &mut self,
+        voice: VoiceId,
+        at: Option<SampleTime>,
+        fx: &mut Effects,
+    ) -> bool {
+        let Some(o) = self.recs.get_mut(&voice).filter(|o| o.devamps_out > 0) else {
+            return false;
+        };
+        o.devamps_out -= 1;
+        if let Some(at) = at {
+            o.note_devamp_cut(at);
+        }
+        let Some(id) = (self.recs.iter())
+            .find(|(_, w)| w.moved_from == Some(voice))
+            .map(|(&id, _)| id)
+        else {
+            return false;
+        };
+        let (Some(o), Some(w)) = (self.recs.get(&voice), self.recs.get(&id)) else {
+            return false;
+        };
+        let (cue, run) = (w.cue, w.run);
+        let Some(at) = at else {
+            fx.feedback.push(Input::DevampIgnored { cue, run });
+            return true;
+        };
+        fx.feedback.push(Input::DevampScheduled { cue, run, at });
+        // The run's length as the old voice now plays it, in the core's count (the moved run
+        // goes on with it), so the end and an auto-follow keep their sample; none while what
+        // follows loops for ever.
+        if let Some(frames) = o.length_after_devamp(at) {
+            fx.feedback.push(Input::ActionLength { cue, run, frames });
+        }
+        let Phase::Waiting {
+            start: Some(swap), ..
+        } = w.phase
+        else {
+            return true;
+        };
+        let plan = move_plan(o, swap);
+        let counted = w.offset.saturating_add(w.delay);
+        let Some(w) = self.recs.get_mut(&id) else {
+            return true;
+        };
+        match plan {
+            Some(plan) => {
+                // Its stream was made from the plan without the cut: made again.
+                if let Phase::Waiting { prepared, .. } = &mut w.phase {
+                    *prepared = None;
+                }
+                w.take_move_plan(plan, counted);
+            }
+            None => w.nothing_left = true,
+        }
+        true
+    }
+
     /// The live record an id (current or alias) belongs to, and whether it is the current id.
     fn resolve(&self, voice: VoiceId) -> Option<(VoiceId, bool)> {
         if self.recs.contains_key(&voice) {
@@ -102,11 +183,14 @@ impl Voices {
         self.recs.get(&cur).map(|r| (r.cue, run))
     }
 
+    /// A voice the mixer no longer has. `held`: whether the cue engine still holds that run of
+    /// that cue; only then can the resume follow that an ended paused voice's record waits for.
     pub(super) fn finished(
         &mut self,
         voice: VoiceId,
         at: SampleTime,
         reason: FinishReason,
+        held: Held<'_>,
         fx: &mut Effects,
     ) {
         let Some((id, current)) = self.resolve(voice) else {
@@ -116,6 +200,12 @@ impl Voices {
             return;
         };
         let (cue, run) = (r.cue, r.run);
+        // A voice a seek moved from: its run is the moved voice's now, so how it ended is no
+        // one's concern.
+        if r.retired {
+            self.remove(id);
+            return;
+        }
         // The mixer dropped the voice because its render kept panicking: the cue breaks, also
         // when a resume that re-keyed it is still on its way.
         let faulted = reason == FinishReason::Faulted;
@@ -140,11 +230,14 @@ impl Voices {
         // end), so keep the record for the resume to report the end afresh. An end on the pause
         // sample left nothing to pause: the engine takes it as the end and resumes
         // nothing, so a record kept for it would stay for the session (and, for a show cue,
-        // keep the cue from being primed again).
+        // keep the cue from being primed again). So would one kept for a run the engine has
+        // dropped since the pause (its device was lost, and the voice is settled without the
+        // mixer's own report of its stop): no resume will name that run again.
         if !failed
             && let Some(p) = r.paused_at
             && at > p
             && reason != FinishReason::Stopped
+            && held(cue, run)
         {
             r.phase = Phase::Ended;
             r.stream = None;
@@ -203,14 +296,14 @@ impl Voices {
     /// A voice the mixer no longer has although no end was reported (its event was dropped):
     /// reported as ended on `at` (or failed, if its stream failed).
     /// A voice no meter read ever listed was never taken by the mixer: its lost report was a
-    /// rejection, so it fails (`voice_rejected`) rather than ends.
-    pub fn lost(&mut self, id: VoiceId, at: SampleTime, fx: &mut Effects) {
+    /// rejection, so it fails (`voice_rejected`) rather than ends. `held`: as [`Self::finished`].
+    pub fn lost(&mut self, id: VoiceId, at: SampleTime, held: Held<'_>, fx: &mut Effects) {
         let Some(r) = self.recs.get(&id) else { return };
         if !matches!(r.phase, Phase::Playing) {
             return;
         }
         if r.listed {
-            self.finished(id, at, FinishReason::EndOfStream, fx);
+            self.finished(id, at, FinishReason::EndOfStream, held, fx);
         } else if let Some(r) = self.remove(id) {
             // Never listed: the mixer never took its start, so it never played.
             fx.feedback.push(Input::StartFailed {
@@ -270,7 +363,8 @@ impl Voices {
                 fx.commands
                     .push((at, CommandKind::StopVoice { voice, fade }));
             }
-            self.finished(id, at, FinishReason::Faulted, fx);
+            // A fault fails the run whoever holds it: its record always goes.
+            self.finished(id, at, FinishReason::Faulted, &|_, _| false, fx);
         }
     }
 }

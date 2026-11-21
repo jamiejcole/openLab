@@ -3,10 +3,10 @@
 import Foundation
 
 /// The inspector's text fields: the Basics tab's, the Triggers tab's times and level for other
-/// cues, the Load Time tab's time, and the Network cue's message.
+/// cues, the Load Time tab's time, the Network cue's message and a Target cue's new target.
 enum InspectorField: Hashable, CaseIterable {
-    case number, name, notes, preWait, postWait, target, duration, loadTime, message
-    case fadeOthersTime, duckDb, duckTime
+    case number, name, notes, preWait, postWait, target, duration, loadTime, message, newTarget
+    case fadeOthersTime, duckDb, duckTime, wallClock
 
     /// The fields that hold a time, shown as stored (`90` becomes `01:30.00`) once committed.
     static let times: Set<InspectorField> = [.preWait, .postWait, .duration, .loadTime, .fadeOthersTime, .duckTime]
@@ -36,6 +36,12 @@ enum InspectorEdit {
         case invalidMessage
         /// Not a number of dB (from -inf to +12).
         case invalidLevel
+        /// Only Target cues have a new target.
+        case noNewTarget
+        /// A Target cue's new target names the cue it retargets (that cue would target itself).
+        case newTargetIsTarget
+        /// Not a time of day: hours, minutes and seconds (0 to 23, or 1 to 12 with AM or PM).
+        case invalidWallClock
 
         /// The `Localizable.strings` key of the message shown for it.
         var messageKey: String {
@@ -53,6 +59,9 @@ enum InspectorEdit {
             case .noMessage: return "inspector.invalid.noMessage"
             case .invalidMessage: return "inspector.invalid.networkMessage"
             case .invalidLevel: return "inspector.invalid.level"
+            case .noNewTarget: return "inspector.invalid.noNewTarget"
+            case .newTargetIsTarget: return "inspector.invalid.newTargetIsTarget"
+            case .invalidWallClock: return "inspector.invalid.wallClock"
             }
         }
     }
@@ -79,32 +88,35 @@ enum InspectorEdit {
 
     /// Kinds with a cue target (core's `CueKind::has_target`).
     static let targetKinds: Set<String> = [
-        "fade", "start", "stop", "pause", "load", "reset", "devamp", "go_to", "arm", "disarm",
+        "fade", "start", "stop", "pause", "load", "reset", "devamp", "go_to", "target", "arm", "disarm",
     ]
 
-    /// What the field shows for `cue`.
+    /// What the field shows for `cue`: times in milliseconds, or as the cue list draws them (`inList`: the
+    /// list's in-place editor).
     static func display(
-        _ field: InspectorField, cue: Cue, model: WorkspaceModel, media: CueMediaDuration? = nil
+        _ field: InspectorField, cue: Cue, model: WorkspaceModel, media: CueMediaDuration? = nil,
+        inList: Bool = false
     ) -> String {
+        let shown: (Double) -> String = { inList ? CueTime.format($0) : CueTime.precise($0) }
         switch field {
         case .number: return cue.number ?? ""
         // Real text, as in QLab: an unnamed cue shows the name it follows. Committing the text
         // unchanged sends nothing (below), so the derived name is never written back.
         case .name: return cue.displayName
         case .notes: return cue.raw["notes"]?.stringValue ?? ""
-        case .preWait: return CueTime.format(cue.raw["pre_wait"]?.doubleValue ?? 0)
-        case .postWait: return CueTime.format(cue.postWait)
+        case .preWait: return shown(cue.raw["pre_wait"]?.doubleValue ?? 0)
+        case .postWait: return shown(cue.postWait)
         case .duration:
             // An Audio cue's length is read-only: what its file gives, as the cue list shows it.
-            if cue.kindType == "audio" { return media?.shownDuration.map(CueTime.format) ?? "" }
-            if cue.kindType == "video" { return videoDuration(cue, media: media).map(CueTime.format) ?? "" }
+            if cue.kindType == "audio" { return media?.shownDuration.map(shown) ?? "" }
+            if cue.kindType == "video" { return videoDuration(cue, media: media).map(shown) ?? "" }
             guard durationKinds.contains(cue.kindType) else { return "" }
-            return CueTime.format(cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
+            return shown(cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         case .loadTime:
             guard cue.kindType == "load" else { return "" }
             let time = cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0
             // Negative: that long before the target's end (QLab 5).
-            return time < 0 ? "-" + CueTime.format(-time) : CueTime.format(time)
+            return time < 0 ? "-" + shown(-time) : shown(time)
         case .message:
             guard cue.kindType == "network" else { return "" }
             let kind = cue.raw["kind"]
@@ -116,9 +128,15 @@ enum InspectorEdit {
             guard let target = model.cue(ModelID(id)) else { return "" }
             // The number only; the name shows beside the field (QLab 5, manual p. 127).
             return target.number ?? ""
-        case .fadeOthersTime: return CueTime.format(fadeOthers(cue).duration)
+        case .newTarget:
+            // Set by its number (QLab 5, manual p. 686); one that is gone or lost its number shows
+            // empty, and the cue's problem says why.
+            guard cue.kindType == "target", let id = cue.raw["kind"]?["new_target"]?.stringValue else { return "" }
+            return model.cue(ModelID(id))?.number ?? ""
+        case .fadeOthersTime: return shown(fadeOthers(cue).duration)
         case .duckDb: return OthersLevel.format(duckOthers(cue).db)
-        case .duckTime: return CueTime.format(duckOthers(cue).duration)
+        case .duckTime: return shown(duckOthers(cue).duration)
+        case .wallClock: return WallClockTrigger(json: cue.raw["triggers"]?["wall_clock"]).display
         }
     }
 
@@ -130,7 +148,12 @@ enum InspectorEdit {
         // An empty field over a target that is gone is a target to clear only when the operator emptied it:
         // a field that was only passed through must not change the cue.
         let dangling = typed && field == .target && hasMissingTarget(cue, model: model)
-        if text == display(field, cue: cue, model: model, media: media) && !dangling { return .success(nil) }
+        if !dangling,
+            text == display(field, cue: cue, model: model, media: media)
+                || text == display(field, cue: cue, model: model, media: media, inList: true)
+        {
+            return .success(nil)
+        }
         switch field {
         case .name:
             // Clearing an unnamed cue's field changes nothing: it goes on following its file.
@@ -169,7 +192,9 @@ enum InspectorEdit {
                 return .success(.setProperty(cue.id, .loadToTime(seconds)))
             }
         case .message: return messageCommand(text: text, cue: cue)
+        case .newTarget: return newTargetCommand(text: text, cue: cue, model: model)
         case .fadeOthersTime, .duckDb, .duckTime: return othersCommand(field, text: text, cue: cue)
+        case .wallClock: return wallClockCommand(text: text, cue: cue)
         case .target:
             guard targetKinds.contains(cue.kindType) else { return .failure(.notApplicable) }
             let n = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -190,7 +215,7 @@ extension InspectorEdit {
 
     /// Why `cue` cannot act on `target`, nil when it can: the one check for every way of setting a
     /// cue target by hand (the inspector's field, the Target column, a drag). The kinds are core's
-    /// `can_target`: Fade takes Audio and Group, Devamp takes Audio and a playlist Group.
+    /// `can_target`: Fade takes Audio, Video and Group, Devamp takes Audio, Video and a playlist Group.
     static func targetRejection(of cue: Cue, target: Cue) -> Rejection? {
         if target.id == cue.id { return .selfTarget }
         return targetRejection(ofKind: cue.kindType, target: target)
@@ -200,13 +225,37 @@ extension InspectorEdit {
     static func targetRejection(ofKind kind: String, target: Cue) -> Rejection? {
         guard targetKinds.contains(kind) else { return .notApplicable }
         switch kind {
+        // A Target cue retargets a cue that acts on a cue, never a Fade (QLab 5, manual p. 686).
+        case "target":
+            return targetKinds.contains(target.kindType) && target.kindType != "fade" ? nil : .wrongTargetKind
         case "fade":
-            return ["audio", "group"].contains(target.kindType) ? nil : .wrongTargetKind
+            return ["audio", "video", "group"].contains(target.kindType) ? nil : .wrongTargetKind
         case "devamp":
             let playlist = target.kindType == "group" && target.raw["kind"]?["mode"]?["type"]?.stringValue == "playlist"
-            return target.kindType == "audio" || playlist ? nil : .wrongTargetKind
+            return ["audio", "video"].contains(target.kindType) || playlist ? nil : .wrongTargetKind
         default: return nil
         }
+    }
+
+    /// A Target cue's new target from a typed cue number (QLab 5, manual p. 686), or why not: a number
+    /// no cue has, the cue it retargets, or a cue that cue cannot act on (core's `retarget_problem`).
+    /// Empty clears it. Judged against its target only while that is set and is a cue it can retarget.
+    static func newTargetCommand(text: String, cue: Cue, model: WorkspaceModel) -> Result<Command?, Rejection> {
+        guard cue.kindType == "target" else { return .failure(.noNewTarget) }
+        let n = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let had = cue.raw["kind"]?["new_target"]?.stringValue
+        if n.isEmpty {
+            return .success(had == nil ? nil : .setProperty(cue.id, .kindFields(["new_target": .null])))
+        }
+        guard let new = model.cue(number: n) else { return .failure(.unknownTarget) }
+        if let id = cue.raw["kind"]?["target"]?.stringValue, let target = model.cue(ModelID(id)),
+            targetRejection(of: cue, target: target) == nil
+        {
+            if new.id == target.id { return .failure(.newTargetIsTarget) }
+            if let rejection = targetRejection(ofKind: target.kindType, target: new) { return .failure(rejection) }
+        }
+        if new.id.raw == had { return .success(nil) }
+        return .success(.setProperty(cue.id, .kindFields(["new_target": .string(new.id.raw)])))
     }
 
     /// Seconds from what the user typed (`CueTime.parse`), or why not: a decimal comma has
@@ -269,11 +318,38 @@ extension InspectorEdit {
 
     /// `triggers` with the hotkey replaced (`.some(nil)` clears it) and/or the hotkey trigger
     /// switched, whatever is not named kept as the cue has it (a show without the switch has it on).
-    static func setTriggers(_ cue: Cue, hotkey: JSONValue?? = nil, enabled: Bool? = nil) -> Command {
+    static func setTriggers(
+        _ cue: Cue, hotkey: JSONValue?? = nil, enabled: Bool? = nil, wallClock: WallClockTrigger? = nil
+    ) -> Command {
         let current = cue.raw["triggers"]
         let kept: JSONValue? = current?["hotkey"].flatMap { $0 == .null ? nil : $0 }
         let on = enabled ?? (current?["hotkey_enabled"] != .bool(false))
-        return .setProperty(cue.id, .triggers(hotkey: hotkey ?? kept, enabled: on))
+        // The wall-clock trigger rides along unchanged unless this edit is of it.
+        let clock = wallClock.map(\.json) ?? current?["wall_clock"].flatMap { $0 == .null ? nil : $0 }
+        return .setProperty(cue.id, .triggers(hotkey: hotkey ?? kept, enabled: on, wallClock: clock))
+    }
+
+    /// A time typed in the wall-clock field, read on the cue's own clock (12-hour: its AM or PM
+    /// half). The switch and the days are kept.
+    static func wallClockCommand(text: String, cue: Cue) -> Result<Command?, Rejection> {
+        let now = WallClockTrigger(json: cue.raw["triggers"]?["wall_clock"])
+        guard let t = WallClockTrigger.parse(text, twelveHour: now.twelveHour, pm: now.isPM) else {
+            return .failure(.invalidWallClock)
+        }
+        return .success(
+            setWallClock(cue) {
+                $0.hours = t.hours
+                $0.minutes = t.minutes
+                $0.seconds = t.seconds
+            })
+    }
+
+    /// The cue's wall-clock trigger with `change` made to it, or nil when that changes nothing.
+    static func setWallClock(_ cue: Cue, _ change: (inout WallClockTrigger) -> Void) -> Command? {
+        let old = WallClockTrigger(json: cue.raw["triggers"]?["wall_clock"])
+        var new = old
+        change(&new)
+        return new == old ? nil : setTriggers(cue, wallClock: new)
     }
 }
 

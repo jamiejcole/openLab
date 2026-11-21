@@ -18,6 +18,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let store: WorkspaceStore
     let emptyLabel = NSTextField(labelWithString: loc("inspector.empty"))
     let tabView = NSTabView()
+    /// The tab titles, drawn flat at the left above the tab view (which draws none).
+    let tabBar = InspectorTabBar()
     let numberField = NSTextField()
     let nameField = NSTextField()
     let preWaitField = NSTextField()
@@ -35,7 +37,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     static let secondTriggers = [
         "nothing", "panic", "stop", "hard_stop", "hard_stop_and_restart", "devamp", "play_next", "play_previous",
     ]
-    let groupModePopup = NSPopUpButton()
+    /// One radio button per group mode (`groupModes` order), with the chosen mode's name and what it does beside them.
+    let groupModeRadios: [NSButton] = (0..<5).map { _ in NSButton(radioButtonWithTitle: "", target: nil, action: nil) }
+    let groupModeTitle = NSTextField(labelWithString: "")
+    let groupModeAbout = NSTextField(wrappingLabelWithString: "")
     let groupLoopCheck = NSButton(checkboxWithTitle: loc("inspector.groupLoop"), target: nil, action: nil)
     let groupShuffleCheck = NSButton(checkboxWithTitle: loc("inspector.groupShuffle"), target: nil, action: nil)
     /// The Mode tab, in the tab view only while a Group cue is selected.
@@ -45,6 +50,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let audioLevels = LevelsPanel(isFade: false)
     let fadeLevels = LevelsPanel(isFade: true)
     let fadeSettings = FadeSettingsPanel()
+    let fadeGeometry = FadeGeometryPanel()
     var levelsItem: NSTabViewItem?
     var curveItem: NSTabViewItem?
     var fadeLevelsItem: NSTabViewItem?
@@ -78,18 +84,24 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The Load Time tab's one field, in the tab view only while a Load cue is selected (CT-14).
     let loadTimeField = NSTextField()
     var loadTimeItem: NSTabViewItem?
+    /// A Target cue's New Target tab: the number of the cue its target acts on once it runs (CT-18).
+    let newTargetField = NSTextField()
     /// The Network cue's Settings tab: its patch, message and Send. The pop-up's items follow the
     /// workspace's network patches; `networkPatchIDs[i]` is item i's patch (nil: separator, no patch).
     let networkPatchPopup = NSPopUpButton()
-    /// An Audio cue's output patch (the I/O tab), and the patches its menu lists.
+    /// The output patch of an Audio cue, or of a Video cue with sound (the I/O tab), and the patches
+    /// its menu lists.
     let outputPatchPopup = NSPopUpButton()
     let editPatchButton = NSButton(title: loc("inspector.io.editPatch"), target: nil, action: nil)
     /// Opens the patch editor of a patch (set by the window controller).
     var onEditPatch: ((ModelID) -> Void)?
     /// A Video cue's rows of the I/O tab.
     let videoIO = VideoIOControls()
+    let geometry = GeometryControls()
     var outputPatchIDs: [ModelID] = []
     var outputPatchNames: [String] = []
+    /// The patch menu ends with a separator and "none" (built for a Video cue).
+    var outputPatchHasNone = false
     let networkMessageField = NSTextField()
     let networkSendButton = NSButton(title: loc("inspector.network.send"), target: nil, action: nil)
     var networkPatchIDs: [ModelID?] = []
@@ -109,6 +121,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let skipCheck = NSButton(checkboxWithTitle: loc("inspector.skipIfDisarmed"), target: nil, action: nil)
     /// The Triggers tab's switch of the hotkey trigger: off keeps the key and starts nothing.
     let hotkeyEnableCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    /// The Triggers tab's wall-clock trigger (TRG-05): its box, the time, the clock it is shown on
+    /// (24-hour, AM, PM) and the days it fires on.
+    let wallClockCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let wallClockField = NSTextField()
+    let wallClockFormatPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let wallClockDaysPopup = NSPopUpButton(frame: .zero, pullsDown: true)
     /// What the cue does to other cues as its action starts (the Triggers tab's right side).
     let fadeOthersCheck = NSButton(checkboxWithTitle: loc("inspector.fadeOthers"), target: nil, action: nil)
     let fadeOthersScopePopup = NSPopUpButton()
@@ -209,6 +227,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// drag not yet committed is given up.
     func endGestures() {
         timeLoops.waveform.endDrag()
+        geometry.thumbnail.endDrag()
         audioLevels.endGesture()
         fadeLevels.endGesture()
         gestureHold(false)
@@ -224,9 +243,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .duration: return durationField
         case .loadTime: return loadTimeField
         case .message: return networkMessageField
+        case .newTarget: return newTargetField
         case .fadeOthersTime: return fadeOthersTimeField
         case .duckDb: return duckDbField
         case .duckTime: return duckTimeField
+        case .wallClock: return wallClockField
         case .notes: return nil
         }
     }
@@ -243,8 +264,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             (numberField, AX.inspectorNumber), (nameField, AX.inspectorName), (preWaitField, AX.inspectorPreWait),
             (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget),
             (durationField, AX.inspectorDuration), (loadTimeField, AX.inspectorLoadTime),
-            (networkMessageField, "inspector-network-message"), (fadeOthersTimeField, "inspector-fade-others-time"),
+            (networkMessageField, "inspector-network-message"), (newTargetField, AX.inspectorNewTarget),
+            (fadeOthersTimeField, "inspector-fade-others-time"),
             (duckDbField, "inspector-duck-others-db"), (duckTimeField, "inspector-duck-others-time"),
+            (wallClockField, AX.inspectorWallClockTime),
         ] {
             f.setAX(id)
             f.delegate = self
@@ -333,6 +356,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             f.widthAnchor.constraint(equalToConstant: 80).isActive = true
         }
         loadTimeField.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        newTargetField.widthAnchor.constraint(equalToConstant: 80).isActive = true
         kindIcon.widthAnchor.constraint(equalToConstant: 20).isActive = true
         let nameRow = NSStackView(views: [kindIcon, nameField])
         nameRow.spacing = 4
@@ -396,15 +420,19 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // A long path gives up its middle folders; it must not hold the inspector, and so the window, wider.
         targetPath.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         targetPath.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        targetPath.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+        Self.prefersWidth(targetPath)
         let targetRow = NSStackView(
             views: [targetField, targetPath, targetNote, clearTargetButton, jumpTargetButton, chooseButton])
         targetRow.spacing = 6
+        // The borderless 16 pt glyph buttons sit closer to what follows them, so the row (and the
+        // inspector's least width) keeps room for the field and Choose at their least widths.
+        targetRow.setCustomSpacing(4, after: clearTargetButton)
+        targetRow.setCustomSpacing(4, after: jumpTargetButton)
         targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         // A long path truncates; it must not hold the inspector, and so the window, wider.
         targetField.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         targetField.lineBreakMode = .byTruncatingMiddle  // the file name at the end is the part that matters
-        targetField.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+        Self.prefersWidth(targetField)
         chooseButton.setContentHuggingPriority(.required, for: .horizontal)
         chooseButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         let centre = column([
@@ -444,7 +472,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         columns.distribution = .fill
         Self.clipsAtTheBottom(columns)
         centre.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        columns.spacing = 10
+        columns.spacing = 8
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
 
         let item = NSTabViewItem(identifier: "basics")
@@ -453,31 +481,41 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let triggers = triggersTab(row: row, column: column)
         modeItem = modeTab(row: row, column: column)
         loadTimeItem = loadTimeTab(row: row, column: column)
+        let newTarget = newTargetTab(row: row, column: column)
         let devamp = devampTab(row: row, column: column)
         let network = networkTab(row: row, column: column)
         let io = ioTab(row: row, column: column)
+        let geometryItem = geometryTab()
+        let fadeGeometryItem = fadeGeometryTab()
         buildLevelsTabs()
         buildTimeLoopsTab()
-        for i in [item, triggers, devamp, network, io]
+        for i in [item, triggers, devamp, network, io, geometryItem, fadeGeometryItem, newTarget]
             + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 })
         {
             if let id = i.identifier as? String { tabItems[id] = i }
         }
         // A zero-wide tab view lays its tab strip out at a negative width as tabs are added (AppKit logs
         // "Invalid view geometry" on macOS 27); Auto Layout sizes it for real below.
-        tabView.frame = NSRect(x: 0, y: 0, width: 320, height: 240)
-        syncTabs(forKind: "")
+        tabView.frame = NSRect(x: 0, y: 0, width: 900, height: 240)
+        syncTabs(InspectorTabs.ids(forKind: ""))
+        tabView.tabViewType = .noTabsNoBorder
         tabView.setAX(AX.inspectorTabs)
         tabView.delegate = self
+        tabBar.setAccessibilityIdentifier(AX.inspectorTabs + "-bar")
+        tabBar.onChoose = { [weak self] id in self?.tabView.selectTabViewItem(withIdentifier: id) }
+        syncTabBar()
 
-        for v in [tabView, emptyLabel, messageLabel] {
+        for v in [tabBar, tabView, emptyLabel, messageLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
         NSLayoutConstraint.activate([
             emptyLabel.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: root.centerYAnchor),
-            tabView.topAnchor.constraint(equalTo: root.topAnchor, constant: 4),
+            tabBar.topAnchor.constraint(equalTo: root.topAnchor, constant: 4),
+            tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 4),
+            tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -4),
+            tabView.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             tabView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 4),
             tabView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -4),
             tabView.bottomAnchor.constraint(equalTo: messageLabel.topAnchor, constant: -2),
@@ -494,6 +532,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 MainActor.assumeIsolated {
                     self?.updatePreviewButton()
                     if let self, let cue = self.cue, cues.contains(cue.id), cue.takesFile { self.render() }
+                    // A Fade's Levels tab comes and goes with its Video target's sound.
+                    if let self, let cue = self.cue, cue.kindType == "fade",
+                        let target = cue.raw["kind"]?["target"]?.stringValue, cues.contains(ModelID(target))
+                    {
+                        self.render()
+                    }
                     // The file's length may have come (or changed): the waveform follows.
                     if let self, let cue = self.cueForEdit, cues.contains(cue.id) { self.renderTimeLoops(cue) }
                     // A probe also tells the matrix how many channels the file has.
@@ -542,19 +586,22 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         hotkeyEnableCheck.toolTip = loc("inspector.hotkey.enabled")
         hotkeyEnableCheck.target = self
         hotkeyEnableCheck.action = #selector(hotkeyEnableChanged)
-        hotkeyField.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        hotkeyField.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        // One line: its prompt is cut short, not wrapped, in the narrow column.
+        hotkeyField.usesSingleLineMode = true
+        hotkeyField.lineBreakMode = .byTruncatingTail
         let hotkeyRow = NSStackView(views: [hotkeyEnableCheck, hotkeyField, hotkeyClear])
         hotkeyRow.spacing = 6
         let left = column(
             [
-                row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck,
+                row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck, wallClockRow(row: row),
             ], nil)
         let right = othersColumn(row: row)
         left.addArrangedSubview(Self.columnFiller())
         right.addArrangedSubview(Self.columnFiller())
         let columns = NSStackView(views: [left, right])
         columns.alignment = .top
-        columns.spacing = 28
+        columns.spacing = 16
         Self.clipsAtTheBottom(columns)
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         let item = NSTabViewItem(identifier: "triggers")
@@ -568,6 +615,18 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// instead, its first fields pushed up over the tabs.
     static func clipsAtTheBottom(_ columns: NSStackView) {
         columns.setClippingResistancePriority(.defaultLow, for: .vertical)
+    }
+
+    /// The target's field or path keeps 90 pt where there is room, but gives that up (down to 40 pt)
+    /// before anything else in the window does: it sits below the splits' holding priorities and the
+    /// window's stay-put priority, so a control a few points wider on another macOS (the Basics tab
+    /// had 2 pt to spare at the least window with the sidebar open) narrows the field instead of
+    /// moving the sidebar's divider or growing the window.
+    static func prefersWidth(_ view: NSView) {
+        view.widthAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        let preferred = view.widthAnchor.constraint(greaterThanOrEqualToConstant: 90)
+        preferred.priority = NSLayoutConstraint.Priority(240)
+        preferred.isActive = true
     }
 
     /// The last view of a tab's column: it takes the height the column is stretched to, so the
@@ -584,21 +643,40 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private func modeTab(
         row: (String, NSView) -> NSView, column: ([NSView], CGFloat?) -> NSStackView
     ) -> NSTabViewItem {
-        groupModePopup.setAX(AX.inspectorGroupMode)
         groupLoopCheck.setAX(AX.inspectorGroupLoop)
         groupShuffleCheck.setAX(AX.inspectorGroupShuffle)
-        for key in Self.groupModes {
-            groupModePopup.menu?.addItem(
-                NSMenuItem(title: loc("inspector.groupMode.\(key)"), action: nil, keyEquivalent: ""))
+        for (n, key) in Self.groupModes.enumerated() {
+            let r = groupModeRadios[n]
+            r.title = loc("inspector.groupMode.\(key)")
+            r.setAX("\(AX.inspectorGroupMode)-\(key)")
+            r.target = self
+            r.action = #selector(groupModeChosen(_:))
         }
-        for c in [groupModePopup as NSControl, groupLoopCheck, groupShuffleCheck] {
+        for c in [groupLoopCheck, groupShuffleCheck] {
             c.target = self
+            c.action = #selector(checkChanged(_:))
         }
-        groupModePopup.action = #selector(popupChanged(_:))
-        groupLoopCheck.action = #selector(checkChanged(_:))
-        groupShuffleCheck.action = #selector(checkChanged(_:))
-        let columns = column(
-            [row(loc("inspector.groupMode"), groupModePopup), groupLoopCheck, groupShuffleCheck], nil)
+        let intro = NSTextField(wrappingLabelWithString: loc("inspector.groupMode.intro"))
+        intro.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let radios = NSStackView(views: groupModeRadios)
+        radios.orientation = .vertical
+        radios.alignment = .leading
+        radios.spacing = 6
+        groupModeTitle.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
+        groupModeAbout.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        groupModeAbout.textColor = .secondaryLabelColor
+        groupModeAbout.preferredMaxLayoutWidth = 320
+        groupModeAbout.setAX("inspector-group-mode-about")
+        // Loop and shuffle are the playlist's own options: drawn only while the mode is a playlist.
+        let about = NSStackView(views: [groupModeTitle, groupModeAbout, groupLoopCheck, groupShuffleCheck])
+        about.orientation = .vertical
+        about.alignment = .leading
+        about.spacing = 6
+        let choices = NSStackView(views: [radios, about])
+        choices.orientation = .horizontal
+        choices.alignment = .top
+        choices.spacing = 24
+        let columns = column([intro, choices], nil)
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         let item = NSTabViewItem(identifier: "mode")
         item.label = loc("inspector.tab.mode")
@@ -618,17 +696,73 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         return item
     }
 
+    /// A Target cue's New Target tab (QLab 5, manual p. 686): the number of the cue its target acts
+    /// on after it runs, with a line saying so.
+    private func newTargetTab(
+        row: (String, NSView) -> NSView, column: ([NSView], CGFloat?) -> NSStackView
+    ) -> NSTabViewItem {
+        let about = NSTextField(labelWithString: loc("inspector.newTarget.about"))
+        about.setAX("inspector-new-target-about")
+        about.textColor = .secondaryLabelColor
+        // Truncated only when the tab is narrower than the line (the least window keeps it whole).
+        about.lineBreakMode = .byTruncatingTail
+        about.setContentCompressionResistancePriority(.defaultHigh - 1, for: .horizontal)
+        let line = NSStackView(views: [newTargetField, about])
+        line.spacing = 12
+        let content = column([row(loc("inspector.newTarget"), line)], nil)
+        content.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        let item = NSTabViewItem(identifier: "newTarget")
+        item.label = loc("inspector.tab.newTarget")
+        item.view = content
+        return item
+    }
+
     /// Shows the Mode tab for a Group cue and hides it otherwise; the controls follow the model.
     func renderMode(_ cue: Cue) {
         let mode = cue.kindType == "group" ? cue.raw["kind"]?["mode"] : nil
         guard let mode else { return }
         let type = mode["type"]?.stringValue ?? "timeline"
-        groupModePopup.selectItem(at: Self.groupModes.firstIndex(of: type) ?? 0)
+        showGroupModes([type])
         let playlist = type == "playlist"
         groupLoopCheck.state = playlist && mode["loop"] == .bool(true) ? .on : .off
         groupShuffleCheck.state = playlist && mode["shuffle"] == .bool(true) ? .on : .off
         groupLoopCheck.isEnabled = playlist
         groupShuffleCheck.isEnabled = playlist
+    }
+
+    /// Ticks the radio of the mode every cue shown has (none when they differ), names it with what it
+    /// does, and shows the playlist's options only when every cue is a playlist.
+    func showGroupModes(_ types: [String]) {
+        let one = Set(types).count == 1 ? types.first : nil
+        for (n, r) in groupModeRadios.enumerated() { r.state = Self.groupModes[n] == one ? .on : .off }
+        groupModeTitle.isHidden = one == nil
+        groupModeAbout.isHidden = one == nil
+        groupModeTitle.stringValue = one.map { loc("inspector.groupMode.\($0)") } ?? ""
+        groupModeAbout.stringValue = one.map { loc("inspector.groupMode.\($0).about") } ?? ""
+        let playlists = one == "playlist"
+        groupLoopCheck.isHidden = !playlists
+        groupShuffleCheck.isHidden = !playlists
+    }
+
+    @objc private func groupModeChosen(_ sender: NSButton) {
+        guard !isLocked, let i = groupModeRadios.firstIndex(of: sender) else { return }
+        // A radio always ends ticked; the model says which one is drawn once it answers.
+        sender.state = .on
+        let type = Self.groupModes[i]
+        // Choosing the type a cue already has changes nothing, and must not clear the playlist's loop
+        // and shuffle. A new type starts from what the model holds (a type that has no loop or shuffle
+        // holds none).
+        sendEach(key: "groupMode") { cue in
+            let mode = cue.raw["kind"]?["mode"]
+            guard cue.kindType == "group", type != (mode?["type"]?.stringValue ?? "timeline") else { return nil }
+            let playlist = type == "playlist"
+            return .setProperty(
+                cue.id,
+                .groupMode(
+                    type: type, loop: playlist && mode?["loop"] == .bool(true),
+                    shuffle: playlist && mode?["shuffle"] == .bool(true)))
+        }
+        render()
     }
 
     /// A recorded chord: refused with a message, or sent as the cue's new hotkey. Returns whether
@@ -808,6 +942,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         }
         guard let cue, let model = store.model else {
             tabView.isHidden = true
+            tabBar.isHidden = true
             messageLabel.isHidden = true
             emptyLabel.isHidden = false
             emptyLabel.stringValue = loc("inspector.empty")
@@ -815,6 +950,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             return
         }
         tabView.isHidden = false
+        tabBar.isHidden = false
         messageLabel.isHidden = false
         emptyLabel.isHidden = true
         endBatchControls()
@@ -838,7 +974,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // Only Wait and Fade cues, and stills, have a duration to type; others take theirs from content
         // or have none.
         durationField.isEnabled = InspectorEdit.editsDuration(cue, media: store.mediaDurations[cue.id])
-        syncTabs(forKind: kind)
+        syncTabs(InspectorTabs.ids(for: cue, model: model, media: store.mediaDurations))
         showChoice(colourPopup, Self.colourItems, [cue.raw["color"]?.stringValue ?? "none"])
         let second = cue.raw["second_color"]?.stringValue ?? "none"
         showChoice(secondColourPopup, Self.colourItems, [second])
@@ -862,6 +998,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         hotkeyEnableCheck.state = hotkeyOn ? .on : .off
         hotkeyEnableCheck.isEnabled = !isLocked
         hotkeyField.textColor = hotkeyOn ? .controlTextColor : .disabledControlTextColor
+        renderWallClock(cueForEdit ?? cue)
         renderOthers(cueForEdit ?? cue)
         onReleaseCheck.state = cue.raw["second_trigger_on_release"] == .bool(true) ? .on : .off
         let secondTrigger = cue.raw["second_trigger"]?.stringValue ?? "nothing"
@@ -872,7 +1009,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         renderDevamp(cue)
         renderNetwork(cue, model: model)
         renderIO(cue, model: model)
+        renderGeometry(cueForKindEdit ?? cue, model: model)
         renderLevels(cueForEdit ?? cue, model: model)
+        renderFadeGeometry(cueForKindEdit ?? cue, model: model)
         renderTimeLoops(cueForEdit ?? cue)
         updatePreviewButton()
         if isLocked { applyLock() }
@@ -887,6 +1026,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let on = connected ?? (store.connectionState == .connected)
         previewButton.isEnabled = previewable && on
         fadePreviewButton.isEnabled = cue?.kindType == "fade" && on
+        fadeGeometry.previewButton.isEnabled = cue?.kindType == "fade" && on
+        timeLoops.showPreview(active: active, canPreview: cue?.kindType == "audio" && on)
     }
 
     /// The Choose button, and a double-click on a file cue's Target field (QLab 5, manual pp. 120, 126).
@@ -903,15 +1044,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     private var lockedControls: [NSControl] {
-        [
-            numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField,
-            hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
+        groupModeRadios + [
+            numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, newTargetField,
+            targetField, hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck,
+            devampStopCheck,
             devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
-            networkSendButton, videoIO.stagePopup, videoIO.chooseButton,
-            secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
+            networkSendButton, videoIO.stagePopup, videoIO.chooseButton, videoIO.trackPopup,
+            secondTriggerPopup, onReleaseCheck, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck, secondColourCheck, secondColourPopup, autoLoadCheck, skipCheck,
             hotkeyEnableCheck, fadeOthersCheck, fadeOthersScopePopup, fadeOthersTimeField, duckCheck, duckDbField,
-            duckTimeField,
+            duckTimeField, wallClockCheck, wallClockField, wallClockFormatPopup, wallClockDaysPopup,
         ]
     }
 
@@ -925,16 +1067,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             view.window?.makeFirstResponder(nil)
         }
         for c in lockedControls { c.isEnabled = !isLocked }
-        // A Video cue's audio patch stays off whatever the mode: it plays no sound yet (#645).
-        if cue?.kindType == "video" {
-            outputPatchPopup.isEnabled = false
-            editPatchButton.isEnabled = false
-        }
         notesView.isEditable = !isLocked
         audioLevels.isLocked = isLocked
         fadeLevels.isLocked = isLocked
         fadeSettings.isLocked = isLocked
+        fadeGeometry.isLocked = isLocked
         timeLoops.isLocked = isLocked
+        geometry.isLocked = isLocked
         if isLocked, !stale.isEmpty { render(force: stale) }
     }
 
@@ -970,10 +1109,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .success(let command?):
             messageLabel.stringValue = ""
             send(command, cue: cue.id, key: "\(f)", revert: [f])
-            // Show what will be stored (`90` becomes `01:30.00`) until the model answers.
+            // Show what will be stored (`90` becomes `01:30.00`, `10:30` 00:10:30) until the model
+            // answers.
             if InspectorField.times.contains(f), let s = CueTime.parse(text) {
-                field(f)?.stringValue = CueTime.format(s)
+                field(f)?.stringValue = CueTime.precise(s)
             }
+            if f == .wallClock, let shown = Self.wallClockShown(command) { field(f)?.stringValue = shown }
         }
         return true
     }
@@ -1011,7 +1152,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// kind edits start from until the engine answers (one cue's comes from `command` itself).
     func send(
         _ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>, coalesce: String? = nil,
-        kinds: [ModelID: JSONValue] = [:], notes: String? = nil
+        kinds: [ModelID: JSONValue] = [:], notes: String? = nil, refusedAs: String? = nil
     ) {
         guard !isLocked else { return }
         // The selection the edit was made for: a several-cue edit's refusal shows their values again
@@ -1067,7 +1208,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                     return
                 }
                 sendFailures += 1
-                if case .engine(_, let message) = error {
+                if case .engine = error, let refusedAs {
+                    showRefusal(refusedAs)
+                } else if case .engine(_, let message) = error {
                     showRefusal(String(format: loc("inspector.refused"), message))
                 } else {
                     showRefusal(loc("inspector.failed"))
@@ -1109,6 +1252,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         showRefusal(loc(rejection.messageKey))
     }
 
+    /// `now` with each of `parts` set, an object part by its own parts (the engine's merge).
+    static func merged(_ now: JSONValue, _ parts: JSONValue) -> JSONValue {
+        guard case .object(var into) = now, case .object(let changes) = parts else { return parts }
+        for (key, v) in changes { into[key] = into[key].map { merged($0, v) } ?? v }
+        return .object(into)
+    }
+
     /// The kind `cue` will have once `property` lands, when the property replaces it (`kind`) or a
     /// field inside it (`duration`, `load_to_time`): a kind edit sent before the answer must keep it.
     private func pendingKind(_ cue: ModelID, after property: JSONValue) -> JSONValue? {
@@ -1117,7 +1267,15 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         if type == "kind_fields", let fields = property["value"]?.objectValue,
             let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
         {
-            for (field, value) in fields { kind.set(field, value) }
+            for (field, value) in fields {
+                // A Video cue's pair or crop, or a Fade's picture values, may carry only their changed
+                // parts, a pair's parts too (the engine merges them).
+                if VideoGeometry.partialFields.contains(field), case .object = value, case .object? = kind[field] {
+                    kind.set(field, Self.merged(kind[field] ?? .null, value))
+                } else {
+                    kind.set(field, value)
+                }
+            }
             return kind
         }
         guard let type, type == "duration" || type == "load_to_time", let value = property["value"],
@@ -1177,21 +1335,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             sendEach(key: "secondColour") { .setProperty($0.id, .secondColor(colour)) }
         } else if sender === secondTriggerPopup, Self.secondTriggers.indices.contains(i) {
             sendEach(key: "second") { .setProperty($0.id, .secondTrigger(Self.secondTriggers[i])) }
-        } else if sender === groupModePopup, Self.groupModes.indices.contains(i) {
-            // Choosing the type a cue already has changes nothing, and must not clear the
-            // playlist's loop and shuffle. A new type starts from what the model holds (a type
-            // that has no loop or shuffle holds none).
-            let type = Self.groupModes[i]
-            sendEach(key: "groupMode") { cue in
-                let mode = cue.raw["kind"]?["mode"]
-                guard cue.kindType == "group", type != (mode?["type"]?.stringValue ?? "timeline") else { return nil }
-                let playlist = type == "playlist"
-                return .setProperty(
-                    cue.id,
-                    .groupMode(
-                        type: type, loop: playlist && mode?["loop"] == .bool(true),
-                        shuffle: playlist && mode?["shuffle"] == .bool(true)))
-            }
         } else if sender === continuePopup, Self.continueModes.indices.contains(i) {
             sendEach(key: "continue") { .setProperty($0.id, .continueMode(Self.continueModes[i])) }
         }

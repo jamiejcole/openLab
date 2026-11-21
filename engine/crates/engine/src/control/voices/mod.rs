@@ -8,8 +8,18 @@
 //! voices of a replaced engine (a new workspace) can never be mistaken for the new one's. A
 //! resume re-keys the mixer voice to a fresh `VoiceId` for the fresh `RunId`; the old id stays an
 //! alias until the voice is gone, so late events and meter entries under it still name the cue.
+//!
+//! **Units.** What the cue engine counts (offsets, totals, positions, delays, the elapsed time
+//! shown) is in frames of the master clock, the primary device's rate. A voice's slice table
+//! and its devamp cuts are what its mixer voice plays: frames at its device's rate. A table is
+//! planned at the master rate and rescaled once, when its stream is made; from then on every
+//! count the core sees is derived from the device's table through the voice's [`Scale`], so a
+//! loop whose length rounds to whole device frames is counted as it really plays, pass after
+//! pass (the end, an auto-follow, a devamp's leave, the time shown and a move all follow the
+//! sound). The other frame counts of its commands are converted where commands are routed to
+//! the device.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -18,13 +28,13 @@ use openlab_audio::{
     PreparedStream, Slice, StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
 };
 use openlab_core::{
-    Action, BrokenReason, Cue, CueEngine, CueId, CueKind, FadeCurve, FadeSpec, Input, LevelParam,
-    PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
+    Action, BrokenReason, Cue, CueEngine, CueId, CueKind, CueLevels, FadeCurve, FadeSpec, Input,
+    LevelParam, PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
 };
 
 use super::media::{MediaCatalog, Probe};
 use super::patches::Patches;
-use super::plan::{PlanFailure, PlanSpec, cue_slices};
+use super::plan::{PlanSpec, cue_slices, cue_slices_from};
 use super::voice_ids::VoiceIds;
 
 /// Most ids kept for the next meter read (meters are read at 30 Hz, so this is never reached in
@@ -44,6 +54,24 @@ pub struct Effects {
     pub notices: Vec<(&'static str, String, Option<CueId>)>,
     /// Media to probe again (a stream of it failed).
     pub reprobe: Vec<String>,
+    /// Lines for the show log at `warn`.
+    pub warnings: Vec<String>,
+    /// Voices that play on from a sample later than planned by that many frames (run, sample,
+    /// frames; negative: earlier), the disk having starved them or their device's clock having
+    /// drifted from the master's: a Video cue's picture follows its sound.
+    pub late: Vec<(RunId, SampleTime, i64)>,
+    /// What a Video cue's picture tells of its run's length, end and devamp: handed on at once
+    /// (`None`) or once that sample has passed. Kept apart from what the voices report, so
+    /// those reports of a Video cue's voice can be dropped wherever they were made: the
+    /// picture alone tells them, once.
+    pub pictured: Vec<(Option<SampleTime>, Input)>,
+}
+
+impl Effects {
+    /// A Video cue's picture tells the cue engine `input` now.
+    pub fn picture_says(&mut self, input: Input) {
+        self.pictured.push((None, input));
+    }
 }
 
 /// The environment voice actions are carried out in.
@@ -56,15 +84,26 @@ pub struct Env<'a> {
     pub patches: &'a Patches,
     /// Where new voice ids come from (shared by the engine, not the voice table).
     pub ids: &'a mut VoiceIds,
+    /// The master clock's rate: the frames every count here is in.
     pub rate: NonZeroU32,
+    /// Each output device's rate, by output key: a voice's stream is made at its patch's
+    /// device's.
+    pub rates: &'a [u32],
     /// The mixers' cue outputs: the widest a voice can be.
     pub cue_outputs: usize,
     /// The scheduling time of the call.
     pub now: SampleTime,
+    /// The commit window: a voice start dated before `now + window` is in it; one later waits
+    /// (a later stop must be able to reach it).
+    pub window: SampleTime,
     /// During a device outage: the sample the mixer renders first when it is back. Stops are
     /// dated there (see [`Voices::stop_date`]).
     pub floor: Option<SampleTime>,
 }
+
+/// Whether the cue engine still holds a run of a cue: a show run that is not broken, or the
+/// cue's preview.
+pub type Held<'a> = &'a dyn Fn(CueId, RunId) -> bool;
 
 /// A mixer command for a voice that is not in the mixer yet, replayed when it starts.
 #[derive(Clone, Copy, Debug)]
@@ -83,7 +122,7 @@ enum Phase {
     /// Not in the mixer yet. `prepared` is `None` while the file's probe has not answered;
     /// `start` is set once the engine has started it; `paused` holds it.
     Waiting {
-        prepared: Option<(PreparedStream, Option<u64>)>,
+        prepared: Option<Ready>,
         start: Option<SampleTime>,
         paused: bool,
         queue: Vec<(SampleTime, Queued)>,
@@ -130,6 +169,10 @@ pub struct VoiceRec {
     cuts: Vec<u64>,
     /// Its start waited for the file's probe, since this sample (`now`).
     held: Option<SampleTime>,
+    /// Its start is held with a cue sequence that waits for a picture to open, and the sample
+    /// the sequence dated it: it is not put in the mixer until the sequence opens the gate
+    /// (`Voices::open_gate`).
+    gate: Option<(u64, SampleTime)>,
     /// How much later than the engine dated it the voice started (held by its probe).
     delay: u64,
     /// The id its `StartVoice` was sent with: a rejection under that id refused the start, so
@@ -149,6 +192,228 @@ pub struct VoiceRec {
     /// Its cue outputs below this have their levels; those from here on were silenced at its
     /// start, beyond the outputs of the patch it started on ([`voice_start`]).
     levelled: usize,
+    /// It starts at this frame of the file (a seek, or a load there), not at `offset` (then 0).
+    file: Option<u64>,
+    /// The elapsed time it shows on its start: `offset`, or for a start at a file frame, how far
+    /// into the action that frame is when the cue plays from the top.
+    shown: u64,
+    /// Made by a seek: it waits for its stream to be primed (at most [`SEEK_PRIME_WAIT`]) so
+    /// the move crossfades rather than drops out, and fades in over [`SEEK_CROSSFADE`].
+    moved: bool,
+    /// The voice a seek moves from, playing on until this one starts and then fading out.
+    replaces: Option<VoiceId>,
+    /// Moved elsewhere by a seek: it is fading out (or going) and stands for no run; its end
+    /// is reported to no one.
+    retired: bool,
+    /// A seek of this voice swaps no earlier than this sample: one crossfade at a time, so a
+    /// burst of seeks never has more than two of the cue's voices sounding.
+    swap_after: SampleTime,
+    /// How the voice it `replaces` fades out when the seek is let go of before it swaps.
+    release_fade: Fade,
+    /// Made by a move to another device (`Action::RelocateVoice`): it goes on from where the
+    /// voice it moves from is, so it shows that voice's elapsed time (`shown`, set when it is
+    /// made) and starts on its planned sample, not before it is in the commit window.
+    relocated: bool,
+    /// The table a move to another device plays ([`move_plan`]), or a Video cue's seek
+    /// ([`SeekTo::Plan`]), at the rate it is in, instead of one planned from `offset` or `file`.
+    rest: Option<(Vec<Slice>, u32)>,
+    /// A move to another device whose stream is late is planned again until this sample, then
+    /// given up ([`SEEK_PRIME_WAIT`] after its first planned swap).
+    swap_limit: SampleTime,
+    /// A move to another device given up (its stream was not ready in time) is tried again
+    /// from this sample on (`Voices::take_due_moves`).
+    retry_at: Option<SampleTime>,
+    /// Moves of its run given up so far: each retry waits twice as long as the one before.
+    gave_up: u32,
+    /// Made by a move to another device: the voice it moves from (kept when a pause lets that
+    /// one go before the swap, unlike `replaces`), whose devamp answers are this run's.
+    moved_from: Option<VoiceId>,
+    /// Devamps sent to it while a move to another device took over its run, not yet answered:
+    /// the move does not swap until they are ([`Voices::moved_devamp_answer`]).
+    devamps_out: u8,
+    /// A move to another device whose old voice has nothing left to play by the swap since a
+    /// devamp's answer (it leaves its loop, or stops, first): given up on the next tick.
+    nothing_left: bool,
+    /// How many master frames its sound has played more than its position counts from its
+    /// device's clock drifting against the master's (fewer: negative), as read on the last
+    /// tick (`Voices::note_drifts`). 0 on the primary.
+    drift: i64,
+    /// Master frames its sound has fallen behind its position by underrunning (each
+    /// `UnderrunEnded`): a starved voice plays on late, it does not skip.
+    late: u64,
+    /// The drift of the voices of its run it was moved on from (to another device), which its
+    /// table already starts after: its run's sound is this plus `drift` past the master clock
+    /// (a Video cue's picture follows the sum).
+    carried_drift: i64,
+    /// Its table's frames (its device's) against the master clock's.
+    scale: Scale,
+    /// The time and loops its table was planned from (`None`: not known, a table handed on
+    /// from elsewhere without them), for an end time edited while it plays.
+    planned: Option<Box<Planned>>,
+}
+
+/// Frames of a voice's device against frames of the master clock. Every conversion between a
+/// voice's table (device frames) and the core's count (master frames) goes through here: one
+/// rational rounding of the whole count each time, so nothing builds up pass after pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Scale {
+    master: u32,
+    local: u32,
+}
+
+impl Scale {
+    pub(super) fn new(master: u32, local: u32) -> Self {
+        Scale { master, local }
+    }
+
+    /// The device's rate.
+    pub(super) fn local_rate(self) -> u32 {
+        self.local
+    }
+
+    /// Both clocks run at one rate: every conversion is the count itself.
+    pub(super) fn is_same(self) -> bool {
+        self.master == self.local
+    }
+
+    /// Master frames as device frames.
+    pub(super) fn local(self, master: u64) -> u64 {
+        openlab_audio::frames_at_rate(master, self.master, self.local)
+    }
+
+    /// Device frames as master frames.
+    pub(super) fn master(self, local: u64) -> u64 {
+        openlab_audio::frames_at_rate(local, self.local, self.master)
+    }
+}
+
+/// A cue's seeks prepare at most one stream per this many seconds: a burst of seeks (a stuck
+/// key, a hostile client) replaces the one waiting instead of opening a stream each, so it can
+/// never use up the streamer's open-stream limit or its memory.
+pub const SEEK_PREPARE_INTERVAL: f64 = 0.05;
+
+/// How long a seek's crossfade lasts: the voice it moves from fades out while the moved one
+/// fades in, linear both, so the jump does not click.
+pub const SEEK_CROSSFADE: f64 = 0.01;
+
+/// The longest a seek of a playing voice waits for its stream at the new point to be primed,
+/// the old voice playing on meanwhile; after it the move is made anyway and plays once the disk
+/// has caught up (an underrun, silence, rather than a sound that never moves).
+pub const SEEK_PRIME_WAIT: f64 = 0.25;
+
+/// How far ahead a move to another device swaps the voices: the old device plays on meanwhile,
+/// so the new one's stream can be read and primed from the point where the sound then is, and
+/// the two crossfade in step. Short enough to be heard as at once.
+pub const MOVE_LEAD: f64 = 0.1;
+
+/// How long after a move to another device is given up (its stream not ready in time) it is
+/// tried again; doubled after each give-up of the same run, at most 16 times this.
+pub const MOVE_RETRY: f64 = SEEK_PRIME_WAIT;
+
+/// The notice code of a cue whose voice ran out of audio from the disk.
+pub const UNDERRUN: &str = "underrun";
+/// Its English text (the same every time, so a client counts the repeats as one entry).
+pub const UNDERRUN_TEXT: &str = "the disk could not keep up with a cue; it plays late from here";
+
+/// Where a voice's stream starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StartAt {
+    /// Device frames into the action, loops unrolled (a start, a load to time).
+    Offset(u64),
+    /// A frame of the file at the device rate (a seek).
+    File(u64),
+    /// This slice table at this rate: what the voice a move to another device replaces still
+    /// had to play.
+    Table(Vec<Slice>, u32),
+}
+
+/// Where a seek moves a run's voice to.
+pub enum SeekTo {
+    /// A frame of the file at the master rate (an Audio cue's seek): its slices are planned from
+    /// there.
+    File(u64),
+    /// A Video cue's seek: `table` (at `rate`) is the rest of its picture's plan from the point,
+    /// `offset` frames into its action, so picture and sound go on in one plan; `paused` while
+    /// its picture is held there (the moved voice waits for the resume, even with no voice
+    /// left to move).
+    Plan {
+        table: Vec<Slice>,
+        rate: u32,
+        offset: u64,
+        paused: bool,
+    },
+}
+
+/// A move to another device planned for one swap sample: the table the new voice plays (what
+/// the old one still has to play from then), where in the action that is, and the elapsed time
+/// it shows there.
+struct MovePlan {
+    /// At the old voice's device rate, `rate`.
+    table: Vec<Slice>,
+    rate: u32,
+    offset: u64,
+    shown: u64,
+    /// The drift the old voice's run carried by then (see [`VoiceRec::carried_drift`]).
+    carried_drift: i64,
+}
+
+/// Plans the move of voice `o` to another device on sample `swap` from its own state there:
+/// where its sound is in its table, the devamp cuts it has been given and whether the latest
+/// stops it. `None` when it has nothing left to play by then (it ended, or will have).
+fn move_plan(o: &VoiceRec, swap: SampleTime) -> Option<MovePlan> {
+    let here = o.position(swap.max(o.start_at)).unwrap_or(o.offset);
+    let played = here.saturating_sub(o.offset);
+    let table = rest_of_table(&o.table, &o.cuts, o.devamp_stop, o.table_point(played))?;
+    Some(MovePlan {
+        table,
+        rate: o.scale.local,
+        // The core's count goes on from the master clock's place; only the table follows
+        // the sound.
+        offset: here,
+        shown: o.shown.saturating_add(played),
+        carried_drift: o.carried_drift.saturating_add(o.drift),
+    })
+}
+
+impl VoiceRec {
+    /// Takes `plan` as what this move to another device plays, the core counting the run
+    /// `counted` frames in on its swap.
+    fn take_move_plan(&mut self, plan: MovePlan, counted: u64) {
+        self.offset = plan.offset;
+        self.rest = Some((plan.table, plan.rate));
+        self.shown = plan.shown;
+        self.delay = counted.saturating_sub(plan.offset);
+        self.carried_drift = plan.carried_drift;
+    }
+
+    /// The frame of its table (its device's frames) its sound has reached once its position
+    /// is `played` master frames past its start: its device's drift on, its underruns back.
+    /// Everything compared with its table (its devamp cuts, a move's plan, the file position,
+    /// the rest after a loop) is counted so, or a move would replay (or skip) the difference.
+    fn table_point(&self, played: u64) -> u64 {
+        let heard = i128::from(played) + i128::from(self.drift) - i128::from(self.late);
+        self.scale
+            .local(u64::try_from(heard.max(0)).unwrap_or(u64::MAX))
+    }
+}
+
+/// A stream ready for a voice.
+struct Ready {
+    /// Its frames and slice table are at `rate`.
+    stream: PreparedStream,
+    /// Frames its table plays, in master frames (`None`: it loops until devamped).
+    total: Option<u64>,
+    /// Its device's frames against the master clock's (`local`: the rate it was made for).
+    scale: Scale,
+    /// The time and loops its table was planned from, when planned from its cue.
+    planned: Option<Box<Planned>>,
+}
+
+/// A stream made for a voice.
+struct Made {
+    ready: Ready,
+    /// The elapsed time it shows at its start (see [`VoiceRec::shown`]).
+    shown: u64,
 }
 
 impl VoiceRec {
@@ -157,17 +422,28 @@ impl VoiceRec {
     /// engine skips the cue (QLab P5/G2); else `ActionFailed`. A loaded voice that was
     /// never started stays `ActionFailed` (the cue is loaded, not playing).
     fn failure(&self, reason: BrokenReason) -> Input {
-        let unplayed = match &self.phase {
-            Phase::Waiting { start, .. } => start.is_some(),
-            // `frames_written` counts frames the disk worker put in the ring, not frames the
-            // mixer played: frames in the ring are about to sound (or have), so a failure after
-            // any was written is taken as during play. A prime fills the ring before the start,
-            // but a prime whose stream failed is dropped every tick (`poll_streams`) and is never
-            // handed to a start, so it cannot make an unplayed start look played.
-            Phase::Playing => self.stream.as_ref().is_none_or(|h| h.frames_written() == 0),
-            Phase::Ended => false,
-        };
+        // A voice moved by a seek is the cue's sound going on: it played before.
+        let unplayed = !self.moved
+            && match &self.phase {
+                Phase::Waiting { start, .. } => start.is_some(),
+                // `frames_written` counts frames the disk worker put in the ring, not frames the
+                // mixer played: frames in the ring are about to sound (or have), so a failure after
+                // any was written is taken as during play. A prime fills the ring before the start,
+                // but a prime whose stream failed is dropped every tick (`poll_streams`) and is never
+                // handed to a start, so it cannot make an unplayed start look played.
+                Phase::Playing => self.stream.as_ref().is_none_or(|h| h.frames_written() == 0),
+                Phase::Ended => false,
+            };
         failure(self.cue, self.run, reason, unplayed)
+    }
+
+    /// Where its stream starts, as planned for it.
+    fn plan_of(&self) -> StartAt {
+        match (&self.rest, self.file) {
+            (Some((table, rate)), _) => StartAt::Table(table.clone(), *rate),
+            (None, Some(frame)) => StartAt::File(frame),
+            (None, None) => StartAt::Offset(self.offset),
+        }
     }
 
     /// Position in the action on rendered sample `t`, while playing.
@@ -185,8 +461,7 @@ impl VoiceRec {
 
 /// A prepared stream kept ready for a cue near the playhead.
 struct Prime {
-    prepared: PreparedStream,
-    total: Option<u64>,
+    ready: Ready,
     sig: Sig,
 }
 
@@ -200,8 +475,8 @@ struct Sig {
     preloaded: bool,
     start: u64,
     end: Option<u64>,
-    marks: Vec<(u64, u32)>,
-    last: u32,
+    marks: Vec<(u64, openlab_core::PlayCount)>,
+    last: openlab_core::PlayCount,
 }
 
 #[derive(Default)]
@@ -216,9 +491,17 @@ pub struct Voices {
     /// Ids that left since the last voice-meter read, and their cue: the read reports them once
     /// more.
     gone: Vec<(VoiceId, CueId)>,
+    /// Ids a lost device cut: the peaks their mixer still holds from before the loss are never
+    /// reported (their cues make no sound any more). Kept while the id can still be named.
+    unmetered: HashSet<VoiceId>,
+    /// Per cue, the sample before which a seek (or a load at a point of the file) prepares no
+    /// stream ([`SEEK_PREPARE_INTERVAL`]).
+    seek_gate: HashMap<CueId, SampleTime>,
     /// A show cue's record left since the last [`Voices::take_freed`]: a priming pass skips a
     /// cue that still has one, so the one after it is gone may prime the cue again.
     freed: bool,
+    /// While set, starts are held with this sequence (`Voices::apply_gated`).
+    gating: Option<u64>,
 }
 
 /// Why a voice could not be prepared.
@@ -233,6 +516,30 @@ enum PrepError {
 impl Voices {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Each playing voice takes its device's drift now, `drift(id)` in master frames (where a
+    /// move to another device plans from).
+    pub fn note_drifts(&mut self, drift: impl Fn(VoiceId) -> f64) {
+        for (&id, r) in &mut self.recs {
+            if matches!(r.phase, Phase::Playing) {
+                // `as` saturates; no clock drifts anywhere near that far.
+                r.drift = drift(id).round() as i64;
+            }
+        }
+    }
+
+    /// The drift voice `voice`'s run carried from the voices it was moved on from (see
+    /// [`VoiceRec::carried_drift`]); 0 for an unknown one.
+    pub fn carried_drift(&self, voice: VoiceId) -> i64 {
+        self.recs.get(&voice).map_or(0, |r| r.carried_drift)
+    }
+
+    /// The voice of run `run` while it plays.
+    pub fn playing(&self, run: RunId) -> Option<VoiceId> {
+        let id = *self.by_run.get(&run)?;
+        let r = self.recs.get(&id)?;
+        matches!(r.phase, Phase::Playing).then_some(id)
     }
 
     /// Voice records alive (loaded, waiting, playing or kept for a resume).
@@ -280,9 +587,12 @@ impl Voices {
 }
 
 mod actions;
+mod end_time;
 mod events;
 mod priming;
 mod queries;
+
+pub(super) use end_time::{Planned, new_end};
 
 impl VoiceRec {
     /// Notes that an accepted devamp leaves its loop on sample `at`. Answered again for the same
@@ -292,21 +602,22 @@ impl VoiceRec {
         let Some(played) = at.checked_sub(self.start_at) else {
             return;
         };
-        let played = played.saturating_sub(self.paused_frames);
+        let played = self.table_point(played.saturating_sub(self.paused_frames));
         if self.cuts.last().is_none_or(|&c| played > c) && self.cuts.len() < MAX_SLICES {
             self.cuts.push(played);
         }
     }
 
     /// The frame of the media file the voice is at when the action is `pos` frames in (the
-    /// table starts at the action offset); `None` without a table or past its end.
+    /// table starts at the action offset), in frames of the file at the master rate; `None`
+    /// without a table or past its end.
     fn file_frame(&self, pos: u64) -> Option<u64> {
-        let played = pos.saturating_sub(self.offset);
+        let played = self.table_point(pos.saturating_sub(self.offset));
         // A devamp stop ends the voice on the loop's boundary: nothing is played after it.
         if self.devamp_stop && self.cuts.last().is_some_and(|&c| c <= played) {
             return None;
         }
-        file_frame(&self.table, &self.cuts, played)
+        file_frame(&self.table, &self.cuts, played).map(|f| self.scale.master(f))
     }
 
     /// The action's length once a devamp leaves the loop it plays on sample `at`: where it is
@@ -319,7 +630,12 @@ impl VoiceRec {
         let rest = if self.devamp_stop {
             0
         } else {
-            rest_after_loop(&self.table, played)?
+            let left = self.table_point(played);
+            let rest = rest_after_loop(&self.table, left)?;
+            // Counted as one stretch from the voice's start, so the rounding never adds up.
+            self.scale
+                .master(left.saturating_add(rest))
+                .saturating_sub(self.scale.master(left))
         };
         Some(
             self.offset
@@ -369,6 +685,78 @@ pub fn file_frame(table: &[Slice], cuts: &[u64], played: u64) -> Option<u64> {
     let (k, within) = walk(table, entry, played - from)?;
     let s = table.get(k)?;
     Some(s.start.saturating_add(within.checked_rem(s.frames)?))
+}
+
+/// What a voice playing `table` from its start still has to play after `played` frames, as a
+/// table of its own (`cuts` and `stop` as for [`file_frame`]): the rest of the pass it is in,
+/// the passes of that slice still to come and every entry after it. A devamp cut still ahead
+/// ends that slice's plays there (it cuts on the end of a pass) and goes on with the entry after
+/// the slice, or nothing for a devamp stop. `None` once nothing is left: past a finite table's
+/// end, or past a devamp stop.
+pub fn rest_of_table(table: &[Slice], cuts: &[u64], stop: bool, played: u64) -> Option<Vec<Slice>> {
+    // The first entry after the slice of entry `k` (a slice split by a start offset is two).
+    let after = |k: usize| -> Option<usize> {
+        let index = table.get(k)?.index;
+        Some(
+            table
+                .iter()
+                .enumerate()
+                .skip(k + 1)
+                .find(|(_, s)| s.index != index)
+                .map_or(table.len(), |(n, _)| n),
+        )
+    };
+    let (mut entry, mut from) = (0usize, 0u64);
+    for &cut in cuts.iter().take_while(|&&c| c <= played) {
+        if stop {
+            return None;
+        }
+        let (k, _) = walk(table, entry, (cut - from).checked_sub(1)?)?;
+        entry = after(k)?;
+        from = cut;
+    }
+    let (k, within) = walk(table, entry, played - from)?;
+    let s = table.get(k)?;
+    let pass = within.checked_div(s.frames)?;
+    let at = within.checked_rem(s.frames)?;
+    let mut rest = vec![Slice {
+        start: s.start.saturating_add(at),
+        frames: s.frames - at,
+        plays: Plays::Times(1),
+        ..*s
+    }];
+    match cuts.iter().find(|&&c| c > played) {
+        Some(&cut) => {
+            // Whole passes of the slice before the cut (it cuts on the end of a pass).
+            let to_cut = (cut - from).saturating_sub(played - from);
+            let full = to_cut.saturating_sub(s.frames - at) / s.frames;
+            if let Ok(n @ 1..) = u32::try_from(full) {
+                rest.push(Slice {
+                    plays: Plays::Times(n),
+                    ..*s
+                });
+            }
+            if !stop {
+                rest.extend(table.get(after(k)?..)?.iter().copied());
+            }
+        }
+        None => {
+            match s.plays {
+                Plays::Infinite => rest.push(*s),
+                Plays::Times(n) => {
+                    let left = u64::from(n).saturating_sub(pass).saturating_sub(1);
+                    if let Ok(left @ 1..) = u32::try_from(left) {
+                        rest.push(Slice {
+                            plays: Plays::Times(left),
+                            ..*s
+                        });
+                    }
+                }
+            }
+            rest.extend(table.get(k + 1..)?.iter().copied());
+        }
+    }
+    Some(rest)
 }
 
 /// Frames the table plays after the loop entry whose play ends on frame `played` (counted from
@@ -432,6 +820,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         devamp_stop: false,
         cuts: Vec::new(),
         held: None,
+        gate: None,
         delay: 0,
         start_id: None,
         slot: None,
@@ -439,7 +828,144 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         former: Vec::new(),
         moves: 0,
         levelled: 0,
+        file: None,
+        shown: 0,
+        moved: false,
+        replaces: None,
+        retired: false,
+        swap_after: 0,
+        release_fade: Fade::NONE,
+        relocated: false,
+        rest: None,
+        swap_limit: 0,
+        retry_at: None,
+        gave_up: 0,
+        moved_from: None,
+        devamps_out: 0,
+        nothing_left: false,
+        drift: 0,
+        late: 0,
+        carried_drift: 0,
+        scale: Scale::new(1, 1),
+        planned: None,
     }
+}
+
+/// The gain `target` has on a voice's first sample: what `vs` starts it with (the duck stage at
+/// 1.0, its cap at the mixer's ceiling).
+fn initial_gain(vs: &VoiceStart, target: GainTarget) -> f32 {
+    let width = vs.cue_outputs.len();
+    match target {
+        GainTarget::Master => vs.gain,
+        GainTarget::Duck => 1.0,
+        GainTarget::DuckCap => openlab_audio::MAX_GAIN,
+        GainTarget::CueOutput(o) => vs.cue_outputs.get(usize::from(o)).copied().unwrap_or(0.0),
+        GainTarget::Crosspoint { input, output } => {
+            let (i, o) = (usize::from(input), usize::from(output));
+            if o >= width {
+                return 0.0;
+            }
+            vs.crosspoints
+                .get(i.saturating_mul(width).saturating_add(o))
+                .copied()
+                .unwrap_or(0.0)
+        }
+    }
+}
+
+/// One gain's ramp as the commands queued for a voice set it.
+#[derive(Clone, Copy, Debug)]
+struct Track {
+    target: GainTarget,
+    from: f32,
+    to: f32,
+    start: SampleTime,
+    fade: Fade,
+}
+
+impl Track {
+    /// The gain on sample `at`; the duck stage moves evenly in dB, as the mixer's does.
+    fn value(&self, at: SampleTime) -> f32 {
+        let pos = at.saturating_sub(self.start);
+        if pos >= self.fade.frames {
+            return self.to;
+        }
+        if self.target == GainTarget::Duck {
+            let floor = 1e-6_f64;
+            let from = f64::from(self.from).max(floor);
+            let to = f64::from(self.to).max(floor);
+            let t = pos as f64 / self.fade.frames as f64;
+            return (from * (to / from).powf(t)) as f32;
+        }
+        openlab_audio::ramp_value(self.from, self.to, pos, self.fade.frames, self.fade.curve)
+    }
+}
+
+/// The commands queued for a voice that starts on `at`, caught up with time: every gain a
+/// command before `at` set is set on `at` to where it stands then (`initial` gives a gain's
+/// value before any command), followed by the rest of a ramp still moving, so it ends on the
+/// sample it was planned to; commands from `at` on (and devamps) are kept as they are, after.
+fn caught_up(
+    queue: Vec<(SampleTime, Queued)>,
+    at: SampleTime,
+    initial: impl Fn(GainTarget) -> f32,
+) -> Vec<(SampleTime, Queued)> {
+    let mut tracks: Vec<Track> = Vec::new();
+    let mut later = Vec::new();
+    for (t, q) in queue {
+        match q {
+            Queued::Ramp { target, gain, fade } if t < at => {
+                let from = tracks
+                    .iter()
+                    .find(|k| k.target == target)
+                    .map_or_else(|| initial(target), |k| k.value(t));
+                // The mixer sets a voice's first cap at once (from no cap there is no step to
+                // smooth), whatever the ramp asked.
+                let fade = if target == GainTarget::DuckCap && from >= openlab_audio::MAX_GAIN {
+                    Fade::NONE
+                } else {
+                    fade
+                };
+                let track = Track {
+                    target,
+                    from,
+                    to: gain,
+                    start: t,
+                    fade,
+                };
+                match tracks.iter_mut().find(|k| k.target == target) {
+                    Some(k) => *k = track,
+                    None => tracks.push(track),
+                }
+            }
+            Queued::Ramp { .. } => later.push((t, q)),
+            Queued::Devamp { .. } => later.push((t.max(at), q)),
+        }
+    }
+    let mut out = Vec::with_capacity(tracks.len() * 2 + later.len());
+    for k in &tracks {
+        out.push((
+            at,
+            Queued::Ramp {
+                target: k.target,
+                gain: k.value(at),
+                fade: Fade::NONE,
+            },
+        ));
+        let end = k.start.saturating_add(k.fade.frames);
+        if end > at && k.value(at) != k.to {
+            out.push((
+                at,
+                Queued::Ramp {
+                    target: k.target,
+                    gain: k.to,
+                    fade: Fade::new(end - at, k.fade.curve),
+                },
+            ));
+        }
+    }
+    out.extend(later);
+    out
 }
 
 fn queued(id: VoiceId, q: Queued) -> CommandKind {
@@ -464,16 +990,18 @@ pub fn to_curve(c: FadeCurve) -> Curve {
     }
 }
 
-fn target(p: LevelParam) -> GainTarget {
+/// The mixer gain `p` names; `None` for a picture's value (VID-05), which no voice has.
+fn target(p: LevelParam) -> Option<GainTarget> {
     let clamp = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
-    match p {
+    Some(match p {
         LevelParam::Master => GainTarget::Master,
         LevelParam::Output(o) => GainTarget::CueOutput(clamp(o)),
         LevelParam::Crosspoint { input, output } => GainTarget::Crosspoint {
             input: clamp(input),
             output: clamp(output),
         },
-    }
+        LevelParam::Picture(_) => return None,
+    })
 }
 
 fn plan_spec(kind: &CueKind) -> Option<PlanSpec<'_>> {
@@ -490,13 +1018,43 @@ fn plan_spec(kind: &CueKind) -> Option<PlanSpec<'_>> {
             slices,
             last_slice_play_count: *last_slice_play_count,
         }),
+        // A Video cue's sound plays its picture's plan.
+        CueKind::Video { timing, .. } => Some(PlanSpec {
+            start_time: timing.start_time,
+            end_time: timing.end_time,
+            slices: &timing.slices,
+            last_slice_play_count: timing.last_slice_play_count,
+        }),
         _ => None,
     }
 }
 
 fn cue_media(ws: &Workspace, cue: CueId) -> Option<String> {
     match &ws.find_cue(cue)?.kind {
-        CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
+        CueKind::Audio { media: Some(m), .. } | CueKind::Video { media: Some(m), .. } => {
+            Some(m.as_str().to_owned())
+        }
+        _ => None,
+    }
+}
+
+/// What a cue's voice is routed and faded by: its patch, its levels and its integrated fades
+/// (an Audio cue's, or those of a Video cue with a patch for its sound).
+fn sound_of(kind: &CueKind) -> Option<(PatchId, &CueLevels, &FadeSpec, &FadeSpec)> {
+    match kind {
+        CueKind::Audio {
+            patch,
+            levels,
+            fade_in,
+            fade_out,
+            ..
+        } => Some((*patch, levels, fade_in, fade_out)),
+        CueKind::Video { timing, sound, .. } => Some((
+            sound.patch?,
+            &sound.levels,
+            &timing.fade_in,
+            &timing.fade_out,
+        )),
         _ => None,
     }
 }
@@ -510,33 +1068,54 @@ pub(super) fn cue_of<'a>(env: &Env<'a>, id: CueId) -> Option<&'a Cue> {
         .or_else(|| env.ws.find_cue(id))
 }
 
+/// The rate a voice of `cue` plays at: its patch's device's (the master clock's while the
+/// patch has no mixer slot).
+fn rate_for(env: &Env<'_>, cue: CueId) -> u32 {
+    let master = env.rate.get();
+    let Some(patch) = cue_of(env, cue).and_then(|c| c.kind.sound_patch()) else {
+        return master;
+    };
+    env.patches
+        .mixer_patch(env.doc, patch)
+        .and_then(|slot| env.patches.slot_output(slot))
+        .and_then(|key| env.rates.get(key).copied())
+        .unwrap_or(master)
+}
+
 fn sig_of(env: &Env<'_>, cue: CueId) -> Option<Sig> {
     let c = cue_of(env, cue)?;
-    let CueKind::Audio {
-        media: Some(media),
-        start_time,
-        end_time,
-        slices,
-        last_slice_play_count,
-        ..
-    } = &c.kind
-    else {
-        return None;
-    };
-    let Some(Probe::Ready(ready)) = env.media.get(media.as_str()) else {
-        return None;
+    let spec = plan_spec(&c.kind)?;
+    let (media, probe, preloaded) = match &c.kind {
+        CueKind::Audio {
+            media: Some(media), ..
+        } => {
+            let Some(Probe::Ready(ready)) = env.media.get(media.as_str()) else {
+                return None;
+            };
+            let preloaded = env.media.is_preloaded(media.as_str());
+            (media, Arc::as_ptr(ready) as usize, preloaded)
+        }
+        // A Video cue's sound: the probe of the audio track it plays.
+        CueKind::Video {
+            media: Some(media),
+            sound,
+            ..
+        } => {
+            let (ready, _) = env.media.sound(media.as_str(), sound.audio_track)?;
+            (media, Arc::as_ptr(&ready) as usize, false)
+        }
+        _ => return None,
     };
     Some(Sig {
         media: media.as_str().to_owned(),
-        probe: Arc::as_ptr(ready) as usize,
-        preloaded: env.media.is_preloaded(media.as_str()),
-        start: start_time.to_bits(),
-        end: end_time.map(f64::to_bits),
-        marks: slices
-            .iter()
+        probe,
+        preloaded,
+        start: spec.start_time.to_bits(),
+        end: spec.end_time.map(f64::to_bits),
+        marks: (spec.slices.iter())
             .map(|m| (m.time.to_bits(), m.play_count))
             .collect(),
-        last: *last_slice_play_count,
+        last: spec.last_slice_play_count,
     })
 }
 
@@ -547,6 +1126,17 @@ fn frames(spec: &FadeSpec, rate: NonZeroU32) -> Fade {
     )
 }
 
+/// How a voice fades in on its first frames.
+#[derive(Clone, Copy, Debug)]
+enum FadeIn {
+    /// The cue's own fade-in: a start from the top.
+    Cue,
+    /// None: a start part way in (load to time) begins past the fade-in.
+    None,
+    /// A seek's crossfade, the voice it moves from fading out meanwhile.
+    Crossfade(Fade),
+}
+
 /// The mixer start of `cue`'s voice `id` on `prepared`, routed and levelled as the model says
 /// now: master, cue outputs (those beyond the patch's outputs are silent), crosspoints, fades.
 fn voice_start(
@@ -554,21 +1144,12 @@ fn voice_start(
     cue: CueId,
     prepared: PreparedStream,
     id: VoiceId,
-    offset: u64,
+    fade_in: FadeIn,
 ) -> Option<(Box<VoiceStart>, StreamHandle)> {
     let c = env.ws.find_cue(cue)?;
-    let CueKind::Audio {
-        patch,
-        levels,
-        fade_in,
-        fade_out,
-        ..
-    } = &c.kind
-    else {
-        return None;
-    };
-    let mixer_patch = env.patches.mixer_patch(env.doc, *patch)?;
-    let patch_outputs = env.patches.outputs(env.doc, *patch);
+    let (patch, levels, cue_fade_in, fade_out) = sound_of(&c.kind)?;
+    let mixer_patch = env.patches.mixer_patch(env.doc, patch)?;
+    let patch_outputs = env.patches.outputs(env.doc, patch);
     // As many cue outputs as the patch has (a voice costs the mixer only those); a later move
     // to a bigger patch widens it with the ramps that give the new outputs their levels.
     let width = patch_outputs.clamp(1, env.cue_outputs.max(1));
@@ -590,11 +1171,10 @@ fn voice_start(
             vs.set_crosspoint(input, output, db_to_gain(xp.db));
         }
     }
-    // A start part way in (load to time) begins past the fade-in.
-    vs.fade_in = if offset == 0 {
-        frames(fade_in, env.rate)
-    } else {
-        Fade::NONE
+    vs.fade_in = match fade_in {
+        FadeIn::Cue => frames(cue_fade_in, env.rate),
+        FadeIn::None => Fade::NONE,
+        FadeIn::Crossfade(fade) => fade,
     };
     vs.fade_out = frames(fade_out, env.rate);
     Some((Box::new(vs), handle))
@@ -635,6 +1215,151 @@ mod tests {
         assert_eq!(file_frame(&t, &[500, 700], 750), None);
         assert_eq!(file_frame(&t[3..], &[10], 20), None);
         assert_eq!(file_frame(&[], &[], 0), None);
+    }
+
+    /// A looping voice that underran 300 frames is devamped out of its loop (it leaves on
+    /// master sample 2300, table frame 2000), then moved with the swap on master 2400: its
+    /// sound is 100 frames into the slice after the loop, and the move plays on from there,
+    /// not the loop again. Likewise on a device whose clock ran 300 frames slow.
+    #[test]
+    fn a_move_after_a_devamp_cut_counts_the_cut_and_the_sound_in_the_same_frames() {
+        let s = |index, start, frames, plays| Slice {
+            index,
+            start,
+            frames,
+            plays,
+        };
+        let table = vec![
+            s(0, 0, 1000, Plays::Infinite),
+            s(1, 1000, 500, Plays::Times(1)),
+        ];
+        for (late, drift) in [(300, 0), (0, -300)] {
+            let mut o = rec(CueId(uuid::Uuid::from_u128(1)), RunId(1), false);
+            o.table = table.clone();
+            o.late = late;
+            o.drift = drift;
+            o.note_devamp_cut(2300);
+            assert_eq!(o.cuts, vec![2000], "late {late}, drift {drift}");
+            let plan = move_plan(&o, 2400).expect("something left");
+            assert_eq!(
+                plan.table,
+                vec![s(1, 1100, 400, Plays::Times(1))],
+                "late {late}, drift {drift}"
+            );
+            // The file position shown follows the sound too.
+            assert_eq!(o.file_frame(2400), Some(1100), "late {late}, drift {drift}");
+        }
+    }
+
+    /// What a voice still has to play, for a move to another device: the rest of its pass, the
+    /// passes to come and what follows; a devamp cut ahead ends the loop on its pass and goes on
+    /// after the slice (nothing for a stop); nothing past the end or past a devamp stop.
+    #[test]
+    fn rest_of_table_follows_passes_cuts_and_stops() {
+        let s = |index, start, frames, plays| Slice {
+            index,
+            start,
+            frames,
+            plays,
+        };
+        // Slice 0 (0..100) three times, slice 1 (100..200) for ever, slice 2 (200..250) twice.
+        let t = [
+            s(0, 0, 100, Plays::Times(3)),
+            s(1, 100, 100, Plays::Infinite),
+            s(2, 200, 50, Plays::Times(2)),
+        ];
+        // 30 into slice 0's second pass: 70 more of it, one more pass, then the rest.
+        assert_eq!(
+            rest_of_table(&t, &[], false, 130),
+            Some(vec![
+                s(0, 30, 70, Plays::Times(1)),
+                s(0, 0, 100, Plays::Times(1)),
+                t[1],
+                t[2]
+            ])
+        );
+        // In the loop with a devamp cut at the end of its pass after next: this pass's rest,
+        // one whole pass, then slice 2 (none of it for a stop).
+        let cut = 300 + 300;
+        assert_eq!(
+            rest_of_table(&t, &[cut], false, 420),
+            Some(vec![
+                s(1, 120, 80, Plays::Times(1)),
+                s(1, 100, 100, Plays::Times(1)),
+                t[2]
+            ])
+        );
+        assert_eq!(
+            rest_of_table(&t, &[cut], true, 420),
+            Some(vec![
+                s(1, 120, 80, Plays::Times(1)),
+                s(1, 100, 100, Plays::Times(1))
+            ])
+        );
+        // Past the cut: slice 2 from where the voice is in it, its second pass to come.
+        assert_eq!(
+            rest_of_table(&t, &[cut], false, cut + 10),
+            Some(vec![
+                s(2, 210, 40, Plays::Times(1)),
+                s(2, 200, 50, Plays::Times(1))
+            ])
+        );
+        // Past a devamp stop, or past the end of the table: nothing.
+        assert_eq!(rest_of_table(&t, &[cut], true, cut), None);
+        assert_eq!(rest_of_table(&t, &[cut], false, cut + 100), None);
+        assert_eq!(rest_of_table(&[], &[], false, 0), None);
+    }
+
+    /// Commands queued while a move waited are caught up on the swap: each gain where it stands
+    /// then and the rest of its ramp, ending on its planned sample; later commands kept.
+    #[test]
+    fn queued_ramps_are_caught_up_with_the_swap() {
+        let ramp = |target, gain, frames| Queued::Ramp {
+            target,
+            gain,
+            fade: Fade::new(frames, Curve::Linear),
+        };
+        let queue = vec![
+            // Master from 1.0 to 0.0 over 100 from 100: half way on 150.
+            (100, ramp(GainTarget::Master, 0.0, 100)),
+            // An output set at once, then over by the swap.
+            (110, ramp(GainTarget::CueOutput(1), 0.25, 0)),
+            (120, ramp(GainTarget::CueOutput(0), 0.5, 10)),
+            // A first cap is set at once, as the mixer sets it (no ramp down from no cap).
+            (100, ramp(GainTarget::DuckCap, 4.0, 100)),
+            // The duck stage halves in dB terms: from 1.0 to 0.01 over 100 from 100.
+            (100, ramp(GainTarget::Duck, 0.01, 100)),
+            (150, ramp(GainTarget::Master, 1.0, 0)),
+            (160, Queued::Devamp { stop: false }),
+        ];
+        let out = caught_up(queue, 150, |t| match t {
+            GainTarget::CueOutput(_) => 2.0,
+            GainTarget::DuckCap => openlab_audio::MAX_GAIN,
+            _ => 1.0,
+        });
+        type Got = (SampleTime, Option<(GainTarget, f32, u64)>);
+        let got: Vec<Got> = out
+            .iter()
+            .map(|(t, q)| match q {
+                Queued::Ramp { target, gain, fade } => (*t, Some((*target, *gain, fade.frames))),
+                Queued::Devamp { .. } => (*t, None),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (150, Some((GainTarget::Master, 0.5, 0))),
+                (150, Some((GainTarget::Master, 0.0, 50))),
+                (150, Some((GainTarget::CueOutput(1), 0.25, 0))),
+                (150, Some((GainTarget::CueOutput(0), 0.5, 0))),
+                (150, Some((GainTarget::DuckCap, 4.0, 0))),
+                (150, Some((GainTarget::Duck, 0.1, 0))),
+                (150, Some((GainTarget::Duck, 0.01, 50))),
+                // On the swap sample itself: kept, after.
+                (150, Some((GainTarget::Master, 1.0, 0))),
+                (160, None),
+            ]
+        );
     }
 
     fn s(index: u32, start: u64, frames: u64, plays: Plays) -> Slice {
@@ -679,21 +1404,35 @@ mod tests {
     }
 
     /// A voice the mixer reports ended on its pause sample is gone (the engine takes it
-    /// as the end and sends no resume); one ended after it is kept for the resume. Show cues and
+    /// as the end and sends no resume); one ended after it is kept for the resume, while the
+    /// engine still holds its run. Show cues and
     /// previews alike: a kept show-cue record would block its cue's prime.
     #[test]
     fn an_end_on_the_pause_sample_frees_the_record_and_one_after_it_keeps_it() {
         let cue = CueId(uuid::Uuid::from_u128(1));
         for preview in [false, true] {
-            for (at, kept) in [(99, false), (100, false), (101, true)] {
+            // The last: the engine dropped the run since the pause, so no resume can follow.
+            for (at, held, kept) in [
+                (99, true, false),
+                (100, true, false),
+                (101, true, true),
+                (101, false, false),
+            ] {
                 let mut v = Voices::new();
                 let run = RunId(7);
                 let mut r = rec(cue, run, preview);
                 r.paused_at = Some(100);
                 v.insert(VoiceId(1), r);
                 let mut fx = Effects::default();
-                v.finished(VoiceId(1), at, FinishReason::EndOfStream, &mut fx);
-                let case = format!("preview {preview}, end on {at}");
+                let end = FinishReason::EndOfStream;
+                v.finished(
+                    VoiceId(1),
+                    at,
+                    end,
+                    &|c, r| held && (c, r) == (cue, run),
+                    &mut fx,
+                );
+                let case = format!("preview {preview}, end on {at}, run held {held}");
                 assert_eq!(
                     fx.feedback,
                     vec![Input::ActionEnded { cue, run, at }],
@@ -717,7 +1456,13 @@ mod tests {
             r.paused_at = paused_at;
             v.insert(VoiceId(1), r);
             let mut fx = Effects::default();
-            v.finished(VoiceId(1), 200, FinishReason::Faulted, &mut fx);
+            v.finished(
+                VoiceId(1),
+                200,
+                FinishReason::Faulted,
+                &|_, _| true,
+                &mut fx,
+            );
             assert!(
                 matches!(
                     fx.feedback.as_slice(),
@@ -736,6 +1481,64 @@ mod tests {
             assert_eq!(fx.notices[0].0, "audio_fault");
             assert_eq!(fx.notices[0].2, Some(cue));
             assert!(v.is_idle());
+        }
+    }
+
+    /// #788 review: the voice a move to another device is taking over ends (a fault, or its
+    /// stream failing) before it answers a devamp sent to it: the waiting moved voice takes
+    /// the devamp into its queue, to carry it out and answer it, and is no longer held for that
+    /// answer; nothing is left pointing at the gone voice.
+    #[test]
+    fn a_devamp_whose_old_voice_ends_unanswered_goes_to_the_moved_voice() {
+        let cue = CueId(uuid::Uuid::from_u128(1));
+        for (reason, stream_failed) in [
+            (FinishReason::Faulted, false),
+            (FinishReason::EndOfStream, true),
+        ] {
+            let mut v = Voices::new();
+            let mut old = rec(cue, RunId(1), false);
+            old.retired = true;
+            old.devamps_out = 1;
+            old.devamp_stop = true;
+            old.stream_failed = stream_failed;
+            v.insert(VoiceId(1), old);
+            let moved = VoiceRec {
+                phase: Phase::Waiting {
+                    prepared: None,
+                    start: Some(500),
+                    paused: false,
+                    queue: Vec::new(),
+                },
+                relocated: true,
+                moved: true,
+                replaces: Some(VoiceId(1)),
+                moved_from: Some(VoiceId(1)),
+                ..rec(cue, RunId(2), false)
+            };
+            v.insert(VoiceId(2), moved);
+            let mut fx = Effects::default();
+            v.finished(VoiceId(1), 200, reason, &|_, _| true, &mut fx);
+            assert!(fx.feedback.is_empty(), "{:?}", fx.feedback);
+            assert!(!v.recs.contains_key(&VoiceId(1)));
+            let w = &v.recs[&VoiceId(2)];
+            assert_eq!(w.moved_from, None);
+            let Phase::Waiting { queue, .. } = &w.phase else {
+                panic!("the move still waits");
+            };
+            assert!(
+                matches!(queue.as_slice(), [(_, Queued::Devamp { stop: true })]),
+                "{queue:?}"
+            );
+            // An answer under the gone id later is no one's.
+            v.event(
+                Event::DevampScheduled {
+                    voice: VoiceId(1),
+                    at: 900,
+                },
+                &|_, _| true,
+                &mut fx,
+            );
+            assert!(fx.feedback.is_empty(), "{:?}", fx.feedback);
         }
     }
 
@@ -797,7 +1600,13 @@ mod tests {
         v.insert(VoiceId(2), rec(cue, RunId(8), false));
         v.aliases.insert(VoiceId(1), (VoiceId(2), RunId(7)));
         let mut fx = Effects::default();
-        v.finished(VoiceId(1), 200, FinishReason::Faulted, &mut fx);
+        v.finished(
+            VoiceId(1),
+            200,
+            FinishReason::Faulted,
+            &|_, _| true,
+            &mut fx,
+        );
         assert!(fx.deferred.is_empty(), "{:?}", fx.deferred);
         assert!(
             matches!(

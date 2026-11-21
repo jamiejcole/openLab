@@ -214,41 +214,89 @@ fn a_failed_stream_probes_the_file_it_read_not_the_cues_current_one() {
     assert_eq!(probed, vec![a], "only the file that failed is probed");
 }
 
-/// The file `probe_then_change` overwrites right after its first probe of it.
-static CHANGE_AFTER_PROBE: std::sync::Mutex<Option<std::path::PathBuf>> =
+/// A file whose next probe `stale_probe` answers with another file's probe, and that file.
+static STALE_PROBE: std::sync::Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>> =
     std::sync::Mutex::new(None);
 
-fn probe_then_change(
-    p: &std::path::Path,
-) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
+/// A probe whose next answer for the file in `STALE_PROBE` describes the other file there: the
+/// file changed right after it was read. Nothing is written to the file, so a scanner holding
+/// it (on Windows an antivirus scan can make a truncate fail) cannot stop the change.
+fn stale_probe(p: &std::path::Path) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
     let probed = gated_probe(p);
-    if let Ok(mut target) = CHANGE_AFTER_PROBE.lock()
-        && target.as_deref() == Some(p)
-    {
-        *target = None;
-        let _ = std::fs::write(p, std::fs::read(wav(&dc(1500, 0.5))).unwrap_or_default());
+    let mut stale = STALE_PROBE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match stale.take() {
+        Some((file, from)) if file == p => openlab_audio::probe(&from),
+        other => {
+            *stale = other;
+            probed
+        }
     }
-    probed
+}
+
+/// The disk worker is held between publishing a stream's failure and letting go of its ring.
+fn hold_after_failure() {
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}
+
+#[test]
+fn a_stream_failure_is_never_missed_by_the_voice_that_ends_with_it() {
+    // The voice ends as soon as its stream lets go of the ring; the failure must already be
+    // published then, or the end is taken for a clean one: no broken cue, no new probe.
+    let path = wav(&dc(2000, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.probe = gated_probe;
+    c.streamer.after_failure = hold_after_failure;
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    wait_probed(std::slice::from_ref(&path), 1);
+    s.settle_media();
+    std::fs::write(&path, std::fs::read(wav(&dc(1500, 0.5))).unwrap()).unwrap();
+    go(&mut s);
+    // Not `run`: that waits for the worker to feed the voice, and so for the failure.
+    let mut blocks = 0;
+    while s.control().engine().state(id(1)) == CueState::Running && blocks < 4000 {
+        s.run_unsettled(BLOCK);
+        s.wait_step();
+        blocks += 1;
+    }
+    s.settle_media();
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    let st = states(&s.take_outbound(), id(1));
+    assert_eq!(
+        st.last(),
+        Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
+    );
+    assert_eq!(
+        probe_order(std::slice::from_ref(&path)).len(),
+        2,
+        "probed again"
+    );
 }
 
 #[test]
 #[allow(clippy::unwrap_used)]
 fn a_stream_prepared_after_a_relink_probes_the_file_it_read() {
     // Cue 1 waits for `a`'s probe, is relinked to `b`, and its stream is prepared from `b`
-    // when b's probe lands. b changes right after that probe, so the stream fails: `b` is
-    // probed again, not `a` (the file the record was made for).
+    // when b's probe lands. That probe describes a longer file than `b` (b changed right after
+    // it was read), so the stream fails: `b` is probed again, not `a` (the file the record was
+    // made for).
     let a = wav(&dc(2000, 0.5));
-    let b = wav(&dc(40_000, 0.5));
+    let b = wav(&dc(1500, 0.5));
+    let longer = wav(&dc(40_000, 0.5));
     let ws = workspace(vec![audio(1, &a, 0), audio(2, &a, 1)]);
     let mut c = config(&ws);
     c.prime_cues = 0;
-    c.probe = probe_then_change;
+    c.probe = stale_probe;
+    c.streamer.after_failure = hold_after_failure;
     // The watchdog's clock stands still: the held probe of `a` is never given up on.
     c.probe_clock = ProbeTime::new().clock();
     gate(&a);
     let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
     wait_probed(std::slice::from_ref(&a), 1);
-    *CHANGE_AFTER_PROBE.lock().unwrap() = Some(b.clone());
+    *STALE_PROBE.lock().unwrap() = Some((b.clone(), longer));
     go(&mut s);
     let mut kind = s
         .control()
@@ -261,9 +309,18 @@ fn a_stream_prepared_after_a_relink_probes_the_file_it_read() {
         *media = Some(openlab_core::MediaRef::new(b.to_str().unwrap()));
     }
     set_kind(&mut s, 1, kind);
-    // b's probe lands while a's is still held; the failed stream is seen by the next ticks.
+    // b's probe lands while a's is still held; the stream prepared from it fails on its disk
+    // thread, whenever that runs. Render until b is asked for again, so the voice's end is met
+    // too (a fixed number of blocks would end before a slow thread got there).
     wait_probed(std::slice::from_ref(&b), 1);
-    s.run_unsettled(BLOCK * 16);
+    let both = [a.clone(), b.clone()];
+    let mut blocks = 0;
+    while probe_order(&both).len() < 3 {
+        assert!(blocks < 4000, "b is asked for again once its stream failed");
+        s.run_unsettled(BLOCK);
+        s.wait_step();
+        blocks += 1;
+    }
     release(&a);
     s.settle_media();
     s.run(BLOCK * 4);
@@ -1415,6 +1472,65 @@ fn a_cue_primed_from_disk_is_primed_again_from_memory_when_its_preload_lands() {
 }
 
 #[test]
+fn a_retargeted_cue_at_the_playhead_has_its_new_target_primed_and_a_reset_primes_the_saved_one() {
+    // Start cue 2 stands by (its target, sound 3, primed); a Target cue (1), fired with the
+    // playhead left on cue 2, points it at sound 5: 5 is primed instead and GO uses that prime.
+    // A reset of cue 2 brings the prime back to 3. One cue looked ahead, so only the standing-by
+    // cue's target is primed.
+    let path = wav(&dc(48_000, 0.5));
+    let ws = workspace(vec![
+        cue(
+            2,
+            CueKind::Start {
+                target: Some(id(3)),
+            },
+        ),
+        cue(
+            1,
+            CueKind::Target {
+                target: Some(id(2)),
+                new_target: Some(id(5)),
+            },
+        ),
+        audio(3, &path, 0),
+        audio(5, &path, 1),
+    ]);
+    let mut config = config(&ws);
+    config.prime_cues = 1;
+    let mut s = show_with(ws, config);
+    s.run(BLOCK);
+    assert_eq!(s.control().primed(), vec![id(3)]);
+    start(&mut s, 1);
+    s.run(BLOCK);
+    assert_eq!(
+        s.control().primed(),
+        vec![id(5)],
+        "the new target is primed"
+    );
+    let hits = s.control().prime_hits();
+    go(&mut s);
+    s.run(BLOCK);
+    assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
+    assert_eq!(s.control().engine().state(id(5)), CueState::Running);
+    // Back on cue 2, reset: the saved target is primed again.
+    s.transport(TransportAction::StopAll);
+    s.transport(TransportAction::SetPlayhead {
+        list: list_id(),
+        cue: Some(id(2)),
+    });
+    // The stopped voice lets go, then cue 5 is primed again for the next GO.
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().primed(), vec![id(5)]);
+    s.transport(TransportAction::Reset { cue: id(2) });
+    s.run(BLOCK);
+    assert_eq!(
+        s.control().primed(),
+        vec![id(3)],
+        "a reset primes the saved target"
+    );
+}
+
+#[test]
 #[allow(clippy::unwrap_used)]
 fn an_edit_to_a_primed_cue_is_heard_at_go_not_the_old_prime() {
     // A prime is reused only while its cue's signature (its own file, start, end, slices)
@@ -1501,7 +1617,7 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
                 ..
             } = k
             {
-                *last_slice_play_count = count;
+                *last_slice_play_count = count.into();
             }
         });
         assert_eq!(length(&s, 1), expected, "play count {count}");
@@ -2012,4 +2128,45 @@ fn hanging_waveform_reads_never_hold_up_a_probe() {
         waveform_of(second.try_recv().ok()).channels[0].max,
         vec![16384; 10]
     );
+}
+
+/// A test can lengthen or shorten the offline driver's waits for other threads (for tests whose
+/// workers lean on a slow platform framework): with a zero wait, a condition that never holds
+/// is looked at once and the wait counted as a stall, not looked at for the default 30 s.
+#[test]
+fn the_offline_drivers_waits_end_at_the_settle_timeout_a_test_sets() {
+    let mut s = show(workspace(vec![]));
+    s.set_settle_timeout(std::time::Duration::ZERO);
+    let looks = std::cell::Cell::new(0);
+    let held = s.wait_for(|_| {
+        looks.set(looks.get() + 1);
+        false
+    });
+    assert!(!held);
+    assert_eq!(looks.get(), 1);
+    assert_eq!(s.stalls(), 1);
+}
+
+/// A wait for another thread that takes the slow-wait time or longer is reported as it ends,
+/// naming what was waited for, the test and the line that waited, so a run that is only slow
+/// still says where its time went; a quick wait is not reported.
+#[test]
+fn the_offline_driver_reports_a_slow_wait_with_the_test_and_line_that_waited() {
+    let mut s = show(workspace(vec![]));
+    assert!(s.wait_for(|_| true));
+    assert!(s.slow_waits().is_empty(), "{:?}", s.slow_waits());
+    s.set_settle_timeout(std::time::Duration::ZERO);
+    s.set_slow_wait(std::time::Duration::ZERO);
+    let line = line!() + 1;
+    assert!(!s.wait_for(|_| false));
+    let [report] = s.slow_waits() else {
+        panic!("{:?}", s.slow_waits())
+    };
+    assert!(report.contains("a condition (gave up)"), "{report}");
+    assert!(
+        report
+            .contains("the_offline_driver_reports_a_slow_wait_with_the_test_and_line_that_waited"),
+        "{report}"
+    );
+    assert!(report.contains(&format!("media.rs:{line}:")), "{report}");
 }

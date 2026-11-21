@@ -261,9 +261,9 @@ extension WorkspaceSettingsWindowController {
 
     @objc private func patchDeviceChosen(_ sender: NSPopUpButton) {
         guard let row = row(at: sender.tag) else { return }
-        let name = sender.selectedItem?.representedObject as? String
+        let choice = sender.selectedItem?.representedObject
         Task {
-            await model.setMapping(row, device: name)
+            await model.choose(choice, for: row)
             redrawPatches()
         }
     }

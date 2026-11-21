@@ -1,0 +1,25 @@
+{
+  "about": "A Load cue loads an Audio cue to 12 s: the cue's Time & Loops timeline shows the position line at 12 s with the row marked loaded; GO then plays from there with the play line moving on; light appearance.",
+  "show": "Loaded",
+  "appearance": "light",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1000, "height": 700},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 0.3},
+    {"shot": "before-the-load-cue"},
+    {"select": "2"},
+    {"key": "space"},
+    {"advance": 0.5},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 0.3},
+    {"shot": "loaded-to-12-seconds"},
+    {"key": "space"},
+    {"advance": 1},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"shot": "playing-from-12-seconds"}
+  ]
+}

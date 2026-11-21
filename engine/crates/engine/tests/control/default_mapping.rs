@@ -20,8 +20,8 @@ use openlab_core::{
     Command, CueKind, CueState, DeviceInfo, MachineSettings, PatchMapping, Position, Workspace,
     WorkspaceId,
 };
-use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
+use openlab_engine::control::{ControlConfig, MAX_OUTPUTS};
 use openlab_engine::persist::{load_machine_settings, load_machine_settings_checked};
 
 /// A config with no mapping for anybody, the given devices and settings stored in `env`.
@@ -167,6 +167,35 @@ fn a_new_workspace_plays_without_a_mapping_step() {
     assert_eq!(mapping(&snap.workspace, &loaded.settings), Some(m));
 }
 
+/// A new workspace gets a patch for each connected output device only up to the number of
+/// devices the engine plays on at once: more devices get none, and each patch made is mapped
+/// to its own device.
+#[test]
+fn a_new_workspace_has_no_more_patches_than_devices_the_engine_can_open() {
+    let env = env();
+    let devices = (0..MAX_OUTPUTS + 4)
+        .map(|n| device(&format!("Device {n}"), 2))
+        .collect();
+    let mut c = bare(&env, devices);
+    c.mixer_patches = MAX_OUTPUTS + 1;
+    let mut s = show_with(workspace(vec![]), c);
+    let snap = new_workspace(&mut s);
+    let ws = &snap.workspace;
+    assert_eq!(ws.patches.len(), MAX_OUTPUTS);
+    assert_eq!(
+        ws.patches[MAX_OUTPUTS - 1].name,
+        format!("Patch {MAX_OUTPUTS}")
+    );
+    for (n, patch) in ws.patches.iter().enumerate() {
+        let m = s
+            .control()
+            .machine()
+            .patch_mapping(ws.id, patch.id)
+            .unwrap();
+        assert_eq!(m.device, format!("Device {n}"));
+    }
+}
+
 #[test]
 fn an_existing_mapping_is_kept() {
     let env = env();
@@ -176,6 +205,7 @@ fn an_existing_mapping_is_kept() {
     let kept = PatchMapping {
         device: "Other".into(),
         channels: vec![1, 0],
+        system: false,
     };
     machine
         .set_patch_mapping(ws.id, patch_id(), kept.clone())
@@ -206,6 +236,7 @@ fn a_show_with_no_mapping_on_this_machine_is_mapped() {
             PatchMapping {
                 device: "Elsewhere".into(),
                 channels: vec![6, 7],
+                system: false,
             },
         )
         .unwrap();
@@ -229,30 +260,29 @@ fn a_show_with_no_mapping_on_this_machine_is_mapped() {
     assert_eq!(mapping(&other, &loaded).unwrap().channels, vec![6, 7]);
 }
 
+/// A device with fewer outputs than the patch: the patch is mapped on the outputs it has (cue
+/// output n to device output n, as QLab 5 routes it), the others have none, and its cues play.
 #[test]
-fn a_device_with_too_few_outputs_leaves_the_patch_unmapped_with_one_warning() {
+fn a_device_with_too_few_outputs_maps_the_outputs_it_has() {
     let env = env();
     let path = wav(&dc(400, 0.5));
     let ws = workspace(vec![audio(1, &path, 0)]);
     let c = bare(&env, vec![device("Mono", 1)]);
     let mut s = show_with(ws.clone(), c);
     let msgs = s.take_outbound();
-    assert!(infos(&msgs).is_empty());
-    let w = warns(&msgs);
-    assert_eq!(w.len(), 1, "{w:?}");
-    assert!(
-        w[0].contains("device Mono has 1 outputs") && w[0].contains("needs 2"),
-        "{w:?}"
+    assert!(warns(&msgs).is_empty(), "{:?}", warns(&msgs));
+    assert_eq!(
+        infos(&msgs),
+        vec!["mapped patch 'Main' to Mono output 1".to_owned()]
     );
-    assert_eq!(mapping(&ws, s.control().machine()), None);
-    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
-    // Not logged again on later syncs of the same workspace.
-    s.take_outbound();
-    let _ = new_workspace(&mut s);
-    let again = warns(&s.take_outbound());
-    assert_eq!(again.len(), 1, "one warning, for the new workspace's patch");
+    assert_eq!(
+        mapping(&ws, s.control().machine()).unwrap().channels,
+        vec![0]
+    );
+    assert_ne!(s.control().engine().state(id(1)), CueState::Broken);
     drop(s);
-    assert!(!env.dirs.settings_path().exists());
+    let loaded = load_machine_settings(&env.dirs).settings;
+    assert_eq!(mapping(&ws, &loaded).unwrap().channels, vec![0]);
 }
 
 #[test]
@@ -268,6 +298,7 @@ fn only_the_unmapped_patch_of_a_partly_mapped_workspace_is_mapped() {
     let kept = PatchMapping {
         device: "Offline".into(),
         channels: vec![3, 2],
+        system: false,
     };
     machine
         .set_patch_mapping(ws.id, patch_id(), kept.clone())

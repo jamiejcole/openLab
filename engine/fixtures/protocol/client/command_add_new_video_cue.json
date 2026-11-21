@@ -24,7 +24,7 @@
       "continue_mode": "do_not_continue",
       "triggers": {
         "hotkey": null,
-        "hotkey_enabled": true
+        "hotkey_enabled": false
       },
       "second_trigger": "nothing",
       "second_trigger_on_release": false,
@@ -42,7 +42,53 @@
         "type": "video",
         "media": "/Volumes/Show/Backdrop.mov",
         "stage": "00000000-0000-0000-0000-000000000001",
-        "duration": null
+        "duration": null,
+        "fill_stage": true,
+        "fill_style": "fit",
+        "translation": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0
+        },
+        "scale_locked": true,
+        "rotation": 0.0,
+        "crop": {
+          "top": 0.0,
+          "bottom": 0.0,
+          "left": 0.0,
+          "right": 0.0
+        },
+        "anchor": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "opacity": 1.0,
+        "layer": 1000,
+        "smooth": true,
+        "start_time": 0.0,
+        "end_time": null,
+        "fade_in": {
+          "duration": 0.0,
+          "curve": "linear"
+        },
+        "fade_out": {
+          "duration": 0.0,
+          "curve": "linear"
+        },
+        "slices": [],
+        "last_slice_play_count": 1,
+        "hold_at_end": false,
+        "patch": null,
+        "levels": {
+          "master_db": 0.0,
+          "outputs": [],
+          "crosspoints": [],
+          "gangs": []
+        },
+        "audio_track": 0
       }
     },
     "auto_number": true

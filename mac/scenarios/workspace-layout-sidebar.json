@@ -1,0 +1,15 @@
+{
+  "about": "The workspace window with the sidebar opened from the footer: the sidebar starts at the top beside the GO area and ends above the inspector, which spans the window; the footer has the warnings mark with the right-hand buttons and no clock. With all well the footer says nothing about the audio: no status mark.",
+  "show": "Demo",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"advance": 2},
+    {"shot": "sidebar-closed"},
+    {"click": "toggle-sidebar"},
+    {"shot": "sidebar-open"},
+    {"click": "toggle-masthead"},
+    {"shot": "go-area-hidden"},
+    {"click": "toggle-masthead"},
+    {"shot": "go-area-back"}
+  ]
+}
