@@ -223,8 +223,8 @@ final class AudioPreferencesTests: XCTestCase {
     }
 
     private func secondDevice() async throws {
-        guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
-            return XCTFail("restore_device")
+        if case .failure(let e) = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) {
+            return XCTFail("restore_device: \(e)")
         }
         try await engine.advance(seconds: 2)
     }
@@ -270,8 +270,8 @@ final class AudioPreferencesTests: XCTestCase {
         let now = try await listed()
         XCTAssertEqual(now.devices.map(\.bufferFrames), [512, 128])
 
-        let file = engine.support.appendingPathComponent("openLab/settings.json")
-        let kept = try Data(contentsOf: file)
+        let saved = await engine.savedSettings(containing: ": 128")
+        let kept = try XCTUnwrap(saved, "the engine wrote the size to this machine's settings")
         engine.stop()
         engine = try await TestEngine.start(settings: kept)
         try await secondDevice()

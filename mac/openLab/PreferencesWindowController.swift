@@ -222,6 +222,9 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         audioMessage.textColor = .systemRed
         audioMessage.setAX(AX.preferencesAudioMessage)
         let bufferHelp = Self.help(loc("prefs.audio.buffer.help"))
+        // Under the list, whose least width is 460: wider than the form's help.
+        bufferHelp.preferredMaxLayoutWidth = 440
+        audioMessage.preferredMaxLayoutWidth = 440
 
         let stack = NSStackView(views: [clockForm, header, scroll, bufferHelp, audioMessage])
         stack.orientation = .vertical

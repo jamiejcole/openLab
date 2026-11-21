@@ -342,6 +342,21 @@ final class TestEngine {
         await app.send({ .request(id: $0, request) })
     }
 
+    /// This machine's `settings.json` once it holds `text`: the engine writes it on its own thread
+    /// after it has answered, so a read right after a request can see the file as it was.
+    func savedSettings(containing text: String) async -> Data? {
+        let file = support.appendingPathComponent("openLab/settings.json")
+        var found: Data?
+        _ = await eventually {
+            guard let data = try? Data(contentsOf: file), String(decoding: data, as: UTF8.self).contains(text) else {
+                return false
+            }
+            found = data
+            return true
+        }
+        return found
+    }
+
     func advance(frames: UInt64) async throws {
         switch await app.send({ .request(id: $0, .advance(frames: frames)) }) {
         case .success: return

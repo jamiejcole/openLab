@@ -175,7 +175,8 @@ final class LauncherPreferencesTests: XCTestCase {
         await commit(prefs, "12")
         XCTAssertTrue(prefs.generalMessage.isHidden, "a valid entry clears the refusal")
 
-        let kept = try Data(contentsOf: engine.support.appendingPathComponent("openLab/settings.json"))
+        let saved = await engine.savedSettings(containing: "\"backup_keep\": 12")
+        let kept = try XCTUnwrap(saved, "the engine wrote the count to this machine's settings")
         engine.stop()
         let again = try await TestEngine.start(settings: kept)
         self.engine = again
