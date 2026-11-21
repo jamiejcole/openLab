@@ -1054,15 +1054,18 @@ final class CueListTests: XCTestCase {
         }
         func isGreen(_ c: NSColor?) -> Bool {
             guard let c else { return false }
-            return c.alphaComponent > 0.5 && c.greenComponent > c.redComponent + 0.2 && c.greenComponent > c.blueComponent
+            return c.alphaComponent > 0.5 && c.greenComponent > c.redComponent + 0.2
+                && c.greenComponent > c.blueComponent
         }
         let bar = ProgressFillView()
         for fraction in [0, 0.25] {
             bar.progress = (fraction, .systemGreen)
             XCTAssertTrue(
-                (114...119).contains { isGreen(pixel(bar, x: $0)) }, "the right end of the cell is outlined green at \(fraction)")
+                (114...119).contains { isGreen(pixel(bar, x: $0)) },
+                "the right end of the cell is outlined green at \(fraction)")
             XCTAssertTrue(
-                (0...4).contains { isGreen(pixel(bar, x: 60, y: $0)) }, "and its bottom edge past the fill at \(fraction)")
+                (0...4).contains { isGreen(pixel(bar, x: 60, y: $0)) },
+                "and its bottom edge past the fill at \(fraction)")
         }
         let fill = try XCTUnwrap(pixel(bar, x: 10))
         XCTAssertGreaterThan(fill.alphaComponent, 0.15, "the fill is drawn")

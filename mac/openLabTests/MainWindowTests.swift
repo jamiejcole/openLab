@@ -1808,7 +1808,8 @@ final class WindowLayoutTests: XCTestCase {
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
                     eventNumber: 0, clickCount: 1, pressure: 1))
             NSApp.postEvent(event, atStart: true)
-            _ = NSApp.nextEvent(matching: .leftMouseDragged, until: .distantFuture, inMode: .eventTracking, dequeue: true)
+            _ = NSApp.nextEvent(
+                matching: .leftMouseDragged, until: .distantFuture, inMode: .eventTracking, dequeue: true)
             XCTAssertEqual(NSApp.currentEvent?.type, .leftMouseDragged)
             let room = split.bounds.height - split.dividerThickness
             for h in [least + 20, least - 10, height] {

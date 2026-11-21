@@ -190,9 +190,12 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
         _ splitView: NSSplitView, constrainSplitPosition proposedPosition: CGFloat, ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
         // A divider placed by code (a restored layout, a window resize) never closes the inspector.
-        guard splitView === verticalSplit, NSApp.currentEvent?.type == .leftMouseDragged else { return proposedPosition }
+        guard splitView === verticalSplit, NSApp.currentEvent?.type == .leftMouseDragged else {
+            return proposedPosition
+        }
         // Only where the drag ends counts: a drag past the line and back up again leaves it open.
-        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(closeInspectorAfterDrag), object: nil)
+        NSObject.cancelPreviousPerformRequests(
+            withTarget: self, selector: #selector(closeInspectorAfterDrag), object: nil)
         if dividerIndex == 0, isVisible(.inspector), !isShowMode,
             Self.dragClosesInspector(
                 position: proposedPosition, splitHeight: splitView.bounds.height, divider: splitView.dividerThickness)
