@@ -75,6 +75,7 @@ struct AppLaunch {
                 menu.openRecent.delegate = delegate
                 NSApp.mainMenu = menu.bar
                 NSApp.windowsMenu = menu.windows
+                NSApp.servicesMenu = menu.services
                 NSApp.helpMenu = menu.help
             },
             activation: .live,
