@@ -150,7 +150,9 @@ final class LauncherPreferencesTests: XCTestCase {
     /// so; an invalid entry is refused with the allowed range and the field returns to what it held; a
     /// valid value is kept for the next launch.
     func testBackupsKeptZeroSaysSoARefusedEntryNamesTheRangeAndAValueSurvivesARelaunch() async throws {
-        let engine = try await TestEngine.start()
+        // Started with a settings file, as the relaunch below is: both runs take the same start path.
+        let seed = Data(#"{"settings_version": 1, "backup_keep": 4}"#.utf8)
+        let engine = try await TestEngine.start(settings: seed)
         self.engine = engine
         let prefs = try await preferences(engine)
         XCTAssertTrue(prefs.backupOffNote.isHidden)

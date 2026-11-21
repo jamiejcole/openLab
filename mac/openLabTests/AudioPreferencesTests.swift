@@ -187,7 +187,9 @@ final class AudioPreferencesTests: XCTestCase {
         engine.stop()
         let prefs = try await open()
         XCTAssertFalse(prefs.clockPopup.isEnabled)
-        XCTAssertFalse(prefs.audioMessage.stringValue.isEmpty)
+        // The connection is being retried, so the window says openLab is starting rather than failing.
+        XCTAssertEqual(prefs.deviceListNote.stringValue, loc("prefs.engine.starting"))
+        XCTAssertFalse(prefs.deviceListNote.isHidden)
     }
 
     /// The tab at the window's least size: the long device names are cut, nothing is clipped.
@@ -238,15 +240,19 @@ final class AudioPreferencesTests: XCTestCase {
         let pid = engine.pid
         let prefs = try await open()
         XCTAssertEqual(prefs.deviceGrid.numberOfRows, 2)
-        XCTAssertEqual(try detail(prefs, row: 0), String(format: loc("prefs.audio.outputs"), 2) + " · " + loc("prefs.audio.clockNow"))
-        XCTAssertEqual(try detail(prefs, row: 1), String(format: loc("prefs.audio.outputs"), 2), "channels, no clock mark")
+        XCTAssertEqual(
+            try detail(prefs, row: 0),
+            String(format: loc("prefs.audio.outputs"), 2) + " · " + loc("prefs.audio.clockNow"))
+        XCTAssertEqual(
+            try detail(prefs, row: 1), String(format: loc("prefs.audio.outputs"), 2), "channels, no clock mark")
 
         try pick(TestEngine.deviceNames[1], in: prefs.clockPopup)
         await prefs.refreshing?.value
         XCTAssertEqual(prefs.clockPopup.titleOfSelectedItem, TestEngine.deviceNames[1])
         XCTAssertTrue(
             try detail(prefs, row: 1).hasSuffix(loc("prefs.audio.clockNext")), "the list marks the new clock device")
-        XCTAssertEqual(prefs.clockNote.stringValue, loc("settings.audio.restartNeeded"), "and says when it takes effect")
+        XCTAssertEqual(
+            prefs.clockNote.stringValue, loc("settings.audio.restartNeeded"), "and says when it takes effect")
         try await rig.advance(1)
         XCTAssertEqual(rig.store.cueStates[TestSnapshots.intro]?.state, .running, "the cue plays on")
         XCTAssertEqual(engine.pid, pid)

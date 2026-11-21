@@ -2427,7 +2427,6 @@ final class EngineCrashFlowTests: XCTestCase {
             popup.selectItem(withTitle: loc(behavior.titleKey))
             _ = popup.sendAction(popup.action, to: popup.target)
         }
-        alerts.saveChoices = [.dontSave]
         choose(.restore)
         try await quit()
         try await startApp()
@@ -2439,6 +2438,7 @@ final class EngineCrashFlowTests: XCTestCase {
         await assertEventually("a new blank workspace") { self.app.allWindows.count == 1 }
         XCTAssertFalse(launcherShown)
         choose(.nothing)
+        alerts.saveChoices = [.dontSave]  // each launch has its own alerts: the blank workspace is not kept
         try await quit()
         try await startApp()
         await settle()

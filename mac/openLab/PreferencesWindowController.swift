@@ -18,7 +18,7 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         /// Both tabs' label columns are this wide, so their controls start at the same place.
         static let labelColumn: CGFloat = 110
         /// Where help text wraps; the window's least width leaves room for it beside the label column.
-        static let helpWidth: CGFloat = 330
+        static let helpWidth: CGFloat = 310
         static let leastSize = NSSize(width: 500, height: 330)
     }
 
@@ -241,6 +241,8 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         }
         clockForm.trailingAnchor.constraint(lessThanOrEqualTo: stack.trailingAnchor, constant: -Layout.inset)
             .isActive = true
+        // The same left edge as the General tab's form.
+        clockForm.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: Layout.inset).isActive = true
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
         // The page fills the tab: the device list takes the width and the height left.
         let page = NSView()
