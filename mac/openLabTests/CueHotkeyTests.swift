@@ -358,49 +358,6 @@ final class TriggersTabTests: XCTestCase {
         vc.hotkeyField.keyDown(with: esc)
         XCTAssertEqual(got.count, 1)
     }
-
-    /// Reached with Tab, the recorder lets Tab and Shift-Tab move on (the keyboard is not caught in
-    /// it, #784 flow 8); clicked, Tab is recorded like any key.
-    func testTabPassesThroughTheRecorderReachedByKeyboardAndIsRecordedAfterAClick() throws {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 300, height: 100), styleMask: [.titled], backing: .buffered,
-            defer: true)
-        let recorder = HotkeyRecorder()
-        let before = NSTextField()
-        let after = NSTextField()
-        for (i, v) in [before, recorder, after].enumerated() {
-            v.frame = NSRect(x: 10 + i * 90, y: 40, width: 80, height: 22)
-            window.contentView?.addSubview(v)
-        }
-        before.nextKeyView = recorder
-        recorder.nextKeyView = after
-        after.nextKeyView = before
-        var got: [KeyChord] = []
-        recorder.onRecord = { if let c = KeyChord(event: $0) { got.append(c) } }
-        func tab(_ flags: NSEvent.ModifierFlags) throws -> NSEvent {
-            try XCTUnwrap(
-                NSEvent.keyEvent(
-                    with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
-                    context: nil, characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false,
-                    keyCode: HotkeyRecorder.tabKeyCode))
-        }
-        XCTAssertTrue(window.makeFirstResponder(recorder), "reached by keyboard")
-        recorder.keyDown(with: try tab([]))
-        XCTAssertTrue(window.firstResponder === after.currentEditor() || window.firstResponder === after)
-        XCTAssertEqual(got, [], "Tab moved on, nothing recorded")
-        XCTAssertTrue(window.makeFirstResponder(recorder))
-        recorder.keyDown(with: try tab([.shift]))
-        XCTAssertTrue(window.firstResponder === before.currentEditor() || window.firstResponder === before)
-        XCTAssertEqual(got, [])
-        let click = try XCTUnwrap(
-            NSEvent.mouseEvent(
-                with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
-                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
-        recorder.mouseDown(with: click)
-        XCTAssertTrue(window.firstResponder === recorder)
-        recorder.keyDown(with: try tab([]))
-        XCTAssertEqual(got.count, 1, "clicked, Tab is recorded")
-    }
 }
 
 /// Cue hotkeys through the app controller with two open workspaces, on an engine of the test's own:

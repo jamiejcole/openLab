@@ -125,9 +125,7 @@ enum HotkeyRules {
 
 /// The recorder control in the Triggers tab: click it, press the chord. It takes the key itself
 /// (also Cmd chords, which would otherwise reach the menus) and hands the event on. Esc leaves
-/// without recording (the app-level monitor has already panicked, as everywhere). Reached with
-/// Tab instead of a click, a plain Tab or Shift-Tab goes on to the next or previous control, so
-/// the keyboard passes through it; any other key is recorded. Clicked, Tab is a key like others.
+/// without recording (the app-level monitor has already panicked, as everywhere).
 final class HotkeyRecorder: NSTextField {
     /// Recording ended, as the field editor's end of editing says for a text field.
     static let didEndRecording = Notification.Name("HotkeyRecorder.didEndRecording")
@@ -139,14 +137,9 @@ final class HotkeyRecorder: NSTextField {
     /// if none is pressed.
     var clearsWhileRecording = false
     private var shownBeforeRecording: String?
-    /// The focus came with a click (not with Tab from the control before it).
-    private var clicked = false
 
     override var acceptsFirstResponder: Bool { isEnabled }
-    override func mouseDown(with event: NSEvent) {
-        clicked = true
-        if window?.firstResponder !== self, window?.makeFirstResponder(self) != true { clicked = false }
-    }
+    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self) }
     override func becomeFirstResponder() -> Bool {
         placeholderString = recordingPlaceholder
         if clearsWhileRecording {
@@ -159,17 +152,11 @@ final class HotkeyRecorder: NSTextField {
         placeholderString = idlePlaceholder
         if let shown = shownBeforeRecording, stringValue.isEmpty { stringValue = shown }
         shownBeforeRecording = nil
-        clicked = false
         NotificationCenter.default.post(name: Self.didEndRecording, object: self)
         return super.resignFirstResponder()
     }
 
     override func keyDown(with event: NSEvent) {
-        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        if !clicked, event.keyCode == Self.tabKeyCode, flags.isSubset(of: [.shift]) {
-            if flags.contains(.shift) { window?.selectPreviousKeyView(self) } else { window?.selectNextKeyView(self) }
-            return
-        }
         if event.keyCode == 53 {
             window?.makeFirstResponder(nil)
         } else {
@@ -177,9 +164,6 @@ final class HotkeyRecorder: NSTextField {
             window?.makeFirstResponder(nil)
         }
     }
-
-    /// The Tab key's code (`kVK_Tab`).
-    static let tabKeyCode: UInt16 = 48
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self else { return false }
