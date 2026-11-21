@@ -1788,6 +1788,48 @@ final class WindowLayoutTests: XCTestCase {
         }
     }
 
+    /// The inspector's divider dragged (a real press, drag and release) a little below the least height
+    /// leaves the inspector at its least; dragged well below it, the inspector snaps closed, as QLab 5's
+    /// does, and its footer button brings it back.
+    func testDraggingTheInspectorDividerFarDownClosesTheInspector() async throws {
+        let url = try showFile("SnapInspector")
+        let (_, wc) = try await open(url)
+        wc.window?.setFrame(frame(wc), display: true)
+        settle(wc)
+        let split = wc.verticalSplit
+        // AppKit's divider tracking follows the real pointer, so the test plays the split's part: a drag
+        // event is made the current event (as it is during a drag) and the split's proposed positions are
+        // handed to its delegate, then the drag ends.
+        func drag(toInspectorHeight height: CGFloat) throws {
+            let window = try XCTUnwrap(wc.window)
+            let event = try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: .leftMouseDragged, location: NSPoint(x: 10, y: 10), modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                    eventNumber: 0, clickCount: 1, pressure: 1))
+            NSApp.postEvent(event, atStart: true)
+            _ = NSApp.nextEvent(matching: .leftMouseDragged, until: .distantFuture, inMode: .eventTracking, dequeue: true)
+            XCTAssertEqual(NSApp.currentEvent?.type, .leftMouseDragged)
+            let room = split.bounds.height - split.dividerThickness
+            for h in [least + 20, least - 10, height] {
+                let at = wc.splitView(split, constrainSplitPosition: room - h, ofSubviewAt: 0)
+                split.setPosition(at, ofDividerAt: 0)
+            }
+        }
+        let least = WorkspaceWindowController.minInspectorHeight
+        try drag(toInspectorHeight: least - 30)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        settle(wc)
+        XCTAssertTrue(wc.isVisible(.inspector), "a drag just past the least height leaves the inspector open")
+        XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, least)
+        try drag(toInspectorHeight: 10)
+        await assertEventually("the inspector snapped closed") { !wc.isVisible(.inspector) }
+        XCTAssertEqual(wc.footer.toggles[.inspector]?.state, .off)
+        try toggle(.inspector, in: wc)
+        XCTAssertTrue(wc.isVisible(.inspector))
+        XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, least, "it comes back at a usable height")
+    }
+
     /// A saved inspector height below the least comes back as the least.
     func testASavedInspectorHeightBelowTheLeastComesBackAsTheLeast() async throws {
         let url = try showFile("SavedShort")
