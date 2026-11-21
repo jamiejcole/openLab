@@ -60,8 +60,9 @@ fn an_unplayable_file_breaks_its_cue_with_the_reason() {
 }
 
 /// Only damage the operator hears is listed (owner decision 2026-11-22): an MP3 with parts that
-/// play as silence is; a WAV cut short of its header, which plays to its real end, is not; nor is an
-/// MP3 whose header counts one frame more than it holds (as whole libraries of good files do).
+/// play as silence is, and so is one that lost a block mid-file (it shows only as being shorter
+/// than its header); a WAV a few milliseconds short of its header is not, nor is an MP3 whose
+/// header counts one frame more than it holds (as whole libraries of good files do).
 #[test]
 fn only_audible_damage_is_listed_as_a_warning() {
     // A WAV whose header promises 2000 frames but holds 1000: it plays to its real end.
@@ -82,10 +83,20 @@ fn only_audible_damage_is_listed_as_a_warning() {
     let n = u32::from_be_bytes(counted[at..at + 4].try_into().unwrap());
     counted[at..at + 4].copy_from_slice(&(n + 1).to_be_bytes());
     let counted = file("mp3", &counted);
+    let mut lost = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../audio/tests/fixtures/tone.mp3"
+    ))
+    .unwrap();
+    for x in &mut lost[4_619..6_200] {
+        *x ^= 0x5a;
+    }
+    let lost = file("mp3", &lost);
     let mut s = show(workspace(vec![
         audio(1, &cut, 0),
         audio(2, &damaged, 0),
         audio(3, &counted, 0),
+        audio(4, &lost, 0),
     ]));
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     let msgs = s.take_outbound();
@@ -106,8 +117,12 @@ fn only_audible_damage_is_listed_as_a_warning() {
         })
         .collect();
     let name = |p: &std::path::Path| p.file_name().unwrap().to_string_lossy().into_owned();
-    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed.len(), 2, "{listed:?}");
     assert!(listed[0].contains(&name(&damaged)), "{listed:?}");
+    assert!(
+        listed[1].contains(&name(&lost)),
+        "a block lost mid-file: {listed:?}"
+    );
     let at = go(&mut s) as usize;
     s.run(3000);
     assert_eq!(

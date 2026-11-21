@@ -47,7 +47,7 @@ Everything here runs on disk, opener or I/O threads, never on the audio thread. 
 | `SlowSeeks` | damaged file whose seeks must decode from the start; `Probed::preload_advised()` is then true |
 
 - Only a file with nothing playable is an error (`Unsupported`, `Corrupt`, `Io`, `NotFound`).
-- The operator is told only of damage they hear (`MediaWarning::is_audible`: `Missing`, `Unreadable`); the engine's `damaged_media` notice counts only those. The other kinds still steer seeking but are never shown: a whole library of good MP3s whose Info header counts its own frame is `Truncated` by one frame (Q761).
+- The operator is told only of damage they hear (`MediaWarning::is_audible`: `Missing`, `Unreadable`, and `Truncated` by more than `HEADER_SLACK`, as a lossy file can lose a block mid-file that way); the engine's `damaged_media` notice counts only those. The others still steer seeking but are never shown: a whole library of good MP3s whose Info header counts its own frame is `Truncated` by one frame (Q761).
 - Damage while streaming is handled exactly as the probe handles it: `StreamHandle::warnings()` lists everything met (probe-reported damage reappears; anything else means the file changed after its probe). The stream reads nothing past the probed length.
 - Seek policy for damaged files (`Probed::seeking`, passed in `StreamRequest`): `Direct` (undamaged, and truncated-only PCM, container seeks), `Indexed` (checkpoint hashes verify the seek), `FromStart` (decode forward). Why and how: `references/decode-details.md`.
 - A disk worker does at most `step_frames` (`DEFAULT_STEP_FRAMES`) of seek decoding per step then serves its other streams, so one slow seek never starves them.
