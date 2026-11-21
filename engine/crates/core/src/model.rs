@@ -127,6 +127,7 @@ impl Workspace {
                 lock_playhead: true,
                 go_needs_key_up: false,
                 osc_enabled: true,
+                copy_media_on_add: true,
             },
             patches: vec![OutputPatch {
                 id: patch,
@@ -370,6 +371,11 @@ pub struct WorkspaceSettings {
     /// connected before lose their rights. Absent in a file: on.
     #[serde(default = "default_true")]
     pub osc_enabled: bool,
+    /// Whether a file set as a cue's target is copied into the show folder (`audio` or
+    /// `video`) and the cue pointed at the copy (QLab 5, Workspace Settings, General, File
+    /// Management; manual p. 100). Absent in a file: on. The engine does the copying.
+    #[serde(default = "default_true")]
+    pub copy_media_on_add: bool,
 }
 
 fn default_true() -> bool {

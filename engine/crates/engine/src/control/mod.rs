@@ -1645,6 +1645,7 @@ mod tests {
                 lock_playhead: true,
                 go_needs_key_up: false,
                 osc_enabled: true,
+                copy_media_on_add: true,
             },
             patches: vec![],
             network_patches: vec![],

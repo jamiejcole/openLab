@@ -143,6 +143,7 @@ patch plays through, are stored on each machine, not in the show file (WS-07).
 | `lock_playhead` | bool | Optional (absent: `true`). The app keeps the selection and the playhead together; off, they move apart. |
 | `go_needs_key_up` | bool | Optional (absent: `false`). The app accepts another GO from the GO key only after the key was released. |
 | `osc_enabled` | bool | Optional (absent: `true`). Off: every OSC message to this workspace is refused with `denied`. |
+| `copy_media_on_add` | bool | Optional (absent: `true`). A file set as a cue's target (a new cue with a file, a replaced file; not a paste) is copied into the show folder's `audio` or `video` folder and the cue pointed at the copy (QLab 5: copy files into the project folder when adding). A show never saved copies nothing. |
 | `new_cues_auto_load` | bool | Optional (absent: `false`). A cue made while it is on (`AddCue`, not a paste or an undo) gets `auto_load`, a group's children too; cues already there keep theirs. |
 
 ### 4.3 Media paths

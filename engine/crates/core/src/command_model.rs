@@ -131,6 +131,10 @@ pub enum WorkspaceSetting {
     OscEnabled {
         value: bool,
     },
+    /// Whether files set as cue targets are copied into the show folder.
+    CopyMediaOnAdd {
+        value: bool,
+    },
 }
 
 /// The wire form of [`WorkspaceSetting::Hotkeys`]: every key present (`null` = no key) and no
@@ -263,6 +267,9 @@ impl WorkspaceSetting {
             Self::OscEnabled { .. } => Self::OscEnabled {
                 value: s.osc_enabled,
             },
+            Self::CopyMediaOnAdd { .. } => Self::CopyMediaOnAdd {
+                value: s.copy_media_on_add,
+            },
         }
     }
 
@@ -282,6 +289,7 @@ impl WorkspaceSetting {
             Self::LockPlayhead { value } => s.lock_playhead = *value,
             Self::GoNeedsKeyUp { value } => s.go_needs_key_up = *value,
             Self::OscEnabled { value } => s.osc_enabled = *value,
+            Self::CopyMediaOnAdd { value } => s.copy_media_on_add = *value,
         }
     }
 
