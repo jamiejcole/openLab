@@ -378,6 +378,7 @@ fn two_cues_with_the_same_hotkey_both_start_with_no_warning() {
         triggers: Triggers {
             hotkey: Some(w.clone()),
             hotkey_enabled: true,
+            wall_clock: Default::default(),
         },
         ..c
     };

@@ -5,6 +5,7 @@
 //! nothing (and says so) elsewhere, so the engine builds and runs on every platform.
 
 pub mod exit;
+pub mod local_time;
 pub mod power;
 pub mod relaunch;
 pub mod signals;

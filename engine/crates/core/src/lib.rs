@@ -34,6 +34,7 @@ mod video_geometry;
 pub mod video_probe;
 mod video_sound;
 mod video_timing;
+mod wall_clock;
 
 pub use backup::*;
 pub use changes::*;
@@ -62,6 +63,7 @@ pub use video::*;
 pub use video_geometry::*;
 pub use video_sound::*;
 pub use video_timing::*;
+pub use wall_clock::*;
 
 /// Crate version, as set in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

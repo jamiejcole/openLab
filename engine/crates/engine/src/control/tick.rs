@@ -29,6 +29,7 @@ impl Control {
         self.watch_tick();
         self.begin_meter_round();
         let moved_before = self.moves_taken_up();
+        self.eng.read_local_time();
         self.each_doc(|cx| cx.tick());
         self.clear_left_autosaves();
         self.end_meter_round();
@@ -400,6 +401,7 @@ impl DocCx<'_> {
         self.doc.net.tick(now);
         self.note_lookup_limit();
         self.deliver_deferred(now);
+        self.wall_clock_triggers(now);
         if self.doc.model.engine().is_due(now) {
             self.feed(Input::Tick, now);
         }

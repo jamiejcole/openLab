@@ -888,6 +888,7 @@ fn setting_a_workspace_key_as_a_cue_hotkey_is_not_refused() {
             value: Triggers {
                 hotkey: Some(hotkey("space")),
                 hotkey_enabled: true,
+                wall_clock: Default::default(),
             },
         },
     };

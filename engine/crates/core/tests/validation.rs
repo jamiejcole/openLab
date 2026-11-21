@@ -1067,6 +1067,49 @@ fn invalid_hotkey_names_warn() {
     );
 }
 
+/// A wall-clock trigger with a time past 23:59:59 or no day to fire on is switched off with a
+/// warning, its time put in range and its days set to every day: it never fires on a time the
+/// file did not mean.
+#[test]
+fn a_wall_clock_time_out_of_range_or_with_no_day_warns_and_is_switched_off() {
+    let clocked = |n: u128, h: u8, m: u8, s: u8, days: Weekdays| {
+        let mut c = cue(n, CueKind::Memo);
+        c.triggers.wall_clock = WallClockTrigger {
+            enabled: true,
+            hours: h,
+            minutes: m,
+            seconds: s,
+            days,
+            twelve_hour: false,
+        };
+        c
+    };
+    let ws = workspace(vec![
+        clocked(1, 24, 0, 0, Weekdays::EVERY_DAY),
+        clocked(2, 23, 60, 0, Weekdays::EVERY_DAY),
+        clocked(3, 23, 59, 255, Weekdays::EVERY_DAY),
+        clocked(4, 10, 0, 0, Weekdays::NONE),
+        clocked(5, 23, 59, 59, Weekdays::NONE.with(Weekday::Sunday, true)),
+    ]);
+    let bad = |cue: u128| {
+        issue(
+            Severity::Warning,
+            Some(cue),
+            IssueKind::InvalidValue {
+                field: "triggers.wall_clock",
+            },
+        )
+    };
+    assert_eq!(validate(&ws), vec![bad(1), bad(2), bad(3), bad(4)]);
+    let loaded = load_show(&show_text(&ws)).unwrap();
+    let cues = &loaded.workspace.cue_lists[0].cues;
+    let t = |i: usize| &cues[i].triggers.wall_clock;
+    assert!((0..4).all(|i| !t(i).enabled));
+    assert_eq!((t(0).hours, t(1).minutes, t(2).seconds), (23, 59, 59));
+    assert_eq!(t(3).days, Weekdays::EVERY_DAY);
+    assert!(t(4).enabled);
+}
+
 #[test]
 fn non_finite_osc_float_is_reset_so_the_show_still_saves() {
     // Regression: 1e39 does not fit an f32 and became +inf, which loaded cleanly but

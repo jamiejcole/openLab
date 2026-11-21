@@ -1052,6 +1052,21 @@ fn every_common_property_can_be_set_and_undone() {
             value: Triggers {
                 hotkey: Some(hotkey),
                 hotkey_enabled: false,
+                wall_clock: Default::default(),
+            },
+        },
+        CueProperty::Triggers {
+            value: Triggers {
+                hotkey: None,
+                hotkey_enabled: true,
+                wall_clock: WallClockTrigger {
+                    enabled: true,
+                    hours: 23,
+                    minutes: 59,
+                    seconds: 59,
+                    days: Weekdays::NONE.with(Weekday::Saturday, true),
+                    twelve_hour: true,
+                },
             },
         },
     ];
@@ -1404,12 +1419,47 @@ fn set_property_refuses_non_finite_and_out_of_range_values() {
                             modifiers: Modifiers::default()
                         }),
                         hotkey_enabled: true,
+                        wall_clock: Default::default(),
                     },
                 }
             )
         ),
         CommandError::InvalidCue(_)
     ));
+    // A wall-clock time past 23:59:59, or no day to fire on, even with the trigger off.
+    for (enabled, hours, minutes, seconds, days) in [
+        (true, 24, 0, 0, Weekdays::EVERY_DAY),
+        (false, 0, 60, 0, Weekdays::EVERY_DAY),
+        (true, 0, 0, 60, Weekdays::EVERY_DAY),
+        (true, 12, 0, 0, Weekdays::NONE),
+    ] {
+        let wall_clock = WallClockTrigger {
+            enabled,
+            hours,
+            minutes,
+            seconds,
+            days,
+            twelve_hour: false,
+        };
+        let before = ws.clone();
+        assert!(matches!(
+            refused(
+                &mut ws,
+                set(
+                    2,
+                    CueProperty::Triggers {
+                        value: Triggers {
+                            hotkey: None,
+                            hotkey_enabled: false,
+                            wall_clock,
+                        },
+                    }
+                )
+            ),
+            CommandError::InvalidCue(_)
+        ));
+        assert_eq!(ws, before);
+    }
 }
 
 #[test]
