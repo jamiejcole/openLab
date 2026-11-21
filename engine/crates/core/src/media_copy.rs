@@ -92,47 +92,87 @@ pub fn numbered_name(name: &str, n: u32) -> String {
     }
 }
 
-/// The cues whose file `command` sets to a file (a new cue with one, a replaced file, a kind
-/// with one), in the order the command names them: what copying on add copies. Pastes are not
-/// among them: a copied cue keeps the file its original has.
-pub fn media_set_by(command: &Command) -> Vec<CueId> {
-    let mut found = Vec::new();
-    collect_media_set(command, &mut found);
-    found
+/// The cues whose file `command` sets to a file other than the one the cue has in `workspace`
+/// (the workspace the command is about to be applied to): a new cue with a file, a replaced file,
+/// a kind with another file. In the order the command names them: what copying on add copies.
+/// A command that rewrites a whole kind for another reason (a level limit clamping cues, a
+/// pasted property) keeps each cue's file and copies nothing. Pastes are not among them: a copied
+/// cue keeps the file its original has.
+pub fn media_set_by(workspace: &Workspace, command: &Command) -> Vec<CueId> {
+    let mut set = MediaSet {
+        workspace,
+        current: None,
+        found: Vec::new(),
+        seen: std::collections::HashSet::new(),
+    };
+    set.collect(command);
+    set.found
 }
 
-fn collect_media_set(command: &Command, found: &mut Vec<CueId>) {
-    let mut push = |id: CueId| {
-        if !found.contains(&id) {
-            found.push(id);
+struct MediaSet<'a> {
+    workspace: &'a Workspace,
+    /// Each cue's file now, read once and only for a command that names a file.
+    current: Option<std::collections::HashMap<CueId, MediaRef>>,
+    found: Vec<CueId>,
+    seen: std::collections::HashSet<CueId>,
+}
+
+impl MediaSet<'_> {
+    fn push(&mut self, id: CueId) {
+        if self.seen.insert(id) {
+            self.found.push(id);
         }
-    };
-    match command {
-        Command::AddCue { cue, .. } => {
-            for c in crate::tree::descendants(std::slice::from_ref::<Cue>(cue)) {
-                if c.kind.media().is_some() {
-                    push(c.id);
+    }
+
+    /// Whether setting `new` on `cue` changes its file.
+    fn changes(&mut self, cue: CueId, new: Option<&MediaRef>) -> bool {
+        let Some(new) = new else {
+            return false;
+        };
+        let workspace = self.workspace;
+        let current = self
+            .current
+            .get_or_insert_with(|| media_of_cues(workspace).into_iter().collect());
+        current.get(&cue) != Some(new)
+    }
+
+    fn collect(&mut self, command: &Command) {
+        match command {
+            Command::AddCue { cue, .. } => {
+                for c in crate::tree::descendants(std::slice::from_ref::<Cue>(cue)) {
+                    if c.kind.media().is_some() {
+                        self.push(c.id);
+                    }
                 }
             }
-        }
-        Command::SetCueProperty { id, property } if property_sets_media(property) => push(*id),
-        Command::BatchSet { ids, property } if property_sets_media(property) => {
-            ids.iter().copied().for_each(push);
-        }
-        Command::Transaction { commands } => {
-            for c in commands {
-                collect_media_set(c, found);
+            Command::SetCueProperty { id, property } => {
+                if self.changes(*id, property_media(property)) {
+                    self.push(*id);
+                }
             }
+            Command::BatchSet { ids, property } => {
+                for id in ids {
+                    if self.changes(*id, property_media(property)) {
+                        self.push(*id);
+                    }
+                }
+            }
+            Command::Transaction { commands } => {
+                for c in commands {
+                    self.collect(c);
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
 }
 
-fn property_sets_media(property: &CueProperty) -> bool {
+/// The file a property sets, if it sets one.
+fn property_media(property: &CueProperty) -> Option<&MediaRef> {
     match property {
-        CueProperty::Media { value } => value.is_some(),
-        CueProperty::Kind { value } => value.media().is_some(),
-        _ => false,
+        CueProperty::Media { value } => value.as_ref(),
+        CueProperty::Kind { value } => value.media(),
+        _ => None,
     }
 }
 

@@ -83,7 +83,7 @@ fn the_cues_whose_file_a_command_sets_are_the_ones_copied_on_add() {
         ],
     };
     assert_eq!(
-        media_set_by(&command),
+        media_set_by(&workspace(vec![]), &command),
         vec![cue_id(1), cue_id(4), cue_id(5), cue_id(7), cue_id(8)]
     );
     // A paste keeps the file its original has: nothing is copied for it.
@@ -91,7 +91,46 @@ fn the_cues_whose_file_a_command_sets_are_the_ones_copied_on_add() {
         at: at_end(),
         cues: vec![cue(10, with_media(audio(), "/Lib/a.wav"))],
     };
-    assert!(media_set_by(&paste).is_empty());
+    assert!(media_set_by(&workspace(vec![]), &paste).is_empty());
+}
+
+/// A command that rewrites a whole kind for another reason (a level limit clamping a cue, a
+/// pasted property, a batch edit) keeps the cue's file: nothing is copied. Only another file is.
+#[test]
+fn a_whole_kind_or_file_edit_that_keeps_the_cue_s_file_copies_nothing() {
+    let ws = workspace(vec![
+        cue(1, with_media(audio(), "audio/hit.wav")),
+        cue(2, with_media(audio(), "/Lib/b.wav")),
+    ]);
+    let mut louder = with_media(audio(), "audio/hit.wav");
+    if let CueKind::Audio { levels, .. } = &mut louder {
+        levels.master_db = -6.0;
+    }
+    let same_kind = Command::Transaction {
+        commands: vec![Command::SetCueProperty {
+            id: cue_id(1),
+            property: CueProperty::Kind { value: louder },
+        }],
+    };
+    assert!(media_set_by(&ws, &same_kind).is_empty());
+    let same_file = Command::BatchSet {
+        ids: vec![cue_id(1), cue_id(2)],
+        property: CueProperty::Media {
+            value: Some(MediaRef::new("/Lib/b.wav")),
+        },
+    };
+    assert_eq!(
+        media_set_by(&ws, &same_file),
+        vec![cue_id(1)],
+        "cue 2 has that file already"
+    );
+    let other_file = Command::SetCueProperty {
+        id: cue_id(1),
+        property: CueProperty::Kind {
+            value: with_media(audio(), "/Lib/new.wav"),
+        },
+    };
+    assert_eq!(media_set_by(&ws, &other_file), vec![cue_id(1)]);
 }
 
 #[test]

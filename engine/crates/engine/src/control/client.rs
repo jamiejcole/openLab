@@ -534,7 +534,7 @@ impl DocCx<'_> {
                     return Flow::Continue;
                 }
                 let footprint = command.footprint();
-                let sets_media = openlab_core::media_set_by(&command);
+                let sets_media = openlab_core::media_set_by(self.doc.model.ws(), &command);
                 let mut edit = self.doc.model.edit();
                 let result =
                     self.doc

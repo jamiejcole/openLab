@@ -819,3 +819,59 @@ fn a_save_as_elsewhere_while_copying_points_each_cue_at_its_copy_where_it_is() {
     assert!(copy.is_file());
     assert_eq!(Path::new(&r.media(1)), copy);
 }
+
+/// Review #779 M1: lowering the workspace's level limit clamps every cue's levels through a
+/// whole-kind edit; that keeps each cue's file, so nothing is copied, however often it is done.
+#[test]
+fn a_level_limit_change_that_clamps_cues_copies_nothing() {
+    let mut r = rig(&[(1, "a.wav", 100, 0.1)]);
+    let inside = r.audio_dir().join("hit.wav");
+    fs::create_dir_all(r.audio_dir()).unwrap();
+    fs::write(&inside, wav_bytes(300, 0.4)).unwrap();
+    r.set_media(1, &inside);
+    r.report();
+    let before = (r.media(1), r.audio_names());
+    for max in [-3.0, -6.0] {
+        r.command(Command::SetWorkspaceSetting {
+            setting: WorkspaceSetting::OutputMaxDb { value: max },
+        });
+        assert!(r.reports().is_empty(), "no copy at {max} dB");
+    }
+    assert_eq!((r.media(1), r.audio_names()), before);
+}
+
+/// Review #779 M1: an edit of a whole kind that keeps the cue's file (a level, as Paste
+/// Properties sends) copies nothing; one that names another file does.
+#[test]
+fn a_whole_kind_edit_copies_only_when_it_names_another_file() {
+    let mut r = rig(&[(1, "a.wav", 100, 0.1)]);
+    // Its file is outside: a kind keeping that file is not a new file.
+    let mut kind =
+        r.s.control()
+            .workspace()
+            .find_cue(id(1))
+            .unwrap()
+            .kind
+            .clone();
+    if let openlab_core::CueKind::Audio { levels, .. } = &mut kind {
+        levels.master_db = -10.0;
+    }
+    r.command(Command::SetCueProperty {
+        id: id(1),
+        property: CueProperty::Kind {
+            value: kind.clone(),
+        },
+    });
+    assert!(r.reports().is_empty());
+    assert_eq!(Path::new(&r.media(1)), r.lib.join("a.wav"));
+    let other = r.lib_file("b.wav", 200, 0.2);
+    if let openlab_core::CueKind::Audio { media, .. } = &mut kind {
+        *media = Some(MediaRef::new(other.to_str().unwrap()));
+    }
+    r.command(Command::SetCueProperty {
+        id: id(1),
+        property: CueProperty::Kind { value: kind },
+    });
+    assert_eq!(r.report().copied, 1);
+    assert_eq!(r.media(1), "audio/b.wav");
+}
