@@ -25,6 +25,10 @@ pub const COPY_CHUNK: usize = 1024 * 1024;
 /// that play from it (a stream reads about two seconds ahead).
 pub const COPY_PAUSE: Duration = Duration::from_millis(2);
 
+/// A copy is flushed to its disk every this many bytes, so its last sync is short: the stall
+/// check measures progress, and one sync of gigabytes on a slow USB disk must not look stuck.
+pub const SYNC_EVERY: u64 = 64 * 1024 * 1024;
+
 /// Most entries of a destination folder looked at for an identical file. Past it the rest are
 /// not looked at, so a copy may be made of a file the folder already holds (never the reverse).
 pub const MAX_INDEX_ENTRIES: usize = 20_000;
@@ -78,8 +82,10 @@ impl CopyProgress {
         self.bytes_total.load(Ordering::SeqCst)
     }
 
-    pub fn set_bytes_total(&self, total: u64) {
-        self.bytes_total.store(total, Ordering::SeqCst);
+    /// Adds one file's size to the total, a beat each: thousands of stats on a slow share are
+    /// progress, not a stall.
+    pub fn add_bytes_total(&self, size: u64) {
+        self.bytes_total.fetch_add(size, Ordering::SeqCst);
         self.beat();
     }
 
@@ -93,7 +99,8 @@ impl CopyProgress {
         self.beat();
     }
 
-    fn beat(&self) {
+    /// Something moved (a stat, a chunk, a sync): the stall check sees the copy is not stuck.
+    pub fn beat(&self) {
         self.beats.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -253,7 +260,13 @@ impl FolderIndex {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
-            if split_tmp_name(&name).is_some() {
+            if let Some((_, pid)) = split_tmp_name(&name) {
+                // A copy this engine left when it crashed: never finished, never pointed at, and
+                // possibly gigabytes. One of this process's own is a copy under way (another doc's
+                // could share the folder) and is left alone. Best effort.
+                if pid != std::process::id() {
+                    let _ = fs::remove_file(entry.path());
+                }
                 continue;
             }
             if let Ok(meta) = entry.metadata() {
@@ -495,6 +508,7 @@ fn fill(
 ) -> Result<(), CopyError> {
     work.buf.resize(work.pacing.chunk.max(1), 0);
     let mut written: u64 = 0;
+    let mut unsynced: u64 = 0;
     loop {
         if work.progress.cancelled() {
             return Err(CopyError::cancelled());
@@ -509,7 +523,13 @@ fn fill(
         let chunk = work.buf.get(..n).unwrap_or_default();
         out.write_all(chunk).map_err(|e| CopyError::writing(&e))?;
         written += n as u64;
+        unsynced += n as u64;
         work.progress.add_bytes(n as u64);
+        if unsynced >= SYNC_EVERY {
+            out.sync_data().map_err(|e| CopyError::writing(&e))?;
+            unsynced = 0;
+            work.progress.beat();
+        }
         pause(work.pacing);
     }
     // A file written to while it was copied gives a copy of neither version.
@@ -743,6 +763,24 @@ mod tests {
         let e = r.copy(&src, false);
         fs::set_permissions(&r.show, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(e.unwrap_err().failure, CopyFailure::ReadOnly);
+    }
+
+    /// Review #779 L1: a copy left by a crashed engine (another pid) goes when the folder is next
+    /// read; one of this process's own (a copy under way) stays.
+    #[test]
+    fn a_crashed_copy_s_temp_file_is_removed_and_a_live_one_is_kept() {
+        let mut r = rig();
+        let audio = r.show.join("audio");
+        fs::create_dir_all(&audio).unwrap();
+        let other = std::process::id().wrapping_add(1);
+        let crashed = audio.join(format!("big.wav.{other}-3.tmp"));
+        let live = audio.join(format!("big.wav.{}-9.tmp", std::process::id()));
+        fs::write(&crashed, b"half").unwrap();
+        fs::write(&live, b"half").unwrap();
+        let src = r.file("kick.wav", b"x");
+        r.copy(&src, false).unwrap();
+        assert!(!crashed.exists(), "the crashed copy is gone");
+        assert!(live.exists(), "a copy under way is left alone");
     }
 
     #[test]

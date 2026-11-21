@@ -688,6 +688,17 @@ fn reason_of(failure: CopyFailure) -> MediaCopyReason {
     }
 }
 
+/// Adds up the files' sizes for the progress report, a beat per file (one stat each).
+fn size_sources<'a>(sources: impl Iterator<Item = &'a Path>, progress: &CopyProgress) {
+    for source in sources {
+        if let Ok(meta) = std::fs::metadata(source) {
+            progress.add_bytes_total(meta.len());
+        } else {
+            progress.beat();
+        }
+    }
+}
+
 /// Starts the copy's thread. Never joined: one stuck on a volume that stopped answering ends
 /// when its call returns, and its answer (a ticket given up on by then) is ignored.
 fn spawn_copy(
@@ -709,12 +720,7 @@ fn spawn_copy(
     thread::Builder::new()
         .name("openlab-copy-media".into())
         .spawn(move || {
-            let total = work
-                .iter()
-                .filter_map(|w| std::fs::metadata(&w.source).ok())
-                .map(|m| m.len())
-                .fold(0u64, u64::saturating_add);
-            progress.set_bytes_total(total);
+            size_sources(work.iter().map(|w| w.source.as_path()), &progress);
             let mut buf = Vec::new();
             let mut indexes = FolderIndexes::default();
             let mut results = Vec::with_capacity(work.len());
@@ -750,4 +756,30 @@ fn spawn_copy(
             let _ = inbox.send(Inbox::Copy(CopyAnswer { ticket, results }));
         })
         .map(|_| ())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// Review #779 L2: sizing the files beats once per file, so a long list on a slow share is
+    /// progress, never a stall.
+    #[test]
+    fn sizing_the_files_beats_once_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<PathBuf> = (0..5)
+            .map(|n| {
+                let p = dir.path().join(format!("{n}.wav"));
+                if n != 2 {
+                    std::fs::write(&p, vec![0u8; n]).unwrap();
+                }
+                p
+            })
+            .collect();
+        let progress = CopyProgress::default();
+        size_sources(paths.iter().map(PathBuf::as_path), &progress);
+        assert_eq!(progress.beats(), 5, "a missing file beats too");
+        assert_eq!(progress.bytes_total(), 1 + 3 + 4);
+    }
 }
