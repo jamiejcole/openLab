@@ -393,7 +393,7 @@
 "hotkeys.reason.menuKey" = "it is the same key as a menu command";
 "hotkeys.reason.editKey" = "the key edits the selected cues";
 "hotkeys.reason.unsupported" = "the key is not supported";
-"inspector.secondTrigger" = "When triggered again";
+"inspector.secondTrigger" = "When triggered a second time while playing";
 "inspector.secondTrigger.nothing" = "Do nothing";
 "inspector.secondTrigger.panic" = "Panic (fade out)";
 "inspector.secondTrigger.stop" = "Stop";

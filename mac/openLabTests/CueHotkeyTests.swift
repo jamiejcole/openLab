@@ -300,8 +300,8 @@ final class TriggersTabTests: XCTestCase {
 
     /// The first edit is refused by the engine (the cue it names exists only in the store, as when
     /// the store is behind); the cue is then added for real with its hotkey trigger off, and the
-    /// next edit must start from the engine's cue: neither the refused key nor the store's stale
-    /// "on" is sent again.
+    /// next edit must start from the engine's cue: the refused key is not sent again (the next
+    /// recorded key switches the trigger on, as any recorded key does).
     func testRefusedTriggersAreNotSentAgainWithTheNextEdit() async throws {
         let id: ModelID = "00000000-0000-0000-0000-0000000000ee"
         var cue = try XCTUnwrap(NewCueKind.memo.cueJSON(id: id, patch: nil))
@@ -326,7 +326,21 @@ final class TriggersTabTests: XCTestCase {
         XCTAssertTrue(vc.record(KeyChord("a")))
         rig.client.requestSnapshot()  // the engine's own copy, not the one the store was given
         await assertEventually { self.triggers(id)?["hotkey"] == KeyChord("a").hotkeyJSON }
-        XCTAssertEqual(triggers(id)?["hotkey_enabled"], .bool(false), "the store's stale switch was not sent")
+        XCTAssertEqual(triggers(id)?["hotkey_enabled"], .bool(true), "a recorded key switches the trigger on")
+    }
+
+    /// What a second trigger does sits under its question, and whether it comes on the key's release
+    /// sits right under that, apart from the hotkey (the owner's layout).
+    func testTheReleaseBoxSitsUnderTheSecondTriggerMenuAndItsQuestion() throws {
+        let stack = try XCTUnwrap(vc.secondTriggerPopup.superview as? NSStackView)
+        XCTAssertTrue(vc.onReleaseCheck.superview === stack, "in the second trigger's column")
+        let views = stack.arrangedSubviews
+        let at = try XCTUnwrap(views.firstIndex(of: vc.secondTriggerPopup))
+        XCTAssertEqual(views.firstIndex(of: vc.onReleaseCheck), at + 1, "right under the menu")
+        let question = try XCTUnwrap(views[at - 1] as? NSTextField)
+        XCTAssertEqual(question.stringValue, loc("inspector.secondTrigger"))
+        XCTAssertTrue(question.stringValue.contains("second time while playing"), question.stringValue)
+        XCTAssertFalse(vc.hotkeyField.isDescendant(of: stack), "the hotkey is in the other column")
     }
 
     func testSecondTriggerAndOnReleaseSend() async {
