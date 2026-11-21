@@ -32,7 +32,7 @@ enum Icon: CaseIterable {
     // Time column header toggle (elapsed / remaining).
     case timeToggle, timeToggleUp
     // The Target column's button for a file cue (present and missing), and the Target field's clear, choose and jump glyphs.
-    case targetFile, targetFileMissing, fieldClear, fieldChoose, fieldJump
+    case targetFile, targetFileMissing, targetFileCopying, fieldClear, fieldChoose, fieldJump
     // Reserved for a screen that does not exist yet; it resolves and is tested already.
     case reservedPopOut
 
@@ -91,6 +91,8 @@ enum Icon: CaseIterable {
         case .timeToggle: return "time-toggle"
         case .timeToggleUp: return "time-toggle-up"
         case .targetFile: return "target-file"
+        // A file being copied into the show folder (WS-04).
+        case .targetFileCopying: return "target-file-copying"
         case .fieldClear: return "field-clear"
         case .fieldChoose: return "field-choose"
         case .fieldJump: return "field-jump"

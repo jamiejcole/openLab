@@ -2,8 +2,9 @@
 
 import AppKit
 
-/// The General page of the workspace settings (QLab 5, manual pp. 99-100): the time between GOs and
-/// the key-up rule, the panic fade, auto-numbering, auto-load and the playhead lock. Each box sends
+/// The General page of the workspace settings (QLab 5, manual pp. 99-101): the time between GOs and
+/// the key-up rule, the panic fade, auto-numbering, auto-load, the playhead lock and copying media
+/// into the show folder as files are added. Each box sends
 /// its setting to the engine and the page is drawn from what the engine then holds.
 extension WorkspaceSettingsWindowController {
     func buildGeneralTab() -> NSView {
@@ -21,6 +22,7 @@ extension WorkspaceSettingsWindowController {
             (autoNumberCheck, "settings-auto-number", #selector(switchClicked(_:))),
             (autoLoadCheck, "settings-new-cues-auto-load", #selector(autoLoadClicked)),
             (lockPlayheadCheck, "settings-lock-playhead", #selector(switchClicked(_:))),
+            (copyMediaCheck, AX.settingsCopyMedia, #selector(switchClicked(_:))),
         ]
         for (box, id, action) in boxes {
             box.setAX(id)
@@ -36,6 +38,7 @@ extension WorkspaceSettingsWindowController {
             NSStackView(views: [autoNumberCheck, autoNumberField]), note("settings.general.autoNumber.note"),
             autoLoadCheck,
             lockPlayheadCheck, note("settings.general.lockPlayhead.note"),
+            copyMediaCheck, note("settings.general.copyMedia.note"),
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -57,6 +60,7 @@ extension WorkspaceSettingsWindowController {
         case keyUpCheck: return .goNeedsKeyUp
         case autoNumberCheck: return .autoNumberNewCues
         case lockPlayheadCheck: return .lockPlayhead
+        case copyMediaCheck: return .copyMediaOnAdd
         default: return nil
         }
     }
@@ -71,6 +75,10 @@ extension WorkspaceSettingsWindowController {
             box.isEnabled = on != nil
         }
         autoNumberField.isEnabled = model.isOn(.autoNumberNewCues) == true
+        let copy = model.isOn(.copyMediaOnAdd)
+        copyMediaCheck.state = copy == true ? .on : .off
+        // Locked in Show Mode, as the rest of the show's editing is.
+        copyMediaCheck.isEnabled = copy != nil && !model.store.showMode
         renderAutoLoad()
     }
 

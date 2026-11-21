@@ -413,6 +413,13 @@ pub enum Request {
         /// Network cues still run, complete and continue, but send nothing.
         network_disabled: bool,
     },
+    /// Copies every file the connection's workspace's cues target that is not inside its show
+    /// folder into the folder's `audio` or `video` folder, and points those cues at the copies
+    /// as one undo step when every file is done (WS-04; QLab 5's on-demand copy). Runs off the
+    /// control thread; `media_copy_progress` and `media_copied` report it. Answers `ok` as soon
+    /// as it starts, or `command_refused` for a show never saved, in Show Mode, or with this
+    /// command already running or waiting. Workspace-bound.
+    CopyMedia,
     /// Puts the connection's workspace in Show Mode or back in Edit Mode (SM-01). The engine
     /// keeps it (not in the show file) so it survives a UI restart, reports it in `document`,
     /// and prevents system and display sleep while any open workspace is in Show Mode (SM-07).

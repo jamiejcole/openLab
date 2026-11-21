@@ -361,6 +361,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 points: vec![[0.5, 0.05], [0.5, 0.5]],
             },
         ),
+        ("copy_media", Request::CopyMedia),
     ]
 }
 
@@ -1040,6 +1041,39 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add("closed", server(ServerMessage::Closed { doc: DocId(3) }));
+    add(
+        "media_copy_progress",
+        server(ServerMessage::MediaCopyProgress {
+            cues: vec![
+                CueId(uuid::Uuid::from_u128(1)),
+                CueId(uuid::Uuid::from_u128(2)),
+            ],
+            files_done: 1,
+            files_total: 2,
+            bytes_done: 1_048_576,
+            bytes_total: 3_145_728,
+            on_demand: true,
+        }),
+    );
+    add(
+        "media_copied",
+        server(ServerMessage::MediaCopied {
+            report: Box::new(openlab_core::protocol::MediaCopyReport {
+                on_demand: true,
+                copied: 3,
+                reused: 1,
+                in_folder: 2,
+                failed: vec![openlab_core::protocol::MediaCopyFailure {
+                    cue: CueId(uuid::Uuid::from_u128(4)),
+                    file: "/Volumes/Library/Thunder.wav".into(),
+                    reason: openlab_core::protocol::MediaCopyReason::Missing,
+                    message: "could not read the file: No such file or directory".into(),
+                }],
+                failed_count: 1,
+                cancelled: false,
+            }),
+        }),
+    );
     add(
         "video_outputs",
         server(ServerMessage::VideoOutputs {
@@ -2251,7 +2285,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 25);
-    assert_eq!(all_requests().len(), 32);
+    assert_eq!(all_requests().len(), 33);
 }
 
 #[test]
@@ -4824,6 +4858,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::ListDevices),
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
+        Just(Request::CopyMedia),
         Just(Request::ListPatchMappings),
         Just(Request::BackupKeep),
         any::<u32>().prop_map(|count| Request::SetBackupKeep { count }),

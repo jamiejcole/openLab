@@ -4,6 +4,7 @@
     "id": "dc25e7eb-0360-4277-833d-8549f60efce5",
     "name": "Loaded",
     "settings": {
+      "copy_media_on_add": false,
       "min_go_interval": 0.0,
       "panic_duration": 0.5,
       "autosave_interval": 30.0,

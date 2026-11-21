@@ -346,8 +346,21 @@ extension AppController {
     private func save(_ store: WorkspaceStore, name: String, asNew: Bool = false) async -> Bool {
         var saveAsURL: URL?
         let reply: Result<OkBody, EngineError>?
+        var copyMedia = false
         if asNew || store.document?.path == nil {
-            guard let url = pickSaveURL(name) else { return false }
+            let copies = store.isOn(.copyMediaOnAdd) ?? WorkspaceSwitch.copyMediaOnAdd.fallback
+            guard let target = pickSaveURL(name, copies) else { return false }
+            var url = target.url
+            if target.newFolder {
+                switch await SaveTarget.makeShowFolder(for: url) {
+                case .success(let inside):
+                    url = inside
+                    copyMedia = true
+                case .failure(let e):
+                    raise(String(format: loc("error.saveFailed"), e.localizedDescription), from: store)
+                    return false
+                }
+            }
             saveAsURL = url
             reply = await bounded { await store.saveAs(path: url.path) }
         } else {
@@ -358,6 +371,11 @@ extension AppController {
             if let saveAsURL {
                 savedAsPaths[ObjectIdentifier(store)] = saveAsURL.path
                 noteRecent(saveAsURL)
+            }
+            // The new show folder takes a copy of every file the cues target (WS-04); the copy runs
+            // in the engine and its end shows in the window's footer.
+            if copyMedia, case .failure(let e) = await store.copyMediaIntoShowFolder() {
+                raise(describe(e), from: store)
             }
             return true
         case .failure(let e)?:

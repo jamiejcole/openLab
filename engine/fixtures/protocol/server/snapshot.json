@@ -182,7 +182,8 @@
         "auto_number_new_cues": true,
         "lock_playhead": true,
         "go_needs_key_up": false,
-        "osc_enabled": true
+        "osc_enabled": true,
+        "copy_media_on_add": true
       },
       "patches": [
         {

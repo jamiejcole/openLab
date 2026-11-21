@@ -82,7 +82,9 @@ final class AppController {
     var pickOpenURL: @MainActor () -> URL? = AppController.openPanel
     /// The folder to search for missing media (nil: cancelled).
     var pickFolderURL: @MainActor () -> URL? = AppController.folderPanel
-    var pickSaveURL: @MainActor (String) -> URL? = AppController.savePanel
+    /// Where to save a show and whether into a new show folder with its media (nil: cancelled). The
+    /// name suggested, and whether the folder choice starts chosen.
+    var pickSaveURL: @MainActor (String, Bool) -> SaveTarget? = AppController.savePanel
     var noteRecent: @MainActor (URL) -> Void = { NSDocumentController.shared.noteNewRecentDocumentURL($0) }
     var recentURLs: @MainActor () -> [URL] = { NSDocumentController.shared.recentDocumentURLs }
     /// Whether a recent workspace's file is still there (a seam: tests list files that do not exist).
@@ -398,10 +400,15 @@ final class AppController {
         return out
     }
 
-    private static func savePanel(_ name: String) -> URL? {
+    /// The Save panel, with QLab 5's choice under it (manual p. 117): a new show folder holding the
+    /// show and a copy of its media, or the show file only.
+    private static func savePanel(_ name: String, newFolder: Bool) -> SaveTarget? {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = suggestedFileName(name)
         if let type = UTType(filenameExtension: "openlab") { panel.allowedContentTypes = [type] }
-        return StandBack.runModal(panel) == .OK ? panel.url : nil
+        let choice = SaveTarget.choicePopup(newFolder: newFolder)
+        panel.accessoryView = SaveTarget.accessory(choice)
+        guard StandBack.runModal(panel) == .OK, let url = panel.url else { return nil }
+        return SaveTarget(url: url, newFolder: choice.indexOfSelectedItem == 0)
     }
 }

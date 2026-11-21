@@ -1390,6 +1390,9 @@ fn two_relative_cues_with(
             *media = Some(MediaRef::new("sfx/hit.wav"));
         }
     }
+    // These tests follow references through a move: a file set on a cue stays where it is
+    // (copying into the show folder is tested in `copy_media.rs`).
+    ws.settings.copy_media_on_add = false;
     let a_show = a.path().join("show.openlab");
     write_show(&a_show, &ws);
     let mut r = rig_with(ws, Some(a_show), hook);

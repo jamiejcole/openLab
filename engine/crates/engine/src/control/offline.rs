@@ -515,6 +515,31 @@ impl OfflineShow {
         }
     }
 
+    /// Waits (bounded by the settle timeout, counted in [`Self::stalls`]) for the next answer of a
+    /// copy of media into a show folder, ticking and handling every other message meanwhile, and
+    /// returns it unhandled, so a test can time what the control thread does with it
+    /// ([`Self::deliver`]).
+    #[track_caller]
+    pub fn next_copy_answer(&mut self) -> Option<Inbox> {
+        let began = std::time::Instant::now();
+        let deadline = began + self.settle_timeout;
+        loop {
+            self.control.tick();
+            match self.inbox.recv_timeout(Duration::from_millis(2)) {
+                Ok(msg @ Inbox::Copy(_)) => return Some(msg),
+                Ok(msg) => {
+                    let _ = self.control.handle(msg);
+                }
+                Err(_) if std::time::Instant::now() >= deadline => {
+                    self.stalls += 1;
+                    self.note_slow("a copy's answer (gave up)", began);
+                    return None;
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
     /// Renders `frames` (whole blocks) with no control tick in between: a control thread that
     /// is late, so mixer events pile up (tests of the event queue overflowing).
     #[track_caller]

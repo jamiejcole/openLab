@@ -176,6 +176,7 @@ Numbers are asserted in `engine/crates/engine/tests/perf.rs` (a 2,110-cue show b
 | Media watch with 2,000 files | < 1% of a core |
 | Second 2,000-cue doc open | idle tick <= 3x one doc, edits <= 1.5x + 0.5 ms; install, close and each wake after either under half an audio block |
 | Save As of a 2,000-cue doc into another folder (doc unchanged while it is written), another doc on its files playing | the request and each wake after it, until its files are watched and probed from the new folder, under half an audio block |
+| Copy media into the show folder, every file of a 2,000-cue doc (`copy_budget`) | every wake while it copies, takes its answer and points the cues at their copies (32 a wake, one undo step) under one audio block / `HEADROOM` (2.67 ms) |
 | 64 stereo fading cues, 512-frame blocks | >= 10x real time; two docs <= 1.25x slower than one |
 
 - Bookkeeping follows the edit's footprint, not the show (cue index position maps, problem facts, catalog key set, `PlanChecks` examining only touched cues, `model_changes` reading through the index). Counters pin it (`whole_show_passes`, `examined`, `walks`, `plan_builds`); do not add a per-edit or per-probe-answer pass over every cue. Priming finds cues through the cue index; its one per-pass walk is a flag test for triggers.

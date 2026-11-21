@@ -2747,6 +2747,7 @@ impl Control {
                 },
             );
         }
+        self.eng.copies.stop_doc(doc);
         let mut closed = self.docs.remove(index);
         self.eng.drop_doc_pictures(doc);
         self.docs_changed();
@@ -3009,6 +3010,16 @@ impl Control {
     /// Document workers abandoned in a stalled read that have not returned yet.
     pub fn stuck_doc_workers(&self) -> usize {
         self.eng.docs.stuck.load(Ordering::SeqCst)
+    }
+
+    /// Copies of media into show folders running or waiting.
+    pub fn copies_busy(&self) -> usize {
+        self.eng.copies.busy()
+    }
+
+    /// Copy threads given up on (stuck on a volume) that have not returned.
+    pub fn copies_stuck(&self) -> usize {
+        self.eng.copies.stuck()
     }
 
     /// Requests, saves and autosaves still being worked on, the engine's and every doc's.

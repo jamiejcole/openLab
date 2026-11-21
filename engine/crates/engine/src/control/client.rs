@@ -89,6 +89,7 @@ impl Control {
                 }
             }
             Inbox::Doc(answer) => self.doc_answer(answer),
+            Inbox::Copy(answer) => self.copy_answer(answer),
             Inbox::Watch(WatchAnswer::Batch(batch)) => self.eng.watch_batches.push(batch),
             Inbox::Watch(WatchAnswer::BucketAnswered { bucket, healthy }) => {
                 self.eng.watch.watch_mut().answered(&bucket, healthy);
@@ -121,6 +122,22 @@ impl Control {
             Ok(flow) => return flow,
             Err(message) => message,
         };
+        if let Addr::Doc(Some(doc)) = from
+            && matches!(
+                message,
+                ClientMessage::Command { .. }
+                    | ClientMessage::Undo { .. }
+                    | ClientMessage::Redo { .. }
+                    | ClientMessage::Request {
+                        request: Request::SetShowMode { on: true },
+                        ..
+                    }
+            )
+        {
+            // A copy still pointing cues at their copies finishes first: it is one undo step,
+            // and the show is never left half retargeted.
+            self.flush_retargets(doc);
+        }
         match from {
             Addr::Doc(Some(doc)) => match message {
                 // Saves look at the other docs' show files: the engine's, not the doc's.
@@ -134,6 +151,14 @@ impl Control {
                     request: Request::Relink { folder, preview },
                 } if self.cx_of(doc).is_some() => {
                     self.relink(doc, id, folder, preview, to);
+                    Flow::Continue
+                }
+                // One copy runs engine-wide.
+                ClientMessage::Request {
+                    id,
+                    request: Request::CopyMedia,
+                } => {
+                    self.copy_media(doc, id, to);
                     Flow::Continue
                 }
                 // The mapping is the machine's: every doc resolves its patches again.
@@ -529,6 +554,7 @@ impl DocCx<'_> {
                     return Flow::Continue;
                 }
                 let footprint = command.footprint();
+                let sets_media = openlab_core::media_set_by(self.doc.model.ws(), &command);
                 let mut edit = self.doc.model.edit();
                 let result =
                     self.doc
@@ -542,6 +568,7 @@ impl DocCx<'_> {
                         // `model_changed`, not dirty.
                         if changed {
                             self.edited(now, &footprint);
+                            self.copy_on_add(sets_media);
                         }
                         reply(to, ok(id, Some(self.doc.revision)));
                     }
@@ -604,6 +631,10 @@ impl DocCx<'_> {
                 Request::SetShowMode { on } => {
                     if self.doc.show_mode != on {
                         self.doc.show_mode = on;
+                        // Nothing is copied while the show runs.
+                        if on {
+                            self.eng.copies.stop_doc(self.doc.id);
+                        }
                         self.document();
                     }
                     reply(to, ok(id, None));

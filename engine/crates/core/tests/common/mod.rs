@@ -173,6 +173,7 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             lock_playhead: true,
             go_needs_key_up: false,
             osc_enabled: true,
+            copy_media_on_add: true,
         },
         patches: vec![patch(1, 2)],
         network_patches: vec![NetworkPatch {

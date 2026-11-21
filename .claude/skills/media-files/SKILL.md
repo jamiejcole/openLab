@@ -1,6 +1,6 @@
 ---
 name: media-files
-description: "Load when changing or reviewing when media probes run, the probe pool and preload scheduling, the stalled-volume gate, the media watch thread and its watchdog, missing/back/changed-file detection, or relink (engine/crates/engine/src/control/media/, control/watch/, persist/relink.rs; core relink.rs)."
+description: "Load when changing or reviewing media probes and preloads, the stalled-volume gate, the media watch, missing-file detection, relink or copying media into the show folder (control/media/, control/watch/, control/copy_media.rs, persist/relink.rs, persist/media_copy.rs; core relink.rs, media_copy.rs)."
 ---
 
 # Media probes, volume gate, media watch, relink
@@ -117,6 +117,22 @@ Control side: `relink { folder }` (bound connection, its doc; WS-03, NFR-04).
 - If the doc closes during the walk the answer is `no_workspace`.
 - `preview` (Target `Relink { doc, preview }`): the same walk, slot, limits and stall check; `apply_relink` drops matches whose cue changed, as for an applied relink, then answers the matches (`list_relinks`) and changes nothing. The app's Find Missing Files sends the accepted ones back as an ordinary media-edit transaction, so they are validated and stored (`Command::prepare`) like any file edit.
 - Both kinds of answer list `matches` and `ambiguous` up to `MAX_RELINK_LIST_BYTES` of paths, whole cues only, with `capped` when cues were left out.
+
+## Copying media into the show folder (WS-04)
+Core (`media_copy.rs`) plans from the model: `media_set_by(workspace, command)` (the cues whose file a client command sets to another file than the cue has, so a whole-kind edit that keeps it, such as a level limit clamping cues, copies nothing: `AddCue` with a file, a group's children too, `SetCueProperty` `media` or a `Kind` with one, `BatchSet` `media`; never a paste).
+  Also `copy_items` (an Audio cue's file goes to `audio`, a Video cue's to `video`; `in_folder` when the stored reference is relative with no `.`/`..`), `numbered_name` (`kick 2.wav`), `retarget_command` (one `Transaction` of `media` edits).
+- **Must not break:** the control thread never copies, stats or reads a file for it; a failed, stopped or crashed copy leaves no file a cue could point at; no cue is retargeted before its copy is whole and in place; a copy never replaces a file; one copy is one undo step.
+- Two ways in: after a client `command` that changed the workspace (`DocCx::copy_on_add`: setting `copy_media_on_add` on, a show folder, not Show Mode; undo and redo never copy), and `copy_media` (on demand; `command_refused` unsaved, in Show Mode, or while it runs or waits for the doc). Added files of one doc waiting join one job.
+- `Copies` (`control/copy_media.rs`, in the engine): one job at a time engine-wide on an `openlab-copy-media` thread, the rest queued. `start_copy` plans on the control thread from the model only (no I/O): on demand a file in the folder is `in_folder`, left alone; a reference with no place on disk fails `missing`; a source on a volume the gate holds stalled (`MediaCatalog::volume_stalled`) fails `not_responding` without being tried.
+- File work (`persist/media_copy.rs`, `copy_into`): source opened with `open_regular` (a FIFO never blocks); the destination folder made if absent, refused if a link or file is in its place; its files indexed once per job (at most `MAX_INDEX_ENTRIES`, temp names, links and non-UTF-8 names left out) and kept up to date with the job's copies.
+  - Not `always_new`: a file of the same size is compared byte for byte (exact; no hash, so no collision can retarget a cue to other audio) and reused if equal. `always_new` (on add, a file already inside the folder; QLab measured, skill `qlab-behaviour` C-R5) always copies.
+  - A copy is written to `<name>.<pid>-<n>.tmp` (`create_new`) in the destination folder, synced, then `rename_no_replace` to the name or the first free `name N` (to `MAX_COPY_NUMBER`); removed on any failure or cancel. A source whose length changed while it was copied fails `unreadable`.
+  - A copy is synced every `SYNC_EVERY` (64 MiB), so its last sync is short; sizing the files beats once per file. Indexing a folder removes another process's copy temps (a crashed engine's); this process's own are copies under way.
+  - Pacing (`CopyPacing`): 1 MiB chunks (the job's only buffer), 2 ms pause after each, so streams keep their disk; tests drop the pause (`ControlConfig::copy`). `CopyHooks` (feature `test-support`) hold a file or fail a write.
+- Progress: the thread's counters (`CopyProgress`); each tick `copy_tick` sends `media_copy_progress` (lossy, at most every `COPY_PROGRESS_EVERY`) and checks for a stall: no counter moved for `doc_timeout` on `stall_clock` gives the thread up (`Handover`, counted in `copies_stuck` until it returns; its late answer is ignored) and reports the files not done `not_responding`, nothing retargeted.
+- End: `plan_retargets` counts the files and lists the cues; `apply_some` (each `copy_tick`) points `APPLY_PER_WAKE` (32) of them at their copies a wake, each part an edit joined to one undo step by the copy's coalesce key; a client undo, redo or command for the doc, or Show Mode turning on, first applies every part still waiting in that wake (`flush_retargets`), so the copy is always one whole undo step and the show is never left half retargeted.
+  A cue whose file changed since the plan keeps it (the edit wins); stored forms come from the copy thread, worked out again after a Save As elsewhere. `media_copied` (state, resent if the channel was full) follows the last part, with up to 200 failures.
+- Show Mode or a close stops a copy whose files are still being copied (nothing retargeted); one already pointing cues at its copies is finished at once (`flush_retargets`; a close drops it). A cue playing keeps its voice and plays its old file to its end.
 
 ## No show folder
 

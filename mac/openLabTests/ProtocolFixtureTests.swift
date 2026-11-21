@@ -26,6 +26,8 @@ final class ProtocolFixtureTests: XCTestCase {
         case .workspaces: return "workspaces"
         case .closed: return "closed"
         case .videoOutputs: return "video_outputs"
+        case .mediaCopyProgress: return "media_copy_progress"
+        case .mediaCopied: return "media_copied"
         case .unknown(_): return "?"
         }
     }
@@ -300,6 +302,27 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertNil(d[TestSnapshots.intro]?.duration, "a cue that loops until devamped has no duration")
         XCTAssertEqual(d[TestSnapshots.rain]?.file, 2.0)
         XCTAssertNil(d[TestSnapshots.radio], "its file is missing")
+    }
+
+    func testMediaCopyMessagesDecode() throws {
+        guard
+            case .mediaCopyProgress(let p) = try ServerMessage.decode(
+                try Fixtures.text("server", "media_copy_progress"))
+        else { return XCTFail("media_copy_progress") }
+        XCTAssertEqual(p.cues.count, 2)
+        XCTAssertEqual(p.filesDone, 1)
+        XCTAssertEqual(p.filesTotal, 2)
+        XCTAssertEqual(p.bytesTotal, 3_145_728)
+        XCTAssertTrue(p.onDemand)
+        guard case .mediaCopied(let r) = try ServerMessage.decode(try Fixtures.text("server", "media_copied"))
+        else { return XCTFail("media_copied") }
+        XCTAssertEqual(r.copied, 3)
+        XCTAssertEqual(r.reused, 1)
+        XCTAssertEqual(r.inFolder, 2)
+        XCTAssertEqual(r.failedCount, 1)
+        XCTAssertEqual(r.failed.first?.reason, "missing")
+        XCTAssertEqual(r.failed.first?.file, "/Volumes/Library/Thunder.wav")
+        XCTAssertFalse(r.cancelled)
     }
 
     func testDecodedValuesAreRight() throws {

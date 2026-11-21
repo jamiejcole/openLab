@@ -1,0 +1,13 @@
+{
+  "about": "#779: the General settings page's copy-media switch and note in light mode at the least settings window size: nothing clipped.",
+  "show": "Demo",
+  "appearance": "light",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "general"},
+    {"click": "settings-copy-media"},
+    {"advance": 0.1},
+    {"resize": [680, 552]},
+    {"shot": "general-light-least"}
+  ]
+}

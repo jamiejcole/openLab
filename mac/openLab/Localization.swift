@@ -144,6 +144,8 @@ enum AX {
     static let settingsPageBar = "settings-page-bar"
     static let settingsPanicField = "settings-panic-field"
     static let settingsGoIntervalField = "settings-go-interval-field"
+    static let settingsCopyMedia = "settings-copy-media"
+    static let saveChoice = "save-choice"
     /// The Audio tab's patch table: `-name-N`, `-device-N`, `-edit-N`, `-remove-N`, `-problem-N` (rows from 1).
     static let settingsPatch = "settings-patch"
     static let settingsPatchAdd = "settings-patch-add"

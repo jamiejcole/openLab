@@ -47,6 +47,7 @@ impl Control {
         self.eng.check_stalled_save();
         self.eng.poll_clears();
         self.poll_orphan_saves();
+        self.copy_tick();
         self.eng.resend_closed();
         self.publish_workspaces();
         self.sync_stages();

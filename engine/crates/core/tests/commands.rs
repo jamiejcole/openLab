@@ -611,6 +611,7 @@ fn the_general_switches_are_workspace_settings_with_undo() {
         WorkspaceSetting::LockPlayhead { value: false },
         WorkspaceSetting::GoNeedsKeyUp { value: true },
         WorkspaceSetting::OscEnabled { value: false },
+        WorkspaceSetting::CopyMediaOnAdd { value: false },
     ] {
         history
             .execute(&mut ws, Command::SetWorkspaceSetting { setting })
@@ -618,6 +619,7 @@ fn the_general_switches_are_workspace_settings_with_undo() {
     }
     assert!(!ws.settings.auto_number_new_cues && !ws.settings.lock_playhead);
     assert!(ws.settings.go_needs_key_up && !ws.settings.osc_enabled);
+    assert!(!ws.settings.copy_media_on_add);
     while history.undo(&mut ws).unwrap() {}
     assert_eq!(ws, before);
 }

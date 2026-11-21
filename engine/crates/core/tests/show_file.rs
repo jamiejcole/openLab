@@ -1468,6 +1468,7 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                 any::<bool>(),
                 any::<bool>(),
                 any::<bool>(),
+                any::<bool>(),
             ),
         ),
     )
@@ -1485,6 +1486,7 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                         lock_playhead,
                         go_needs_key_up,
                         osc_enabled,
+                        copy_media_on_add,
                     ),
                 ),
             )| {
@@ -1504,6 +1506,7 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                     lock_playhead,
                     go_needs_key_up,
                     osc_enabled,
+                    copy_media_on_add,
                 }
             },
         )
@@ -2163,6 +2166,7 @@ fn a_file_without_the_basics_and_triggers_keys_loads_with_their_defaults() {
         "lock_playhead",
         "go_needs_key_up",
         "osc_enabled",
+        "copy_media_on_add",
     ] {
         doc["workspace"]["settings"]
             .as_object_mut()
@@ -2178,9 +2182,11 @@ fn a_file_without_the_basics_and_triggers_keys_loads_with_their_defaults() {
     assert!(!first.auto_load && !first.skip_if_disarmed);
     assert!(first.triggers.hotkey_enabled);
     assert!(!loaded.workspace.settings.new_cues_auto_load);
-    // Auto-numbering, the playhead lock and OSC access are on in a file that never said.
+    // Auto-numbering, the playhead lock, OSC access and copying media into the show folder
+    // are on in a file that never said.
     let settings = &loaded.workspace.settings;
     assert!(settings.auto_number_new_cues && settings.lock_playhead && settings.osc_enabled);
+    assert!(settings.copy_media_on_add);
     assert!(!settings.go_needs_key_up);
 }
 

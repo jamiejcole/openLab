@@ -56,6 +56,9 @@ pub enum Inbox {
     /// One read runs at a time engine-wide, so its ticket names
     /// the request, and the request the doc.
     Doc(super::docs::DocAnswer),
+    /// A copy of media into a show folder is done (internal feedback); one runs at a time, so
+    /// its ticket names it.
+    Copy(super::copy_media::CopyAnswer),
     /// The media watch's findings (internal feedback). One
     /// watch serves every doc: its events name files, and the loop hands each to the docs that
     /// watch it.

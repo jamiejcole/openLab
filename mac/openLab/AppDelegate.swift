@@ -225,6 +225,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         appController.frontController?.window?.toggleFullScreen(nil)
     }
     @MainActor @objc func showWorkspaceInFinder(_ sender: Any?) { appController.showFrontWorkspaceInFinder() }
+    @MainActor @objc func copyMediaIntoShowFolder(_ sender: Any?) {
+        appController.frontController?.copyMediaIntoShowFolder()
+    }
     @MainActor @objc func pasteLevels(_ sender: Any?) { appController.frontController?.pasteLevels() }
     @MainActor @objc func selectNextInspectorTab(_ sender: Any?) { appController.selectAdjacentInspectorTab(by: 1) }
     @MainActor @objc func selectPreviousInspectorTab(_ sender: Any?) {
@@ -315,6 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 window.styleMask.contains(.fullScreen) ? "menu.view.exitFullScreen" : "menu.view.enterFullScreen")
             return true
         case #selector(showWorkspaceInFinder(_:))?: return appController.canShowFrontWorkspaceInFinder
+        case #selector(copyMediaIntoShowFolder(_:))?: return appController.frontController?.canCopyMedia ?? false
         case #selector(pasteLevels(_:))?:
             return textEditor == nil && (appController.frontController?.canPasteLevels ?? false)
         case #selector(selectNextInspectorTab(_:))?, #selector(selectPreviousInspectorTab(_:))?:

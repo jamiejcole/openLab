@@ -4,6 +4,7 @@
     "id": "00000000-0000-0000-0000-0000000000d3",
     "name": "Three",
     "settings": {
+      "copy_media_on_add": false,
       "min_go_interval": 0.0,
       "panic_duration": 0.5,
       "autosave_interval": 30.0,

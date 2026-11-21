@@ -559,7 +559,67 @@ fn performance_budgets() {
     );
     watch_budget();
     two_doc_budgets(&path);
+    copy_budget(&path);
 }
+
+/// WS-04: copying every file of a 2,000-cue show into its show folder (on demand) costs the
+/// control thread no wake longer than [`COPY_WAKE_LIMIT`]: the wakes while the files are copied,
+/// the one that takes the copy's answer, and each wake after it that points the next part of the
+/// cues at their copies (a few hundred a wake, all one undo step) and takes up their files.
+fn copy_budget(path: &std::path::Path) {
+    let mut while_copying = Duration::MAX;
+    let mut applying = Duration::MAX;
+    for _ in 0..RUNS {
+        let text = read_text(path, MAX_SHOW_FILE_BYTES).unwrap();
+        let ws = load_show(&text).unwrap().workspace;
+        let mut c = config(&ws);
+        c.show_path = Some(path.to_path_buf());
+        c.copy.pacing.pause = Duration::ZERO;
+        let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+        s.settle_media();
+        let id = s.request_id();
+        s.send(ClientMessage::Request {
+            id,
+            request: openlab_core::protocol::Request::CopyMedia,
+        });
+        let mut longest = Duration::ZERO;
+        for _ in 0..10 {
+            let t = Instant::now();
+            s.tick();
+            longest = longest.max(t.elapsed());
+        }
+        while_copying = while_copying.min(longest);
+        let answer = s.next_copy_answer().expect("the copy answers");
+        let t = Instant::now();
+        s.deliver(answer);
+        let mut longest = t.elapsed();
+        let mut wakes = 0;
+        while s.control().copies_busy() > 0 {
+            let t = Instant::now();
+            s.tick();
+            longest = longest.max(t.elapsed());
+            wakes += 1;
+            assert!(wakes < 200, "the copy never ended");
+        }
+        // And the wake after the last part, which takes up its files.
+        let t = Instant::now();
+        s.tick();
+        longest = longest.max(t.elapsed());
+        applying = applying.min(longest);
+    }
+    eprintln!(
+        "copy media of a 2,000-cue show: wake while copying {while_copying:?}, longest wake applying it {applying:?} (limit {COPY_WAKE_LIMIT:?})"
+    );
+    assert!(
+        while_copying < COPY_WAKE_LIMIT,
+        "wake while copying {while_copying:?}"
+    );
+    assert!(applying < COPY_WAKE_LIMIT, "applying the copy {applying:?}");
+}
+
+/// The longest control wake a copy of media may cause: one audio block divided by [`HEADROOM`],
+/// as the doc open and Save As gates, so a copy finishing while cues play never makes a long wake.
+const COPY_WAKE_LIMIT: Duration = Duration::from_nanos(256 * 1_000_000_000 / 48_000 / 2);
 
 /// Runs of ten passes, the best taken: the shared Intel runner measured 78 ms, 179 ms and
 /// 207 ms on the same code, so a few runs can all land in a slow spell.

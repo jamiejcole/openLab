@@ -31,6 +31,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let autosaveField = NSTextField()
     let lockPlayheadCheck = NSButton(
         checkboxWithTitle: loc("settings.general.lockPlayhead"), target: nil, action: nil)
+    let copyMediaCheck = NSButton(checkboxWithTitle: loc("settings.general.copyMedia"), target: nil, action: nil)
     // Audio: the patch table (`+Audio`) and the volume limits beside it.
     let maxLimitField = NSTextField()
     let minLimitField = NSTextField()
@@ -122,6 +123,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // Published before they change: the sinks use the delivered value and render after it.
         subs.append(store.$status.sink { [weak self] _ in self?.renderSoon() })
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
+        // Show Mode locks the copy-media switch.
+        subs.append(store.$showMode.removeDuplicates().sink { [weak self] _ in self?.renderSoon() })
         // The table is drawn from what the model last read from the engine, whoever asked for it.
         subs.append(model.$patches.sink { [weak self] _ in self?.renderSoon() })
         subs.append(model.$devices.sink { [weak self] _ in self?.renderSoon() })

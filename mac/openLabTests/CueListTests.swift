@@ -6883,7 +6883,13 @@ private final class ToolbarDrag: NSObject, @MainActor NSDraggingInfo {
 }
 
 extension PlayheadFlowTests {
-    private var listMenuItems: [NSMenuItem] { MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items) }
+    /// Every item of the menu bar's menus and their submenus (File > Show Files holds Show in Finder).
+    private var listMenuItems: [NSMenuItem] {
+        func all(_ items: [NSMenuItem]) -> [NSMenuItem] {
+            items + items.compactMap(\.submenu).flatMap { all($0.items) }
+        }
+        return all(MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items))
+    }
 
     private func menuItem(_ action: Selector) throws -> NSMenuItem {
         try XCTUnwrap(listMenuItems.first { $0.action == action }, "\(action)")
@@ -7365,7 +7371,7 @@ extension PlayheadFlowTests {
         XCTAssertFalse(delegate.validateMenuItem(item), "an unsaved workspace has no file")
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).openlab")
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
-        app.pickSaveURL = { _ in url }
+        app.pickSaveURL = { _, _ in SaveTarget(url: url) }
         let saved = await app.saveWorkspace(store, asNew: true)
         XCTAssertTrue(saved)
         await assertEventually("the engine knows the path") { self.store.document?.path != nil }
