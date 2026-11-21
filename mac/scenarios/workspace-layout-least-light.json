@@ -1,5 +1,5 @@
 {
-  "about": "The window at its least width (800 pt) with the sidebar open, light appearance: every list column is whole, the first column is narrow, the time headers have chevrons and the continue header a mark; the footer's status mark fits beside the count.",
+  "about": "The window at its least width (800 pt) with the sidebar open, light appearance: every list column is whole, the first column is narrow, the time headers have chevrons and the continue header a mark; the footer's count and buttons fit at that width.",
   "show": "Demo",
   "window": {"width": 800, "height": 700},
   "appearance": "light",

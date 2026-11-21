@@ -357,11 +357,24 @@ final class WarningsTests: XCTestCase {
         XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.door])
     }
 
-    func testRowWithoutACueCannotBeSelected() async throws {
+    /// A row about no cue (a device, a list) can be selected, so it can be hidden, but "Inspect Cue" is
+    /// off for it and choosing it reveals nothing.
+    func testRowWithoutACueCanBeSelectedAndHiddenButNotInspected() async throws {
         try await make()
         try receive(#"{"type":"warnings","warnings":[{"type":"unknown_list","list":"\#(Self.second)"}]}"#)
         let row = try XCTUnwrap(side.rows.firstIndex { $0.cue == nil })
-        XCTAssertFalse(wc.sidebar.tableView(side.table, shouldSelectRow: row))
+        XCTAssertTrue(side.tableView(side.table, shouldSelectRow: row), "the page's own delegate lets it be selected")
+        var reveals = 0
+        side.onInspect = { _, _ in reveals += 1 }
+        side.table.selectRowIndexes([row], byExtendingSelection: false)
+        XCTAssertEqual(side.table.selectedRow, row)
+        XCTAssertFalse(side.inspectButton.isEnabled, "Inspect Cue is off: there is no cue")
+        XCTAssertTrue(side.hideButton.isEnabled)
+        XCTAssertEqual(reveals, 0, "selecting it reveals nothing")
+        let id = side.rows[row].id
+        side.hideButton.performClick(nil)
+        XCTAssertFalse(side.rows.contains { $0.id == id }, "hidden")
+        XCTAssertTrue(side.all.contains { $0.id == id }, "and still counted")
     }
 
     /// A reason too long for one line (a cue its lost device left paused) wraps, and its row is tall

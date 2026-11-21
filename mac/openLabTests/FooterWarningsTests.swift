@@ -124,7 +124,7 @@ final class FooterWarningsTests: XCTestCase {
         return window.frame.size
     }
 
-    func testTheButtonDoesNotOverlapTheBadgeOrOtherControlsOrWidenTheWindowAtTheMinimumWidth() async throws {
+    func testTheButtonDoesNotOverlapTheAlarmOrOtherControlsOrWidenTheWindowAtTheMinimumWidth() async throws {
         let (_, wc) = try await open()
         // The window's size at its minimum, with the button shown and without it: showing it
         // must not widen the window.
@@ -233,6 +233,55 @@ final class FooterWarningsTests: XCTestCase {
         }
     }
 
+    /// A device with a very long name: the alarm is cut in the middle, the window keeps its size and no
+    /// other footer control is pushed out or overlapped, at the least width, light and dark.
+    func testALongDeviceNameInTheAlarmIsCutAndPushesNothingOutAtTheLeastWidth() async throws {
+        let (_, wc) = try await open("Demo")
+        let name = String(repeating: "Front of House Main Interface ", count: 4) + "(USB)"
+        var json = try JSONValue.parse(Fixtures.text("server", "status"))?["status"] ?? .null
+        json.set(
+            "outputs",
+            .array([
+                .object([
+                    "name": .string(name), "state": .string("lost"), "primary": .bool(false),
+                    "sample_rate": .int(48000), "channels": .int(2),
+                ])
+            ]))
+        let status = try JSONDecoder().decode(SystemStatus.self, from: Data(try json.text().utf8))
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            wc.window?.appearance = NSAppearance(named: appearance)
+            for mode in [false, true] {
+                await wc.requestShowMode(mode)
+                await assertEventually { wc.isShowMode == mode }
+                wc.footer.show(status: nil, connected: true)
+                let without = try atMinimum(wc)
+                wc.footer.show(status: status, connected: true)
+                let with = try atMinimum(wc)
+                XCTAssertEqual(with, without, "the alarm widens the window (\(appearance.rawValue), show \(mode))")
+                let footer = wc.footer
+                XCTAssertEqual(
+                    footer.alarmButton.title,
+                    loc("footer.alarm") + " " + String(format: loc("footer.alarm.outputLost"), name))
+                let controls =
+                    ([
+                        footer.alarmButton, footer.modeSwitch, footer.countLabel, footer.warningsButton,
+                        footer.settingsButton,
+                    ]
+                    + Array(footer.toggles.values)).filter { !$0.isHiddenOrHasHiddenAncestor }
+                let frames = controls.map { footer.convert($0.bounds, from: $0) }
+                for (i, f) in frames.enumerated() {
+                    XCTAssertTrue(
+                        footer.bounds.contains(f), "\(controls[i]) outside the footer: \(f) in \(footer.bounds)")
+                    for j in frames.indices where j > i {
+                        XCTAssertFalse(f.intersects(frames[j]), "\(controls[i]) overlaps \(controls[j])")
+                    }
+                }
+                XCTAssertLessThan(frames[0].width, footer.bounds.width / 2 + 1, "the alarm is cut, not stretched")
+            }
+        }
+        wc.footer.show(status: nil, connected: true)
+    }
+
     // MARK: The device alarm
 
     private func alarmStatus() throws -> SystemStatus {
@@ -241,7 +290,13 @@ final class FooterWarningsTests: XCTestCase {
         return s
     }
 
-    private func warningTitles(_ rig: Rig) -> [String] { WarningRows.make(store: rig.store).map(\.title) }
+    /// The titles the Warnings page draws, read from its cells.
+    private func drawnTitles(_ wc: WorkspaceWindowController) -> [String] {
+        let table = wc.warningsPage.table
+        return (0..<table.numberOfRows).compactMap {
+            (table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? WarningCell)?.title.stringValue
+        }
+    }
 
     /// Two devices, a patch on the second: it is unplugged → the footer's alarm names it at once and
     /// Status > Warnings lists it; plugged back in → the alarm and the row are gone.
@@ -275,14 +330,13 @@ final class FooterWarningsTests: XCTestCase {
         }
         XCTAssertFalse(wc.footer.alarmButton.isHidden, "a lost device's alarm is always in view")
         let row = String(format: loc("warnings.device"), second)
-        await assertEventually("Status > Warnings lists the device") {
-            try? await rig.advance(1)
-            return self.warningTitles(rig).contains(row)
-        }
-        // The alarm opens the Warnings page.
+        // The alarm opens the Warnings page, and the page draws the device's row.
         wc.footer.alarmButton.performClick(nil)
         XCTAssertEqual(wc.existingStatusWindow?.page, .warnings)
-        wc.existingStatusWindow?.close()
+        await assertEventually("Status > Warnings draws the device's row") {
+            try? await rig.advance(1)
+            return self.drawnTitles(wc).contains(row)
+        }
 
         guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
             return XCTFail("plug back in")
@@ -291,10 +345,11 @@ final class FooterWarningsTests: XCTestCase {
             try? await rig.advance(1)
             return wc.footer.alarmButton.isHidden
         }
-        await assertEventually("the row goes") {
+        await assertEventually("the drawn row goes") {
             try? await rig.advance(1)
-            return !self.warningTitles(rig).contains(row)
+            return !self.drawnTitles(wc).contains(row)
         }
+        wc.existingStatusWindow?.close()
     }
 
     /// Only the first device, unplugged: the alarm names the audio device, and the fault is a row.
@@ -308,8 +363,25 @@ final class FooterWarningsTests: XCTestCase {
             return wc.footer.alarmButton.title == loc("footer.alarm") + " " + loc("footer.alarm.deviceLost")
         }
         XCTAssertFalse(wc.footer.alarmButton.isHidden, "the primary device's alarm is always in view")
-        XCTAssertTrue(
-            WarningRows.make(store: rig.store).contains { $0.title.hasPrefix(loc("warnings.device").prefix(5)) },
-            "\(warningTitles(rig))")
+        wc.footer.alarmButton.performClick(nil)
+        let row = String(format: loc("warnings.device"), "openLab Virtual Output")
+        await assertEventually("Status > Warnings draws the device's row") {
+            try? await rig.advance(1)
+            return self.drawnTitles(wc).contains(row)
+        }
+        let table = wc.warningsPage.table
+        let at = try XCTUnwrap(drawnTitles(wc).firstIndex(of: row))
+        let cell = try XCTUnwrap(table.view(atColumn: 0, row: at, makeIfNecessary: true) as? WarningCell)
+        XCTAssertEqual(cell.detail.stringValue, loc("warnings.device.device_lost"))
+        guard case .success = await engine.request(.restoreDevice()) else { return XCTFail("plug back in") }
+        await assertEventually("the alarm clears") {
+            try? await rig.advance(2)
+            return wc.footer.alarmButton.isHidden
+        }
+        await assertEventually("the drawn row goes") {
+            try? await rig.advance(1)
+            return !self.drawnTitles(wc).contains(row)
+        }
+        wc.existingStatusWindow?.close()
     }
 }

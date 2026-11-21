@@ -64,6 +64,10 @@ final class FooterBar: NSView {
         alarmButton.isBordered = false
         alarmButton.imagePosition = .imageLeading
         alarmButton.refusesFirstResponder = true
+        // A long device name is cut in the middle: the alarm gives way to the other controls, never
+        // pushes them out of the footer.
+        alarmButton.lineBreakMode = .byTruncatingMiddle
+        alarmButton.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         alarmButton.setAX(AX.deviceAlarm)
         alarmButton.toolTip = loc("footer.alarm.tooltip")
         alarmButton.target = self
@@ -197,6 +201,7 @@ final class FooterBar: NSView {
         alarmButton.isHidden = text == nil
         guard let text else { return }
         alarmButton.title = text
+        alarmButton.toolTip = text + "\n" + loc("footer.alarm.tooltip")
         alarmButton.image = Icon.statusAlarm.image(text, compact: true)
         alarmButton.contentTintColor = .systemRed
         alarmButton.font = .systemFont(ofSize: 12, weight: .semibold)
