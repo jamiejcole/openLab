@@ -1,6 +1,6 @@
 ---
 name: engine-lifecycle
-description: "Load when changing or reviewing engine start/shutdown, engine.json, instance lock, signals, run marker, crash capture, show log and status, sleep prevention, app relaunch, Warnings page of the status window (WarningsPage*.swift), EngineAlarm.swift, mac supervisor (engine/crates/engine/src/host/, diag/, platform/)."
+description: "Load when changing or reviewing engine start/shutdown, engine.json, instance lock, signals, run marker, crash capture, show log and status, sleep prevention, app relaunch, Warnings page (WarningsPage*.swift), EngineAlarm.swift, mac supervisor (engine/crates/engine/src/host/, diag/, platform/)."
 ---
 
 # Engine process lifecycle

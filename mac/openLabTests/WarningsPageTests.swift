@@ -57,6 +57,20 @@ final class WarningsPageTests: XCTestCase {
         XCTAssertEqual(page.table.numberOfRows, page.rows.count)
     }
 
+    /// Flow: the page is opened for the first time with a warning already there → it lists it at once,
+    /// drawn, without waiting for anything to change.
+    func testThePageShowsTheCurrentWarningsTheMomentItIsMade() async throws {
+        let rig = try await realRig()
+        let wc = WorkspaceWindowController(store: rig.store)
+        XCTAssertNil(wc.existingStatusWindow)
+        let page = wc.warningsPage
+        let row = try XCTUnwrap(page.rows.firstIndex { $0.cue == radio }, "Radio's missing file is listed")
+        XCTAssertEqual(page.table.numberOfRows, page.rows.count)
+        let cell = try XCTUnwrap(page.table.view(atColumn: 0, row: row, makeIfNecessary: true) as? WarningCell)
+        XCTAssertEqual(cell.title.stringValue, "2.3  Radio")
+        XCTAssertEqual(page.summaryLabel.stringValue, String(format: loc("warnings.one"), 1))
+    }
+
     /// Flow: Show Mode, a warning arrives → nothing modal: no sheet, no modal window; the footer's count
     /// changes and the open Status window lists it.
     func testAWarningInShowModeRaisesNothingModalAndShowsInTheFooterAndThePage() async throws {

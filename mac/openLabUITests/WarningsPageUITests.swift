@@ -17,7 +17,7 @@ final class WarningsPageUITests: XCTestCase {
         XCTAssertTrue(report.waitForExistence(timeout: 10), "the list opens")
         let summary = app.staticTexts.matching(identifier: "warnings-summary").firstMatch
         XCTAssertTrue(waitFor("value == '1 warning'", summary), "the summary counts the one warning")
-        let radio = report.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2.3  Radio'")).firstMatch
+        let radio = report.staticTexts["2.3  Radio"]
         XCTAssertTrue(radio.waitForExistence(timeout: 10), "the broken cue is listed")
 
         radio.click()
@@ -38,7 +38,7 @@ final class WarningsPageUITests: XCTestCase {
         app.buttons["footer-warnings"].click()
         let list = app.descendants(matching: .any).matching(identifier: "warnings-table").firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 10), "the Warnings page opens")
-        app.radioButtons["Logs"].firstMatch.click()
+        tabButton("Logs", in: app).click()
         let log = app.tables.matching(identifier: "log-table").firstMatch
         XCTAssertTrue(log.waitForExistence(timeout: 10), "the Logs page is a tab of the same window")
     }
@@ -60,7 +60,7 @@ final class WarningsPageUITests: XCTestCase {
         app.menuBars.menuItems["Workspace Status"].click()
         let report = app.descendants(matching: .any).matching(identifier: "warnings-table").firstMatch
         XCTAssertTrue(report.waitForExistence(timeout: 10))
-        let radio = report.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2.3  Radio'")).firstMatch
+        let radio = report.staticTexts["2.3  Radio"]
         XCTAssertTrue(radio.waitForExistence(timeout: 10))
 
         app.menuBars.menuBarItems["Window"].click()

@@ -24,7 +24,7 @@ final class TransportUITests: XCTestCase {
         app.menuBars.menuItems["Workspace Status"].click()
         let status = app.descendants(matching: .any).matching(identifier: "status-window").firstMatch
         XCTAssertTrue(status.waitForExistence(timeout: 10), "the status window opens")
-        app.radioButtons["Logs"].firstMatch.click()
+        tabButton("Logs", in: app).click()
         let log = app.tables.matching(identifier: "log-table").firstMatch
         XCTAssertTrue(log.waitForExistence(timeout: 10), "on its Logs page")
         // The table's own area, not a label: a table view asks for key on a click.

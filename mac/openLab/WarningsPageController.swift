@@ -94,7 +94,7 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
         let oldIDs = Set(old.map(\.id))
         let newIDs = Set(listed.map(\.id))
         let kept = old.filter { newIDs.contains($0.id) }
-        if kept.map(\.id) == listed.filter({ oldIDs.contains($0.id) }).map(\.id) {
+        if !old.isEmpty, kept.map(\.id) == listed.filter({ oldIDs.contains($0.id) }).map(\.id) {
             // The rows that stay keep their order: the ones that went are removed, new ones inserted
             // where they belong and a row whose words changed is redrawn in place.
             rows = kept
