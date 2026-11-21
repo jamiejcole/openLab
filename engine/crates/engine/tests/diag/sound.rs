@@ -294,3 +294,46 @@ fn a_healthy_show_raises_none_of_them() {
         assert_eq!(logged(&s, words), vec![], "{words}");
     }
 }
+
+/// The pre-show check counts a device's dropouts only while some cue's patch is on that device,
+/// as it does the device's other notices; the warnings list has them either way.
+#[test]
+fn the_preshow_check_counts_dropouts_only_on_a_device_a_cue_plays_on() {
+    fn preshow(s: &mut OfflineShow) -> openlab_core::protocol::PreshowReport {
+        use openlab_core::protocol::{ClientMessage, Outcome, Request, ResultData};
+        let id = s.request_id();
+        let replies = s.send(ClientMessage::Request {
+            id,
+            request: Request::PreshowCheck,
+        });
+        replies
+            .iter()
+            .find_map(|m| match m {
+                ServerMessage::Result {
+                    outcome: Outcome::Ok(ok),
+                    ..
+                } => match &ok.data {
+                    Some(ResultData::PreshowCheck(r)) => Some((**r).clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{replies:?}"))
+    }
+    fn counted(r: &openlab_core::protocol::PreshowReport) -> bool {
+        r.system
+            .iter()
+            .any(|w| matches!(w, WireWarning::Notice { code, .. } if code == "audio_dropouts"))
+    }
+    let path = wav(&dc(4000, 0.5));
+    for (cues, counts) in [(vec![], false), (vec![audio(1, &path, 0)], true)] {
+        let (mut s, clock) = rig(workspace(cues));
+        let doc = first_doc(&s);
+        s.renderer_mut().inject_xruns(1);
+        at(&mut s, &clock, 0);
+        assert!(listed(&s, doc, "audio_dropouts").is_some());
+        let report = preshow(&mut s);
+        assert_eq!(counted(&report), counts, "{report:?}");
+        assert_eq!(report.ok, !counts, "{report:?}");
+    }
+}
