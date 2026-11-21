@@ -1261,8 +1261,10 @@ final class InspectorWindowFrameTests: XCTestCase {
         await select(audio)
         try clickTab("basics")
         let tabs = wc.sidebar.tabs
-        tabs.setLabel("12 Cue Lists", forSegment: 0)
-        tabs.setLabel("12 Active Cues", forSegment: 1)
+        // Two tabs share the row, so labels this long stand for a busy show on a macOS that measures
+        // segmented controls wider.
+        tabs.setLabel("12 Cue Lists, carts and groups", forSegment: 0)
+        tabs.setLabel("12 Active Cues running now", forSegment: 1)
         // The tabs ask for more than the sidebar's 280 pt, less its 10 pt margins, by more than the 12 pt
         // a newer macOS adds to the shorter labels.
         XCTAssertGreaterThan(tabs.intrinsicContentSize.width, 280 - 20 + 12)
@@ -1273,7 +1275,7 @@ final class InspectorWindowFrameTests: XCTestCase {
         XCTAssertEqual(wc.sidebar.view.frame.width, 280, accuracy: 1, "the sidebar keeps its width")
         let inSidebar = tabs.convert(tabs.bounds, to: wc.sidebar.view)
         XCTAssertTrue(wc.sidebar.view.bounds.contains(inSidebar), "the tabs fit the sidebar: \(inSidebar)")
-        XCTAssertEqual(tabs.label(forSegment: 1), "12 Active Cues")
+        XCTAssertEqual(tabs.label(forSegment: 1), "12 Active Cues running now")
     }
 
     /// The Triggers tab at the least window size with the sidebar open: the hotkey field's prompt stays on
@@ -1935,8 +1937,13 @@ final class WindowLayoutTests: XCTestCase {
         layout.inspectorHeight = 300
         layout.sidebarWidth = 350
         layout.shown = [.inspector: false, .sidebar: true]
-        layout.sidebarTab = 2
+        layout.sidebarTab = 1
         XCTAssertEqual(WindowLayout(stored: layout.stored), layout)
+        // A layout saved when the sidebar had a third tab (Warnings) names a tab that is gone: it is
+        // dropped, and the sidebar opens on its first tab.
+        var old = layout.stored
+        old["sidebarTab"] = 2
+        XCTAssertNil(WindowLayout(stored: old).sidebarTab)
         var damaged = layout.stored
         damaged["frame"] = [Double.nan, 0, 10, 10]
         damaged["sidebarTab"] = -1

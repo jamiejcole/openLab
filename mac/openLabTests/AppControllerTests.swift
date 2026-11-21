@@ -499,8 +499,8 @@ final class AppControllerTests: XCTestCase {
     }
 
     /// Closing a workspace whose cue is playing (the operator confirms), with an edit from its window
-    /// and its pre-show check still unanswered: the engine closes the doc, which stops its cues, and the
-    /// window goes with everything it owns once the answers come, which find nothing to call back into.
+    /// and its status window open: the engine closes the doc, which stops its cues, and the window goes
+    /// with everything it owns once the answer comes, which finds nothing to call back into.
     /// The engine and the app go on.
     func testAWorkspaceClosedWhileACuePlaysWithRequestsPendingIsReleased() throws {
         var released = Released()
@@ -516,15 +516,11 @@ final class AppControllerTests: XCTestCase {
             let wc = try XCTUnwrap(app.windows[doc])
             wc.masthead.onCommitNotes?(fade, "pending")
             _ = wc.showWorkspaceStatus()
-            // Both wait on their answers. Others may be held beside them: a read the owned windows started
+            // The edit waits on its answer. Others may be held beside it: a read the owned windows started
             // before the hold (the patch editor's mappings, sent once its device list came back) can be
             // answered after it on a slow machine.
             await assertEventually {
-                let edit = self.engine.heldResults { if case .command = $0 { return true } else { return false } }
-                let check = self.engine.heldResults {
-                    if case .request(_, .preshowCheck) = $0 { return true } else { return false }
-                }
-                return edit == 1 && check == 1
+                self.engine.heldResults { if case .command = $0 { return true } else { return false } } == 1
             }
             engine.holdResults = false
             alerts.saveChoices = [.dontSave]

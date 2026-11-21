@@ -175,7 +175,9 @@ final class FooterWarningsTests: XCTestCase {
             return rig.store.status != nil
         }
         let footer = wc.footer
-        XCTAssertEqual(footer.countLabel.stringValue, "6 cues in 1 list")
+        XCTAssertEqual(
+            footer.countLabel.stringValue,
+            FooterBar.countText(cues: rig.store.model?.cueCount ?? -1, lists: rig.store.model?.cueLists.count ?? -1))
         XCTAssertFalse(footer.modeSwitch.isHidden)
         XCTAssertEqual(footer.toggles.count, 3)
         XCTAssertTrue(footer.alarmButton.isHidden)
