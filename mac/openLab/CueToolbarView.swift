@@ -7,6 +7,9 @@ import AppKit
 final class CueToolbarButtons: NSSegmentedControl, NSDraggingSource {
     /// The pasteboard item for the segment pressed (nil: it adds nothing) and the picture to drag.
     var dragItem: ((Int) -> (NSPasteboardItem, NSImage)?)?
+    /// A click (a press that did not move) on a segment. A momentary control reads no selected segment
+    /// once its tracking ends, so a click tracked here names its segment itself.
+    var onClick: ((Int) -> Void)?
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext)
         -> NSDragOperation
@@ -43,8 +46,7 @@ final class CueToolbarButtons: NSSegmentedControl, NSDraggingSource {
             drag.setDraggingFrame(NSRect(x: at.x - 8, y: at.y - 8, width: 16, height: 16), contents: image)
             beginDraggingSession(with: [drag], event: event, source: self)
         } else {
-            selectedSegment = seg
-            sendAction(action, to: target)
+            onClick?(seg)
         }
     }
 }
@@ -149,6 +151,7 @@ final class CueToolbarView: NSView {
                 else { return nil }
                 return (item, image)
             }
+            control.onClick = { [weak self] segment in self?.add(group: groupIndex, segment: segment) }
             control.target = self
             control.action = #selector(clicked(_:))
             control.segmentStyle = .texturedRounded
