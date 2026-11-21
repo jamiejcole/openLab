@@ -326,6 +326,9 @@ impl Control {
             );
             self.mark_warnings_dirty();
         }
+        if self.eng.sound_health() {
+            self.mark_warnings_dirty();
+        }
         self.each_doc(|cx| cx.resend_state());
         let eng = &mut self.eng;
         let out = eng.out.dropped() + eng.out.lossy_dropped();
@@ -383,6 +386,7 @@ impl DocCx<'_> {
         self.start_seeks(now, &mut fx);
         self.follow_sound_clocks(now, &mut fx);
         self.follow(fx, now);
+        self.flush_underruns();
         // A move to another device given up on a slow disk is tried again when due.
         if self.doc.voices.take_due_moves(now) {
             for input in self.follow_devices(now) {

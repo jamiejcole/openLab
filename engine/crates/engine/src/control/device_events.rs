@@ -841,6 +841,17 @@ impl DocCx<'_> {
         }
     }
 
+    /// Whether one of this workspace's patches has its mixer patch on output `key`.
+    fn plays_on(&self, key: OutputKey) -> bool {
+        self.doc.model.ws().patches.iter().any(|p| {
+            self.eng
+                .patches
+                .mixer_patch(self.doc.id, p.id)
+                .and_then(|slot| self.eng.patches.slot_output(slot))
+                == Some(key)
+        })
+    }
+
     /// Whether some cue's sound plays on `patch`: an Audio cue, or a Video cue not known to
     /// have nothing to hear (as the pre-show check counts a patch's users).
     fn patch_in_use(&self, patch: PatchId) -> bool {
@@ -915,6 +926,34 @@ impl DocCx<'_> {
                     name,
                 ));
             }
+        }
+        // Dropouts on a device this workspace plays on: one entry per device while they go
+        // on, with how many so far.
+        for (key, output) in self.eng.outputs.iter() {
+            let Some(count) = self
+                .eng
+                .observe
+                .sound
+                .dropouts
+                .get(&key)
+                .and_then(|d| d.count())
+            else {
+                continue;
+            };
+            if !self.plays_on(key) {
+                continue;
+            }
+            let name = &output.name;
+            list.push(WireWarning::Notice {
+                code: "audio_dropouts".to_owned(),
+                message: format!(
+                    "audio device \"{name}\" dropped out {count} time(s): gaps in its sound"
+                ),
+                cue: None,
+                device: Some(name.clone()),
+                patch: None,
+                count: Some(count),
+            });
         }
         let ws_id = self.doc.model.ws().id;
         for patch in &self.doc.model.ws().patches {

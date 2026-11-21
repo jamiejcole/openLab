@@ -7,6 +7,7 @@
 
 pub mod cpu;
 pub mod crash;
+pub mod health;
 pub mod log;
 pub mod run_marker;
 pub mod status;

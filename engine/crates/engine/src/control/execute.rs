@@ -8,8 +8,27 @@ use std::collections::VecDeque;
 use openlab_core::protocol::{LogLevel, RuntimeChange, WireWarning};
 use openlab_core::{Action, CueId, Footprint, Input, SampleTime, Workspace};
 
-use super::voices::{Effects, Env};
+use super::voices::{Effects, Env, UNDERRUN, UNDERRUN_TEXT};
 use super::{DocCx, FEEDBACK_LIMIT, ProbeAnswer};
+
+/// A runtime notice from the binary.
+fn notice_change(
+    code: &str,
+    message: String,
+    cue: Option<CueId>,
+    count: Option<u64>,
+) -> RuntimeChange {
+    RuntimeChange::Warning {
+        warning: WireWarning::Notice {
+            patch: None,
+            code: code.to_owned(),
+            message,
+            cue,
+            device: None,
+            count,
+        },
+    }
+}
 
 impl DocCx<'_> {
     pub(super) fn probe_answer(&mut self, answer: ProbeAnswer) {
@@ -271,22 +290,52 @@ impl DocCx<'_> {
             self.doc.media.reprobe(&key);
         }
         if !notices.is_empty() {
+            let now_ms = self.eng.config.clock.now_ms();
             let changes = notices
                 .into_iter()
-                .map(|(code, message, cue)| RuntimeChange::Warning {
-                    warning: WireWarning::Notice {
-                        patch: None,
-                        code: code.to_owned(),
-                        message,
-                        cue,
-                        device: None,
-                    },
+                .filter_map(|(code, message, cue)| {
+                    // A starved cue can underrun many times a second: told at once, then at
+                    // most once per ten seconds with the number since.
+                    let count = match (code, cue) {
+                        (UNDERRUN, Some(c)) => {
+                            Some(self.doc.underruns.entry(c).or_default().hit(now_ms, 1)?)
+                        }
+                        _ => None,
+                    };
+                    Some(notice_change(code, message, cue, count))
                 })
                 .collect::<Vec<_>>();
-            self.observe_changes(&changes);
-            self.runtime(changes);
+            if !changes.is_empty() {
+                self.observe_changes(&changes);
+                self.runtime(changes);
+            }
         }
         feedback
+    }
+
+    /// Each cue's underruns held back whose notice is due, told with their number; a cue
+    /// quiet for ten seconds is forgotten.
+    pub(super) fn flush_underruns(&mut self) {
+        if self.doc.underruns.is_empty() {
+            return;
+        }
+        let now_ms = self.eng.config.clock.now_ms();
+        let mut due = Vec::new();
+        self.doc.underruns.retain(|&cue, t| {
+            if let Some(n) = t.due(now_ms) {
+                due.push(notice_change(
+                    UNDERRUN,
+                    UNDERRUN_TEXT.to_owned(),
+                    Some(cue),
+                    Some(n),
+                ));
+            }
+            !t.idle(now_ms)
+        });
+        if !due.is_empty() {
+            self.observe_changes(&due);
+            self.runtime(due);
+        }
     }
 
     /// [`Self::after`], then hands the feedback to the engine (outside a `feed`).

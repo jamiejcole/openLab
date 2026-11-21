@@ -8,9 +8,6 @@ use openlab_core::protocol::{
     DeviceState, DeviceStatus, DiskStatus, OutputState, OutputStatus, SystemStatus,
 };
 
-/// A disk is healthy when no underrun happened in this long.
-pub const DISK_RECOVERY_MS: i64 = 10_000;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatusConfig {
     /// A status is sent at least this often.
@@ -34,6 +31,8 @@ impl Default for StatusConfig {
 pub struct Counters {
     pub xruns: u64,
     pub underrun_frames: u64,
+    /// No underrun for [`super::health::DISK_RECOVERY_MS`] ([`super::health::DiskWatch`]).
+    pub disk_healthy: bool,
     pub streams: u32,
     pub log_dropped: u64,
     /// Sequence number of the newest show-log record.
@@ -54,6 +53,7 @@ pub struct Counters {
 pub struct Peek<'a> {
     pub xruns: u64,
     pub underrun_frames: u64,
+    pub disk_healthy: bool,
     pub device_name: Option<&'a str>,
     pub device_state: DeviceState,
     /// The open output devices and their states, packed so a change is seen without a copy
@@ -94,6 +94,7 @@ impl<'a> Peek<'a> {
         Self {
             xruns: c.xruns,
             underrun_frames: c.underrun_frames,
+            disk_healthy: c.disk_healthy,
             device_name: c.device.name.as_deref(),
             device_state: c.device.state,
             outputs: outputs_fingerprint(c.outputs.iter().map(|o| o.state)),
@@ -144,8 +145,6 @@ pub struct StatusReporter {
     last_discrete: Option<Discrete>,
     /// CPU seconds and time at the previous status.
     last_cpu: Option<(i64, f64)>,
-    last_underrun_frames: u64,
-    last_underrun_ms: Option<i64>,
 }
 
 impl StatusReporter {
@@ -155,8 +154,6 @@ impl StatusReporter {
             last_sent_ms: None,
             last_discrete: None,
             last_cpu: None,
-            last_underrun_frames: 0,
-            last_underrun_ms: None,
         }
     }
 
@@ -168,13 +165,7 @@ impl StatusReporter {
         peek: &Peek<'_>,
         gather: impl FnOnce() -> Counters,
     ) -> Option<SystemStatus> {
-        if peek.underrun_frames > self.last_underrun_frames {
-            self.last_underrun_ms = Some(now_ms);
-        }
-        self.last_underrun_frames = peek.underrun_frames;
-        let healthy = self
-            .last_underrun_ms
-            .is_none_or(|at| now_ms.saturating_sub(at) >= DISK_RECOVERY_MS);
+        let healthy = peek.disk_healthy;
         let since = self.last_sent_ms.map(|at| now_ms.saturating_sub(at));
         let due = match since {
             None => true,
@@ -234,6 +225,7 @@ mod tests {
         Counters {
             xruns: 0,
             underrun_frames: 0,
+            disk_healthy: true,
             streams: 2,
             log_dropped: 0,
             log_seq: 0,
@@ -386,18 +378,17 @@ mod tests {
     }
 
     #[test]
-    fn disk_health_returns_ten_seconds_after_the_last_underrun() {
+    fn the_disk_turning_unhealthy_or_healthy_sends_early_and_is_reported() {
         let mut r = StatusReporter::new(StatusConfig::default());
         let mut c = counters();
         assert!(poll(&mut r, 0, &c).unwrap().disk.healthy);
-        c.underrun_frames = 480;
-        let s = poll(&mut r, 1000, &c).unwrap();
+        c.disk_healthy = false;
+        assert!(poll(&mut r, 100, &c).is_none(), "inside the gap");
+        let s = poll(&mut r, 250, &c).expect("changed, gap over");
         assert!(!s.disk.healthy);
-        assert_eq!(s.disk.underrun_frames, 480);
-        assert!(!poll(&mut r, 10_999, &c).unwrap().disk.healthy);
-        let s = poll(&mut r, 11_999, &c).unwrap();
-        assert!(s.disk.healthy, "ten quiet seconds");
-        assert_eq!(s.disk.streams, 2);
+        assert!(poll(&mut r, 600, &c).is_none(), "nothing new since");
+        c.disk_healthy = true;
+        assert!(poll(&mut r, 850, &c).unwrap().disk.healthy);
     }
 
     #[test]

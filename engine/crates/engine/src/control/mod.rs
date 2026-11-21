@@ -96,6 +96,7 @@ pub use outputs::MAX_OUTPUTS;
 pub use transport::transport_input;
 pub use wake::{stall_floor, wake_frames};
 
+use crate::diag::health::Throttle;
 use crate::persist::AppDirs;
 use checks::PlanChecks;
 use device_events::playable_device;
@@ -597,6 +598,9 @@ struct Doc {
     /// saved or autosaved copy (`saved_workspace`); changing it does not mark the doc unsaved.
     /// Holds off sleep (SM-07).
     show_mode: bool,
+    /// Underruns per cue in the last ten seconds: each cue's `underrun` notice goes out at
+    /// most once per ten seconds with how many since its previous one.
+    underruns: std::collections::HashMap<CueId, Throttle>,
 }
 
 /// Counters already reported, so each increase is reported once.
@@ -1230,6 +1234,7 @@ impl Doc {
             meters_live: false,
             waveforms: waveforms::Waveforms::default(),
             show_mode: false,
+            underruns: std::collections::HashMap::new(),
         }
     }
 
@@ -1434,6 +1439,7 @@ fn notice(code: &str, message: String, cue: Option<CueId>) -> WireWarning {
         message,
         cue,
         device: None,
+        count: None,
     }
 }
 
@@ -1445,6 +1451,7 @@ fn device_notice(code: &str, message: String, device: &str) -> WireWarning {
         message,
         cue: None,
         device: Some(device.to_owned()),
+        count: None,
     }
 }
 

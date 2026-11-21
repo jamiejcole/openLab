@@ -359,6 +359,10 @@ pub enum WireWarning {
         /// name it and the pre-show check can leave out a patch no cue uses.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         patch: Option<PatchId>,
+        /// How often it happened, for a notice about something that repeats (an output
+        /// device's dropouts so far, a cue's underruns since its previous notice).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<u64>,
     },
 }
 

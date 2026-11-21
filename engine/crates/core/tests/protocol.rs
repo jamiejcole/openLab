@@ -114,6 +114,7 @@ fn snapshot() -> Snapshot {
             message: "intro.wav has a damaged tail".into(),
             cue: Some(cue_id(10)),
             device: None,
+            count: None,
         }],
         media_durations: vec![CueMediaDuration {
             cue: cue_id(10),
@@ -1472,6 +1473,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     message: "duplicate cue number 3 was cleared".into(),
                     cue: None,
                     device: None,
+                    count: None,
                 },
                 WireWarning::LateStart {
                     cue: cue_id(10),
@@ -1484,6 +1486,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                         .into(),
                     cue: None,
                     device: Some("Out".into()),
+                    count: None,
                 },
             ],
         }),
@@ -3433,6 +3436,7 @@ fn all_warnings() -> Vec<WireWarning> {
         message: "intro.wav has a damaged tail".into(),
         cue: Some(c),
         device: None,
+        count: None,
     });
     all
 }
@@ -3787,6 +3791,7 @@ fn preshow_report_sample() -> PreshowReport {
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
             device: Some("Scarlett 2i2".into()),
+            count: None,
         }],
     }
 }
@@ -3891,6 +3896,20 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
             device: Some("Scarlett 2i2".into()),
+            count: None,
+        }),
+    );
+    // A repeating notice says how often (an output device's dropouts so far).
+    add(
+        "warnings_notice_audio_dropouts",
+        warnings(WireWarning::Notice {
+            patch: None,
+            code: "audio_dropouts".into(),
+            message: "audio device \"Scarlett 2i2\" dropped out 3 time(s): gaps in its sound"
+                .into(),
+            cue: None,
+            device: Some("Scarlett 2i2".into()),
+            count: Some(3),
         }),
     );
     for (_, r) in go_table() {
