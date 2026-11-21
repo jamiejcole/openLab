@@ -594,9 +594,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         hotkeyRow.spacing = 6
         let left = column(
             [
-                row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck, wallClockRow(row: row),
+                row(loc("inspector.hotkey"), hotkeyRow), wallClockRow(row: row),
             ], nil)
-        let right = othersColumn(row: row)
+        let right = othersColumn()
         left.addArrangedSubview(Self.columnFiller())
         right.addArrangedSubview(Self.columnFiller())
         let columns = NSStackView(views: [left, right])
@@ -778,9 +778,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             return false
         }
         messageLabel.stringValue = ""
-        // The trigger's switch is its own box, shown with or without a key: a recorded key keeps the
-        // switch that box shows (the unanswered edit's, if one is in flight).
-        send(InspectorEdit.setTriggers(cue, hotkey: .some(chord.hotkeyJSON)), cue: cue.id, key: "hotkey", revert: [])
+        // A recorded key turns the trigger on (QLab 5 ticks its box), and Clear turns it off.
+        send(
+            InspectorEdit.setTriggers(cue, hotkey: .some(chord.hotkeyJSON), enabled: true), cue: cue.id, key: "hotkey",
+            revert: [])
         return true
     }
 
@@ -820,7 +821,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             return
         }
         messageLabel.stringValue = ""
-        send(InspectorEdit.setTriggers(cue, hotkey: .some(nil)), cue: cue.id, key: "hotkey", revert: [])
+        send(InspectorEdit.setTriggers(cue, hotkey: .some(nil), enabled: false), cue: cue.id, key: "hotkey", revert: [])
     }
 
     private func fillPopups() {

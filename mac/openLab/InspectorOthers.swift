@@ -74,7 +74,7 @@ extension InspectorEdit {
 /// The Triggers tab's right side: what the cue does to other cues when its action starts (QLab 5,
 /// manual pp. 129-130), then what a second trigger does.
 extension InspectorViewController {
-    func othersColumn(row: (String, NSView) -> NSView) -> NSStackView {
+    func othersColumn() -> NSStackView {
         fadeOthersCheck.setAX("inspector-fade-others")
         fadeOthersScopePopup.setAX("inspector-fade-others-scope")
         fadeOthersTimeField.setAX("inspector-fade-others-time", label: loc("inspector.fadeOthers.time"))
@@ -121,9 +121,13 @@ extension InspectorViewController {
             duckTimeField,
         ])
         duckBy.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
+        // What a second trigger does, with whether it comes on the key's release, under its own heading
+        // (the question is long, so it does not sit beside its menu in the narrow column).
+        let second = small(loc("inspector.secondTrigger"))
         let column = NSStackView(views: [
-            heading, fadeRow, fadeOver, duckCheck, duckBy, row(loc("inspector.secondTrigger"), secondTriggerPopup),
+            heading, fadeRow, fadeOver, duckCheck, duckBy, second, secondTriggerPopup, onReleaseCheck,
         ])
+        column.setCustomSpacing(12, after: duckBy)
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 6
