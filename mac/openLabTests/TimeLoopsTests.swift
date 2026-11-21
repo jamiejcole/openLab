@@ -91,9 +91,9 @@ final class TimeLoopsTests: XCTestCase {
 
     // MARK: Drawing model
 
-    /// AUD-14: each channel gets a lane of its own, top to bottom; a column spans the bucket's
-    /// highest to lowest sample about the lane's middle, and silence is a one-point hairline.
-    func testDrawingStacksChannelsAndSpansMinToMax() {
+    /// AUD-14: all channels are drawn as one waveform; a column spans the highest to the lowest
+    /// sample of any channel in the bucket about the middle, and silence is a one-point hairline.
+    func testDrawingCombinesChannelsAndSpansMinToMax() {
         let peaks = WaveformPeaks(
             cue: Self.intro, duration: 4, start: 0, end: 4,
             channels: [
@@ -102,18 +102,15 @@ final class TimeLoopsTests: XCTestCase {
             ])
         let d = WaveformDrawing(
             peaks: peaks, scale: WaveformScale(start: 0, end: 4, width: 4),
-            in: CGRect(x: 0, y: 0, width: 4, height: 200))
-        XCTAssertEqual(
-            d.lanes.map(\.rect),
-            [CGRect(x: 0, y: 0, width: 4, height: 100), CGRect(x: 0, y: 100, width: 4, height: 100)])
-        let left = d.lanes[0].columns
-        XCTAssertEqual(left.map(\.x), [0.5, 1.5, 2.5, 3.5])
-        // Full scale fills 95 % of the half-lane each way; half scale half that.
-        XCTAssertEqual(left[0].top, 50 - 47.5, accuracy: 0.01)
-        XCTAssertEqual(left[0].bottom, 50 + 47.5, accuracy: 0.01)
-        XCTAssertEqual(left[2].top, 50 - 47.5 * 16384 / 32767, accuracy: 0.01)
-        XCTAssertEqual(left[1].bottom - left[1].top, 1, "silence is a hairline")
-        XCTAssertEqual(d.lanes[1].columns[3].bottom, 150 + 47.5, accuracy: 0.01, "the second lane is its own")
+            in: CGRect(x: 0, y: 0, width: 4, height: 100))
+        XCTAssertEqual(d.rect, CGRect(x: 0, y: 0, width: 4, height: 100), "one waveform over the whole area")
+        XCTAssertEqual(d.columns.map(\.x), [0.5, 1.5, 2.5, 3.5])
+        // Full scale fills 95 % of the half-height each way; half scale half that.
+        XCTAssertEqual(d.columns[0].top, 50 - 47.5, accuracy: 0.01)
+        XCTAssertEqual(d.columns[0].bottom, 50 + 47.5, accuracy: 0.01)
+        XCTAssertEqual(d.columns[2].top, 50 - 47.5 * 16384 / 32767, accuracy: 0.01)
+        XCTAssertEqual(d.columns[1].bottom - d.columns[1].top, 1, "silence is a hairline")
+        XCTAssertEqual(d.columns[3].bottom, 50 + 47.5, accuracy: 0.01, "the second channel's peak shows too")
     }
 
     /// Zoomed in, each column takes only the buckets under it; columns past the peaks are left out.
@@ -124,11 +121,11 @@ final class TimeLoopsTests: XCTestCase {
         let zoomed = WaveformDrawing(
             peaks: peaks, scale: WaveformScale(start: 0, end: 1, width: 2),
             in: CGRect(x: 0, y: 0, width: 2, height: 100))
-        XCTAssertEqual(zoomed.lanes[0].columns.map(\.top), [50 - 47.5, 50 - 47.5], "the first bucket only")
+        XCTAssertEqual(zoomed.columns.map(\.top), [50 - 47.5, 50 - 47.5], "the first bucket only")
         let wide = WaveformDrawing(
             peaks: peaks, scale: WaveformScale(start: 0, end: 4, width: 4),
             in: CGRect(x: 0, y: 0, width: 4, height: 100))
-        XCTAssertEqual(wide.lanes[0].columns.count, 2, "nothing is drawn past the file's end")
+        XCTAssertEqual(wide.columns.count, 2, "nothing is drawn past the file's end")
     }
 
     /// The ruler's first label starts beside the start handle's triangle, wherever the handle is, and a
@@ -1135,6 +1132,21 @@ final class TimeLoopsTests: XCTestCase {
         await answered()
     }
 
+    /// W5/W6: the new-slice button is plural while a section is selected; the remove-all button says Delete.
+    func testSliceButtonTitlesFollowTheSelection() async {
+        await showIntro()
+        XCTAssertEqual(panel.addSliceButton.title, loc("timeLoops.addSlice"))
+        XCTAssertTrue(loc("timeLoops.deleteSlices").hasPrefix("Delete"), panel.deleteSlicesButton.title)
+        XCTAssertEqual(panel.deleteSlicesButton.title, loc("timeLoops.deleteSlices"))
+        wave.beginPress(atX: wave.scale.x(5))
+        wave.endPress(atX: wave.scale.x(15))
+        XCTAssertNotNil(wave.selection)
+        XCTAssertEqual(panel.addSliceButton.title, loc("timeLoops.addSlices"))
+        XCTAssertNotEqual(loc("timeLoops.addSlices"), loc("timeLoops.addSlice"))
+        wave.click(atX: wave.scale.x(10))
+        XCTAssertEqual(panel.addSliceButton.title, loc("timeLoops.addSlice"), "a click clears the section")
+    }
+
     /// AUD-12: a click places the insertion point and the new-slice button puts a marker there,
     /// in time order; the slice before a new marker plays once and the one after keeps its count.
     /// A marker too near a trim or another marker is refused.
@@ -1691,18 +1703,19 @@ extension PlayheadFlowTests {
         }
     }
 
-    /// The white position line is drawn at `x`.
+    /// The yellow position line is drawn at `x`.
     private func lineDrawn(at x: CGFloat) throws -> Bool {
-        try drawnColumns { min($0.redComponent, $0.greenComponent, $0.blueComponent) > 0.4 }.contains {
+        try drawnColumns { $0.redComponent > 0.7 && $0.greenComponent > 0.6 && $0.blueComponent < 0.4 }.contains {
             abs($0 - x) <= 1
         }
     }
 
     /// The span of the waves drawn with the section's light wash, or nil.
     private func shadedSpan(awayFrom lineX: CGFloat? = nil) throws -> ClosedRange<CGFloat>? {
-        // The wash over the dark waves is a pale blue-grey: blue above red, unlike a line's edge.
+        // The wash over the dark waves is a dull yellow: red and green well above blue, dimmer than a line.
         let shaded = try drawnColumns {
-            (0.1..<0.4).contains($0.redComponent) && $0.blueComponent < 0.4 && $0.blueComponent > $0.redComponent
+            (0.1..<0.5).contains($0.redComponent) && (0.1..<0.5).contains($0.greenComponent)
+                && $0.blueComponent < 0.25
         }
         let wash = shaded.filter { column in lineX.map { abs(column - $0) > 2 } ?? true }
         guard let a = wash.min(), let b = wash.max() else { return nil }
@@ -1753,6 +1766,27 @@ extension PlayheadFlowTests {
         try await play(0.4)
         await playsAt(id, 12.5)
         XCTAssertEqual(rowMark(id), runningMark)
+    }
+
+    /// Clicking around the waves faster than the double-click time: a click that follows another
+    /// within it carries a click count of 2 or 3, and still moves the cue and the line each time.
+    func testClicksFasterThanTwiceASecondEachMoveTheCueAndLeaveOneLine() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        clickWave(at: 12)
+        for (n, t) in [(2, 20.0), (3, 8.0), (2, 25.0)] {
+            pressWave(x: waveX(t), clicks: n)
+            waveView.mouseUp(with: waveMouse(.leftMouseUp, x: waveX(t), clicks: n))
+            XCTAssertEqual(waveView.insertion ?? -1, t, accuracy: 0.05, "click \(n) moved the line")
+        }
+        await seekRun(4)
+        XCTAssertEqual(seeks.map { ($0 * 10).rounded() / 10 }, [12, 20, 8, 25])
+        await assertEventually("the row shows the cue loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+        await assertEventually("one line, at the last click") {
+            self.waveView.playhead == nil && abs((self.waveView.insertion ?? -1) - 25) < 0.1
+        }
+        XCTAssertTrue(try lineDrawn(at: waveX(25)))
+        for t in [12.0, 20, 8] { XCTAssertFalse(try lineDrawn(at: waveX(t)), "no line left at \(t)") }
     }
 
     func testACueLoadedToATimeByALoadCueShowsThePositionLineThere() async throws {
@@ -2284,7 +2318,7 @@ extension PlayheadFlowTests {
         XCTAssertEqual(waveView.insertion ?? -1, 10, accuracy: 0.001, "the line is still there")
         let green = try drawnColumns { $0.greenComponent > $0.redComponent + 0.2 && $0.greenComponent > 0.3 }
         XCTAssertTrue(green.contains { abs($0 - self.waveX(10)) <= 1 }, "the marker's green shows")
-        XCTAssertFalse(try lineDrawn(at: waveX(10)), "not the white line over it")
+        XCTAssertFalse(try lineDrawn(at: waveX(10)), "not the position line over it")
     }
 
     /// A 20 s file sliced at 5 s, ending at 15 s, its last slice played three times (35 s in all),

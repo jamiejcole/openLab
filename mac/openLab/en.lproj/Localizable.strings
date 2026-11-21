@@ -1117,7 +1117,8 @@
 "timeLoops.invalid.count" = "Enter a whole number of times from 1 to 1000000.";
 "timeLoops.invalid.unknownLength" = "The file has not been read yet: set the start once its length is known.";
 "timeLoops.addSlice" = "New Slice";
-"timeLoops.deleteSlices" = "Clear Slices";
+"timeLoops.addSlices" = "New Slices";
+"timeLoops.deleteSlices" = "Delete Slices";
 "timeLoops.fades" = "Built-in fades";
 "timeLoops.holdAtEnd" = "Keep last frame";
 "timeLoops.still" = "A still image has no timeline";
