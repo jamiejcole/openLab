@@ -3084,8 +3084,8 @@ impl Run {
                 let end = (s.b != u8::MAX).then(|| f64::from(s.b) / 40.0);
                 let any = |v: &[CueId]| v.get(usize::from(s.a) % v.len().max(1)).copied();
                 match (any(&playing), any(&videos)) {
-                    (Some(cue), _) if s.a % 4 != 0 => self.edit_end_time(cue, end)?,
-                    (_, Some(cue)) if s.b % 4 != 0 => {
+                    (Some(cue), _) if !s.a.is_multiple_of(4) => self.edit_end_time(cue, end)?,
+                    (_, Some(cue)) if !s.b.is_multiple_of(4) => {
                         self.end_edit = Some((cue, end));
                         kind = Kind::Operator { trigger: true };
                         Input::Start { cue }
@@ -3127,7 +3127,7 @@ impl Run {
                 ],
                 patches: vec![(
                     patch_id(1),
-                    if s.b % 5 == 0 {
+                    if s.b.is_multiple_of(5) {
                         PatchResolution::DeviceMissing { device: "D".into() }
                     } else {
                         PatchResolution::Mapped {
