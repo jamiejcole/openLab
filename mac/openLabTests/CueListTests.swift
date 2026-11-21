@@ -1043,25 +1043,31 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
-    /// A running cue's Duration cell shows its whole length as a faint bar under the green fill: the right end of
-    /// the cell (past the fill) is drawn, so a part-way fill is not a box round the first digits; with no run
-    /// nothing is drawn.
-    func testDurationCellOfARunningCueDrawsItsWholeBarUnderTheFill() throws {
-        func pixel(_ view: ProgressFillView, x: Int) -> NSColor? {
+    /// A running cue's Duration cell is outlined in green over its whole width, so a playing cue is easy to
+    /// see, and filled up to its progress; with no run nothing is drawn.
+    func testDurationCellOfARunningCueIsOutlinedInGreenUnderTheFill() throws {
+        func pixel(_ view: ProgressFillView, x: Int, y: Int = 12) -> NSColor? {
             view.frame = NSRect(x: 0, y: 0, width: 120, height: 24)
             guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
             view.cacheDisplay(in: view.bounds, to: rep)
-            return rep.colorAt(x: x, y: 12)
+            return rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
+        }
+        func isGreen(_ c: NSColor?) -> Bool {
+            guard let c else { return false }
+            return c.alphaComponent > 0.5 && c.greenComponent > c.redComponent + 0.2 && c.greenComponent > c.blueComponent
         }
         let bar = ProgressFillView()
-        bar.progress = (0.25, .systemGreen)
-        let edge = (114...119).compactMap { pixel(bar, x: $0)?.alphaComponent }.max() ?? 0
-        XCTAssertGreaterThan(edge, 0.02, "the faint track reaches the end of the cell")
+        for fraction in [0, 0.25] {
+            bar.progress = (fraction, .systemGreen)
+            XCTAssertTrue(
+                (114...119).contains { isGreen(pixel(bar, x: $0)) }, "the right end of the cell is outlined green at \(fraction)")
+            XCTAssertTrue(
+                (0...4).contains { isGreen(pixel(bar, x: 60, y: $0)) }, "and its bottom edge past the fill at \(fraction)")
+        }
         let fill = try XCTUnwrap(pixel(bar, x: 10))
-        XCTAssertGreaterThan(fill.alphaComponent, 0.15, "and the fill is part of it")
-        XCTAssertLessThan(edge, fill.alphaComponent, "the track is fainter than the fill")
+        XCTAssertGreaterThan(fill.alphaComponent, 0.15, "the fill is drawn")
         let inside = try XCTUnwrap(pixel(bar, x: 60))
-        XCTAssertEqual(inside.alphaComponent, 0, accuracy: 0.01, "inside the track, past the fill: clear")
+        XCTAssertEqual(inside.alphaComponent, 0, accuracy: 0.01, "inside the outline, past the fill: clear")
         bar.progress = nil
         let none = (114...119).compactMap { pixel(bar, x: $0)?.alphaComponent }.max() ?? 1
         XCTAssertEqual(none, 0, accuracy: 0.01, "no run: nothing drawn")
