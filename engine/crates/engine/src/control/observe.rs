@@ -442,7 +442,9 @@ impl Engine {
             let (level, message) = match change {
                 DropoutChange::Raised { count } => (
                     LogLevel::Warn,
-                    format!("audio device \"{name}\" dropped out {count} time(s): gaps in its sound"),
+                    format!(
+                        "audio device \"{name}\" dropped out {count} time(s): gaps in its sound"
+                    ),
                 ),
                 DropoutChange::More { more, count } => (
                     LogLevel::Warn,
@@ -453,9 +455,7 @@ impl Engine {
                 ),
                 DropoutChange::Cleared { count } => (
                     LogLevel::Info,
-                    format!(
-                        "audio device \"{name}\": no dropouts for 10 s ({count} in all)"
-                    ),
+                    format!("audio device \"{name}\": no dropouts for 10 s ({count} in all)"),
                 ),
             };
             lines.push((LogKind::Device, level, message));

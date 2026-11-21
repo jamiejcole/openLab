@@ -841,13 +841,17 @@ impl DocCx<'_> {
         }
     }
 
-    /// Whether one of this workspace's patches has its mixer patch on output `key`.
+    /// Whether one of this workspace's patches plays on output `key`: mapped to a device that
+    /// is there, its mixer patch on that output.
     fn plays_on(&self, key: OutputKey) -> bool {
+        let (doc, patches) = (self.doc.id, &self.eng.patches);
         self.doc.model.ws().patches.iter().any(|p| {
-            self.eng
-                .patches
-                .mixer_patch(self.doc.id, p.id)
-                .and_then(|slot| self.eng.patches.slot_output(slot))
+            matches!(
+                patches.resolution(doc, p.id),
+                Some(PatchResolution::Mapped { .. })
+            ) && patches
+                .mixer_patch(doc, p.id)
+                .and_then(|slot| patches.slot_output(slot))
                 == Some(key)
         })
     }

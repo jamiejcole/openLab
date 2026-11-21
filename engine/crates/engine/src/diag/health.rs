@@ -270,7 +270,10 @@ mod tests {
         assert_eq!(d.update(9_000, 20), None);
         assert_eq!(
             d.update(10_010, 20),
-            Some(DropoutChange::More { more: 13, count: 15 })
+            Some(DropoutChange::More {
+                more: 13,
+                count: 15
+            })
         );
         assert_eq!(d.update(18_000, 20), None, "quiet, not yet cleared");
         assert_eq!(
@@ -279,7 +282,10 @@ mod tests {
         );
         assert_eq!(d.count(), None);
         // Later: raised again, counted afresh.
-        assert_eq!(d.update(40_000, 21), Some(DropoutChange::Raised { count: 1 }));
+        assert_eq!(
+            d.update(40_000, 21),
+            Some(DropoutChange::Raised { count: 1 })
+        );
     }
 
     #[test]
@@ -329,7 +335,10 @@ mod tests {
         assert_eq!(w.update(5_000, Some(0.1)), None);
         let later = w.update(11_000, None).expect("the held crossing is told");
         assert_eq!(later.crossings, 1);
-        assert!((later.peak - 1.2).abs() < 1e-9, "the worst since the last report");
+        assert!(
+            (later.peak - 1.2).abs() < 1e-9,
+            "the worst since the last report"
+        );
         // A load below the threshold never is.
         let mut calm = LoadWatch::default();
         for t in (0..60_000).step_by(5) {
