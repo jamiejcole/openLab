@@ -343,6 +343,7 @@ mod tests {
         Arc::new(Ready {
             path: "/a.wav".into(),
             probed: openlab_audio::Probed {
+                codec: None,
                 info: openlab_audio::MediaInfo {
                     channels: 1,
                     sample_rate: 48_000,

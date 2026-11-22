@@ -15,10 +15,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use symphonia::core::codecs::audio::well_known::{
-    CODEC_ID_AAC, CODEC_ID_MP1, CODEC_ID_MP2, CODEC_ID_MP3, CODEC_ID_OPUS, CODEC_ID_PCM_MULAW,
-    CODEC_ID_PCM_S32LE, CODEC_ID_VORBIS,
+    CODEC_ID_AAC, CODEC_ID_ALAC, CODEC_ID_FLAC, CODEC_ID_MP1, CODEC_ID_MP2, CODEC_ID_MP3,
+    CODEC_ID_OPUS, CODEC_ID_PCM_F32BE, CODEC_ID_PCM_F32LE, CODEC_ID_PCM_F64BE, CODEC_ID_PCM_F64LE,
+    CODEC_ID_PCM_MULAW, CODEC_ID_PCM_S32LE, CODEC_ID_VORBIS,
 };
-use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::audio::{
+    AudioCodecId, AudioCodecParameters, AudioDecoder, AudioDecoderOptions,
+};
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
@@ -175,6 +178,10 @@ pub struct MediaWarning {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Probed {
     pub info: MediaInfo,
+    /// The codec the file is coded in, as a short stable name (`pcm`, `pcm_float`, `flac`, `alac`,
+    /// `aac`, `mp1`, `mp2`, `mp3`, `vorbis`, `opus`, `other`); `None` when the probe did not read
+    /// it (a file already preloaded).
+    pub codec: Option<&'static str>,
     pub warnings: Vec<MediaWarning>,
     pub seeking: Seeking,
 }
@@ -517,6 +524,7 @@ pub fn probe_media(media: Media) -> Result<Probed, MediaError> {
     match media {
         Media::Preloaded(p) => Ok(Probed {
             info: p.info,
+            codec: None,
             warnings: p.warnings.clone(),
             seeking: Seeking::Direct,
         }),
@@ -526,12 +534,14 @@ pub fn probe_media(media: Media) -> Result<Probed, MediaError> {
                 Opened::Pcm(p) => {
                     return Ok(Probed {
                         info: p.info(),
+                        codec: Some(p.codec_name()),
                         warnings: p.warnings().to_vec(),
                         seeking: Seeking::Direct,
                     });
                 }
             };
             let info = d.exact_info()?;
+            let codec = Some(codec_name(d.params.codec));
             let seeking = d.choose_seeking(info.frames)?;
             if seeking == Seeking::FromStart {
                 d.warn(MediaWarning {
@@ -542,10 +552,30 @@ pub fn probe_media(media: Media) -> Result<Probed, MediaError> {
             }
             Ok(Probed {
                 info,
+                codec,
                 warnings: std::mem::take(&mut d.warnings),
                 seeking,
             })
         }),
+    }
+}
+
+/// The short name a decoded codec goes by in a probe (see [`Probed::codec`]).
+fn codec_name(id: AudioCodecId) -> &'static str {
+    match id {
+        CODEC_ID_AAC => "aac",
+        CODEC_ID_ALAC => "alac",
+        CODEC_ID_FLAC => "flac",
+        CODEC_ID_MP1 => "mp1",
+        CODEC_ID_MP2 => "mp2",
+        CODEC_ID_MP3 => "mp3",
+        CODEC_ID_OPUS => "opus",
+        CODEC_ID_VORBIS => "vorbis",
+        CODEC_ID_PCM_F32BE | CODEC_ID_PCM_F32LE | CODEC_ID_PCM_F64BE | CODEC_ID_PCM_F64LE => {
+            "pcm_float"
+        }
+        id if (CODEC_ID_PCM_S32LE..=CODEC_ID_PCM_MULAW).contains(&id) => "pcm",
+        _ => "other",
     }
 }
 

@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::show::*;
 use openlab_audio::{MediaError, MediaInfo, Probed, Seeking};
 use openlab_core::protocol::{
-    ClientMessage, CueMediaDuration, Outcome, RuntimeChange, ServerMessage,
+    AudioFileFormat, ClientMessage, CueMediaDuration, Outcome, RuntimeChange, ServerMessage,
 };
 use openlab_core::{Command, CueKind, CueProperty, MediaRef, Workspace};
 use openlab_engine::control::ControlConfig;
@@ -37,6 +37,8 @@ fn fake_probe(path: &Path) -> Result<Probed, MediaError> {
         1
     };
     Ok(Probed {
+        // Only `wide.wav` has its codec read; the probe of a file already preloaded gives none.
+        codec: path.ends_with("wide.wav").then_some("flac"),
         info: MediaInfo {
             channels,
             sample_rate: RATE,
@@ -84,6 +86,7 @@ fn shows(cues: usize, fs: &FakeFs) -> OfflineShow {
 
 fn lengths(cue: u128, file: f64, trimmed: f64, duration: Option<f64>) -> CueMediaDuration {
     CueMediaDuration {
+        audio_file: None,
         cue: id(cue),
         file: Some(file),
         trimmed: Some(trimmed),
@@ -97,6 +100,7 @@ fn lengths(cue: u128, file: f64, trimmed: f64, duration: Option<f64>) -> CueMedi
 
 fn unknown(cue: u128) -> CueMediaDuration {
     CueMediaDuration {
+        audio_file: None,
         cue: id(cue),
         file: None,
         trimmed: None,
@@ -385,6 +389,38 @@ fn one_cues_change_in_two_thousand_sends_one_change_and_no_snapshot() {
     let msgs = s.take_outbound();
     assert_eq!(snapshots(&msgs), 0);
     assert_eq!(durations(&msgs), vec![unknown(42)]);
+}
+
+#[test]
+fn an_audio_cues_file_format_follows_its_probe() {
+    let fs = FakeFs::new();
+    let mut s = shows(1, &fs);
+    // The probe read no codec: the format is left out, never guessed.
+    assert_eq!(s.control().snapshot().media_durations[0].audio_file, None);
+    let wide = PathBuf::from("/show/sounds/wide.wav");
+    fs.put(&wide, 1);
+    let msgs = edit_kind(&mut s, 1, |k| {
+        if let CueKind::Audio { media, .. } = k {
+            *media = Some(MediaRef::new(wide.to_str().unwrap()));
+        }
+    });
+    let expected = Some(AudioFileFormat {
+        codec: "flac".into(),
+        channels: 6,
+        sample_rate: RATE,
+    });
+    assert_eq!(
+        durations(&msgs).last().map(|d| d.audio_file.clone()),
+        Some(expected.clone())
+    );
+    assert_eq!(
+        s.control().snapshot().media_durations[0].audio_file,
+        expected
+    );
+    // The file going missing withdraws the format with the lengths.
+    fs.remove(&wide);
+    assert!(s.watch_pass());
+    assert_eq!(durations(&s.take_outbound()), vec![unknown(1)]);
 }
 
 #[test]

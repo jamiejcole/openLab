@@ -643,6 +643,7 @@ fn present_probe(path: &Path) -> Result<openlab_audio::Probed, openlab_audio::Me
         return Err(openlab_audio::MediaError::NotFound(path.to_path_buf()));
     }
     Ok(openlab_audio::Probed {
+        codec: None,
         info: openlab_audio::MediaInfo {
             channels: 1,
             sample_rate: RATE,
@@ -671,6 +672,7 @@ fn a_relinked_cue_gets_its_new_files_lengths() {
         })
         .collect();
     let expected = openlab_core::protocol::CueMediaDuration {
+        audio_file: None,
         cue: id(1),
         file: Some(0.5),
         trimmed: Some(0.5),

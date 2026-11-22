@@ -5,7 +5,7 @@ import AppKit
 /// The I/O tab's Video cue rows (QLab 5, manual pp. 211-212): the file, the format its probe read,
 /// the format of its sound (a pop-up of the audio tracks when the movie has several), the stage
 /// pop-up (with "none"), a button opening the stage's monitor window and the stage's pixel size.
-/// Held by the inspector; hidden for an Audio cue.
+/// Held by the inspector. An Audio cue's I/O tab uses its file and sound-format rows and the patch.
 @MainActor
 final class VideoIOControls {
     let fileLabel = NSTextField(labelWithString: "")
@@ -22,7 +22,7 @@ final class VideoIOControls {
     let trackNote = NSTextField(labelWithString: loc("inspector.io.trackMissingNote"))
     /// The titles of the track pop-up's items, as last built.
     var trackTitles: [String] = []
-    /// The rows only a Video cue has (the grid's rows; hidden for an Audio cue).
+    /// The rows only a Video cue has: its picture format and stage (the grid's rows; hidden for an Audio cue).
     var videoRows: [NSGridRow] = []
     /// The sound-format row: shown only for a Video cue whose movie has sound.
     var soundRow: NSGridRow?
@@ -79,11 +79,20 @@ final class VideoIOControls {
     /// What the sound-format row says for one audio track: its codec, channel count and sample rate.
     /// A codec this build has no name for shows its four-character code.
     nonisolated static func soundText(_ t: AudioTrackFormat) -> String {
-        let codec = ProblemText.text(for: "inspector.io.audioCodec.\(t.codec)") ?? t.codec
-        let channels =
-            t.channels == 1
-            ? loc("inspector.io.channels.one") : String(format: loc("inspector.io.channels.many"), t.channels)
-        return String(format: loc("inspector.io.soundFormatText"), codec, channels, kHzText(t.sampleRate))
+        soundText(codec: t.codec, channels: t.channels, sampleRate: t.sampleRate)
+    }
+
+    /// The same for an Audio cue's file, as the engine's probe read it.
+    nonisolated static func soundText(_ f: AudioFileFormat) -> String {
+        soundText(codec: f.codec, channels: f.channels, sampleRate: f.sampleRate)
+    }
+
+    private nonisolated static func soundText(codec: String, channels: Int, sampleRate: Int) -> String {
+        let name = ProblemText.text(for: "inspector.io.audioCodec.\(codec)") ?? codec
+        let count =
+            channels == 1
+            ? loc("inspector.io.channels.one") : String(format: loc("inspector.io.channels.many"), channels)
+        return String(format: loc("inspector.io.soundFormatText"), name, count, kHzText(sampleRate))
     }
 
     /// What the format row says for a probed file: a movie's codec, pixel size and frame rate, or
@@ -102,8 +111,8 @@ final class VideoIOControls {
 
 extension InspectorViewController {
     /// The I/O tab (QLab 5 has the same rows): for a Video cue its file, format and stage, and when
-    /// its movie has sound the sound's format and the output patch; for an Audio cue the output
-    /// patch alone.
+    /// its movie has sound the sound's format and the output patch; for an Audio cue its file, the
+    /// file's format and the output patch.
     func ioTab(row: (String, NSView) -> NSView, column: ([NSView], CGFloat?) -> NSStackView) -> NSTabViewItem {
         outputPatchPopup.setAX("inspector-output-patch", label: loc("inspector.io.patch"))
         outputPatchPopup.target = self
@@ -154,7 +163,7 @@ extension InspectorViewController {
         grid.column(at: 0).width = labels.map { ceil($0.fittingSize.width) }.max() ?? 0
         // The file row takes the tab's width, so a long path shows as much as fits.
         grid.cell(atColumnIndex: 1, rowIndex: 0).xPlacement = .fill
-        v.videoRows = [grid.row(at: 0), grid.row(at: 1), grid.row(at: 3)]
+        v.videoRows = [grid.row(at: 1), grid.row(at: 3)]
         v.soundRow = grid.row(at: 2)
         v.patchRow = grid.row(at: 4)
         // The grid fills the tab's width: a long path takes the room there is, then gives up its middle.
@@ -182,7 +191,8 @@ extension InspectorViewController {
         let video = cue.kindType == "video"
         let sounds = cue.sounds(store.mediaDurations[cue.id])
         for r in videoIO.videoRows { r.isHidden = !video }
-        videoIO.soundRow?.isHidden = !(video && sounds)
+        // An Audio cue's sound format is its file's; a Video cue's is its movie's, when it has sound.
+        videoIO.soundRow?.isHidden = video && !sounds
         videoIO.patchRow?.isHidden = !sounds
         let patches = model.patches
         let names = patches.map { p -> String in
@@ -204,7 +214,8 @@ extension InspectorViewController {
                     NSMenuItem(title: loc("inspector.io.patchNone"), action: nil, keyEquivalent: ""))
             }
         }
-        if video { renderVideoIO(cue, model: model) }
+        renderFile(cue)
+        if video { renderVideoIO(cue, model: model) } else { renderAudioFormat(cue) }
         let current = cue.raw["kind"]?["patch"]?.stringValue
         let chosen = outputPatchChoices.firstIndex(of: current ?? "") ?? -1
         if outputPatchPopup.indexOfSelectedItem != chosen { outputPatchPopup.selectItem(at: chosen) }
@@ -219,9 +230,8 @@ extension InspectorViewController {
         outputPatchIDs.map(\.raw) + (outputPatchHasNone ? ["\u{2}", ""] : [])
     }
 
-    /// A Video cue's rows: its file and the format the engine's probe read, the sound's format (the
-    /// track pop-up when the movie has several audio tracks) and its stage.
-    private func renderVideoIO(_ cue: Cue, model: WorkspaceModel) {
+    /// The file row of an Audio or Video cue: its path as the Basics tab shows it, and Choose.
+    private func renderFile(_ cue: Cue) {
         let v = videoIO
         let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
         let path = CueRowMenu.mediaURL(media, showPath: store.document?.path)?.path ?? media
@@ -229,6 +239,27 @@ extension InspectorViewController {
         v.fileLabel.textColor = media.isEmpty ? .secondaryLabelColor : .labelColor
         v.fileLabel.toolTip = media.isEmpty ? nil : path
         v.chooseButton.isEnabled = !isLocked && !isBatch
+    }
+
+    /// An Audio cue's sound-format row: the codec, channels and rate the engine's probe read, or
+    /// that the file is not read (missing, damaged or not probed yet).
+    private func renderAudioFormat(_ cue: Cue) {
+        let v = videoIO
+        let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
+        let format = store.mediaDurations[cue.id]?.audioFile
+        v.soundLabel.isHidden = false
+        v.trackPopup.isHidden = true
+        v.trackNote.isHidden = true
+        v.soundLabel.textColor = format == nil ? .secondaryLabelColor : .labelColor
+        v.soundLabel.stringValue =
+            format.map(VideoIOControls.soundText) ?? (media.isEmpty ? "" : loc("inspector.io.formatUnknown"))
+    }
+
+    /// A Video cue's rows: the format the engine's probe read, the sound's format (the
+    /// track pop-up when the movie has several audio tracks) and its stage.
+    private func renderVideoIO(_ cue: Cue, model: WorkspaceModel) {
+        let v = videoIO
+        let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
         let picture = store.mediaDurations[cue.id]?.picture
         v.formatLabel.textColor = picture == nil ? .secondaryLabelColor : .labelColor
         v.formatLabel.stringValue =

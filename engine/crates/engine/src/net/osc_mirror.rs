@@ -1427,6 +1427,7 @@ mod tests {
             c.kind = audio.clone();
         }
         let media = |n, duration| openlab_core::protocol::CueMediaDuration {
+            audio_file: None,
             cue: cue_id(n),
             file: duration,
             trimmed: duration,
@@ -1484,6 +1485,7 @@ mod tests {
             c.kind = video.clone();
         }
         let media = |n, file, duration| openlab_core::protocol::CueMediaDuration {
+            audio_file: None,
             cue: cue_id(n),
             file,
             trimmed: None,

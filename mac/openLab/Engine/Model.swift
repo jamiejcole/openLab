@@ -169,6 +169,8 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
     let channels: Int?
     /// A Video cue's file as its probe read it (nil for an Audio cue, or not known).
     var picture: PictureFormat? = nil
+    /// An Audio cue's file as its probe read it (nil for a Video cue, or not known).
+    var audioFile: AudioFileFormat? = nil
     /// The audio tracks of a Video cue's movie, in file order (nil: it has no sound, or the cue is
     /// not a Video cue with a probed movie).
     var audioTracks: [AudioTrackFormat]? = nil
@@ -177,6 +179,7 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
 
     enum CodingKeys: String, CodingKey {
         case cue, file, trimmed, duration, channels, picture
+        case audioFile = "audio_file"
         case audioTracks = "audio_tracks"
         case audioTrack = "audio_track"
     }
@@ -206,6 +209,19 @@ struct PictureFormat: Hashable, Sendable, Decodable {
     let height: Int
     let fps: Double?
     let duration: Double?
+}
+
+/// An Audio cue's file as the engine's probe read it: its codec's short name (`pcm`, `pcm_float`,
+/// `flac`, `alac`, `aac`, `mp1`, `mp2`, `mp3`, `vorbis`, `opus`, `other`), channel count and sample rate.
+struct AudioFileFormat: Hashable, Sendable, Decodable {
+    let codec: String
+    let channels: Int
+    let sampleRate: Int
+
+    enum CodingKeys: String, CodingKey {
+        case codec, channels
+        case sampleRate = "sample_rate"
+    }
 }
 
 /// One audio track of a movie as the engine's probe read it: its sample format's four-character

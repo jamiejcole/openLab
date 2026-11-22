@@ -184,9 +184,11 @@ final class InspectorLevelsTests: XCTestCase {
         _ n: Int, _ m: LevelMatrixView, file: StaticString = #filePath, line: UInt = #line
     ) throws {
         XCTAssertEqual(try renderedInputRows(m), n, "rows drawn", file: file, line: line)
+        // The captions over the crosspoint section take a band only when there are rows under them.
+        let captions = n > 0 ? LevelMatrixView.captionH : 0
         XCTAssertEqual(
-            m.frame.height, LevelMatrixView.headerH + LevelMatrixView.cellH * CGFloat(n + 1), "frame", file: file,
-            line: line)
+            m.frame.height, LevelMatrixView.headerH + captions + LevelMatrixView.cellH * CGFloat(n + 1), "frame",
+            file: file, line: line)
     }
 
     private func relink(_ cue: ModelID, to path: String) async throws {
@@ -201,6 +203,36 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { self.vc.audioLevels.matrix.inputs == 6 }
         try assertRows(6, vc.audioLevels.matrix)
         XCTAssertEqual(vc.audioLevels.matrix.outputCount, 2, "the columns still come from the cue's outputs")
+    }
+
+    /// An Audio cue's I/O tab shows its file with Choose and the format the engine's probe read
+    /// (the Video cue's rows), above the output patch; a file that is not there says it is not read.
+    func testAnAudioCuesIOTabShowsItsFileAndTheFilesFormat() async throws {
+        try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        await assertEventually { self.store.mediaDurations[Self.intro]?.audioFile != nil }
+        let io = vc.videoIO
+        let format = try XCTUnwrap(store.mediaDurations[Self.intro]?.audioFile)
+        XCTAssertEqual(format.codec, "pcm")
+        XCTAssertEqual(format.channels, 1)
+        await assertEventually { io.soundLabel.stringValue.hasPrefix("PCM, 1 channel, ") }
+        XCTAssertTrue(io.fileLabel.stringValue.hasSuffix("a.wav"), io.fileLabel.stringValue)
+        XCTAssertFalse(io.soundLabel.isHidden)
+        XCTAssertTrue(io.trackPopup.isHidden)
+        XCTAssertTrue(io.chooseButton.isEnabled)
+        XCTAssertEqual(io.videoRows.map(\.isHidden), [true, true], "no picture format or stage")
+        XCTAssertEqual(io.patchRow?.isHidden, false)
+        vc.view.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(
+            io.fileLabel.convert(io.fileLabel.bounds, to: nil).minY,
+            io.soundLabel.convert(io.soundLabel.bounds, to: nil).maxY - 1, "the file above the format")
+
+        showCue(TestSnapshots.radio)
+        await rig.sync()
+        XCTAssertNil(store.mediaDurations[TestSnapshots.radio], "its file is missing")
+        XCTAssertEqual(io.soundLabel.stringValue, loc("inspector.io.formatUnknown"))
+        XCTAssertEqual(io.fileLabel.textColor, .labelColor, "the path still shows")
     }
 
     func testAMonoFileGivesTheMatrixOneRow() async throws {

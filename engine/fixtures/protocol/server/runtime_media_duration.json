@@ -7,7 +7,12 @@
       "cue": "00000000-0000-0000-0000-00000000000a",
       "file": 62.5,
       "trimmed": 60.25,
-      "channels": 6
+      "channels": 6,
+      "audio_file": {
+        "codec": "flac",
+        "channels": 6,
+        "sample_rate": 48000
+      }
     },
     {
       "type": "media_duration",
