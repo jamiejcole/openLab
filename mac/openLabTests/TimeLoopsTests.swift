@@ -1314,14 +1314,16 @@ final class TimeLoopsTests: XCTestCase {
     func testEditingEachSlicesPlayCount() async {
         await showIntro()
         await addSlice(at: 10, expect: 1)
-        wave.doubleClick(atX: wave.scale.x(5), y: wave.waveRect.maxY - 2)
+        let first = wave.countRect(0)
+        wave.doubleClick(atX: first.midX, y: first.midY)
         XCTAssertEqual(panel.editingSlice, 0)
         XCTAssertFalse(panel.sliceCountField.isHidden)
         XCTAssertEqual(panel.sliceCountField.stringValue, "1")
         type(panel.sliceCountField, "4")
         await assertEventually { self.slices(self.kinds.last) == [[10, 4]] }
         XCTAssertTrue(panel.sliceCountField.isHidden)
-        wave.doubleClick(atX: wave.scale.x(30), y: wave.waveRect.maxY - 2)
+        let last = wave.countRect(1)
+        wave.doubleClick(atX: last.midX, y: last.midY)
         XCTAssertEqual(panel.editingSlice, 1, "the slice after the last marker")
         type(panel.sliceCountField, "loop")
         await assertEventually { normalised(self.kinds.last?["last_slice_play_count"]) == .double(0) }

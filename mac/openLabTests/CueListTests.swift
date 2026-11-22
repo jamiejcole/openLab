@@ -4922,6 +4922,24 @@ final class CueListDrawingTests: XCTestCase {
             let w = Double(region.width * scale)
             return (Double(lo) / w)...(Double(hi + 1) / w)
         }
+
+        /// The Duration cell's fill (0...1 of the cell's width): the matching run from the left along a
+        /// pixel row inside the progress box but under the text, so the outline round the whole cell
+        /// does not count.
+        func fillExtent(_ match: (CGFloat, CGFloat, CGFloat) -> Bool) -> ClosedRange<Double>? {
+            let y = rep.pixelsHigh - 1 - Int(4.5 * scale)
+            let x0 = Int(region.minX * scale)
+            let x1 = min(rep.pixelsWide, Int(region.maxX * scale))
+            func matches(_ x: Int) -> Bool {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return false }
+                return match(c.redComponent, c.greenComponent, c.blueComponent)
+            }
+            guard let lo = (x0..<max(x0, x1)).first(where: matches) else { return nil }
+            var hi = lo
+            while hi + 1 < x1, matches(hi + 1) { hi += 1 }
+            let w = Double(region.width * scale)
+            return (Double(lo - x0) / w)...(Double(hi + 1 - x0) / w)
+        }
     }
 
     // Colours as drawn: the system green (running), yellow (paused) and the playhead's grey.
@@ -4930,6 +4948,8 @@ final class CueListDrawingTests: XCTestCase {
     private static let yellowish: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in
         r > 0.85 && g > 0.7 && r - b > 0.2 && abs(r - g) < 0.3
     }
+    /// The pale yellow of a paused cue's fill over a light background (a quarter of the yellow).
+    private static let yellowTint: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in r - b > 0.12 && g - b > 0.08 }
     /// The playhead's pointer on a dark list: white.
     private static let pointerWhite: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in
         r > 0.97 && g > 0.97 && b > 0.97
@@ -5818,7 +5838,7 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { (rig.store.progress[self.ten]?.elapsed ?? 0) >= 3.9 }
         let first = try XCTUnwrap(CueTime.parse(h.cell("duration", ten)?.label.stringValue ?? ""))
         XCTAssertEqual(first, 4, accuracy: 0.1, "four seconds into the first pass")
-        let bar = try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.greenish), "the bar is drawn")
+        let bar = try XCTUnwrap(try pixels(h, "duration", ten).fillExtent(Self.greenish), "the bar is drawn")
         XCTAssertEqual(bar.upperBound, 0.4, accuracy: 0.06)
         try await rig.advance(8)  // into the second pass
         await assertEventually { (rig.store.progress[self.ten]?.elapsed ?? 0) >= 11.9 }
@@ -5826,7 +5846,7 @@ final class CueListDrawingTests: XCTestCase {
         let second = try XCTUnwrap(CueTime.parse(h.cell("duration", ten)?.label.stringValue ?? ""))
         XCTAssertEqual(second, 2, accuracy: 0.1, "it started again: two seconds into the second pass")
         XCTAssertEqual(
-            try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.greenish)).upperBound, 0.2, accuracy: 0.06)
+            try XCTUnwrap(try pixels(h, "duration", ten).fillExtent(Self.greenish)).upperBound, 0.2, accuracy: 0.06)
         guard case .success = await rig.store.transport(.stop(cue: ten, fadeOut: nil)) else { return XCTFail("stop") }
         try await rig.advance(1)
         await assertEventually { rig.store.cueStates[self.ten]?.state != .running }
@@ -5926,7 +5946,7 @@ final class CueListDrawingTests: XCTestCase {
         let gone = try XCTUnwrap(CueTime.parse(h.cell("duration", ten)?.label.stringValue ?? ""))
         XCTAssertEqual(gone, 4, accuracy: 0.1, "the text counts the time gone")
         let drawn = try pixels(h, "duration", ten)
-        let reach = try XCTUnwrap(drawn.extent(Self.greenish), "outlined and filled in green")
+        let reach = try XCTUnwrap(drawn.fillExtent(Self.greenish), "outlined and filled in green")
         XCTAssertEqual(reach.upperBound, 0.4, accuracy: 0.06, "to about 40 % of the cell")
         XCTAssertEqual(reach.lowerBound, 0, accuracy: 0.03)
         // It ends: the outline is gone and the cell reads the duration again.
@@ -5949,11 +5969,12 @@ final class CueListDrawingTests: XCTestCase {
         let status = try pixels(h, "status", ten)
         XCTAssertGreaterThan(status.count(Self.yellowish), 8, "the paused icon is drawn")
         XCTAssertEqual(try XCTUnwrap(h.cell("status", ten)).images[1].accessibilityLabel(), loc("cue.state.paused"))
-        let first = try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.yellowish), "progress drawn in yellow")
+        let first = try XCTUnwrap(
+            try pixels(h, "duration", ten).fillExtent(Self.yellowTint), "progress drawn in yellow")
         XCTAssertEqual(first.upperBound, 0.4, accuracy: 0.06)
         XCTAssertEqual(try pixels(h, "duration", ten).count(Self.greenish), 0)
         try await rig.advance(2)
-        let later = try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.yellowish))
+        let later = try XCTUnwrap(try pixels(h, "duration", ten).fillExtent(Self.yellowTint))
         XCTAssertEqual(later.upperBound, first.upperBound, accuracy: 0.02, "stays where it stopped")
     }
 }
