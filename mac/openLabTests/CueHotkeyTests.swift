@@ -777,6 +777,23 @@ final class CueHotkeyFiringTests: XCTestCase {
         await assertEventually { await self.hotkeys() == 3 }
     }
 
+    /// The waveform's own keys (M adds a slice) stay with its window: with the workspace's status
+    /// window key, a cue hotkey on M fires even if the waveform behind it had the focus.
+    func testAWaveformKeyBehindTheStatusWindowLeavesTheCueHotkeyToFire() async throws {
+        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord("m").hotkeyJSON, enabled: true)))
+        await assertEventually { self.first.model?.cue(self.intro)?.raw["triggers"]?["hotkey"] != .null }
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        let wave = WaveformView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        wc.window?.contentView?.addSubview(wave)
+        defer { wave.removeFromSuperview() }
+        _ = wc.window?.makeFirstResponder(wave)
+        XCTAssertTrue(wc.window?.firstResponder === wave)
+        let status = try XCTUnwrap(wc.statusWindow.window)
+        app.keyWindow = { status }
+        XCTAssertNil(app.handleKeyDown(try event("m")), "the cue hotkey takes M")
+        await assertEventually { await self.hotkeys() == 1 }
+    }
+
     func testEscStillPanicsWhateverTheCueHotkeys() async throws {
         _ = await first.send(
             command: .setProperty(intro, .triggers(hotkey: KeyChord(KeyChord.escape).hotkeyJSON, enabled: true)))

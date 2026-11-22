@@ -277,7 +277,9 @@ final class AppController {
         if listWindowKey, beginCellEdit(keys.editKey(for: chord), event: event) { return nil }
         // The Time & Loops waveform's own keys (Shift-I, Shift-O, M) while it has the focus go on to
         // it, before a cue hotkey on the same key.
-        if frontController?.window?.firstResponder is WaveformView, WaveformView.editKey(for: event) != nil {
+        if listWindowKey, frontController?.window?.firstResponder is WaveformView,
+            WaveformView.editKey(for: event) != nil
+        {
             return event
         }
         if fireCueHotkeys(chord, event: event) { return nil }
