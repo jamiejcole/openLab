@@ -180,12 +180,19 @@ fn property_media(property: &CueProperty) -> Option<&MediaRef> {
 /// changes. Cues that are gone or play no file are skipped. An empty result is an empty
 /// transaction, which `History` ignores.
 pub fn retarget_command(workspace: &Workspace, retargets: &[(CueId, MediaRef)]) -> Command {
-    // One walk of the show, not one per cue: a copy may retarget thousands.
-    let file_cues: std::collections::HashSet<CueId> = workspace
-        .cues()
-        .filter(|c| matches!(c.kind, CueKind::Audio { .. } | CueKind::Video { .. }))
-        .map(|c| c.id)
-        .collect();
+    let wanted: std::collections::HashSet<CueId> = retargets.iter().map(|(cue, _)| *cue).collect();
+    // One walk of the show that stops at the last wanted cue, not one per cue.
+    let mut file_cues = std::collections::HashSet::new();
+    for cue in workspace.cues() {
+        if file_cues.len() == wanted.len() {
+            break;
+        }
+        if wanted.contains(&cue.id)
+            && matches!(cue.kind, CueKind::Audio { .. } | CueKind::Video { .. })
+        {
+            file_cues.insert(cue.id);
+        }
+    }
     let commands = retargets
         .iter()
         .filter(|(cue, _)| file_cues.contains(cue))
@@ -197,6 +204,29 @@ pub fn retarget_command(workspace: &Workspace, retargets: &[(CueId, MediaRef)]) 
         })
         .collect();
     Command::Transaction { commands }
+}
+
+/// The file now set on each of the listed cues that has one, from one walk of the show that
+/// stops at the last listed cue: a wake's cost follows the part of the show it touches, not
+/// every cue.
+pub fn media_of_listed(
+    workspace: &Workspace,
+    cues: &std::collections::HashSet<CueId>,
+) -> std::collections::HashMap<CueId, MediaRef> {
+    let mut found = std::collections::HashMap::new();
+    let mut seen = 0;
+    for cue in workspace.cues() {
+        if seen == cues.len() {
+            break;
+        }
+        if cues.contains(&cue.id) {
+            seen += 1;
+            if let Some(media) = cue.kind.media() {
+                found.insert(cue.id, media.clone());
+            }
+        }
+    }
+    found
 }
 
 #[cfg(test)]
