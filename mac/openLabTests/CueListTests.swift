@@ -3645,7 +3645,8 @@ final class PlayheadFlowTests: XCTestCase {
     ) async throws {
         await assertEventually("a panel", file: file, line: line) { !NotesNoticePanel.open.isEmpty }
         let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel, file: file, line: line)
-        XCTAssertFalse(panel.canBecomeKey, "never key", file: file, line: line)
+        XCTAssertTrue(
+            (panel as? NSPanel)?.becomesKeyOnlyIfNeeded == true, "never key on its own", file: file, line: line)
         XCTAssertFalse(panel.isKeyWindow, file: file, line: line)
         let said = sheetText(panel)
         XCTAssertTrue(said.contains("not saved"), said, file: file, line: line)

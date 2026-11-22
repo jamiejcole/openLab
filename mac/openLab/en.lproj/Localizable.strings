@@ -1144,8 +1144,9 @@
 "engine.alarm.editsLostOne" = "%@ was reopened from its file: its unsaved edits had no autosave and are lost.";
 "engine.alarm.editsLostSetAside" = "%@ was reopened from its file; an earlier autosave was set aside and can be restored.";
 "engine.alarm.failedOne" = "%@ could not be reopened: %@";
-"engine.alarm.unclean" = "openLab did not quit cleanly";
-"engine.alarm.uncleanMessage" = "Autosaved work from the last session was found.";
+"engine.alarm.recover" = "Recover unsaved changes?";
+"engine.alarm.recoverMessage" = "Some work from your last session was autosaved but never saved to a file. You can reopen it now, or later with File > Recover Autosaves.";
+"engine.alarm.notNow" = "Not Now";
 "engine.alarm.autosaves" = "%d autosaved workspace(s) can be restored.";
 "engine.alarm.restore" = "Restore Autosaves…";
 "engine.alarm.dismiss" = "Dismiss";

@@ -1007,7 +1007,9 @@ final class ScenarioRunner {
                             [loc("engine.alarm.back"), String(format: loc("engine.alarm.autosaves"), 2)].joined(
                                 separator: "\n"))
                     } else {
-                        alarm.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
+                        alarm.show(
+                            title: loc("engine.alarm.recover"), message: loc("engine.alarm.recoverMessage"),
+                            kind: .recoveryOffer)
                         alarm.setDetail(String(format: loc("engine.alarm.autosaves"), 2))
                     }
                     alarm.setRestoreAction {}
@@ -1507,6 +1509,24 @@ final class ScenarioRunner {
 
     /// The whole window (title bar included) at 2x, drawn offscreen.
     private func shot(to url: URL) throws {
+        // A standard alert's content is not drawn by an offscreen render of its views: it is shot as
+        // the window server shows it.
+        if let f = focused, f.isVisible,
+            f.identifier?.rawValue == AX.engineAlarm || NotesNoticePanel.open.contains(where: { $0.panel === f })
+        {
+            guard let view = f.contentView?.superview else { throw Failure("the alert has no frame view") }
+            f.layoutIfNeeded()
+            f.displayIfNeeded()
+            view.layoutSubtreeIfNeeded()
+            note("alert window \(f.frame.size)")
+            let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else {
+                throw Failure("PNG encoding failed")
+            }
+            try png.write(to: url)
+            return
+        }
         // A focused sheet is shot over its window, as it shows on screen.
         let (shown, sheet) = sheetOver(window)
         guard let frame = shown.contentView?.superview else { throw Failure("the window has no frame view") }
