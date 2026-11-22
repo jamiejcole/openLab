@@ -704,7 +704,7 @@ fn a_stage_host_sending_garbage_is_stopped_and_sound_plays_on() {
 /// log, so it cannot flood the log or the clients.
 #[test]
 fn a_stage_host_logging_in_a_burst_is_rate_limited() {
-    let script = r#"printf '{"type":"hello","version":5,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
+    let script = r#"printf '{"type":"hello","version":6,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
     let mut host = host_config(&["-c", script]);
     host.program = PathBuf::from("/bin/sh");
     let ws = with_stages(vec![], vec![stage(1)]);
@@ -926,12 +926,13 @@ fn the_monitor_button_opens_a_window_showing_the_stage_scaled_to_fit_with_black_
     assert_eq!(s.stalls(), 0);
 }
 
-/// #648 flow: Show Mode → monitors stay as they are; the app quitting closes them without
-/// stopping the engine's output. The app's last connection ending (a quit or a crash; the
-/// WebSocket server's own test shows it tells the control loop) closes every monitor while the
-/// stage's display shows on.
+/// #648 flow: Show Mode → monitors stay as they are; the app quitting closes them. #795 S6: the
+/// app's last connection ending (a quit or a crash; the WebSocket server's own test shows it
+/// tells the control loop) also takes every stage off its display, its picture kept (the cue
+/// plays on unseen), a stage host relaunched meanwhile too; an app connecting again puts the
+/// stage back up with its picture.
 #[test]
-fn show_mode_leaves_monitors_as_they_are_and_the_app_quitting_closes_them_but_not_the_output() {
+fn show_mode_leaves_monitors_as_they_are_and_the_app_gone_takes_monitors_and_stages_down() {
     let mut s = stage_show(
         with_stages(vec![], vec![stage(1)]),
         virtual_host(),
@@ -957,15 +958,35 @@ fn show_mode_leaves_monitors_as_they_are_and_the_app_quitting_closes_them_but_no
         (None, vec![])
     );
     assert!(logged(&mut s, "monitor windows are closed"));
-    // The output plays on: the stage still up on its display with its picture.
+    // No stage outlives the app: off its display, its own picture kept.
+    assert!(s.wait_for(|c| c.stage_state(stage_id(1)) == Some(&StageState::Hidden)));
+    assert_eq!(display_frame(&mut s, "V1"), None, "nothing on the display");
     assert_eq!(probe(&mut s, 1), (Some(42), QUADRANTS.to_vec()));
-    assert_eq!(display_frame(&mut s, "V1"), Some(42));
+    // A stage host relaunched while the app is gone keeps the stage down.
+    let first = s.control().stage_host_pid().expect("a running stage host");
+    let killed = std::process::Command::new("kill")
+        .args(["-9", &first.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != first)));
+    s.settle_stages();
+    assert_eq!(state(&mut s, 1), Some(StageState::Hidden));
+    // The app back: the stage is up again.
+    s.deliver(openlab_engine::control::Inbox::AppConnected { pid: None });
+    assert!(s.wait_for(|c| {
+        c.stage_state(stage_id(1))
+            .is_some_and(|st| *st != StageState::Hidden)
+    }));
+    s.settle_stages();
     assert_eq!(
         state(&mut s, 1),
         Some(StageState::Shown {
             display: "V1".into()
         })
     );
+    test_card(&mut s, 1, 43);
+    assert_eq!(display_frame(&mut s, "V1"), Some(43));
     assert_eq!(s.stalls(), 0);
 }
 
@@ -1133,7 +1154,7 @@ fn the_windowed_stage_host_exits_when_its_input_closes() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, r#"{{"type":"hello","version":5}}"#).unwrap();
+    writeln!(stdin, r#"{{"type":"hello","version":6}}"#).unwrap();
     let mut out = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
@@ -1268,7 +1289,7 @@ fn child_named(parent: u32, name: &str) -> Option<u32> {
 fn a_stage_host_reporting_in_a_burst_neither_floods_the_log_nor_grows_memory() {
     let known = stage_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":5,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":6,"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
@@ -1472,7 +1493,7 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
 fn a_reporting_burst_is_pushed_at_most_once_per_gap() {
     let known = stage_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":5,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":6,"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
@@ -1546,7 +1567,7 @@ fn routine_clocks_never_get_a_busy_stage_host_stopped() {
     use openlab_engine::stage::{StageEvent, StageHost};
     // Answers hello, then never reads again.
     let script =
-        r#"read line; echo '{"type":"hello","version":5,"pid":1,"video":true}'; exec sleep 600"#;
+        r#"read line; echo '{"type":"hello","version":6,"pid":1,"video":true}'; exec sleep 600"#;
     let mut config = host_config(&["-c", script]);
     config.program = PathBuf::from("/bin/sh");
     config.answer_within = Duration::from_secs(3600);
@@ -1656,14 +1677,16 @@ fn call(
     }
 }
 
-/// #642 flow: the app is force-quit while a cue plays → the picture stays up and the engine
-/// keeps playing. A real (test-support) engine process on its stepped virtual device runs its
-/// stage host on a virtual display; the app's connections (its app connection and its
-/// workspace's) end without `goodbye`, as a force-quit's do. A connection made afterwards finds
-/// the cue still running and its picture on the stage, and the cue then ends on its time with
-/// the stage black.
+/// #795 S6 (replacing #642's picture left up): the app is force-quit while a cue plays → its
+/// stage comes down (no stage outlives the app) and the engine keeps playing; the app back (the
+/// engine relaunches it) → the picture is up again where the cue is. A real (test-support)
+/// engine process on its stepped virtual device runs its stage host on a virtual display; the
+/// app's connections (its app connection and its workspace's) end without `goodbye`, as a
+/// force-quit's do (the process gone, its sockets closed). A workspace connection made
+/// afterwards finds the stage hidden and the cue still running; once an app connects again the
+/// stage is shown with the cue's picture, and the cue ends on its time with the stage black.
 #[test]
-fn the_app_force_quit_while_a_cue_plays_leaves_the_picture_up_and_the_engine_playing() {
+fn the_app_force_quit_while_a_cue_plays_takes_its_stage_down_until_the_app_is_back() {
     use std::io::BufRead;
     use std::process::{Command, Stdio};
     let engine = test_engine();
@@ -1799,19 +1822,41 @@ fn the_app_force_quit_while_a_cue_plays_leaves_the_picture_up_and_the_engine_pla
     // Force-quit: both connections just end.
     drop(window);
     drop(app);
-    // The engine plays on: still up after another half second, its cue running.
-    let (mut app, _) = connect(port, &token, None);
-    advance(&mut app, 5, 0.5);
+    // The stage comes down (a count of round trips, no clock); the engine plays on.
     let (mut window, snapshot) = connect(port, &token, Some(doc));
+    let state_is = |ws: &mut Socket, from: u64, want: &Option<StageState>| {
+        (0..20_000u64).any(|n| {
+            let outcome = call(ws, from + n, |id| ClientMessage::Request {
+                id,
+                request: Request::ListStageMappings,
+            });
+            matches!(outcome, Outcome::Ok(body) if matches!(&body.data,
+                Some(ResultData::StageMappings { stages }) if stages.first().map(|e| &e.state) == Some(want)))
+        })
+    };
+    assert!(
+        state_is(&mut window, 10_000, &hidden),
+        "the stage came down with the app"
+    );
     let running =
         snapshot.expect("a snapshot").cue_states.iter().any(|e| {
             e.cue == show::id(1) && e.state == openlab_core::protocol::WireCueState::Running
         });
     assert!(running, "the cue plays on");
+    advance(&mut window, 5, 0.5);
+    // The app back: the stage is shown again with the cue's picture.
+    let (mut app, _) = connect(port, &token, None);
+    let shown = Some(StageState::Shown {
+        display: "V1".into(),
+    });
+    assert!(
+        state_is(&mut window, 40_000, &shown),
+        "the stage is up again with the app"
+    );
     assert_eq!(
         shows(&mut window, 6),
         (Some(0), vec![QUADRANTS[0]]),
-        "the picture stays up"
+        "the picture is up again"
     );
     // And it ends on its time: black then, never a frozen frame.
     advance(&mut app, 7, 1.1);

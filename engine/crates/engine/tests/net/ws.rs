@@ -154,6 +154,7 @@ fn control_thread(rx: &Receiver<Inbox>, out: &Out, c: &Control) {
                 c.triggers.lock().unwrap().push((source, detail));
                 continue;
             }
+            Inbox::AppConnected { .. } => continue,
             Inbox::AppsGone => {
                 c.apps_gone.fetch_add(1, Ordering::SeqCst);
                 continue;

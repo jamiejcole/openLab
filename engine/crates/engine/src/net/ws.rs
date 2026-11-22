@@ -126,6 +126,10 @@ struct Shared {
     connections: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
     relaunches: Mutex<Budget>,
+    /// Held while an app connection registers or unregisters and tells the control thread, so
+    /// `Inbox::AppConnected` and `Inbox::AppsGone` reach it in the order the connections came and
+    /// went (a reconnect overlapping the old connection's end never leaves the stages down).
+    app_edge: Mutex<()>,
     /// The app process the latest app connection's `hello` named (relaunch.rs); `None`: it
     /// named none, or no relaunch is configured.
     app: Mutex<Option<AppProcess>>,
@@ -187,6 +191,7 @@ impl WsServer {
             config,
             shutdown: shutdown_rx,
             relaunches: Mutex::new(Budget::default()),
+            app_edge: Mutex::new(()),
             app: Mutex::new(None),
         });
         runtime.spawn(hub::distribute(shared.hub.clone(), outbound, tap_slot));
@@ -417,14 +422,14 @@ async fn serve(shared: Arc<Shared>, tcp: TcpStream, pending: OwnedSemaphorePermi
         Ok(Some(Ok(Message::Text(text)))) => text,
         _ => return,
     };
-    let doc = match authenticate(&shared, hello.as_str()) {
+    let (doc, pid) = match authenticate(&shared, hello.as_str()) {
         Ok((doc, pid)) => {
             if doc.is_none()
                 && let Some(relaunch) = &shared.config.relaunch
             {
                 *lock(&shared.app) = relaunch.identify(pid);
             }
-            doc
+            (doc, pid)
         }
         Err(refusal) => {
             if let Ok(text) = encode_server(&refusal) {
@@ -436,7 +441,7 @@ async fn serve(shared: Arc<Shared>, tcp: TcpStream, pending: OwnedSemaphorePermi
     };
     authed.store(true, Ordering::Release);
     drop(pending);
-    run(shared, ws, doc).await;
+    run(shared, ws, doc, pid).await;
 }
 
 /// The connection ended (or must end).
@@ -481,8 +486,15 @@ struct Conn {
     said_goodbye: bool,
 }
 
-async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>) {
-    let registration = shared.hub.register(doc);
+async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>, pid: Option<u32>) {
+    let registration = {
+        let _edge = doc.is_none().then(|| lock(&shared.app_edge));
+        let registration = shared.hub.register(doc);
+        if doc.is_none() {
+            let _ = shared.inbox.send(Inbox::AppConnected { pid });
+        }
+        registration
+    };
     let (reply_tx, reply_rx) = reply_channel();
     let mut conn = Conn {
         ws,
@@ -504,10 +516,13 @@ async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>) {
         shared,
     };
     let _ = conn.session().await;
-    conn.shared.hub.unregister(conn.hub_id);
-    if conn.doc.is_none() && conn.shared.hub.app_connections() == 0 {
-        // The app is gone (quit or crashed): its monitor windows go with it.
-        let _ = conn.shared.inbox.send(Inbox::AppsGone);
+    {
+        let _edge = conn.doc.is_none().then(|| lock(&conn.shared.app_edge));
+        conn.shared.hub.unregister(conn.hub_id);
+        if conn.doc.is_none() && conn.shared.hub.app_connections() == 0 {
+            // The app is gone (quit or crashed): its monitor windows and the stages go with it.
+            let _ = conn.shared.inbox.send(Inbox::AppsGone);
+        }
     }
     if conn.doc.is_none() && !conn.said_goodbye && !*conn.shared.shutdown.borrow() {
         app_lost(&conn.shared);

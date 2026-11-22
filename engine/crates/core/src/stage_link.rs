@@ -19,7 +19,7 @@ use crate::video_geometry::{PictureParam, PictureRamp, VideoGeometry};
 use crate::video_timing::{PictureFades, PlanPass, picture_run_ok};
 
 /// The link version both ends speak; a stage host answering another version is not used.
-pub const LINK_VERSION: u32 = 5;
+pub const LINK_VERSION: u32 = 6;
 /// Longest line either end accepts, newline excluded: enough for a `stages` set of
 /// [`MAX_LINK_STAGES`] stages whose display ids and monitor titles are all [`MAX_TEXT_BYTES`]
 /// long.
@@ -58,6 +58,11 @@ pub enum ToStage {
     /// windows (over the desktop), so the operator can see the app's question; what it draws
     /// is unchanged.
     StandBack { on: bool },
+    /// The operator's app: `connected` while one is connected to the engine, with its process
+    /// id when it gave one. While none is (the app quit or was force-quit), every output window
+    /// is down, whatever the stages show, until one is again: no stage outlives the app. A click
+    /// on a stage brings the app with `pid` forward with the keys.
+    App { connected: bool, pid: Option<u32> },
     /// The engine's sample clock: `sample` is now, at `rate` samples a second. Every picture's
     /// position follows it; the stage host moves it on by its own clock between messages.
     Clock { sample: u64, rate: u32 },
@@ -654,6 +659,14 @@ mod tests {
             ToStage::Quit,
             ToStage::RaiseMonitor { stage: stage(1) },
             ToStage::StandBack { on: true },
+            ToStage::App {
+                connected: true,
+                pid: Some(501),
+            },
+            ToStage::App {
+                connected: false,
+                pid: None,
+            },
             ToStage::Load {
                 picture: 4,
                 stage: stage(1),

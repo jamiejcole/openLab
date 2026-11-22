@@ -197,6 +197,9 @@ final class AppController {
         StandBack.shared.changed = { [weak self] asking in self?.questionsChanged(asking) }
         backstop.asking = StandBack.shared.isAsking
         backstop.menuBarCoverChanged = { [weak self] covered in self?.watchEngine(covered) }
+        // A click on the app's black (it stands in for a stage) brings the workspace window
+        // forward with the keys, as a click on a stage does.
+        backstop.onClick = { [weak self] in self?.comeForward() }
         subs.append(
             session.$connectionState.removeDuplicates().sink { [weak self] state in
                 if state == .connected { self?.sendStandBack() }

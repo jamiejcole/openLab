@@ -172,14 +172,19 @@ pub struct StageHost {
 
 enum Order {
     Stages(Vec<StageOutput>),
+    /// The operator's app (`ToStage::App`): kept, and given to each stage host that starts
+    /// before its stages, so a stage host started while the app is gone never puts a window up.
+    App(ToStage),
     /// A picture message or the clock: written as it is to the running stage host.
     Picture(ToStage),
     /// A routine clock: dropped when the stage host's queue is half full (the next replaces
     /// it), so a burst of them (the engine running ahead of real time, a stage host busy for a
     /// moment) never fills the queue and gets the stage host stopped as not reading.
     Clock(ToStage),
+    /// Test support: written as it is; the flag, if any, is set once it is queued for a running
+    /// stage host.
     #[cfg(feature = "test-support")]
-    Send(ToStage),
+    Send(ToStage, Option<Arc<std::sync::atomic::AtomicBool>>),
     /// Test support: nothing; the supervisor looks at its (hand-moved) clock again.
     #[cfg(feature = "test-support")]
     Wake,
@@ -201,6 +206,14 @@ impl StageHost {
     /// Sets the stages the stage host shows (every open workspace's), replacing the last set.
     pub fn set_stages(&self, stages: Vec<StageOutput>) {
         let _ = self.commands.send(Order::Stages(stages));
+    }
+
+    /// The operator's app connected (with its process id, if known) or gone: told to the
+    /// running stage host and to every one started after, ahead of its stages.
+    pub fn set_app(&self, connected: bool, pid: Option<u32>) {
+        let _ = self
+            .commands
+            .send(Order::App(ToStage::App { connected, pid }));
     }
 
     /// Sends a Video cue picture message or the clock (`load`, `play`, `pause`, `stop`,
@@ -226,7 +239,20 @@ impl StageHost {
     /// Test support: sends `message` as it is.
     #[cfg(feature = "test-support")]
     pub fn send(&self, message: ToStage) {
-        let _ = self.commands.send(Order::Send(message));
+        let _ = self.commands.send(Order::Send(message, None));
+    }
+
+    /// Test support: sends `message` as it is; the flag returned is set once it is queued for
+    /// the running stage host. Whatever the supervisor writes after that (a ping) reaches the
+    /// stage host behind it, and whatever it wrote before (a ping it may still answer) is
+    /// counted by then.
+    #[cfg(feature = "test-support")]
+    pub fn send_queued(&self, message: ToStage) -> Arc<std::sync::atomic::AtomicBool> {
+        let queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _ = self
+            .commands
+            .send(Order::Send(message, Some(Arc::clone(&queued))));
+        queued
     }
 
     /// The control thread is running. Pings go only after this was said since the last one,
@@ -306,6 +332,8 @@ struct Supervisor {
     commands: Receiver<Order>,
     events: EventSink,
     stages: Option<Vec<StageOutput>>,
+    /// The last `ToStage::App`, given to each stage host before its stages.
+    app: Option<ToStage>,
     running: Option<Running>,
     starts: VecDeque<Instant>,
     paused_until: Option<Instant>,
@@ -323,6 +351,7 @@ impl Supervisor {
             commands,
             events,
             stages: None,
+            app: None,
             running: None,
             starts: VecDeque::new(),
             paused_until: None,
@@ -359,8 +388,19 @@ impl Supervisor {
                         }
                         self.stages = Some(stages);
                     }
+                    Ok(Order::App(message)) => {
+                        if self.running.as_ref().is_some_and(|r| r.hello) {
+                            self.write(&message);
+                        }
+                        self.app = Some(message);
+                    }
                     #[cfg(feature = "test-support")]
-                    Ok(Order::Send(message)) => self.write(&message),
+                    Ok(Order::Send(message, queued)) => {
+                        self.write(&message);
+                        if let Some(queued) = queued.filter(|_| self.running.is_some()) {
+                            queued.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
                     #[cfg(feature = "test-support")]
                     Ok(Order::Wake) => {}
                     Ok(Order::Alive) => self.alive = true,
@@ -521,6 +561,9 @@ impl Supervisor {
                 }
                 r.hello = true;
                 (self.events)(StageEvent::Started { pid, video });
+                if let Some(app) = self.app.clone() {
+                    self.write(&app);
+                }
                 if let Some(stages) = self.stages.clone() {
                     self.write(&ToStage::Stages { stages });
                 }

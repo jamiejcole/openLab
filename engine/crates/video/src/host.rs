@@ -369,6 +369,12 @@ pub trait Platform {
     /// The window on `display` (none: on no display) stands back under every app's windows,
     /// over the desktop, from its next present; every other window covers its display.
     fn stand_back(&mut self, _display: Option<&str>) {}
+    /// The operator's app, by process id (none known: `None`): a click on a stage brings it
+    /// forward with the keys.
+    fn set_operator(&mut self, _pid: Option<u32>) {}
+    /// Called from every poll: the stage host never keeps the keys. If something made it the
+    /// active app (a click on a stage, the system at its start), the operator's app gets them back.
+    fn keep_keys_with_operator(&mut self) {}
 }
 
 /// How long the stage host may hear nothing at all from the engine (it pings every second while
@@ -458,6 +464,9 @@ pub struct Host<P: Platform> {
     /// its own is up).
     stand_back: bool,
     silence_limit: std::time::Duration,
+    /// An app is connected to the engine (`ToStage::App`; until the engine says otherwise, one
+    /// is taken to be). While none is, every output window is down: no stage outlives the app.
+    app_connected: bool,
     /// A failed picture was dropped since the stages were last drawn: the next poll draws them
     /// again, so its last frame never stays in a window.
     redraw_due: bool,
@@ -483,6 +492,7 @@ impl<P: Platform> Host<P> {
             silent: false,
             stand_back: false,
             silence_limit: ENGINE_SILENCE,
+            app_connected: true,
             redraw_due: false,
             monitors: BTreeMap::new(),
         }
@@ -698,6 +708,7 @@ impl<P: Platform> Host<P> {
     /// that failed or fell behind) and the monitor windows the operator closed.
     pub fn poll(&mut self, out: &mut Vec<FromStage>) {
         let now = Instant::now();
+        self.platform.keep_keys_with_operator();
         self.check_silence(now, out);
         self.report_failures(out);
         // A picture that failed leaves its display now, whether or not others still play:
@@ -906,6 +917,20 @@ impl<P: Platform> Host<P> {
                 }
                 self.apply(out);
             }
+            ToStage::App { connected, pid } => {
+                self.platform.set_operator(pid);
+                if std::mem::replace(&mut self.app_connected, connected) != connected {
+                    out.push(FromStage::Log {
+                        level: LinkLevel::Info,
+                        message: if connected {
+                            "the app is back: the stage windows are up again".into()
+                        } else {
+                            "the app is gone: every stage window is down until it is back".into()
+                        },
+                    });
+                    self.apply(out);
+                }
+            }
             ToStage::RaiseMonitor { stage } => {
                 if let Some(m) = self.monitors.get_mut(&stage) {
                     // Closed by the operator: drawn (so opened) again by the next apply.
@@ -1029,6 +1054,7 @@ impl<P: Platform> Host<P> {
             let cues = self.cues_on(stage.id, now);
             if let Some(m) = self.monitors.get(&stage.id).filter(|m| !m.closed)
                 && self.platform.video()
+                && self.app_connected
             {
                 watched.push((m.title.clone(), layer_of(stage, picture, cues.clone())));
             }
@@ -1045,6 +1071,8 @@ impl<P: Platform> Host<P> {
                 Some(_) if !stage.keep_black && picture == Picture::Black && cues.is_empty() => {
                     StageState::Hidden
                 }
+                // No app: nothing is shown, whatever plays (the cues play on unseen).
+                Some(_) if !self.app_connected => StageState::Hidden,
                 Some(id) => {
                     on.entry(id.clone())
                         .or_default()
@@ -1529,6 +1557,10 @@ pub(crate) mod tests {
         /// Monitor windows brought to the front.
         raised: Vec<StageId>,
         fail_monitors: bool,
+        /// The operator's app as last told.
+        operator: Option<u32>,
+        /// Polls that asked the platform to keep the keys with the operator's app.
+        keeps: u32,
     }
 
     impl Platform for Fake {
@@ -1609,6 +1641,12 @@ pub(crate) mod tests {
         }
         fn stand_back(&mut self, display: Option<&str>) {
             self.stood_back = display.map(str::to_owned);
+        }
+        fn set_operator(&mut self, pid: Option<u32>) {
+            self.operator = pid;
+        }
+        fn keep_keys_with_operator(&mut self) {
+            self.keeps += 1;
         }
         fn take_closed_monitors(&mut self) -> Vec<StageId> {
             let closed = std::mem::take(&mut self.user_closed);
@@ -2576,6 +2614,74 @@ pub(crate) mod tests {
         assert_eq!(h.platform.stood_back, None);
     }
 
+    /// #795: the app gone (force-quit) → every stage window comes down, its stage hidden, said
+    /// once in the log, whatever plays (the picture runs on unseen, its monitor not drawn); the app
+    /// back → every window up again with what it shows. The app's process is the one a click on a
+    /// stage brings forward, and every poll keeps the keys with it.
+    #[test]
+    fn the_app_gone_takes_every_stage_window_down_until_it_is_back() {
+        let mut h = menu_bar_host();
+        send(
+            &mut h,
+            ToStage::App {
+                connected: true,
+                pid: Some(77),
+            },
+        );
+        assert_eq!(h.platform.operator, Some(77));
+        load(&mut h, 3, 2);
+        play(&mut h, 3, 0);
+        clock(&mut h, 10);
+        h.step(None, &mut Vec::new());
+        assert_eq!(h.platform.pictures_drawn.get("D"), Some(&vec![3]));
+        let polls = h.platform.keeps;
+        h.step(None, &mut Vec::new());
+        assert!(h.platform.keeps > polls, "every poll keeps the keys away");
+        let out = send(
+            &mut h,
+            ToStage::App {
+                connected: false,
+                pid: None,
+            },
+        );
+        assert!(
+            h.platform.shown.is_empty(),
+            "no window up: {:?}",
+            h.platform.shown
+        );
+        assert_eq!(h.platform.operator, None);
+        assert_eq!(
+            states(&out),
+            vec![(id(1), StageState::Hidden), (id(2), StageState::Hidden)]
+        );
+        assert!(matches!(&logs(&out)[..], [(LinkLevel::Info, m)] if m.contains("app is gone")));
+        // Frames go on (the picture plays on, unseen): still nothing up.
+        clock(&mut h, 20);
+        h.step(None, &mut Vec::new());
+        assert!(h.platform.shown.is_empty());
+        assert_eq!(drawn(&mut h, 2).len(), 1, "its picture still runs");
+        // The same word again changes nothing and says nothing.
+        let again = send(
+            &mut h,
+            ToStage::App {
+                connected: false,
+                pid: None,
+            },
+        );
+        assert!(again.is_empty(), "{again:?}");
+        let out = send(
+            &mut h,
+            ToStage::App {
+                connected: true,
+                pid: Some(78),
+            },
+        );
+        assert_eq!(h.platform.shown.get("M"), Some(&vec![id(1)]));
+        assert_eq!(h.platform.pictures_drawn.get("D"), Some(&vec![3]));
+        assert_eq!(h.platform.operator, Some(78));
+        assert_eq!(states(&out).len(), 2, "both shown again: {out:?}");
+    }
+
     /// #708: a hung engine (nothing heard for `ENGINE_SILENCE`) stands the window on the display
     /// with the menu bar (the operator's) back, and nothing else: what it draws and every stage's
     /// state are unchanged, why goes to the log once. Any word from the engine covers again.
@@ -2653,6 +2759,8 @@ pub(crate) mod tests {
             user_closed: Vec::new(),
             raised: Vec::new(),
             fail_monitors: false,
+            operator: None,
+            keeps: 0,
         })
     }
 
