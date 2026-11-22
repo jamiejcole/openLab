@@ -76,8 +76,8 @@ final class StatusWindowTests: XCTestCase {
         status.copyIDButton.performClick(nil)
         XCTAssertEqual(board.string(forType: .string), id)
 
-        // It never takes the keyboard (GO keeps reaching the workspace window) and goes with it.
-        XCTAssertEqual((status.window as? NSPanel)?.canBecomeKey, false)
+        // Opening it leaves the keyboard with the workspace window; it goes with it.
+        XCTAssertFalse(status.window?.isKeyWindow == true, "opening the window does not take the keys")
         wc.window?.close()
         XCTAssertFalse(status.window?.isVisible == true)
     }
@@ -92,5 +92,26 @@ final class StatusWindowTests: XCTestCase {
         XCTAssertTrue(status.warnings.choose(row: row))
         await assertEventually("the cue is selected") { wc.cueList.selectedIDs() == [self.radio] }
         XCTAssertEqual(rig.store.playheads, playheads, "a click in a list of warnings never moves GO")
+    }
+
+    /// Flow: a click on the Warnings window makes it a window that can be key (so openLab becomes
+    /// the active app) and Command-W closes it, not the workspace.
+    func testTheStatusWindowCanTakeTheKeysOnAClickAndCommandWClosesOnlyIt() async throws {
+        let (_, wc) = try await open()
+        await wc.showWorkspaceStatus().value
+        let status = try XCTUnwrap(wc.existingStatusWindow)
+        let panel = try XCTUnwrap(status.window as? NSPanel)
+        XCTAssertTrue(panel.canBecomeKey, "a click can make it key")
+        XCTAssertFalse(panel.styleMask.contains(.nonactivatingPanel), "a click activates openLab")
+        XCTAssertFalse(panel.becomesKeyOnlyIfNeeded, "a click on its text or list makes it key")
+        XCTAssertFalse(panel.hidesOnDeactivate)
+        XCTAssertTrue(panel.isFloatingPanel)
+
+        // The unit-test host is never the active app, so the window cannot actually be made key here:
+        // File > Close acts on the key window, which a click now makes this one, and closes it alone.
+        XCTAssertTrue(panel.styleMask.contains(.closable))
+        panel.performClose(nil)
+        XCTAssertFalse(panel.isVisible, "Close closed the status window")
+        XCTAssertTrue(wc.window?.isVisible == true, "and left the workspace open")
     }
 }

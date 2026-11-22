@@ -24,7 +24,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use openlab_audio::total_frames;
-use openlab_core::protocol::{AudioTrackFormat, CueMediaDuration};
+use openlab_core::protocol::{AudioFileFormat, AudioTrackFormat, CueMediaDuration};
 use openlab_core::{
     Cue, CueId, CueKind, MAX_CHANNELS, PlayCount, SampleTime, SliceMarker, SliceProblem,
     VideoTiming, Workspace, seconds_to_samples,
@@ -444,14 +444,23 @@ impl PlanChecks {
             }
             let media = entry.map(|e| {
                 let info = &e.probe.probed.info;
+                let channels =
+                    Some(info.channels).filter(|c| (1..=MAX_CHANNELS as u16).contains(c));
                 CueMediaDuration {
                     cue: id,
                     file: seconds(info.frames, info.sample_rate),
                     trimmed: e.trimmed.zip(rate).and_then(|(f, r)| seconds(f, r.get())),
                     duration: e.length.zip(rate).and_then(|(f, r)| seconds(f, r.get())),
                     // The probe already refuses other counts; a wrong one is dropped, not sent.
-                    channels: Some(info.channels).filter(|c| (1..=MAX_CHANNELS as u16).contains(c)),
+                    channels,
                     picture: None,
+                    audio_file: e.probe.probed.codec.zip(channels).map(|(codec, channels)| {
+                        AudioFileFormat {
+                            codec: codec.to_owned(),
+                            channels,
+                            sample_rate: info.sample_rate,
+                        }
+                    }),
                     audio_tracks: Vec::new(),
                     audio_track: None,
                 }
@@ -467,6 +476,7 @@ impl PlanChecks {
                 None => {
                     self.sent.remove(&id);
                     out.media.push(CueMediaDuration {
+                        audio_file: None,
                         cue: id,
                         file: None,
                         trimmed: None,
@@ -519,6 +529,7 @@ impl PlanChecks {
         }
         let in_seconds = |f: Option<SampleTime>| f.zip(rate).and_then(|(f, r)| seconds(f, r.get()));
         let media = CueMediaDuration {
+            audio_file: None,
             cue: id,
             file: match &p.report {
                 Some(ProbeReport::Video { duration, .. }) => Some(*duration),

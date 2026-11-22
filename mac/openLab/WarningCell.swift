@@ -37,7 +37,7 @@ final class WarningCell: NSTableCellView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     /// On a selected row (the accent fill) the reasons take the selection's text colour, as the
     /// title does; the secondary grey would be faint on the accent.

@@ -465,6 +465,14 @@ impl PcmSource {
         })
     }
 
+    /// The probe's name for this file's samples (`Probed::codec`).
+    pub(crate) fn codec_name(&self) -> &'static str {
+        match self.layout.kind {
+            Kind::Float => "pcm_float",
+            Kind::Unsigned8 | Kind::Int => "pcm",
+        }
+    }
+
     pub(crate) fn info(&self) -> MediaInfo {
         let channels = u16::try_from(self.channels).unwrap_or(u16::MAX);
         MediaInfo::new(channels, self.rate, self.frames)

@@ -315,6 +315,7 @@ fn a_batch_from_before_a_move_to_another_folder_is_dropped() {
 
 fn fake_probe(_: &Path) -> Result<Probed, MediaError> {
     Ok(Probed {
+        codec: None,
         info: MediaInfo {
             channels: 1,
             sample_rate: RATE,

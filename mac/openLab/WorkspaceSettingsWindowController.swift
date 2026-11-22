@@ -485,7 +485,7 @@ final class DoneButton: NSButton {
 @MainActor
 final class WidthWatchingView: NSView {
     var onWidthChange: (() -> Void)?
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override func setFrameSize(_ newSize: NSSize) {
         let before = frame.width

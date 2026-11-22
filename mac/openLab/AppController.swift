@@ -197,6 +197,9 @@ final class AppController {
         StandBack.shared.changed = { [weak self] asking in self?.questionsChanged(asking) }
         backstop.asking = StandBack.shared.isAsking
         backstop.menuBarCoverChanged = { [weak self] covered in self?.watchEngine(covered) }
+        // A click on the app's black (it stands in for a stage) brings the workspace window
+        // forward with the keys, as a click on a stage does.
+        backstop.onClick = { [weak self] in self?.comeForward() }
         subs.append(
             session.$connectionState.removeDuplicates().sink { [weak self] state in
                 if state == .connected { self?.sendStandBack() }
@@ -267,14 +270,20 @@ final class AppController {
             performNow(command, isRepeat: isRepeat)
             return nil
         }
-        if beginCellEdit(keys.editKey(for: chord), event: event) { return nil }
+        // The list's own keys (edit a cell, flag, continue mode, `=`/`-`) only while its window is key:
+        // with the workspace's status window key, an editor opened behind it would take no typing,
+        // and the typing would fall through to GO and the cue hotkeys.
+        let listWindowKey = frontController.map { $0.window === keyWindow() } ?? false
+        if listWindowKey, beginCellEdit(keys.editKey(for: chord), event: event) { return nil }
         // The Time & Loops waveform's own keys (Shift-I, Shift-O, M) while it has the focus go on to
         // it, before a cue hotkey on the same key.
-        if frontController?.window?.firstResponder is WaveformView, WaveformView.editKey(for: event) != nil {
+        if listWindowKey, frontController?.window?.firstResponder is WaveformView,
+            WaveformView.editKey(for: event) != nil
+        {
             return event
         }
         if fireCueHotkeys(chord, event: event) { return nil }
-        return moveBySequenceKey(chord, event: event) ? nil : event
+        return listWindowKey && moveBySequenceKey(chord, event: event) ? nil : event
     }
 
     /// `=` and `-` move the playhead to the next and previous sequence (QLab 5's View menu gives
@@ -338,13 +347,13 @@ final class AppController {
 
     /// Keys stay with a modal panel or alert, a sheet (the window it is on, or the sheet itself as
     /// key window), the launcher and a panel that is not ours (file open/save). Monitoring windows
-    /// such as the Log window, and no key window at all (app active, windows behind), still let
+    /// such as the workspace status window (it counts as its workspace's window), and no key window at all (app active, windows behind), still let
     /// hotkeys fire.
     private func cueHotkeysBlocked() -> Bool {
         if isModalUp() { return true }
         guard let key = keyWindow() else { return false }
         return key.attachedSheet != nil || key.sheetParent != nil || key is PasteSheetWindow
-            || key === launcher.window || key is NSPanel
+            || key === launcher.window || (key is NSPanel && frontController == nil)
     }
 
     /// The cue hotkeys of `store` that fire: a chord equal to one of its keys of the map belongs to

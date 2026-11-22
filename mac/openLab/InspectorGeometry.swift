@@ -110,7 +110,7 @@ final class GeometryThumbnail: NSView {
     var onHold: ((Bool) -> Void)?
     private var dragFrom: (mouse: NSPoint, translation: CGPoint)?
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -263,7 +263,7 @@ final class GeometryField: NSTextField {
 
 /// What the Geometry tab's fields scroll over: top-down, as a form reads.
 final class GeometryFieldsView: NSView {
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 }
 
 /// The Geometry tab's controls. Typed values and choices go out through `onEdit` as kind fields;

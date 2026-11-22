@@ -133,11 +133,21 @@ extension AppController {
         overrides.panel?.close()
     }
 
+    /// A click on the app's black over a stage's display: the app comes forward and the frontmost
+    /// workspace window takes the keys (a key window of the app's own, a panel or an alert, keeps
+    /// them), so Esc then panics.
+    func comeForward() {
+        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        if keyWindow() != nil { return }
+        let ours = Set(controllers.values.compactMap { $0.window.map(ObjectIdentifier.init) })
+        NSApp.orderedWindows.first { ours.contains(ObjectIdentifier($0)) }?.makeKeyAndOrderFront(nil)
+    }
+
     // MARK: Front-window routing
 
     var frontController: WorkspaceWindowController? {
         guard let key = keyWindow() else { return nil }
-        return controllers.values.first { $0.window === key }
+        return controllers.values.first { $0.window === key || $0.existingStatusWindow?.window === key }
     }
 
     /// The workspace whose window or settings window is key: Edit > Undo and Redo act on its edits,

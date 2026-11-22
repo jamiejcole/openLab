@@ -242,7 +242,7 @@ final class MeterView: NSView {
 
     static let rangeDb: Float = 60
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: 120, height: 22) }
     override var isOpaque: Bool { false }
 

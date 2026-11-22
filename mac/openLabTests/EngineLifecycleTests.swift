@@ -41,12 +41,14 @@ final class ScriptedProcesses: EngineProcesses {
 @MainActor
 final class RecordingPresenter: EngineAlarmPresenting {
     private(set) var shown: [(title: String, message: String)] = []
+    private(set) var kinds: [EngineAlertKind] = []
     private(set) var detail = ""
     private(set) var restore: (() -> Void)?
     private(set) var isVisible = false
 
-    func show(title: String, message: String) {
+    func show(title: String, message: String, kind: EngineAlertKind) {
         shown.append((title, message))
+        kinds.append(kind)
         isVisible = true
     }
     func setDetail(_ text: String) { detail = text }
@@ -1167,12 +1169,32 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertTrue(app.session.stores.isEmpty)
         let offered = await pump { self.presenter.restore != nil }
         XCTAssertTrue(offered)
-        XCTAssertEqual(presenter.shown.first?.title, loc("engine.alarm.unclean"))
+        // A standard alert about recovering unsaved changes; the unclean end itself is not announced.
+        XCTAssertEqual(presenter.shown.first?.title, loc("engine.alarm.recover"))
+        XCTAssertEqual(presenter.kinds, [.recoveryOffer])
+        XCTAssertFalse(
+            presenter.shown.contains { $0.message.contains("quit cleanly") || $0.title.contains("quit cleanly") })
         XCTAssertTrue(alerts.log.isEmpty, "no modal by itself")
         XCTAssertFalse(supervisor.recoveryPending, "offered once")
         presenter.restore?()
         await assertEventually { self.alerts.log == ["autosave:Lost"] }
         await assertEventually { self.app.session.stores.values.contains { $0.model?.name == "Lost" } }
+    }
+
+    /// Flow: force quit with nothing autosaved → reopening raises no alert at all: the unclean end
+    /// is a record in the log, not something the operator is asked about.
+    func testLaunchAfterAnUncleanExitWithNoAutosaveShowsNothing() async throws {
+        try await runs.start()
+        try await runs.crash()
+
+        try await launch()
+        _ = await pump { !self.supervisor.recoveryPending }
+        XCTAssertNotNil(alarm.offerTask, "the unclean end was seen")
+        await alarm.offerTask?.value
+        XCTAssertTrue(presenter.shown.isEmpty, "\(presenter.shown)")
+        XCTAssertFalse(presenter.isVisible)
+        XCTAssertNil(presenter.restore)
+        XCTAssertTrue(alerts.log.isEmpty)
     }
 
     /// An autosave the operator dismissed with the alarm (an untitled workspace's that no window
@@ -2982,7 +3004,7 @@ final class AppLaunchTests: XCTestCase {
 }
 
 /// #368: a click anywhere on the engine alarm must leave the workspace window key, so GO and the
-/// transport keys keep working while the engine is down.
+/// transport keys keep working while the engine is down. #800: it is a standard alert window.
 @MainActor
 final class EngineAlarmPanelTests: XCTestCase {
     func testNothingInTheAlarmMakesItKey() throws {
@@ -2991,11 +3013,73 @@ final class EngineAlarmPanelTests: XCTestCase {
         alarm.setDetail("detail")
         alarm.setRestoreAction {}
         defer { alarm.dismiss() }
-        let panel = try XCTUnwrap(alarm.panel)
+        let panel = try XCTUnwrap(alarm.panel as? NSPanel)
         XCTAssertTrue(panel.becomesKeyOnlyIfNeeded)
+        XCTAssertEqual(panel.level, .floating)
+        XCTAssertFalse(panel.isKeyWindow)
         func walk(_ v: NSView) -> [NSView] { [v] + v.subviews.flatMap(walk) }
         let views = walk(try XCTUnwrap(panel.contentView))
         XCTAssertTrue(views.contains { ($0 as? NSTextField)?.stringValue == "The engine stopped." })
         for v in views { XCTAssertFalse(v.needsPanelToBecomeKey, "\(type(of: v))") }
+    }
+
+    /// Flow: the engine stops → a standard critical alert with the app icon, the bold message, the
+    /// explanation and its detail, and Restore Autosaves / Dismiss buttons that work without a modal.
+    func testTheAlarmIsAStandardCriticalAlertWhoseButtonsStillWork() throws {
+        let alarm = EngineAlarmPanel()
+        var restored = 0
+        alarm.show(title: "The engine crashed", message: "Cues stopped.")
+        alarm.setDetail("2 autosaves")
+        alarm.setRestoreAction { restored += 1 }
+        defer { alarm.dismiss() }
+        XCTAssertEqual(alarm.alertStyle, .critical)
+        let panel = try XCTUnwrap(alarm.panel)
+        XCTAssertEqual(panel.identifier?.rawValue, AX.engineAlarm)
+        let said = sheetText(panel)
+        for part in ["The engine crashed", "Cues stopped.", "2 autosaves"] {
+            XCTAssertTrue(said.contains(part), said)
+        }
+        XCTAssertTrue(alarm.isVisible)
+        XCTAssertTrue(pressButton(loc("engine.alarm.restore"), in: panel))
+        XCTAssertEqual(restored, 1)
+        XCTAssertTrue(alarm.isVisible, "Restore leaves the alarm up")
+        XCTAssertFalse(pressButton(loc("engine.alarm.restore"), in: try XCTUnwrap(alarm.panel)), "the offer is spent")
+        XCTAssertTrue(pressButton(loc("engine.alarm.dismiss"), in: try XCTUnwrap(alarm.panel)))
+        XCTAssertFalse(alarm.isVisible)
+    }
+
+    /// Flow: Dismiss, then the engine's later news (a detail line, a spent offer) never brings the
+    /// alert back unasked; a new offer does.
+    func testADismissedAlertStaysHiddenWhenItsDetailOrOfferChanges() {
+        let alarm = EngineAlarmPanel()
+        defer { alarm.dismiss() }
+        alarm.show(title: "The engine crashed", message: "Cues stopped.")
+        alarm.setRestoreAction {}
+        XCTAssertTrue(pressButton(loc("engine.alarm.dismiss"), in: alarm.panel ?? NSWindow()))
+        XCTAssertFalse(alarm.isVisible)
+        alarm.setDetail("1 autosave")
+        alarm.setRestoreAction(nil)
+        XCTAssertFalse(alarm.isVisible, "setDetail and clearing the offer leave it hidden")
+
+        alarm.show(title: "Recover", message: "Work was autosaved.", kind: .recoveryOffer)
+        alarm.setRestoreAction {}
+        XCTAssertTrue(pressButton(loc("engine.alarm.notNow"), in: alarm.panel ?? NSWindow()))
+        alarm.setDetail("2 autosaves")
+        alarm.setRestoreAction(nil)
+        XCTAssertFalse(alarm.isVisible, "Not Now stays hidden")
+        alarm.setRestoreAction {}
+        XCTAssertTrue(alarm.isVisible, "a new offer shows it")
+    }
+
+    /// Flow: autosaved work after an unclean end → an ordinary alert with Restore Autosaves / Not Now.
+    func testTheRecoveryOfferIsAnOrdinaryAlertWithNotNow() throws {
+        let alarm = EngineAlarmPanel()
+        alarm.show(title: "Recover", message: "Work was autosaved.", kind: .recoveryOffer)
+        alarm.setRestoreAction {}
+        defer { alarm.dismiss() }
+        XCTAssertEqual(alarm.alertStyle, .warning)
+        let panel = try XCTUnwrap(alarm.panel)
+        XCTAssertTrue(pressButton(loc("engine.alarm.notNow"), in: panel))
+        XCTAssertFalse(alarm.isVisible)
     }
 }

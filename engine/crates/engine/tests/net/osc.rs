@@ -293,7 +293,7 @@ fn control_thread(rx: &Receiver<Inbox>, c: &Stand) {
                 c.triggers.lock().unwrap().push((source, detail));
                 c.changed.notify_one();
             }
-            Inbox::AppsGone => {}
+            Inbox::AppsGone | Inbox::AppConnected { .. } => {}
             _ => break,
         }
     }

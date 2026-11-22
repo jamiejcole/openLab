@@ -650,17 +650,32 @@ impl HandClock {
     }
 
     /// Hangs the stage host and moves the clock until the supervisor kills it as not answering:
-    /// a ping goes out (waited for), then its answer time passes. Returns the hung one's pid.
+    /// a ping goes out behind the hang (waited for), then its answer time passes. Returns the
+    /// hung one's pid.
+    ///
+    /// Pings are counted only once the hang is queued: the supervisor may wake (for an alive
+    /// mark, a line from the stage host) and read the moved clock before it takes the hang, and a
+    /// ping it sends then is answered; taken for the hung one, the clock would never be moved
+    /// past the answer time of the ping that is not answered.
     pub fn hang_until_killed(&self, s: &mut OfflineShow, answer_within: u64) -> u32 {
         let pid = s.control().stage_host_pid().expect("a stage host runs");
-        s.control_mut().hang_stage_host();
+        let queued = s.control_mut().hang_stage_host();
+        assert!(
+            s.wait_for(|_| queued.load(Ordering::SeqCst)),
+            "the hang never reached the stage host"
+        );
         let sent = self.pings();
         self.advance(s, 1);
         assert!(s.wait_for(|_| self.pings() > sent), "no ping went out");
         self.advance(s, answer_within + 1);
         assert!(
             s.wait_for(|c| c.stage_host_pid().is_none_or(|p| p != pid)),
-            "the hung stage host was not killed"
+            "the hung stage host was not killed (pings sent {}, {} after the hang; supervisor \
+             wakes {}; its clock {} ms)",
+            self.pings(),
+            self.pings() - sent,
+            self.wakes(),
+            self.ms.load(Ordering::SeqCst),
         );
         pid
     }

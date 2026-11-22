@@ -46,7 +46,21 @@ fn main() {
         "present orders the window front once, over everything"
     );
     assert_eq!(after, r.screen_saver_level, "and leaves it there");
-    assert!(r.ignores_mouse, "ignores the mouse");
+    // #795: a click on a stage never reaches an app behind it, and brings the operator's app
+    // forward with the keys (the stage host hands them over), the first click too.
+    assert!(!r.ignores_mouse, "takes every click over the stage");
+    assert!(
+        r.accepts_first_mouse,
+        "the first click too, the stage host not active"
+    );
+    assert!(
+        r.click_lands_on_stage,
+        "a click lands on the stage, not behind it"
+    );
+    assert_eq!(
+        r.clicks_handed_over, 3,
+        "a left, right or other click hands the keys to the operator's app"
+    );
     assert!(
         !r.can_become_key,
         "never key: the operator's keys stay with the app"

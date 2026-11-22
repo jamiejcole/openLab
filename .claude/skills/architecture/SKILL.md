@@ -41,7 +41,7 @@ engine process
 - Keep the crate count at four (the fourth, `crates/video`, and the stage host process: user decision 2026-11-13). Add a module before a crate.
 - OS-specific code lives in a `platform` module per crate behind `cfg` (paths, sleep prevention, relaunch, RT priority).
 - Show-file paths are relative with forward slashes or absolute; compare them case-insensitively on Windows (NFR-31/32). The protocol is UI-agnostic, so a Windows UI does not touch the engine.
-- **The engine stays windowless** (user decision 2026-11-13, replacing "the engine will own output windows"): output windows live in the stage host, a child process the engine spawns and supervises, so picture survives an app crash and a stage host crash or hang never stops sound. Skill `video`.
+- **The engine stays windowless** (user decision 2026-11-13, replacing "the engine will own output windows"): output windows live in the stage host, a child process the engine spawns and supervises, so the stages come down while no app is connected (and return when it reconnects; the app's own black after an engine crash stays until Esc) and a stage host crash or hang never stops sound. Skill `video`.
 - **Pictures never travel to the app.** A stage's monitor window (a live copy of the stage for the operator) is a window of the stage host's own, drawn with the stage's frames; the app only asks the engine to open or close it (`set_stage_monitor`). No frames cross a process boundary. Skill `video`, "Monitor windows".
 
 ## Threads (who owns what)

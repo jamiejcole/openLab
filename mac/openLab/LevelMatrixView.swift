@@ -20,8 +20,11 @@ final class LevelMatrixView: NSView {
     static let headW: CGFloat = 56
     /// The row of names under the top row's boxes.
     static let headerH: CGFloat = 18
+    /// The captions over the crosspoint section ("inputs" over the row numbers, "crosspoints" over
+    /// the grid), which tell the sliders above from the matrix below.
+    static let captionH: CGFloat = 20
     /// Where the crosspoint rows start.
-    static var crossTop: CGFloat { cellH + headerH }
+    static var crossTop: CGFloat { cellH + headerH + captionH }
 
     var levels: LevelSet? {
         didSet { needsDisplay = true }
@@ -67,7 +70,7 @@ final class LevelMatrixView: NSView {
     private var dragSlot: LevelSet.Slot?
     private var dragging = false
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
     func resize(inputs: Int, outputs: Int) {
@@ -76,7 +79,8 @@ final class LevelMatrixView: NSView {
         setFrameSize(
             NSSize(
                 width: Self.headW + CGFloat(outputCount) * Self.cellW,
-                height: Self.crossTop + Self.cellH * CGFloat(self.inputs)))
+                height: (self.inputs > 0 ? Self.crossTop : Self.cellH + Self.headerH)
+                    + Self.cellH * CGFloat(self.inputs)))
         // A drag that began on a row the file no longer has must not keep editing it.
         if let s = dragSlot, !isInGrid(s) { dragSlot = nil }
         needsDisplay = true
@@ -148,6 +152,17 @@ final class LevelMatrixView: NSView {
             }
         }
         guard inputs > 0 else { return }
+        let captions = NSRect(x: 0, y: Self.cellH + Self.headerH, width: bounds.width, height: Self.captionH)
+        if dirty.intersects(captions) {
+            centred(
+                loc("levels.inputs"), in: NSRect(x: 0, y: captions.minY, width: Self.headW, height: Self.captionH),
+                attributes: label)
+            centred(
+                loc("levels.crosspoints"),
+                in: NSRect(
+                    x: Self.headW, y: captions.minY, width: CGFloat(outputCount) * Self.cellW, height: Self.captionH),
+                attributes: label)
+        }
         let firstRow = max(0, Int((dirty.minY - Self.crossTop) / Self.cellH))
         let lastRow = min(inputs - 1, Int((dirty.maxY - Self.crossTop) / Self.cellH))
         guard firstRow <= lastRow else { return }

@@ -1,0 +1,38 @@
+{
+  "about": "An Audio cue's I/O and Levels tabs (dark, 800 x 517): the I/O tab shows the file, Choose and the file's format above the output patch; the Levels tab shows its sliders and crosspoint matrix with the output names and input numbers that say which control is which.",
+  "show": "Demo",
+  "appearance": "dark",
+  "media": {
+    "media/a.wav": 30
+  },
+  "window": {
+    "width": 800,
+    "height": 517
+  },
+  "steps": [
+    {
+      "advance": 0.1
+    },
+    {
+      "select": "1"
+    },
+    {
+      "tab": "io"
+    },
+    {
+      "advance": 0.2
+    },
+    {
+      "shot": "io"
+    },
+    {
+      "tab": "levels"
+    },
+    {
+      "advance": 0.2
+    },
+    {
+      "shot": "levels"
+    }
+  ]
+}

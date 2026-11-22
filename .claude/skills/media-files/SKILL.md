@@ -10,6 +10,7 @@ Hold limits for a GO on an unanswered probe (`PROBE_HOLD_LIMIT`) and on a stream
 
 ## Must not break
 - **The control thread never stats, reads or walks a file or folder.** Probes, preloads, watch stats and relink walks run on their own threads.
+- The probe also names the file's codec (`Probed::codec`); an Audio cue's media report carries it as `audio_file` with channels and rate, for the I/O tab.
 - **A healthy disk never makes a cue broken.** A probe that is merely slow is never failed early. Nothing playing is touched by a re-probe.
 - **The system volume is never gated; the show file's volume is exempt only while one doc is open** (with several, see "Never gated").
 - **A volume counts as stalled only on corroboration** (the watch says so, or two different files' probes are stuck on it). One slow file is not a dead mount.

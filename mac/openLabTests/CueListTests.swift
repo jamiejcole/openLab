@@ -1043,6 +1043,40 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
+    /// A fading cue's state mark is the moving dots (the state image keeps its label and tooltip);
+    /// running and idle cues show their still marks and no dots.
+    func testAFadingCueShowsMovingDotsInItsStateSlot() async throws {
+        let h = try await H()
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
+        let cell = try XCTUnwrap(h.cell("status", H.intro))
+        XCTAssertTrue(cell.fadingDots.isHidden, "running: the still mark")
+        XCTAssertEqual(cell.images[1].alphaValue, 1)
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"fading"}"#)
+        let fading = try XCTUnwrap(h.cell("status", H.intro))
+        XCTAssertFalse(fading.fadingDots.isHidden, "fading: the dots")
+        XCTAssertEqual(fading.images[1].alphaValue, 0, "the still glyph is not drawn under them")
+        XCTAssertEqual(fading.images[1].accessibilityLabel(), loc("cue.state.fading"), "the label stays")
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
+        let idle = try XCTUnwrap(h.cell("status", H.intro))
+        XCTAssertTrue(idle.fadingDots.isHidden, "idle: no dots")
+        XCTAssertEqual(idle.images[1].alphaValue, 1)
+    }
+
+    /// The brightness sweeps round the cluster: a dot is brightest when the sweep reaches it and
+    /// fades behind it, never fully out.
+    func testTheFadingDotsBrightnessSweepsRound() {
+        let p = PulsingDots.period
+        XCTAssertEqual(PulsingDots.alpha(angle: 0, at: 0), 1, accuracy: 0.001, "the sweep starts at angle 0")
+        XCTAssertEqual(
+            PulsingDots.alpha(angle: -.pi / 2, at: p / 4), 1, accuracy: 0.001, "a quarter period on: clockwise")
+        XCTAssertLessThan(PulsingDots.alpha(angle: -.pi / 2, at: 0), 0.5, "a dot the sweep has not reached is dim")
+        XCTAssertGreaterThan(
+            PulsingDots.alpha(angle: .pi / 4, at: p / 4), PulsingDots.alpha(angle: -.pi, at: p / 4),
+            "the dots just passed are brighter than those it comes to next")
+        let low = (0..<120).map { PulsingDots.alpha(angle: 0, at: Double($0) / 100) }.min() ?? 0
+        XCTAssertGreaterThanOrEqual(low, PulsingDots.dimAlpha - 0.001, "never fully out")
+    }
+
     /// A running cue's Duration cell is outlined in green over its whole width, so a playing cue is easy to
     /// see, and filled up to its progress; with no run nothing is drawn.
     func testDurationCellOfARunningCueIsOutlinedInGreenUnderTheFill() throws {
@@ -3654,7 +3688,8 @@ final class PlayheadFlowTests: XCTestCase {
     ) async throws {
         await assertEventually("a panel", file: file, line: line) { !NotesNoticePanel.open.isEmpty }
         let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel, file: file, line: line)
-        XCTAssertFalse(panel.canBecomeKey, "never key", file: file, line: line)
+        XCTAssertTrue(
+            (panel as? NSPanel)?.becomesKeyOnlyIfNeeded == true, "never key on its own", file: file, line: line)
         XCTAssertFalse(panel.isKeyWindow, file: file, line: line)
         let said = sheetText(panel)
         XCTAssertTrue(said.contains("not saved"), said, file: file, line: line)

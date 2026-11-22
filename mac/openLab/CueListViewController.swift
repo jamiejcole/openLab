@@ -255,6 +255,8 @@ final class CueCell: NSTableCellView {
     private var trailing: NSLayoutConstraint?
 
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView(), NSImageView()]
+    /// A fading cue's state mark: a turning cluster of dots over the state slot (image 1 keeps the label and tooltip).
+    let fadingDots = PulsingDots()
     /// The first column's slots, left to right, as (image, x from the cell's left edge, width). Each mark
     /// has its own place whether or not the others are shown, so every row's marks line up down the list:
     /// the playhead's room at the row's edge (the row draws the pointer there), the state, then the type
@@ -295,6 +297,16 @@ final class CueCell: NSTableCellView {
                     image.centerYAnchor.constraint(equalTo: centerYAnchor),
                 ])
             }
+            fadingDots.isHidden = true
+            fadingDots.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(fadingDots)
+            let slot = images[1]
+            NSLayoutConstraint.activate([
+                fadingDots.leadingAnchor.constraint(equalTo: slot.leadingAnchor),
+                fadingDots.widthAnchor.constraint(equalTo: slot.widthAnchor),
+                fadingDots.heightAnchor.constraint(equalTo: slot.heightAnchor),
+                fadingDots.centerYAnchor.constraint(equalTo: slot.centerYAnchor),
+            ])
         } else {
             let views: [NSView] = [images[0], label, images[1], images[2], images[3]]
             let stack = NSStackView(views: views)
@@ -390,6 +402,14 @@ final class CueCell: NSTableCellView {
         view.toolTip = tooltip ?? label
     }
 
+    /// Shows the moving dots in place of state image 1's picture (on) or the picture again (off). The
+    /// image view keeps its label and tooltip either way.
+    func showFading(_ on: Bool) {
+        fadingDots.isHidden = !on
+        images[1].alphaValue = on ? 0 : 1
+        if on, let mark = tints[1] { fadingDots.colour = drawnColour(mark.tint) }
+    }
+
     private func tinted(_ image: NSImage, _ tint: NSColor, _ label: String) -> NSImage {
         TimeHeaderCell.tinted(image, drawnColour(tint), size: image.size, description: label)
     }
@@ -411,6 +431,7 @@ final class CueCell: NSTableCellView {
         didSet {
             guard backgroundStyle != oldValue else { return }
             for (i, mark) in tints { images[i].image = tinted(mark.image, mark.tint, mark.label) }
+            if let mark = tints[1] { fadingDots.colour = drawnColour(mark.tint) }
         }
     }
 }
@@ -2020,6 +2041,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                     1, icon: icon, label: style.label, tint: style.tint,
                     tooltip: detail.map { "\(style.label): \($0)" })
             }
+            cell.showFading(state == .fading)
             // A preview is outside the show, so it has its own mark next to the cue's state.
             cell.images[2].setAccessibilityIdentifier("cue-preview")
             if store.previewing.contains(node.id) {
