@@ -1,0 +1,13 @@
+{
+ "about": "Alerts (#800): crashed",
+ "show": "Demo",
+ "steps": [
+  {
+   "focus": "alarm",
+   "alarm": "crashed"
+  },
+  {
+   "shot": "alarm-crashed"
+  }
+ ]
+}

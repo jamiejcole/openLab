@@ -161,6 +161,8 @@ final class ScenarioRunner {
         var state = "ready"
         var size: CGSize?
         var notice = false
+        /// `focus` `alarm`: `crashed`, `recover` or `notes`.
+        var alarm = "crashed"
     }
 
     static let stepKinds = [
@@ -283,7 +285,7 @@ final class ScenarioRunner {
             "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"], "set_media": ["file"],
             "choose": ["item"], "device": ["output"],
             "find_missing_files": ["folder"],
-            "focus": ["recents", "state", "size", "notice"],
+            "focus": ["recents", "state", "size", "notice", "alarm"],
         ]
         let allowed = options[kind, default: []].union([kind])
         if let extra = o.keys.first(where: { !allowed.contains($0) }) {
@@ -417,12 +419,22 @@ final class ScenarioRunner {
         case "focus":
             let which = try string("focus")
             let known = [
-                "workspace", "settings", "sheet", "patch-editor", "preferences", "status", "about", "launcher",
+                "workspace", "settings", "sheet", "patch-editor", "preferences", "status", "about", "launcher", "alarm",
             ]
             guard known.contains(which) else {
                 throw Failure(
-                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\", \"status\", \"about\", \"launcher\" or \"sheet\""
+                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\", \"status\", \"about\", \"launcher\", \"alarm\" or \"sheet\""
                 )
+            }
+            if which == "alarm" {
+                var look = LauncherLook()
+                if let a = o["alarm"] {
+                    guard let a = a as? String, ["crashed", "recover", "notes"].contains(a) else {
+                        throw Failure("\"alarm\" must be \"crashed\", \"recover\" or \"notes\"")
+                    }
+                    look.alarm = a
+                }
+                return .focus(which, launcher: look)
             }
             guard which == "launcher" else {
                 if let extra = ["recents", "state", "size", "notice"].first(where: { o[$0] != nil }) {
@@ -592,6 +604,7 @@ final class ScenarioRunner {
     private var launcherWindow: LauncherWindowController?
     /// The About window, once a step focused it.
     private var aboutWindow: AboutWindowController?
+    private var alarmPresenter: EngineAlarmPanel?
     /// The application preferences, once a step focused them.
     private var prefs: PreferencesWindowController?
     /// What new meter views asked before the run (restored when it ends).
@@ -974,6 +987,34 @@ final class ScenarioRunner {
                 w.appearance = wc.window?.appearance
                 await sc.model.refresh()
                 sc.render()
+                focused = w
+            } else if which == "alarm", let look {
+                // An alert the engine alarm or a notice raises.
+                let w: NSWindow
+                if look.alarm == "notes" {
+                    NotesNoticePanel.closeAll()
+                    NotesNoticePanel.show(
+                        NotesNotice(
+                            message: "The notes of cue 3 were not saved: they are longer than the limit.",
+                            text: "x"),
+                        near: nil, pasteboard: NSPasteboard(name: NSPasteboard.Name("openlab-scenario-notes")))
+                    w = try XCTUnwrap(NotesNoticePanel.open.last?.panel)
+                } else {
+                    let alarm = EngineAlarmPanel()
+                    if look.alarm == "crashed" {
+                        alarm.show(title: loc("engine.alarm.crashed"), message: loc("engine.alarm.restarting"))
+                        alarm.setDetail(
+                            [loc("engine.alarm.back"), String(format: loc("engine.alarm.autosaves"), 2)].joined(
+                                separator: "\n"))
+                    } else {
+                        alarm.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
+                        alarm.setDetail(String(format: loc("engine.alarm.autosaves"), 2))
+                    }
+                    alarm.setRestoreAction {}
+                    alarmPresenter = alarm
+                    w = try XCTUnwrap(alarm.panel)
+                }
+                w.appearance = wc.window?.appearance
                 focused = w
             } else if which == "about" {
                 // The About window, drawn off screen
