@@ -30,6 +30,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let hotkeyField = HotkeyRecorder()
     let hotkeyClear = NSButton(title: loc("inspector.hotkey.clear"), target: nil, action: nil)
     let secondTriggerPopup = NSPopUpButton()
+    /// The second trigger's question, drawn beside or over its menu.
+    let secondTriggerQuestion = NSTextField(labelWithString: "")
     let onReleaseCheck = NSButton(checkboxWithTitle: loc("inspector.onRelease"), target: nil, action: nil)
     /// Seams: the workspace's transport keys and the menu bar's keys, for hotkey validation.
     var transportKeys: (() -> TransportKeys)?
@@ -586,27 +588,53 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         hotkeyEnableCheck.toolTip = loc("inspector.hotkey.enabled")
         hotkeyEnableCheck.target = self
         hotkeyEnableCheck.action = #selector(hotkeyEnableChanged)
-        hotkeyField.widthAnchor.constraint(equalToConstant: 130).isActive = true
         // One line: its prompt is cut short, not wrapped, in the narrow column.
         hotkeyField.usesSingleLineMode = true
         hotkeyField.lineBreakMode = .byTruncatingTail
-        let hotkeyRow = NSStackView(views: [hotkeyEnableCheck, hotkeyField, hotkeyClear])
-        hotkeyRow.spacing = 6
-        let left = column(
-            [
-                row(loc("inspector.hotkey"), hotkeyRow), wallClockRow(row: row),
-            ], nil)
-        let right = othersColumn()
+        hotkeyField.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        func label(_ key: String) -> NSTextField {
+            let l = NSTextField(labelWithString: loc(key))
+            l.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            l.textColor = .secondaryLabelColor
+            return l
+        }
+        // The labels share a width so the boxes line up down the column.
+        let hotkeyLabel = label("inspector.hotkey")
+        let clockLabel = label("inspector.wallClock")
+        let labelWidth = max(hotkeyLabel.fittingSize.width, clockLabel.fittingSize.width)
+        for l in [hotkeyLabel, clockLabel] { l.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true }
+        let boxWidth = hotkeyEnableCheck.fittingSize.width
+        let hotkeyRow = WrappingRow(
+            head: [hotkeyLabel, hotkeyEnableCheck, hotkeyField, hotkeyClear], tail: [], indent: 0)
+        let clockRow = wallClockRow(label: clockLabel, indent: labelWidth + boxWidth + 12)
+        let left = NSStackView(views: [hotkeyRow.view, clockRow.view])
+        left.orientation = .vertical
+        left.alignment = .leading
+        left.spacing = 10
+        let (right, rightRows) = othersColumn()
         left.addArrangedSubview(Self.columnFiller())
         right.addArrangedSubview(Self.columnFiller())
-        let columns = NSStackView(views: [left, right])
-        columns.alignment = .top
-        columns.spacing = 16
+        let divider = SeparatorLine()
+        let columns = TriggersColumns(views: [left, divider, right])
+        columns.rows = [hotkeyRow, clockRow] + rightRows
+        columns.alignment = .height
+        columns.spacing = 12
         Self.clipsAtTheBottom(columns)
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         let item = NSTabViewItem(identifier: "triggers")
         item.label = loc("inspector.tab.triggers")
         item.view = columns
+        // Tab goes down the left column, then down the right, and round again, so the time-of-day
+        // field is reached from the keyboard (the hotkey box lets Tab pass when Tab brought the
+        // focus to it). Controls that cannot take the focus (off, or without the system's full
+        // keyboard access) are passed over.
+        let order: [NSView] = [
+            hotkeyEnableCheck, hotkeyField, hotkeyClear, wallClockCheck, wallClockField, wallClockFormatPopup,
+            wallClockDaysPopup, fadeOthersCheck, fadeOthersScopePopup, fadeOthersTimeField, duckCheck, duckDbField,
+            duckTimeField, secondTriggerPopup, onReleaseCheck,
+        ]
+        for (view, next) in zip(order, order.dropFirst() + order.prefix(1)) { view.nextKeyView = next }
+        item.initialFirstResponder = hotkeyEnableCheck
         return item
     }
 

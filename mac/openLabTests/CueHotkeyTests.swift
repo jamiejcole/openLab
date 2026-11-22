@@ -332,14 +332,16 @@ final class TriggersTabTests: XCTestCase {
     /// What a second trigger does sits under its question, and whether it comes on the key's release
     /// sits right under that, apart from the hotkey (the owner's layout).
     func testTheReleaseBoxSitsUnderTheSecondTriggerMenuAndItsQuestion() throws {
-        let stack = try XCTUnwrap(vc.secondTriggerPopup.superview as? NSStackView)
-        XCTAssertTrue(vc.onReleaseCheck.superview === stack, "in the second trigger's column")
+        let stack = try XCTUnwrap(vc.onReleaseCheck.superview as? NSStackView)
+        let row = try XCTUnwrap(stack.arrangedSubviews.first { vc.secondTriggerPopup.isDescendant(of: $0) })
         let views = stack.arrangedSubviews
-        let at = try XCTUnwrap(views.firstIndex(of: vc.secondTriggerPopup))
-        XCTAssertEqual(views.firstIndex(of: vc.onReleaseCheck), at + 1, "right under the menu")
-        let question = try XCTUnwrap(views[at - 1] as? NSTextField)
-        XCTAssertEqual(question.stringValue, loc("inspector.secondTrigger"))
-        XCTAssertTrue(question.stringValue.contains("second time while playing"), question.stringValue)
+        let rowIndex = views.firstIndex(of: row)
+        XCTAssertEqual(views.firstIndex(of: vc.onReleaseCheck), rowIndex.map { $0 + 1 }, "right under the menu")
+        XCTAssertTrue(vc.secondTriggerQuestion.isDescendant(of: row), "the question is on the menu's row")
+        XCTAssertEqual(vc.secondTriggerQuestion.stringValue, loc("inspector.secondTrigger"))
+        XCTAssertTrue(
+            vc.secondTriggerQuestion.stringValue.contains("second time while playing"),
+            vc.secondTriggerQuestion.stringValue)
         XCTAssertFalse(vc.hotkeyField.isDescendant(of: stack), "the hotkey is in the other column")
     }
 
@@ -371,6 +373,146 @@ final class TriggersTabTests: XCTestCase {
                 characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: 53))
         vc.hotkeyField.keyDown(with: esc)
         XCTAssertEqual(got.count, 1)
+    }
+
+    /// Reached with Tab, the recorder lets Tab and Shift-Tab move on (the keyboard is not caught in
+    /// it, #784 flow 8); clicked, Tab is recorded like any key.
+    func testTabPassesThroughTheRecorderReachedByKeyboardAndIsRecordedAfterAClick() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 100), styleMask: [.titled], backing: .buffered,
+            defer: true)
+        let recorder = HotkeyRecorder()
+        recorder.isEditable = false  // as in the Triggers tab
+        recorder.isSelectable = false
+        let before = NSTextField()
+        let after = NSTextField()
+        for (i, v) in [before, recorder, after].enumerated() {
+            v.frame = NSRect(x: 10 + i * 90, y: 40, width: 80, height: 22)
+            window.contentView?.addSubview(v)
+        }
+        before.nextKeyView = recorder
+        recorder.nextKeyView = after
+        after.nextKeyView = before
+        var got: [KeyChord] = []
+        recorder.onRecord = { if let c = KeyChord(event: $0) { got.append(c) } }
+        func tab(_ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+                    context: nil, characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false,
+                    keyCode: HotkeyRecorder.tabKeyCode))
+        }
+        XCTAssertTrue(window.makeFirstResponder(recorder), "reached by keyboard")
+        recorder.keyDown(with: try tab([]))
+        XCTAssertEqual(got, [], "Tab moved on, nothing recorded")
+        func focused(_ field: NSTextField) -> Bool {
+            window.firstResponder === field || (window.firstResponder as? NSText)?.delegate === field
+        }
+        XCTAssertTrue(focused(after), "the focus went on to the next field")
+        XCTAssertTrue(window.makeFirstResponder(recorder))
+        recorder.keyDown(with: try tab([.shift]))
+        XCTAssertEqual(got, [])
+        XCTAssertTrue(focused(before), "Shift-Tab went back to the field before")
+        let click = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        recorder.mouseDown(with: click)
+        recorder.keyDown(with: try tab([]))
+        XCTAssertEqual(got.count, 1, "clicked, Tab is recorded")
+    }
+
+    // MARK: Layout
+
+    /// The Triggers tab at `width`, laid out.
+    private func triggersLaidOut(width: CGFloat, height: CGFloat = 300) -> NSView {
+        window.setContentSize(NSSize(width: width, height: height))
+        vc.tabView.selectTabViewItem(withIdentifier: "triggers")
+        vc.view.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        vc.view.layoutSubtreeIfNeeded()
+        vc.view.layoutSubtreeIfNeeded()
+        return vc.tabView.selectedTabViewItem?.view ?? vc.view
+    }
+
+    private func frame(_ v: NSView, in root: NSView) -> NSRect { root.convert(v.bounds, from: v) }
+
+    private func sameLine(_ a: NSView, _ b: NSView, in root: NSView) -> Bool {
+        abs(frame(a, in: root).midY - frame(b, in: root).midY) < 12
+    }
+
+    /// The Triggers tab as QLab 5 lays it out: the label at the left of its row, the box and field on
+    /// the line after it, fade-and-stop with its scope and time on one line, the second-trigger
+    /// question beside its menu with the on-release box right under it, a divider between columns.
+    func testWideTriggersTabHasLabelsAtTheLeftAndOneLinePerTrigger() throws {
+        let root = triggersLaidOut(width: 1200)
+        let columns = try XCTUnwrap(root as? TriggersColumns)
+        XCTAssertFalse(columns.compact)
+        XCTAssertTrue(sameLine(vc.hotkeyEnableCheck, vc.hotkeyField, in: root))
+        XCTAssertTrue(sameLine(vc.wallClockCheck, vc.wallClockField, in: root))
+        XCTAssertTrue(sameLine(vc.wallClockField, vc.wallClockDaysPopup, in: root))
+        XCTAssertEqual(frame(vc.hotkeyEnableCheck, in: root).minX, frame(vc.wallClockCheck, in: root).minX, accuracy: 1)
+        XCTAssertGreaterThan(frame(vc.hotkeyEnableCheck, in: root).minX, 40, "a label is left of the box")
+        XCTAssertTrue(sameLine(vc.fadeOthersCheck, vc.fadeOthersScopePopup, in: root))
+        XCTAssertTrue(sameLine(vc.fadeOthersCheck, vc.fadeOthersTimeField, in: root))
+        XCTAssertTrue(sameLine(vc.duckDbField, vc.duckTimeField, in: root))
+        XCTAssertTrue(sameLine(vc.secondTriggerPopup, vc.secondTriggerQuestion, in: root))
+        let menu = frame(vc.secondTriggerPopup, in: root)
+        let release = frame(vc.onReleaseCheck, in: root)
+        XCTAssertLessThanOrEqual(release.maxY, menu.minY + 1, "the on-release box is under the menu")
+        XCTAssertLessThan(menu.minY - release.maxY, 12, "right under it")
+        let divider = try XCTUnwrap(columns.arrangedSubviews.first { $0 is SeparatorLine })
+        XCTAssertLessThan(frame(vc.wallClockDaysPopup, in: root).maxX, frame(divider, in: root).minX)
+        XCTAssertGreaterThan(frame(vc.fadeOthersCheck, in: root).minX, frame(divider, in: root).maxX)
+    }
+
+    /// At the least window's width the lines wrap, and every control is drawn inside the tab, none over
+    /// another.
+    func testNarrowTriggersTabWrapsAndKeepsEveryControlInsideWithoutOverlap() throws {
+        let root = triggersLaidOut(width: 780, height: 240)
+        let columns = try XCTUnwrap(root as? TriggersColumns)
+        XCTAssertTrue(columns.compact, "tab \(vc.tabView.frame.width) wide \(columns.fittingSize.width)")
+        XCTAssertFalse(sameLine(vc.fadeOthersCheck, vc.fadeOthersTimeField, in: root), "the time wraps under")
+        XCTAssertFalse(sameLine(vc.wallClockField, vc.wallClockDaysPopup, in: root), "the days wrap under")
+        XCTAssertFalse(sameLine(vc.secondTriggerPopup, vc.secondTriggerQuestion, in: root))
+        let all: [NSView] = [
+            vc.hotkeyEnableCheck, vc.hotkeyField, vc.hotkeyClear, vc.wallClockCheck, vc.wallClockField,
+            vc.wallClockFormatPopup, vc.wallClockDaysPopup, vc.fadeOthersCheck, vc.fadeOthersScopePopup,
+            vc.fadeOthersTimeField, vc.duckCheck, vc.duckDbField, vc.duckTimeField, vc.secondTriggerQuestion,
+            vc.secondTriggerPopup, vc.onReleaseCheck,
+        ]
+        let frames = all.map { frame($0, in: root) }
+        for (v, f) in zip(all, frames) {
+            XCTAssertGreaterThanOrEqual(f.minX, 0, "\(v) inside on the left")
+            XCTAssertLessThanOrEqual(f.maxX, root.bounds.width, "\(v) inside on the right")
+        }
+        for i in frames.indices {
+            for j in frames.indices where j > i {
+                let both = frames[i].intersection(frames[j])
+                XCTAssertTrue(both.isNull || both.isEmpty, "\(all[i]) overlaps \(all[j])")
+            }
+        }
+        XCTAssertFalse(try XCTUnwrap(triggersLaidOut(width: 1200) as? TriggersColumns).compact, "wide again")
+    }
+
+    /// #784: the keyboard goes from the fade-out time field on through the duck fields and round to the
+    /// time-of-day field.
+    func testTabReachesTheTimeOfDayFieldFromTheFadeOutTimeField() throws {
+        _ = triggersLaidOut(width: 1200)
+        for c in [vc.fadeOthersTimeField, vc.duckDbField, vc.duckTimeField] { c.isEnabled = true }
+        XCTAssertTrue(window.makeFirstResponder(vc.fadeOthersTimeField))
+        let fields: [NSView] = [vc.wallClockField, vc.fadeOthersTimeField, vc.duckDbField, vc.duckTimeField]
+        var reached: [NSView] = []
+        var current: NSView = vc.fadeOthersTimeField
+        for _ in 0..<20 {
+            guard let next = current.nextValidKeyView else { break }
+            if fields.contains(next) { reached.append(next) }
+            if reached.count == 3 { break }
+            current = next
+        }
+        XCTAssertEqual(
+            reached.map { ObjectIdentifier($0) },
+            [vc.duckDbField, vc.duckTimeField, vc.wallClockField].map { ObjectIdentifier($0) },
+            "after the fade time: the duck level, the duck time, then round to the time of day")
     }
 }
 

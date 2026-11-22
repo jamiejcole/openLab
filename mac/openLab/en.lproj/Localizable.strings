@@ -344,7 +344,7 @@
 "inspector.groupMode.start_random.about" = "Starts one child cue picked at random, then puts the playhead on the cue after the group.";
 "inspector.groupLoop" = "Loop playlist";
 "inspector.groupShuffle" = "Shuffle playlist";
-"inspector.wallClock" = "Time of day";
+"inspector.wallClock" = "Time of day:";
 "inspector.wallClock.enabled" = "Time-of-day trigger on";
 "inspector.wallClock.time" = "Time of day (hours, minutes, seconds)";
 "inspector.wallClock.format" = "Clock";
@@ -371,8 +371,8 @@
 "inspector.wallClock.short.friday" = "Fri";
 "inspector.wallClock.short.saturday" = "Sat";
 "inspector.invalid.wallClock" = "Enter a time of day as hours:minutes:seconds (10:30 is ten minutes thirty past midnight).";
-"inspector.hotkey" = "Hotkey";
-"inspector.hotkey.click" = "Click, then press a key";
+"inspector.hotkey" = "Hotkey:";
+"inspector.hotkey.click" = "Click to set";
 "inspector.hotkey.recording" = "Press a key…";
 "inspector.hotkey.clear" = "Clear";
 "inspector.hotkey.space" = "Space";
