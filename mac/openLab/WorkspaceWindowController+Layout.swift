@@ -175,3 +175,40 @@ extension WorkspaceWindowController {
         }
     }
 #endif
+
+/// The inspector's divider dragged well below the inspector's least height closes the inspector, as
+/// QLab 5's does; the footer's inspector button (or View menu) brings it back at its last height.
+extension WorkspaceWindowController: NSSplitViewDelegate {
+    /// Whether a drag of the inspector's divider to `position` closes it: the inspector would be less
+    /// than half its least height. Above that the least height holds it, so a drag that just overshoots
+    /// the least height does not close it.
+    static func dragClosesInspector(position: CGFloat, splitHeight: CGFloat, divider: CGFloat) -> Bool {
+        splitHeight - divider - position < minInspectorHeight / 2
+    }
+
+    func splitView(
+        _ splitView: NSSplitView, constrainSplitPosition proposedPosition: CGFloat, ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        // A divider placed by code (a restored layout, a window resize) never closes the inspector.
+        guard splitView === verticalSplit, NSApp.currentEvent?.type == .leftMouseDragged else {
+            return proposedPosition
+        }
+        // Only where the drag ends counts: a drag past the line and back up again leaves it open.
+        NSObject.cancelPreviousPerformRequests(
+            withTarget: self, selector: #selector(closeInspectorAfterDrag), object: nil)
+        if dividerIndex == 0, isVisible(.inspector), !isShowMode,
+            Self.dragClosesInspector(
+                position: proposedPosition, splitHeight: splitView.bounds.height, divider: splitView.dividerThickness)
+        {
+            // Closed once the drag's tracking ends: hiding a pane under a divider still being tracked
+            // leaves the split mid-drag with one pane.
+            perform(#selector(closeInspectorAfterDrag), with: nil, afterDelay: 0, inModes: [.default])
+        }
+        return proposedPosition
+    }
+
+    @objc private func closeInspectorAfterDrag() {
+        guard isVisible(.inspector), !isShowMode else { return }
+        setVisible(.inspector, false)
+    }
+}

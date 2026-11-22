@@ -21,70 +21,66 @@ struct WaveformScale: Equatable {
 }
 
 /// What the waveform draws (AUD-14), worked out once per set of peaks and size so a redraw (the
-/// playhead moving, a handle dragged) only strokes what is here. Each file channel has a lane of
-/// its own, stacked top to bottom as QLab does; each pixel column is a vertical line from the
-/// highest to the lowest sample under it. Pure: tests check it without drawing.
+/// playhead moving, a handle dragged) only strokes what is here. All the file's channels are
+/// drawn as one waveform, as QLab does: each pixel column is a vertical line from the highest to
+/// the lowest sample of any channel under it. Pure: tests check it without drawing.
 struct WaveformDrawing: Equatable {
     struct Column: Equatable {
         let x: CGFloat
         let top: CGFloat
         let bottom: CGFloat
     }
-    struct Lane: Equatable {
-        let rect: CGRect
-        let columns: [Column]
+    let rect: CGRect
+    let columns: [Column]
+
+    static let empty = WaveformDrawing(rect: .zero, columns: [])
+
+    init(rect: CGRect, columns: [Column]) {
+        self.rect = rect
+        self.columns = columns
     }
-    let lanes: [Lane]
-
-    static let empty = WaveformDrawing(lanes: [])
-
-    init(lanes: [Lane]) { self.lanes = lanes }
 
     /// `peaks` drawn in `rect` (flipped: y grows down) at `scale`; columns outside the peaks' range
     /// are left out.
     init(peaks: WaveformPeaks, scale: WaveformScale, in rect: CGRect) {
-        let count = peaks.channels.count
-        let columns = Int(rect.width.rounded(.down))
-        guard count > 0, columns > 0, peaks.end > peaks.start else {
-            self.lanes = []
+        self.rect = rect
+        let width = Int(rect.width.rounded(.down))
+        let n = peaks.channels.map { min($0.min.count, $0.max.count) }.min() ?? 0
+        guard width > 0, n > 0, peaks.end > peaks.start else {
+            self.columns = []
             return
         }
-        let laneHeight = rect.height / CGFloat(count)
-        lanes = peaks.channels.enumerated().map { c, channel in
-            let lane = CGRect(
-                x: rect.minX, y: rect.minY + CGFloat(c) * laneHeight, width: rect.width, height: laneHeight)
-            let n = min(channel.min.count, channel.max.count)
-            guard n > 0 else { return Lane(rect: lane, columns: []) }
-            let perBucket = (peaks.end - peaks.start) / Double(n)
-            let half = (lane.height / 2) * 0.95
-            var out: [Column] = []
-            out.reserveCapacity(columns)
-            for px in 0..<columns {
-                let t0 = scale.seconds(CGFloat(px))
-                let t1 = scale.seconds(CGFloat(px + 1))
-                guard t1 > peaks.start, t0 < peaks.end else { continue }
-                let first = max(0, Int(((t0 - peaks.start) / perBucket).rounded(.down)))
-                let last = min(n, max(first + 1, Int(((t1 - peaks.start) / perBucket).rounded(.up))))
-                guard first < last else { continue }
-                var lo = Int16.max
-                var hi = Int16.min
+        let perBucket = (peaks.end - peaks.start) / Double(n)
+        let half = (rect.height / 2) * 0.95
+        var out: [Column] = []
+        out.reserveCapacity(width)
+        for px in 0..<width {
+            let t0 = scale.seconds(CGFloat(px))
+            let t1 = scale.seconds(CGFloat(px + 1))
+            guard t1 > peaks.start, t0 < peaks.end else { continue }
+            let first = max(0, Int(((t0 - peaks.start) / perBucket).rounded(.down)))
+            let last = min(n, max(first + 1, Int(((t1 - peaks.start) / perBucket).rounded(.up))))
+            guard first < last else { continue }
+            var lo = Int16.max
+            var hi = Int16.min
+            for channel in peaks.channels {
                 for i in first..<last {
                     lo = min(lo, channel.min[i])
                     hi = max(hi, channel.max[i])
                 }
-                let top = lane.midY - CGFloat(Float(hi) / WaveformPeaks.fullScale) * half
-                let bottom = lane.midY - CGFloat(Float(lo) / WaveformPeaks.fullScale) * half
-                // Silence still shows as a hairline, as a centre line does.
-                out.append(Column(x: rect.minX + CGFloat(px) + 0.5, top: top, bottom: max(bottom, top + 1)))
             }
-            return Lane(rect: lane, columns: out)
+            let top = rect.midY - CGFloat(Float(hi) / WaveformPeaks.fullScale) * half
+            let bottom = rect.midY - CGFloat(Float(lo) / WaveformPeaks.fullScale) * half
+            // Silence still shows as a hairline, as a centre line does.
+            out.append(Column(x: rect.minX + CGFloat(px) + 0.5, top: top, bottom: max(bottom, top + 1)))
         }
+        self.columns = out
     }
 }
 
 /// The waveform of an Audio cue's file with its trims, slices and built-in fades (AUD-10, AUD-11,
 /// AUD-12, AUD-14): a time ruler on top with the start and end handles at its ends, the file's
-/// channels stacked below, the trimmed-off parts dimmed, slice markers with each slice's play count
+/// channels drawn as one waveform below, the trimmed-off parts dimmed, slice markers with each slice's play count
 /// along the bottom, the fade-in and fade-out envelope along the top, and the playhead while the
 /// cue plays. Dragging a handle moves that trim, marker or fade; a trim's new time is reported as
 /// it moves, and every drag is committed once when the mouse goes up. A slice marker dragged out
@@ -178,9 +174,9 @@ class WaveformView: NSView {
     /// The message's colour: light, to read on `waveBackground` in either appearance.
     static let messageColour = NSColor(calibratedWhite: 0.82, alpha: 1)
     /// The position line, and the selected section's wash and faint edges (all over the waves).
-    static let positionLine = NSColor.white.withAlphaComponent(0.8)
-    static let sectionWash = NSColor.white.withAlphaComponent(0.18)
-    static let sectionEdge = NSColor.white.withAlphaComponent(0.22)
+    static let positionLine = NSColor.systemYellow
+    static let sectionWash = NSColor.systemYellow.withAlphaComponent(0.22)
+    static let sectionEdge = NSColor.systemYellow.withAlphaComponent(0.35)
     /// A drag moved a handle: its new time (for the end, nil is the end of the file).
     var onTrimCommit: ((Handle, Double?) -> Void)?
     /// A drag moved the slice marker that was at `from` to `to`, or (nil) took it out of the view.
@@ -445,9 +441,14 @@ class WaveformView: NSView {
     }
 
     /// A double-click on a slice's play count asks to edit it.
-    func doubleClick(atX x: CGFloat, y: CGFloat) {
-        guard !isLocked, y >= waveRect.maxY - Self.countBand, let i = slice(at: scale.seconds(x)) else { return }
+    /// Whether it was on a count: a fast second click anywhere else is a click like the first.
+    @discardableResult
+    func doubleClick(atX x: CGFloat, y: CGFloat) -> Bool {
+        guard !isLocked, let i = slice(at: scale.seconds(x)), countRect(i).contains(NSPoint(x: x, y: y)) else {
+            return false
+        }
         onEditCount?(i)
+        return true
     }
 
     /// Where slice `index`'s play count is drawn: the middle of the visible part of the slice,
@@ -489,9 +490,12 @@ class WaveformView: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
-        if event.clickCount == 2 {
-            doubleClick(atX: p.x, y: p.y)
-        } else if !beginDrag(atX: p.x, y: p.y), !onCount(p) {
+        // A second click within the system's double-click time is a click when it is not on a count:
+        // clicking around the waves faster than twice a second must still move the cue each time.
+        if event.clickCount == 2, doubleClick(atX: p.x, y: p.y) {
+            return
+        }
+        if !beginDrag(atX: p.x, y: p.y), !onCount(p) {
             beginPress(atX: p.x)
         }
     }
@@ -590,20 +594,13 @@ class WaveformView: NSView {
         drawRuler(dirtyRect)
         let wave = waveRect
         NSColor.systemTeal.setStroke()
-        for lane in currentDrawing().lanes {
-            let path = NSBezierPath()
-            path.lineWidth = 1
-            for c in lane.columns where c.x >= dirtyRect.minX - 1 && c.x <= dirtyRect.maxX + 1 {
-                path.move(to: NSPoint(x: c.x, y: c.top))
-                path.line(to: NSPoint(x: c.x, y: c.bottom))
-            }
-            path.stroke()
+        let path = NSBezierPath()
+        path.lineWidth = 1
+        for c in currentDrawing().columns where c.x >= dirtyRect.minX - 1 && c.x <= dirtyRect.maxX + 1 {
+            path.move(to: NSPoint(x: c.x, y: c.top))
+            path.line(to: NSPoint(x: c.x, y: c.bottom))
         }
-        // Channel separators.
-        NSColor.white.withAlphaComponent(0.15).setFill()
-        for lane in currentDrawing().lanes.dropFirst() {
-            NSRect(x: 0, y: lane.rect.minY, width: wave.width, height: 1).fill()
-        }
+        path.stroke()
         if duration != nil {
             // What the trims leave out is dimmed.
             NSColor.black.withAlphaComponent(0.55).setFill()

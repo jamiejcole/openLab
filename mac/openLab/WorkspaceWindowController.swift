@@ -888,6 +888,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         sidebarWidthConstraint = sidebarWidth
 
         verticalSplit.isVertical = false
+        verticalSplit.delegate = self
         verticalSplit.dividerStyle = .thin
         verticalSplit.addArrangedSubview(horizontalSplit)
         verticalSplit.addArrangedSubview(inspector.view)

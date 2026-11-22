@@ -97,6 +97,9 @@ pub(crate) fn scale_round(x: u64, num: u32, den: u32) -> u64 {
 /// the mixer's [`MAX_SAMPLE_RATE`].
 pub(crate) const MIN_MEDIA_RATE: u32 = 8_000;
 
+/// Frames a file may fall short of its header without being reported: one MP3 packet (an Info
+/// header that counts its own frame) or one AAC packet, about 46 ms at 44.1 kHz.
+const HEADER_SLACK: u64 = 2048;
 /// Most warnings kept per file; damage beyond that still plays as silence.
 const MAX_WARNINGS: usize = 256;
 /// Longest AAC encoder delay believed, in frames (0.74 s at 44.1 kHz; real encoders use 1024-2624).
@@ -168,6 +171,21 @@ pub struct MediaWarning {
     pub kind: WarningKind,
     pub at: u64,
     pub frames: u64,
+}
+
+impl MediaWarning {
+    /// Whether the operator hears it: audio that plays as silence, a file that stops before its
+    /// readable end, or one more than a packet shorter than its header says (a lossy file can lose
+    /// a block mid-file that way, an audible splice). Everything else (a header that miscounts by
+    /// a packet, frames dropped at a repeat, slow seeks, priming kept) plays as the file is and is
+    /// not reported (owner decision 2026-11-22: only files that are really damaged are reported).
+    pub fn is_audible(&self) -> bool {
+        match self.kind {
+            WarningKind::Missing | WarningKind::Unreadable => true,
+            WarningKind::Truncated => self.frames > HEADER_SLACK,
+            WarningKind::Repeated | WarningKind::SlowSeeks | WarningKind::PrimingIgnored => false,
+        }
+    }
 }
 
 /// A playable file's probe: its format and exact length, any damage found on the way, and how

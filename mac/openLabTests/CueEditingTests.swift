@@ -642,6 +642,31 @@ final class CueEditingTests: XCTestCase {
         XCTAssertTrue(CueToolbarView.kinds.allSatisfy { $0.allSatisfy { $0 != nil } })
     }
 
+    /// A real press and release on a button adds its cue: the momentary control reads no selected
+    /// segment once its own tracking ends, so the click has to carry the segment.
+    func testAClickOnAToolbarButtonAddsItsKind() throws {
+        let toolbar = CueToolbarView(frame: NSRect(x: 0, y: 0, width: 900, height: 40))
+        let window = NSWindow(
+            contentRect: toolbar.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = toolbar
+        toolbar.layoutSubtreeIfNeeded()
+        var asked: [NewCueKind] = []
+        toolbar.onAdd = { asked.append($0) }
+        let audio = toolbar.segmentedControls[1]
+        let at = audio.convert(NSPoint(x: audio.bounds.midX, y: audio.bounds.midY), to: nil)
+        func mouse(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(
+                with: type, location: at, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        let down = try XCTUnwrap(mouse(.leftMouseDown))
+        window.postEvent(try XCTUnwrap(mouse(.leftMouseUp)), atStart: false)
+        audio.mouseDown(with: down)
+        XCTAssertEqual(asked, [.audio])
+    }
+
     func testCuesMenuKeysFollowQLab() {
         let cues = MainMenu.make().cues
         let keys = Dictionary(

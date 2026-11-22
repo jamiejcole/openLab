@@ -598,6 +598,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         countField.isEnabled = !off && !sliced && playCount != .endless
         deleteSlicesButton.isEnabled = !off && sliced
         addSliceButton.isEnabled = !off && (waveform.insertion != nil || waveform.selection != nil)
+        // A selected section puts a marker on each edge: the button says so.
+        addSliceButton.title = loc(waveform.selection != nil ? "timeLoops.addSlices" : "timeLoops.addSlice")
         fadeCheck.isEnabled = !off
         fadeCurvePopup.isEnabled = !off && hasFades
         holdCheck.isEnabled = !off
