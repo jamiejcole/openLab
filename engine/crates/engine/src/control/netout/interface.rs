@@ -81,7 +81,9 @@ fn bind_device(_: &Socket, _: &str, _: bool) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
     use std::io::{Read, Write};
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
     use std::net::{Ipv4Addr, TcpListener};
 
     /// The loopback interface's name on this system.

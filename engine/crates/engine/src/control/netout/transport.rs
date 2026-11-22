@@ -69,8 +69,11 @@ pub(super) fn monotonic_ms() -> u64 {
 #[derive(Default)]
 pub struct SystemTransport {
     /// By address family (true: IPv4) and interface (none: the system's choice).
-    udp: Mutex<HashMap<(bool, Option<String>), Arc<UdpSocket>>>,
+    udp: Mutex<UdpSockets>,
 }
+
+/// Keyed by address family (true: IPv4) and interface (none: the system's choice).
+type UdpSockets = HashMap<(bool, Option<String>), Arc<UdpSocket>>;
 
 /// Sockets kept at once. A show names a handful of interfaces; past this the table starts
 /// again (a sender holding a dropped socket keeps using it).

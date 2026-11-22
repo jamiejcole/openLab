@@ -284,7 +284,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 view.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -16).isActive = true
             }
             // The key map's two columns and the patch and stage tables share the pane's width, so a long name wraps or is cut in its own.
-            if id == "keys" || id == "audio" || id.hasPrefix("video") {
+            if id == "keys" || id == "audio" || id == "network" || id.hasPrefix("video") {
                 view.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -16).isActive = true
             }
             NSLayoutConstraint.activate([
