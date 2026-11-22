@@ -2,14 +2,13 @@
 
 import AppKit
 
-/// A ring of eight dots round a ring of four that slowly turns while a brightness sweeps round it:
+/// A ring of eight dots round a ring of four, with a brightness sweeping round them:
 /// the cue list's mark for a cue whose level is changing (fading), so a fade reads as something
 /// happening, not as a still glyph. Drawn from one shared clock (every fading row moves in step); with
 /// Reduce Motion on, it stands still and evenly lit.
 final class PulsingDots: NSView {
-    /// One turn of the brightness sweep, and one turn of the dots themselves (slower).
+    /// One turn of the brightness sweep.
     static let period: TimeInterval = 1.2
-    static let spinPeriod: TimeInterval = 4.8
     static let dimAlpha: CGFloat = 0.25
     /// Dots per ring, outer then inner, and each ring's radius as a share of half the view.
     static let rings: [(count: Int, radius: CGFloat, dot: CGFloat)] = [(8, 0.78, 0.17), (4, 0.36, 0.16)]
@@ -21,7 +20,7 @@ final class PulsingDots: NSView {
     /// The shared clock's time, in seconds; tests set it.
     nonisolated(unsafe) static var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
 
-    /// The alpha of a dot at `angle` (radians, before the turn) at `time`: brightest where the sweep
+    /// The alpha of a dot at `angle` (radians) at `time`: brightest where the sweep
     /// is, fading behind it, never fully out.
     static func alpha(angle: Double, at time: TimeInterval) -> CGFloat {
         let head = 2 * Double.pi * (time / period).truncatingRemainder(dividingBy: 1)
@@ -29,11 +28,6 @@ final class PulsingDots: NSView {
         var behind = (head - angle) / (2 * Double.pi)
         behind -= behind.rounded(.down)
         return dimAlpha + (1 - dimAlpha) * CGFloat(pow(1 - behind, 2))
-    }
-
-    /// How far the dots have turned at `time`, in radians.
-    static func turn(at time: TimeInterval) -> Double {
-        2 * Double.pi * (time / spinPeriod).truncatingRemainder(dividingBy: 1)
     }
 
     static var moves: Bool { !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -54,11 +48,10 @@ final class PulsingDots: NSView {
         let centre = NSPoint(x: bounds.midX, y: bounds.midY)
         let time = Self.now()
         let moving = Self.moves
-        let turn = moving ? Self.turn(at: time) : 0
         for ring in Self.rings {
             for k in 0..<ring.count {
                 let angle = 2 * Double.pi * Double(k) / Double(ring.count)
-                let a = angle + turn
+                let a = angle
                 let alpha = moving ? Self.alpha(angle: a, at: time) : 1
                 colour.withAlphaComponent(alpha).setFill()
                 let r = half * ring.radius

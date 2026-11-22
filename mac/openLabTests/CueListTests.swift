@@ -1063,16 +1063,14 @@ final class CueListTests: XCTestCase {
     }
 
     /// The brightness sweeps round the cluster: a dot is brightest when the sweep reaches it and
-    /// fades behind it, never fully out; the cluster itself turns, more slowly.
-    func testTheFadingDotsBrightnessSweepsRoundAsTheyTurn() {
+    /// fades behind it, never fully out.
+    func testTheFadingDotsBrightnessSweepsRound() {
         let p = PulsingDots.period
         XCTAssertEqual(PulsingDots.alpha(angle: 0, at: 0), 1, accuracy: 0.001, "the sweep starts at angle 0")
         XCTAssertEqual(PulsingDots.alpha(angle: .pi / 2, at: p / 4), 1, accuracy: 0.001, "a quarter period on")
         XCTAssertLessThan(PulsingDots.alpha(angle: .pi / 2, at: 0), 0.5, "a dot the sweep has not reached is dim")
         let low = (0..<120).map { PulsingDots.alpha(angle: 0, at: Double($0) / 100) }.min() ?? 0
         XCTAssertGreaterThanOrEqual(low, PulsingDots.dimAlpha - 0.001, "never fully out")
-        XCTAssertEqual(PulsingDots.turn(at: PulsingDots.spinPeriod / 4), .pi / 2, accuracy: 0.001)
-        XCTAssertGreaterThan(PulsingDots.spinPeriod, p, "the dots turn more slowly than the sweep")
     }
 
     /// A running cue's Duration cell shows its whole length as a faint bar under the green fill: the right end of
