@@ -53,9 +53,8 @@ final class WarningsPageController: NSWindowController, NSTableViewDataSource, N
             defer: false)
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = true
-        // No view in it needs the panel to be key (the list included: NonKeyTableView), so a click
-        // anywhere leaves the workspace window key and GO, the transport keys and cue hotkeys
-        // keep reaching it.
+        // This panel is never shown (its content is taken into the status window), so nothing in
+        // it needs to become key (the list included: NonKeyTableView).
         panel.becomesKeyOnlyIfNeeded = true
         panel.title = loc("status.page.warnings")
         panel.identifier = NSUserInterfaceItemIdentifier(AX.warningsPage)

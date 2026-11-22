@@ -53,12 +53,13 @@ final class EngineAlarmPanel: NSObject, EngineAlarmPresenting {
 
     func setDetail(_ text: String) {
         detail = text
-        render()
+        if isVisible { render() }
     }
 
     func setRestoreAction(_ action: (() -> Void)?) {
         restoreAction = action
-        render()
+        // Clearing the button never brings back an alert the operator dismissed.
+        if action != nil || isVisible { render() }
     }
 
     func dismiss() {

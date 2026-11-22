@@ -1189,6 +1189,7 @@ final class EngineCrashFlowTests: XCTestCase {
 
         try await launch()
         _ = await pump { !self.supervisor.recoveryPending }
+        XCTAssertNotNil(alarm.offerTask, "the unclean end was seen")
         await alarm.offerTask?.value
         XCTAssertTrue(presenter.shown.isEmpty, "\(presenter.shown)")
         XCTAssertFalse(presenter.isVisible)
@@ -3045,6 +3046,29 @@ final class EngineAlarmPanelTests: XCTestCase {
         XCTAssertFalse(pressButton(loc("engine.alarm.restore"), in: try XCTUnwrap(alarm.panel)), "the offer is spent")
         XCTAssertTrue(pressButton(loc("engine.alarm.dismiss"), in: try XCTUnwrap(alarm.panel)))
         XCTAssertFalse(alarm.isVisible)
+    }
+
+    /// Flow: Dismiss, then the engine's later news (a detail line, a spent offer) never brings the
+    /// alert back unasked; a new offer does.
+    func testADismissedAlertStaysHiddenWhenItsDetailOrOfferChanges() {
+        let alarm = EngineAlarmPanel()
+        defer { alarm.dismiss() }
+        alarm.show(title: "The engine crashed", message: "Cues stopped.")
+        alarm.setRestoreAction {}
+        XCTAssertTrue(pressButton(loc("engine.alarm.dismiss"), in: alarm.panel ?? NSWindow()))
+        XCTAssertFalse(alarm.isVisible)
+        alarm.setDetail("1 autosave")
+        alarm.setRestoreAction(nil)
+        XCTAssertFalse(alarm.isVisible, "setDetail and clearing the offer leave it hidden")
+
+        alarm.show(title: "Recover", message: "Work was autosaved.", kind: .recoveryOffer)
+        alarm.setRestoreAction {}
+        XCTAssertTrue(pressButton(loc("engine.alarm.notNow"), in: alarm.panel ?? NSWindow()))
+        alarm.setDetail("2 autosaves")
+        alarm.setRestoreAction(nil)
+        XCTAssertFalse(alarm.isVisible, "Not Now stays hidden")
+        alarm.setRestoreAction {}
+        XCTAssertTrue(alarm.isVisible, "a new offer shows it")
     }
 
     /// Flow: autosaved work after an unclean end → an ordinary alert with Restore Autosaves / Not Now.

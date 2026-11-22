@@ -741,10 +741,12 @@ final class CueHotkeyFiringTests: XCTestCase {
         await settle()
         let none = await hotkeys()
         XCTAssertEqual(none, 0)
-        // The Log window is a monitoring window: hotkeys fire with it key.
-        let log = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
-        log.isReleasedWhenClosed = false
-        app.keyWindow = { log }
+        // The workspace status window is its workspace's window: hotkeys fire, and the front
+        // workspace (GO, Save) is the one it belongs to.
+        let status = try XCTUnwrap(app.windows[demoDoc]).statusWindow
+        let statusWindow = try XCTUnwrap(status.window)
+        app.keyWindow = { statusWindow }
+        XCTAssertTrue(app.frontController?.existingStatusWindow === status)
         XCTAssertNil(app.handleKeyDown(try event("x")))
         await assertEventually { await self.hotkeys() == 1 }
         app.handleKeyUp(try event("x", type: .keyUp))

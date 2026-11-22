@@ -1127,7 +1127,6 @@
 "timeLoops.invalid.trimSlices" = "The trims must stay at least 0.05 s outside the slice markers.";
 
 /* Engine lifecycle (M5.2, NFR-01, NFR-05) */
-"engine.alarm.window" = "Engine";
 "engine.alarm.crashed" = "The engine crashed";
 "engine.alarm.stopped" = "The engine stopped";
 "engine.alarm.restarting" = "Cues that were playing have stopped. openLab is starting a new engine and reopening your workspaces.";

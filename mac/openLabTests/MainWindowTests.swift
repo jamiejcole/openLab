@@ -324,23 +324,23 @@ final class MainWindowTests: XCTestCase {
                 Range(m.range(at: 1), in: text).map { String(text[$0]) }
             }.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil })
         XCTAssertEqual(symbols, Set(Icon.allCases.compactMap(\.symbol)), "only the rows still in use name symbols")
-        XCTAssertEqual(symbols, ["pause.fill", "play.fill", "exclamationmark.triangle.fill", "trash"])
+        XCTAssertEqual(symbols, ["pause.fill", "play.fill", "trash"])
     }
 
     func testAMissingSymbolOrDrawingShowsTheLocalisedNameAndLogsOnce() {
         defer { IconLookup.shared.setLookup(nil) }
         IconLookup.shared.setLookup { _ in false }
-        let text = Icon.engineAlarm.image("Alarm")
+        let text = Icon.targetFileMissing.image("Alarm")
         XCTAssertEqual(text.accessibilityDescription, "Alarm")
         XCTAssertTrue(text.isTemplate)
-        XCTAssertGreaterThan(text.size.width, Icon.engineAlarm.image("A", compact: true).size.width)
-        _ = Icon.engineAlarm.image("Alarm")
-        XCTAssertEqual(IconLookup.shared.reportedNames, ["exclamationmark.triangle.fill"])
+        XCTAssertGreaterThan(text.size.width, Icon.targetFileMissing.image("A", compact: true).size.width)
+        _ = Icon.targetFileMissing.image("Alarm")
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["trash"])
         _ = Icon.settings.image("Settings")
-        XCTAssertEqual(IconLookup.shared.reportedNames, ["exclamationmark.triangle.fill", "settings"])
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["trash", "settings"])
         XCTAssertEqual(Icon.settings.image("Settings").accessibilityDescription, "Settings")
         XCTAssertFalse(Icon.settings.resolvesToSymbol)
-        XCTAssertFalse(Icon.engineAlarm.resolvesToSymbol)
+        XCTAssertFalse(Icon.targetFileMissing.resolvesToSymbol)
     }
 
     /// Flow (#698): the footer, the inspector's Target field buttons and the transport strip show the approved
