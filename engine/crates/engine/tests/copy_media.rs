@@ -256,6 +256,17 @@ fn rig_with(
     saved: bool,
     tweak: impl FnOnce(&mut ControlConfig),
 ) -> Rig {
+    rig_from(files, saved, false, tweak)
+}
+
+/// [`rig_with`], the cues naming their files relative to the show folder (`../lib/...`) when
+/// `relative`.
+fn rig_from(
+    files: &[(u128, &str, usize, f32)],
+    saved: bool,
+    relative: bool,
+    tweak: impl FnOnce(&mut ControlConfig),
+) -> Rig {
     let env = env();
     let lib = env.root.path().join("lib");
     fs::create_dir_all(&lib).unwrap();
@@ -265,7 +276,11 @@ fn rig_with(
             let path = lib.join(rel);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, wav_bytes(*frames, *value)).unwrap();
-            audio(*n, &path, 0)
+            if relative {
+                audio(*n, &Path::new("../lib").join(rel), 0)
+            } else {
+                audio(*n, &path, 0)
+            }
         })
         .collect();
     let ws = workspace(cues);
@@ -1021,12 +1036,16 @@ fn show_mode_while_a_copy_is_retargeting_retargets_the_rest_at_once() {
 
 /// `count` cues `f{n}.wav` whose files differ by length, copied with `tweak`'s pacing.
 fn many(count: u128, tweak: impl FnOnce(&mut ControlConfig)) -> Rig {
+    many_from(count, false, tweak)
+}
+
+fn many_from(count: u128, relative: bool, tweak: impl FnOnce(&mut ControlConfig)) -> Rig {
     let names: Vec<String> = (1..=count).map(|n| format!("f{n}.wav")).collect();
     let files: Vec<(u128, &str, usize, f32)> = (1..=count)
         .zip(&names)
         .map(|(n, name)| (n, name.as_str(), 100 + n as usize, 0.1))
         .collect();
-    rig_with(&files, true, tweak)
+    rig_from(&files, true, relative, tweak)
 }
 
 fn original_bytes(n: u128) -> Vec<u8> {
@@ -1094,8 +1113,9 @@ fn a_save_as_elsewhere_while_a_copy_is_retargeting_leaves_every_cue_on_its_own_c
 }
 
 /// Review #652 H1 (2nd): a Save As written on the writer thread while the copy answers moves the
-/// show folder only when it lands; parts applied after that spell their files against the folder
-/// the doc has then, so no cue ends on the old folder's spelling resolved against the new one.
+/// show folder only when it lands. The parts still waiting are applied before the move, so every
+/// cue ends on its own copy (not the other show's same-named file, nor left on its original
+/// because the move re-spelled a relative reference), and the copy stays one undo step.
 #[test]
 fn a_save_as_landing_while_a_copy_retargets_leaves_every_cue_on_its_own_copy() {
     use openlab_engine::control::{Inbox, SaveHook, reply_channel};
@@ -1104,7 +1124,7 @@ fn a_save_as_landing_while_a_copy_retargets_leaves_every_cue_on_its_own_copy() {
     let copy_gate = Gate::default();
     let save_gate = Gate::default();
     let armed = Arc::new(AtomicBool::new(false));
-    let mut r = many(60, |c| {
+    let mut r = many_from(60, true, |c| {
         c.copy.apply_per_wake = 1;
         let held = copy_gate.clone();
         c.copy.hooks.before_file = Some(Arc::new(move |_| held.wait()));
@@ -1165,7 +1185,18 @@ fn a_save_as_landing_while_a_copy_retargets_leaves_every_cue_on_its_own_copy() {
             original_bytes(n),
             "cue {n} resolves to {resolved}"
         );
+        assert!(
+            same_file(
+                Path::new(&resolved),
+                &r.audio_dir().join(format!("f{n}.wav"))
+            ),
+            "cue {n} is not on its copy: {resolved}"
+        );
     }
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// Review #652 M1: the planner's part size is the config's; at one file a wake every cue still

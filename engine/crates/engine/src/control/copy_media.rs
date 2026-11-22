@@ -23,7 +23,7 @@ use openlab_core::{
 };
 
 use super::inbox::reply;
-use super::{Control, DocCx, DocId, Inbox, ReplyTx, fail, ok};
+use super::{Control, DocCx, DocId, Engine, Inbox, ReplyTx, fail, ok};
 use crate::persist::{
     Copied, CopyError, CopyFailure, CopyHooks, CopyPacing, CopyProgress, CopyWork, FolderIndexes,
     copy_into, media_path,
@@ -595,6 +595,32 @@ impl Control {
     /// one whole undo step before a user's undo, redo, edit or Show Mode acts on the doc. Only
     /// those user-driven wakes apply more than a part: a copy nobody interrupts still trickles.
     pub(super) fn flush_retargets(&mut self, doc: DocId) {
+        if let Some(mut cx) = self.cx_of(doc) {
+            cx.flush_retargets();
+        }
+    }
+
+    fn send_report(&mut self, doc: DocId, report: MediaCopyReport) {
+        self.eng.send_copy_report(doc, report);
+    }
+}
+
+impl Engine {
+    fn send_copy_report(&mut self, doc: DocId, report: MediaCopyReport) {
+        let message = ServerMessage::MediaCopied {
+            report: Box::new(report),
+        };
+        if !self.out.send_state(Some(doc), message.clone()) {
+            self.copies.unsent.push((doc, message));
+        }
+    }
+}
+
+impl DocCx<'_> {
+    /// [`Control::flush_retargets`] for this doc; also called when a save is about to move the
+    /// doc's folder, so no part waiting is applied after the move re-spells the cues it checks.
+    pub(super) fn flush_retargets(&mut self) {
+        let doc = self.doc.id;
         if self
             .eng
             .copies
@@ -607,26 +633,13 @@ impl Control {
         let Some(mut applying) = self.eng.copies.applying.take() else {
             return;
         };
-        if let Some(mut cx) = self.cx_of(doc) {
-            cx.plan_step(&mut applying, usize::MAX);
-            cx.apply_chunk(&mut applying, usize::MAX);
-            if let Some(report) = applying.finished() {
-                self.send_report(doc, report);
-            }
+        self.plan_step(&mut applying, usize::MAX);
+        self.apply_chunk(&mut applying, usize::MAX);
+        if let Some(report) = applying.finished() {
+            self.eng.send_copy_report(doc, report);
         }
     }
 
-    fn send_report(&mut self, doc: DocId, report: MediaCopyReport) {
-        let message = ServerMessage::MediaCopied {
-            report: Box::new(report),
-        };
-        if !self.eng.out.send_state(Some(doc), message.clone()) {
-            self.eng.copies.unsent.push((doc, message));
-        }
-    }
-}
-
-impl DocCx<'_> {
     /// After a client's command that changed the workspace: queues the copy of the files it
     /// set on cues, when the workspace copies on add, has a show folder and is not in Show Mode.
     pub(super) fn copy_on_add(&mut self, cues: Vec<CueId>) {
