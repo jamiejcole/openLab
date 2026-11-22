@@ -1,0 +1,21 @@
+{
+  "about": "Triggers tab layout, dark: the hotkey and time-of-day rows with labels at the left, fade out and stop and duck each on one line, the second-trigger menu and the on-release box under it; at 1200 wide, at the least window (800x500), at the least window with the sidebar open, and with two cues selected.",
+  "show": "basics-triggers/basics-triggers.openlab",
+  "appearance": "dark",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "27"},
+    {"tab": "triggers"},
+    {"click": "inspector-wall-clock"},
+    {"type": "inspector-wall-clock-time", "text": "19:25:00"},
+    {"shot": "dark-wide"},
+    {"resize": [800, 500]},
+    {"shot": "dark-least"},
+    {"click": "toggle-sidebar"},
+    {"shot": "dark-least-sidebar"},
+    {"click": "toggle-sidebar"},
+    {"select": ["24", "25"]},
+    {"tab": "triggers"},
+    {"shot": "dark-least-several"}
+  ]
+}

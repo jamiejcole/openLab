@@ -14,14 +14,14 @@ extension InspectorViewController {
     /// The days menu's item that ticks every day (a day item's represented object is its number).
     static let everyDayItem = "every"
 
-    func wallClockRow(row: (String, NSView) -> NSView) -> NSView {
+    func wallClockRow(label: NSView, indent: CGFloat) -> WrappingRow {
         wallClockCheck.setAX(AX.inspectorWallClock, label: loc("inspector.wallClock.enabled"))
         wallClockCheck.toolTip = loc("inspector.wallClock.enabled")
         wallClockCheck.target = self
         wallClockCheck.action = #selector(wallClockCheckChanged)
         wallClockField.setAccessibilityLabel(loc("inspector.wallClock.time"))
         wallClockField.placeholderString = "00:00:00"
-        wallClockField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        wallClockField.widthAnchor.constraint(equalToConstant: 72).isActive = true
         wallClockFormatPopup.setAX(AX.inspectorWallClockFormat, label: loc("inspector.wallClock.format"))
         for key in Self.wallClockFormats {
             wallClockFormatPopup.menu?.addItem(
@@ -53,18 +53,11 @@ extension InspectorViewController {
         // The days button names the days; a long list is cut short rather than widening the column.
         wallClockDaysPopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         (wallClockDaysPopup.cell as? NSPopUpButtonCell)?.lineBreakMode = .byTruncatingTail
-        let time = NSStackView(views: [wallClockCheck, wallClockField, wallClockFormatPopup])
-        time.spacing = 6
-        time.alignment = .firstBaseline
-        // Two lines, as the hotkey's row, so the tab fits the inspector at its least width: the days
-        // button sits under the time.
-        let days = NSStackView(views: [wallClockDaysPopup])
-        days.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
-        let lines = NSStackView(views: [time, days])
-        lines.orientation = .vertical
-        lines.alignment = .leading
-        lines.spacing = 4
-        return row(loc("inspector.wallClock"), lines)
+        // The label, box, time and clock on one line; the days button follows on that line where
+        // the tab is wide, else sits under the time.
+        return WrappingRow(
+            head: [label, wallClockCheck, wallClockField, wallClockFormatPopup], tail: [wallClockDaysPopup],
+            indent: indent)
     }
 
     /// One cue's trigger: its box, its time (faint while off, as a hotkey switched off), its clock

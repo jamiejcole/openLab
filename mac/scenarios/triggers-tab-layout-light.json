@@ -1,0 +1,21 @@
+{
+  "about": "Triggers tab layout, light: as triggers-tab-layout.json, in the light appearance.",
+  "show": "basics-triggers/basics-triggers.openlab",
+  "appearance": "light",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "27"},
+    {"tab": "triggers"},
+    {"click": "inspector-wall-clock"},
+    {"type": "inspector-wall-clock-time", "text": "19:25:00"},
+    {"shot": "light-wide"},
+    {"resize": [800, 500]},
+    {"shot": "light-least"},
+    {"click": "toggle-sidebar"},
+    {"shot": "light-least-sidebar"},
+    {"click": "toggle-sidebar"},
+    {"select": ["24", "25"]},
+    {"tab": "triggers"},
+    {"shot": "light-least-several"}
+  ]
+}

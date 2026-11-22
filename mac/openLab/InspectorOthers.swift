@@ -74,7 +74,7 @@ extension InspectorEdit {
 /// The Triggers tab's right side: what the cue does to other cues when its action starts (QLab 5,
 /// manual pp. 129-130), then what a second trigger does.
 extension InspectorViewController {
-    func othersColumn() -> NSStackView {
+    func othersColumn() -> (column: NSStackView, rows: [WrappingRow]) {
         fadeOthersCheck.setAX("inspector-fade-others")
         fadeOthersScopePopup.setAX("inspector-fade-others-scope")
         fadeOthersTimeField.setAX("inspector-fade-others-time", label: loc("inspector.fadeOthers.time"))
@@ -112,26 +112,28 @@ extension InspectorViewController {
             return s
         }
         let heading = small(loc("inspector.others.heading"))
-        // Two lines, so the tab fits an inspector narrowed by the sidebar at the least window size.
-        let fadeRow = line([fadeOthersCheck, fadeOthersScopePopup])
-        let fadeOver = line([small(loc("inspector.others.over")), fadeOthersTimeField])
-        fadeOver.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
+        // Fade, scope, "over" and the time on one line where the tab is wide, else the time under.
+        let fadeRow = WrappingRow(
+            head: [fadeOthersCheck, fadeOthersScopePopup],
+            tail: [small(loc("inspector.others.over")), fadeOthersTimeField],
+            indent: 20)
         let duckBy = line([
             small(loc("inspector.duckOthers.by")), duckDbField, small(loc("inspector.duckOthers.dbOver")),
             duckTimeField,
         ])
         duckBy.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
-        // What a second trigger does, with whether it comes on the key's release, under its own heading
-        // (the question is long, so it does not sit beside its menu in the narrow column).
-        let second = small(loc("inspector.secondTrigger"))
-        let column = NSStackView(views: [
-            heading, fadeRow, fadeOver, duckCheck, duckBy, second, secondTriggerPopup, onReleaseCheck,
-        ])
+        // The second trigger's question, then its menu: on one line where the tab is wide, else the
+        // menu under the question. Whether it comes on the release sits right under the menu.
+        secondTriggerQuestion.stringValue = loc("inspector.secondTrigger")
+        secondTriggerQuestion.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        secondTriggerQuestion.textColor = .secondaryLabelColor
+        let second = WrappingRow(head: [secondTriggerQuestion], tail: [secondTriggerPopup], indent: 0)
+        let column = NSStackView(views: [heading, fadeRow.view, duckCheck, duckBy, second.view, onReleaseCheck])
         column.setCustomSpacing(12, after: duckBy)
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 6
-        return column
+        return (column, [fadeRow, second])
     }
 
     /// The right side from one cue: the boxes, the choice, the values (kept while off and drawn off).
