@@ -181,7 +181,6 @@ enum AX {
     static let patchEditorDeviceOutputs = "patch-editor-device-outputs"
     static let patchEditorDone = "patch-editor-done"
     static let patchEditorCrosspointField = "patch-editor-crosspoint-field"
-    static let patchEditorOutputMute = "patch-editor-output-mute"
     static let patchEditorDeviceFader = "patch-editor-device-fader"
     static let patchEditorDeviceField = "patch-editor-device-field"
     static let patchEditorDeviceMute = "patch-editor-device-mute"

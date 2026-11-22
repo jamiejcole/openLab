@@ -2319,6 +2319,65 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertEqual(try field("name").stringValue, "Desk")
     }
 
+    /// A destination's interface is chosen from the Mac's network interfaces (Automatic first), stored
+    /// in the show, undone like any edit, and one the Mac lacks stays listed, marked, until changed.
+    func testADestinationsInterfaceIsChosenFromTheMacsInterfacesAndKeptInTheShow() async throws {
+        let settings = WorkspaceSettingsWindowController(store: rig.store) {
+            [NetworkInterface(name: "en0", address: "192.168.1.5"), NetworkInterface(name: "en5", address: "10.0.0.2")]
+        }
+        defer { settings.window?.close() }
+        await settings.present().value
+        settings.tabs.selectTabViewItem(withIdentifier: "network")
+        await assertEventually { settings.networkInterfacePopups.count == 1 }
+        func popup() throws -> NSPopUpButton { try XCTUnwrap(settings.networkInterfacePopups.first) }
+        func stored() -> String? { rig.store.model?.networkPatches.first?.raw["interface"]?.stringValue }
+        XCTAssertEqual(
+            try popup().itemTitles,
+            [loc("settings.network.interfaceAutomatic"), "en0 (192.168.1.5)", "en5 (10.0.0.2)"])
+        XCTAssertEqual(try popup().indexOfSelectedItem, 0, "a new destination is automatic")
+        XCTAssertNil(stored())
+        let chooser = try popup()
+        chooser.selectItem(at: 2)
+        _ = chooser.target?.perform(chooser.action, with: chooser)
+        await assertEventually { stored() == "en5" }
+        await assertEventually { (try? popup().titleOfSelectedItem) == "en5 (10.0.0.2)" }
+        // One undo step: back to automatic.
+        _ = await rig.store.undo()
+        await assertEventually { stored() == nil }
+        await assertEventually { (try? popup().indexOfSelectedItem) == 0 }
+        // A show moved from another Mac names an interface this one lacks: kept, marked, never silently dropped.
+        guard
+            case .success = await rig.store.send(
+                command: .setNetworkPatch(
+                    try XCTUnwrap(rig.store.model?.networkPatches.first?.id), "interface", .string("en9")))
+        else { return XCTFail("interface") }
+        await assertEventually {
+            (try? popup().titleOfSelectedItem) == String(format: loc("settings.network.interfaceAbsent"), "en9")
+        }
+        XCTAssertEqual(stored(), "en9")
+        // Choosing Automatic clears it.
+        let again = try popup()
+        again.selectItem(at: 0)
+        _ = again.target?.perform(again.action, with: again)
+        await assertEventually { stored() == nil }
+        // A name the engine refuses leaves the table as it was, with the reason.
+        guard
+            case .failure = await rig.store.send(
+                command: .setNetworkPatch(
+                    try XCTUnwrap(rig.store.model?.networkPatches.first?.id), "interface", .string("not valid")))
+        else { return XCTFail("the engine accepted a bad interface name") }
+        XCTAssertNil(stored())
+    }
+
+    /// The Mac's own interfaces, as the page reads them: each up interface with an IPv4 address once, by name.
+    func testTheMacsInterfacesAreListedByNameWithTheirAddress() {
+        let found = NetworkInterfaces.current()
+        XCTAssertFalse(found.isEmpty)
+        XCTAssertEqual(Set(found.map(\.name)).count, found.count, "each name once")
+        XCTAssertTrue(found.contains { $0.name == "lo0" && $0.address == "127.0.0.1" }, "\(found)")
+        XCTAssertTrue(found.allSatisfy { !$0.address.isEmpty && !$0.name.isEmpty })
+    }
+
     func testTheRowMenusEditItemsSetTheWholeSelectionAndMarkWhatItHas() async throws {
         wc.cueList.selectAsUser([Self.intro, Self.fade])
         await assertEventually { self.wc.cueList.selectedIDs() == [Self.intro, Self.fade] }

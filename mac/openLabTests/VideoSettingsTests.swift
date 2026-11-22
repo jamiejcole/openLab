@@ -77,14 +77,70 @@ final class VideoSettingsTests: XCTestCase {
         let sc = WorkspaceSettingsWindowController(store: rig.store)
         await sc.present().value
         let pane = sc.videoPane
-        await settled(sc) { pane.nameFields.count == 2 && pane.displayPopups.count == 2 }
+        let routing = sc.videoRoutingPane
+        await settled(sc) { pane.nameFields.count == 2 && routing.displayPopups.count == 2 }
         XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1", "Stage 2"])
         XCTAssertEqual(
             pane.shown?.map { "\($0.width) × \($0.height)" }, ["1920 × 1080", "1280 × 720"])
         XCTAssertEqual(
-            pane.displayPopups.map { $0.titleOfSelectedItem }, ["Virtual V1 (1920 × 1080)", "Virtual V2 (1280 × 720)"])
+            routing.displayPopups.map { $0.titleOfSelectedItem },
+            ["Virtual V1 (1920 × 1080)", "Virtual V2 (1280 × 720)"])
         XCTAssertTrue(pane.emptyLabel.isHidden)
-        XCTAssertEqual(pane.warningLabels.map(\.stringValue), ["", ""], "no warnings: both shown or hidden")
+        XCTAssertEqual(routing.warningLabels.map(\.stringValue), ["", ""], "no warnings: both shown or hidden")
+    }
+
+    /// The Video category is split into Video Outputs (the stages), Output Routing (the display
+    /// each is shown on) and Output Devices (the displays), as QLab 5's are, with no Video Inputs;
+    /// the page bar lists the three and the stages page has no display choice.
+    func testTheVideoCategoryHasStagesRoutingAndDevicePages() async throws {
+        let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let video = try XCTUnwrap(SettingsCategory.allCases.firstIndex(of: .video))
+        sc.categoryTable.selectRowIndexes(IndexSet(integer: video), byExtendingSelection: false)
+        XCTAssertEqual(sc.shownPage, .video, "a category shows its first page")
+        XCTAssertFalse(sc.pageBar.isHidden)
+        XCTAssertEqual(
+            (0..<sc.pageBar.segmentCount).compactMap { sc.pageBar.label(forSegment: $0) },
+            ["Video Outputs", "Output Routing", "Output Devices"])
+        XCTAssertEqual(SettingsCategory.video.pages, [.video, .videoRouting, .videoDevices])
+        await settled(sc) { sc.videoPane.nameFields.count == 1 }
+        XCTAssertFalse(sc.videoPane.cols.contains(.display), "the stages page chooses no display")
+        XCTAssertEqual(sc.videoRoutingPane.cols, [.name, .size, .display])
+        XCTAssertEqual(sc.videoDevicesPane.cols, [.name, .resolution, .shownOn])
+        sc.pageBar.selectedSegment = 1
+        _ = sc.pageBar.target?.perform(sc.pageBar.action, with: sc.pageBar)
+        XCTAssertEqual(sc.shownPage, .videoRouting)
+    }
+
+    /// The Output Devices page lists the Mac's displays with their size and the stages shown on
+    /// each, and says when none is used.
+    func testTheDevicesPageListsEachDisplayWithTheStagesShownOnIt() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let devices = sc.videoDevicesPane
+        await settled(sc) { devices.deviceLabels.count == 2 }
+        XCTAssertEqual(
+            devices.deviceLabels.map { $0.map(\.stringValue) },
+            [
+                ["Virtual V1", "1920 × 1080", loc("settings.video.unused")],
+                ["Virtual V2", "1280 × 720", loc("settings.video.unused")],
+            ])
+        XCTAssertTrue(devices.emptyLabel.isHidden)
+        guard case .success = await rig.store.setStageMapping(ModelID(stageA), display: "V2") else {
+            return XCTFail("mapping")
+        }
+        await settled(sc) { devices.deviceLabels.last?.last?.stringValue == "Cyc" }
+        XCTAssertEqual(devices.deviceLabels.first?.last?.stringValue, loc("settings.video.unused"))
+    }
+
+    /// The monitor button says what it does: its title and tooltip name a monitor window and a live
+    /// copy of the stage, not a bare "Watch".
+    func testTheMonitorButtonSaysItOpensALiveCopyOfTheStage() async throws {
+        let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.monitorButtons.count == 1 }
+        let button = pane.monitorButtons[0]
+        XCTAssertEqual(button.title, "Monitor")
+        XCTAssertTrue(try XCTUnwrap(button.toolTip).contains("live copy"), "\(button.toolTip ?? "")")
+        XCTAssertTrue(try XCTUnwrap(button.accessibilityLabel()).contains("monitor window"))
     }
 
     /// Flow 2: a stage's display pop-up changed: the stage goes to that display at once (its state
@@ -92,13 +148,14 @@ final class VideoSettingsTests: XCTestCase {
     func testChangingAStagesDisplayPopUpMovesItToThatDisplay() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
-        await settled(sc) { pane.displayPopups.count == 1 }
-        let popup = pane.displayPopups[0]
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.displayPopups.count == 1 }
+        let popup = routing.displayPopups[0]
         XCTAssertEqual(popup.titleOfSelectedItem, loc("settings.video.displayNone"))
         popup.selectItem(withTitle: "Virtual V2 (1280 × 720)")
         _ = popup.sendAction(popup.action, to: popup.target)
         await settled(sc) { pane.shown?.first?.display == "V2" }
-        XCTAssertEqual(pane.displayPopups.first?.titleOfSelectedItem, "Virtual V2 (1280 × 720)")
+        XCTAssertEqual(routing.displayPopups.first?.titleOfSelectedItem, "Virtual V2 (1280 × 720)")
         XCTAssertEqual(rig.store.videoOutputs.stages.first?.mapping?.display, "V2")
     }
 
@@ -107,12 +164,13 @@ final class VideoSettingsTests: XCTestCase {
     func testNewStageRenameInPlaceAndRemoveAreOneUndoStepEach() async throws {
         let (rig, sc) = try await open()
         let pane = sc.videoPane
+        let routing = sc.videoRoutingPane
         await settled(sc) { pane.shown?.isEmpty == true }
         XCTAssertFalse(pane.emptyLabel.isHidden, "an empty table says so")
         pane.addButton.performClick(nil)
         await settled(sc) { pane.nameFields.count == 1 }
         XCTAssertEqual(pane.nameFields[0].stringValue, String(format: loc("settings.video.newName"), 1))
-        XCTAssertEqual(pane.displayPopups[0].titleOfSelectedItem, loc("settings.video.displayNone"))
+        XCTAssertEqual(routing.displayPopups[0].titleOfSelectedItem, loc("settings.video.displayNone"))
         let field = pane.nameFields[0]
         field.stringValue = "Cyc"
         pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
@@ -133,8 +191,9 @@ final class VideoSettingsTests: XCTestCase {
     func testTheKeepBlackBoxSetsTheStagesBlackWhichComesOnlyWithItsFirstPicture() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
-        await settled(sc) { pane.displayPopups.count == 1 }
-        let popup = pane.displayPopups[0]
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.displayPopups.count == 1 }
+        let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
         await settled(sc) { rig.store.videoOutputs.stages.first?.state?.state == "hidden" }
@@ -203,14 +262,15 @@ final class VideoSettingsTests: XCTestCase {
     func testAStageWithoutADisplayWarnsInItsRowAndTheWarningsUntilOneIsChosen() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
-        await settled(sc) { pane.warningLabels.first?.stringValue == loc("settings.video.warn.noDisplay") }
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.warningLabels.first?.stringValue == loc("settings.video.warn.noDisplay") }
         let warnings = WarningRows.make(store: rig.store)
         XCTAssertTrue(
             warnings.contains {
                 $0.title == String(format: loc("warnings.stage"), "Cyc")
                     && $0.detail == loc("warnings.stage.noDisplay")
             }, "\(warnings)")
-        let popup = pane.displayPopups[0]
+        let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
         await settled(sc) { pane.shown?.first?.warning == nil }
@@ -223,27 +283,30 @@ final class VideoSettingsTests: XCTestCase {
     func testTheTableRedrawsThroughEveryRowShapeWithoutLeftovers() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080), (stageB, "Angelica", 1920, 1080)])
         let pane = sc.videoPane
+        let routing = sc.videoRoutingPane
         func check(_ why: String) {
             let rows = pane.shown ?? []
             let warned = rows.filter { $0.warning != nil }.count
             XCTAssertEqual(pane.holder.subviews, [pane.grid], "\(why): one table")
-            XCTAssertEqual(pane.grid.numberOfRows, rows.count + warned, why)
+            XCTAssertEqual(pane.grid.numberOfRows, rows.count, why)
             let controls: [NSView] =
-                pane.nameFields + pane.layerFields + pane.displayPopups + pane.blackBoxes + pane.monitorButtons
-                + pane.removeButtons
-            // Per row its controls and its pixel-size label; the warning lines (the titles are not
-            // in the rows' grid).
-            XCTAssertEqual(pane.grid.subviews.count, controls.count + rows.count + warned, why)
+                pane.nameFields + pane.layerFields + pane.blackBoxes + pane.monitorButtons + pane.removeButtons
+            // Per row its controls and its pixel-size field pair (the titles are not in the rows' grid).
+            XCTAssertEqual(pane.grid.subviews.count, controls.count + rows.count, why)
             XCTAssertTrue(controls.allSatisfy { $0.superview === pane.grid }, why)
             XCTAssertEqual(pane.nameFields.map(\.stringValue), rows.map(\.name), why)
+            // The routing page: its row's controls and label cells, and a line for each warning.
+            XCTAssertEqual(routing.grid.numberOfRows, rows.count + warned, why)
+            XCTAssertEqual(routing.grid.subviews.count, 3 * rows.count + warned, why)
+            XCTAssertTrue(routing.displayPopups.allSatisfy { $0.superview === routing.grid }, why)
         }
         for round in 1...2 {
-            await settled(sc) { pane.shown?.count == 2 && pane.warningLabels.allSatisfy { !$0.stringValue.isEmpty } }
+            await settled(sc) { pane.shown?.count == 2 && routing.warningLabels.allSatisfy { !$0.stringValue.isEmpty } }
             check("round \(round): two stages, each with a warning")
-            let popup = pane.displayPopups[0]
+            let popup = routing.displayPopups[0]
             popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
             _ = popup.sendAction(popup.action, to: popup.target)
-            await settled(sc) { pane.shown?.first?.warning == nil }
+            await settled(sc) { routing.shown?.first?.warning == nil }
             check("round \(round): a warning line gone")
             pane.addButton.performClick(nil)
             await settled(sc) { pane.shown?.count == 3 }
@@ -270,14 +333,15 @@ final class VideoSettingsTests: XCTestCase {
     func testWhatChangesWhileANameIsTypedIsDrawnAtOnceAndTheTypingGoesOn() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
-        await settled(sc) { pane.warningLabels.first?.stringValue == loc("settings.video.warn.noDisplay") }
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.warningLabels.first?.stringValue == loc("settings.video.warn.noDisplay") }
         try startTyping("Cyclo", in: pane.nameFields[0], sc)
         let caret = NSRange(location: 2, length: 2)
         pane.nameFields[0].currentEditor()?.selectedRange = caret
         guard case .success = await rig.store.setStageMapping(ModelID(stageA), display: "V1") else {
             return XCTFail("mapping")
         }
-        await caughtUp(rig, sc, "drawn while the name is typed") { pane.warningLabels.first?.stringValue == "" }
+        await caughtUp(rig, sc, "drawn while the name is typed") { routing.warningLabels.first?.stringValue == "" }
         let field = pane.nameFields[0]
         XCTAssertEqual(field.currentEditor()?.string, "Cyclo", "still typing, as typed")
         XCTAssertEqual(field.currentEditor()?.selectedRange, caret, "the selection where it was")
@@ -414,6 +478,7 @@ final class VideoSettingsTests: XCTestCase {
                 (String(format: "00000000-0000-0000-0000-0000000a%04d", n), "Stage \(n)", 1920, 1080)
             })
         let pane = sc.videoPane
+        let routing = sc.videoRoutingPane
         await settled(sc) { pane.nameFields.count == 12 }
         let window = try XCTUnwrap(sc.window)
         sc.tabs.selectTabViewItem(withIdentifier: "video")
@@ -432,28 +497,34 @@ final class VideoSettingsTests: XCTestCase {
             pane.shown?.first?.display == "V1"
         }
         window.contentView?.layoutSubtreeIfNeeded()
-        for popup in pane.displayPopups {
+        for c in 0..<pane.cols.count {
+            XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)")
+        }
+        // The routing page's display choice reads whole, and its titles line up with its columns.
+        sc.tabs.selectTabViewItem(withIdentifier: "videoRouting")
+        window.contentView?.layoutSubtreeIfNeeded()
+        for popup in routing.displayPopups {
             XCTAssertLessThanOrEqual(
                 popup.intrinsicContentSize.width, popup.frame.width, popup.titleOfSelectedItem ?? "")
         }
-        for c in 0..<VideoSettingsPane.columns.count {
-            XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)")
+        for c in 0..<routing.cols.count {
+            XCTAssertEqual(routing.header.column(at: c).width, routing.grid.column(at: c).width, "column \(c)")
         }
         // At the window's least size too.
         window.setContentSize(window.contentMinSize)
         window.contentView?.layoutSubtreeIfNeeded()
-        for popup in pane.displayPopups {
+        for popup in routing.displayPopups {
             XCTAssertLessThanOrEqual(
                 popup.intrinsicContentSize.width, popup.frame.width, "least size: \(popup.titleOfSelectedItem ?? "")")
         }
-        let least = pane.displayWidth
+        let least = routing.displayWidth
         window.setContentSize(NSSize(width: 1400, height: 1000))
         window.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThanOrEqual(pane.displayWidth, least)
-        XCTAssertEqual(pane.displayWidth, VideoSettingsPane.mostDisplayWidth)
-        XCTAssertGreaterThan(pane.nameWidth, VideoSettingsPane.columns[0])
-        for c in 0..<VideoSettingsPane.columns.count {
-            XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)")
+        XCTAssertGreaterThanOrEqual(routing.displayWidth, least)
+        XCTAssertEqual(routing.displayWidth, VideoSettingsPane.mostDisplayWidth)
+        XCTAssertGreaterThan(routing.nameWidth, VideoSettingsPane.Col.name.width)
+        for c in 0..<routing.cols.count {
+            XCTAssertEqual(routing.header.column(at: c).width, routing.grid.column(at: c).width, "column \(c)")
         }
     }
 
@@ -508,9 +579,10 @@ final class VideoSettingsTests: XCTestCase {
     func testTheLayerFieldOrdersStagesOnOneDisplayAndRefusesOutOfRangeValues() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080), (stageB, "Angelica", 1920, 1080)])
         let pane = sc.videoPane
+        let routing = sc.videoRoutingPane
         await settled(sc) { pane.layerFields.count == 2 }
         for (i, stage) in [stageA, stageB].enumerated() {
-            let popup = pane.displayPopups[i]
+            let popup = routing.displayPopups[i]
             popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
             _ = popup.sendAction(popup.action, to: popup.target)
             await settled(sc) { pane.shown?[i].display == "V1" }
@@ -573,10 +645,11 @@ final class VideoSettingsTests: XCTestCase {
     func testAStagesSizeChangedOnTheVideoPageShowsInItsRowAndIsDrawnAtThatSizeInOneUndoStep() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
+        let routing = sc.videoRoutingPane
         await settled(sc) { pane.widthFields.count == 1 }
         XCTAssertEqual(pane.widthFields[0].stringValue, "1920")
         XCTAssertEqual(pane.heightFields[0].stringValue, "1080")
-        let popup = pane.displayPopups[0]
+        let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
         await settled(sc) { pane.shown?.first?.display == "V1" }

@@ -1016,29 +1016,29 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
     }
 
-    /// ui-qa D4: a cue output's mute shows on its row (its button on, its level red) and is set
-    /// and cleared there; Unmute All clears it too.
-    func testACueOutputsMuteShowsOnItsRowAndIsToggledThere() async throws {
+    /// A cue output muted in the show reads red on its row (its level kept, a tooltip saying why)
+    /// and the row has no mute button, as QLab 5's has none; Unmute All still clears it.
+    func testAMutedCueOutputReadsRedWithNoMuteButtonOnItsRow() async throws {
         let (rig, sc) = try await open(edit: routedFar(to: 2, muted: true))
         let editor = try await edit(in: sc)
-        await assertEventually { editor.outputMutes.count == 2 }
-        XCTAssertEqual(editor.outputMutes.map(\.state), [.off, .on])
-        XCTAssertEqual(editor.outputFields[1].textColor, .systemRed)
+        await assertEventually { editor.outputFields.count == 2 }
+        await assertEventually { editor.outputFields[1].textColor == .systemRed }
         XCTAssertEqual(editor.outputFields[1].stringValue, "0.0", "muting keeps the level")
-        XCTAssertTrue(editor.matrixRows.bounds.contains(editor.outputMutes[0].frame), "on its row")
-        editor.outputMutes[0].performClick(nil)
+        XCTAssertEqual(editor.outputFields[1].toolTip, loc("patchEditor.outputMuted"))
+        XCTAssertNil(editor.outputFields[0].toolTip)
+        XCTAssertTrue(
+            editor.matrixRows.subviews.allSatisfy { !($0 is NSButton) }, "no button on a cue output's row")
         let mutes = {
             (rig.store.model?.patches.first?.raw["outputs"]?.arrayValue ?? []).map { o -> Bool in
                 if case .bool(true) = o["mute"] { return true }
                 return false
             }
         }
-        await assertEventually { mutes() == [true, true] }
-        await assertEventually { editor.outputMutes.map(\.state) == [.on, .on] }
+        XCTAssertEqual(mutes(), [false, true])
         editor.unmuteButton.performClick(nil)
         await assertEventually { mutes() == [false, false] }
-        await assertEventually { editor.outputMutes.map(\.state) == [.off, .off] }
-        XCTAssertEqual(editor.outputFields[1].textColor, .controlTextColor)
+        await assertEventually { editor.outputFields[1].textColor == .controlTextColor }
+        XCTAssertNil(editor.outputFields[1].toolTip)
     }
 
     /// Opens a crosspoint's box, types and presses Esc.

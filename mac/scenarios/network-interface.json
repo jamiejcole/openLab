@@ -1,0 +1,32 @@
+{
+  "about": "Network Outputs with the Interface pop-up: a destination on Automatic, one interface chosen, then the least window size (dark).",
+  "show": "Demo",
+  "appearance": "dark",
+  "steps": [
+    {
+      "focus": "settings"
+    },
+    {
+      "tab": "network"
+    },
+    {
+      "shot": "network-automatic"
+    },
+    {
+      "choose": "settings-network-interface-1",
+      "item": "lo0 (127.0.0.1)"
+    },
+    {
+      "shot": "network-chosen"
+    },
+    {
+      "resize": [
+        680,
+        552
+      ]
+    },
+    {
+      "shot": "network-least"
+    }
+  ]
+}
