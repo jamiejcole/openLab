@@ -1043,6 +1043,37 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
+    /// A fading cue's state mark is the moving dots (the state image keeps its label and tooltip);
+    /// running and idle cues show their still marks and no dots.
+    func testAFadingCueShowsMovingDotsInItsStateSlot() async throws {
+        let h = try await H()
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
+        let cell = try XCTUnwrap(h.cell("status", H.intro))
+        XCTAssertTrue(cell.fadingDots.isHidden, "running: the still mark")
+        XCTAssertEqual(cell.images[1].alphaValue, 1)
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"fading"}"#)
+        let fading = try XCTUnwrap(h.cell("status", H.intro))
+        XCTAssertFalse(fading.fadingDots.isHidden, "fading: the dots")
+        XCTAssertEqual(fading.images[1].alphaValue, 0, "the still glyph is not drawn under them")
+        XCTAssertEqual(fading.images[1].accessibilityLabel(), loc("cue.state.fading"), "the label stays")
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
+        let idle = try XCTUnwrap(h.cell("status", H.intro))
+        XCTAssertTrue(idle.fadingDots.isHidden, "idle: no dots")
+        XCTAssertEqual(idle.images[1].alphaValue, 1)
+    }
+
+    /// The dots brighten in turn: each peaks a third of a period after the one before, never fully out.
+    func testTheFadingDotsPeakInTurn() {
+        let period = PulsingDots.period
+        for i in 0..<3 {
+            let peak = period * Double(i) / 3 + period / 2
+            XCTAssertEqual(PulsingDots.alpha(dot: i, at: peak), 1, accuracy: 0.001, "dot \(i) peaks")
+            for j in 0..<3 where j != i { XCTAssertLessThan(PulsingDots.alpha(dot: j, at: peak), 0.9) }
+        }
+        let low = (0..<120).map { PulsingDots.alpha(dot: 0, at: Double($0) / 100) }.min() ?? 0
+        XCTAssertEqual(low, PulsingDots.dimAlpha, accuracy: 0.01)
+    }
+
     /// A running cue's Duration cell shows its whole length as a faint bar under the green fill: the right end of
     /// the cell (past the fill) is drawn, so a part-way fill is not a box round the first digits; with no run
     /// nothing is drawn.
