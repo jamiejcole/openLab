@@ -472,7 +472,7 @@ impl DocCx<'_> {
         for (path, n) in damaged {
             list.push(notice(
                 "damaged_media",
-                format!("{path}: {n} damaged part(s); they play as silence"),
+                format!("{path} is damaged ({n} part(s)): it plays with gaps or ends early"),
                 None,
             ));
         }

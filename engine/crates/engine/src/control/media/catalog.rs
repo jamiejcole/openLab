@@ -1304,11 +1304,13 @@ impl MediaCatalog {
             .map(|(k, _)| k.as_str())
     }
 
-    /// Damaged-but-playable files, with how many problems the probe found.
+    /// Damaged-but-playable files, with how many audible problems the probe found (see
+    /// `MediaWarning::is_audible`; a file that plays as it is is not listed).
     pub fn damaged(&self) -> impl Iterator<Item = (&str, usize)> {
         self.entries.iter().filter_map(|(k, e)| match &e.probe {
-            Probe::Ready(r) if !r.probed.warnings.is_empty() => {
-                Some((k.as_str(), r.probed.warnings.len()))
+            Probe::Ready(r) => {
+                let n = r.probed.warnings.iter().filter(|w| w.is_audible()).count();
+                (n > 0).then_some((k.as_str(), n))
             }
             _ => None,
         })

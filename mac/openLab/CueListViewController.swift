@@ -198,8 +198,9 @@ final class CueOutlineView: NSOutlineView {
     }
 }
 
-/// A running cue's progress behind its Duration text: the cell faintly outlined, filled and outlined in
-/// the colour from the left up to `fraction` of its width (nothing drawn when nil).
+/// A running cue's progress behind its Duration text: the whole cell outlined in the colour (so a playing
+/// cue stands out, as QLab 5's does), filled from the left up to `fraction` of its width (nothing drawn
+/// when nil).
 final class ProgressFillView: NSView {
     var progress: (fraction: Double, colour: NSColor)? {
         didSet {
@@ -209,23 +210,18 @@ final class ProgressFillView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         NSBezierPath.clip(bounds)
-        guard let progress, progress.fraction > 0 else { return }
+        guard let progress else { return }
         let box = bounds.insetBy(dx: 1, dy: 3)
-        let rect = NSRect(
-            x: box.minX, y: box.minY, width: box.width * CGFloat(min(1, progress.fraction)), height: box.height)
-        // The whole cell is drawn very faintly under the fill, so a part-way fill reads as progress along a bar
-        // and not as a box round the first digits.
         let track = NSBezierPath(roundedRect: box, xRadius: 3, yRadius: 3)
-        NSColor.labelColor.withAlphaComponent(0.12).setStroke()
-        track.lineWidth = 0.5
+        progress.colour.setStroke()
+        track.lineWidth = 1
         track.stroke()
+        let rect = NSRect(
+            x: box.minX, y: box.minY, width: box.width * CGFloat(min(1, max(0, progress.fraction))),
+            height: box.height)
         guard rect.width >= 1 else { return }
-        let path = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
         progress.colour.withAlphaComponent(0.25).setFill()
-        path.fill()
-        progress.colour.withAlphaComponent(0.6).setStroke()
-        path.lineWidth = 1
-        path.stroke()
+        NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).fill()
     }
 }
 

@@ -142,10 +142,17 @@ final class SettingsGeneralTests: XCTestCase {
 
     /// Checklist: application preferences → autosave interval: typed on the General page (the
     /// interval is the workspace's, kept in the show), a number outside 5 seconds to 1 hour is
-    /// refused and the engine's number shown again.
+    /// refused and the engine's number shown again. No explanation sits under the field (the owner
+    /// asked for it to go).
     func testTheAutosaveIntervalIsTypedOnThePageAndKeptByTheEngine() async throws {
         let (rig, sc) = try await open()
         XCTAssertEqual(sc.autosaveField.stringValue, "30")
+        func texts(_ view: NSView) -> [String] {
+            ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap(texts)
+        }
+        let page = texts(sc.buildGeneralTab())
+        XCTAssertTrue(page.contains(loc("settings.general.autosave")), "the autosave row is on the page")
+        XCTAssertFalse(page.contains { $0.contains("recovery copy") || $0.hasPrefix("5 seconds") }, "\(page)")
         func type(_ text: String) {
             sc.autosaveField.stringValue = text
             commit(sc, sc.autosaveField)
