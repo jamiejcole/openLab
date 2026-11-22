@@ -638,6 +638,7 @@ fn the_network_output_override_applies_to_every_doc() {
         host: "127.0.0.1".into(),
         port: 9,
         protocol: NetworkProtocol::Udp,
+        interface: None,
     };
     let osc = || {
         cue(

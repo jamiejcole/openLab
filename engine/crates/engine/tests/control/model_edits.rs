@@ -184,6 +184,7 @@ fn settings_patches_and_lists_reach_clients_as_model_changed() {
                 host: "127.0.0.1".into(),
                 port: 9000,
                 protocol: NetworkProtocol::Udp,
+                interface: None,
             },
         },
         Command::AddCueList {

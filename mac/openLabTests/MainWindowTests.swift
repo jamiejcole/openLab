@@ -1289,11 +1289,11 @@ final class InspectorWindowFrameTests: XCTestCase {
         settleLayout()
         let field = wc.inspector.hotkeyField
         XCTAssertEqual(field.stringValue, "", "no key: the prompt shows")
-        XCTAssertEqual(field.frame.width, 130, accuracy: 0.5)
+        XCTAssertEqual(field.frame.width, 100, accuracy: 0.5)
         let prompt = (field.placeholderString ?? "") as NSString
         let font = try XCTUnwrap(field.font)
         let promptWidth = prompt.size(withAttributes: [.font: font]).width
-        XCTAssertGreaterThan(promptWidth, field.frame.width - 10, "the prompt is cut")
+        XCTAssertLessThanOrEqual(promptWidth, field.frame.width - 10, "the whole prompt shows, not cut")
         XCTAssertLessThanOrEqual(field.frame.height, wc.inspector.hotkeyClear.frame.height + 4, "one line tall")
     }
 

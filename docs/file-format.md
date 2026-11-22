@@ -101,7 +101,7 @@ cue, and the cue shows as broken where it cannot run.
 | An empty, over-long (256 bytes), repeated (the first stays) or 17th and later OSC passcode row | Warning (`OscPasscodeDropped`); the row is removed. Warnings never contain the passcode |
 | An OSC passcode that is not made of digits only | Warning (`OscPasscodeNotDigits`); kept, since dropping it would change who can connect (a v3 passcode may be any text) |
 | A cue name over 1024 bytes, cue notes over 64 KiB, or a Network cue address over 64 KiB, more than 1024 arguments or a string argument over 64 KiB | Warning (`TooLarge`, per cue and field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one |
-| A workspace, cue list, patch or network patch name over 1024 characters or with a control character other than a newline, or a network host over 253 bytes or with one | Warning (`InvalidName`, one per kind of field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one |
+| A workspace, cue list, patch or network patch name over 1024 characters or with a control character other than a newline, or a network host over 253 bytes or with one, or a network interface name that is not 1 to 15 ASCII letters, digits and `. _ - :` | Warning (`InvalidName`, one per kind of field); kept as it is, so the show opens; commands refuse such a new value, and undo restores a loaded one |
 | Settings outside their ranges (§4.2), or an auto-number increment that is not greater than 0 | Warning; clamped (an invalid increment becomes 1) |
 
 Valid targets: a Fade cue targets an Audio, Video or Group cue; a Devamp cue targets an Audio cue or a
@@ -189,6 +189,7 @@ A destination for Network cues. A new workspace starts with one, "Network 1" (`1
 | `host` | string | Host name or IP address (IPv6 may be in brackets). Not checked when the file loads; a cue that sends to a patch whose host is empty or malformed, or whose port is 0, loads as it is and shows as broken. A host name is looked up when the workspace opens (not stored). |
 | `port` | integer 0–65535 | 1–65535 can be sent to. |
 | `protocol` | `"udp"` \| `"tcp"` | TCP messages are SLIP-framed (OSC 1.1), one connection per message. |
+| `interface` | string | Optional (absent: automatic, the system routes the message). The network interface the patch sends from, by the system's name for it (`en0`, `eth0`): 1 to 15 ASCII letters, digits and `. _ - :`. A name that does not fit is kept as it is when the file loads, with a warning (`InvalidName`, field `network_patches.interface`), and commands refuse such a new value. Whether the interface exists on this computer is asked when a message is sent: a send by an interface the computer lacks fails (a warning and a log entry) and the show goes on. Choosing an interface works on macOS and Linux; elsewhere a send by one fails. |
 
 ### 4.6 Cue lists
 

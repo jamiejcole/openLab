@@ -12,7 +12,7 @@ All dependencies must be GPLv3-compatible (`cargo deny` enforces licences). Ever
 | assert_no_alloc | RT allocation guard in debug/test (a normal dependency of openlab-audio for the callback guard and of openlab-engine for the debug global allocator) | BSD-1-Clause |
 | rosc | OSC encode/decode | MIT/Apache-2.0 |
 | tokio, tokio-tungstenite | async networking, WebSocket | MIT |
-| socket2 | OSC UDP socket buffer sizes (macOS refuses a reply larger than its default send buffer) | MIT/Apache-2.0 |
+| socket2 | OSC UDP socket buffer sizes (macOS refuses a reply larger than its default send buffer); network output sockets bound to a chosen interface (feature `all`) | MIT/Apache-2.0 |
 | futures-util (`sink` only) | `StreamExt`/`SinkExt` on the WebSocket stream | MIT/Apache-2.0 |
 | getrandom | OS CSPRNG for the session token (std has none) | MIT/Apache-2.0 |
 | serde, serde_json | serialisation | MIT/Apache-2.0 |

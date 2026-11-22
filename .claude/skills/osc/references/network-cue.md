@@ -44,3 +44,8 @@ Raw UDP/TCP string messages and OSC parameter fades are not implemented.
 - `Request::SetOutputOverrides { network_disabled }` sets one engine-wide flag shared by every doc's `NetOut` and send threads, settable through any doc. It is in memory only: not in a show file, machine setting or undo step; a restarted engine starts with output on.
 - With it set, `SendOsc` is received and dropped (info log, nothing queued): Network cues still run, complete and continue. Turning it on also drops what is queued (the sender checks before each send); only a message already being sent goes out.
 - `network_output_disabled` is in every `status` message and a change sends one early (`docs/protocol.md`). The UI must show it plainly.
+
+## Interface
+- A network patch may name the interface its messages leave by (`NetworkPatch.interface`, the system's name such as `en0`; absent: the system routes; QLab 5's per-patch Interface column). It is part of the sender's `Destination`, so changing it replaces the sender and the next message leaves by the new one. The name is checked like a host on every path that sets it (`interface_problem`: 1 to 15 ASCII letters, digits and `. _ - :`; commands refuse, load warns `InvalidName` and keeps it).
+- `control/netout/interface.rs` makes the sockets: macOS `IP_BOUND_IF` by index (`if_nametoindex`), Linux `SO_BINDTODEVICE`; elsewhere a send by an interface fails as unsupported. UDP sockets are kept per family and interface (`MAX_UDP_SOCKETS`) so the source port stays one.
+- An interface the computer lacks (a show moved from another Mac) is a failed send (`network_send_failed`, the destination shown `udp://host:port via en9`), never a broken cue or a stall: the computer's interfaces are not known when the file loads.

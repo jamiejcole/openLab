@@ -70,6 +70,7 @@ fn sample() -> Workspace {
         host: "10.0.0.3".into(),
         port: 9000,
         protocol: NetworkProtocol::Udp,
+        interface: None,
     });
     ws.cue_lists.push(CueList {
         id: list_id(4),
@@ -205,6 +206,7 @@ fn everything() -> Vec<Command> {
                 host: "10.0.0.2".into(),
                 port: 8000,
                 protocol: NetworkProtocol::Udp,
+                interface: None,
             },
         },
         Command::SetNetworkPatchProperty {
@@ -479,6 +481,7 @@ fn with_loaded_port_zero() -> Workspace {
         host: "10.0.0.9".into(),
         port: 0,
         protocol: NetworkProtocol::Udp,
+        interface: None,
     });
     ws.cue_lists[0].cues.push(cue(
         40,

@@ -1016,29 +1016,34 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
     }
 
-    /// ui-qa D4: a cue output's mute shows on its row (its button on, its level red) and is set
-    /// and cleared there; Unmute All clears it too.
-    func testACueOutputsMuteShowsOnItsRowAndIsToggledThere() async throws {
+    /// A cue output muted in the show reads red on its row (its level kept, a tooltip saying why)
+    /// and the row has no mute button, as QLab 5's has none; Unmute All still clears it.
+    func testAMutedCueOutputReadsRedWithNoMuteButtonOnItsRow() async throws {
         let (rig, sc) = try await open(edit: routedFar(to: 2, muted: true))
         let editor = try await edit(in: sc)
-        await assertEventually { editor.outputMutes.count == 2 }
-        XCTAssertEqual(editor.outputMutes.map(\.state), [.off, .on])
-        XCTAssertEqual(editor.outputFields[1].textColor, .systemRed)
+        await assertEventually { editor.outputFields.count == 2 }
+        await assertEventually { editor.outputFields[1].textColor == .systemRed }
         XCTAssertEqual(editor.outputFields[1].stringValue, "0.0", "muting keeps the level")
-        XCTAssertTrue(editor.matrixRows.bounds.contains(editor.outputMutes[0].frame), "on its row")
-        editor.outputMutes[0].performClick(nil)
+        XCTAssertEqual(editor.outputFields[1].toolTip, loc("patchEditor.outputMuted"))
+        XCTAssertNil(editor.outputFields[0].toolTip)
+        XCTAssertEqual(
+            editor.matrix.rowLabels, ["1", String(format: loc("patchEditor.mutedRow"), "2")],
+            "not by colour alone: the muted row says so")
+        XCTAssertEqual(editor.outputFields[1].accessibilityLabel(), loc("patchEditor.outputMuted"))
+        XCTAssertTrue(
+            editor.matrixRows.subviews.allSatisfy { !($0 is NSButton) }, "no button on a cue output's row")
         let mutes = {
             (rig.store.model?.patches.first?.raw["outputs"]?.arrayValue ?? []).map { o -> Bool in
                 if case .bool(true) = o["mute"] { return true }
                 return false
             }
         }
-        await assertEventually { mutes() == [true, true] }
-        await assertEventually { editor.outputMutes.map(\.state) == [.on, .on] }
+        XCTAssertEqual(mutes(), [false, true])
         editor.unmuteButton.performClick(nil)
         await assertEventually { mutes() == [false, false] }
-        await assertEventually { editor.outputMutes.map(\.state) == [.off, .off] }
-        XCTAssertEqual(editor.outputFields[1].textColor, .controlTextColor)
+        await assertEventually { editor.outputFields[1].textColor == .controlTextColor }
+        XCTAssertNil(editor.outputFields[1].toolTip)
+        XCTAssertEqual(editor.matrix.rowLabels, ["1", "2"])
     }
 
     /// Opens a crosspoint's box, types and presses Esc.
@@ -1582,6 +1587,80 @@ final class WorkspaceSettingsTests: XCTestCase {
             XCTAssertTrue(window.contentView?.bounds.contains(list.convert(list.bounds, to: nil)) == true)
             if !sc.pageBar.isHidden { assertNothingClippedOrOverlapping(in: sc.pageBar, "the page bar") }
         }
+    }
+
+    /// A Video page laid out wide (its columns take the width they are given) does not hold the
+    /// window wide: after a shrink every page is at the least size.
+    func testNoPageHoldsTheWindowWideWhenItIsShrunk() async throws {
+        let (_, sc) = try await open()
+        let window = try XCTUnwrap(sc.window)
+        // A window that is on screen keeps to the least size its constraints allow.
+        window.orderFront(nil)
+        for page in SettingsPage.allCases {
+            window.setContentSize(NSSize(width: 1400, height: 900))
+            sc.show(page: page)
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.setContentSize(window.contentMinSize)
+            // The columns are refitted when the table's frame changes, and laid out again (as the
+            // run loop does).
+            for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded() }
+            XCTAssertEqual(
+                window.contentLayoutRect.width, window.contentMinSize.width, accuracy: 0.5,
+                "the \(page) page lets the window narrow")
+            let shown = try XCTUnwrap(sc.tabs.selectedTabViewItem?.view)
+            for v in shown.subviews {
+                XCTAssertLessThanOrEqual(
+                    v.frame.maxX, shown.bounds.width + 0.5, "the \(page) page is laid out wider than the window")
+            }
+            assertNothingClippedOrOverlapping(in: shown, "the \(page) page")
+        }
+    }
+
+    /// Network Outputs at the least window: every column, Interface and remove included, is inside
+    /// the table's frame (Name and Address give up width), so nothing needs a scroller.
+    func testTheNetworkTableFitsEveryColumnAtTheLeastWindow() async throws {
+        let (_, sc) = try await open()
+        for _ in 0..<3 { await sc.model.addNetworkPatch() }
+        let window = try XCTUnwrap(sc.window)
+        window.setContentSize(window.contentMinSize)
+        sc.show(page: .network)
+        sc.lastDrawn = nil
+        sc.render()
+        window.contentView?.layoutSubtreeIfNeeded()
+        let clip = try XCTUnwrap(sc.networkGrid.enclosingScrollView?.contentView)
+        XCTAssertFalse(sc.networkDeleteButtons.isEmpty)
+        for v in sc.networkInterfacePopups + sc.networkTransportPopups + sc.networkDeleteButtons + sc.networkFields {
+            let f = v.convert(v.bounds, to: clip)
+            XCTAssertLessThanOrEqual(
+                f.maxX, clip.bounds.width + 0.5, "\(v.accessibilityIdentifier()) is cut at the right")
+        }
+        XCTAssertEqual(window.contentLayoutRect.width, window.contentMinSize.width, accuracy: 0.5)
+        // A long choice is cut in its middle, so the interface's name always shows.
+        let popup = try XCTUnwrap(sc.networkInterfacePopups.first)
+        XCTAssertEqual((popup.cell as? NSPopUpButtonCell)?.lineBreakMode, .byTruncatingMiddle)
+    }
+
+    /// A stored interface this Mac lacks reads whole in the closed pop-up: its name and that it is missing.
+    func testAMissingInterfaceReadsWholeInTheClosedPopUp() async throws {
+        let (rig, sc) = try await open()
+        await sc.model.addNetworkPatch()
+        guard
+            case .success = await rig.store.send(
+                command: .setNetworkPatch(
+                    try XCTUnwrap(rig.store.model?.networkPatches.first?.id), "interface", .string("en99")))
+        else { return XCTFail("interface") }
+        let window = try XCTUnwrap(sc.window)
+        window.setContentSize(window.contentMinSize)
+        sc.show(page: .network)
+        await assertEventually { sc.networkInterfacePopups.first?.titleOfSelectedItem?.hasPrefix("en99") == true }
+        sc.lastDrawn = nil
+        sc.render()
+        window.contentView?.layoutSubtreeIfNeeded()
+        let popup = try XCTUnwrap(sc.networkInterfacePopups.first)
+        let title = try XCTUnwrap(popup.titleOfSelectedItem)
+        let wanted = (title as NSString).size(withAttributes: [.font: popup.font ?? NSFont.systemFont(ofSize: 13)])
+            .width
+        XCTAssertLessThanOrEqual(wanted + 30, popup.bounds.width, "\(title) fits the closed pop-up")
     }
 
     // MARK: Panic fade

@@ -10,6 +10,8 @@ struct NetworkPatchRow: Equatable {
     var port: Int
     /// `udp` or `tcp`.
     var transport: String
+    /// The system's name for the interface it sends from (`en0`); nil: the system routes it.
+    var interface: String?
 }
 
 /// The network destinations of the workspace settings (CT-30). Every edit is one engine command,
@@ -22,7 +24,8 @@ extension WorkspaceSettingsModel {
         (store.model?.networkPatches ?? []).map { p in
             NetworkPatchRow(
                 id: p.id, name: p.raw["name"]?.stringValue ?? "", host: p.raw["host"]?.stringValue ?? "",
-                port: Int(p.raw["port"]?.doubleValue ?? 0), transport: p.raw["protocol"]?.stringValue ?? "udp")
+                port: Int(p.raw["port"]?.doubleValue ?? 0), transport: p.raw["protocol"]?.stringValue ?? "udp",
+                interface: p.raw["interface"]?.stringValue)
         }
     }
 
@@ -65,6 +68,13 @@ extension WorkspaceSettingsModel {
     func setNetworkPatchTransport(_ id: ModelID, _ transport: String) async -> Bool {
         guard Self.networkTransports.contains(transport) else { return false }
         return await sendNetwork(.setNetworkPatch(id, "protocol", .string(transport)))
+    }
+
+    /// Sends from the interface named `interface` (the system's name for it), or lets the system
+    /// route it (nil). The engine refuses a name that cannot be one, and says so.
+    @discardableResult
+    func setNetworkPatchInterface(_ id: ModelID, _ interface: String?) async -> Bool {
+        await sendNetwork(.setNetworkPatch(id, "interface", interface.map { .string($0) } ?? .null))
     }
 
     private func sendNetwork(_ command: Command) async -> Bool {

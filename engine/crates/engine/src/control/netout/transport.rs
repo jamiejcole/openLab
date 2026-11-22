@@ -8,6 +8,8 @@ pub struct Destination {
     pub host: String,
     pub port: u16,
     pub protocol: NetworkProtocol,
+    /// The network interface to send from; none: the system routes it.
+    pub interface: Option<String>,
 }
 
 impl Destination {
@@ -16,6 +18,7 @@ impl Destination {
             host: patch.host.clone(),
             port: patch.port,
             protocol: patch.protocol,
+            interface: patch.interface.clone(),
         }
     }
 }
@@ -26,7 +29,11 @@ impl fmt::Display for Destination {
             NetworkProtocol::Udp => "udp",
             NetworkProtocol::Tcp => "tcp",
         };
-        write!(f, "{proto}://{}:{}", self.host, self.port)
+        write!(f, "{proto}://{}:{}", self.host, self.port)?;
+        match &self.interface {
+            Some(interface) => write!(f, " via {interface}"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -61,27 +68,46 @@ pub(super) fn monotonic_ms() -> u64 {
 /// The real network.
 #[derive(Default)]
 pub struct SystemTransport {
-    udp4: Mutex<Option<Arc<UdpSocket>>>,
-    udp6: Mutex<Option<Arc<UdpSocket>>>,
+    /// By address family (true: IPv4) and interface (none: the system's choice).
+    udp: Mutex<UdpSockets>,
 }
 
+/// Keyed by address family (true: IPv4) and interface (none: the system's choice).
+type UdpSockets = HashMap<(bool, Option<String>), Arc<UdpSocket>>;
+
+/// Sockets kept at once. A show names a handful of interfaces; past this the table starts
+/// again (a sender holding a dropped socket keeps using it).
+const MAX_UDP_SOCKETS: usize = 16;
+
 impl SystemTransport {
-    /// One socket per address family, kept so every UDP message leaves from the same source
-    /// port (a receiver that answers, or filters by source, sees one sender).
-    fn udp(&self, to: &SocketAddr) -> Result<Arc<UdpSocket>, String> {
-        let (slot, bind) = if to.is_ipv4() {
-            (&self.udp4, SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
-        } else {
-            (&self.udp6, SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)))
-        };
-        let mut slot = slot
+    /// One socket per address family and interface, kept so every UDP message leaves from the
+    /// same source port (a receiver that answers, or filters by source, sees one sender).
+    fn udp(&self, to: &SocketAddr, interface: Option<&str>) -> Result<Arc<UdpSocket>, String> {
+        let v4 = to.is_ipv4();
+        let key = (v4, interface.map(str::to_owned));
+        let mut sockets = self
+            .udp
             .lock()
             .map_err(|_| "socket state poisoned".to_owned())?;
-        if let Some(socket) = slot.as_ref() {
+        if let Some(socket) = sockets.get(&key) {
             return Ok(Arc::clone(socket));
         }
-        let socket = Arc::new(UdpSocket::bind(bind).map_err(|e| e.to_string())?);
-        *slot = Some(Arc::clone(&socket));
+        let socket = match interface {
+            Some(name) => interface::udp_socket(v4, name).map_err(|e| e.to_string())?,
+            None => {
+                let bind = if v4 {
+                    SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))
+                } else {
+                    SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))
+                };
+                UdpSocket::bind(bind).map_err(|e| e.to_string())?
+            }
+        };
+        let socket = Arc::new(socket);
+        if sockets.len() >= MAX_UDP_SOCKETS {
+            sockets.clear();
+        }
+        sockets.insert(key, Arc::clone(&socket));
         Ok(socket)
     }
 }
@@ -122,7 +148,7 @@ impl Transport for SystemTransport {
         match to.protocol {
             NetworkProtocol::Udp => {
                 let first = found.first().ok_or("the host has no address")?;
-                let socket = self.udp(first)?;
+                let socket = self.udp(first, to.interface.as_deref())?;
                 socket
                     .send_to(packet, first)
                     .map(|_| ())
@@ -131,7 +157,11 @@ impl Transport for SystemTransport {
             NetworkProtocol::Tcp => {
                 let mut last = "the host has no address".to_owned();
                 for addr in found {
-                    match TcpStream::connect_timeout(&addr, TCP_TIMEOUT) {
+                    let connected = match to.interface.as_deref() {
+                        Some(name) => interface::tcp_connect(&addr, name, TCP_TIMEOUT),
+                        None => TcpStream::connect_timeout(&addr, TCP_TIMEOUT),
+                    };
+                    match connected {
                         Ok(mut stream) => {
                             stream
                                 .set_write_timeout(Some(TCP_TIMEOUT))

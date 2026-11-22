@@ -17,8 +17,6 @@ final class PatchRoutingView: NSView {
     static let levelW: CGFloat = 60
     static let meterW: CGFloat = 52
     static let cellW: CGFloat = 46
-    /// A cue output's mute button, at the right end of its label.
-    static let muteW: CGFloat = 22
     static var crossX: CGFloat { labelW + levelW + meterW }
 
     /// Each cue output's label: its number, and its name when it has one.
@@ -90,13 +88,6 @@ final class PatchRoutingView: NSView {
         NSRect(
             x: Self.labelW + 2, y: Self.headerH + CGFloat(row) * Self.rowH + 1, width: Self.levelW - 6,
             height: Self.rowH - 2)
-    }
-
-    /// A cue output's mute button.
-    func muteRect(row: Int) -> NSRect {
-        NSRect(
-            x: Self.labelW - Self.muteW - 2, y: Self.headerH + CGFloat(row) * Self.rowH + 2, width: Self.muteW,
-            height: Self.rowH - 4)
     }
 
     /// Where the meter goes: one bar per row, for the first `rows` rows.
@@ -227,8 +218,7 @@ final class PatchRoutingView: NSView {
                 NSColor.labelColor.withAlphaComponent(0.04).setFill()
                 NSRect(x: 0, y: y, width: width, height: Self.rowH).fill()
             }
-            // The row's mute button sits at the label column's right end.
-            draw(rowLabels[row], in: NSRect(x: 4, y: y, width: Self.labelW - Self.muteW - 8, height: Self.rowH), label)
+            draw(rowLabels[row], in: NSRect(x: 4, y: y, width: Self.labelW - 8, height: Self.rowH), label)
         }
     }
 

@@ -143,6 +143,7 @@ impl Workspace {
                 host: "127.0.0.1".to_owned(),
                 port: 53000,
                 protocol: NetworkProtocol::Udp,
+                interface: None,
             }],
             stages: Vec::new(),
             show_mode: false,
@@ -321,6 +322,10 @@ pub struct NetworkPatch {
     pub host: String,
     pub port: u16,
     pub protocol: NetworkProtocol,
+    /// The network interface the destination is sent from (a system name such as `en0`);
+    /// none lets the system route it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

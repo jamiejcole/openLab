@@ -18,16 +18,58 @@ struct StageRow: Equatable {
     var warning: String?
 }
 
-/// The Video page of the workspace settings (VID-01, VID-12; QLab 5 manual pp. 225-227): the
-/// workspace's stages, one row each with its name (typed in place), pixel size (width and height
-/// typed in place), the display it is
-/// shown on on this machine, whether black stays up between cues, its layer, a button that opens its
-/// monitor window (a live copy of the stage, QLab 5 manual p. 157) and a remove button; and a button
-/// that adds one. A stage that cannot be seen says why in its row. Every control
-/// sends its edit to the engine and the page is drawn from what the engine then holds (the model
-/// for the stages, `video_outputs` for displays and states), so a refused edit shows the old state.
+/// The Video pages of the workspace settings (VID-01, VID-12; QLab 5 manual pp. 225-227), one
+/// `VideoSettingsPane` per section as QLab 5 splits them (UI map `settings.video.*`), only for what
+/// openLab has:
+/// - Video Outputs: the workspace's stages, one row each with its name and pixel size (typed in
+///   place), whether black stays up between cues, its layer, a button that opens its monitor
+///   window (a live copy of the stage, QLab 5 manual p. 157) and a remove button; and a button that
+///   adds one.
+/// - Output Routing: the display each stage is shown on on this machine; a stage that cannot be
+///   seen says why in its row.
+/// - Output Devices: the displays this computer has, their size and the stages shown on each.
+/// Every control sends its edit to the engine and a page is drawn from what the engine then holds
+/// (the model for the stages, `video_outputs` for displays and states), so a refused edit shows the
+/// old state.
 @MainActor
 final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
+    /// The sections QLab 5's Video settings are split into (no Video Inputs: openLab has no camera cues).
+    enum Section: Equatable { case outputs, routing, devices }
+
+    /// A column of a section's table.
+    enum Col: Equatable {
+        case name, size, display, black, layer, monitor, remove, resolution, shownOn
+
+        /// The key of its title (`settings.video.col.<key>`).
+        var key: String {
+            switch self {
+            case .name: return "name"
+            case .size: return "size"
+            case .display: return "display"
+            case .black: return "black"
+            case .layer: return "layer"
+            case .monitor: return "monitor"
+            case .remove: return "remove"
+            case .resolution: return "resolution"
+            case .shownOn: return "shownOn"
+            }
+        }
+
+        var width: CGFloat {
+            switch self {
+            case .name: return 90
+            case .size: return VideoSettingsPane.sizeWidth
+            case .display, .shownOn: return VideoSettingsPane.leastDisplayWidth
+            case .black: return 32
+            case .layer: return 30
+            case .monitor: return VideoSettingsPane.monitorWidth
+            case .remove: return 16
+            case .resolution: return 92
+            }
+        }
+    }
+
+    let section: Section
     let store: WorkspaceStore
     let view: NSStackView
     let addButton = NSButton(title: loc("settings.video.add"), target: nil, action: nil)
@@ -35,18 +77,18 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     /// cells (a warning line), so rows are never removed from it.
     private(set) var grid = NSGridView()
     /// The column titles, above the scrolling rows so they stay in sight.
-    let header = VideoSettingsPane.makeGrid(rows: false)
+    let header: NSGridView
     let holder = FlippedView()
     let scroll = NSScrollView()
     /// The display and name columns' widths: what the table's width leaves after the other
     /// columns goes to the display choice first, then to the name.
     private(set) var displayWidth: CGFloat = VideoSettingsPane.leastDisplayWidth
-    private(set) var nameWidth: CGFloat = VideoSettingsPane.columns[0]
+    private(set) var nameWidth: CGFloat = Col.name.width
     private var popupWidths: [NSLayoutConstraint] = []
     private var nameWidths: [NSLayoutConstraint] = []
     /// Counts edits tried, so an older edit's answer does not overwrite a newer one's reason.
     private var attempt = 0
-    let emptyLabel = NSTextField(labelWithString: loc("settings.video.none"))
+    let emptyLabel: NSTextField
     let noVideoLabel = NSTextField(wrappingLabelWithString: loc("settings.video.noVideo"))
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     /// The rows as last drawn; the controls find their stage here by their tag.
@@ -61,15 +103,32 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private(set) var monitorButtons: [NSButton] = []
     private(set) var removeButtons: [NSButton] = []
     private(set) var warningLabels: [NSTextField] = []
+    /// The Output Devices rows: each display's name, size and the stages shown on it.
+    private(set) var deviceLabels: [[NSTextField]] = []
     private var subs: [AnyCancellable] = []
     /// Edits on their way to the engine, one after another.
     private var commits: Task<Void, Never>?
 
     static let id = "settings-video"
 
-    init(store: WorkspaceStore) {
+    /// The columns of `section`'s table, left to right.
+    static func columns(of section: Section) -> [Col] {
+        switch section {
+        case .outputs: return [.name, .size, .black, .layer, .monitor, .remove]
+        case .routing: return [.name, .size, .display]
+        case .devices: return [.name, .resolution, .shownOn]
+        }
+    }
+
+    var cols: [Col] { Self.columns(of: section) }
+
+    init(store: WorkspaceStore, section: Section = .outputs) {
         self.store = store
+        self.section = section
         view = NSStackView()
+        header = Self.makeGrid(rows: false, cols: Self.columns(of: section))
+        emptyLabel = NSTextField(
+            labelWithString: loc(section == .devices ? "settings.video.noDisplays" : "settings.video.none"))
         super.init()
         build()
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
@@ -89,16 +148,13 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     // MARK: Building
 
-    /// Name, pixels, display, black, layer, monitor, remove: the least widths (the display and name
-    /// columns take more when there is room).
-    static let columns: [CGFloat] = [90, sizeWidth, leastDisplayWidth, 32, 30, monitorWidth, 16]
     /// The monitor button's column.
-    static let monitorWidth: CGFloat = 56
+    nonisolated static let monitorWidth: CGFloat = 56
     /// A width or height field: five digits.
-    static let sideWidth: CGFloat = 40
+    nonisolated static let sideWidth: CGFloat = 40
     /// The pixels column: width, "×", height.
-    static let sizeWidth: CGFloat = 2 * sideWidth + 14
-    static let leastDisplayWidth: CGFloat = 120
+    nonisolated static let sizeWidth: CGFloat = 2 * sideWidth + 14
+    nonisolated static let leastDisplayWidth: CGFloat = 120
     static let mostDisplayWidth: CGFloat = 260
     static let columnSpacing: CGFloat = 6
     /// Between the table's edge and its rows.
@@ -109,11 +165,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         addButton.bezelStyle = .rounded
         addButton.target = self
         addButton.action = #selector(addClicked)
-        let note = NSTextField(wrappingLabelWithString: loc("settings.video.note"))
+        let note = NSTextField(wrappingLabelWithString: loc("settings.video.note.\(noteKey)"))
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
         note.preferredMaxLayoutWidth = 320
-        let top = NSStackView(views: [addButton, note])
+        let top = NSStackView(views: section == .outputs ? [addButton, note] : [note])
         top.orientation = .horizontal
         top.spacing = 12
         noVideoLabel.textColor = .systemOrange
@@ -124,12 +180,13 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         messageLabel.setAX(Self.id + "-message")
 
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
         holder.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = holder
-        install(Self.makeGrid(rows: true))
+        install(Self.makeGrid(rows: true, cols: cols))
         NSLayoutConstraint.activate([
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
@@ -160,17 +217,26 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         // The table takes the page's width; the display column takes what the others leave.
         scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
         titles.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
-        view.setAX(Self.id)
+        view.setAX(section == .outputs ? Self.id : "\(Self.id)-\(noteKey)")
+    }
+
+    /// The section's name in identifiers and the key of its note.
+    private var noteKey: String {
+        switch section {
+        case .outputs: return "outputs"
+        case .routing: return "routing"
+        case .devices: return "devices"
+        }
     }
 
     /// The column titles (`rows` false), or an empty table for the rows, with the column sizes.
-    private static func makeGrid(rows: Bool) -> NSGridView {
+    private static func makeGrid(rows: Bool, cols: [Col]) -> NSGridView {
         let grid: NSGridView
         if rows {
-            grid = NSGridView(numberOfColumns: columns.count, rows: 0)
+            grid = NSGridView(numberOfColumns: cols.count, rows: 0)
         } else {
-            let titles = ["name", "size", "display", "black", "layer", "monitor", "remove"].map { key -> NSView in
-                let label = NSTextField(labelWithString: loc("settings.video.col.\(key)"))
+            let titles = cols.map { col -> NSView in
+                let label = NSTextField(labelWithString: loc("settings.video.col.\(col.key)"))
                 label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
                 return label
             }
@@ -178,31 +244,43 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         }
         grid.rowSpacing = 6
         grid.columnSpacing = columnSpacing
-        for (c, width) in columns.enumerated() { grid.column(at: c).width = width }
+        for (c, col) in cols.enumerated() {
+            grid.column(at: c).width = col.width
+            if col == .black || col == .monitor || col == .remove { grid.column(at: c).xPlacement = .center }
+        }
         grid.yPlacement = .center
-        grid.column(at: 3).xPlacement = .center
-        grid.column(at: 5).xPlacement = .center
-        grid.column(at: 6).xPlacement = .center
         return grid
     }
+
+    /// The table's second flexible column after the name: the display choice, or the stages a
+    /// display shows.
+    private var wideIndex: Int? { cols.firstIndex { $0 == .display || $0 == .shownOn } }
 
     /// Shares what the table's width leaves after the fixed columns: the display column first
     /// (so a display's name and "not connected" read whole), then the name, in the titles and the
     /// rows alike.
     func fitColumns() {
-        let fixed = Self.columns.enumerated().filter { $0.offset != 0 && $0.offset != 2 }
-            .reduce(0) { $0 + $1.element }
+        let wide = wideIndex
+        let fixed = cols.enumerated().filter { $0.offset != 0 && $0.offset != wide }
+            .reduce(0) { $0 + $1.element.width }
         let spare =
             (scroll.contentView.bounds.width - 2 * Self.inset - fixed
-            - Self.columnSpacing * CGFloat(Self.columns.count - 1)).rounded(.down)
-        let display = min(Self.mostDisplayWidth, max(Self.leastDisplayWidth, spare - Self.columns[0]))
-        // The name takes all the rest, so a wide window shows a long name whole.
-        let name = max(Self.columns[0], spare - display)
+            - Self.columnSpacing * CGFloat(cols.count - 1)).rounded(.down)
+        let display: CGFloat
+        let name: CGFloat
+        if wide != nil {
+            display = min(Self.mostDisplayWidth, max(Self.leastDisplayWidth, spare - Col.name.width))
+            // The name takes all the rest, so a wide window shows a long name whole.
+            name = max(Col.name.width, spare - display)
+        } else {
+            display = Self.leastDisplayWidth
+            name = max(Col.name.width, spare)
+        }
         displayWidth = display
         nameWidth = name
         for g in [header, grid] {
             g.column(at: 0).width = name
-            g.column(at: 2).width = display
+            if let wide { g.column(at: wide).width = display }
         }
         for c in popupWidths { c.constant = display }
         for c in nameWidths { c.constant = name }
@@ -218,8 +296,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             new.topAnchor.constraint(equalTo: holder.topAnchor, constant: Self.inset),
             new.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: Self.inset),
             new.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -Self.inset),
-            new.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -Self.inset),
         ])
+        // Not required: the columns are fitted to the page's width, and a table that is
+        // momentarily wider must not hold the window wide (nor outweigh the page's own sizing).
+        let trailing = new.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -Self.inset)
+        trailing.priority = NSLayoutConstraint.Priority(250)
+        trailing.isActive = true
     }
 
     // MARK: Drawing
@@ -277,7 +359,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         let enabled = store.model != nil
         addButton.isEnabled = enabled
         noVideoLabel.isHidden = store.videoOutputs.video != false
-        emptyLabel.isHidden = !rows.isEmpty
+        emptyLabel.isHidden = section == .devices ? !list.isEmpty : !rows.isEmpty
         if !forced, shown == rows, displays == list { return }
         let resume = typedIn()
         // The old fields leave the window with the table: their end of editing is not an edit.
@@ -286,7 +368,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         displays = list
         popupWidths = []
         nameWidths = []
-        let grid = Self.makeGrid(rows: true)
+        let grid = Self.makeGrid(rows: true, cols: cols)
+        deviceLabels = []
         nameFields = []
         widthFields = []
         heightFields = []
@@ -296,8 +379,48 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         monitorButtons = []
         removeButtons = []
         warningLabels = []
-        for (i, row) in rows.enumerated() {
+        func addWarning(_ row: StageRow, _ n: Int) {
+            let warning = NSTextField(wrappingLabelWithString: row.warning ?? "")
+            warning.textColor = .systemOrange
+            warning.font = .systemFont(ofSize: 11)
+            warning.setAX("\(Self.id)-warning-\(n)")
+            warningLabels.append(warning)
+            if row.warning != nil {
+                let r = grid.addRow(with: [warning])
+                r.mergeCells(in: NSRange(location: 0, length: cols.count))
+            }
+        }
+        if section == .devices {
+            for (i, d) in list.enumerated() {
+                let used = rows.filter { $0.display == d.id }.map(\.name).joined(separator: ", ")
+                let name = Self.cellLabel(d.name, key: "name", n: i + 1, width: nameWidth)
+                nameWidths.append(contentsOf: Self.widthConstraints(of: name))
+                let size = Self.cellLabel(
+                    String(format: loc("settings.video.resolution"), String(d.width), String(d.height)),
+                    key: "resolution", n: i + 1)
+                let shownOn = Self.cellLabel(
+                    used.isEmpty ? loc("settings.video.unused") : used, key: "shown-on", n: i + 1, width: displayWidth)
+                popupWidths.append(contentsOf: Self.widthConstraints(of: shownOn))
+                shownOn.textColor = used.isEmpty ? .secondaryLabelColor : .labelColor
+                grid.addRow(with: [name, size, shownOn])
+                deviceLabels.append([name, size, shownOn])
+            }
+        }
+        for (i, row) in (section == .devices ? [] : rows).enumerated() {
             let n = i + 1
+            if section == .routing {
+                let name = Self.cellLabel(row.name, key: "name", n: n, width: nameWidth)
+                nameWidths.append(contentsOf: Self.widthConstraints(of: name))
+                let size = Self.cellLabel(
+                    String(format: loc("settings.video.resolution"), String(row.width), String(row.height)),
+                    key: "size", n: n)
+                let popup = displayPopup(row, tag: i, enabled: enabled)
+                popup.setAX("\(Self.id)-display-\(n)", label: "\(row.name), \(loc("settings.video.col.display"))")
+                grid.addRow(with: [name, size, popup])
+                displayPopups.append(popup)
+                addWarning(row, n)
+                continue
+            }
             let name = NSTextField(string: row.name)
             name.controlSize = .small
             name.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -326,8 +449,6 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             size.setAX("\(Self.id)-size-\(n)")
             widthFields.append(width)
             heightFields.append(height)
-            let popup = displayPopup(row, tag: i, enabled: enabled)
-            popup.setAX("\(Self.id)-display-\(n)", label: "\(row.name), \(loc("settings.video.col.display"))")
             let black = NSButton(checkboxWithTitle: "", target: self, action: #selector(blackClicked(_:)))
             black.controlSize = .small
             black.state = row.keepBlack ? .on : .off
@@ -342,7 +463,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             layer.delegate = self
             layer.tag = i
             layer.identifier = NSUserInterfaceItemIdentifier("layer")
-            layer.widthAnchor.constraint(equalToConstant: Self.columns[4]).isActive = true
+            layer.widthAnchor.constraint(equalToConstant: Col.layer.width).isActive = true
             layer.setAX("\(Self.id)-layer-\(n)", label: "\(row.name), \(loc("settings.video.col.layer"))")
             let monitor = NSButton(
                 title: loc("settings.video.monitor"), target: self, action: #selector(monitorClicked(_:)))
@@ -360,27 +481,36 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             remove.tag = i
             remove.isEnabled = enabled
             remove.setAX("\(Self.id)-remove-\(n)", label: "\(loc("settings.video.remove")) \(row.name)")
-            grid.addRow(with: [name, size, popup, black, layer, monitor, remove])
+            grid.addRow(with: [name, size, black, layer, monitor, remove])
             nameFields.append(name)
             layerFields.append(layer)
-            displayPopups.append(popup)
             blackBoxes.append(black)
             monitorButtons.append(monitor)
             removeButtons.append(remove)
-            let warning = NSTextField(wrappingLabelWithString: row.warning ?? "")
-            warning.textColor = .systemOrange
-            warning.font = .systemFont(ofSize: 11)
-            warning.setAX("\(Self.id)-warning-\(n)")
-            warningLabels.append(warning)
-            if row.warning != nil {
-                let r = grid.addRow(with: [warning])
-                r.mergeCells(in: NSRange(location: 0, length: Self.columns.count))
-            }
         }
         install(grid)
         fitColumns()
         grid.layoutSubtreeIfNeeded()
         if let resume { self.resume(resume) }
+    }
+
+    /// A read-only cell: one line, cut at the end, its whole text in the tooltip.
+    private static func cellLabel(_ text: String, key: String, n: Int, width: CGFloat? = nil) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.lineBreakMode = .byTruncatingTail
+        label.toolTip = text
+        label.setAX("\(id)-\(key)-\(n)", label: text)
+        if let width {
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.widthAnchor.constraint(equalToConstant: width).isActive = true
+        }
+        return label
+    }
+
+    /// The width constraint `cellLabel` gave `label`, to move with the table's columns.
+    private static func widthConstraints(of label: NSTextField) -> [NSLayoutConstraint] {
+        label.constraints.filter { $0.firstAttribute == .width && $0.relation == .equal }
     }
 
     /// A width or height field of the size column.

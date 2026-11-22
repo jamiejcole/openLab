@@ -322,6 +322,7 @@ impl NetOut {
     }
 }
 
+mod interface;
 mod lookup;
 mod send;
 mod transport;

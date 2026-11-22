@@ -9,7 +9,8 @@
       "name": "Lights",
       "host": "10.0.0.7",
       "port": 8000,
-      "protocol": "udp"
+      "protocol": "udp",
+      "interface": "en0"
     }
   }
 }
