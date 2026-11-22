@@ -1948,9 +1948,11 @@ mod tests {
         assert_eq!(r, Err(MediaError::BadSlices));
         // The stream lets go of the ring, so the voice playing it ends. The worker publishes the
         // error just before it drops the task (see `run_worker`), so the drop may still be on its
-        // way: wait for it, as for any other step of the worker (a sanitizer run is slow there).
-        let until = std::time::Instant::now() + Duration::from_secs(10);
-        while !p.source.is_abandoned() && std::time::Instant::now() < until {
+        // way: give the worker turns until it has (a sanitizer run is slow there), a bounded count.
+        for _ in 0..10_000_000 {
+            if p.source.is_abandoned() {
+                break;
+            }
             std::thread::yield_now();
         }
         assert!(p.source.is_abandoned());
