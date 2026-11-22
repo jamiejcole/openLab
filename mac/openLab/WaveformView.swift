@@ -217,7 +217,7 @@ class WaveformView: NSView {
     /// The width changed during a live resize: [`onResize`] is owed when it ends.
     private var resizedLive = false
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     var waveRect: CGRect {
         CGRect(x: 0, y: Self.rulerHeight, width: bounds.width, height: max(0, bounds.height - Self.rulerHeight))

@@ -443,5 +443,5 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
 
 /// A plain view whose origin is at the top, for content laid out from the top in a scroll view.
 final class FlippedView: NSView {
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 }

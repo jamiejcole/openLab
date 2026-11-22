@@ -872,9 +872,19 @@ notices() {
   fi
 }
 
+# 17. AppKit asks a view's `isFlipped` from its display cycle (cursor rects, tracking areas). An isolated
+# override gets a Swift 6 executor check in its @objc thunk, and that check crashed the app in the field
+# (a stage's windows changing at the end of a movie): every override is `nonisolated` (it returns a constant).
+flipped_overrides() {
+  local hits
+  hits=$(grep -rnE 'override (public )?var isFlipped' mac/openLab 2>/dev/null | grep -v 'nonisolated' || true)
+  [ -z "$hits" ] || fail flipped "isFlipped overrides must be nonisolated: $hits"
+}
+
 known_entries
 spdx
 notices
+flipped_overrides
 strings_keys
 debug_assertions
 versions

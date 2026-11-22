@@ -37,7 +37,7 @@ final class InspectorTabButton: NSButton {
         ((title as NSString).size(withAttributes: [.font: Self.font]).width).rounded(.up) + 2 * Self.padding
     }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
         if isChosen {

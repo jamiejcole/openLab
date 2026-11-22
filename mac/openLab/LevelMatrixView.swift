@@ -70,7 +70,7 @@ final class LevelMatrixView: NSView {
     private var dragSlot: LevelSet.Slot?
     private var dragging = false
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
     func resize(inputs: Int, outputs: Int) {

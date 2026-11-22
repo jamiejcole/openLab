@@ -59,7 +59,7 @@ final class PatchRoutingView: NSView {
     /// The matrix's size or contents changed: the panes that float over it follow.
     var onChange: (() -> Void)?
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { isEnabled }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -310,7 +310,7 @@ final class PatchRoutingPane: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
     override var isOpaque: Bool { true }
 
     override func draw(_ dirty: NSRect) {

@@ -61,7 +61,7 @@ final class LevelsScrollView: NSScrollView {
 
 /// What the levels scroll over: the faders, the value boxes under them and the field that types in a box.
 final class LevelsBoard: NSView {
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 }
 
 /// An Audio cue's Levels tab (AUD-06, AUD-08) and a Fade cue's levels (CT-10), laid out as QLab's
