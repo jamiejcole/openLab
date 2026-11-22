@@ -756,11 +756,9 @@ impl DocCx<'_> {
     fn apply_chunk(&mut self, applying: &mut Applying, per_wake: usize) {
         let take = per_wake.min(applying.retargets.len());
         let chunk: Vec<Retarget> = applying.retargets.drain(..take).collect();
-        // Each cue's file now, from one walk of the show (not one per cue).
-        let current: std::collections::HashMap<CueId, MediaRef> =
-            openlab_core::media_of_cues(self.doc.model.ws())
-                .into_iter()
-                .collect();
+        // Each listed cue's file now, from one walk that stops at the last of them.
+        let wanted: std::collections::HashSet<CueId> = chunk.iter().map(|r| r.cue).collect();
+        let current = openlab_core::media_of_listed(self.doc.model.ws(), &wanted);
         let retargets: Vec<(CueId, MediaRef)> = chunk
             .into_iter()
             .filter(|r| current.get(&r.cue) == Some(&r.from))
