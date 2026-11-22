@@ -28,7 +28,7 @@ enum Icon: CaseIterable {
     // Engine status levels.
     case statusWarning, statusAlarm
     // Cue list markers.
-    case playhead, preview, outputOverridden, flagged, flaggedInside, warningMarker, engineAlarm
+    case playhead, preview, outputOverridden, flagged, flaggedInside, warningMarker
     // Time column header toggle (elapsed / remaining).
     case timeToggle, timeToggleUp
     // The Target column's button for a file cue (present and missing), and the Target field's clear, choose and jump glyphs.
@@ -97,7 +97,7 @@ enum Icon: CaseIterable {
         case .fieldChoose: return "field-choose"
         case .fieldJump: return "field-jump"
         case .reservedPopOut: return "reserved-pop-out"
-        case .transportPanic, .activeCuePause, .activeCueResume, .engineAlarm, .targetFileMissing: return nil
+        case .transportPanic, .activeCuePause, .activeCueResume, .targetFileMissing: return nil
         }
     }
 
@@ -106,7 +106,6 @@ enum Icon: CaseIterable {
         switch self {
         case .activeCuePause: return "pause.fill"
         case .activeCueResume: return "play.fill"
-        case .engineAlarm: return "exclamationmark.triangle.fill"
         case .targetFileMissing: return "trash"
         default: return nil
         }

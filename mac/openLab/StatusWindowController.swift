@@ -7,8 +7,8 @@ import Combine
 /// one window with a Warnings page (what is wrong now, live, a row selecting its cue), a Logs page
 /// (the show log) and an Info page (this workspace's name, id and file). Window > Workspace Status
 /// (Shift-Command-W), View > Warnings and a click on the footer's warnings button or device alarm
-/// open it, the last two on the Warnings page. Like the log window it never takes the keyboard:
-/// GO and the transport keys keep reaching the workspace window.
+/// open it, the last two on the Warnings page. Opening it does not take the keyboard (GO and the
+/// transport keys keep reaching the workspace window); a click on it does, and Command-W then closes it.
 @MainActor
 final class StatusWindowController: NSWindowController {
     enum Page: String, CaseIterable {
@@ -33,10 +33,13 @@ final class StatusWindowController: NSWindowController {
         self.store = store
         self.warnings = warnings
         self.logs = logs
-        let panel = LogPanel(
+        // An ordinary floating panel: a click makes it key and activates openLab, so Command-W
+        // closes it (not the workspace) and the Warnings list takes clicks like any list.
+        let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 480),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow, .nonactivatingPanel],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow],
             backing: .buffered, defer: false)
+        panel.becomesKeyOnlyIfNeeded = false
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
         panel.title = loc("status.title")

@@ -3,10 +3,14 @@
 import AppKit
 import Combine
 
+/// What an alert on the alarm's panel is about: the engine alarm (critical, with a beep) or the
+/// offer of autosaved work after an unclean end (an ordinary alert).
+enum EngineAlertKind { case alarm, recoveryOffer }
+
 /// The engine alarm on screen. A protocol so tests record what is shown.
 @MainActor
 protocol EngineAlarmPresenting: AnyObject {
-    func show(title: String, message: String)
+    func show(title: String, message: String, kind: EngineAlertKind)
     func setDetail(_ text: String)
     /// Shows (or, with nil, hides) the button that offers the autosaves.
     func setRestoreAction(_ action: (() -> Void)?)
@@ -14,107 +18,92 @@ protocol EngineAlarmPresenting: AnyObject {
     var isVisible: Bool { get }
 }
 
-/// The engine alarm: a floating panel that cannot be missed (above every window, a critical
-/// Dock bounce, a beep) but is not modal and never becomes key on its own, so transport keys and
-/// Esc keep working in the workspace windows while it is up.
+extension EngineAlarmPresenting {
+    func show(title: String, message: String) { show(title: title, message: message, kind: .alarm) }
+}
+
+/// The engine alarm: a standard alert window (a critical one for the alarm) that cannot be missed
+/// (above every window, a critical Dock bounce, a beep) but is not modal and never becomes key on
+/// its own, so transport keys and Esc keep working in the workspace windows while it is up.
 @MainActor
 final class EngineAlarmPanel: NSObject, EngineAlarmPresenting {
-    private(set) var panel: NSPanel?
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let messageLabel = NSTextField(wrappingLabelWithString: "")
-    private let detailLabel = NSTextField(wrappingLabelWithString: "")
-    private var restoreButton: NSButton?
+    private var alert: FloatingAlert?
+    private var title = ""
+    private var message = ""
+    private var detail = ""
+    private var kind = EngineAlertKind.alarm
     private var restoreAction: (() -> Void)?
 
-    func show(title: String, message: String) {
-        let panel = self.panel ?? makePanel()
-        titleLabel.stringValue = title
-        messageLabel.stringValue = message
-        detailLabel.stringValue = ""
-        detailLabel.isHidden = true
-        panel.orderFrontRegardless()
-        NSSound.beep()
-        NSApp.requestUserAttention(.criticalRequest)
+    /// The alert's window while one is up.
+    var panel: NSWindow? { alert?.window }
+    /// The standard alert's style (a critical one for the alarm).
+    var alertStyle: NSAlert.Style? { alert?.alert.alertStyle }
+
+    func show(title: String, message: String, kind: EngineAlertKind) {
+        self.title = title
+        self.message = message
+        self.kind = kind
+        detail = ""
+        render()
+        if kind == .alarm {
+            NSSound.beep()
+            NSApp.requestUserAttention(.criticalRequest)
+        }
     }
 
     func setDetail(_ text: String) {
-        detailLabel.stringValue = text
-        detailLabel.isHidden = text.isEmpty
+        detail = text
+        if isVisible { render() }
     }
 
     func setRestoreAction(_ action: (() -> Void)?) {
         restoreAction = action
-        restoreButton?.isHidden = action == nil
-        if action != nil { panel?.orderFrontRegardless() }
+        // Clearing the button never brings back an alert the operator dismissed.
+        if action != nil || isVisible { render() }
     }
 
     func dismiss() {
-        panel?.orderOut(nil)
+        alert?.window.orderOut(nil)
+        alert = nil
         restoreAction = nil
     }
 
-    var isVisible: Bool { panel?.isVisible == true }
+    var isVisible: Bool { alert?.window.isVisible == true }
 
-    private func makePanel() -> NSPanel {
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 160),
-            styleMask: [.titled, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = loc("engine.alarm.window")
-        panel.identifier = NSUserInterfaceItemIdentifier(AX.engineAlarm)
-        panel.level = .floating
-        panel.isFloatingPanel = true
-        panel.becomesKeyOnlyIfNeeded = true
-        panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-        let icon = NSImageView()
-        icon.image = Icon.engineAlarm.image(loc("engine.alarm.window"), compact: true)
-        icon.contentTintColor = .systemRed
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 28, weight: .bold)
-        titleLabel.font = .boldSystemFont(ofSize: 15)
-        titleLabel.textColor = .systemRed
-        titleLabel.setAX(AX.engineAlarmTitle)
-        messageLabel.setAX(AX.engineAlarmMessage)
-        // Selectable text needs its panel to be key: a click on the message would take the keys
-        // from the workspace window and GO would stop working while the engine is down.
-        messageLabel.isSelectable = false
-        detailLabel.isSelectable = false
-        detailLabel.font = .systemFont(ofSize: 11)
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.setAX(AX.engineAlarmDetail)
-
-        let restore = NSButton(title: loc("engine.alarm.restore"), target: self, action: #selector(restoreClicked))
-        restore.setAX(AX.engineAlarmRestore)
-        restore.isHidden = true
-        restoreButton = restore
-        let dismiss = NSButton(title: loc("engine.alarm.dismiss"), target: self, action: #selector(dismissClicked))
-        dismiss.setAX(AX.engineAlarmDismiss)
-        let buttons = NSStackView(views: [restore, dismiss])
-        buttons.orientation = .horizontal
-
-        let text = NSStackView(views: [titleLabel, messageLabel, detailLabel, buttons])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 8
-        let row = NSStackView(views: [icon, text])
-        row.orientation = .horizontal
-        row.alignment = .top
-        row.spacing = 12
-        row.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        panel.contentView = row
-        panel.center()
-        self.panel = panel
-        return panel
+    /// Builds the alert for what is to say now, in the place of the one up (a standard alert's
+    /// layout is fixed when it is built).
+    private func render() {
+        var buttons: [FloatingAlert.Button] = []
+        if restoreAction != nil {
+            buttons.append(
+                .init(
+                    title: loc("engine.alarm.restore"), id: AX.engineAlarmRestore,
+                    action: { [weak self] in
+                        self?.restoreClicked()
+                    }))
+        }
+        let dismissKey = kind == .recoveryOffer ? "engine.alarm.notNow" : "engine.alarm.dismiss"
+        buttons.append(
+            .init(title: loc(dismissKey), id: AX.engineAlarmDismiss, action: { [weak self] in self?.dismiss() }))
+        let next = FloatingAlert(
+            critical: kind == .alarm, title: title, message: message, detail: detail, buttons: buttons,
+            messageIDs: (AX.engineAlarmTitle, AX.engineAlarmMessage, AX.engineAlarmDetail))
+        next.window.identifier = NSUserInterfaceItemIdentifier(AX.engineAlarm)
+        if let old = alert?.window, old.isVisible {
+            next.window.setFrameTopLeftPoint(NSPoint(x: old.frame.minX, y: old.frame.maxY))
+            old.orderOut(nil)
+        } else {
+            next.window.center()
+        }
+        alert = next
+        next.window.orderFrontRegardless()
     }
 
-    @objc private func restoreClicked() {
+    private func restoreClicked() {
         let action = restoreAction
         setRestoreAction(nil)
         action?()
     }
-
-    @objc private func dismissClicked() { dismiss() }
 }
 
 /// Joins the supervisor and the session to the alarm: shows it when the engine is gone, says
@@ -216,7 +205,8 @@ final class EngineAlarmController {
         return lines.joined(separator: "\n")
     }
 
-    /// After an unclean exit: the autosaves no open window holds, behind the alarm's button.
+    /// After an unclean exit: the autosaves no open window holds, offered in an alert about recovering
+    /// unsaved changes. The unclean end itself raises nothing (it is in the show log and Warnings).
     private func checkRecovery() {
         guard supervisor.recoveryPending else { return }
         supervisor.recoveryPending = false
@@ -234,7 +224,9 @@ final class EngineAlarmController {
             // Offered when the button is pressed: a workspace opened since (the launch choice
             // reopened it) is not opened a second time.
             if !self.isShown {
-                self.presenter.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
+                self.presenter.show(
+                    title: loc("engine.alarm.recover"), message: loc("engine.alarm.recoverMessage"),
+                    kind: .recoveryOffer)
             }
             self.summary = self.reattachSummary(setAside: Set(offer.filter(\.stale).map(\.workspaceId)))
             self.offered = entries

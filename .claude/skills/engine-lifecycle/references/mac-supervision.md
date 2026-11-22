@@ -9,7 +9,7 @@ Files: `mac/openLab/Engine/EngineSupervisor.swift`, `EngineProcesses.swift`, `En
 - **Never end an engine that merely answers slowly**: a socket that opens but sends no `welcome` within 10 s is busy (its control loop may be stalled while the audio thread plays), not silent.
 - **Quit closes with `discard_changes` only after every prompt is answered**, so a later cancelled prompt never loses edits.
 - A reused pid is never signalled: liveness is `kill(pid, 0)` plus the process's executable name (`openlab-engine`).
-- The alarm never takes the keys: Esc and transport keys keep working mid-show.
+- The alarm is a standard alert window (`EngineAlarm.swift`, `FloatingAlert`) shown without a modal and never takes the keys: Esc and transport keys keep working mid-show.
 
 ## Launch
 
@@ -42,6 +42,7 @@ This holds at launch and for a replacement after a crash. Nothing plays on it, s
   - A window with unsaved changes and no autosave newer than its file is reopened from the file; the alarm and its log say its edits are lost.
   - An untitled window uses `open_recovery` of its workspace id's autosave (a clean one uses `new`). A window that cannot be rebound closes and is listed in the alarm.
   - A bound connection is pinned to its run's token and never says `hello` with an old doc id to a new run.
+- An unclean end (the previous run's marker) raises no alert of its own: it is a show-log and Warnings record. Only autosaves no window holds raise one, a standard alert about recovering unsaved changes (Restore Autosaves… / Not Now); with none, nothing is shown.
 - Then `scan_recovery` entries no open window holds are offered behind the alarm's Restore button (one prompt each, at most 8 workspaces). The same offer is in File > Recover Autosaves... whenever the engine is connected, so a dismissed or never-made offer (a quit during reattach, an untitled workspace) stays reachable.
 - A File > New or Open during the reattach gets its window at once, unless a waiting window will claim the path just opened (the engine answers `opened` before it lists the doc, so the decision uses the requested path). For the same reason a `workspaces` list that omits a doc closes its window only if an earlier list of that engine run named the doc.
 
