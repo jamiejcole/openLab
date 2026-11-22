@@ -181,8 +181,10 @@ enum Order {
     /// it), so a burst of them (the engine running ahead of real time, a stage host busy for a
     /// moment) never fills the queue and gets the stage host stopped as not reading.
     Clock(ToStage),
+    /// Test support: written as it is; the flag, if any, is set once it is queued for a running
+    /// stage host.
     #[cfg(feature = "test-support")]
-    Send(ToStage),
+    Send(ToStage, Option<Arc<std::sync::atomic::AtomicBool>>),
     /// Test support: nothing; the supervisor looks at its (hand-moved) clock again.
     #[cfg(feature = "test-support")]
     Wake,
@@ -237,7 +239,20 @@ impl StageHost {
     /// Test support: sends `message` as it is.
     #[cfg(feature = "test-support")]
     pub fn send(&self, message: ToStage) {
-        let _ = self.commands.send(Order::Send(message));
+        let _ = self.commands.send(Order::Send(message, None));
+    }
+
+    /// Test support: sends `message` as it is; the flag returned is set once it is queued for
+    /// the running stage host. Whatever the supervisor writes after that (a ping) reaches the
+    /// stage host behind it, and whatever it wrote before (a ping it may still answer) is
+    /// counted by then.
+    #[cfg(feature = "test-support")]
+    pub fn send_queued(&self, message: ToStage) -> Arc<std::sync::atomic::AtomicBool> {
+        let queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _ = self
+            .commands
+            .send(Order::Send(message, Some(Arc::clone(&queued))));
+        queued
     }
 
     /// The control thread is running. Pings go only after this was said since the last one,
@@ -380,7 +395,12 @@ impl Supervisor {
                         self.app = Some(message);
                     }
                     #[cfg(feature = "test-support")]
-                    Ok(Order::Send(message)) => self.write(&message),
+                    Ok(Order::Send(message, queued)) => {
+                        self.write(&message);
+                        if let Some(queued) = queued.filter(|_| self.running.is_some()) {
+                            queued.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
                     #[cfg(feature = "test-support")]
                     Ok(Order::Wake) => {}
                     Ok(Order::Alive) => self.alive = true,

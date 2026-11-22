@@ -1000,11 +1000,14 @@ impl Control {
         }
     }
 
-    /// Test support: makes the running stage host stop answering, as a hung one would.
+    /// Test support: makes the running stage host stop answering, as a hung one would. The flag
+    /// is set once the hang is queued for it: a ping the supervisor sends after that goes
+    /// unanswered, one it sent before may still be answered.
     #[cfg(feature = "test-support")]
-    pub fn hang_stage_host(&mut self) {
-        if let Some(host) = &self.eng.stages.host {
-            host.send(openlab_core::stage_link::ToStage::Hang);
+    pub fn hang_stage_host(&mut self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        match &self.eng.stages.host {
+            Some(host) => host.send_queued(openlab_core::stage_link::ToStage::Hang),
+            None => std::sync::Arc::default(),
         }
     }
 
