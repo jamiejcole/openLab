@@ -1631,7 +1631,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertFalse(sc.networkDeleteButtons.isEmpty)
         for v in sc.networkInterfacePopups + sc.networkTransportPopups + sc.networkDeleteButtons + sc.networkFields {
             let f = v.convert(v.bounds, to: clip)
-            XCTAssertLessThanOrEqual(f.maxX, clip.bounds.width + 0.5, "\(v.accessibilityIdentifier()) is cut at the right")
+            XCTAssertLessThanOrEqual(
+                f.maxX, clip.bounds.width + 0.5, "\(v.accessibilityIdentifier()) is cut at the right")
         }
         XCTAssertEqual(window.contentLayoutRect.width, window.contentMinSize.width, accuracy: 0.5)
     }
@@ -1654,7 +1655,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         window.contentView?.layoutSubtreeIfNeeded()
         let popup = try XCTUnwrap(sc.networkInterfacePopups.first)
         let title = try XCTUnwrap(popup.titleOfSelectedItem)
-        let wanted = (title as NSString).size(withAttributes: [.font: popup.font ?? NSFont.systemFont(ofSize: 13)]).width
+        let wanted = (title as NSString).size(withAttributes: [.font: popup.font ?? NSFont.systemFont(ofSize: 13)])
+            .width
         XCTAssertLessThanOrEqual(wanted + 30, popup.bounds.width, "\(title) fits the closed pop-up")
     }
 

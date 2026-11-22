@@ -168,7 +168,8 @@ extension WorkspaceSettingsWindowController {
             delete.isEnabled = enabled
             delete.setAX("\(AX.settingsNetwork)-delete-\(n)", label: "\(loc("settings.network.delete")) \(row.name)")
             networkGrid.addRow(with: [
-                field("name", row.name, width: Self.networkNameMin), field("host", row.host, width: Self.networkHostMin),
+                field("name", row.name, width: Self.networkNameMin),
+                field("host", row.host, width: Self.networkHostMin),
                 field("port", String(row.port), width: 52), popup, interface, delete,
             ])
             networkTransportPopups.append(popup)
