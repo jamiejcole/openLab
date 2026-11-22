@@ -409,18 +409,13 @@ final class StagePointer {
     deinit {
         for m in monitors { NSEvent.removeMonitor(m) }
         for o in observers { NotificationCenter.default.removeObserver(o) }
-        // The pointer is never left hidden, nor the timer running, past this.
-        let (wasHidden, unhide, stop) = MainActor.assumeIsolated { (hidden, unhide, stopPolling) }
-        if wasHidden || stop != nil {
-            let finish: @MainActor @Sendable () -> Void = {
-                if wasHidden { unhide() }
-                stop?()
-            }
-            if Thread.isMainThread {
-                MainActor.assumeIsolated { finish() }
-            } else {
-                DispatchQueue.main.async { finish() }
-            }
+        // The pointer is never left hidden, nor the timer running, past this. The app's backstop owns it
+        // and is released on the main thread; anywhere else nothing here may be read, so nothing is
+        // touched (no trap).
+        guard Thread.isMainThread else { return }
+        MainActor.assumeIsolated {
+            if hidden { unhide() }
+            stopPolling?()
         }
     }
 
