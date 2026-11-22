@@ -1564,7 +1564,11 @@ fn a_cue_added_during_a_save_as_that_needed_no_respelling_follows_the_move() {
     let sound = a.path().join("sfx").join("hit.wav");
     fs::copy(wav(&dc(800, 0.5)), &sound).unwrap();
     let elsewhere = wav(&dc(800, 0.5));
-    let ws = workspace(vec![audio(1, &elsewhere, 0)]);
+    let mut ws = workspace(vec![audio(1, &elsewhere, 0)]);
+    // The copy of an added file into the show folder runs on its own thread and would retarget
+    // cue 2 to `audio/` when it lands, before or after the move; this test follows the move
+    // (copying is tested in `copy_media.rs`).
+    ws.settings.copy_media_on_add = false;
     let a_show = a.path().join("show.openlab");
     write_show(&a_show, &ws);
     let mut r = rig_with(ws, Some(a_show), None);

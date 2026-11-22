@@ -1657,6 +1657,11 @@ impl DocCx<'_> {
     /// A save of this workspace is on disk; `prepared` is what the writer thread made of a Save
     /// As into another folder ([`prepare_move`]).
     fn saved(&mut self, save: &PendingSave, prepared: Option<Box<dyn std::any::Any + Send>>) {
+        // A copy that answered while this save was written still has parts waiting: they go in
+        // before the move re-spells the cues, which their check of each cue's file relies on.
+        if self.doc.show_path.as_deref() != Some(save.path.as_path()) {
+            self.flush_retargets();
+        }
         let mut moved = prepared.and_then(|p| match p.downcast::<Moved>() {
             Ok(moved) => Some(moved),
             Err(other) => {

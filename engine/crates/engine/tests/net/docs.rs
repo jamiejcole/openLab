@@ -45,7 +45,17 @@ fn engine_with(
     tweak(&mut c);
     let control = Control::new(ws, ctl, Backend::Offline, c, inbox_tx.clone(), out_tx).unwrap();
     let worker = thread::spawn(move || runner::run(control, &inbox));
-    let server = WsServer::start(inbox_tx, outbound, ServerConfig::default()).unwrap();
+    // The server's own timers (5 s to say hello, 30 s of unanswered pings) are for real peers.
+    // The hello deadline covers the server's accept plus its read of the hello. Under the
+    // sanitizers a client has been seen ending with "connection ended" and nothing said; the
+    // cause is unproven (#652), and these tests are about docs, not those timers, so they are
+    // loosened.
+    let config = ServerConfig {
+        hello_timeout: Duration::from_secs(60),
+        dead_after: Duration::from_secs(120),
+        ..ServerConfig::default()
+    };
+    let server = WsServer::start(inbox_tx, outbound, config).unwrap();
     (server, worker)
 }
 

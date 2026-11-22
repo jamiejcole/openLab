@@ -23,7 +23,7 @@ use openlab_core::{
 };
 
 use super::inbox::reply;
-use super::{Control, DocCx, DocId, Inbox, ReplyTx, fail, ok};
+use super::{Control, DocCx, DocId, Engine, Inbox, ReplyTx, fail, ok};
 use crate::persist::{
     Copied, CopyError, CopyFailure, CopyHooks, CopyPacing, CopyProgress, CopyWork, FolderIndexes,
     copy_into, media_path,
@@ -31,7 +31,11 @@ use crate::persist::{
 
 /// Cues pointed at their copies per control wake: each wake is an edit of this many cues, so a
 /// copy of thousands of files never makes one long wake.
-pub const APPLY_PER_WAKE: usize = 32;
+pub const APPLY_PER_WAKE: usize = 8;
+
+/// Files of a finished copy sorted into counts and cues to retarget per control wake: this work
+/// is a part of the copy's end, so a copy of thousands of files does not make one long wake.
+const PLAN_PER_WAKE: usize = 128;
 
 /// Least time between two `media_copy_progress` messages of a copy.
 pub const COPY_PROGRESS_EVERY: Duration = Duration::from_millis(250);
@@ -43,6 +47,8 @@ pub struct CopyConfig {
     pub hooks: CopyHooks,
     /// Cues pointed at their copies per wake ([`APPLY_PER_WAKE`]).
     pub apply_per_wake: usize,
+    /// Files of a finished copy sorted per wake ([`PLAN_PER_WAKE`]).
+    pub plan_per_wake: usize,
 }
 
 impl Default for CopyConfig {
@@ -51,6 +57,7 @@ impl Default for CopyConfig {
             pacing: CopyPacing::default(),
             hooks: CopyHooks::default(),
             apply_per_wake: APPLY_PER_WAKE,
+            plan_per_wake: PLAN_PER_WAKE,
         }
     }
 }
@@ -74,14 +81,7 @@ struct WorkItem {
 /// What a copy's thread found, file by file (the plan's item index and its outcome).
 pub struct CopyAnswer {
     ticket: u64,
-    results: Vec<(usize, Result<Done, CopyError>)>,
-}
-
-/// A file done with on the copy's thread: where it went, and that place as the show file would
-/// store it from the job's show folder (worked out there, not on the control thread).
-struct Done {
-    copied: Copied,
-    stored: Option<MediaRef>,
+    results: Vec<(usize, Result<Copied, CopyError>)>,
 }
 
 impl std::fmt::Debug for CopyAnswer {
@@ -97,8 +97,8 @@ impl std::fmt::Debug for CopyAnswer {
 
 /// How an item of the plan ended.
 enum Outcome {
-    Copied(PathBuf, Option<MediaRef>),
-    Reused(PathBuf, Option<MediaRef>),
+    Copied(PathBuf),
+    Reused(PathBuf),
     /// Already inside the show folder (on demand): left as it is.
     InFolder,
     Failed(MediaCopyReason, String),
@@ -148,8 +148,6 @@ struct Running {
     ticket: u64,
     doc: DocId,
     mode: CopyMode,
-    /// The show folder the copies go into.
-    show_dir: PathBuf,
     items: Vec<CopyItem>,
     /// Outcomes known before the thread started (a file in the folder, one that cannot be
     /// reached), by item index.
@@ -179,10 +177,12 @@ pub(super) struct Copies {
     applying: Option<Applying>,
     /// Cues pointed at their copies per wake.
     per_wake: usize,
+    /// Files of a finished copy sorted per wake.
+    plan_per_wake: usize,
 }
 
 impl Copies {
-    pub(super) fn new(inbox: Sender<Inbox>, per_wake: usize) -> Self {
+    pub(super) fn new(inbox: Sender<Inbox>, config: &CopyConfig) -> Self {
         Self {
             inbox,
             running: None,
@@ -191,7 +191,8 @@ impl Copies {
             stuck: Arc::new(AtomicUsize::new(0)),
             unsent: Vec::new(),
             applying: None,
-            per_wake,
+            per_wake: config.apply_per_wake,
+            plan_per_wake: config.plan_per_wake,
         }
     }
 
@@ -412,7 +413,6 @@ impl Control {
             ticket: self.eng.copies.ticket,
             doc: job.doc,
             mode: job.mode,
-            show_dir: show_dir.clone(),
             items,
             settled,
             cues,
@@ -485,14 +485,13 @@ impl Control {
     fn finish_copy(
         &mut self,
         running: Running,
-        results: Vec<(usize, Result<Done, CopyError>)>,
+        results: Vec<(usize, Result<Copied, CopyError>)>,
         abandoned_after: Option<u64>,
     ) {
         let Running {
             ticket,
             doc,
             mode,
-            show_dir,
             items,
             mut settled,
             ..
@@ -502,14 +501,8 @@ impl Control {
             settled.push((
                 index,
                 match result {
-                    Ok(Done {
-                        copied: Copied::New(path),
-                        stored,
-                    }) => Outcome::Copied(path, stored),
-                    Ok(Done {
-                        copied: Copied::Reused(path),
-                        stored,
-                    }) => Outcome::Reused(path, stored),
+                    Ok(Copied::New(path)) => Outcome::Copied(path),
+                    Ok(Copied::Reused(path)) => Outcome::Reused(path),
                     Err(e) => {
                         if e.failure == CopyFailure::Cancelled {
                             cancelled = true;
@@ -540,6 +533,7 @@ impl Control {
             }
         }
         settled.sort_by_key(|(i, _)| *i);
+        let first_plan_part = self.eng.copies.plan_per_wake.max(1);
         let Some(mut cx) = self.cx_of(doc) else {
             return;
         };
@@ -547,18 +541,32 @@ impl Control {
         if cx.doc.show_mode {
             cancelled = true;
         }
-        let (report, retargets) = cx.plan_retargets(mode, &show_dir, &items, &settled, cancelled);
-        if retargets.is_empty() {
+        let planner = Planner {
+            mode,
+            items,
+            settled: settled.into_iter(),
+            cancelled,
+            copied: 0,
+            reused: std::collections::HashSet::new(),
+            in_folder: std::collections::HashSet::new(),
+            failed: Vec::new(),
+            failed_count: 0,
+        };
+        // Sorted and applied a part per wake from the next wake on (`copy_tick`); the first part
+        // of the sorting is done now, so a small copy reports at once.
+        let mut applying = Applying {
+            doc,
+            key: format!("copy-media:{ticket}"),
+            retargets: VecDeque::new(),
+            planner: Some(planner),
+            report: None,
+        };
+        cx.plan_step(&mut applying, first_plan_part);
+        if let Some(report) = applying.finished() {
             self.send_report(doc, report);
             return;
         }
-        // Applied from the next wake on (`copy_tick`), a part per wake.
-        self.eng.copies.applying = Some(Applying {
-            doc,
-            key: format!("copy-media:{ticket}"),
-            retargets,
-            report,
-        });
+        self.eng.copies.applying = Some(applying);
     }
 
     /// The next part of pointing a finished copy's cues at their copies; its report once the last
@@ -568,12 +576,16 @@ impl Control {
             return;
         };
         let per_wake = self.eng.copies.per_wake.max(1);
+        let plan_per_wake = self.eng.copies.plan_per_wake.max(1);
         match self.cx_of(applying.doc) {
-            Some(mut cx) => cx.apply_chunk(&mut applying, per_wake),
+            Some(mut cx) => {
+                cx.plan_step(&mut applying, plan_per_wake);
+                cx.apply_chunk(&mut applying, per_wake);
+            }
             None => return,
         }
-        if applying.retargets.is_empty() {
-            self.send_report(applying.doc, applying.report);
+        if let Some(report) = applying.finished() {
+            self.send_report(applying.doc, report);
         } else {
             self.eng.copies.applying = Some(applying);
         }
@@ -583,6 +595,32 @@ impl Control {
     /// one whole undo step before a user's undo, redo, edit or Show Mode acts on the doc. Only
     /// those user-driven wakes apply more than a part: a copy nobody interrupts still trickles.
     pub(super) fn flush_retargets(&mut self, doc: DocId) {
+        if let Some(mut cx) = self.cx_of(doc) {
+            cx.flush_retargets();
+        }
+    }
+
+    fn send_report(&mut self, doc: DocId, report: MediaCopyReport) {
+        self.eng.send_copy_report(doc, report);
+    }
+}
+
+impl Engine {
+    fn send_copy_report(&mut self, doc: DocId, report: MediaCopyReport) {
+        let message = ServerMessage::MediaCopied {
+            report: Box::new(report),
+        };
+        if !self.out.send_state(Some(doc), message.clone()) {
+            self.copies.unsent.push((doc, message));
+        }
+    }
+}
+
+impl DocCx<'_> {
+    /// [`Control::flush_retargets`] for this doc; also called when a save is about to move the
+    /// doc's folder, so no part waiting is applied after the move re-spells the cues it checks.
+    pub(super) fn flush_retargets(&mut self) {
+        let doc = self.doc.id;
         if self
             .eng
             .copies
@@ -595,23 +633,13 @@ impl Control {
         let Some(mut applying) = self.eng.copies.applying.take() else {
             return;
         };
-        if let Some(mut cx) = self.cx_of(doc) {
-            cx.apply_chunk(&mut applying, usize::MAX);
-            self.send_report(doc, applying.report);
+        self.plan_step(&mut applying, usize::MAX);
+        self.apply_chunk(&mut applying, usize::MAX);
+        if let Some(report) = applying.finished() {
+            self.eng.send_copy_report(doc, report);
         }
     }
 
-    fn send_report(&mut self, doc: DocId, report: MediaCopyReport) {
-        let message = ServerMessage::MediaCopied {
-            report: Box::new(report),
-        };
-        if !self.eng.out.send_state(Some(doc), message.clone()) {
-            self.eng.copies.unsent.push((doc, message));
-        }
-    }
-}
-
-impl DocCx<'_> {
     /// After a client's command that changed the workspace: queues the copy of the files it
     /// set on cues, when the workspace copies on add, has a show folder and is not in Show Mode.
     pub(super) fn copy_on_add(&mut self, cues: Vec<CueId>) {
@@ -625,89 +653,77 @@ impl DocCx<'_> {
         self.eng.copies.add(self.doc.id, cues);
     }
 
-    /// Points the cues whose file was copied or found at their copies, as one undo step, and
-    /// counts the files. A cue whose file changed since the copy was planned keeps the new one
-    /// (the edit wins). A stopped copy retargets nothing.
-    fn plan_retargets(
-        &mut self,
-        mode: CopyMode,
-        job_dir: &Path,
-        items: &[CopyItem],
-        settled: &[(usize, Outcome)],
-        cancelled: bool,
-    ) -> (MediaCopyReport, VecDeque<Retarget>) {
-        let show_dir = self.doc.show_path.as_deref().and_then(Path::parent);
-        // A Save As into another folder since the copy began: the stored forms the thread worked
-        // out are for the old folder, and are worked out again here.
-        let moved = show_dir != Some(job_dir);
-        let show_dir = show_dir.and_then(Path::to_str).map(str::to_owned);
-        let mut retargets = VecDeque::new();
-        let mut copied = 0u64;
-        let mut reused: std::collections::HashSet<&Path> = std::collections::HashSet::new();
-        let mut in_folder: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let mut failed = Vec::new();
-        let mut failed_count = 0u64;
-        for (index, outcome) in settled {
-            let Some(item) = items.get(*index) else {
+    /// Sorts the next `n` settled files of the copy into the report's counts and the cues to
+    /// point at their copies (all one undo step, applied by [`Self::apply_chunk`]); the report is
+    /// complete once the last file is sorted. A cue whose file changed since the copy was planned
+    /// keeps the new one (the edit wins). A stopped copy retargets nothing.
+    fn plan_step(&mut self, applying: &mut Applying, n: usize) {
+        let Some(p) = applying.planner.as_mut() else {
+            return;
+        };
+        // Show Mode began since: nothing more is retargeted.
+        if self.doc.show_mode {
+            p.cancelled = true;
+        }
+        for (index, outcome) in p.settled.by_ref().take(n) {
+            let Some(item) = p.items.get(index) else {
                 continue;
             };
             let target = match outcome {
-                Outcome::Copied(path, stored) => {
-                    copied += 1;
-                    Some((path, stored))
+                Outcome::Copied(path) => {
+                    p.copied += 1;
+                    Some(path)
                 }
-                Outcome::Reused(path, stored) => {
-                    reused.insert(path.as_path());
-                    Some((path, stored))
+                Outcome::Reused(path) => {
+                    p.reused.insert(path.clone());
+                    Some(path)
                 }
                 Outcome::InFolder => {
-                    in_folder.insert(item.media.as_str());
+                    p.in_folder.insert(item.media.as_str().to_owned());
                     None
                 }
                 Outcome::Failed(reason, message) => {
-                    failed_count += 1;
-                    if failed.len() < MAX_COPY_FAILURES_LISTED {
-                        failed.push(MediaCopyFailure {
+                    p.failed_count += 1;
+                    if p.failed.len() < MAX_COPY_FAILURES_LISTED {
+                        p.failed.push(MediaCopyFailure {
                             cue: item.cue,
                             file: item.media.as_str().to_owned(),
-                            reason: *reason,
-                            message: message.clone(),
+                            reason,
+                            message,
                         });
                     }
                     None
                 }
             };
-            let Some((path, stored)) = target else {
+            let Some(path) = target else {
                 continue;
             };
-            if cancelled {
+            if p.cancelled {
                 continue;
             }
-            let stored = match stored {
-                Some(stored) if !moved => Some(stored.clone()),
-                _ => path
-                    .to_str()
-                    .map(|p| portable_ref(p, show_dir.as_deref(), PathStyle::host())),
-            };
-            if let Some(stored) = stored {
-                retargets.push_back(Retarget {
-                    cue: item.cue,
-                    from: item.media.clone(),
-                    to: stored,
-                });
-            }
+            applying.retargets.push_back(Retarget {
+                cue: item.cue,
+                from: item.media.clone(),
+                path,
+            });
         }
+        if p.settled.len() > 0 {
+            return;
+        }
+        let Some(p) = applying.planner.take() else {
+            return;
+        };
         let report = MediaCopyReport {
-            on_demand: mode == CopyMode::OnDemand,
-            copied,
-            reused: reused.len() as u64,
-            in_folder: in_folder.len() as u64,
-            failed,
-            failed_count,
-            cancelled,
+            on_demand: p.mode == CopyMode::OnDemand,
+            copied: p.copied,
+            reused: p.reused.len() as u64,
+            in_folder: p.in_folder.len() as u64,
+            failed: p.failed,
+            failed_count: p.failed_count,
+            cancelled: p.cancelled,
         };
         self.log(
-            if failed_count > 0 {
+            if report.failed_count > 0 {
                 LogLevel::Warn
             } else {
                 LogLevel::Info
@@ -718,10 +734,10 @@ impl DocCx<'_> {
                 report.reused,
                 report.in_folder,
                 report.failed_count,
-                if cancelled { " (stopped)" } else { "" }
+                if report.cancelled { " (stopped)" } else { "" }
             ),
         );
-        (report, retargets)
+        applying.report = Some(report);
     }
 
     /// Points the next `per_wake` cues of `applying` at their copies, joined to the copy's one undo
@@ -730,15 +746,24 @@ impl DocCx<'_> {
     fn apply_chunk(&mut self, applying: &mut Applying, per_wake: usize) {
         let take = per_wake.min(applying.retargets.len());
         let chunk: Vec<Retarget> = applying.retargets.drain(..take).collect();
-        // Each cue's file now, from one walk of the show (not one per cue).
-        let current: std::collections::HashMap<CueId, MediaRef> =
-            openlab_core::media_of_cues(self.doc.model.ws())
-                .into_iter()
-                .collect();
+        // Each listed cue's file now, from one walk that stops at the last of them.
+        let wanted: std::collections::HashSet<CueId> = chunk.iter().map(|r| r.cue).collect();
+        let current = openlab_core::media_of_listed(self.doc.model.ws(), &wanted);
+        // The stored form is spelled against the show folder as it is now: a Save As that landed
+        // since the copy was planned moved the folder, and the part follows it.
+        let show_dir = self
+            .doc
+            .show_path
+            .as_deref()
+            .and_then(Path::parent)
+            .and_then(Path::to_str);
         let retargets: Vec<(CueId, MediaRef)> = chunk
             .into_iter()
             .filter(|r| current.get(&r.cue) == Some(&r.from))
-            .map(|r| (r.cue, r.to))
+            .filter_map(|r| {
+                let path = r.path.to_str()?;
+                Some((r.cue, portable_ref(path, show_dir, PathStyle::host())))
+            })
             .collect();
         if retargets.is_empty() {
             return;
@@ -771,16 +796,43 @@ struct Retarget {
     cue: CueId,
     /// The file the cue had when the copy was planned.
     from: MediaRef,
-    to: MediaRef,
+    /// The copy's absolute path; its stored form is worked out when the cue is retargeted.
+    path: PathBuf,
 }
 
-/// A copy whose files are done, its cues being pointed at their copies a few hundred a wake
+/// A copy whose files are done, its cues being pointed at their copies a few at a wake
 /// (each wake an edit of that many cues, all one undo step).
 struct Applying {
     doc: DocId,
     key: String,
     retargets: VecDeque<Retarget>,
-    report: MediaCopyReport,
+    /// The files not yet sorted into the report and the cues to retarget; none once all are.
+    planner: Option<Planner>,
+    /// Set when the last file is sorted.
+    report: Option<MediaCopyReport>,
+}
+
+impl Applying {
+    /// The report once every file is sorted and every cue retargeted.
+    fn finished(&mut self) -> Option<MediaCopyReport> {
+        if self.planner.is_some() || !self.retargets.is_empty() {
+            return None;
+        }
+        self.report.take()
+    }
+}
+
+/// A finished copy's files being sorted into the report's counts, a part per wake.
+struct Planner {
+    mode: CopyMode,
+    items: Vec<CopyItem>,
+    settled: std::vec::IntoIter<(usize, Outcome)>,
+    cancelled: bool,
+    copied: u64,
+    reused: std::collections::HashSet<PathBuf>,
+    in_folder: std::collections::HashSet<String>,
+    failed: Vec<MediaCopyFailure>,
+    failed_count: u64,
 }
 
 fn progress_message(r: &Running) -> ServerMessage {
@@ -855,15 +907,7 @@ fn spawn_copy(
                     item.folder,
                     item.always_new,
                     &mut ctx,
-                )
-                .map(|copied| {
-                    let stored = match &copied {
-                        Copied::New(p) | Copied::Reused(p) => p
-                            .to_str()
-                            .map(|p| portable_ref(p, show_dir.to_str(), PathStyle::host())),
-                    };
-                    Done { copied, stored }
-                });
+                );
                 results.push((item.index, result));
                 progress.file_done();
             }

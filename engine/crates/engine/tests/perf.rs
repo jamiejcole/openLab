@@ -565,7 +565,7 @@ fn performance_budgets() {
 /// WS-04: copying every file of a 2,000-cue show into its show folder (on demand) costs the
 /// control thread no wake longer than [`COPY_WAKE_LIMIT`]: the wakes while the files are copied,
 /// the one that takes the copy's answer, and each wake after it that points the next part of the
-/// cues at their copies (a few hundred a wake, all one undo step) and takes up their files.
+/// cues at their copies (a few a wake, all one undo step) and takes up their files.
 fn copy_budget(path: &std::path::Path) {
     let mut while_copying = Duration::MAX;
     let mut applying = Duration::MAX;
@@ -599,7 +599,7 @@ fn copy_budget(path: &std::path::Path) {
             s.tick();
             longest = longest.max(t.elapsed());
             wakes += 1;
-            assert!(wakes < 200, "the copy never ended");
+            assert!(wakes < 1000, "the copy never ended");
         }
         // And the wake after the last part, which takes up its files.
         let t = Instant::now();
