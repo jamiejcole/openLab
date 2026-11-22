@@ -1635,6 +1635,9 @@ final class WorkspaceSettingsTests: XCTestCase {
                 f.maxX, clip.bounds.width + 0.5, "\(v.accessibilityIdentifier()) is cut at the right")
         }
         XCTAssertEqual(window.contentLayoutRect.width, window.contentMinSize.width, accuracy: 0.5)
+        // A long choice is cut in its middle, so the interface's name always shows.
+        let popup = try XCTUnwrap(sc.networkInterfacePopups.first)
+        XCTAssertEqual((popup.cell as? NSPopUpButtonCell)?.lineBreakMode, .byTruncatingMiddle)
     }
 
     /// A stored interface this Mac lacks reads whole in the closed pop-up: its name and that it is missing.

@@ -88,6 +88,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// leaves after the fixed columns.
     var networkNameWidths: [NSLayoutConstraint] = []
     var networkHostWidths: [NSLayoutConstraint] = []
+    var networkInterfaceWidths: [NSLayoutConstraint] = []
     var networkScroll: NSScrollView?
     var shownNetwork: [NetworkPatchRow]?
     var networkCommits: Task<Void, Never>?
@@ -105,7 +106,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
 
-    private var subs: [AnyCancellable] = []
+    var subs: [AnyCancellable] = []
     // Menu-tracking observers: held only while the window is open, removed when it closes.
     private var observers: [NSObjectProtocol] = []
     private var fitQueued = false

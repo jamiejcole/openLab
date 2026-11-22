@@ -468,9 +468,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         let device = row.flatMap(model.deviceName(of:))
         let channels = device.map(model.channelCount(of:)) ?? 0
         let columns = min(PatchRouting.maxDeviceOutputs, max(channels, state.routing.namedDeviceOutputs))
+        // The mark goes with the number, before the name, so a long name cut at its tail never hides it.
         matrix.rowLabels = state.names.enumerated().map { i, name in
-            let label = name.isEmpty ? "\(i + 1)" : "\(i + 1)  \(name)"
-            return isMuted(i) ? String(format: loc("patchEditor.mutedRow"), label) : label
+            let number = isMuted(i) ? String(format: loc("patchEditor.mutedRow"), "\(i + 1)") : "\(i + 1)"
+            return name.isEmpty ? number : "\(number)  \(name)"
         }
         matrix.deviceOutputs = columns
         matrix.usable = state.usable

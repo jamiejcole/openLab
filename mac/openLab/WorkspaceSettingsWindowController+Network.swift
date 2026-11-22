@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import AppKit
+import Combine
 
 /// The Network tab of the workspace settings (CT-30): the destinations Network cues send to, one
 /// row each with its name, host, port, UDP or TCP and a delete button, and a button that adds one.
@@ -64,9 +65,10 @@ extension WorkspaceSettingsWindowController {
         scroll.setAX(AX.settingsNetwork + "-table", label: loc("settings.tab.network"))
         networkScroll = scroll
         scroll.contentView.postsFrameChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            forName: NSView.frameDidChangeNotification, object: scroll.contentView, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { self?.fitNetworkColumns() } }
+        subs.append(
+            NotificationCenter.default.publisher(for: NSView.frameDidChangeNotification, object: scroll.contentView)
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in MainActor.assumeIsolated { self?.fitNetworkColumns() } })
 
         let stack = NSStackView(views: [top, scroll])
         stack.orientation = .vertical
@@ -81,18 +83,27 @@ extension WorkspaceSettingsWindowController {
     static let networkNameMin: CGFloat = 70
     static let networkHostMin: CGFloat = 96
     static let networkInterfaceWidth: CGFloat = 136
-    /// The Name and Address columns' widths: what the table's width leaves after Port, Type,
-    /// Interface and the remove button, a share each, so every column is whole at the least window.
+    /// The widest the Interface column takes, so a usual choice ("en0 (192.168.1.20)") reads whole.
+    static let networkInterfaceMost: CGFloat = 164
+    /// The columns' widths for the table's width: Interface first takes what is left over the least
+    /// widths (up to `networkInterfaceMost`), then Name and Address share the rest, so every column is
+    /// whole at the least window. The fields' widths change before the grid's columns, so no required
+    /// width ever contradicts a column's.
     func fitNetworkColumns() {
         guard let scroll = networkScroll else { return }
-        let fixed: CGFloat = 52 + 64 + Self.networkInterfaceWidth + 24
-        let spare = scroll.contentView.bounds.width - 16 - fixed - 5 * networkGrid.columnSpacing
+        let room = scroll.contentView.bounds.width - 16 - (52 + 64 + 24) - 5 * networkGrid.columnSpacing
+        let interface = min(
+            Self.networkInterfaceMost,
+            max(Self.networkInterfaceWidth, (room - Self.networkNameMin - Self.networkHostMin).rounded(.down)))
+        let spare = room - interface
         let name = max(Self.networkNameMin, (spare * 0.4).rounded(.down))
         let host = max(Self.networkHostMin, (spare - name).rounded(.down))
-        networkGrid.column(at: 0).width = name
-        networkGrid.column(at: 1).width = host
         for c in networkNameWidths { c.constant = name }
         for c in networkHostWidths { c.constant = host }
+        for c in networkInterfaceWidths { c.constant = interface }
+        networkGrid.column(at: 0).width = name
+        networkGrid.column(at: 1).width = host
+        networkGrid.column(at: 4).width = interface
     }
 
     /// Draws the table. One that is as drawn is left alone, and so is one being typed in: a rebuild
@@ -117,6 +128,7 @@ extension WorkspaceSettingsWindowController {
         networkInterfacePopups = []
         networkDeleteButtons = []
         networkNameWidths = []
+        networkInterfaceWidths = []
         networkHostWidths = []
         let available = networkInterfaces()
         for (i, row) in rows.enumerated() {
@@ -157,7 +169,11 @@ extension WorkspaceSettingsWindowController {
             interface.action = #selector(networkInterfaceChosen(_:))
             interface.isEnabled = enabled
             interface.toolTip = loc("settings.network.interfaceTip")
-            interface.widthAnchor.constraint(equalToConstant: Self.networkInterfaceWidth).isActive = true
+            // Cut in the middle: "en0 (192…20)" keeps the interface's name in a narrow column.
+            (interface.cell as? NSPopUpButtonCell)?.lineBreakMode = .byTruncatingMiddle
+            let interfaceWidth = interface.widthAnchor.constraint(equalToConstant: Self.networkInterfaceWidth)
+            interfaceWidth.isActive = true
+            networkInterfaceWidths.append(interfaceWidth)
             interface.setAX(
                 "\(AX.settingsNetwork)-interface-\(n)", label: "\(row.name), \(loc("settings.network.col.interface"))")
             let delete = NSButton(title: "", target: self, action: #selector(networkDeleteClicked(_:)))
