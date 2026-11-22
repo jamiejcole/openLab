@@ -303,6 +303,7 @@ fn an_edited_network_cue_sends_the_edited_message() {
         host: "10.0.0.2".into(),
         port: 9000,
         protocol: NetworkProtocol::Udp,
+        interface: None,
     });
     for property in [
         CueProperty::Destination { value: net_id(2) },

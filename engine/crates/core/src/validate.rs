@@ -81,6 +81,28 @@ pub fn host_problem(host: &str) -> Option<&'static str> {
     }
 }
 
+/// Longest network interface name: the system's own limit (`IFNAMSIZ` 16, less the terminator).
+pub const MAX_INTERFACE_BYTES: usize = 15;
+
+/// Why `name` cannot name a network interface, or none. A name is what the system calls the
+/// interface (`en0`, `eth0`, `wlp3s0`): up to 15 ASCII letters, digits and `. _ - :`, so it can
+/// be handed to the socket layer as it is. Whether such an interface exists on this computer is
+/// asked when a message is sent, not here: a show moves between computers.
+pub fn interface_problem(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some("an interface name is not empty; leave the interface automatic instead")
+    } else if name.len() > MAX_INTERFACE_BYTES {
+        Some("an interface name is at most 15 bytes")
+    } else if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b':'))
+    {
+        Some("an interface name is made of letters, digits and . _ - :")
+    } else {
+        None
+    }
+}
+
 /// Deepest allowed cue nesting (a top-level cue is depth 1). Keeps every valid workspace within
 /// the JSON parser's recursion limit, so whatever saves also loads.
 pub const MAX_GROUP_DEPTH: usize = 32;
@@ -235,7 +257,7 @@ pub enum IssueKind {
     /// removing it would change who can connect, but the user should replace it.
     OscPasscodeNotDigits { row: usize },
     /// The name or host in `field` (`name`, `cue_lists.name`, `patches.name`, `patches.outputs.name`,
-    /// `network_patches.name`, `network_patches.host`) is over-long or has a control character:
+    /// `network_patches.name`, `network_patches.host`, `network_patches.interface`) is over-long or has a control character:
     /// kept as it is, since load never refuses a show; editing it needs a valid value.
     InvalidName { field: &'static str },
     /// The cue's `field` (`name`, `notes`, `address`, `args`, `args.value`) is over its memory
@@ -1328,6 +1350,13 @@ impl Checker {
                     .network_patches
                     .iter()
                     .any(|p| host_problem(&p.host).is_some()),
+            ),
+            (
+                "network_patches.interface",
+                workspace
+                    .network_patches
+                    .iter()
+                    .any(|p| p.interface.as_deref().and_then(interface_problem).is_some()),
             ),
         ];
         for (field, odd) in fields {

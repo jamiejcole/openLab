@@ -183,6 +183,7 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             host: "127.0.0.1".into(),
             port: 53000,
             protocol: NetworkProtocol::Udp,
+            interface: None,
         }],
         stages: Vec::new(),
         show_mode: false,

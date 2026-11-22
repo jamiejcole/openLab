@@ -42,6 +42,7 @@ fn patch(host: &str, port: u16, protocol: NetworkProtocol) -> NetworkPatch {
         host: host.into(),
         port,
         protocol,
+        interface: None,
     }
 }
 
@@ -713,4 +714,57 @@ fn a_network_cue_added_like_the_app_does_comes_with_its_patch_and_undoes_as_one(
     s.send(ClientMessage::Undo { id: undo });
     let ws = s.control().workspace();
     assert!(ws.network_patches.is_empty() && ws.find_cue(id(14)).is_none());
+}
+
+/// The loopback interface's name where choosing an interface works.
+#[cfg(target_os = "macos")]
+const LOOPBACK: &str = "lo0";
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const LOOPBACK: &str = "lo";
+
+/// A patch that names an interface sends its message out by that interface: here the loopback,
+/// to a listener on it, through the control loop and the real transport.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
+#[test]
+fn go_sends_by_the_interface_the_patch_names() {
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket.set_read_timeout(Some(GUARD)).unwrap();
+    let port = socket.local_addr().unwrap().port();
+    let mut p = patch("127.0.0.1", port, NetworkProtocol::Udp);
+    p.interface = Some(LOOPBACK.into());
+    let mut s = show_of(vec![osc(1, "/lx/go", args())], p, None);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    go(&mut s);
+    s.run(256);
+    let mut buf = [0u8; 2048];
+    let (n, _) = socket.recv_from(&mut buf).unwrap();
+    assert_eq!(&buf[..n], expected_bytes().as_slice());
+}
+
+/// An interface this computer lacks (a show moved from another Mac) fails the send with a
+/// warning that names it; the cue finishes and the show goes on.
+#[test]
+fn an_interface_the_computer_lacks_is_a_warning_and_the_show_goes_on() {
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+    let port = socket.local_addr().unwrap().port();
+    let mut p = patch("127.0.0.1", port, NetworkProtocol::Udp);
+    p.interface = Some("nosuch9".into());
+    let mut s = show_of(vec![osc(1, "/a", vec![])], p, None);
+    go(&mut s);
+    s.run(256);
+    s.settle_net();
+    let msgs = s.take_outbound();
+    let seen = notices(&msgs);
+    assert!(
+        seen.iter()
+            .any(|(code, message)| code == "network_send_failed"
+                && message.contains(&format!("udp://127.0.0.1:{port} via nosuch9"))),
+        "{seen:?}"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    let mut buf = [0u8; 64];
+    assert!(socket.recv_from(&mut buf).is_err(), "nothing was sent");
 }

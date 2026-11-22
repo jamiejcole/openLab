@@ -1644,6 +1644,7 @@ fn any_workspace() -> impl Strategy<Value = Workspace> {
                     } else {
                         NetworkProtocol::Udp
                     },
+                    interface: None,
                 })
                 .collect();
             ws

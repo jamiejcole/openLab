@@ -31,6 +31,7 @@ fn net_with(n: u128, name: &str, host: &str) -> NetworkPatch {
         host: host.into(),
         port: 8000,
         protocol: NetworkProtocol::Udp,
+        interface: None,
     }
 }
 
@@ -218,6 +219,7 @@ fn odd_workspace() -> Workspace {
     ws.patches[0].outputs[1].name = "bell\u{7}".into();
     ws.network_patches[0].name = "nul\0".into();
     ws.network_patches[0].host = "h".repeat(300);
+    ws.network_patches[0].interface = Some("en 0".into());
     ws
 }
 
@@ -244,6 +246,7 @@ fn a_show_with_odd_names_loads_with_one_warning_per_field_and_saves_back_unchang
             "cue_lists.name",
             "name",
             "network_patches.host",
+            "network_patches.interface",
             "network_patches.name",
             "patches.name",
             "patches.outputs.name"
@@ -289,6 +292,12 @@ fn an_odd_loaded_name_can_be_replaced_and_undone_back() {
             id: net_id(1),
             property: NetworkPatchProperty::Host {
                 value: "10.0.0.1".into(),
+            },
+        },
+        Command::SetNetworkPatchProperty {
+            id: net_id(1),
+            property: NetworkPatchProperty::Interface {
+                value: Some("en0".into()),
             },
         },
     ];
@@ -451,4 +460,103 @@ fn an_unchanged_odd_name_is_a_no_op_and_a_missing_id_wins_over_a_bad_name() {
         ),
         CommandError::NetworkPatchNotFound(net_id(404))
     );
+}
+
+/// A network patch's interface: chosen, cleared and undone like any property; a value the
+/// socket layer could not be given by name is refused on every path that sets it.
+#[test]
+fn a_network_patchs_interface_is_set_cleared_and_undone() {
+    let ws = workspace(vec![]);
+    assert_eq!(
+        ws.network_patches[0].interface, None,
+        "automatic by default"
+    );
+    let mut work = ws.clone();
+    let mut history = History::new();
+    let set = |value: Option<&str>| Command::SetNetworkPatchProperty {
+        id: net_id(1),
+        property: NetworkPatchProperty::Interface {
+            value: value.map(str::to_owned),
+        },
+    };
+    assert!(history.execute(&mut work, set(Some("en0"))).unwrap());
+    assert_eq!(work.network_patches[0].interface.as_deref(), Some("en0"));
+    assert!(
+        !history.execute(&mut work, set(Some("en0"))).unwrap(),
+        "no change"
+    );
+    assert!(history.execute(&mut work, set(None)).unwrap());
+    assert_eq!(work.network_patches[0].interface, None);
+    history.undo(&mut work).unwrap();
+    assert_eq!(work.network_patches[0].interface.as_deref(), Some("en0"));
+    history.undo(&mut work).unwrap();
+    assert_eq!(work, ws);
+}
+
+#[test]
+fn an_interface_name_is_short_and_plain_on_every_path_that_sets_it() {
+    let ws = workspace(vec![]);
+    let good = [
+        "en0",
+        "eth0.100",
+        "wlp3s0",
+        "br-1a2b",
+        "vlan0:1",
+        "0123456789abcde",
+    ];
+    let bad = [
+        "",
+        "0123456789abcdef",
+        "en 0",
+        "en0\n",
+        "en\u{e9}",
+        "a/b",
+        "en0\0",
+    ];
+    for name in good {
+        let mut work = ws.clone();
+        let mut net = net_with(9, "N", "10.0.0.9");
+        net.interface = Some(name.into());
+        let add = Command::AddNetworkPatch {
+            index: 0,
+            patch: net,
+        };
+        assert!(History::new().execute(&mut work, add).is_ok(), "{name:?}");
+    }
+    for name in bad {
+        let mut net = net_with(9, "N", "10.0.0.9");
+        net.interface = Some(name.into());
+        let add = Command::AddNetworkPatch {
+            index: 0,
+            patch: net,
+        };
+        assert!(
+            matches!(refused(&ws, add), CommandError::InvalidValue(_)),
+            "add {name:?}"
+        );
+        let set = Command::SetNetworkPatchProperty {
+            id: net_id(1),
+            property: NetworkPatchProperty::Interface {
+                value: Some(name.into()),
+            },
+        };
+        assert!(
+            matches!(refused(&ws, set), CommandError::InvalidValue(_)),
+            "set {name:?}"
+        );
+    }
+}
+
+/// The interface travels with the show: saved when chosen, absent when automatic.
+#[test]
+fn an_interface_is_saved_with_the_show_and_absent_when_automatic() {
+    let mut ws = workspace(vec![]);
+    let automatic = save_show(&ws).unwrap();
+    assert!(!automatic.contains("\"interface\""), "{automatic}");
+    ws.network_patches[0].interface = Some("en0".into());
+    let text = save_show(&ws).unwrap();
+    assert!(text.contains("\"interface\":\"en0\"") || text.contains("\"interface\": \"en0\""));
+    let loaded = load_show(&text).unwrap();
+    assert_eq!(loaded.workspace, ws);
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
 }

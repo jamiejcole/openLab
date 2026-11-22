@@ -635,7 +635,7 @@ fn patch_output_property(p: &Pick, output: usize) -> PatchProperty {
 }
 
 fn network_property(p: &Pick) -> NetworkPatchProperty {
-    match p.b % 4 {
+    match p.b % 5 {
         0 => NetworkPatchProperty::Name {
             value: name_pool(p.d),
         },
@@ -644,6 +644,16 @@ fn network_property(p: &Pick) -> NetworkPatchProperty {
         },
         2 => NetworkPatchProperty::Port {
             value: (p.d % 65536) as u16,
+        },
+        3 => NetworkPatchProperty::Interface {
+            value: [
+                None,
+                Some("en0"),
+                Some(""),
+                Some("a b"),
+                Some("0123456789abcdef"),
+            ][p.d as usize % 5]
+                .map(str::to_owned),
         },
         _ => NetworkPatchProperty::Protocol {
             value: if p.d.is_multiple_of(2) {
@@ -720,6 +730,7 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
                 host: host_pool(p.a),
                 port: 1,
                 protocol: NetworkProtocol::Udp,
+                interface: None,
             },
         },
         17 => Command::RemoveNetworkPatch {
@@ -1383,6 +1394,7 @@ fn hostile_base() -> Workspace {
         host: "".into(),
         port: 0,
         protocol: NetworkProtocol::Udp,
+        interface: None,
     });
     ws.settings.osc_access.passcodes.push(OscPasscode {
         passcode: "12ab".into(),

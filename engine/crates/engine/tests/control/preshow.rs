@@ -86,6 +86,7 @@ fn lighting(protocol: NetworkProtocol) -> NetworkPatch {
         host: "10.0.0.5".into(),
         port: 8000,
         protocol,
+        interface: None,
     }
 }
 

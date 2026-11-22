@@ -594,6 +594,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                             host: "127.0.0.1".into(),
                             port: 53000,
                             protocol: NetworkProtocol::Udp,
+                            interface: None,
                         },
                     },
                     Command::AddCue {
@@ -4115,6 +4116,7 @@ fn model_commands() -> Vec<(String, Command)> {
         host: "10.0.0.7".into(),
         port: 8000,
         protocol: NetworkProtocol::Udp,
+        interface: Some("en0".into()),
     };
     vec![
         (
@@ -4334,6 +4336,9 @@ fn property_commands() -> Vec<(String, Command)> {
         NetworkPatchProperty::Port { value: 65535 },
         NetworkPatchProperty::Protocol {
             value: NetworkProtocol::Tcp,
+        },
+        NetworkPatchProperty::Interface {
+            value: Some("en0".into()),
         },
     ];
     let mut out = Vec::new();
