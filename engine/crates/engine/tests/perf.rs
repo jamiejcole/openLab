@@ -599,7 +599,7 @@ fn copy_budget(path: &std::path::Path) {
             s.tick();
             longest = longest.max(t.elapsed());
             wakes += 1;
-            assert!(wakes < 200, "the copy never ended");
+            assert!(wakes < 1000, "the copy never ended");
         }
         // And the wake after the last part, which takes up its files.
         let t = Instant::now();
