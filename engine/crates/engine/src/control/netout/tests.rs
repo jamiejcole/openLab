@@ -16,6 +16,7 @@ fn patch(n: u128, host: &str) -> NetworkPatch {
         host: host.into(),
         port: 9000,
         protocol: NetworkProtocol::Udp,
+        interface: None,
     }
 }
 
@@ -747,4 +748,45 @@ fn a_panicking_worker_still_counts_its_job_off() {
                 .values()
                 .all(|l| l.pending.load(Ordering::SeqCst) == 0)
     });
+}
+
+/// A patch's interface is part of where its messages go: changing it replaces the sender, and
+/// the next message leaves by the new interface; clearing it returns to the system's choice.
+#[test]
+fn a_changed_interface_changes_where_the_next_message_leaves() {
+    #[derive(Default)]
+    struct Seen(Mutex<Vec<Destination>>);
+    impl Transport for Seen {
+        fn send(&self, to: &Destination, _: &[SocketAddr], _: &[u8]) -> Result<(), String> {
+            crate::lock(&self.0).push(to.clone());
+            Ok(())
+        }
+        fn resolve(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, String> {
+            Ok(vec![])
+        }
+    }
+    let seen = Arc::new(Seen::default());
+    let (tx, _rx) = crossbeam_channel::unbounded();
+    let mut net = NetOut::new(NetTransport(seen.clone()), tx, 1000);
+    let mut p = patch(1, "10.0.0.1");
+    for (i, interface) in [None, Some("en5"), None].into_iter().enumerate() {
+        p.interface = interface.map(str::to_owned);
+        assert_eq!(
+            net.send(&p, CueId(Uuid::nil()), vec![1]),
+            SendOutcome::Queued
+        );
+        crate::spin::spin_until("the message was sent", || {
+            crate::lock(&seen.0).len() == i + 1
+        });
+    }
+    let sent: Vec<Option<String>> = crate::lock(&seen.0)
+        .iter()
+        .map(|d| d.interface.clone())
+        .collect();
+    assert_eq!(sent, [None, Some("en5".to_owned()), None]);
+    let via = Destination::of(&NetworkPatch {
+        interface: Some("en5".into()),
+        ..p
+    });
+    assert_eq!(via.to_string(), "udp://10.0.0.1:9000 via en5");
 }

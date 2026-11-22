@@ -20,7 +20,7 @@ extension WorkspaceSettingsWindowController {
         top.orientation = .horizontal
         top.spacing = 12
 
-        let headers = ["name", "host", "port", "protocol", "delete"].map { key -> NSView in
+        let headers = ["name", "host", "port", "protocol", "interface", "delete"].map { key -> NSView in
             let label = NSTextField(labelWithString: loc("settings.network.col.\(key)"))
             label.font = .systemFont(ofSize: 12, weight: .semibold)
             return label
@@ -28,10 +28,12 @@ extension WorkspaceSettingsWindowController {
         networkGrid.addRow(with: headers)
         networkGrid.rowSpacing = 8
         networkGrid.columnSpacing = 8
-        for (c, width) in [120, 140, 60, 70, 40].enumerated() { networkGrid.column(at: c).width = CGFloat(width) }
+        for (c, width) in [110, 130, 56, 64, 150, 24].enumerated() { networkGrid.column(at: c).width = CGFloat(width) }
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
         let holder = FlippedView()
@@ -47,7 +49,7 @@ extension WorkspaceSettingsWindowController {
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             holder.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),
-            scroll.widthAnchor.constraint(equalToConstant: 480),
+            scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
         ])
         scroll.setAX(AX.settingsNetwork + "-table", label: loc("settings.tab.network"))
@@ -81,7 +83,9 @@ extension WorkspaceSettingsWindowController {
         }
         networkFields = []
         networkTransportPopups = []
+        networkInterfacePopups = []
         networkDeleteButtons = []
+        let available = networkInterfaces()
         for (i, row) in rows.enumerated() {
             let n = i + 1
             func field(_ key: String, _ text: String, width: CGFloat) -> NSTextField {
@@ -106,6 +110,21 @@ extension WorkspaceSettingsWindowController {
             popup.isEnabled = enabled
             popup.setAX(
                 "\(AX.settingsNetwork)-protocol-\(n)", label: "\(row.name), \(loc("settings.network.col.protocol"))")
+            let interface = NSPopUpButton(frame: .zero, pullsDown: false)
+            let choices = NetworkInterfaces.choices(stored: row.interface, available: available)
+            for choice in choices {
+                interface.addItem(withTitle: choice.title)
+                interface.lastItem?.representedObject = choice.value
+            }
+            interface.selectItem(at: choices.firstIndex { $0.value == row.interface } ?? 0)
+            interface.tag = i
+            interface.target = self
+            interface.action = #selector(networkInterfaceChosen(_:))
+            interface.isEnabled = enabled
+            interface.toolTip = loc("settings.network.interfaceTip")
+            interface.widthAnchor.constraint(equalToConstant: 150).isActive = true
+            interface.setAX(
+                "\(AX.settingsNetwork)-interface-\(n)", label: "\(row.name), \(loc("settings.network.col.interface"))")
             let delete = NSButton(title: "", target: self, action: #selector(networkDeleteClicked(_:)))
             delete.image = Icon.fieldClear.image(loc("settings.network.delete"), compact: true)
             delete.isBordered = false
@@ -115,9 +134,10 @@ extension WorkspaceSettingsWindowController {
             delete.setAX("\(AX.settingsNetwork)-delete-\(n)", label: "\(loc("settings.network.delete")) \(row.name)")
             networkGrid.addRow(with: [
                 field("name", row.name, width: 120), field("host", row.host, width: 140),
-                field("port", String(row.port), width: 60), popup, delete,
+                field("port", String(row.port), width: 56), popup, interface, delete,
             ])
             networkTransportPopups.append(popup)
+            networkInterfacePopups.append(interface)
             networkDeleteButtons.append(delete)
         }
         networkGrid.layoutSubtreeIfNeeded()
@@ -156,6 +176,16 @@ extension WorkspaceSettingsWindowController {
         let transport = WorkspaceSettingsModel.networkTransports[sender.indexOfSelectedItem]
         Task {
             await model.setNetworkPatchTransport(id, transport)
+            redrawNetwork()
+        }
+    }
+
+    @objc private func networkInterfaceChosen(_ sender: NSPopUpButton) {
+        guard let rows = shownNetwork, rows.indices.contains(sender.tag) else { return }
+        let id = rows[sender.tag].id
+        let interface = sender.selectedItem?.representedObject as? String
+        Task {
+            await model.setNetworkPatchInterface(id, interface)
             redrawNetwork()
         }
     }

@@ -6,7 +6,7 @@ import Foundation
 /// they are listed under, as in QLab 5's settings window: a list of categories on the left and the
 /// pages of the chosen one on the right (UI map `settings.*`).
 enum SettingsPage: String, CaseIterable {
-    case general, keys, audio, video, network, osc
+    case general, keys, audio, video, videoRouting, videoDevices, network, osc
 
     var titleKey: String {
         switch self {
@@ -14,6 +14,8 @@ enum SettingsPage: String, CaseIterable {
         case .keys: return "settings.page.keys"
         case .audio: return "settings.page.audio"
         case .video: return "settings.page.video"
+        case .videoRouting: return "settings.page.videoRouting"
+        case .videoDevices: return "settings.page.videoDevices"
         case .network: return "settings.page.network"
         case .osc: return "settings.page.osc"
         }
@@ -24,7 +26,7 @@ enum SettingsPage: String, CaseIterable {
         case .general: return .general
         case .keys: return .controls
         case .audio: return .audio
-        case .video: return .video
+        case .video, .videoRouting, .videoDevices: return .video
         case .network, .osc: return .network
         }
     }

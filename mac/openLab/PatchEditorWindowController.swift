@@ -46,8 +46,6 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     let routingNote = NSTextField(wrappingLabelWithString: "")
     /// One level box per cue output, laid over the matrix's level column.
     private(set) var outputFields: [NSTextField] = []
-    /// One mute button per cue output, at the right end of its row's label.
-    private(set) var outputMutes: [NSButton] = []
     /// The box a crosspoint's level is typed in, laid over the box double-clicked.
     let crosspointField = NSTextField()
     /// The crosspoint being typed in (cue output, device output).
@@ -455,17 +453,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         set(mainField, LevelText.format(state.main), enabled: editable)
         for (i, db) in state.levels.enumerated() {
             set(outputFields[i], LevelText.format(db), enabled: editable)
-            // A muted cue output keeps its level: the button says it is muted, the level reads red.
+            // A cue output muted in the show keeps its level, which reads red; the editor has no
+            // button to mute one (QLab 5's has none on a cue output's row): Unmute All clears it.
             let muted = state.routing.outputs.indices.contains(i) && state.routing.outputs[i].mute
-            outputMutes[i].state = muted ? .on : .off
-            // On, the letter turns red, as a muted device output's column number does.
-            outputMutes[i].attributedTitle = NSAttributedString(
-                string: loc("patchEditor.muteShort"),
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 9, weight: muted ? .heavy : .semibold),
-                    .foregroundColor: muted ? NSColor.systemRed : NSColor.controlTextColor,
-                ])
-            outputMutes[i].isEnabled = editable
+            outputFields[i].toolTip = muted ? loc("patchEditor.outputMuted") : nil
             outputFields[i].textColor = muted ? .systemRed : .controlTextColor
         }
 
@@ -572,8 +563,6 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         outputNameFields = []
         for f in outputFields { f.removeFromSuperview() }
         outputFields = []
-        for b in outputMutes { b.removeFromSuperview() }
-        outputMutes = []
         for i in 0..<count {
             let label = NSTextField(labelWithString: String(format: loc("patchEditor.cueOutput"), i + 1))
             label.alignment = .right
@@ -602,20 +591,6 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
                 label: "\(String(format: loc("patchEditor.cueOutput"), i + 1)), \(loc("patchEditor.level"))")
             matrixRows.addSubview(level)
             outputFields.append(level)
-
-            let mute = NSButton(
-                title: loc("patchEditor.muteShort"), target: self, action: #selector(outputMuteClicked(_:)))
-            mute.setButtonType(.pushOnPushOff)
-            mute.bezelStyle = .recessed
-            mute.controlSize = .mini
-            mute.font = .systemFont(ofSize: 9, weight: .semibold)
-            mute.tag = i
-            mute.frame = matrix.muteRect(row: i).offsetBy(dx: 0, dy: -PatchRoutingView.headerH)
-            mute.setAX(
-                "\(AX.patchEditorOutputMute)-\(i + 1)",
-                label: "\(String(format: loc("patchEditor.cueOutput"), i + 1)), \(loc("patchEditor.mute"))")
-            matrixRows.addSubview(mute)
-            outputMutes.append(mute)
         }
         mainField.tag = 0
     }
@@ -787,16 +762,6 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             draggedDeviceOutput == d ? "patch-device-fader:\(patchID.raw):\(Self.launchToken):\(gesture):\(d)" : nil
         send(.setPatchDeviceOutputLevel(patchID, deviceOutput: d, db: db), coalesce: key)
         if deviceFields.indices.contains(d) { deviceFields[d].stringValue = LevelText.format(db) }
-    }
-
-    @objc private func outputMuteClicked(_ sender: NSButton) {
-        send(
-            .setPatchProperty(
-                patchID,
-                [
-                    "type": .string("output_mute"), "output": .int(Int64(sender.tag)),
-                    "value": .bool(sender.state == .on),
-                ]))
     }
 
     @objc private func muteClicked(_ sender: NSButton) {

@@ -33,6 +33,7 @@ fn net(n: u128) -> NetworkPatch {
         host: "10.0.0.1".into(),
         port: 8000,
         protocol: NetworkProtocol::Tcp,
+        interface: None,
     }
 }
 

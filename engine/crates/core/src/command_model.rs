@@ -29,7 +29,9 @@ use crate::model::{
     WorkspaceSettings, hotkey_field, is_reserved_key,
 };
 use crate::osc_access::{MAX_OSC_PASSCODES, OscPasscode, OscRights, is_valid_new_passcode};
-use crate::validate::{host_problem, name_problem, patch_problems, settings_problems, visit};
+use crate::validate::{
+    host_problem, interface_problem, name_problem, patch_problems, settings_problems, visit,
+};
 use crate::video::{MAX_STAGE_LAYER, MAX_STAGES, Stage, StageProperty, stage_problem};
 
 /// The inverse of a change that changed nothing. `History` ignores it.
@@ -1021,10 +1023,22 @@ fn patch_index(ws: &Workspace, id: PatchId) -> Result<usize, CommandError> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NetworkPatchProperty {
-    Name { value: String },
-    Host { value: String },
-    Port { value: u16 },
-    Protocol { value: NetworkProtocol },
+    Name {
+        value: String,
+    },
+    Host {
+        value: String,
+    },
+    Port {
+        value: u16,
+    },
+    Protocol {
+        value: NetworkProtocol,
+    },
+    /// The network interface to send from; none: the system routes it.
+    Interface {
+        value: Option<String>,
+    },
 }
 
 impl NetworkPatchProperty {
@@ -1040,6 +1054,9 @@ impl NetworkPatchProperty {
             Self::Protocol { .. } => Self::Protocol {
                 value: patch.protocol,
             },
+            Self::Interface { .. } => Self::Interface {
+                value: patch.interface.clone(),
+            },
         }
     }
 
@@ -1049,6 +1066,7 @@ impl NetworkPatchProperty {
             Self::Host { value } => patch.host.clone_from(value),
             Self::Port { value } => patch.port = *value,
             Self::Protocol { value } => patch.protocol = *value,
+            Self::Interface { value } => patch.interface.clone_from(value),
         }
     }
 }
@@ -1068,6 +1086,11 @@ fn add_network_patch(
         check_port(patch.port)?;
         check_name(&patch.name)?;
         host_problem(&patch.host).map_or(Ok(()), |why| Err(CommandError::InvalidValue(why)))?;
+        patch
+            .interface
+            .as_deref()
+            .and_then(interface_problem)
+            .map_or(Ok(()), |why| Err(CommandError::InvalidValue(why)))?;
     }
     ws.network_patches.insert(index, patch.clone());
     Ok(Command::RemoveNetworkPatch {
@@ -1118,6 +1141,12 @@ fn set_network_patch_property(
                 host_problem(value).map_or(Ok(()), |why| Err(CommandError::InvalidValue(why)))?;
             }
             NetworkPatchProperty::Protocol { .. } => {}
+            NetworkPatchProperty::Interface { value } => {
+                value
+                    .as_deref()
+                    .and_then(interface_problem)
+                    .map_or(Ok(()), |why| Err(CommandError::InvalidValue(why)))?;
+            }
         }
     }
     property.write(patch);
