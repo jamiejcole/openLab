@@ -47,6 +47,8 @@ pub struct CopyConfig {
     pub hooks: CopyHooks,
     /// Cues pointed at their copies per wake ([`APPLY_PER_WAKE`]).
     pub apply_per_wake: usize,
+    /// Files of a finished copy sorted per wake ([`PLAN_PER_WAKE`]).
+    pub plan_per_wake: usize,
 }
 
 impl Default for CopyConfig {
@@ -55,6 +57,7 @@ impl Default for CopyConfig {
             pacing: CopyPacing::default(),
             hooks: CopyHooks::default(),
             apply_per_wake: APPLY_PER_WAKE,
+            plan_per_wake: PLAN_PER_WAKE,
         }
     }
 }
@@ -183,10 +186,12 @@ pub(super) struct Copies {
     applying: Option<Applying>,
     /// Cues pointed at their copies per wake.
     per_wake: usize,
+    /// Files of a finished copy sorted per wake.
+    plan_per_wake: usize,
 }
 
 impl Copies {
-    pub(super) fn new(inbox: Sender<Inbox>, per_wake: usize) -> Self {
+    pub(super) fn new(inbox: Sender<Inbox>, config: &CopyConfig) -> Self {
         Self {
             inbox,
             running: None,
@@ -195,7 +200,8 @@ impl Copies {
             stuck: Arc::new(AtomicUsize::new(0)),
             unsent: Vec::new(),
             applying: None,
-            per_wake,
+            per_wake: config.apply_per_wake,
+            plan_per_wake: config.plan_per_wake,
         }
     }
 
@@ -544,6 +550,7 @@ impl Control {
             }
         }
         settled.sort_by_key(|(i, _)| *i);
+        let first_plan_part = self.eng.copies.plan_per_wake.max(1);
         let Some(mut cx) = self.cx_of(doc) else {
             return;
         };
@@ -572,7 +579,7 @@ impl Control {
             planner: Some(planner),
             report: None,
         };
-        cx.plan_step(&mut applying, PLAN_PER_WAKE);
+        cx.plan_step(&mut applying, first_plan_part);
         if let Some(report) = applying.finished() {
             self.send_report(doc, report);
             return;
@@ -587,9 +594,10 @@ impl Control {
             return;
         };
         let per_wake = self.eng.copies.per_wake.max(1);
+        let plan_per_wake = self.eng.copies.plan_per_wake.max(1);
         match self.cx_of(applying.doc) {
             Some(mut cx) => {
-                cx.plan_step(&mut applying, PLAN_PER_WAKE);
+                cx.plan_step(&mut applying, plan_per_wake);
                 cx.apply_chunk(&mut applying, per_wake);
             }
             None => return,

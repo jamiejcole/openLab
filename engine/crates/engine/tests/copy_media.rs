@@ -1018,3 +1018,146 @@ fn show_mode_while_a_copy_is_retargeting_retargets_the_rest_at_once() {
     );
     assert_eq!(r.report().copied, 3);
 }
+
+/// `count` cues `f{n}.wav` whose files differ by length, copied with `tweak`'s pacing.
+fn many(count: u128, tweak: impl FnOnce(&mut ControlConfig)) -> Rig {
+    let names: Vec<String> = (1..=count).map(|n| format!("f{n}.wav")).collect();
+    let files: Vec<(u128, &str, usize, f32)> = (1..=count)
+        .zip(&names)
+        .map(|(n, name)| (n, name.as_str(), 100 + n as usize, 0.1))
+        .collect();
+    rig_with(&files, true, tweak)
+}
+
+fn original_bytes(n: u128) -> Vec<u8> {
+    wav_bytes(100 + n as usize, 0.1)
+}
+
+/// Waits until cue 1 is on its copy: the copy has answered and its parts are under way.
+fn wait_until_retargeting(r: &mut Rig) {
+    let first = r.media(1);
+    assert!(r.s.wait_for(|c| {
+        c.workspace()
+            .find_cue(id(1))
+            .and_then(|q| q.kind.media())
+            .is_some_and(|m| m.as_str() != first)
+    }));
+}
+
+/// Review #652 H1: a Save As into another folder answered while a finished copy still has parts
+/// to retarget finishes them first; parts left queued would carry forms worked out against the
+/// old folder and, resolved against the new one, play another show's file (and the late parts
+/// would be a separate undo step).
+#[test]
+fn a_save_as_elsewhere_while_a_copy_is_retargeting_leaves_every_cue_on_its_own_copy() {
+    let mut r = many(60, |c| c.copy.apply_per_wake = 1);
+    let elsewhere = r.env.root.path().join("Elsewhere");
+    fs::create_dir_all(elsewhere.join("audio")).unwrap();
+    for n in 1..=60 {
+        fs::write(
+            elsewhere.join("audio").join(format!("f{n}.wav")),
+            wav_bytes(7, 0.9),
+        )
+        .unwrap();
+    }
+    assert!(ok(&r.copy_media()));
+    wait_until_retargeting(&mut r);
+    assert_ne!(r.media(60), "audio/f60.wav", "parts still waiting");
+    let sid = r.s.request_id();
+    assert!(ok(&r.s.send(ClientMessage::Request {
+        id: sid,
+        request: Request::SaveAs {
+            path: elsewhere
+                .join("Moved.openlab")
+                .to_string_lossy()
+                .into_owned(),
+        },
+    })));
+    let all = r.reports();
+    assert_eq!(all.iter().map(|x| x.copied).sum::<u64>(), 60);
+    let dir = portable(&elsewhere);
+    for n in 1..=60 {
+        let resolved = openlab_core::resolve(&r.media(n), &dir);
+        assert_eq!(
+            fs::read(&resolved).unwrap(),
+            original_bytes(n),
+            "cue {n} resolves to {resolved}"
+        );
+    }
+    // A move clears history, and the copy was whole before it did: an undo afterwards has no
+    // half-copy to revert and leaves every cue on its copy.
+    r.undo();
+    for n in 1..=60 {
+        let resolved = openlab_core::resolve(&r.media(n), &dir);
+        assert_eq!(fs::read(&resolved).unwrap(), original_bytes(n), "cue {n}");
+    }
+}
+
+/// Review #652 M1: the planner's part size is the config's; at one file a wake every cue still
+/// ends on its copy and the report counts every file.
+#[test]
+fn a_copy_sorted_one_file_per_wake_points_every_cue_at_its_copy_and_counts_them_all() {
+    let mut r = many(12, |c| {
+        c.copy.plan_per_wake = 1;
+        c.copy.apply_per_wake = 3;
+    });
+    assert!(ok(&r.copy_media()));
+    let report = r.report();
+    assert_eq!(
+        (report.copied, report.reused, report.failed_count),
+        (12, 0, 0)
+    );
+    for n in 1..=12 {
+        let media = r.media(n);
+        assert_eq!(media, format!("audio/f{n}.wav"));
+        assert_eq!(
+            fs::read(r.audio_dir().join(format!("f{n}.wav"))).unwrap(),
+            original_bytes(n)
+        );
+    }
+}
+
+/// Review #652 M1: an Undo or Show Mode arriving while the planner still has files to sort
+/// finishes the plan and the parts first, so the copy is one undo step.
+#[test]
+fn an_undo_while_the_copy_is_still_being_sorted_finishes_it_and_is_one_undo_step() {
+    let mut r = many(12, |c| {
+        c.copy.plan_per_wake = 1;
+        c.copy.apply_per_wake = 1;
+    });
+    let before: Vec<String> = (1..=12).map(|n| r.media(n)).collect();
+    assert!(ok(&r.copy_media()));
+    // Under way: cue 1 is on its copy while the planner has files left to sort one a wake.
+    wait_until_retargeting(&mut r);
+    assert_eq!(r.media(12), before[11], "the last cue is still waiting");
+    r.undo();
+    let after: Vec<String> = (1..=12).map(|n| r.media(n)).collect();
+    assert_eq!(after, before, "one undo reverts the whole copy");
+    assert_eq!(r.report().copied, 12);
+    let after: Vec<String> = (1..=12).map(|n| r.media(n)).collect();
+    assert_eq!(after, before, "nothing retargets after the undo");
+}
+
+#[test]
+fn show_mode_while_the_copy_is_still_being_sorted_retargets_everything_at_once() {
+    let mut r = many(12, |c| {
+        c.copy.plan_per_wake = 1;
+        c.copy.apply_per_wake = 1;
+    });
+    assert!(ok(&r.copy_media()));
+    wait_until_retargeting(&mut r);
+    assert_ne!(
+        r.media(12),
+        "audio/f12.wav",
+        "the last cue is still waiting"
+    );
+    let sid = r.s.request_id();
+    assert!(ok(&r.s.send(ClientMessage::Request {
+        id: sid,
+        request: Request::SetShowMode { on: true },
+    })));
+    for n in 1..=12 {
+        assert_eq!(r.media(n), format!("audio/f{n}.wav"));
+    }
+    assert_eq!(r.report().copied, 12);
+}

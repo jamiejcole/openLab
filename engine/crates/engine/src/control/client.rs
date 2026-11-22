@@ -131,13 +131,18 @@ impl Control {
                     | ClientMessage::Undo { .. }
                     | ClientMessage::Redo { .. }
                     | ClientMessage::Request {
-                        request: Request::SetShowMode { on: true },
+                        request: Request::SetShowMode { on: true }
+                            | Request::Save
+                            | Request::SaveAs { .. }
+                            | Request::Relink { .. },
                         ..
                     }
             )
         {
             // A copy still pointing cues at their copies finishes first: it is one undo step,
-            // and the show is never left half retargeted.
+            // and the show is never left half retargeted. A Save As elsewhere moves the folder
+            // the queued parts' stored forms were worked out against, and a relink edits cues'
+            // files, so both wait for the parts.
             self.flush_retargets(doc);
         }
         match from {

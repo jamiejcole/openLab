@@ -9,7 +9,7 @@ mod common;
 use common::*;
 use openlab_core::{
     AUDIO_FOLDER, Command, CopyMode, CueKind, CueProperty, History, MediaRef, Position,
-    VIDEO_FOLDER, copy_items, media_set_by, retarget_command,
+    VIDEO_FOLDER, copy_items, media_of_listed, media_set_by, retarget_command,
 };
 
 fn with_media(mut kind: CueKind, path: &str) -> CueKind {
@@ -195,4 +195,22 @@ fn the_retarget_is_one_undo_step_that_changes_only_the_file() {
     assert_eq!(ws, before, "one undo puts every cue back");
     assert!(history.redo(&mut ws).unwrap());
     assert_eq!(media(&ws, 2).as_deref(), Some("audio/b.wav"));
+}
+
+/// Review #652 M1: a listed cue that is gone or has no file is left out, and the walk still
+/// finds the listed cues after it.
+#[test]
+fn the_files_of_listed_cues_leave_out_a_missing_cue_and_a_cue_with_no_file() {
+    let ws = workspace(vec![
+        cue(1, with_media(audio(), "audio/a.wav")),
+        cue(2, CueKind::Memo),
+        cue(3, with_media(audio(), "audio/c.wav")),
+    ]);
+    let listed = [1, 2, 3, 99].map(cue_id).into_iter().collect();
+    let found = media_of_listed(&ws, &listed);
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[&cue_id(1)].as_str(), "audio/a.wav");
+    assert_eq!(found[&cue_id(3)].as_str(), "audio/c.wav");
+    let none = std::collections::HashSet::new();
+    assert!(media_of_listed(&ws, &none).is_empty());
 }
