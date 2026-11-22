@@ -405,9 +405,14 @@ final class TriggersTabTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(recorder), "reached by keyboard")
         recorder.keyDown(with: try tab([]))
         XCTAssertEqual(got, [], "Tab moved on, nothing recorded")
+        func focused(_ field: NSTextField) -> Bool {
+            window.firstResponder === field || (window.firstResponder as? NSText)?.delegate === field
+        }
+        XCTAssertTrue(focused(after), "the focus went on to the next field")
         XCTAssertTrue(window.makeFirstResponder(recorder))
         recorder.keyDown(with: try tab([.shift]))
         XCTAssertEqual(got, [])
+        XCTAssertTrue(focused(before), "Shift-Tab went back to the field before")
         let click = try XCTUnwrap(
             NSEvent.mouseEvent(
                 with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,

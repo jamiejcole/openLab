@@ -1293,7 +1293,7 @@ final class InspectorWindowFrameTests: XCTestCase {
         let prompt = (field.placeholderString ?? "") as NSString
         let font = try XCTUnwrap(field.font)
         let promptWidth = prompt.size(withAttributes: [.font: font]).width
-        XCTAssertGreaterThan(promptWidth, field.frame.width - 10, "the prompt is cut")
+        XCTAssertLessThanOrEqual(promptWidth, field.frame.width - 10, "the whole prompt shows, not cut")
         XCTAssertLessThanOrEqual(field.frame.height, wc.inspector.hotkeyClear.frame.height + 4, "one line tall")
     }
 
