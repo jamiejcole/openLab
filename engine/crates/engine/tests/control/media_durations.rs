@@ -200,14 +200,16 @@ fn a_probe_that_answers_later_sends_the_cues_lengths_then() {
     s.take_outbound();
     s.settle_media();
     let msgs = s.take_outbound();
-    // Both cues on the file, in one runtime message.
-    assert_eq!(
-        durations(&msgs),
-        vec![
-            lengths(1, 0.1, 0.1, Some(0.1)),
-            lengths(2, 0.1, 0.1, Some(0.1))
-        ]
-    );
+    // Both cues on the file, in one runtime message, with the format the real probe read.
+    let read = |n| CueMediaDuration {
+        audio_file: Some(AudioFileFormat {
+            codec: "pcm_float".into(),
+            channels: 1,
+            sample_rate: 8000,
+        }),
+        ..lengths(n, 0.1, 0.1, Some(0.1))
+    };
+    assert_eq!(durations(&msgs), vec![read(1), read(2)]);
     let runtime = msgs
         .iter()
         .filter(|m| {
