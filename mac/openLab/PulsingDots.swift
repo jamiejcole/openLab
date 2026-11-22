@@ -7,8 +7,8 @@ import AppKit
 /// happening, not as a still glyph. Drawn from one shared clock (every fading row moves in step); with
 /// Reduce Motion on, it stands still and evenly lit.
 final class PulsingDots: NSView {
-    /// One turn of the brightness sweep.
-    static let period: TimeInterval = 1.2
+    /// One turn of the brightness sweep, clockwise.
+    static let period: TimeInterval = 0.8
     static let dimAlpha: CGFloat = 0.25
     /// Dots per ring, outer then inner, and each ring's radius as a share of half the view.
     static let rings: [(count: Int, radius: CGFloat, dot: CGFloat)] = [(8, 0.78, 0.17), (4, 0.36, 0.16)]
@@ -23,9 +23,10 @@ final class PulsingDots: NSView {
     /// The alpha of a dot at `angle` (radians) at `time`: brightest where the sweep
     /// is, fading behind it, never fully out.
     static func alpha(angle: Double, at time: TimeInterval) -> CGFloat {
-        let head = 2 * Double.pi * (time / period).truncatingRemainder(dividingBy: 1)
+        // Clockwise: the head's angle falls with time (the view's y runs up).
+        let head = -2 * Double.pi * (time / period).truncatingRemainder(dividingBy: 1)
         // How far the dot trails the sweep, 0 at the head to 1 just ahead of it.
-        var behind = (head - angle) / (2 * Double.pi)
+        var behind = (angle - head) / (2 * Double.pi)
         behind -= behind.rounded(.down)
         return dimAlpha + (1 - dimAlpha) * CGFloat(pow(1 - behind, 2))
     }

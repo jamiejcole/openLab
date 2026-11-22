@@ -1067,8 +1067,12 @@ final class CueListTests: XCTestCase {
     func testTheFadingDotsBrightnessSweepsRound() {
         let p = PulsingDots.period
         XCTAssertEqual(PulsingDots.alpha(angle: 0, at: 0), 1, accuracy: 0.001, "the sweep starts at angle 0")
-        XCTAssertEqual(PulsingDots.alpha(angle: .pi / 2, at: p / 4), 1, accuracy: 0.001, "a quarter period on")
-        XCTAssertLessThan(PulsingDots.alpha(angle: .pi / 2, at: 0), 0.5, "a dot the sweep has not reached is dim")
+        XCTAssertEqual(
+            PulsingDots.alpha(angle: -.pi / 2, at: p / 4), 1, accuracy: 0.001, "a quarter period on: clockwise")
+        XCTAssertLessThan(PulsingDots.alpha(angle: -.pi / 2, at: 0), 0.5, "a dot the sweep has not reached is dim")
+        XCTAssertGreaterThan(
+            PulsingDots.alpha(angle: .pi / 4, at: p / 4), PulsingDots.alpha(angle: -.pi, at: p / 4),
+            "the dots just passed are brighter than those it comes to next")
         let low = (0..<120).map { PulsingDots.alpha(angle: 0, at: Double($0) / 100) }.min() ?? 0
         XCTAssertGreaterThanOrEqual(low, PulsingDots.dimAlpha - 0.001, "never fully out")
     }
