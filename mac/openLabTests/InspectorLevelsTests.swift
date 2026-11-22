@@ -1383,6 +1383,8 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertNil(m.slot(at: NSPoint(x: 5, y: row1)), "a row label")
         XCTAssertNil(m.slot(at: NSPoint(x: 5000, y: 5)))
         XCTAssertNil(m.slot(at: NSPoint(x: LevelMatrixView.headW + 5, y: LevelMatrixView.cellH + 5)), "the names")
+        let caption = LevelMatrixView.cellH + LevelMatrixView.headerH + LevelMatrixView.captionH / 2
+        XCTAssertNil(m.slot(at: NSPoint(x: LevelMatrixView.headW + 5, y: caption)), "the captions over the grid")
     }
 
     func testGangedOutputsMoveTogether() async throws {
