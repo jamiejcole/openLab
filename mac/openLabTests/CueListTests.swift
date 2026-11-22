@@ -1062,16 +1062,17 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(idle.images[1].alphaValue, 1)
     }
 
-    /// The dots brighten in turn: each peaks a third of a period after the one before, never fully out.
-    func testTheFadingDotsPeakInTurn() {
-        let period = PulsingDots.period
-        for i in 0..<3 {
-            let peak = period * Double(i) / 3 + period / 2
-            XCTAssertEqual(PulsingDots.alpha(dot: i, at: peak), 1, accuracy: 0.001, "dot \(i) peaks")
-            for j in 0..<3 where j != i { XCTAssertLessThan(PulsingDots.alpha(dot: j, at: peak), 0.9) }
-        }
-        let low = (0..<120).map { PulsingDots.alpha(dot: 0, at: Double($0) / 100) }.min() ?? 0
-        XCTAssertEqual(low, PulsingDots.dimAlpha, accuracy: 0.01)
+    /// The brightness sweeps round the cluster: a dot is brightest when the sweep reaches it and
+    /// fades behind it, never fully out; the cluster itself turns, more slowly.
+    func testTheFadingDotsBrightnessSweepsRoundAsTheyTurn() {
+        let p = PulsingDots.period
+        XCTAssertEqual(PulsingDots.alpha(angle: 0, at: 0), 1, accuracy: 0.001, "the sweep starts at angle 0")
+        XCTAssertEqual(PulsingDots.alpha(angle: .pi / 2, at: p / 4), 1, accuracy: 0.001, "a quarter period on")
+        XCTAssertLessThan(PulsingDots.alpha(angle: .pi / 2, at: 0), 0.5, "a dot the sweep has not reached is dim")
+        let low = (0..<120).map { PulsingDots.alpha(angle: 0, at: Double($0) / 100) }.min() ?? 0
+        XCTAssertGreaterThanOrEqual(low, PulsingDots.dimAlpha - 0.001, "never fully out")
+        XCTAssertEqual(PulsingDots.turn(at: PulsingDots.spinPeriod / 4), .pi / 2, accuracy: 0.001)
+        XCTAssertGreaterThan(PulsingDots.spinPeriod, p, "the dots turn more slowly than the sweep")
     }
 
     /// A running cue's Duration cell shows its whole length as a faint bar under the green fill: the right end of

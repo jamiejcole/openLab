@@ -2,12 +2,17 @@
 
 import AppKit
 
-/// Three dots that brighten one after another: the cue list's mark for a cue whose level is changing
-/// (fading), so a fade reads as something happening, not as a still glyph. Drawn from one shared clock
-/// (every fading row moves in step); with Reduce Motion on, the dots stand still.
+/// A ring of eight dots round a ring of four that slowly turns while a brightness sweeps round it:
+/// the cue list's mark for a cue whose level is changing (fading), so a fade reads as something
+/// happening, not as a still glyph. Drawn from one shared clock (every fading row moves in step); with
+/// Reduce Motion on, it stands still and evenly lit.
 final class PulsingDots: NSView {
+    /// One turn of the brightness sweep, and one turn of the dots themselves (slower).
     static let period: TimeInterval = 1.2
-    static let dimAlpha: CGFloat = 0.3
+    static let spinPeriod: TimeInterval = 4.8
+    static let dimAlpha: CGFloat = 0.25
+    /// Dots per ring, outer then inner, and each ring's radius as a share of half the view.
+    static let rings: [(count: Int, radius: CGFloat, dot: CGFloat)] = [(8, 0.78, 0.17), (4, 0.36, 0.16)]
 
     var colour: NSColor = MarkColour.caution {
         didSet { needsDisplay = true }
@@ -16,13 +21,19 @@ final class PulsingDots: NSView {
     /// The shared clock's time, in seconds; tests set it.
     nonisolated(unsafe) static var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
 
-    /// Dot `i`'s alpha at `time`: each peaks a third of a period after the one before.
-    static func alpha(dot i: Int, at time: TimeInterval) -> CGFloat {
-        let phase = (time / period - Double(i) / 3).truncatingRemainder(dividingBy: 1)
-        let p = phase < 0 ? phase + 1 : phase
-        // A smooth rise and fall over the period: 1 at its peak, dimAlpha at its lowest.
-        let wave = (1 - cos(2 * Double.pi * p)) / 2
-        return dimAlpha + (1 - dimAlpha) * CGFloat(wave)
+    /// The alpha of a dot at `angle` (radians, before the turn) at `time`: brightest where the sweep
+    /// is, fading behind it, never fully out.
+    static func alpha(angle: Double, at time: TimeInterval) -> CGFloat {
+        let head = 2 * Double.pi * (time / period).truncatingRemainder(dividingBy: 1)
+        // How far the dot trails the sweep, 0 at the head to 1 just ahead of it.
+        var behind = (head - angle) / (2 * Double.pi)
+        behind -= behind.rounded(.down)
+        return dimAlpha + (1 - dimAlpha) * CGFloat(pow(1 - behind, 2))
+    }
+
+    /// How far the dots have turned at `time`, in radians.
+    static func turn(at time: TimeInterval) -> Double {
+        2 * Double.pi * (time / spinPeriod).truncatingRemainder(dividingBy: 1)
     }
 
     static var moves: Bool { !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -39,14 +50,22 @@ final class PulsingDots: NSView {
     var wantsTicks: Bool { window != nil && !isHidden && Self.moves }
 
     override func draw(_ dirtyRect: NSRect) {
-        let d = min(bounds.height, bounds.width / 4).rounded(.down)
-        let gap = (bounds.width - 3 * d) / 4
+        let half = min(bounds.width, bounds.height) / 2
+        let centre = NSPoint(x: bounds.midX, y: bounds.midY)
         let time = Self.now()
-        for i in 0..<3 {
-            let alpha = Self.moves ? Self.alpha(dot: i, at: time) : 1
-            colour.withAlphaComponent(alpha).setFill()
-            let rect = NSRect(x: gap + CGFloat(i) * (d + gap), y: (bounds.height - d) / 2, width: d, height: d)
-            NSBezierPath(ovalIn: rect).fill()
+        let moving = Self.moves
+        let turn = moving ? Self.turn(at: time) : 0
+        for ring in Self.rings {
+            for k in 0..<ring.count {
+                let angle = 2 * Double.pi * Double(k) / Double(ring.count)
+                let a = angle + turn
+                let alpha = moving ? Self.alpha(angle: a, at: time) : 1
+                colour.withAlphaComponent(alpha).setFill()
+                let r = half * ring.radius
+                let d = half * ring.dot * 2
+                let at = NSPoint(x: centre.x + r * CGFloat(cos(a)), y: centre.y + r * CGFloat(sin(a)))
+                NSBezierPath(ovalIn: NSRect(x: at.x - d / 2, y: at.y - d / 2, width: d, height: d)).fill()
+            }
         }
     }
 

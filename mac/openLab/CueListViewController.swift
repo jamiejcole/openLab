@@ -259,7 +259,7 @@ final class CueCell: NSTableCellView {
     private var trailing: NSLayoutConstraint?
 
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView(), NSImageView()]
-    /// A fading cue's state mark: moving dots over the state slot (image 1 keeps the label and tooltip).
+    /// A fading cue's state mark: a turning cluster of dots over the state slot (image 1 keeps the label and tooltip).
     let fadingDots = PulsingDots()
     /// The first column's slots, left to right, as (image, x from the cell's left edge, width). Each mark
     /// has its own place whether or not the others are shown, so every row's marks line up down the list:
@@ -308,7 +308,7 @@ final class CueCell: NSTableCellView {
             NSLayoutConstraint.activate([
                 fadingDots.leadingAnchor.constraint(equalTo: slot.leadingAnchor),
                 fadingDots.widthAnchor.constraint(equalTo: slot.widthAnchor),
-                fadingDots.heightAnchor.constraint(equalToConstant: 6),
+                fadingDots.heightAnchor.constraint(equalTo: slot.heightAnchor),
                 fadingDots.centerYAnchor.constraint(equalTo: slot.centerYAnchor),
             ])
         } else {
