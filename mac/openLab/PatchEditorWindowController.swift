@@ -458,14 +458,20 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             let muted = state.routing.outputs.indices.contains(i) && state.routing.outputs[i].mute
             outputFields[i].toolTip = muted ? loc("patchEditor.outputMuted") : nil
             outputFields[i].textColor = muted ? .systemRed : .controlTextColor
+            outputFields[i].setAccessibilityLabel(muted ? loc("patchEditor.outputMuted") : nil)
         }
+        // Not by colour alone: the row's label says the output is muted.
+        func isMuted(_ i: Int) -> Bool { state.routing.outputs.indices.contains(i) && state.routing.outputs[i].mute }
 
         // The matrix: one row per cue output, one column per device output the device has or the
         // routing names.
         let device = row.flatMap(model.deviceName(of:))
         let channels = device.map(model.channelCount(of:)) ?? 0
         let columns = min(PatchRouting.maxDeviceOutputs, max(channels, state.routing.namedDeviceOutputs))
-        matrix.rowLabels = state.names.enumerated().map { i, name in name.isEmpty ? "\(i + 1)" : "\(i + 1)  \(name)" }
+        matrix.rowLabels = state.names.enumerated().map { i, name in
+            let label = name.isEmpty ? "\(i + 1)" : "\(i + 1)  \(name)"
+            return isMuted(i) ? String(format: loc("patchEditor.mutedRow"), label) : label
+        }
         matrix.deviceOutputs = columns
         matrix.usable = state.usable
         matrix.routing = state.routing

@@ -1026,6 +1026,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(editor.outputFields[1].stringValue, "0.0", "muting keeps the level")
         XCTAssertEqual(editor.outputFields[1].toolTip, loc("patchEditor.outputMuted"))
         XCTAssertNil(editor.outputFields[0].toolTip)
+        XCTAssertEqual(
+            editor.matrix.rowLabels, ["1", String(format: loc("patchEditor.mutedRow"), "2")],
+            "not by colour alone: the muted row says so")
+        XCTAssertEqual(editor.outputFields[1].accessibilityLabel(), loc("patchEditor.outputMuted"))
         XCTAssertTrue(
             editor.matrixRows.subviews.allSatisfy { !($0 is NSButton) }, "no button on a cue output's row")
         let mutes = {
@@ -1039,6 +1043,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually { mutes() == [false, false] }
         await assertEventually { editor.outputFields[1].textColor == .controlTextColor }
         XCTAssertNil(editor.outputFields[1].toolTip)
+        XCTAssertEqual(editor.matrix.rowLabels, ["1", "2"])
     }
 
     /// Opens a crosspoint's box, types and presses Esc.

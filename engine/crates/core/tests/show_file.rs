@@ -52,6 +52,9 @@ fn example_older() -> Workspace {
             cue.triggers.wall_clock = WallClockTrigger::default();
         }
     }
+    for patch in &mut ws.network_patches {
+        patch.interface = None;
+    }
     ws
 }
 

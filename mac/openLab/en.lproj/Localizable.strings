@@ -730,6 +730,7 @@
 "patchEditor.mutedColumn" = "%ld M";
 "patchEditor.mute" = "Mute";
 "patchEditor.outputMuted" = "Muted in this show. Unmute All clears it.";
+"patchEditor.mutedRow" = "%@ (muted)";
 "patchEditor.notConnectedNote" = "This device is not connected: the routing is kept and heard when it is back.";
 "patchEditor.copyRouting" = "Copy Routing";
 "patchEditor.copyDefaults" = "Defaults";

@@ -137,7 +137,7 @@ extension Command {
         Command(.object(["type": .string("remove_network_patch"), "id": .string(id.raw)]))
     }
 
-    /// `SetNetworkPatchProperty`: `property` is `name`, `host`, `port` or `protocol`.
+    /// `SetNetworkPatchProperty`: `property` is `name`, `host`, `port`, `protocol` or `interface`.
     static func setNetworkPatch(_ id: ModelID, _ property: String, _ value: JSONValue) -> Command {
         Command(
             .object([

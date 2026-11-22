@@ -232,7 +232,8 @@
         "name": "Lighting desk",
         "host": "192.168.1.20",
         "port": 53000,
-        "protocol": "udp"
+        "protocol": "udp",
+        "interface": "en0"
       }
     ],
     "stages": [
