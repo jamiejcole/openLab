@@ -2442,7 +2442,8 @@ final class AppControllerTests: XCTestCase {
         app.launcher.select(row: 1)
         app.launcher.openSelected()
         await assertEventually { app.windows.count == before + 1 }
-        XCTAssertEqual(recents.first, other)
+        // The system's recent list takes the opened show a moment after its window is up.
+        await assertEventually("the opened show heads the recents") { self.recents.first == other }
     }
 
     /// The system's recent list forgets a deleted file, so the launcher keeps what it listed: the
