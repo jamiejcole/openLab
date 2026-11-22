@@ -117,6 +117,7 @@ fn snapshot() -> Snapshot {
             count: None,
         }],
         media_durations: vec![CueMediaDuration {
+            audio_file: None,
             cue: cue_id(10),
             file: Some(62.5),
             trimmed: Some(60.0),
@@ -1270,6 +1271,11 @@ fn fixtures() -> Vec<(String, Sample)> {
             seq: 44,
             changes: vec![
                 RuntimeChange::MediaDuration(CueMediaDuration {
+                    audio_file: Some(openlab_core::protocol::AudioFileFormat {
+                        codec: "flac".into(),
+                        channels: 6,
+                        sample_rate: 48_000,
+                    }),
                     cue: cue_id(10),
                     file: Some(62.5),
                     trimmed: Some(60.25),
@@ -1280,6 +1286,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     audio_track: None,
                 }),
                 RuntimeChange::MediaDuration(CueMediaDuration {
+                    audio_file: None,
                     cue: cue_id(11),
                     file: None,
                     trimmed: None,
@@ -1299,6 +1306,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             seq: 45,
             changes: vec![
                 RuntimeChange::MediaDuration(CueMediaDuration {
+                    audio_file: None,
                     cue: cue_id(15),
                     file: Some(12.5),
                     trimmed: None,
@@ -1315,6 +1323,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     audio_track: None,
                 }),
                 RuntimeChange::MediaDuration(CueMediaDuration {
+                    audio_file: None,
                     cue: cue_id(16),
                     file: None,
                     trimmed: None,
@@ -1338,6 +1347,7 @@ fn fixtures() -> Vec<(String, Sample)> {
         server(ServerMessage::Runtime {
             seq: 46,
             changes: vec![RuntimeChange::MediaDuration(CueMediaDuration {
+                audio_file: None,
                 cue: cue_id(15),
                 file: Some(12.5),
                 trimmed: Some(12.5),

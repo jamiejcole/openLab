@@ -64,6 +64,34 @@ fn aiff_decodes_to_the_known_signal() {
 }
 
 #[test]
+fn the_probe_names_each_files_codec() {
+    let reference = tone(11_025, RATE);
+    for (fmt, want) in [
+        (Pcm::I16, "pcm"),
+        (Pcm::I24, "pcm"),
+        (Pcm::F32, "pcm_float"),
+    ] {
+        let path = temp_file(
+            &format!("codec-{fmt:?}.wav"),
+            &wav(&reference, 2, RATE, fmt),
+        );
+        assert_eq!(probe(&path).unwrap().codec, Some(want), "{fmt:?}");
+    }
+    let aif = aiff(&reference, 2, RATE, Pcm::I16);
+    let p = probe_media(Media::Reader(Box::new(Cursor::new(aif)), None)).unwrap();
+    assert_eq!(p.codec, Some("pcm"));
+    for (name, want) in [
+        ("tone.flac", "flac"),
+        ("tone-alac.m4a", "alac"),
+        ("tone.mp3", "mp3"),
+        ("tone.m4a", "aac"),
+        ("tone.ogg", "vorbis"),
+    ] {
+        assert_eq!(probe(&fixture(name)).unwrap().codec, Some(want), "{name}");
+    }
+}
+
+#[test]
 fn lossless_fixtures_decode_exactly() {
     let reference = tone(FIXTURE_FRAMES as usize, RATE);
     for name in ["tone.flac", "tone-alac.m4a"] {

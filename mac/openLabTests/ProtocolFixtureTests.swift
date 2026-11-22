@@ -245,7 +245,8 @@ final class ProtocolFixtureTests: XCTestCase {
             decoded,
             [
                 CueMediaDuration(
-                    cue: "00000000-0000-0000-0000-00000000000a", file: 62.5, trimmed: 60.25, duration: nil, channels: 6),
+                    cue: "00000000-0000-0000-0000-00000000000a", file: 62.5, trimmed: 60.25, duration: nil, channels: 6,
+                    audioFile: AudioFileFormat(codec: "flac", channels: 6, sampleRate: 48000)),
                 CueMediaDuration(
                     cue: "00000000-0000-0000-0000-00000000000b", file: nil, trimmed: nil, duration: nil, channels: nil),
             ])

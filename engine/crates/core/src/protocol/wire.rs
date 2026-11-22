@@ -537,6 +537,10 @@ pub struct CueMediaDuration {
     /// `still`). Absent for an Audio cue, and with the lengths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<crate::video_probe::ProbeReport>,
+    /// An Audio cue's file as its probe read it: codec, channels and sample rate. Absent for a
+    /// Video cue, with the lengths, and when the probe did not read the codec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_file: Option<AudioFileFormat>,
     /// The audio tracks of a Video cue's movie, in file order (VID-06). Empty (absent) for a
     /// movie without sound, a still and an Audio cue: the cue then has no sound, no levels to
     /// show and no need of an output patch.
@@ -547,6 +551,16 @@ pub struct CueMediaDuration {
     /// track's. Absent with `audio_tracks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_track: Option<u32>,
+}
+
+/// An Audio cue's file as its probe read it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioFileFormat {
+    /// The codec's short name: `pcm`, `pcm_float`, `flac`, `alac`, `aac`, `mp1`, `mp2`, `mp3`,
+    /// `vorbis`, `opus` or `other`.
+    pub codec: String,
+    pub channels: u16,
+    pub sample_rate: u32,
 }
 
 /// One audio track of a movie as its probe read it.

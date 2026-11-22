@@ -16,6 +16,7 @@ use std::time::Duration;
 
 fn fake(_: &Path) -> Result<Probed, MediaError> {
     Ok(Probed {
+        codec: None,
         info: MediaInfo {
             channels: 1,
             sample_rate: 1000,

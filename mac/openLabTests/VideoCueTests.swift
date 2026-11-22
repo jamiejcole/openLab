@@ -644,7 +644,7 @@ final class VideoCueTests: XCTestCase {
         await soon { inspector.cue?.id == audioID }
         XCTAssertTrue(inspector.outputPatchPopup.isEnabled)
         XCTAssertTrue(v.videoRows.allSatisfy(\.isHidden))
-        XCTAssertEqual(v.soundRow?.isHidden, true)
+        XCTAssertEqual(v.soundRow?.isHidden, false, "an Audio cue's file format is the sound row")
         XCTAssertEqual(v.patchRow?.isHidden, false)
     }
 

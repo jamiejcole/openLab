@@ -193,6 +193,16 @@ extension InspectorViewController {
     private func renderBatchAudio(_ cues: [Cue], first: Cue, model: WorkspaceModel) {
         renderIO(first, model: model)
         renderBatchSound(cues)
+        let v = videoIO
+        if Set(cues.map { $0.raw["kind"]?["media"]?.stringValue ?? "" }).count > 1 {
+            v.fileLabel.stringValue = loc("inspector.mixed")
+            v.fileLabel.textColor = .secondaryLabelColor
+            v.fileLabel.toolTip = nil
+        }
+        if Set(cues.map { store.mediaDurations[$0.id]?.audioFile }).count > 1 {
+            v.soundLabel.stringValue = loc("inspector.mixed")
+            v.soundLabel.textColor = .secondaryLabelColor
+        }
     }
 
     /// The output patch and the Levels tab of several cues with sound: the patch they share or

@@ -996,6 +996,16 @@
 "inspector.io.audioCodec.in32" = "PCM";
 "inspector.io.audioCodec.fl32" = "PCM";
 "inspector.io.audioCodec.fl64" = "PCM";
+"inspector.io.audioCodec.pcm" = "PCM";
+"inspector.io.audioCodec.pcm_float" = "PCM (float)";
+"inspector.io.audioCodec.flac" = "FLAC";
+"inspector.io.audioCodec.aac" = "AAC";
+"inspector.io.audioCodec.mp1" = "MP1";
+"inspector.io.audioCodec.mp2" = "MP2";
+"inspector.io.audioCodec.mp3" = "MP3";
+"inspector.io.audioCodec.vorbis" = "Vorbis";
+"inspector.io.audioCodec.opus" = "Opus";
+"inspector.io.audioCodec.other" = "Other codec";
 /* A Video cue's Geometry tab (VID-04) */
 "inspector.tab.geometry" = "Geometry";
 "inspector.geometry.mode" = "Placement";
@@ -1077,6 +1087,8 @@
 "levels.matrix" = "Levels matrix";
 "levels.master" = "Main level";
 "levels.main" = "main";
+"levels.inputs" = "inputs";
+"levels.crosspoints" = "crosspoints";
 "levels.setDefault" = "Set Default Levels";
 "levels.output" = "Cue output %d";
 "levels.cross" = "File channel %d to output %d";
