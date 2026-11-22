@@ -6,8 +6,8 @@ import AppKit
 /// of the app's stands the stage there back (`StandBack`); so does an engine that stops answering
 /// (the app's black at once here, the stage host's window by its own silence limit).
 extension AppController {
-    /// How often the engine is asked whether it answers while the app's black covers the display
-    /// with the menu bar; one not answered by the next ask counts as not answering.
+    /// How often the engine is asked whether it answers while the display with the menu bar is
+    /// covered; one not answered by the next ask counts as not answering.
     static let engineWatchEvery = 1.0
 
     func questionsChanged(_ asking: Bool) {
@@ -28,8 +28,8 @@ extension AppController {
         }
     }
 
-    /// Watches the engine's answers while the app's black covers the display with the menu bar
-    /// (`covered`), and stops when it no longer does.
+    /// Watches the engine's answers while the display with the menu bar is covered, by the app's black
+    /// or by a stage's picture (`covered`), and stops when it no longer does.
     func watchEngine(_ covered: Bool) {
         engineWatch?.cancel()
         engineWatch = nil

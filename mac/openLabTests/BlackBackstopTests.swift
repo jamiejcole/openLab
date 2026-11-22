@@ -152,6 +152,53 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertFalse(pointer.hidden)
     }
 
+    /// #795 S1: no window asks for mouse-moved events and the app's own events never reach a global
+    /// monitor, so the place is read on a timer while the app is active over covered displays: from a
+    /// stage onto the app's window on another display shows the pointer; back onto the stage hides
+    /// it; the app resigning, no display covered or the pointer going away shows it and stops the timer.
+    func testThePointerFollowsItsPlaceOnATimerWhileTheAppIsActiveAndIsNeverLeftHidden() {
+        var hides = 0
+        var unhides = 0
+        var at = NSPoint(x: Self.v1Frame.midX, y: Self.v1Frame.midY)
+        var active = true
+        var tick: (@MainActor () -> Void)?
+        func make() -> StagePointer {
+            let pointer = StagePointer()
+            pointer.hide = { hides += 1 }
+            pointer.unhide = { unhides += 1 }
+            pointer.location = { at }
+            pointer.isActive = { active }
+            pointer.startPolling = { fire in
+                tick = fire
+                return { tick = nil }
+            }
+            return pointer
+        }
+        var pointer: StagePointer? = make()
+        XCTAssertEqual(pointer?.isPolling, false, "nothing covered")
+        pointer?.frames = [Self.v1Frame]
+        XCTAssertEqual(pointer?.hidden, true, "over the stage, active: hidden")
+        XCTAssertEqual(pointer?.isPolling, true)
+        at = NSPoint(x: Self.v2Frame.midX, y: Self.v2Frame.midY)  // onto the app's window, no event
+        tick?()
+        XCTAssertEqual(pointer?.hidden, false, "the poll shows it over the workspace window")
+        at = NSPoint(x: Self.v1Frame.midX, y: Self.v1Frame.midY)
+        tick?()
+        XCTAssertEqual(pointer?.hidden, true, "back onto the stage")
+        pointer?.update(appActive: false)
+        XCTAssertEqual([pointer?.hidden, pointer?.isPolling], [false, false], "resigned: shown, not polled")
+        pointer?.update()
+        XCTAssertEqual([pointer?.hidden, pointer?.isPolling], [true, true])
+        pointer?.frames = []
+        XCTAssertEqual([pointer?.hidden, pointer?.isPolling], [false, false], "no display covered")
+        pointer?.frames = [Self.v1Frame]
+        XCTAssertEqual(pointer?.hidden, true)
+        XCTAssertEqual(hides - unhides, 1, "one hide not yet matched")
+        pointer = nil
+        XCTAssertEqual(hides, unhides, "gone: the pointer is shown again")
+        XCTAssertNil(tick, "and the timer stopped")
+    }
+
     /// This Mac's displays as the backstop reads them: ColorSync's UUIDs (the stage host's display
     /// ids), each screen's frame, and the menu bar on the first screen only.
     func testThisMacsDisplaysAreNamedAsTheStageHostNamesThem() throws {
@@ -424,6 +471,42 @@ final class BlackBackstopTests: XCTestCase {
             back = await eventually { window.level == BlackBackstop.level }
         }
         XCTAssertTrue(back, "the engine answers again: over everything again")
+    }
+
+    /// #795 S1: a stage that keeps no black, playing on the only display, hides the pointer there; the
+    /// engine hung, the stage host stands back after its silence limit, so the app takes the
+    /// pointer back over its windows at the same time, with no backstop of its own up. The engine
+    /// answering again hides it again.
+    func testAHungEngineWhileAKeepBlackOffStageShowsTheOnlyDisplayTheAppGetsThePointerBack() async throws {
+        let watch = ManualScheduler()
+        let (store, _, stage2) = try await start()
+        app.engineWatchScheduler = watch
+        await keepBlack(store, stage2, false)
+        await played(store, stage2)
+        await pushed("the picture shown, no black of the app's") {
+            self.state(store, stage2) == "shown" && self.app.backstop.windows["V2"] == nil
+        }
+        XCTAssertTrue(app.backstop.pointer.frames.contains(Self.v2Frame), "hidden over the picture")
+        let pid = engine.pid
+        XCTAssertEqual(kill(pid, SIGSTOP), 0)
+        var stopped = true
+        defer { if stopped { kill(pid, SIGCONT) } }
+        for _ in 0..<2 {
+            await assertEventually { await watch.waitingCount == 1 }
+            await watch.fire()
+        }
+        await assertEventually("the pointer is the app's over its display") {
+            !self.app.backstop.pointer.frames.contains(Self.v2Frame)
+        }
+        XCTAssertEqual(kill(pid, SIGCONT), 0)
+        stopped = false
+        var back = false
+        for _ in 0..<20 where !back {
+            await assertEventually { await watch.waitingCount == 1 }
+            await watch.fire()
+            back = await eventually { self.app.backstop.pointer.frames.contains(Self.v2Frame) }
+        }
+        XCTAssertTrue(back, "the engine answers again: hidden over the picture again")
     }
 
     /// The menu bar's display covered: a stage of the workspace shows a picture there (the test card)

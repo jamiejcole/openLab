@@ -166,7 +166,8 @@ final class BlackBackstop {
     var engineSilent = false {
         didSet { if engineSilent != oldValue { update() } }
     }
-    /// Told when a window of its own starts or stops covering the display with the menu bar.
+    /// Told when the display with the menu bar starts or stops being covered (by a window of its own
+    /// or by a stage's picture): the engine is watched while it is.
     var menuBarCoverChanged: (@MainActor (Bool) -> Void)?
     /// A click on one of its windows: the app comes forward with the keys, as a click on a stage
     /// brings it (the stage host hands them over).
@@ -178,11 +179,6 @@ final class BlackBackstop {
     /// Its black on the display with the menu bar stands back under the app's windows, just under
     /// the stage's window standing back there.
     static let standingBackLevel = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 2)
-
-    /// Whether a window of its own is up on the display with the menu bar.
-    var coversMenuBarDisplay: Bool {
-        windows.keys.contains { id in displays.contains { $0.id == id && $0.hasMenuBar } }
-    }
 
     /// Esc: every black held goes now, whether or not an engine is there to hear the panic (a
     /// relaunching engine, a stage host down), so the operator is never locked out of the display.
@@ -243,12 +239,16 @@ final class BlackBackstop {
             // Never key, never activating: the operator's keys and focus stay where they are.
             if !window.isVisible { window.orderFrontRegardless() }
         }
-        if coversMenuBarDisplay != coveredMenuBar {
-            coveredMenuBar.toggle()
-            menuBarCoverChanged?(coveredMenuBar)
+        let outputs = stores.map(\.videoOutputs)
+        let watched = !Self.coveredFrames(
+            displays: displays, backstops: Set(windows.keys), outputs: outputs, menuBar: true
+        ).isEmpty
+        if watched != coveredMenuBar {
+            coveredMenuBar = watched
+            menuBarCoverChanged?(watched)
         }
         pointer.frames = Self.pointerFrames(
-            displays: displays, backstops: Set(windows.keys), outputs: stores.map(\.videoOutputs), standingBack: back)
+            displays: displays, backstops: Set(windows.keys), outputs: outputs, standingBack: back)
     }
 
     /// The displays the pointer is hidden over: each a stage is shown on (its picture or its black)
@@ -257,11 +257,30 @@ final class BlackBackstop {
     static func pointerFrames(
         displays: [BackstopDisplay], backstops: Set<String>, outputs: [VideoOutputs], standingBack: Bool
     ) -> [NSRect] {
+        coveredDisplays(displays: displays, backstops: backstops, outputs: outputs)
+            .filter { !(standingBack && $0.hasMenuBar) }.map(\.frame)
+    }
+
+    /// The displays a stage is shown on or the app holds black.
+    static func coveredDisplays(
+        displays: [BackstopDisplay], backstops: Set<String>, outputs: [VideoOutputs]
+    ) -> [BackstopDisplay] {
         var covered = backstops
         for entry in outputs.flatMap(\.stages) where entry.state?.state == "shown" {
             if let display = entry.state?.display { covered.insert(display) }
         }
-        return displays.filter { covered.contains($0.id) && !(standingBack && $0.hasMenuBar) }.map(\.frame)
+        return displays.filter { covered.contains($0.id) }
+    }
+
+    /// The frames of the covered displays that have the menu bar (`menuBar`): while one is covered,
+    /// by the app's black or by a stage's picture alone (no backstop: it keeps no black), the engine
+    /// is watched, so the pointer and the app's black stand back when it stops answering as the
+    /// stage host's window does.
+    static func coveredFrames(
+        displays: [BackstopDisplay], backstops: Set<String>, outputs: [VideoOutputs], menuBar: Bool
+    ) -> [NSRect] {
+        coveredDisplays(displays: displays, backstops: backstops, outputs: outputs)
+            .filter { $0.hasMenuBar == menuBar }.map(\.frame)
     }
 
     /// A borderless black window over `frame`, not yet ordered front.
@@ -325,16 +344,32 @@ private final class BlackView: NSView {
 /// and the app is active, so it neither shows over the audience's picture nor takes the shape an
 /// app behind the stage would give it. The stage host cannot hide it (macOS lets only the active
 /// app hide the pointer); a click on a stage makes the app active (the stage host hands it the
-/// keys). Shown again as soon as it leaves those displays or the app is not active.
+/// keys). Shown again as soon as it leaves those displays, the app is not active, no display is
+/// covered or this goes away. The place is read on a short timer while the app is active and a
+/// display is covered: no window of the app asks for mouse-moved events and the app's own events
+/// never reach a global monitor, so events alone miss a move from a stage onto the app's window.
 @MainActor
 final class StagePointer {
-    /// Seams: tests count instead of hiding the machine's pointer, and give its place.
+    /// How often the place is read while the app is active over covered displays.
+    static let pollEvery = 0.1
+    /// Seams: tests count instead of hiding the machine's pointer, and give its place and clock.
     var hide: @MainActor () -> Void = { NSCursor.hide() }
     var unhide: @MainActor () -> Void = { NSCursor.unhide() }
     var isActive: @MainActor () -> Bool = { NSApp.isActive }
     var location: @MainActor () -> NSPoint = { NSEvent.mouseLocation }
+    /// Starts a repeating call of `fire` every `pollEvery` seconds and returns what stops it.
+    var startPolling: @MainActor (_ fire: @escaping @MainActor () -> Void) -> @MainActor () -> Void = { fire in
+        let timer = Timer(timeInterval: StagePointer.pollEvery, repeats: true) { _ in
+            MainActor.assumeIsolated { fire() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        return { timer.invalidate() }
+    }
     /// The pointer is hidden by us now (each hide is matched by one unhide).
     private(set) var hidden = false
+    /// Whether the place is being polled now.
+    var isPolling: Bool { stopPolling != nil }
+    private var stopPolling: (@MainActor () -> Void)?
     /// The covered displays' frames, in screen coordinates.
     var frames: [NSRect] = [] {
         didSet { if frames != oldValue { update() } }
@@ -344,7 +379,7 @@ final class StagePointer {
 
     init() {
         // Moves over another app's window (a stage's: the stage host's) come to the global
-        // monitor, moves over the app's own windows to the local one.
+        // monitor, moves over the app's own windows to the local one (when they take them).
         let moves: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         if let m = NSEvent.addGlobalMonitorForEvents(
             matching: moves, handler: { [weak self] _ in MainActor.assumeIsolated { self?.update() } })
@@ -360,26 +395,49 @@ final class StagePointer {
         {
             monitors.append(m)
         }
-        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
-            observers.append(
-                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.update() }
-                })
-        }
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in MainActor.assumeIsolated { self?.update() } })
+        // Not active already, whatever `isActive` still says while the notification is delivered.
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in MainActor.assumeIsolated { self?.update(appActive: false) } })
     }
 
     deinit {
         for m in monitors { NSEvent.removeMonitor(m) }
         for o in observers { NotificationCenter.default.removeObserver(o) }
+        // The pointer is never left hidden, nor the timer running, past this.
+        let (wasHidden, unhide, stop) = MainActor.assumeIsolated { (hidden, unhide, stopPolling) }
+        if wasHidden || stop != nil {
+            let finish: @MainActor @Sendable () -> Void = {
+                if wasHidden { unhide() }
+                stop?()
+            }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { finish() }
+            } else {
+                DispatchQueue.main.async { finish() }
+            }
+        }
     }
 
-    /// Hides or shows the pointer for where it is now.
-    func update() {
-        let at = location()
-        let over = frames.contains { NSMouseInRect(at, $0, false) }
-        let want = over && isActive()
-        guard want != hidden else { return }
-        hidden = want
-        if want { hide() } else { unhide() }
+    /// Hides or shows the pointer for where it is now, and polls while it may need to change.
+    func update(appActive: Bool? = nil) {
+        let active = appActive ?? isActive()
+        let over = active && frames.contains { NSMouseInRect(location(), $0, false) }
+        if over != hidden {
+            hidden = over
+            if over { hide() } else { unhide() }
+        }
+        let poll = active && !frames.isEmpty
+        if poll, stopPolling == nil {
+            stopPolling = startPolling { [weak self] in self?.update() }
+        } else if !poll, let stop = stopPolling {
+            stopPolling = nil
+            stop()
+        }
     }
 }
