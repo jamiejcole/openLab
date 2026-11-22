@@ -81,14 +81,7 @@ struct WorkItem {
 /// What a copy's thread found, file by file (the plan's item index and its outcome).
 pub struct CopyAnswer {
     ticket: u64,
-    results: Vec<(usize, Result<Done, CopyError>)>,
-}
-
-/// A file done with on the copy's thread: where it went, and that place as the show file would
-/// store it from the job's show folder (worked out there, not on the control thread).
-struct Done {
-    copied: Copied,
-    stored: Option<MediaRef>,
+    results: Vec<(usize, Result<Copied, CopyError>)>,
 }
 
 impl std::fmt::Debug for CopyAnswer {
@@ -104,8 +97,8 @@ impl std::fmt::Debug for CopyAnswer {
 
 /// How an item of the plan ended.
 enum Outcome {
-    Copied(PathBuf, Option<MediaRef>),
-    Reused(PathBuf, Option<MediaRef>),
+    Copied(PathBuf),
+    Reused(PathBuf),
     /// Already inside the show folder (on demand): left as it is.
     InFolder,
     Failed(MediaCopyReason, String),
@@ -155,8 +148,6 @@ struct Running {
     ticket: u64,
     doc: DocId,
     mode: CopyMode,
-    /// The show folder the copies go into.
-    show_dir: PathBuf,
     items: Vec<CopyItem>,
     /// Outcomes known before the thread started (a file in the folder, one that cannot be
     /// reached), by item index.
@@ -422,7 +413,6 @@ impl Control {
             ticket: self.eng.copies.ticket,
             doc: job.doc,
             mode: job.mode,
-            show_dir: show_dir.clone(),
             items,
             settled,
             cues,
@@ -495,14 +485,13 @@ impl Control {
     fn finish_copy(
         &mut self,
         running: Running,
-        results: Vec<(usize, Result<Done, CopyError>)>,
+        results: Vec<(usize, Result<Copied, CopyError>)>,
         abandoned_after: Option<u64>,
     ) {
         let Running {
             ticket,
             doc,
             mode,
-            show_dir,
             items,
             mut settled,
             ..
@@ -512,14 +501,8 @@ impl Control {
             settled.push((
                 index,
                 match result {
-                    Ok(Done {
-                        copied: Copied::New(path),
-                        stored,
-                    }) => Outcome::Copied(path, stored),
-                    Ok(Done {
-                        copied: Copied::Reused(path),
-                        stored,
-                    }) => Outcome::Reused(path, stored),
+                    Ok(Copied::New(path)) => Outcome::Copied(path),
+                    Ok(Copied::Reused(path)) => Outcome::Reused(path),
                     Err(e) => {
                         if e.failure == CopyFailure::Cancelled {
                             cancelled = true;
@@ -560,7 +543,6 @@ impl Control {
         }
         let planner = Planner {
             mode,
-            job_dir: show_dir,
             items,
             settled: settled.into_iter(),
             cancelled,
@@ -666,11 +648,6 @@ impl DocCx<'_> {
         let Some(p) = applying.planner.as_mut() else {
             return;
         };
-        let show_dir = self.doc.show_path.as_deref().and_then(Path::parent);
-        // A Save As into another folder since the copy began: the stored forms the thread worked
-        // out are for the old folder, and are worked out again here.
-        let moved = show_dir != Some(p.job_dir.as_path());
-        let show_dir = show_dir.and_then(Path::to_str).map(str::to_owned);
         // Show Mode began since: nothing more is retargeted.
         if self.doc.show_mode {
             p.cancelled = true;
@@ -680,13 +657,13 @@ impl DocCx<'_> {
                 continue;
             };
             let target = match outcome {
-                Outcome::Copied(path, stored) => {
+                Outcome::Copied(path) => {
                     p.copied += 1;
-                    Some((path, stored))
+                    Some(path)
                 }
-                Outcome::Reused(path, stored) => {
+                Outcome::Reused(path) => {
                     p.reused.insert(path.clone());
-                    Some((path, stored))
+                    Some(path)
                 }
                 Outcome::InFolder => {
                     p.in_folder.insert(item.media.as_str().to_owned());
@@ -705,25 +682,17 @@ impl DocCx<'_> {
                     None
                 }
             };
-            let Some((path, stored)) = target else {
+            let Some(path) = target else {
                 continue;
             };
             if p.cancelled {
                 continue;
             }
-            let stored = match stored {
-                Some(stored) if !moved => Some(stored),
-                _ => path
-                    .to_str()
-                    .map(|path| portable_ref(path, show_dir.as_deref(), PathStyle::host())),
-            };
-            if let Some(stored) = stored {
-                applying.retargets.push_back(Retarget {
-                    cue: item.cue,
-                    from: item.media.clone(),
-                    to: stored,
-                });
-            }
+            applying.retargets.push_back(Retarget {
+                cue: item.cue,
+                from: item.media.clone(),
+                path,
+            });
         }
         if p.settled.len() > 0 {
             return;
@@ -767,10 +736,21 @@ impl DocCx<'_> {
         // Each listed cue's file now, from one walk that stops at the last of them.
         let wanted: std::collections::HashSet<CueId> = chunk.iter().map(|r| r.cue).collect();
         let current = openlab_core::media_of_listed(self.doc.model.ws(), &wanted);
+        // The stored form is spelled against the show folder as it is now: a Save As that landed
+        // since the copy was planned moved the folder, and the part follows it.
+        let show_dir = self
+            .doc
+            .show_path
+            .as_deref()
+            .and_then(Path::parent)
+            .and_then(Path::to_str);
         let retargets: Vec<(CueId, MediaRef)> = chunk
             .into_iter()
             .filter(|r| current.get(&r.cue) == Some(&r.from))
-            .map(|r| (r.cue, r.to))
+            .filter_map(|r| {
+                let path = r.path.to_str()?;
+                Some((r.cue, portable_ref(path, show_dir, PathStyle::host())))
+            })
             .collect();
         if retargets.is_empty() {
             return;
@@ -803,7 +783,8 @@ struct Retarget {
     cue: CueId,
     /// The file the cue had when the copy was planned.
     from: MediaRef,
-    to: MediaRef,
+    /// The copy's absolute path; its stored form is worked out when the cue is retargeted.
+    path: PathBuf,
 }
 
 /// A copy whose files are done, its cues being pointed at their copies a few at a wake
@@ -831,7 +812,6 @@ impl Applying {
 /// A finished copy's files being sorted into the report's counts, a part per wake.
 struct Planner {
     mode: CopyMode,
-    job_dir: PathBuf,
     items: Vec<CopyItem>,
     settled: std::vec::IntoIter<(usize, Outcome)>,
     cancelled: bool,
@@ -914,15 +894,7 @@ fn spawn_copy(
                     item.folder,
                     item.always_new,
                     &mut ctx,
-                )
-                .map(|copied| {
-                    let stored = match &copied {
-                        Copied::New(p) | Copied::Reused(p) => p
-                            .to_str()
-                            .map(|p| portable_ref(p, show_dir.to_str(), PathStyle::host())),
-                    };
-                    Done { copied, stored }
-                });
+                );
                 results.push((item.index, result));
                 progress.file_done();
             }

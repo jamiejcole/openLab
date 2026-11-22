@@ -1093,6 +1093,81 @@ fn a_save_as_elsewhere_while_a_copy_is_retargeting_leaves_every_cue_on_its_own_c
     }
 }
 
+/// Review #652 H1 (2nd): a Save As written on the writer thread while the copy answers moves the
+/// show folder only when it lands; parts applied after that spell their files against the folder
+/// the doc has then, so no cue ends on the old folder's spelling resolved against the new one.
+#[test]
+fn a_save_as_landing_while_a_copy_retargets_leaves_every_cue_on_its_own_copy() {
+    use openlab_engine::control::{Inbox, SaveHook, reply_channel};
+    use openlab_engine::persist::JobKind;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let copy_gate = Gate::default();
+    let save_gate = Gate::default();
+    let armed = Arc::new(AtomicBool::new(false));
+    let mut r = many(60, |c| {
+        c.copy.apply_per_wake = 1;
+        let held = copy_gate.clone();
+        c.copy.hooks.before_file = Some(Arc::new(move |_| held.wait()));
+        let (held, armed) = (save_gate.clone(), armed.clone());
+        c.save_hook = Some(SaveHook(Arc::new(move |kind: JobKind| {
+            if kind == JobKind::Save && armed.load(Ordering::SeqCst) {
+                held.wait();
+            }
+        })));
+    });
+    let elsewhere = r.env.root.path().join("Elsewhere");
+    fs::create_dir_all(elsewhere.join("audio")).unwrap();
+    for n in 1..=60 {
+        fs::write(
+            elsewhere.join("audio").join(format!("f{n}.wav")),
+            wav_bytes(7, 0.9),
+        )
+        .unwrap();
+    }
+    armed.store(true, Ordering::SeqCst);
+    let copy_id = r.s.request_id();
+    let (tx, _copy_rx) = reply_channel();
+    let _ = r.s.control_mut().handle(Inbox::Client {
+        message: ClientMessage::Request {
+            id: copy_id,
+            request: Request::CopyMedia,
+        },
+        reply: tx,
+    });
+    // The Save As is delivered with the copy still held: its write waits at the save gate.
+    let save_id = r.s.request_id();
+    let (tx, _save_rx) = reply_channel();
+    let _ = r.s.control_mut().handle(Inbox::Client {
+        message: ClientMessage::Request {
+            id: save_id,
+            request: Request::SaveAs {
+                path: elsewhere
+                    .join("Moved.openlab")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        },
+        reply: tx,
+    });
+    // The copy answers while the write is still pending: its parts are planned against the old
+    // folder; the save then lands and moves the doc.
+    copy_gate.open();
+    wait_until_retargeting(&mut r);
+    save_gate.open();
+    assert!(r.s.wait_for(|c| c.docs_busy() == 0));
+    let all = r.reports();
+    assert_eq!(all.iter().map(|x| x.copied).sum::<u64>(), 60);
+    let dir = portable(&elsewhere);
+    for n in 1..=60 {
+        let resolved = openlab_core::resolve(&r.media(n), &dir);
+        assert_eq!(
+            fs::read(&resolved).unwrap(),
+            original_bytes(n),
+            "cue {n} resolves to {resolved}"
+        );
+    }
+}
+
 /// Review #652 M1: the planner's part size is the config's; at one file a wake every cue still
 /// ends on its copy and the report counts every file.
 #[test]
