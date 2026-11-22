@@ -267,14 +267,18 @@ final class AppController {
             performNow(command, isRepeat: isRepeat)
             return nil
         }
-        if beginCellEdit(keys.editKey(for: chord), event: event) { return nil }
+        // The list's own keys (edit a cell, flag, continue mode, `=`/`-`) only while its window is key:
+        // with the workspace's status window key, an editor opened behind it would take no typing,
+        // and the typing would fall through to GO and the cue hotkeys.
+        let listWindowKey = frontController.map { $0.window === keyWindow() } ?? false
+        if listWindowKey, beginCellEdit(keys.editKey(for: chord), event: event) { return nil }
         // The Time & Loops waveform's own keys (Shift-I, Shift-O, M) while it has the focus go on to
         // it, before a cue hotkey on the same key.
         if frontController?.window?.firstResponder is WaveformView, WaveformView.editKey(for: event) != nil {
             return event
         }
         if fireCueHotkeys(chord, event: event) { return nil }
-        return moveBySequenceKey(chord, event: event) ? nil : event
+        return listWindowKey && moveBySequenceKey(chord, event: event) ? nil : event
     }
 
     /// `=` and `-` move the playhead to the next and previous sequence (QLab 5's View menu gives

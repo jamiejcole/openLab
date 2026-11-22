@@ -750,6 +750,14 @@ final class CueHotkeyFiringTests: XCTestCase {
         XCTAssertNil(app.handleKeyDown(try event("x")))
         await assertEventually { await self.hotkeys() == 1 }
         app.handleKeyUp(try event("x", type: .keyUp))
+        // The list's own keys stay with the list's window: with the status window key, Q (edit a
+        // cue's name) opens no editor in the list behind it, so typing never reaches GO.
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        _ = wc.window?.makeFirstResponder(wc.cueList.outlineView)
+        let q = try event("q")
+        XCTAssertTrue(app.handleKeyDown(q) === q, "not taken as an edit key")
+        XCTAssertEqual(wc.cueList.outlineView.editedRow, -1, "no cell editor opened behind the status window")
+        XCTAssertFalse(wc.window?.firstResponder is NSText, "the list keeps the focus")
         app.keyWindow = { nil }  // app active, no key window: still fires
         XCTAssertNil(app.handleKeyDown(try event("x")))
         await assertEventually { await self.hotkeys() == 3 }
