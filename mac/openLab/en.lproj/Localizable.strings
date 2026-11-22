@@ -592,7 +592,7 @@
 "settings.network.col.interface" = "Interface";
 "settings.network.interfaceAutomatic" = "Automatic";
 "settings.network.interfaceItem" = "%1$@ (%2$@)";
-"settings.network.interfaceAbsent" = "%@ (not on this Mac)";
+"settings.network.interfaceAbsent" = "%@ — missing";
 "settings.network.interfaceTip" = "The network connection this destination sends from. Automatic lets the Mac choose; pick one when the Mac is on several networks with similar addresses.";
 "settings.network.col.delete" = "";
 "settings.network.delete" = "Remove";

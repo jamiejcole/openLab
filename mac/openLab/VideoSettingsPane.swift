@@ -180,6 +180,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         messageLabel.setAX(Self.id + "-message")
 
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
@@ -295,8 +296,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             new.topAnchor.constraint(equalTo: holder.topAnchor, constant: Self.inset),
             new.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: Self.inset),
             new.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -Self.inset),
-            new.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -Self.inset),
         ])
+        // Not required: the columns are fitted to the page's width, and a table that is
+        // momentarily wider must not hold the window wide (nor outweigh the page's own sizing).
+        let trailing = new.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -Self.inset)
+        trailing.priority = NSLayoutConstraint.Priority(250)
+        trailing.isActive = true
     }
 
     // MARK: Drawing

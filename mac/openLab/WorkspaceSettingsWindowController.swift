@@ -84,6 +84,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// The interfaces this Mac has, read each time the table is drawn.
     let networkInterfaces: () -> [NetworkInterface]
     var networkDeleteButtons: [NSButton] = []
+    /// The width constraints of the name and host fields; the table gives them what its width
+    /// leaves after the fixed columns.
+    var networkNameWidths: [NSLayoutConstraint] = []
+    var networkHostWidths: [NSLayoutConstraint] = []
+    var networkScroll: NSScrollView?
     var shownNetwork: [NetworkPatchRow]?
     var networkCommits: Task<Void, Never>?
 

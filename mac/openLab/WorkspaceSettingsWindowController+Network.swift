@@ -27,8 +27,12 @@ extension WorkspaceSettingsWindowController {
         }
         networkGrid.addRow(with: headers)
         networkGrid.rowSpacing = 8
-        networkGrid.columnSpacing = 8
-        for (c, width) in [110, 130, 56, 64, 150, 24].enumerated() { networkGrid.column(at: c).width = CGFloat(width) }
+        networkGrid.columnSpacing = 6
+        for (c, width) in [Self.networkNameMin, Self.networkHostMin, 52, 64, Self.networkInterfaceWidth, 24]
+            .enumerated()
+        {
+            networkGrid.column(at: c).width = width
+        }
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
@@ -41,11 +45,16 @@ extension WorkspaceSettingsWindowController {
         holder.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(networkGrid)
         scroll.documentView = holder
+        // Not required: the columns are fitted to the window's width, and a table that is
+        // momentarily wider must not hold the window wide (nor outweigh the page's own sizing).
+        let trailing = networkGrid.trailingAnchor.constraint(
+            lessThanOrEqualTo: holder.trailingAnchor, constant: -8)
+        trailing.priority = NSLayoutConstraint.Priority(250)
         NSLayoutConstraint.activate([
             networkGrid.topAnchor.constraint(equalTo: holder.topAnchor, constant: 8),
             networkGrid.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 8),
             networkGrid.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -8),
-            networkGrid.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -8),
+            trailing,
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             holder.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),
@@ -53,6 +62,11 @@ extension WorkspaceSettingsWindowController {
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
         ])
         scroll.setAX(AX.settingsNetwork + "-table", label: loc("settings.tab.network"))
+        networkScroll = scroll
+        scroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: scroll.contentView, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.fitNetworkColumns() } }
 
         let stack = NSStackView(views: [top, scroll])
         stack.orientation = .vertical
@@ -62,6 +76,23 @@ extension WorkspaceSettingsWindowController {
         top.setContentHuggingPriority(.required, for: .vertical)
         stack.spacing = 12
         return stack
+    }
+
+    static let networkNameMin: CGFloat = 70
+    static let networkHostMin: CGFloat = 96
+    static let networkInterfaceWidth: CGFloat = 136
+    /// The Name and Address columns' widths: what the table's width leaves after Port, Type,
+    /// Interface and the remove button, a share each, so every column is whole at the least window.
+    func fitNetworkColumns() {
+        guard let scroll = networkScroll else { return }
+        let fixed: CGFloat = 52 + 64 + Self.networkInterfaceWidth + 24
+        let spare = scroll.contentView.bounds.width - 16 - fixed - 5 * networkGrid.columnSpacing
+        let name = max(Self.networkNameMin, (spare * 0.4).rounded(.down))
+        let host = max(Self.networkHostMin, (spare - name).rounded(.down))
+        networkGrid.column(at: 0).width = name
+        networkGrid.column(at: 1).width = host
+        for c in networkNameWidths { c.constant = name }
+        for c in networkHostWidths { c.constant = host }
     }
 
     /// Draws the table. One that is as drawn is left alone, and so is one being typed in: a rebuild
@@ -85,6 +116,8 @@ extension WorkspaceSettingsWindowController {
         networkTransportPopups = []
         networkInterfacePopups = []
         networkDeleteButtons = []
+        networkNameWidths = []
+        networkHostWidths = []
         let available = networkInterfaces()
         for (i, row) in rows.enumerated() {
             let n = i + 1
@@ -95,7 +128,9 @@ extension WorkspaceSettingsWindowController {
                 f.delegate = self
                 f.tag = i
                 f.identifier = NSUserInterfaceItemIdentifier(key)
-                f.widthAnchor.constraint(equalToConstant: width).isActive = true
+                let w = f.widthAnchor.constraint(equalToConstant: width)
+                w.isActive = true
+                if key == "name" { networkNameWidths.append(w) } else if key == "host" { networkHostWidths.append(w) }
                 f.setAccessibilityIdentifier("\(AX.settingsNetwork)-\(key)-\(n)")
                 f.setAccessibilityLabel("\(row.name), \(loc("settings.network.col.\(key)"))")
                 networkFields.append(f)
@@ -122,7 +157,7 @@ extension WorkspaceSettingsWindowController {
             interface.action = #selector(networkInterfaceChosen(_:))
             interface.isEnabled = enabled
             interface.toolTip = loc("settings.network.interfaceTip")
-            interface.widthAnchor.constraint(equalToConstant: 150).isActive = true
+            interface.widthAnchor.constraint(equalToConstant: Self.networkInterfaceWidth).isActive = true
             interface.setAX(
                 "\(AX.settingsNetwork)-interface-\(n)", label: "\(row.name), \(loc("settings.network.col.interface"))")
             let delete = NSButton(title: "", target: self, action: #selector(networkDeleteClicked(_:)))
@@ -133,13 +168,14 @@ extension WorkspaceSettingsWindowController {
             delete.isEnabled = enabled
             delete.setAX("\(AX.settingsNetwork)-delete-\(n)", label: "\(loc("settings.network.delete")) \(row.name)")
             networkGrid.addRow(with: [
-                field("name", row.name, width: 120), field("host", row.host, width: 140),
-                field("port", String(row.port), width: 56), popup, interface, delete,
+                field("name", row.name, width: Self.networkNameMin), field("host", row.host, width: Self.networkHostMin),
+                field("port", String(row.port), width: 52), popup, interface, delete,
             ])
             networkTransportPopups.append(popup)
             networkInterfacePopups.append(interface)
             networkDeleteButtons.append(delete)
         }
+        fitNetworkColumns()
         networkGrid.layoutSubtreeIfNeeded()
     }
 
