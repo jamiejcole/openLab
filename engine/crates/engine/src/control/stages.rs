@@ -442,15 +442,15 @@ impl Control {
         let sent = self.eng.stages.sent.take().unwrap_or_default();
         let drawn = |set: &StageSet, id: RouteId| {
             let route = set.routes.iter().find(|o| o.id == id)?.clone();
-            let regions: Vec<(StageId, bool, u32, &RegionOutput)> = (set.stages.iter())
+            let regions: Vec<(StageId, bool, u32, RegionOutput)> = (set.stages.iter())
                 .flat_map(|s| {
                     s.regions
                         .iter()
                         .filter(|r| r.route == id)
-                        .map(move |r| (s.id, s.keep_black, s.stack, r))
+                        .map(move |r| (s.id, s.keep_black, s.stack, r.clone()))
                 })
                 .collect();
-            Some((route, format!("{regions:?}")))
+            Some((route, regions))
         };
         self.eng
             .stages

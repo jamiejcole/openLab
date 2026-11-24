@@ -1137,36 +1137,38 @@ impl<P: Platform> Host<P> {
     /// open monitor's title and layer.
     fn plan(&self, now: (u64, u32)) -> Plan {
         let mut plan = Plan::default();
-        let mut cues: HashMap<StageId, Vec<CuePicture>> = HashMap::new();
+        // Each route's regions with something to draw, found in one pass over the stages.
+        let mut parts: HashMap<RouteId, Vec<StagePart<'_>>> = HashMap::new();
         for stage in &self.stages {
             let on = self.cues_on(stage.id, now);
+            let picture = self.picture(stage.id);
             if let Some(m) = self.monitors.get(&stage.id).filter(|m| !m.closed)
                 && self.platform.video()
                 && self.app_connected
             {
-                let layer = layer_of(stage, self.picture(stage.id), on.clone(), None);
+                let layer = layer_of(stage, picture, on.clone(), None);
                 plan.watched.push((m.title.clone(), layer));
             }
-            cues.insert(stage.id, on);
+            // Off, a stage with nothing to show draws nothing: the desktop shows there.
+            if !stage.keep_black && picture == Picture::Black && on.is_empty() {
+                continue;
+            }
+            for (index, region) in stage.regions.iter().enumerate() {
+                parts
+                    .entry(region.route)
+                    .or_default()
+                    .push((index, stage, picture, on.clone()));
+            }
         }
         for route in &self.routes {
             let screen = (self.displays.iter())
                 .find(|d| Some(&d.id) == route.display.as_ref())
                 .map(|d| (d.width, d.height));
             let mut layers: Vec<Drawn> = Vec::new();
-            for stage in &self.stages {
-                let picture = self.picture(stage.id);
-                let on = cues.get(&stage.id).cloned().unwrap_or_default();
-                // Off, a stage with nothing to show draws nothing: the desktop shows there.
-                if !stage.keep_black && picture == Picture::Black && on.is_empty() {
-                    continue;
-                }
-                for (index, region) in stage.regions.iter().enumerate() {
-                    if region.route == route.id {
-                        let layer =
-                            layer_of(stage, picture, on.clone(), Some((region, route, screen)));
-                        layers.push(((stage.stack, index), route.id, layer));
-                    }
+            for (index, stage, picture, on) in parts.remove(&route.id).unwrap_or_default() {
+                if let Some(region) = stage.regions.get(index) {
+                    let layer = layer_of(stage, picture, on, Some((region, route, screen)));
+                    layers.push(((stage.stack, index), route.id, layer));
                 }
             }
             let state = match &route.display {
@@ -1451,6 +1453,10 @@ impl<P: Platform> Host<P> {
         }
     }
 }
+
+/// A region of a stage with something to draw: its index, its stage, the stage's picture and
+/// its cues' pictures.
+type StagePart<'a> = (usize, &'a StageOutput, Picture, Vec<CuePicture>);
 
 /// One layer a display draws: its order (stage stack, region index) and its route.
 type Drawn = ((u32, usize), RouteId, Layer);
