@@ -2383,7 +2383,8 @@ final class AppControllerTests: XCTestCase {
         table.keyDown(with: ret)
         await assertEventually { app.windows.values.contains { $0.window?.title.hasPrefix("Beta") == true } }
         await assertEventually { !(app.launcher.window?.isVisible ?? true) }
-        XCTAssertEqual(recents.first, b, "Beta is now first")
+        // The show is noted as recent once its open returns, just after its window appears.
+        await assertEventually("Beta is now first") { self.recents.first == b }
         // A double-click on a row: the table's own action.
         app.showLauncher()
         XCTAssertEqual(app.launcher.recents.map(\.name), ["Beta", "Alpha"])
@@ -2396,7 +2397,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(app.windows.count, before)
         app.launcher.openSelected()
         await assertEventually { app.windows.count == before + 1 }
-        XCTAssertEqual(recents.first, a)
+        await assertEventually("Alpha is now first") { self.recents.first == a }
     }
 
     /// The launcher comes up while the engine starts (its list disabled), is ready later, and Return
