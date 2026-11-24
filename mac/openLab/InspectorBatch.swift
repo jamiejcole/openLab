@@ -201,6 +201,12 @@ extension InspectorViewController {
             v.soundLabel.stringValue = loc("inspector.mixed")
             v.soundLabel.textColor = .secondaryLabelColor
         }
+        // The first cue may have no file while others do: the row shows when any of them has one.
+        if cues.contains(where: Self.hasFile) { v.soundRow?.isHidden = false }
+    }
+
+    static func hasFile(_ cue: Cue) -> Bool {
+        !(cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
     }
 
     /// The output patch and the Levels tab of several cues with sound: the patch they share or
@@ -243,6 +249,8 @@ extension InspectorViewController {
     private func renderBatchVideo(_ cues: [Cue], first: Cue, model: WorkspaceModel, allSound: Bool) {
         renderIO(first, model: model)
         let v = videoIO
+        // The first cue may have no file while others do: the picture format row shows when any has one.
+        if cues.contains(where: Self.hasFile) { v.videoRows.first?.isHidden = false }
         v.soundRow?.isHidden = !allSound
         v.showOutputSection(allSound)
         if allSound {

@@ -36,6 +36,9 @@ enum StoreChange: Sendable {
 @MainActor
 final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var model: WorkspaceModel?
+    /// Counts the patch mappings this app changed (the engine sends nothing for one), so views showing
+    /// where a patch plays read it again.
+    @Published private(set) var patchMappingRevision = 0
     @Published private(set) var document: DocumentState?
     @Published private(set) var cueStates: [ModelID: CueRunState] = [:]
     @Published private(set) var problems: [ModelID: [WireProblem]] = [:]
@@ -369,7 +372,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
 
     /// Sets, or with nil clears, where `patch` plays on this machine.
     func setPatchMapping(_ patch: ModelID, _ mapping: PatchMapping?) async -> Result<OkBody, EngineError> {
-        await client.send { .request(id: $0, .setPatchMapping(patch: patch, mapping: mapping)) }
+        let result = await client.send { .request(id: $0, .setPatchMapping(patch: patch, mapping: mapping)) }
+        if case .success = result { patchMappingRevision += 1 }
+        return result
     }
 
     // MARK: Applying server messages

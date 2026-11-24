@@ -229,6 +229,16 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(io.videoRows.map(\.isHidden), [true, true], "no picture format or stage")
         XCTAssertEqual(io.patchRow?.isHidden, false)
         XCTAssertEqual(io.outputFormatRow?.isHidden, io.outputFormatLabel.stringValue.isEmpty)
+        // The line comes from the engine: the patch's device as the engine reads it, not an empty row.
+        await assertEventually { !io.outputFormatLabel.stringValue.isEmpty && io.outputFormatRow?.isHidden == false }
+        XCTAssertNotEqual(io.outputFormatLabel.stringValue, loc("inspector.io.outputFormatNotConnected"))
+        XCTAssertNotEqual(io.outputFormatLabel.stringValue, loc("inspector.io.outputFormatNoDevice"))
+        // A patch mapped again here is read again (the engine sends nothing for a mapping change).
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        let before = store.patchMappingRevision
+        _ = await store.setPatchMapping(patch, nil)
+        XCTAssertEqual(store.patchMappingRevision, before + 1)
+        await assertEventually { !io.outputFormatLabel.stringValue.isEmpty }
         XCTAssertFalse(io.divider.isHidden)
         vc.view.layoutSubtreeIfNeeded()
         func frame(_ v: NSView) -> NSRect { v.convert(v.bounds, to: nil) }

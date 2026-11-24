@@ -40,6 +40,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The output devices the engine has open, as its last status said (their rates and channels).
     var openOutputs: [OutputStatus] = []
     private var rateSub: AnyCancellable?
+    private var mappingSub: AnyCancellable?
     var patchReading: Task<Void, Never>?
     var patchReadAgain = false
     let hotkeyField = HotkeyRecorder()
@@ -583,6 +584,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 if devicesChanged { self.readPatchDevices() }
                 self.redrawOutputFormat()
             }
+        }
+        // A patch moved to another device here: read where the patches play again.
+        mappingSub = store.$patchMappingRevision.dropFirst().sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.readPatchDevices() }
         }
         readPatchDevices()
         render()
