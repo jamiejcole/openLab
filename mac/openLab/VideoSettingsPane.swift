@@ -73,7 +73,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             case .name: return 90
             case .size: return 72
             case .display: return VideoSettingsPane.leastDisplayWidth
-            case .scaling: return 62
+            case .scaling: return 80  // "Centre" whole in a small pop-up
             case .devices: return VideoSettingsPane.leastDisplayWidth
             case .edit: return 34
             case .monitor: return VideoSettingsPane.monitorWidth

@@ -514,7 +514,7 @@ final class VideoSettingsTests: XCTestCase {
         // The routing page's display choice reads whole, and its titles line up with its columns.
         sc.tabs.selectTabViewItem(withIdentifier: "videoRouting")
         window.contentView?.layoutSubtreeIfNeeded()
-        for popup in routing.displayPopups {
+        for popup in routing.displayPopups + routing.scalingPopups {
             XCTAssertLessThanOrEqual(
                 popup.intrinsicContentSize.width, popup.frame.width, popup.titleOfSelectedItem ?? "")
         }
@@ -524,7 +524,7 @@ final class VideoSettingsTests: XCTestCase {
         // At the window's least size too.
         window.setContentSize(window.contentMinSize)
         window.contentView?.layoutSubtreeIfNeeded()
-        for popup in routing.displayPopups {
+        for popup in routing.displayPopups + routing.scalingPopups {
             XCTAssertLessThanOrEqual(
                 popup.intrinsicContentSize.width, popup.frame.width, "least size: \(popup.titleOfSelectedItem ?? "")")
         }
