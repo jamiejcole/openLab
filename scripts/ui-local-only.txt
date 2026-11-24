@@ -8,3 +8,11 @@ openLabUITests/CueListLayoutUITests/testGroupClosedAndOpenedByTriangleAndArrowsW
 openLabUITests/ListToolsUITests/testAToolbarButtonDraggedIntoTheListMakesACueWhereItLandsAndInAnOpenGroupJoinsIt
 openLabUITests/VideoUITests/testGeometryFieldsTypedThumbnailDraggedEachUndoneAndRedone
 openLabUITests/VideoUITests/testGeometryTabOrderBringsAFieldBelowTheScrolledAreaIntoView
+# #808: the hosted runner delivers no drag and no Return key press to the app. Seen on both nightly runs on
+# 45074677927 and 45316112953: the press-and-drag on the waveform moves nothing (the same test's clicks work), and
+# Return after a click on the launcher's row opens nothing (the double-click that reaches the same code works),
+# while both pass on a Mac. The app logic is covered by unit tests: the waveform's drag by TimeLoopsTests
+# (dragWave), Return in the launcher's list by AppControllerTests
+# (testDoubleClickOrReturnOnARecentShowOpensItAndMovesItToTheTopOfTheList).
+openLabUITests/LaunchTests/testReturnOnTheSelectedRecentShowOpensItAndClosesTheLauncher
+openLabUITests/TimeLoopsUITests/testWaveformClickMovesThePlaybackPositionDragSelectsASectionAndAHandleDragTrims
