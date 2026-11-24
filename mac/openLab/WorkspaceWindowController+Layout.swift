@@ -246,6 +246,8 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
         }
 
         func move(toInspectorHeight height: CGFloat) {
+            // Show Mode may have locked the window mid-drag (another client's change): leave the inspector as it is.
+            guard !wc.isShowMode else { return }
             let split = wc.verticalSplit
             let closes = WorkspaceWindowController.dragClosesInspector(height: height)
             if closes != closed {

@@ -2103,7 +2103,8 @@ extension PlayheadFlowTests {
         var wanted: [Double] = []
         for (t, dx) in [(100.0, 2.0), (300.0, -2.0), (450.0, 1.0)] {
             let x = waveX(t)
-            XCTAssertGreaterThan(abs(waveView.scale.seconds(x + dx) - t), WaveformView.minLength, "a pixel is over minLength here")
+            XCTAssertGreaterThan(
+                abs(waveView.scale.seconds(x + dx) - t), WaveformView.minLength, "a pixel is over minLength here")
             dragWave(fromX: x, through: [x + dx])
             XCTAssertNil(waveView.selection, "a pixel of movement is no section")
             XCTAssertEqual(waveView.insertion ?? -1, t, accuracy: 1, "click at \(t) landed")

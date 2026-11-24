@@ -2013,7 +2013,8 @@ final class PlayheadFlowTests: XCTestCase {
         scroll.setFrameSize(NSSize(width: scroll.frame.width, height: last.maxY - 20))
         scroll.layoutSubtreeIfNeeded()
         outline.tile()
-        XCTAssertGreaterThanOrEqual(outline.frame.height, last.maxY + spare - 1, "a full list gets the three rows added")
+        XCTAssertGreaterThanOrEqual(
+            outline.frame.height, last.maxY + spare - 1, "a full list gets the three rows added")
         try await focusList(on: cues[0])
         XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]])
         let window = try XCTUnwrap(wc.window)

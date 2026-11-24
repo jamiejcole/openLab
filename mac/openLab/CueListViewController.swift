@@ -183,7 +183,7 @@ final class CueOutlineView: NSOutlineView {
             return
         }
         // A press on a row's empty space below the cues ends the selection (QLab), with no cue selected.
-        if row < 0, event.modifierFlags.intersection([.command, .shift]).isEmpty {
+        if row < 0, event.modifierFlags.intersection([.command, .shift, .control]).isEmpty {
             window?.makeFirstResponder(self)
             deselectAll(nil)
             return
@@ -476,7 +476,9 @@ final class CueCell: NSTableCellView {
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet {
             guard backgroundStyle != oldValue else { return }
-            for (i, mark) in tints where !(i == 1 && showsDots) { images[i].image = tinted(mark.image, mark.tint, mark.label) }
+            for (i, mark) in tints where !(i == 1 && showsDots) {
+                images[i].image = tinted(mark.image, mark.tint, mark.label)
+            }
             if let mark = tints[1] { fadingDots.colour = drawnColour(mark.tint) }
         }
     }
@@ -1245,6 +1247,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         listID = list?.id
         chosenList = list?.id
         seenHead = list.flatMap { store.playheads[$0.id] }
+        // A resync replaces the list: a skip waiting for an undone add's playhead move no longer applies.
+        headRemovedWhileSelected = false
         roots = (list?.cues ?? []).map { makeNode($0, parent: nil) }
         outlineView.reloadData()
         func expand(_ node: CueNode) {

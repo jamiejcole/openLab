@@ -1843,17 +1843,37 @@ final class WindowLayoutTests: XCTestCase {
         let window = try XCTUnwrap(wc.window)
         let y = split.bounds.height - wc.inspector.view.frame.height - split.dividerThickness / 2
         let at = split.convert(NSPoint(x: 60, y: y), to: nil)
-        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+        func event(_ type: NSEvent.EventType, at point: NSPoint? = nil) throws -> NSEvent {
             try XCTUnwrap(
                 NSEvent.mouseEvent(
-                    with: type, location: at, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+                    with: type, location: point ?? at, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                    eventNumber: 0, clickCount: 1, pressure: 1))
         }
         NSApp.postEvent(try event(.leftMouseUp), atStart: false)
         let before = wc.inspector.view.frame.height
         split.mouseDown(with: try event(.leftMouseDown))
         XCTAssertTrue(wc.isVisible(.inspector))
         XCTAssertEqual(wc.inspector.view.frame.height, before, accuracy: 1)
+        // The same press with drag events through the split's own mouse-down: down to the window's foot and
+        // let go there closes it; down and back up before letting go leaves it open.
+        let low = split.convert(NSPoint(x: 60, y: split.bounds.height - 10), to: nil)
+        for type in [NSEvent.EventType.leftMouseDragged, .leftMouseDragged, .leftMouseUp] {
+            NSApp.postEvent(try event(type, at: low), atStart: false)
+        }
+        split.mouseDown(with: try event(.leftMouseDown))
+        XCTAssertFalse(wc.isVisible(.inspector), "a real drag to the foot closes the inspector")
+        try toggle(.inspector, in: wc)
+        settle(wc)
+        let y2 = split.bounds.height - wc.inspector.view.frame.height - split.dividerThickness / 2
+        let start = split.convert(NSPoint(x: 60, y: y2), to: nil)
+        for (type, point) in [
+            (NSEvent.EventType.leftMouseDragged, low), (.leftMouseDragged, start), (.leftMouseUp, start),
+        ] {
+            NSApp.postEvent(try event(type, at: point), atStart: false)
+        }
+        split.mouseDown(with: try event(.leftMouseDown, at: start))
+        XCTAssertTrue(wc.isVisible(.inspector), "dragged down and back up while held: still open")
     }
 
     /// A saved inspector height below the least comes back as the least.
