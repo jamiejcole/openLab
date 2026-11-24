@@ -1,0 +1,19 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "add_route",
+    "index": 0,
+    "route": {
+      "id": "00000000-0000-0000-0000-000000000090",
+      "name": "Output 1",
+      "width": 1920,
+      "height": 1080,
+      "rotation": 90,
+      "scaling": "fit"
+    },
+    "regions": [
+      "00000000-0000-0000-0000-0000000000a0"
+    ]
+  }
+}

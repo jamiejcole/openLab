@@ -33,13 +33,14 @@ use crate::cue::{
     OscArg, SecondTrigger, Triggers,
 };
 use crate::model::{
-    CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, StageId, Workspace,
+    CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, RegionId, RouteId,
+    StageId, Workspace,
 };
 use crate::network::MessageIssue;
 use crate::osc_access::OscRights;
 use crate::tree::{find_path, height, walk_mut};
 use crate::validate::{IssueKind, MAX_GROUP_DEPTH, ValidationIssue, visit};
-use crate::video::{Stage, StageProperty};
+use crate::video::{OutputRoute, Region, RegionProperty, RouteProperty, Stage, StageProperty};
 pub use numbers::next_auto_number;
 
 use numbers::{renumber, set_numbers};
@@ -322,6 +323,46 @@ pub enum Command {
         id: StageId,
         property: StageProperty,
     },
+    /// Adds an output route at `index` (0 to the current count; at most `MAX_ROUTES`). The
+    /// regions named in `regions` (each must exist and have no route) are sent to it: the undo of
+    /// a route's removal puts its regions back on it.
+    AddRoute {
+        index: usize,
+        route: OutputRoute,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        regions: Vec<RegionId>,
+    },
+    /// Removes an output route. Regions sent to it are left with none; the inverse puts them
+    /// back. Its per-machine display choice stays in the machine settings, so an undo brings it
+    /// back on its display.
+    RemoveRoute {
+        id: RouteId,
+    },
+    /// Moves a route to `index` among the routes (counted after taking it out).
+    MoveRoute {
+        id: RouteId,
+        index: usize,
+    },
+    SetRouteProperty {
+        id: RouteId,
+        property: RouteProperty,
+    },
+    /// Adds a region to `stage` at `index` (0 to its count; at most `MAX_REGIONS`), inside the
+    /// stage, its route one the workspace has (or none).
+    AddRegion {
+        stage: StageId,
+        index: usize,
+        region: Region,
+    },
+    RemoveRegion {
+        stage: StageId,
+        id: RegionId,
+    },
+    SetRegionProperty {
+        stage: StageId,
+        id: RegionId,
+        property: RegionProperty,
+    },
     /// Adds an empty cue list at `index` (0 to the current count).
     AddCueList {
         index: usize,
@@ -407,6 +448,14 @@ pub enum CommandError {
     StageNotFound(StageId),
     #[error("stage id {0} is already in use")]
     DuplicateStageId(StageId),
+    #[error("output route {0} does not exist")]
+    RouteNotFound(RouteId),
+    #[error("output route id {0} is already in use")]
+    DuplicateRouteId(RouteId),
+    #[error("region {0} does not exist")]
+    RegionNotFound(RegionId),
+    #[error("region id {0} is already in use")]
+    DuplicateRegionId(RegionId),
     #[error("patch id {0} is already in use")]
     DuplicatePatchId(PatchId),
     #[error("network patch id {0} is already in use")]

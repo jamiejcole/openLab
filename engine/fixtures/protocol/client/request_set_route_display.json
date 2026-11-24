@@ -2,8 +2,8 @@
   "type": "request",
   "id": 64,
   "request": {
-    "type": "set_stage_mapping",
-    "stage": "00000000-0000-0000-0000-000000000080",
+    "type": "set_route_display",
+    "route": "00000000-0000-0000-0000-000000000090",
     "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230"
   }
 }

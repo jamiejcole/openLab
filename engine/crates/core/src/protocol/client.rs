@@ -13,7 +13,7 @@ use super::{
 use crate::command::Command;
 use crate::cue::{FadeSpec, Modifiers};
 use crate::media_path::{PathStyle, is_absolute, to_portable};
-use crate::model::{CueId, CueListId, PatchId, StageId, WorkspaceId};
+use crate::model::{CueId, CueListId, PatchId, RouteId, StageId, WorkspaceId};
 use crate::settings::PatchMapping;
 
 /// Longest `coalesce` key of a `command`, bytes.
@@ -443,19 +443,19 @@ pub enum Request {
     /// Where each of the connection's workspace's patches plays on this machine (WS-07), for a
     /// patch editor: answers `patch_mappings`. Workspace-bound.
     ListPatchMappings,
-    /// The displays this machine can show stages on (VID-01), as the stage host lists them:
-    /// answers `displays`. Empty until the stage host, which starts with the engine's control
-    /// loop, has listed them. App-scope.
+    /// The displays this machine can show output routes on (VID-01), as the stage host lists
+    /// them: answers `displays`. Empty until the stage host, which starts with the engine's
+    /// control loop, has listed them. App-scope.
     ListDisplays,
-    /// Where each of the connection's workspace's stages is shown on this machine (VID-01):
-    /// answers `stage_mappings`. Workspace-bound.
-    ListStageMappings,
-    /// Shows the connection's workspace's `stage` on `display` (an id `list_displays` names) on
-    /// this machine, or on no display (absent or null); kept in machine settings under the
-    /// workspace id and stage id, not in the show file. Answers `ok`, or `not_found` (stage or
-    /// display unknown); nothing changes on a refusal. Workspace-bound.
-    SetStageMapping {
-        stage: StageId,
+    /// Where each of the connection's workspace's output routes is shown on this machine, and
+    /// its stages' black and monitors (VID-01): answers `route_displays`. Workspace-bound.
+    ListRouteDisplays,
+    /// Shows the connection's workspace's output `route` on `display` (an id `list_displays`
+    /// names) on this machine, or on no display (absent or null); kept in machine settings under
+    /// the workspace id and route id, not in the show file, and not an undo step. Answers `ok`,
+    /// or `not_found` (route or display unknown); nothing changes on a refusal. Workspace-bound.
+    SetRouteDisplay {
+        route: RouteId,
         #[serde(default)]
         display: Option<String>,
     },
@@ -668,7 +668,7 @@ impl ClientMessage {
             }
             Self::Request {
                 request:
-                    Request::SetStageMapping {
+                    Request::SetRouteDisplay {
                         display: Some(display),
                         ..
                     },

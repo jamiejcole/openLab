@@ -1,6 +1,6 @@
 {
   "type": "welcome",
-  "protocol_version": 4,
+  "protocol_version": 5,
   "workspaces": [
     {
       "doc": 0,

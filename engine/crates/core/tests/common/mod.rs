@@ -185,6 +185,7 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             protocol: NetworkProtocol::Udp,
             interface: None,
         }],
+        routes: Vec::new(),
         stages: Vec::new(),
         show_mode: false,
         cue_lists: vec![CueList {

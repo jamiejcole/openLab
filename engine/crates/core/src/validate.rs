@@ -21,14 +21,17 @@ use crate::cue::{
 use crate::limits::{fade_holds_levels, group_ids};
 use crate::model::{
     CueId, CueList, CueListId, NetworkPatchId, OutputPatch, PatchCrosspoint, PatchId, PatchOutput,
-    StageId, Workspace, WorkspaceSettings, hotkey_field,
+    RegionId, RouteId, StageId, Workspace, WorkspaceSettings, hotkey_field,
 };
 use crate::network::MAX_HOST_BYTES;
 use crate::osc_access::{
     MAX_OSC_PASSCODE_BYTES, MAX_OSC_PASSCODES, OscAccess, is_valid_new_passcode,
 };
 use crate::tree::walk_mut;
-use crate::video::{MAX_STAGE_LAYER, MAX_STAGE_PIXELS, MAX_STAGES, Stage};
+use crate::video::{
+    MAX_REGIONS, MAX_ROUTE_PIXELS, MAX_ROUTES, MAX_STAGE_LAYER, MAX_STAGE_PIXELS, MAX_STAGES,
+    OutputRoute, Stage,
+};
 
 /// Longest name of a workspace, cue list, patch or network patch, in Unicode scalar values (not
 /// bytes: a name in any script gets the same room, and a UI text field counts characters).
@@ -156,6 +159,22 @@ pub enum IssueKind {
     StageLayer { stage: StageId },
     /// More than [`MAX_STAGES`] stages; the extra ones were dropped.
     TooManyStages,
+    /// Error.
+    DuplicateRouteId { id: RouteId },
+    /// Error: two regions (of any stages) share an id.
+    DuplicateRegionId { id: RegionId },
+    /// The route's size was outside 1 to [`MAX_ROUTE_PIXELS`] a side; it was clamped.
+    RouteSize { route: RouteId },
+    /// The route's rotation was not 0, 90, 180 or 270; it was set to 0.
+    RouteRotation { route: RouteId },
+    /// More than [`MAX_ROUTES`] routes; the extra ones were dropped.
+    TooManyRoutes,
+    /// The stage had more than [`MAX_REGIONS`] regions; the extra ones were dropped.
+    TooManyRegions { stage: StageId },
+    /// The region did not lie wholly inside its stage; it was moved (and shrunk) inside.
+    RegionBounds { stage: StageId, region: RegionId },
+    /// The region named a route the workspace does not have; it now has none.
+    RegionRouteMissing { region: RegionId, route: RouteId },
     /// Error: the cue is nested deeper than [`MAX_GROUP_DEPTH`].
     NestingTooDeep,
     /// `number` was already used by `first`; this cue's number was cleared.
@@ -292,6 +311,37 @@ impl fmt::Display for ValidationIssue {
                     "more than {MAX_STAGES} stages; the extra ones were dropped"
                 )
             }
+            IssueKind::DuplicateRouteId { id } => write!(f, "duplicate output route id {}", id.0),
+            IssueKind::DuplicateRegionId { id } => write!(f, "duplicate region id {}", id.0),
+            IssueKind::RouteSize { route } => write!(
+                f,
+                "output route {}: size outside 1 to {MAX_ROUTE_PIXELS} pixels a side; clamped",
+                route.0
+            ),
+            IssueKind::RouteRotation { route } => write!(
+                f,
+                "output route {}: rotation not 0, 90, 180 or 270; set to 0",
+                route.0
+            ),
+            IssueKind::TooManyRoutes => write!(
+                f,
+                "more than {MAX_ROUTES} output routes; the extra ones were dropped"
+            ),
+            IssueKind::TooManyRegions { stage } => write!(
+                f,
+                "stage {}: more than {MAX_REGIONS} regions; the extra ones were dropped",
+                stage.0
+            ),
+            IssueKind::RegionBounds { stage, region } => write!(
+                f,
+                "stage {}, region {}: not inside its stage; moved inside",
+                stage.0, region.0
+            ),
+            IssueKind::RegionRouteMissing { region, route } => write!(
+                f,
+                "region {}: output route {} does not exist; it now has none",
+                region.0, route.0
+            ),
             IssueKind::DuplicateNetworkPatchId { id } => {
                 write!(f, "duplicate network patch id {}", id.0)
             }
@@ -452,7 +502,8 @@ pub fn repair(workspace: &mut Workspace) -> Vec<ValidationIssue> {
     for id in duplicates(workspace.network_patches.iter().map(|p| p.id)) {
         checker.error(None, IssueKind::DuplicateNetworkPatchId { id });
     }
-    checker.stages(&mut workspace.stages);
+    checker.routes(&mut workspace.routes);
+    checker.stages(&mut workspace.stages, &workspace.routes);
     checker.names(workspace);
     checker.settings(&mut workspace.settings);
     for patch in &mut workspace.patches {
@@ -824,7 +875,27 @@ impl Checker {
         }
     }
 
-    fn stages(&mut self, stages: &mut Vec<Stage>) {
+    fn routes(&mut self, routes: &mut Vec<OutputRoute>) {
+        if routes.len() > MAX_ROUTES {
+            routes.truncate(MAX_ROUTES);
+            self.warn(None, IssueKind::TooManyRoutes);
+        }
+        for id in duplicates(routes.iter().map(|r| r.id)) {
+            self.error(None, IssueKind::DuplicateRouteId { id });
+        }
+        for route in routes {
+            let (size, rotation) = route.repair();
+            if size {
+                self.warn(None, IssueKind::RouteSize { route: route.id });
+            }
+            if rotation {
+                self.warn(None, IssueKind::RouteRotation { route: route.id });
+            }
+        }
+    }
+
+    /// After [`Self::routes`]: regions are checked against the routes left.
+    fn stages(&mut self, stages: &mut Vec<Stage>, routes: &[OutputRoute]) {
         if stages.len() > MAX_STAGES {
             stages.truncate(MAX_STAGES);
             self.warn(None, IssueKind::TooManyStages);
@@ -832,12 +903,43 @@ impl Checker {
         for id in duplicates(stages.iter().map(|s| s.id)) {
             self.error(None, IssueKind::DuplicateStageId { id });
         }
+        for id in duplicates(stages.iter().flat_map(|s| s.regions.iter().map(|r| r.id))) {
+            self.error(None, IssueKind::DuplicateRegionId { id });
+        }
         for stage in stages {
             if stage.clamp_size() {
                 self.warn(None, IssueKind::StageSize { stage: stage.id });
             }
             if stage.clamp_layer() {
                 self.warn(None, IssueKind::StageLayer { stage: stage.id });
+            }
+            if stage.regions.len() > MAX_REGIONS {
+                stage.regions.truncate(MAX_REGIONS);
+                self.warn(None, IssueKind::TooManyRegions { stage: stage.id });
+            }
+            let size = (stage.width, stage.height);
+            for region in &mut stage.regions {
+                if region.move_inside(size) {
+                    self.warn(
+                        None,
+                        IssueKind::RegionBounds {
+                            stage: stage.id,
+                            region: region.id,
+                        },
+                    );
+                }
+                if let Some(route) = region.route
+                    && !routes.iter().any(|r| r.id == route)
+                {
+                    region.route = None;
+                    self.warn(
+                        None,
+                        IssueKind::RegionRouteMissing {
+                            region: region.id,
+                            route,
+                        },
+                    );
+                }
             }
         }
     }
@@ -1343,6 +1445,10 @@ impl Checker {
             (
                 "stages.name",
                 bad(workspace.stages.iter().map(|s| s.name.as_str())),
+            ),
+            (
+                "routes.name",
+                bad(workspace.routes.iter().map(|r| r.name.as_str())),
             ),
             (
                 "network_patches.host",
