@@ -13,6 +13,10 @@ final class PulsingDots: NSView {
     /// Dots per ring, outer then inner, and each ring's radius as a share of half the view.
     static let rings: [(count: Int, radius: CGFloat, dot: CGFloat)] = [(8, 0.78, 0.17), (4, 0.36, 0.16)]
 
+    /// Presses and hovers fall through to the state image under the dots, which holds the label and
+    /// tooltip.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     var colour: NSColor = MarkColour.caution {
         didSet { needsDisplay = true }
     }
