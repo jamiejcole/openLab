@@ -2286,7 +2286,7 @@ fn a_workspace_created_during_an_outage_is_mapped_when_the_device_is_back() {
     assert!(
         logs(&s.take_outbound(), LogLevel::Info)
             .iter()
-            .any(|l| l.contains("mapped patch 'Main Outputs' to Fake 1 outputs 1\u{2013}2"))
+            .any(|l| l.contains("mapped patch 'Patch 1' to Fake 1 outputs 1\u{2013}2"))
     );
 }
 
@@ -2677,16 +2677,13 @@ fn two_patches_on_two_devices_each_play_only_their_own_cue() {
     assert_eq!(s.control().live_voices(), 0);
 }
 
-/// Checklist: a new workspace has one output patch for each output device connected at that
-/// moment (QLab 5 manual p. 106). The primary's comes first (the workspace's own patch), then
-/// one per other listed device with outputs, in list order, each mapped on this machine to its
-/// device's first outputs (a device with no outputs gets none); a cue on the second device's
-/// patch plays there and nowhere else.
+/// A new workspace has exactly one output patch, "Patch 1", mapped on this machine to the
+/// primary device's first outputs, however many output devices are connected (a device with no
+/// outputs or a second one gets no patch of its own).
 #[test]
-fn a_new_workspace_has_one_output_patch_for_each_connected_output_device() {
+fn a_new_workspace_has_one_output_patch_whatever_devices_are_connected() {
     let ws = workspace(vec![]);
     let mut c = device_config(&ws);
-    // A slot for each patch of both workspaces.
     c.mixer_patches = 3;
     let devices = vec![
         listed(DEV, DEV_NAME, 2),
@@ -2697,61 +2694,13 @@ fn a_new_workspace_has_one_output_patch_for_each_connected_output_device() {
     let doc = s.new_doc();
     let new = s.control().doc(doc).unwrap().workspace().clone();
     let names: Vec<&str> = new.patches.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["Main Outputs", "Patch 2"]);
-    let mapped = |s: &DeviceShow, n: usize| {
-        let m = s
-            .control()
-            .machine()
-            .patch_mapping(new.id, new.patches[n].id);
-        m.map(|m| (m.device.clone(), m.channels.clone()))
-    };
-    assert_eq!(mapped(&s, 0), Some((DEV_NAME.to_owned(), vec![0, 1])));
-    assert_eq!(mapped(&s, 1), Some((DEV2_NAME.to_owned(), vec![0, 1])));
-    s.wait_output(DEV2_NAME);
-
-    // A cue on Patch 2 plays on the second device only.
-    let mut cue = audio(1, &wav(&dc(500, 0.5)), 0);
-    if let CueKind::Audio { patch, .. } = &mut cue.kind {
-        *patch = new.patches[1].id;
-    }
-    let id_ = s.request_id();
-    let add = ClientMessage::Command {
-        id: id_,
-        coalesce: None,
-        command: Box::new(openlab_core::Command::AddCue {
-            at: openlab_core::Position {
-                list: new.cue_lists[0].id,
-                parent: None,
-                index: 0,
-            },
-            cue,
-            auto_number: false,
-        }),
-    };
-    let replies = s.send_doc(doc, add);
-    assert!(
-        replies.iter().any(|m| matches!(
-            m,
-            ServerMessage::Result {
-                outcome: Outcome::Ok(_),
-                ..
-            }
-        )),
-        "{replies:?}"
-    );
-    s.settle_media();
-    let problems = s
+    assert_eq!(names, ["Patch 1"]);
+    let m = s
         .control()
-        .doc(doc)
-        .unwrap()
-        .engine()
-        .problems(id(1))
-        .to_vec();
-    assert!(problems.is_empty(), "{problems:?}");
-    s.transport_doc(doc, TransportAction::Start { cue: id(1) });
-    s.run(1000);
-    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
-    assert_eq!(heard(&s.device_channel(DEV, 0)), Vec::<f32>::new());
+        .machine()
+        .patch_mapping(new.id, new.patches[0].id)
+        .map(|m| (m.device.clone(), m.channels.clone()));
+    assert_eq!(m, Some((DEV_NAME.to_owned(), vec![0, 1])));
 }
 
 /// A start on the second device lands on the sample the master date translates to there:

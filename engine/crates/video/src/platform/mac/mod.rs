@@ -159,8 +159,12 @@ impl Platform for Mac {
         }
         let mtm = self.windows.as_ref().map(|w| w.mtm);
         self.found = displays::active(|cg| {
-            mtm.and_then(|mtm| screen_of(mtm, cg))
-                .map(|s| s.localizedName().to_string())
+            mtm.and_then(|mtm| screen_of(mtm, cg)).map(|s| {
+                (
+                    s.localizedName().to_string(),
+                    u32::try_from(s.maximumFramesPerSecond()).unwrap_or(0),
+                )
+            })
         });
         self.found.iter().map(|f| f.display.clone()).collect()
     }
@@ -936,6 +940,7 @@ fn virtual_displays(list: &str) -> Option<Vec<Display>> {
                 name: format!("Virtual {id}"),
                 width: w.parse().ok()?,
                 height: h.parse().ok()?,
+                fps: 60,
             })
         })
         .collect()

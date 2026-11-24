@@ -131,7 +131,7 @@ impl Workspace {
             },
             patches: vec![OutputPatch {
                 id: patch,
-                name: "Main Outputs".to_owned(),
+                name: "Patch 1".to_owned(),
                 master_db: 0.0,
                 outputs: vec![output; 2],
                 crosspoints: Vec::new(),

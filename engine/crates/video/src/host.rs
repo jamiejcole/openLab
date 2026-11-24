@@ -2728,6 +2728,7 @@ pub(crate) mod tests {
             name: "Projector".into(),
             width: 1920,
             height: 1080,
+            fps: 60,
         }
     }
 

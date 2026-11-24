@@ -119,11 +119,11 @@ impl Engine {
         }
     }
 
-    /// A new workspace's stages (QLab 5 manual p. 226): one per connected display, named
-    /// "Stage 1", "Stage 2"... in the stage host's display order, sized as the display and
-    /// shown on it on this machine. None while the stage host has listed no display yet.
+    /// A new workspace's stage: one, "Stage 1", sized as the main display (the first the stage
+    /// host lists) and shown on it on this machine. None while the stage host has listed no
+    /// display yet.
     pub(super) fn add_display_stages(&mut self, ws: &mut openlab_core::Workspace) {
-        let displays = self.stages.displays.clone();
+        let displays: Vec<_> = self.stages.displays.iter().take(1).cloned().collect();
         for (n, display) in displays.iter().enumerate().take(openlab_core::MAX_STAGES) {
             let stage = openlab_core::Stage::new(
                 StageId(super::docs::random_id()),
