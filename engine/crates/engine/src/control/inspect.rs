@@ -76,6 +76,8 @@ impl Control {
                     dirty: false,
                     can_undo: false,
                     can_redo: false,
+                    undo_name: None,
+                    redo_name: None,
                     show_mode: false,
                 },
                 workspace: self.none.ws.clone(),

@@ -314,12 +314,18 @@ struct DocumentState: Hashable, Sendable, Decodable {
     var dirty: Bool
     var canUndo: Bool
     var canRedo: Bool
+    /// What the step the next undo and redo apply is called (docs/protocol.md `document`): a
+    /// code the Edit menu words (`undo.step.<code>`); nil, or a code it does not know: no name.
+    var undoName: String?
+    var redoName: String?
     /// The engine holds this workspace in Show Mode (SM-07 sleep hold); absent means false.
     var showMode: Bool
     enum CodingKeys: String, CodingKey {
         case path, dirty
         case canUndo = "can_undo"
         case canRedo = "can_redo"
+        case undoName = "undo_name"
+        case redoName = "redo_name"
         case showMode = "show_mode"
     }
 
@@ -329,6 +335,8 @@ struct DocumentState: Hashable, Sendable, Decodable {
         dirty = try c.decode(Bool.self, forKey: .dirty)
         canUndo = try c.decode(Bool.self, forKey: .canUndo)
         canRedo = try c.decode(Bool.self, forKey: .canRedo)
+        undoName = try c.decodeIfPresent(String.self, forKey: .undoName)
+        redoName = try c.decodeIfPresent(String.self, forKey: .redoName)
         showMode = try c.decodeIfPresent(Bool.self, forKey: .showMode) ?? false
     }
 }

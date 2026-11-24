@@ -835,6 +835,8 @@ mod tests {
                 dirty: false,
                 can_undo: false,
                 can_redo: false,
+                undo_name: None,
+                redo_name: None,
                 show_mode: false,
             },
             workspace,
@@ -1114,6 +1116,8 @@ mod tests {
             dirty,
             can_undo: false,
             can_redo: false,
+            undo_name: None,
+            redo_name: None,
             show_mode: false,
         };
         assert_eq!(m.document(&doc(None, true)), Applied::Updates(vec![]));

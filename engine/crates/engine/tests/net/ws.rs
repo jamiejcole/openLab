@@ -112,6 +112,8 @@ fn snapshot(revision: u64) -> Snapshot {
             dirty: false,
             can_undo: false,
             can_redo: false,
+            undo_name: None,
+            redo_name: None,
             show_mode: false,
         },
         workspace: workspace(vec![]),

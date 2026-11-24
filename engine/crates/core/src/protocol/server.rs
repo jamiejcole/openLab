@@ -815,7 +815,7 @@ pub enum LogLevel {
 }
 
 /// Save state and undo availability of the open workspace.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentState {
     /// Where it is saved; `null` = never saved.
     pub path: Option<String>,
@@ -823,6 +823,13 @@ pub struct DocumentState {
     pub dirty: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// What the step the next undo applies is called (absent: it has no name, or there is
+    /// none), for the client's Edit menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_name: Option<crate::StepName>,
+    /// As `undo_name`, for the next redo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redo_name: Option<crate::StepName>,
     /// The workspace is in Show Mode (SM-01, SM-07; set with `set_show_mode`): kept by the
     /// engine while it runs, not saved in the show file, so a relaunched UI gets it back.
     /// Absent: `false`.

@@ -1283,6 +1283,8 @@ impl Doc {
             dirty: self.revision != self.saved_revision,
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
+            undo_name: self.history.undo_name(),
+            redo_name: self.history.redo_name(),
             show_mode: self.show_mode,
         }
     }

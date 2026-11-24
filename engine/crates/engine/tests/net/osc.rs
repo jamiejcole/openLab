@@ -170,6 +170,8 @@ fn snapshot(ws: &Workspace, revision: u64) -> Snapshot {
             dirty: false,
             can_undo: false,
             can_redo: false,
+            undo_name: None,
+            redo_name: None,
             show_mode: false,
         },
         workspace: ws.clone(),
@@ -1866,6 +1868,8 @@ async fn a_document_with_another_path_asks_for_a_new_snapshot() {
             dirty: false,
             can_undo: false,
             can_redo: false,
+            undo_name: None,
+            redo_name: None,
             show_mode: false,
         },
     };
@@ -2800,6 +2804,8 @@ async fn the_active_list_survives_a_resync_and_a_snapshot_so_go_fires_the_same_l
                 dirty: false,
                 can_undo: false,
                 can_redo: false,
+                undo_name: None,
+                redo_name: None,
                 show_mode: false,
             },
         })

@@ -169,6 +169,18 @@ enum MainMenu {
         }
     }
 
+    /// Edit > Undo or Redo, named after the step it would apply when the engine names it
+    /// (`step`, a code of docs/protocol.md `document`); a step without a name, or one this app
+    /// has no words for, is Undo or Redo alone.
+    static func undoTitle(redo: Bool, step: String?) -> String {
+        let plain = loc(redo ? "menu.edit.redo" : "menu.edit.undo")
+        guard let step else { return plain }
+        let key = "undo.step.\(step)"
+        let words = loc(key)
+        guard words != key else { return plain }
+        return String(format: loc(redo ? "menu.edit.redoNamed" : "menu.edit.undoNamed"), words)
+    }
+
     private static func editMenu() -> NSMenu {
         menu(
             "menu.edit",

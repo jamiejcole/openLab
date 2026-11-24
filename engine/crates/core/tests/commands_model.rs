@@ -2640,6 +2640,129 @@ fn a_new_route_is_named_after_the_highest_output_number() {
     assert_eq!(next_route_name(&routes), "Output 2");
 }
 
+/// #813 U1: each route, region and stage edit is one undo step with a name (a region's new
+/// bounds are a resize when its size changes, else a move); undo and redo keep the step's name,
+/// a coalesced gesture keeps its first edit's, and an unnamed edit has none.
+#[test]
+fn route_region_and_stage_steps_are_named_through_undo_and_redo() {
+    let mut ws = two_route_workspace();
+    let mut history = History::new();
+    let bounds = |x, width| RegionProperty::Bounds {
+        x,
+        y: 0,
+        width,
+        height: 1080,
+    };
+    let steps = [
+        (
+            Command::AddRoute {
+                index: 2,
+                route: route_n(3),
+                regions: Vec::new(),
+            },
+            StepName::AddRoute,
+        ),
+        (
+            route_prop(3, RouteProperty::Name { value: "Cyc".into() }),
+            StepName::RenameRoute,
+        ),
+        (
+            route_prop(
+                3,
+                RouteProperty::Size {
+                    width: 1280,
+                    height: 720,
+                },
+            ),
+            StepName::ResizeRoute,
+        ),
+        (
+            route_prop(3, RouteProperty::Rotation { value: 90 }),
+            StepName::RotateRoute,
+        ),
+        (
+            route_prop(
+                3,
+                RouteProperty::Scaling {
+                    value: RouteScaling::Fit,
+                },
+            ),
+            StepName::RouteScaling,
+        ),
+        (
+            Command::MoveRoute {
+                id: route_n(3).id,
+                index: 0,
+            },
+            StepName::MoveRoute,
+        ),
+        (region_prop(1, 2, bounds(1920, 960)), StepName::ResizeRegion),
+        (region_prop(1, 2, bounds(2000, 960)), StepName::MoveRegion),
+        (
+            region_prop(
+                1,
+                2,
+                RegionProperty::Route {
+                    value: Some(route_n(3).id),
+                },
+            ),
+            StepName::RegionRoute,
+        ),
+        (
+            Command::RemoveRegion {
+                stage: stage_n(1).id,
+                id: region_n(2, None, 0, 1).id,
+            },
+            StepName::RemoveRegion,
+        ),
+        (
+            Command::RemoveRoute { id: route_n(3).id },
+            StepName::RemoveRoute,
+        ),
+        (
+            stage_prop(1, StageProperty::Layer { value: 5 }),
+            StepName::StageLayer,
+        ),
+    ];
+    for (command, name) in steps.iter().cloned() {
+        assert!(history.execute(&mut ws, command).unwrap());
+        assert_eq!(history.undo_name(), Some(name));
+        assert_eq!(history.redo_name(), None);
+    }
+    // Undone one by one, each name moves to redo; redone, back to undo.
+    for (_, name) in steps.iter().rev() {
+        assert_eq!(history.undo_name(), Some(*name));
+        assert!(history.undo(&mut ws).unwrap());
+        assert_eq!(history.redo_name(), Some(*name));
+    }
+    assert_eq!(history.undo_name(), None);
+    assert!(history.redo(&mut ws).unwrap());
+    assert_eq!(history.undo_name(), Some(StepName::AddRoute));
+    // A typed gesture is one step under its first edit's name; an unnamed edit has none.
+    for name in ["C", "Cy"] {
+        history
+            .execute_coalescing(
+                &mut ws,
+                route_prop(3, RouteProperty::Name { value: name.into() }),
+                Some("route-name"),
+            )
+            .unwrap();
+    }
+    assert_eq!(history.undo_name(), Some(StepName::RenameRoute));
+    history
+        .execute(
+            &mut ws,
+            Command::RenameCueList {
+                id: list_id(1),
+                name: "Act 1".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(history.undo_name(), None);
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(history.undo_name(), Some(StepName::RenameRoute));
+}
+
 // ---- Cue lists ----
 
 #[test]
