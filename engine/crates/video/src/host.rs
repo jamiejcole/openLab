@@ -3949,7 +3949,7 @@ pub(crate) mod tests {
                 display: "D1".into()
             }
         )));
-        assert!(h.platform.guides.get("D1").is_none());
+        assert!(!h.platform.guides.contains_key("D1"));
         out.clear();
         h.platform.displays.push(display("D1"));
         h.displays_changed(&mut out);
@@ -3967,7 +3967,7 @@ pub(crate) mod tests {
                 pid: None,
             },
         );
-        assert!(h.platform.guides.get("D1").is_none());
+        assert!(!h.platform.guides.contains_key("D1"));
     }
 
     /// #821 GD4: a guide's lines are a few display pixels thick whatever the route's size and

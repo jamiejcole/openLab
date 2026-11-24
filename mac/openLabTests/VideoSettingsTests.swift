@@ -1854,13 +1854,17 @@ extension VideoSettingsTests {
                 [
                     "id": stage1, "name": "Stage 1", "width": 3840, "height": 1080, "keep_black": false,
                     "regions": [
-                        region(rA, o1, 0), region(rB, o2, 1280), region("00000000-0000-0000-0000-00000000c003", nil, 2560),
+                        region(rA, o1, 0), region(rB, o2, 1280),
+                        region("00000000-0000-0000-0000-00000000c003", nil, 2560),
                     ],
                 ] as [String: Any],
                 [
                     "id": stage2, "name": "Stage 2", "width": 1920, "height": 1080, "keep_black": false,
                     "regions": [
-                        ["id": "00000000-0000-0000-0000-00000000c004", "route": route3, "x": 0, "y": 0, "width": 1920, "height": 1080]
+                        [
+                            "id": "00000000-0000-0000-0000-00000000c004", "route": route3, "x": 0, "y": 0,
+                            "width": 1920, "height": 1080,
+                        ]
                     ],
                 ] as [String: Any],
             ]

@@ -1697,7 +1697,9 @@ extension VideoCueTests {
             await self.colours("V1", probe) == [Self.guideColour, Self.guideColour, [0, 0, 0, 255]]
         }
         await clickOutput1Guides(sc)
-        await soon("plain black again") { await self.colours("V1", probe) == Array(repeating: [0, 0, 0, 255], count: 3) }
+        await soon("plain black again") {
+            await self.colours("V1", probe) == Array(repeating: [0, 0, 0, 255], count: 3)
+        }
         await sc.videoRoutingPane.refresh()
         XCTAssertEqual(store.videoOutputs.route(Self.stage)?.state?.state, "shown", "the black stayed up")
     }
