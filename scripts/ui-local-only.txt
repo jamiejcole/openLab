@@ -8,3 +8,7 @@ openLabUITests/CueListLayoutUITests/testGroupClosedAndOpenedByTriangleAndArrowsW
 openLabUITests/ListToolsUITests/testAToolbarButtonDraggedIntoTheListMakesACueWhereItLandsAndInAnOpenGroupJoinsIt
 openLabUITests/VideoUITests/testGeometryFieldsTypedThumbnailDraggedEachUndoneAndRedone
 openLabUITests/VideoUITests/testGeometryTabOrderBringsAFieldBelowTheScrolledAreaIntoView
+# #769: the hosted runner delivers no drag to the app. Seen on both nightly runs on 45074677927 and
+# 45316112953: the press-and-drag on the waveform moves nothing (the same test's clicks work), while it passes
+# on a Mac. The app logic is covered by unit tests: the waveform's drag by TimeLoopsTests (dragWave).
+openLabUITests/TimeLoopsUITests/testWaveformClickMovesThePlaybackPositionDragSelectsASectionAndAHandleDragTrims
