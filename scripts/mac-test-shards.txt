@@ -7,9 +7,13 @@
 # what the account runs at once; a sixth waited for a runner. Balanced from runner times (one hosted
 # macOS run: shard 1 took 7.9 minutes and shard 2 21.4 with only the first three classes below) so each
 # shard's job takes about 14-15 minutes; the smoke set's 3-4 are in shard 2's share.
-# Re-balance when a class's time changes a lot.
+# Re-balance when a class's time changes a lot (the last three below moved from shard 2 in 2026-11 after
+# shard 2 ran past its 25-minute step limit with no test hung, #808).
 # Shard 1:
 1 AppControllerTests
 1 EngineCrashFlowTests
 1 CueListTests
 1 PlayheadFlowTests
+1 CueTargetFlowTests
+1 ScenarioShotTests
+1 CueHotkeyFiringTests
