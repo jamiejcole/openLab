@@ -367,6 +367,19 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(store.receive(try outputsStatus(up)), .applied)
         vc.applyPatchMappings(try mappings(patch, device: "Dev"), devices: [])
         XCTAssertEqual(line.stringValue, "2 outputs, 48 kHz")
+        // A lost device the list still names (state lost) is not connected either; one listed and only
+        // not open yet shows its channels from the list.
+        func listed(_ state: String) throws -> [DeviceEntry] {
+            try JSONDecoder().decode(
+                [DeviceEntry].self,
+                from: Data(
+                    #"[{"name":"Dev","output_channels":2,"buffer_frames":256,"state":"\#(state)"}]"#.utf8))
+        }
+        XCTAssertEqual(store.receive(try outputsStatus("[]")), .applied)
+        vc.applyPatchMappings(gone, devices: try listed("lost"))
+        XCTAssertEqual(line.stringValue, loc("inspector.io.outputFormatNotConnected"))
+        vc.applyPatchMappings(gone, devices: try listed("opening"))
+        XCTAssertEqual(line.stringValue, "2 outputs")
     }
 
     /// Several Audio cues on one patch show that patch's device format; on different patches the line is empty.

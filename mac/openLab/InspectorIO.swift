@@ -437,11 +437,16 @@ extension InspectorViewController {
         var found: [ModelID: String] = [:]
         var missing: Set<ModelID> = []
         for e in entries {
-            // Missing means not on this Mac's list; a listed device that is only not open yet is not.
-            if let r = e.resolution, r.type == "device_missing",
-                !devices.contains(where: { $0.name == r.json["device"]?.stringValue })
-            {
-                missing.insert(e.patch)
+            // A device the patch names that is not on this Mac's list, or is listed lost, is not connected;
+            // one listed and only not open yet is the device (its channels come from the list).
+            if let r = e.resolution, r.type == "device_missing", let name = r.json["device"]?.stringValue {
+                let listed = devices.first { $0.name == name }
+                if let listed, listed.state != .lost, listed.state != .failed {
+                    found[e.patch] = name
+                } else {
+                    missing.insert(e.patch)
+                }
+                continue
             }
             guard let r = e.resolution, r.type != "unmapped", r.type != "device_missing",
                 let name = r.json["device"]?.stringValue, !name.isEmpty
