@@ -42,7 +42,6 @@ extension InspectorViewController {
     var singleCueControls: [NSControl] {
         [
             numberField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton,
-            videoIO.chooseButton,
         ]
     }
 
@@ -164,9 +163,10 @@ extension InspectorViewController {
         }
         targetField.toolTip = nil
         targetField.isHidden = false
-        targetPath.isHidden = true
-        targetPath.url = nil
-        for v in [chooseButton, clearTargetButton, jumpTargetButton, targetNote] as [NSView] { v.isHidden = true }
+        targetPath.show(url: nil)
+        for v in [chooseButton, clearTargetButton, jumpTargetButton, revealTargetButton, targetNote] as [NSView] {
+            v.isHidden = true
+        }
     }
 
     private func renderBatchMode(_ cues: [Cue], first: Cue) {

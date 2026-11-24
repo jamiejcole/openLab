@@ -1,5 +1,5 @@
 {
-  "about": "An Audio cue's Basics, I/O and Levels tabs (dark, 1200 x 800): I/O shows the file as a folder-and-file path with the clear and choose buttons, the file's format, a divider, the output patch with Edit and the output format line; Levels has a gap between the names row and the captions.",
+  "about": "An Audio cue's Basics, I/O and Levels tabs (dark, 1200 x 800): I/O shows the file as a folder-and-file path in a field box with the clear and show-in-Finder buttons, the file's format, a divider, the output patch with Edit and the output format line; Levels has a gap between the names row and the captions.",
   "show": "Demo",
   "appearance": "dark",
   "media": {

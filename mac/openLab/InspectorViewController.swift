@@ -30,9 +30,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The tab the user last chose, for every cue: a cue without it shows its first tab and the choice
     /// stays (`syncTabs`).
     var chosenTab: String?
-    /// The sample rate the engine mixes at (the clock device's), for the I/O tab's output format; nil while unknown.
-    var clockRate: UInt32?
+    /// The device each patch plays on on this Mac, as the engine last said (nil until it has); a patch
+    /// not in it has no device here. For the I/O tab's output format.
+    var patchDevices: [ModelID: String]?
+    /// The output channel count of each device on this Mac, by name.
+    var deviceChannels: [String: Int] = [:]
+    /// The output devices the engine has open, as its last status said (their rates and channels).
+    var openOutputs: [OutputStatus] = []
     private var rateSub: AnyCancellable?
+    var patchReading: Task<Void, Never>?
+    var patchReadAgain = false
     let hotkeyField = HotkeyRecorder()
     let hotkeyClear = NSButton(title: loc("inspector.hotkey.clear"), target: nil, action: nil)
     let secondTriggerPopup = NSPopUpButton()
@@ -71,6 +78,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     static let devampModes = ["current_slice", "looping_cue"]
     /// Clears the Target: an Audio cue's file or a control cue's target cue.
     let clearTargetButton = NSButton(title: "", target: nil, action: nil)
+    /// Shows the Target's file in Finder (a file cue's); the I/O tab's file row has its own.
+    let revealTargetButton = NSButton(title: "", target: nil, action: nil)
+    /// Shows a file in Finder (a seam for tests).
+    var revealFile: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
     /// Moves the selection to a control cue's target cue.
     let jumpTargetButton = NSButton(title: "", target: nil, action: nil)
     /// Beside the Target field: the target cue's name, or why there is none.
@@ -418,24 +429,21 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         jumpTargetButton.isHidden = true
         targetNote.isHidden = true
         targetField.onDoubleClick = { [weak self] in self?.chooseClicked() }
-        targetPath.onDoubleClick = { [weak self] in self?.chooseClicked() }
-        targetPath.setAX("inspector-target-path", label: loc("cuelist.col.target"))
-        targetPath.pathStyle = .standard
-        targetPath.isEditable = false
-        targetPath.controlSize = .small
-        targetPath.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        targetPath.isHidden = true
-        // A long path gives up its middle folders; it must not hold the inspector, and so the window, wider.
-        targetPath.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        targetPath.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        Self.prefersWidth(targetPath)
+        targetPath.configure(id: "inspector-target-path", label: loc("cuelist.col.target")) { [weak self] in
+            self?.chooseClicked()
+        }
+        configureRevealButton(revealTargetButton, id: "inspector-target-reveal")
         let targetRow = NSStackView(
-            views: [targetField, targetPath, targetNote, clearTargetButton, jumpTargetButton, chooseButton])
+            views: [
+                targetField, targetPath.box, targetNote, clearTargetButton, jumpTargetButton, revealTargetButton,
+                chooseButton,
+            ])
         targetRow.spacing = 6
         // The borderless 16 pt glyph buttons sit closer to what follows them, so the row (and the
         // inspector's least width) keeps room for the field and Choose at their least widths.
         targetRow.setCustomSpacing(4, after: clearTargetButton)
         targetRow.setCustomSpacing(4, after: jumpTargetButton)
+        targetRow.setCustomSpacing(4, after: revealTargetButton)
         targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         // A long path truncates; it must not hold the inspector, and so the window, wider.
         targetField.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -561,17 +569,18 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         connectionSub = store.$connectionState.sink { [weak self] state in  // willSet: use the emitted value
             MainActor.assumeIsolated { self?.updatePreviewButton(connected: state == .connected) }
         }
-        // The output-format line follows the rate the engine mixes at (willSet: use the emitted value).
-        rateSub = store.$status.map { s -> UInt32? in
-            guard let d = s?.device, d.state != .absent, d.sampleRate > 0 else { return nil }
-            return d.sampleRate
-        }.removeDuplicates().sink { [weak self] rate in
+        // The output-format line follows the devices the engine has open (willSet: use the emitted
+        // value); a device coming or going also moves the patches' devices.
+        rateSub = store.$status.map { $0?.outputs ?? [] }.removeDuplicates().sink { [weak self] outputs in
             MainActor.assumeIsolated {
-                guard let self, self.clockRate != rate else { return }
-                self.clockRate = rate
-                if self.isViewLoaded { self.render() }
+                guard let self else { return }
+                let devicesChanged = Set(self.openOutputs.map(\.name)) != Set(outputs.map(\.name))
+                self.openOutputs = outputs
+                if devicesChanged { self.readPatchDevices() }
+                self.redrawOutputFormat()
             }
         }
+        readPatchDevices()
         render()
     }
 
@@ -1095,7 +1104,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             targetField, hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck,
             devampStopCheck,
             devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
-            networkSendButton, videoIO.stagePopup, videoIO.chooseButton, videoIO.clearButton, videoIO.trackPopup,
+            networkSendButton, videoIO.stagePopup, videoIO.clearButton, videoIO.trackPopup,
             secondTriggerPopup, onReleaseCheck, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck, secondColourCheck, secondColourPopup, autoLoadCheck, skipCheck,
             hotkeyEnableCheck, fadeOthersCheck, fadeOthersScopePopup, fadeOthersTimeField, duckCheck, duckDbField,

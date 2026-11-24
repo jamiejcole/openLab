@@ -971,9 +971,9 @@
 "inspector.io.patch" = "Output patch";
 "inspector.io.editPatch" = "Edit…";
 "inspector.io.file" = "File";
-"inspector.io.choose" = "Choose…";
 "inspector.io.noFile" = "No file";
 "inspector.io.outputFormat" = "Output format";
+"inspector.io.outputFormatNoDevice" = "No device on this Mac";
 "inspector.io.outputFormatText" = "%@, %@ kHz";
 "inspector.io.outputs.one" = "1 output";
 "inspector.io.outputs.many" = "%d outputs";
@@ -1096,6 +1096,7 @@
 "inspector.devampMode.current_slice" = "The loop now playing";
 "inspector.devampMode.looping_cue" = "The cue's own loop";
 "inspector.target.clear" = "Clear target";
+"inspector.target.reveal" = "Show in Finder";
 "inspector.target.jump" = "Select the target cue";
 "inspector.target.none" = "(no target)";
 "fade.curve.rising" = "Curve of a level fading up";
