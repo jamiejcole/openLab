@@ -365,6 +365,35 @@ struct RouteEntry: Hashable, Sendable, Decodable {
     let mapping: DisplayChoice?
     /// Nil while the stage host has not said.
     let state: RouteState?
+    /// Its alignment guides show (absent: false).
+    var guides: Bool = false
+    /// The colour its guides are drawn in, `#rrggbb`: the one picked, else its place's default
+    /// (nil only from an engine that predates guides).
+    var guideColour: String?
+
+    init(
+        route: ModelID, mapping: DisplayChoice?, state: RouteState?, guides: Bool = false, guideColour: String? = nil
+    ) {
+        self.route = route
+        self.mapping = mapping
+        self.state = state
+        self.guides = guides
+        self.guideColour = guideColour
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case route, mapping, state, guides
+        case guideColour = "guide_colour"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        route = try c.decode(ModelID.self, forKey: .route)
+        mapping = try c.decodeIfPresent(DisplayChoice.self, forKey: .mapping)
+        state = try c.decodeIfPresent(RouteState.self, forKey: .state)
+        guides = try c.decodeIfPresent(Bool.self, forKey: .guides) ?? false
+        guideColour = try c.decodeIfPresent(String.self, forKey: .guideColour)
+    }
 }
 
 /// One stage on this machine.

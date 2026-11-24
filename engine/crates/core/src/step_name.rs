@@ -59,6 +59,8 @@ pub fn step_name(command: &Command, workspace: &Workspace) -> Option<StepName> {
             RouteProperty::Size { .. } => StepName::ResizeRoute,
             RouteProperty::Rotation { .. } => StepName::RotateRoute,
             RouteProperty::Scaling { .. } => StepName::RouteScaling,
+            // No step of its own (`Command::is_view_aid`).
+            RouteProperty::GuideColour { .. } => return None,
         },
         Command::AddRegion { .. } => StepName::AddRegion,
         Command::RemoveRegion { .. } => StepName::RemoveRegion,

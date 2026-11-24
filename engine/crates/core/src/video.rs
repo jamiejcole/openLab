@@ -82,7 +82,63 @@ pub struct OutputRoute {
     pub rotation: u16,
     #[serde(default)]
     pub scaling: RouteScaling,
+    /// The colour its alignment guides are drawn in (p. 233), as the operator picked it on the
+    /// Output Routing page; `None`: the default for its place in the workspace's list
+    /// ([`OutputRoute::guide_colour_at`]). Whether the guides show is not saved: the engine
+    /// keeps it while the workspace is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide_colour: Option<GuideColour>,
 }
+
+/// An alignment guide's colour (red, green, blue); `"#rrggbb"` in show files and on the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GuideColour(pub [u8; 3]);
+
+impl GuideColour {
+    /// `"#rrggbb"` (either case) as a colour; `None` for anything else.
+    pub fn parse(text: &str) -> Option<Self> {
+        let hex = text.strip_prefix('#')?;
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let part = |at: usize| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok();
+        Some(Self([part(0)?, part(2)?, part(4)?]))
+    }
+}
+
+impl std::fmt::Display for GuideColour {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [r, g, b] = self.0;
+        write!(f, "#{r:02x}{g:02x}{b:02x}")
+    }
+}
+
+impl Serialize for GuideColour {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for GuideColour {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::parse(&text)
+            .ok_or_else(|| serde::de::Error::custom("a guide colour is written #rrggbb"))
+    }
+}
+
+/// The guide colours routes take by default, by their place in the workspace's list (wrapping
+/// round), so the guides of neighbouring routes can be told apart.
+pub const GUIDE_COLOURS: [GuideColour; 8] = [
+    GuideColour([0x00, 0xc8, 0xff]),
+    GuideColour([0xff, 0x3c, 0xc8]),
+    GuideColour([0xff, 0xd2, 0x00]),
+    GuideColour([0x3c, 0xdc, 0x50]),
+    GuideColour([0xff, 0x82, 0x00]),
+    GuideColour([0x96, 0x6e, 0xff]),
+    GuideColour([0xff, 0x46, 0x46]),
+    GuideColour([0xff, 0xff, 0xff]),
+];
 
 impl OutputRoute {
     /// A route sized as `width` x `height`, not turned, filling its display.
@@ -94,7 +150,19 @@ impl OutputRoute {
             height: height.clamp(1, MAX_ROUTE_PIXELS),
             rotation: 0,
             scaling: RouteScaling::Fill,
+            guide_colour: None,
         }
+    }
+
+    /// The colour its guides are drawn in, the route being at `index` in its workspace's list:
+    /// the one picked, else that place's default.
+    pub fn guide_colour_at(&self, index: usize) -> GuideColour {
+        self.guide_colour.unwrap_or_else(|| {
+            GUIDE_COLOURS
+                .get(index % GUIDE_COLOURS.len())
+                .copied()
+                .unwrap_or(GuideColour([0xff, 0xff, 0xff]))
+        })
     }
 
     /// Puts size and rotation within their limits; `(size, rotation)` say which changed.
@@ -419,6 +487,12 @@ pub enum RouteProperty {
     Scaling {
         value: RouteScaling,
     },
+    /// The colour its guides are drawn in; `None`: its place's default. Saved with the show
+    /// but no undo step (`Command::is_view_aid`).
+    GuideColour {
+        #[serde(default)]
+        value: Option<GuideColour>,
+    },
 }
 
 impl RouteProperty {
@@ -437,6 +511,9 @@ impl RouteProperty {
             Self::Scaling { .. } => Self::Scaling {
                 value: route.scaling,
             },
+            Self::GuideColour { .. } => Self::GuideColour {
+                value: route.guide_colour,
+            },
         }
     }
 
@@ -449,6 +526,7 @@ impl RouteProperty {
             }
             Self::Rotation { value } => route.rotation = *value,
             Self::Scaling { value } => route.scaling = *value,
+            Self::GuideColour { value } => route.guide_colour = *value,
         }
     }
 }

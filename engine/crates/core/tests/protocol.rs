@@ -355,6 +355,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 open: true,
             },
         ),
+
         (
             "monitor_probe",
             Request::MonitorProbe {
@@ -365,6 +366,16 @@ fn all_requests() -> Vec<(&'static str, Request)> {
             },
         ),
         ("copy_media", Request::CopyMedia),
+        (
+            "set_route_guides",
+            Request::SetRouteGuides {
+                routes: vec![
+                    RouteId(uuid::Uuid::from_u128(0x90)),
+                    RouteId(uuid::Uuid::from_u128(0x91)),
+                ],
+                show: true,
+            },
+        ),
     ]
 }
 
@@ -1101,6 +1112,8 @@ fn fixtures() -> Vec<(String, Sample)> {
             routes: vec![
                 RouteEntry {
                     route: RouteId(uuid::Uuid::from_u128(0x90)),
+                    guides: true,
+                    guide_colour: Some(openlab_core::GuideColour([0, 200, 255])),
                     mapping: None,
                     state: Some(openlab_core::stage_link::RouteState::DisplayMissing {
                         display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
@@ -1108,6 +1121,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                 },
                 RouteEntry {
                     route: RouteId(uuid::Uuid::from_u128(0x91)),
+                    guides: false,
+                    guide_colour: Some(openlab_core::GuideColour([0, 200, 0])),
                     mapping: None,
                     state: Some(openlab_core::stage_link::RouteState::Hidden),
                 },
@@ -1798,6 +1813,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                     routes: vec![
                         RouteEntry {
                             route: RouteId(uuid::Uuid::from_u128(0x90)),
+                            guides: true,
+                            guide_colour: Some(openlab_core::GuideColour([0, 200, 255])),
                             mapping: Some(DisplayChoice {
                                 display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
                                 name: "Projector".into(),
@@ -1810,11 +1827,15 @@ fn fixtures() -> Vec<(String, Sample)> {
                         },
                         RouteEntry {
                             route: RouteId(uuid::Uuid::from_u128(0x91)),
+                            guides: false,
+                            guide_colour: Some(openlab_core::GuideColour([0, 200, 0])),
                             mapping: None,
                             state: Some(openlab_core::stage_link::RouteState::NoDisplay),
                         },
                         RouteEntry {
                             route: RouteId(uuid::Uuid::from_u128(0x92)),
+                            guides: false,
+                            guide_colour: Some(openlab_core::GuideColour([0, 200, 0])),
                             mapping: None,
                             state: Some(openlab_core::stage_link::RouteState::Failed {
                                 reason: "the display gave nothing to draw into".into(),
@@ -1822,6 +1843,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                         },
                         RouteEntry {
                             route: RouteId(uuid::Uuid::from_u128(0x93)),
+                            guides: false,
+                            guide_colour: Some(openlab_core::GuideColour([0, 200, 0])),
                             mapping: None,
                             state: None,
                         },
@@ -2335,7 +2358,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 25);
-    assert_eq!(all_requests().len(), 33);
+    assert_eq!(all_requests().len(), 34);
 }
 
 #[test]
@@ -4509,6 +4532,9 @@ fn property_commands() -> Vec<(String, Command)> {
         RouteProperty::Rotation { value: 270 },
         RouteProperty::Scaling {
             value: RouteScaling::Centre,
+        },
+        RouteProperty::GuideColour {
+            value: Some(openlab_core::GuideColour([0xff, 0x82, 0x00])),
         },
     ] {
         out.push((

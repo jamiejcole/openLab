@@ -21,10 +21,11 @@ use crate::video_geometry::{PictureParam, PictureRamp, VideoGeometry};
 use crate::video_timing::{PictureFades, PlanPass, picture_run_ok};
 
 /// The link version both ends speak; a stage host answering another version is not used.
-pub const LINK_VERSION: u32 = 7;
+pub const LINK_VERSION: u32 = 8;
 /// Longest line either end accepts, newline excluded: enough for a `stages` set of
 /// [`MAX_LINK_STAGES`] stages of [`MAX_REGIONS`] regions each whose monitor titles are all
-/// [`MAX_TEXT_BYTES`] long, and [`MAX_LINK_ROUTES`] routes whose display ids are too.
+/// [`MAX_TEXT_BYTES`] long, and [`MAX_LINK_ROUTES`] routes whose display ids and guide names are
+/// too.
 pub const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 /// Most displays one `displays` message lists.
 pub const MAX_DISPLAYS: usize = 32;
@@ -230,6 +231,18 @@ pub struct RouteOutput {
     /// The display it is shown on (an id from `displays`); `None`: no display on this machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
+    /// Its alignment guides, drawn over everything the display shows of it; `None`: hidden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide: Option<RouteGuide>,
+}
+
+/// A route's alignment guides (QLab 5 manual p. 233): an outline of the route's whole raster,
+/// its centre lines, marks at its corners and centre, and its name, in its colour.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteGuide {
+    /// The route's name as the guides write it (`link_text`).
+    pub name: String,
+    pub colour: crate::GuideColour,
 }
 
 /// A message from the stage host to the engine.
@@ -562,6 +575,9 @@ fn check_stages(stages: &[StageOutput], routes: &[RouteOutput]) -> Result<(), Li
         if route.display.as_deref().is_some_and(|d| !text_ok(d)) {
             return Err(LinkError::Invalid("bad display id"));
         }
+        if route.guide.as_ref().is_some_and(|g| !text_ok(&g.name)) {
+            return Err(LinkError::Invalid("bad guide name"));
+        }
     }
     for stage in stages {
         if !side_ok(stage.width) || !side_ok(stage.height) {
@@ -733,6 +749,7 @@ mod tests {
             rotation: 0,
             scaling: RouteScaling::Fill,
             display: display.map(str::to_owned),
+            guide: None,
         }
     }
 
@@ -767,6 +784,10 @@ mod tests {
                     RouteOutput {
                         rotation: 270,
                         scaling: RouteScaling::Centre,
+                        guide: Some(RouteGuide {
+                            name: "Projector \u{e9}".into(),
+                            colour: crate::GuideColour([0, 200, 255]),
+                        }),
                         ..route_out(2, None)
                     },
                 ],
@@ -877,6 +898,10 @@ mod tests {
                 height: crate::MAX_ROUTE_PIXELS,
                 rotation: 270,
                 scaling: RouteScaling::Stretch,
+                guide: Some(RouteGuide {
+                    name: "g".repeat(MAX_TEXT_BYTES),
+                    colour: crate::GuideColour([255, 255, 255]),
+                }),
                 ..route_out(u128::MAX - n, Some(&"d".repeat(MAX_TEXT_BYTES)))
             })
             .collect();
@@ -1238,6 +1263,32 @@ mod tests {
             (
                 set(vec![], vec![route_out(1, None), route_out(1, None)]),
                 "an output route twice",
+            ),
+            (
+                set(
+                    vec![],
+                    vec![RouteOutput {
+                        guide: Some(RouteGuide {
+                            name: "Out\u{7}".into(),
+                            colour: crate::GuideColour([0, 200, 255]),
+                        }),
+                        ..route_out(1, None)
+                    }],
+                ),
+                "bad guide name",
+            ),
+            (
+                set(
+                    vec![],
+                    vec![RouteOutput {
+                        guide: Some(RouteGuide {
+                            name: String::new(),
+                            colour: crate::GuideColour([0, 200, 255]),
+                        }),
+                        ..route_out(1, None)
+                    }],
+                ),
+                "bad guide name",
             ),
             (
                 set(vec![region_out(1, 1, 1920)], vec![route_out(1, None)]),

@@ -251,7 +251,8 @@
         "width": 1080,
         "height": 1920,
         "rotation": 90,
-        "scaling": "fit"
+        "scaling": "fit",
+        "guide_colour": "#ff8200"
       }
     ],
     "stages": [

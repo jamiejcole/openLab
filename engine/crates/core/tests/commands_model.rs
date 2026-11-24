@@ -2199,6 +2199,76 @@ fn a_route_loaded_with_a_blank_name_can_still_be_edited() {
     ));
 }
 
+/// #821 GD7, GD8: a route's guide colour defaults by its place in the list, so neighbouring
+/// routes differ; picking one changes the model (saved with the show) but is no undo step: undo
+/// still names and undoes the edit before it, redo stays, and the colour stays as picked. The
+/// same colour again is no change; `None` goes back to the default. In a transaction it is
+/// undone with the rest.
+#[test]
+fn a_guide_colour_is_saved_in_the_model_but_is_no_undo_step() {
+    let mut ws = two_route_workspace();
+    let (first, second) = (ws.routes[0].guide_colour_at(0), ws.routes[1].guide_colour_at(1));
+    assert_ne!(first, second, "each route's default differs from its neighbour's");
+    assert_eq!(first, GUIDE_COLOURS[0]);
+    let mut history = History::new();
+    let rename = route_prop(
+        1,
+        RouteProperty::Name {
+            value: "Cyc".into(),
+        },
+    );
+    assert!(history.execute(&mut ws, rename).unwrap());
+    let orange = GuideColour([0xff, 0x82, 0x00]);
+    let pick = |value| route_prop(1, RouteProperty::GuideColour { value });
+    assert!(history.execute(&mut ws, pick(Some(orange))).unwrap());
+    assert_eq!(ws.routes[0].guide_colour, Some(orange));
+    assert_eq!(ws.routes[0].guide_colour_at(0), orange);
+    assert_eq!(history.undo_len(), 1, "the colour is no step");
+    assert_eq!(history.undo_name(), Some(StepName::RenameRoute));
+    assert!(!history.execute(&mut ws, pick(Some(orange))).unwrap(), "same colour: no change");
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws.routes[0].name, "Output 1");
+    assert_eq!(ws.routes[0].guide_colour, Some(orange), "undo leaves the colour");
+    // A colour picked between an undo and its redo leaves the redo there.
+    assert!(history.execute(&mut ws, pick(None)).unwrap());
+    assert_eq!(ws.routes[0].guide_colour_at(0), first);
+    assert!(history.can_redo());
+    assert!(history.redo(&mut ws).unwrap());
+    assert_eq!(ws.routes[0].name, "Cyc");
+    // Saved and read back with the show.
+    ws.routes[1].guide_colour = Some(orange);
+    let loaded = load_show(&save_show(&ws).unwrap()).unwrap();
+    assert_eq!(loaded.workspace.routes[1].guide_colour, Some(orange));
+    assert_eq!(loaded.workspace.routes[0].guide_colour, None);
+    assert!(save_show(&ws).unwrap().contains("\"guide_colour\": \"#ff8200\""));
+    // Inside a transaction it goes with the step.
+    let mut history = History::new();
+    let before = ws.clone();
+    let both = Command::Transaction {
+        commands: vec![
+            pick(Some(GuideColour([1, 2, 3]))),
+            route_prop(1, RouteProperty::Rotation { value: 90 }),
+        ],
+    };
+    assert!(history.execute(&mut ws, both).unwrap());
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws, before);
+}
+
+/// A guide colour reads only as `#rrggbb`: anything else in a show file refuses it as a wrong
+/// value, never a panic.
+#[test]
+fn a_guide_colour_reads_only_as_six_hex_digits() {
+    assert_eq!(GuideColour::parse("#00C8ff"), Some(GuideColour([0, 200, 255])));
+    for bad in ["", "#", "00c8ff", "#00c8f", "#00c8fff", "#0xc8ff", "#+0c8ff", "#00c8f\u{e9}"] {
+        assert_eq!(GuideColour::parse(bad), None, "{bad:?}");
+    }
+    let mut ws = two_route_workspace();
+    ws.routes[0].guide_colour = Some(GuideColour([0, 200, 255]));
+    let text = save_show(&ws).unwrap().replace("#00c8ff", "red");
+    assert!(load_show(&text).is_err());
+}
+
 /// R9: removing a route its regions use is allowed; they are left with none (assumed), and the
 /// undo brings the route back at its place with them on it, exactly. A client following the
 /// model changes sees the same.

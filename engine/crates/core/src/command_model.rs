@@ -1770,6 +1770,18 @@ pub(crate) fn apply_model(
 // Coalescing
 
 impl Command {
+    /// Whether the command changes only a view aid: saved with the show, but no undo step
+    /// (`History` applies it and records nothing). An output route's guide colour.
+    pub fn is_view_aid(&self) -> bool {
+        matches!(
+            self,
+            Self::SetRouteProperty {
+                property: crate::video::RouteProperty::GuideColour { .. },
+                ..
+            }
+        )
+    }
+
     /// What value a pure value-setting command sets, as a hashable key (its kind, the item,
     /// and which field of it); `None` for any other command, and for the patch edits that change
     /// the layout. Two commands with equal keys set the same value.

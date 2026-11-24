@@ -227,6 +227,9 @@ enum Request: Hashable, Sendable, Codable {
     /// Opens (or brings to the front) or closes the workspace's stage's monitor window: a live
     /// copy of the stage the stage host draws in a window of its own.
     case setStageMonitor(stage: ModelID, open: Bool)
+    /// Shows or hides the alignment guides of the workspace's output routes (at most 64): a view
+    /// aid the engine keeps while the workspace is open, never saved and no undo step.
+    case setRouteGuides(routes: [ModelID], show: Bool)
     /// How long the sequence that starts at `cue` lasts (its auto-continue and auto-follow chain),
     /// for the Load to Time slider.
     case sequenceSpan(cue: ModelID)
@@ -320,6 +323,7 @@ enum Request: Hashable, Sendable, Codable {
             opt(&f, "display", display)
             return ("set_route_display", f)
         case .setStageMonitor(let stage, let open): return ("set_stage_monitor", [("stage", stage), ("open", open)])
+        case .setRouteGuides(let routes, let show): return ("set_route_guides", [("routes", routes), ("show", show)])
         case .sequenceSpan(let cue): return ("sequence_span", [("cue", cue)])
         #if DEBUG
             case .advance(let frames): return ("advance", [("frames", frames)])
@@ -411,6 +415,9 @@ enum Request: Hashable, Sendable, Codable {
         case "set_stage_monitor":
             self = .setStageMonitor(
                 stage: try c.decode(ModelID.self, forKey: "stage"), open: try c.decode(Bool.self, forKey: "open"))
+        case "set_route_guides":
+            self = .setRouteGuides(
+                routes: try c.decode([ModelID].self, forKey: "routes"), show: try c.decode(Bool.self, forKey: "show"))
         case "sequence_span": self = .sequenceSpan(cue: try c.decode(ModelID.self, forKey: "cue"))
         #if DEBUG
             case "advance": self = .advance(frames: try c.decode(UInt64.self, forKey: "frames"))
