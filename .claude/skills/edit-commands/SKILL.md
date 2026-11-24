@@ -13,6 +13,8 @@ let inverse = workspace.apply(command)?;   // Result<Inverse, CommandError>
 
 `Inverse` is a `Command`: applying it undoes the original, applying that result redoes it. `History` holds the undo and redo stacks of inverses and is the **only** thing that changes a workspace in the engine (`execute`, `execute_coalescing`, `undo`, `redo`). Undo is unlimited. Call `History::clear` when the workspace changes behind its back. `execute` returns `Ok(true)` if it recorded a change and `Ok(false)` if it changed nothing.
 
+Each step also carries its name (`step_name.rs`, `StepName`: stage, route and region edits, named from the command and the workspace before it; a transaction of one command takes its name, one of several properties of one route is `EditRoute`, others none). Undo and redo move the name with the step, a coalesced gesture keeps its first edit's; `undo_name` / `redo_name` reach clients in `document` (docs/protocol.md).
+
 ## Must not break
 - **Atomic.** A refused command leaves the workspace exactly as it was. The one exception, `RollbackFailed`, means an inverse is wrong.
 - **Exact.** Undo then redo restores ids, order and parent/child structure.
