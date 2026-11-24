@@ -298,18 +298,18 @@ enum WarningRows {
         for text in store.appNotices {
             rows.append(WarningRow(id: "k:\(text)", cue: nil, title: text, detail: "", canRelink: false))
         }
-        // A stage that cannot be seen on this computer (VID-01): no display chosen, its display
-        // unplugged, or failing.
-        for entry in store.videoOutputs.stages {
+        // An output route that cannot be seen on this computer (VID-01): no display chosen, its
+        // display unplugged, or failing.
+        for entry in store.videoOutputs.routes {
             guard let state = entry.state, let why = Self.stageReason(state) else { continue }
-            // A stage gone from the workspace since the engine's last word has no row. The title is
-            // the stage's name (a long one shortened); the detail a reason short enough for one line.
-            guard let full = model?.stages.first(where: { $0.id == entry.stage })?.raw["name"]?.stringValue
+            // A route gone from the workspace since the engine's last word has no row. The title is
+            // the route's name (a long one shortened); the detail a reason short enough for one line.
+            guard let full = model?.routes.first(where: { $0.id == entry.route })?.raw["name"]?.stringValue
             else { continue }
             let name = full.count > Self.stageNameLength ? full.prefix(Self.stageNameLength - 1) + "…" : full
             rows.append(
                 WarningRow(
-                    id: "v:\(entry.stage.raw)", cue: nil, title: String(format: loc("warnings.stage"), String(name)),
+                    id: "v:\(entry.route.raw)", cue: nil, title: String(format: loc("warnings.stage"), String(name)),
                     detail: why, canRelink: false))
         }
         return rows
@@ -360,8 +360,9 @@ enum WarningRows {
             id: key, cue: nil, title: counted(ProblemText.warning(w, label: label)), detail: "", canRelink: false)
     }
 
-    /// Why a stage cannot be seen, in a few words for the Warnings list; nil for one that is fine.
-    static func stageReason(_ state: StageState) -> String? {
+    /// Why an output route cannot be seen, in a few words for the Warnings list; nil for one that
+    /// is fine.
+    static func stageReason(_ state: RouteState) -> String? {
         switch state.state {
         case "no_display": return loc("warnings.stage.noDisplay")
         case "display_missing": return loc("warnings.stage.missing")

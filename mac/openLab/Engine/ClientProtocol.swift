@@ -216,13 +216,14 @@ enum Request: Hashable, Sendable, Codable {
     /// AUD-14: an Audio cue's file peaks over file seconds `start..<end` in `buckets` parts (1 to 8192).
     case waveform(cue: ModelID, start: Double, end: Double, buckets: UInt32)
     case snapshot
-    /// VID-01: the displays this machine can show stages on, as the stage host lists them.
+    /// VID-01: the displays this machine can show output routes on, as the stage host lists them.
     case listDisplays
-    /// VID-01: where each of the workspace's stages is shown on this machine, and where it is now.
-    case listStageMappings
-    /// VID-01: shows the workspace's stage on a display (`listDisplays` id) on this machine; nil
-    /// leaves it on none. Kept in the engine's machine settings, not the show file.
-    case setStageMapping(stage: ModelID, display: String?)
+    /// VID-01: where each of the workspace's output routes is shown on this machine and where it is
+    /// now, and each stage's black and monitor.
+    case listRouteDisplays
+    /// VID-01: shows the workspace's output route on a display (`listDisplays` id) on this machine;
+    /// nil leaves it on none. Kept in the engine's machine settings, not the show file; no undo step.
+    case setRouteDisplay(route: ModelID, display: String?)
     /// Opens (or brings to the front) or closes the workspace's stage's monitor window: a live
     /// copy of the stage the stage host draws in a window of its own.
     case setStageMonitor(stage: ModelID, open: Bool)
@@ -313,11 +314,11 @@ enum Request: Hashable, Sendable, Codable {
         case .waveform(let cue, let start, let end, let buckets):
             return ("waveform", [("cue", cue), ("start", start), ("end", end), ("buckets", buckets)])
         case .listDisplays: return ("list_displays", [])
-        case .listStageMappings: return ("list_stage_mappings", [])
-        case .setStageMapping(let stage, let display):
-            f.append(("stage", stage))
+        case .listRouteDisplays: return ("list_route_displays", [])
+        case .setRouteDisplay(let route, let display):
+            f.append(("route", route))
             opt(&f, "display", display)
-            return ("set_stage_mapping", f)
+            return ("set_route_display", f)
         case .setStageMonitor(let stage, let open): return ("set_stage_monitor", [("stage", stage), ("open", open)])
         case .sequenceSpan(let cue): return ("sequence_span", [("cue", cue)])
         #if DEBUG
@@ -402,10 +403,10 @@ enum Request: Hashable, Sendable, Codable {
                 cue: try c.decode(ModelID.self, forKey: "cue"), start: try c.decode(Double.self, forKey: "start"),
                 end: try c.decode(Double.self, forKey: "end"), buckets: try c.decode(UInt32.self, forKey: "buckets"))
         case "list_displays": self = .listDisplays
-        case "list_stage_mappings": self = .listStageMappings
-        case "set_stage_mapping":
-            self = .setStageMapping(
-                stage: try c.decode(ModelID.self, forKey: "stage"),
+        case "list_route_displays": self = .listRouteDisplays
+        case "set_route_display":
+            self = .setRouteDisplay(
+                route: try c.decode(ModelID.self, forKey: "route"),
                 display: try c.decodeIfPresent(String.self, forKey: "display"))
         case "set_stage_monitor":
             self = .setStageMonitor(

@@ -6,16 +6,25 @@ import Foundation
 /// undo step.
 extension Command {
     /// `AddStage` at `index`: a new stage of `width` x `height` pixels, keeping black between cues
-    /// once a picture has played on it.
-    static func addStage(id: ModelID, name: String, width: Int, height: Int, index: Int) -> Command {
-        Command(
-            .object([
-                "type": .string("add_stage"), "index": .int(Int64(index)),
-                "stage": .object([
-                    "id": .string(id.raw), "name": .string(name), "width": .int(Int64(width)),
-                    "height": .int(Int64(height)), "keep_black": .bool(true), "layer": .int(1),
-                ]),
-            ]))
+    /// once a picture has played on it, with one region covering it sent to `route` when one is
+    /// given (`region` its id).
+    static func addStage(
+        id: ModelID, name: String, width: Int, height: Int, index: Int, route: ModelID? = nil,
+        region: ModelID? = nil
+    ) -> Command {
+        var stage: [String: JSONValue] = [
+            "id": .string(id.raw), "name": .string(name), "width": .int(Int64(width)),
+            "height": .int(Int64(height)), "keep_black": .bool(true), "layer": .int(1),
+        ]
+        if let route, let region {
+            stage["regions"] = .array([
+                .object([
+                    "id": .string(region.raw), "route": .string(route.raw), "x": .int(0), "y": .int(0),
+                    "width": .int(Int64(width)), "height": .int(Int64(height)),
+                ])
+            ])
+        }
+        return Command(.object(["type": .string("add_stage"), "index": .int(Int64(index)), "stage": .object(stage)]))
     }
 
     /// `RemoveStage`. Its display choice on this machine is kept, so an undo brings it back there.
@@ -30,28 +39,30 @@ extension Command {
 }
 
 extension WorkspaceStore {
-    /// Reads the displays and this workspace's stages' displays and states again (they are then
-    /// kept current by `video_outputs` pushes).
+    /// Reads the displays, this workspace's routes' displays and states and its stages' black
+    /// again (they are then kept current by `video_outputs` pushes).
     @discardableResult
     func refreshVideoOutputs() async -> Result<VideoOutputs, EngineError> {
         let displays = await client.send { .request(id: $0, .listDisplays) }
-        let stages = await client.send { .request(id: $0, .listStageMappings) }
-        switch (displays, stages) {
+        let routes = await client.send { .request(id: $0, .listRouteDisplays) }
+        switch (displays, routes) {
         case (.failure(let e), _), (_, .failure(let e)):
             return .failure(e)
-        case (.success(let d), .success(let s)):
-            guard case .displays(let list, let video)? = d.data, case .stageMappings(let entries)? = s.data else {
+        case (.success(let d), .success(let r)):
+            guard case .displays(let list, let video)? = d.data,
+                case .routeDisplays(let routes, let stages)? = r.data
+            else {
                 return .failure(.encoding("unexpected answer to the display lists"))
             }
-            let outputs = VideoOutputs(displays: list, video: video, stages: entries)
+            let outputs = VideoOutputs(displays: list, video: video, routes: routes, stages: stages)
             setVideoOutputs(outputs)
             return .success(outputs)
         }
     }
 
-    /// Shows `stage` on `display` (nil: on none) on this machine.
-    func setStageMapping(_ stage: ModelID, display: String?) async -> Result<OkBody, EngineError> {
-        await client.send { .request(id: $0, .setStageMapping(stage: stage, display: display)) }
+    /// Shows output `route` on `display` (nil: on none) on this machine: not an undo step.
+    func setRouteDisplay(_ route: ModelID, display: String?) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setRouteDisplay(route: route, display: display)) }
     }
 
     /// Opens `stage`'s monitor window (or brings it to the front), or closes it: a live copy of the

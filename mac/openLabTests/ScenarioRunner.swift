@@ -2319,7 +2319,7 @@ final class ScenarioShotTests: XCTestCase {
             of: """
                 {"show": "Video", "displays": "V1:1920x1080",
                  "settings": {"settings_version": 1, "workspaces": {"00000000-0000-0000-0000-0000000000f0": {
-                   "patches": {}, "stages": {"00000000-0000-0000-0000-0000000000f1":
+                   "patches": {}, "routes": {"00000000-0000-0000-0000-0000000000f1":
                      {"display": "V1", "name": "Stage 1", "width": 1920, "height": 1080}}}}},
                  "media": {"media/clip.mov": 4, "media/still.png": 1, "media/card.jpg": 1,
                    "media/A very long name for a projection clip used in the second act.mov": 2},

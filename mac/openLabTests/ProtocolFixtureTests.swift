@@ -111,14 +111,14 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertEqual(entries.map { $0.resolution?.type }, ["mapped", "unmapped", "mapped", "device_missing"])
     }
 
-    /// VID-01: the display list, the stage mappings and the stage display choice decode from their
-    /// fixtures.
+    /// VID-01: the display list, the routes' displays and a route's display choice decode from
+    /// their fixtures.
     func testStageDisplayMessagesDecodeFromTheirFixtures() throws {
         guard
-            case .request(_, .setStageMapping(let stage, let display)) = try JSONDecoder().decode(
-                ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_stage_mapping").utf8))
-        else { return XCTFail("set_stage_mapping") }
-        XCTAssertEqual(stage, "00000000-0000-0000-0000-000000000080")
+            case .request(_, .setRouteDisplay(let route, let display)) = try JSONDecoder().decode(
+                ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_route_display").utf8))
+        else { return XCTFail("set_route_display") }
+        XCTAssertEqual(route, "00000000-0000-0000-0000-000000000090")
         XCTAssertEqual(display, "37D8832A-2D66-02CA-B9F7-8F30A301B230")
         guard
             case .result(_, .ok(let shown)) = try ServerMessage.decode(try Fixtures.text("server", "result_displays")),
@@ -133,14 +133,22 @@ final class ProtocolFixtureTests: XCTestCase {
             StageDisplay.self,
             from: Data(#"{"id":"A","name":"Old","width":1920,"height":1080}"#.utf8))
         XCTAssertEqual(old.fps, 0)
+        XCTAssertFalse(old.main)
         guard
             case .result(_, .ok(let mapped)) = try ServerMessage.decode(
-                try Fixtures.text("server", "result_stage_mappings")),
-            case .stageMappings(let entries)? = mapped.data
-        else { return XCTFail("stage_mappings") }
-        XCTAssertEqual(entries.map { $0.state?.state }, ["shown", "no_display", nil])
-        XCTAssertEqual(entries[0].mapping?.name, "Projector")
-        XCTAssertNil(entries[1].mapping)
+                try Fixtures.text("server", "result_route_displays")),
+            case .routeDisplays(let routes, let stages)? = mapped.data
+        else { return XCTFail("route_displays") }
+        XCTAssertEqual(routes.map { $0.state?.state }, ["shown", "no_display", "failed", nil])
+        XCTAssertEqual(routes[0].mapping?.name, "Projector")
+        XCTAssertNil(routes[1].mapping)
+        XCTAssertEqual(stages.map(\.stage), ["00000000-0000-0000-0000-000000000080"])
+        guard case .videoOutputs(let outputs) = try ServerMessage.decode(try Fixtures.text("server", "video_outputs"))
+        else { return XCTFail("video_outputs") }
+        XCTAssertEqual(outputs.displays.map(\.main), [true])
+        XCTAssertEqual(outputs.routes.map { $0.state?.state }, ["display_missing", "hidden"])
+        XCTAssertEqual(outputs.stages.map(\.panicked), [false, true])
+        XCTAssertEqual(outputs.stages.map(\.monitor), [true, false])
     }
 
     /// The Load to Time slider's span: `sequence_span` and its answer, with and without an end.

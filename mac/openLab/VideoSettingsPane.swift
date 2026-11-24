@@ -3,7 +3,8 @@
 import AppKit
 import Combine
 
-/// One stage as the Video page lists it.
+/// One stage as the Video Outputs page lists it, or one output route as the Output Routing page
+/// does (its keep-black and layer then unused).
 struct StageRow: Equatable {
     var id: ModelID
     var name: String
@@ -11,10 +12,11 @@ struct StageRow: Equatable {
     var height: Int
     var keepBlack: Bool
     var layer: Int
-    /// The display chosen on this machine (an id `list_displays` gives), and its name then.
+    /// A route's display chosen on this machine (an id `list_displays` gives), and its name then.
     var display: String?
     var displayName: String?
-    /// Why the stage cannot be seen now, in words; nil when it is shown or hidden between cues.
+    /// Why a route cannot be seen now, in words; nil when it is shown or shows nothing between
+    /// cues.
     var warning: String?
 }
 
@@ -25,13 +27,14 @@ struct StageRow: Equatable {
 ///   place), whether black stays up between cues, its layer, a button that opens its monitor
 ///   window (a live copy of the stage, QLab 5 manual p. 157) and a remove button; and a button that
 ///   adds one.
-/// - Output Routing: the display each stage is shown on on this machine; a stage that cannot be
-///   seen says why in its row.
+/// - Output Routing: the workspace's output routes, one row each with its name, its size and the
+///   display it is shown on on this machine (QLab 5 manual p. 232); a route that cannot be seen
+///   says why in its row.
 /// - Output Devices: the displays this computer has, one row each: Device N, its name, its size in
 ///   pixels and its refresh rate.
 /// Every control sends its edit to the engine and a page is drawn from what the engine then holds
-/// (the model for the stages, `video_outputs` for displays and states), so a refused edit shows the
-/// old state.
+/// (the model for the stages and routes, `video_outputs` for displays and states), so a refused
+/// edit shows the old state.
 @MainActor
 final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     /// The sections QLab 5's Video settings are split into (no Video Inputs: openLab has no camera cues).
@@ -132,7 +135,10 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         view = NSStackView()
         header = Self.makeGrid(rows: false, cols: Self.columns(of: section))
         emptyLabel = NSTextField(
-            labelWithString: loc(section == .devices ? "settings.video.noDisplays" : "settings.video.none"))
+            labelWithString: loc(
+                section == .devices
+                    ? "settings.video.noDisplays"
+                    : section == .routing ? "settings.video.noRoutes" : "settings.video.none"))
         super.init()
         build()
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
@@ -314,23 +320,32 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     // MARK: Drawing
 
-    /// The stages as the engine has them, with this machine's displays and their states.
+    /// The stages (Video Outputs) or routes (Output Routing) as the engine has them, a route with
+    /// its display on this machine and its state.
     func rows() -> [StageRow] {
         let outputs = store.videoOutputs
+        if section == .routing {
+            return (store.model?.routes ?? []).map { r in
+                let entry = outputs.route(r.id)
+                return StageRow(
+                    id: r.id, name: r.raw["name"]?.stringValue ?? "", width: Int(r.raw["width"]?.doubleValue ?? 0),
+                    height: Int(r.raw["height"]?.doubleValue ?? 0), keepBlack: false, layer: 0,
+                    display: entry?.mapping?.display, displayName: entry?.mapping?.name,
+                    warning: entry?.state.flatMap(Self.warning))
+            }
+        }
         return (store.model?.stages ?? []).map { s in
-            let entry = outputs.stages.first { $0.stage == s.id }
             let raw = s.raw
             let name = raw["name"]?.stringValue ?? ""
             return StageRow(
                 id: s.id, name: name, width: Int(raw["width"]?.doubleValue ?? 0),
                 height: Int(raw["height"]?.doubleValue ?? 0), keepBlack: raw["keep_black"] == .bool(true),
-                layer: Int(raw["layer"]?.doubleValue ?? 1), display: entry?.mapping?.display,
-                displayName: entry?.mapping?.name, warning: entry?.state.flatMap(Self.warning))
+                layer: Int(raw["layer"]?.doubleValue ?? 1))
         }
     }
 
-    /// What a stage's state says to the operator; nil for a stage that is fine.
-    static func warning(_ state: StageState) -> String? {
+    /// What a route's state says to the operator; nil for a route that is fine.
+    static func warning(_ state: RouteState) -> String? {
         switch state.state {
         case "no_display": return loc("settings.video.warn.noDisplay")
         case "display_missing": return loc("settings.video.warn.missing")
@@ -681,9 +696,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         field.currentEditor()?.string = value
     }
 
-    /// A refusal in words, never with an internal id: a stage gone since it was drawn says so.
+    /// A refusal in words, never with an internal id: a stage or route gone since it was drawn
+    /// says so.
     private func reason(_ e: EngineError, _ stage: ModelID?) -> String {
-        if let stage, store.model?.stages.contains(where: { $0.id == stage }) != true {
+        let listed = section == .routing ? store.model?.routes : store.model?.stages
+        if let stage, listed?.contains(where: { $0.id == stage }) != true {
             return loc("settings.video.gone")
         }
         if let stage, let cue = Self.cueUsing(e), let name = rows().first(where: { $0.id == stage })?.name {
@@ -704,13 +721,19 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     /// The edits still on their way (tests wait for them).
     var pending: Task<Void, Never>? { commits }
 
+    /// A new stage, 1920 x 1080, with one region covering it on the workspace's first output
+    /// route (none: no region, so it is drawn nowhere but its monitor).
     @objc private func addClicked() {
         let typed = endTyping()
         let count = store.model?.stages.count ?? 0
         let id = ModelID(UUID().uuidString.lowercased())
+        let region = ModelID(UUID().uuidString.lowercased())
+        let route = store.model?.routes.first?.id
         let name = String(format: loc("settings.video.newName"), count + 1)
         commit(nil, after: typed) { [store] in
-            await store.send(command: .addStage(id: id, name: name, width: 1920, height: 1080, index: count))
+            await store.send(
+                command: .addStage(
+                    id: id, name: name, width: 1920, height: 1080, index: count, route: route, region: region))
         }
     }
 
@@ -743,7 +766,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         let typed = endTyping()
         guard let row = row(sender.tag) else { return }
         guard display != row.display else { return }
-        commit(row.id, after: typed) { [store] in await store.setStageMapping(row.id, display: display) }
+        commit(row.id, after: typed) { [store] in await store.setRouteDisplay(row.id, display: display) }
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {

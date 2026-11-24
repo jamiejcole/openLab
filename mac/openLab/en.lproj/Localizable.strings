@@ -522,7 +522,8 @@
 "settings.tab.video" = "Video";
 "settings.video.add" = "New Stage";
 "settings.video.note.outputs" = "A stage is a picture Video cues are drawn on. Output Routing chooses the display each is shown on.";
-"settings.video.note.routing" = "Each stage is shown on one of this computer’s displays. The choice is kept on this Mac, not in the show.";
+"settings.video.note.routing" = "Each output route is shown on one of this computer’s displays. The choice is kept on this Mac, not in the show.";
+"settings.video.noRoutes" = "No output routes.";
 "settings.video.note.devices" = "The displays connected to this computer.";
 "settings.video.noDisplays" = "No displays.";
 "settings.video.resolution" = "%1$@ × %2$@";
@@ -556,10 +557,10 @@
 "settings.video.height" = "Height in pixels";
 "settings.video.gone" = "That stage is no longer in the workspace.";
 "settings.video.inUse" = "“%1$@” cannot be removed while cue %2$@ uses it. Stop the cue first.";
-"settings.video.warn.noDisplay" = "No display on this computer: choose one to show this stage.";
-"settings.video.warn.missing" = "Its display is not connected: the stage is not shown until it is.";
+"settings.video.warn.noDisplay" = "No display on this computer: choose one to show this output.";
+"settings.video.warn.missing" = "Its display is not connected: this output is not shown until it is.";
 "settings.video.warn.failed" = "Cannot be shown: %@";
-"warnings.stage" = "Stage “%@”";
+"warnings.stage" = "Output “%@”";
 "warnings.stage.noDisplay" = "No display on this computer";
 "warnings.stage.missing" = "Its display is not connected";
 "warnings.stage.failed" = "Cannot be shown";

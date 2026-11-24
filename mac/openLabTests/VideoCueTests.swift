@@ -505,7 +505,7 @@ final class VideoCueTests: XCTestCase {
     func testRemovingAStageOnTheVideoPageWhileACuePlaysOnItIsRefusedWithTheReason() async throws {
         try await openVideoShow()
         await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
-        guard case .success = await store.setStageMapping(Self.stage, display: "V1") else {
+        guard case .success = await store.setStageDisplay(Self.stage, display: "V1") else {
             return XCTFail("display")
         }
         click(Self.still)

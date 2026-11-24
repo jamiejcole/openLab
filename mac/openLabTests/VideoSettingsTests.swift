@@ -40,8 +40,15 @@ final class VideoSettingsTests: XCTestCase {
             var root = try XCTUnwrap(
                 JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
             var ws = try XCTUnwrap(root["workspace"] as? [String: Any])
+            // Each stage has one region covering it, on an output route of its own id and size.
+            ws["routes"] = stages.enumerated().map { n, s in
+                ["id": s.0, "name": "Output \(n + 1)", "width": s.2, "height": s.3] as [String: Any]
+            }
             ws["stages"] = stages.map { s in
-                ["id": s.0, "name": s.1, "width": s.2, "height": s.3, "keep_black": false, "layer": 1] as [String: Any]
+                [
+                    "id": s.0, "name": s.1, "width": s.2, "height": s.3, "keep_black": false, "layer": 1,
+                    "regions": [["id": s.0, "route": s.0, "x": 0, "y": 0, "width": s.2, "height": s.3]],
+                ] as [String: Any]
             }
             root["workspace"] = ws
             try JSONSerialization.data(withJSONObject: root).write(to: file)
@@ -165,13 +172,13 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(popup.titleOfSelectedItem, loc("settings.video.displayNone"))
         popup.selectItem(withTitle: "Virtual V2 (1280 × 720)")
         _ = popup.sendAction(popup.action, to: popup.target)
-        await settled(sc) { pane.shown?.first?.display == "V2" }
+        await settled(sc) { routing.shown?.first?.display == "V2" }
         XCTAssertEqual(routing.displayPopups.first?.titleOfSelectedItem, "Virtual V2 (1280 × 720)")
-        XCTAssertEqual(rig.store.videoOutputs.stages.first?.mapping?.display, "V2")
+        XCTAssertEqual(rig.store.videoOutputs.routes.first?.mapping?.display, "V2")
     }
 
-    /// Flow 3: New Stage adds a stage with no display; its name is typed in place; it is removed;
-    /// each is one undo step.
+    /// Flow 3: New Stage adds a stage (with no output route in the workspace, it reaches no
+    /// display); its name is typed in place; it is removed; each is one undo step.
     func testNewStageRenameInPlaceAndRemoveAreOneUndoStepEach() async throws {
         let (rig, sc) = try await open()
         let pane = sc.videoPane
@@ -181,7 +188,8 @@ final class VideoSettingsTests: XCTestCase {
         pane.addButton.performClick(nil)
         await settled(sc) { pane.nameFields.count == 1 }
         XCTAssertEqual(pane.nameFields[0].stringValue, String(format: loc("settings.video.newName"), 1))
-        XCTAssertEqual(routing.displayPopups[0].titleOfSelectedItem, loc("settings.video.displayNone"))
+        XCTAssertEqual(routing.shown, [], "no output route")
+        XCTAssertEqual(routing.emptyLabel.isHidden, false)
         let field = pane.nameFields[0]
         field.stringValue = "Cyc"
         pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
@@ -207,17 +215,17 @@ final class VideoSettingsTests: XCTestCase {
         let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
-        await settled(sc) { rig.store.videoOutputs.stages.first?.state?.state == "hidden" }
+        await settled(sc) { rig.store.videoOutputs.routes.first?.state?.state == "hidden" }
         pane.blackBoxes[0].performClick(nil)
         await settled(sc) { rig.store.model?.stages.first?.raw["keep_black"] == .bool(true) }
         XCTAssertEqual(pane.blackBoxes[0].state, .on)
         // #708: no picture has played on the stage since the show opened, so its black is not up yet:
         // ticking the box never covers a display.
         await settled(sc) { rig.store.videoOutputs.stages.first?.panicked == true }
-        XCTAssertEqual(rig.store.videoOutputs.stages.first?.state?.state, "hidden")
+        XCTAssertEqual(rig.store.videoOutputs.routes.first?.state?.state, "hidden")
         pane.blackBoxes[0].performClick(nil)
         await settled(sc) { rig.store.model?.stages.first?.raw["keep_black"] == .bool(false) }
-        XCTAssertEqual(rig.store.videoOutputs.stages.first?.state?.state, "hidden")
+        XCTAssertEqual(rig.store.videoOutputs.routes.first?.state?.state, "hidden")
     }
 
     /// What `stage`'s monitor window shows at a content size of `width` x `height` pixels, read back
@@ -278,13 +286,13 @@ final class VideoSettingsTests: XCTestCase {
         let warnings = WarningRows.make(store: rig.store)
         XCTAssertTrue(
             warnings.contains {
-                $0.title == String(format: loc("warnings.stage"), "Cyc")
+                $0.title == String(format: loc("warnings.stage"), "Output 1")
                     && $0.detail == loc("warnings.stage.noDisplay")
             }, "\(warnings)")
         let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
-        await settled(sc) { pane.shown?.first?.warning == nil }
+        await settled(sc) { routing.shown?.first?.warning == nil }
         XCTAssertFalse(WarningRows.make(store: rig.store).contains { $0.id == "v:\(self.stageA)" })
     }
 
@@ -297,7 +305,8 @@ final class VideoSettingsTests: XCTestCase {
         let routing = sc.videoRoutingPane
         func check(_ why: String) {
             let rows = pane.shown ?? []
-            let warned = rows.filter { $0.warning != nil }.count
+            let routes = routing.shown ?? []
+            let warned = routes.filter { $0.warning != nil }.count
             XCTAssertEqual(pane.holder.subviews, [pane.grid], "\(why): one table")
             XCTAssertEqual(pane.grid.numberOfRows, rows.count, why)
             let controls: [NSView] =
@@ -307,8 +316,8 @@ final class VideoSettingsTests: XCTestCase {
             XCTAssertTrue(controls.allSatisfy { $0.superview === pane.grid }, why)
             XCTAssertEqual(pane.nameFields.map(\.stringValue), rows.map(\.name), why)
             // The routing page: its row's controls and label cells, and a line for each warning.
-            XCTAssertEqual(routing.grid.numberOfRows, rows.count + warned, why)
-            XCTAssertEqual(routing.grid.subviews.count, 3 * rows.count + warned, why)
+            XCTAssertEqual(routing.grid.numberOfRows, routes.count + warned, why)
+            XCTAssertEqual(routing.grid.subviews.count, 3 * routes.count + warned, why)
             XCTAssertTrue(routing.displayPopups.allSatisfy { $0.superview === routing.grid }, why)
         }
         for round in 1...2 {
@@ -334,7 +343,7 @@ final class VideoSettingsTests: XCTestCase {
             _ = await rig.store.undo()
             _ = await rig.store.undo()
             _ = await rig.store.undo()
-            _ = await rig.store.setStageMapping(ModelID(stageA), display: nil)
+            _ = await rig.store.setRouteDisplay(ModelID(stageA), display: nil)
             await sc.videoPane.refresh()
         }
     }
@@ -349,7 +358,7 @@ final class VideoSettingsTests: XCTestCase {
         try startTyping("Cyclo", in: pane.nameFields[0], sc)
         let caret = NSRange(location: 2, length: 2)
         pane.nameFields[0].currentEditor()?.selectedRange = caret
-        guard case .success = await rig.store.setStageMapping(ModelID(stageA), display: "V1") else {
+        guard case .success = await rig.store.setRouteDisplay(ModelID(stageA), display: "V1") else {
             return XCTFail("mapping")
         }
         await caughtUp(rig, sc, "drawn while the name is typed") { routing.warningLabels.first?.stringValue == "" }
@@ -502,10 +511,10 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(pane.header.convert(pane.header.bounds, to: nil), titlesAt)
         // A display chosen, at the window's first size: its choice reads whole.
         let first = try XCTUnwrap(pane.shown?.first?.id)
-        let chosen = await rig.store.setStageMapping(first, display: "V1")
+        let chosen = await rig.store.setStageDisplay(first, display: "V1")
         guard case .success = chosen else { return XCTFail("\(chosen)") }
         await caughtUp(rig, sc, "the choice is drawn \(rig.store.videoOutputs)") {
-            pane.shown?.first?.display == "V1"
+            routing.shown?.first?.display == "V1"
         }
         window.contentView?.layoutSubtreeIfNeeded()
         for c in 0..<pane.cols.count {
@@ -539,13 +548,23 @@ final class VideoSettingsTests: XCTestCase {
         }
     }
 
-    /// A long stage name is cut with an ellipsis in its field and in the Warnings list, whose
-    /// reason is a short line of its own.
+    /// A long stage name is cut with an ellipsis in its field, and a long output route name in the
+    /// Warnings list, whose reason is a short line of its own.
     func testALongStageNameIsShortenedAndTheReasonStays() async throws {
         let long = "A very long stage name for the upstage cyclorama projector left half"
         let (rig, sc) = try await open(stages: [(stageA, long, 1920, 1080)])
         let pane = sc.videoPane
-        await settled(sc) { pane.nameFields.count == 1 && pane.shown?.first?.warning != nil }
+        let routing = sc.videoRoutingPane
+        let renamed = await rig.store.send(
+            command: Command(
+                .object([
+                    "type": .string("set_route_property"), "id": .string(stageA),
+                    "property": .object(["type": .string("name"), "value": .string(long)]),
+                ])))
+        guard case .success = renamed else { return XCTFail("\(renamed)") }
+        await settled(sc) {
+            pane.nameFields.count == 1 && routing.shown?.first?.warning != nil && routing.shown?.first?.name == long
+        }
         XCTAssertEqual(pane.nameFields[0].lineBreakMode, .byTruncatingTail)
         let row = try XCTUnwrap(WarningRows.make(store: rig.store).first { $0.id == "v:\(stageA)" })
         XCTAssertEqual(row.detail, loc("warnings.stage.noDisplay"), "the reason whole, on a line of its own")
@@ -558,7 +577,8 @@ final class VideoSettingsTests: XCTestCase {
     /// footer's count), from what the engine sends on connecting; and again on a new engine (an
     /// engine relaunched under the app: a fresh connection and store).
     func testAStageWithoutADisplayWarnsInTheMainWindowWithoutTheSettingsWindow() async throws {
-        let warning = String(format: loc("warnings.stage"), "Cyc")
+        // The warning names the stage's output route.
+        let warning = String(format: loc("warnings.stage"), "Output 1")
         var engines = [engine!]
         for round in 1...2 {
             let rig = try await openShow(stages: [(stageA, "Cyc", 1920, 1080)], on: engines[round - 1])
@@ -596,7 +616,7 @@ final class VideoSettingsTests: XCTestCase {
             let popup = routing.displayPopups[i]
             popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
             _ = popup.sendAction(popup.action, to: popup.target)
-            await settled(sc) { pane.shown?[i].display == "V1" }
+            await settled(sc) { routing.shown?[i].display == "V1" }
             pane.blackBoxes[i].performClick(nil)
             await settled(sc) { pane.shown?[i].keepBlack == true }
             let frame: UInt16 = i == 0 ? 111 : 222
@@ -651,8 +671,7 @@ final class VideoSettingsTests: XCTestCase {
     }
 
     /// #674 flow 1: a stage's size is changed on the Video page: its row shows the new size, its
-    /// picture on the display is drawn at that size (a square stage on the wide V1: black bars at
-    /// the sides, the test card between them), and one undo puts it back.
+    /// region follows it (#813 G6) and still fills its route on V1, and one undo puts both back.
     func testAStagesSizeChangedOnTheVideoPageShowsInItsRowAndIsDrawnAtThatSizeInOneUndoStep() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
@@ -663,7 +682,7 @@ final class VideoSettingsTests: XCTestCase {
         let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
-        await settled(sc) { pane.shown?.first?.display == "V1" }
+        await settled(sc) { routing.shown?.first?.display == "V1" }
         guard
             case .success = await rig.client.send({ .request(id: $0, .stageTestCard(stage: ModelID(stageA), frame: 7)) }
             )
@@ -680,12 +699,16 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(pane.heightFields[0].stringValue, "1080")
         XCTAssertEqual(rig.store.model?.stages.first?.raw["width"]?.doubleValue, 1080)
         XCTAssertEqual(pane.messageLabel.stringValue, "")
-        await assertEventually("a square stage in V1's middle") {
-            await self.displayColours("V1", points) == [black, red]
+        let region = rig.store.model?.stages.first?.raw["regions"]?.arrayValue?.first
+        XCTAssertEqual(region?["width"]?.doubleValue, 1080, "the region follows the stage")
+        await assertEventually("the square stage's region still fills V1") {
+            await self.displayColours("V1", points + [[0.5, 0.05]]) == [red, red, black]
         }
         _ = await rig.store.undo()
         await settled(sc) { pane.shown?.first?.width == 1920 }
         XCTAssertEqual(pane.widthFields[0].stringValue, "1920")
+        XCTAssertEqual(
+            rig.store.model?.stages.first?.raw["regions"]?.arrayValue?.first?["width"]?.doubleValue, 1920)
         await assertEventually("back across V1") { await self.displayColours("V1", points) == [red, red] }
     }
 

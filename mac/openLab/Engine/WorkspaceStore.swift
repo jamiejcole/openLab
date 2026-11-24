@@ -525,6 +525,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .patch(let id): m.patches.removeAll { $0.id == id }
             case .networkPatch(let id): m.networkPatches.removeAll { $0.id == id }
             case .stage(let id): m.stages.removeAll { $0.id == id }
+            case .route(let id): m.routes.removeAll { $0.id == id }
             case .unknown: return .gap
             }
         }
@@ -555,6 +556,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .stage(let index, let stage):
                 m.stages.removeAll { $0.id == stage.id }
                 m.stages.insert(stage, at: min(index, m.stages.count))
+            case .route(let index, let route):
+                m.routes.removeAll { $0.id == route.id }
+                m.routes.insert(route, at: min(index, m.routes.count))
             case .settings(let name, let settings):
                 m.name = name
                 m.settings = settings
