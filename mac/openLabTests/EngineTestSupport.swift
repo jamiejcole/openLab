@@ -575,10 +575,12 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
 /// A window of the app, the tests or AppKit itself. Windows of other system frameworks (text input
 /// and its completion list) are made once for the process when a field first takes the keyboard.
 /// AppKit's tooltip panel is the same: one panel, made the first time a tooltip shows (when the real
-/// pointer rests over a view with a tooltip during a test) and kept for the process.
+/// pointer rests over a view with a tooltip during a test) and kept for the process. So is the
+/// colour panel, made the first time a colour swatch opens it.
 @MainActor
 func isAppWindow(_ window: NSWindow) -> Bool {
     if String(describing: type(of: window)) == "NSToolTipPanel" { return false }
+    if window is NSColorPanel { return false }
     let owner = Bundle(for: type(of: window))
     return owner == Bundle.main || owner == Bundle(for: EngineTestObserver.self) || owner == Bundle(for: NSWindow.self)
 }

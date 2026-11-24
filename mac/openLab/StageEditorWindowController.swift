@@ -39,6 +39,9 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     let nameField = NSTextField()
     let layerField = NSTextField()
     let blackCheck = NSButton(checkboxWithTitle: loc("settings.video.black"), target: nil, action: nil)
+    /// Shows the alignment guides on every route the stage's regions use (QLab 5 manual p. 230):
+    /// the same state as those routes' boxes on Output Routing, mixed when only some show them.
+    let guidesCheck = NSButton(checkboxWithTitle: loc("stageEditor.guides"), target: nil, action: nil)
     let widthField = NSTextField()
     let heightField = NSTextField()
     /// The region list's rows, rebuilt on each change.
@@ -79,6 +82,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         var regions: [RegionRow]
         var routes: [String]
         var selected: ModelID?
+        var guides: NSControl.StateValue
+        var guided: Bool
     }
 
     static let minSize = NSSize(width: 600, height: 500)
@@ -98,6 +103,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         window.contentView = buildContent()
         window.center()
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
+        subs.append(store.$videoOutputs.sink { [weak self] _ in self?.renderSoon() })
         render()
     }
 
@@ -153,9 +159,17 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         blackCheck.target = self
         blackCheck.action = #selector(blackClicked)
         blackCheck.toolTip = loc("stageEditor.black.tip")
+        guidesCheck.setAX("\(Self.id)-guides", label: loc("stageEditor.guides"))
+        guidesCheck.controlSize = .small
+        guidesCheck.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        guidesCheck.allowsMixedState = true
+        guidesCheck.target = self
+        guidesCheck.action = #selector(guidesClicked)
+        guidesCheck.toolTip = loc("stageEditor.guides.tip")
         let top = NSGridView(views: [
             [label("stageEditor.name"), nameField, label("stageEditor.layer"), layerField],
             [label("stageEditor.size"), pair(widthField, "×", heightField), NSGridCell.emptyContentView, blackCheck],
+            [NSGridCell.emptyContentView, NSGridCell.emptyContentView, NSGridCell.emptyContentView, guidesCheck],
         ])
         top.rowAlignment = .firstBaseline
         top.rowSpacing = 8
@@ -163,6 +177,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         top.column(at: 0).xPlacement = .trailing
         top.column(at: 2).xPlacement = .trailing
         top.cell(atColumnIndex: 3, rowIndex: 1).xPlacement = .leading
+        top.cell(atColumnIndex: 3, rowIndex: 2).xPlacement = .leading
         // As wide as its fields, not the window.
         top.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
@@ -261,6 +276,21 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     /// The regions as the model holds them now.
     var regions: [RegionRow] { stage.map(RegionRow.of) ?? [] }
 
+    /// The routes the stage's regions are sent to, in route order, each once (a region with no
+    /// route, or one the workspace lacks, adds none).
+    var guidedRoutes: [ModelID] {
+        let used = Set(regions.compactMap(\.route))
+        return routes.map(\.id).filter { used.contains($0) }
+    }
+
+    /// The guides box's state: on when every route of the stage shows its guides, off when none
+    /// does, mixed between.
+    private var guidesState: NSControl.StateValue {
+        let shown = guidedRoutes.map { store.videoOutputs.route($0)?.guides ?? false }
+        if shown.isEmpty || !shown.contains(true) { return .off }
+        return shown.contains(false) ? .mixed : .on
+    }
+
     private func renderSoon() {
         DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.render() } }
     }
@@ -288,7 +318,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         let state = Drawn(
             name: raw?["name"]?.stringValue ?? "", layer: Int(raw?["layer"]?.doubleValue ?? 1),
             keepBlack: raw?["keep_black"] == .bool(true), width: width, height: height, regions: regions,
-            routes: routes.map { "\($0.id.raw)\u{0}\($0.raw["name"]?.stringValue ?? "")" }, selected: selected)
+            routes: routes.map { "\($0.id.raw)\u{0}\($0.raw["name"]?.stringValue ?? "")" }, selected: selected,
+            guides: guidesState, guided: !guidedRoutes.isEmpty)
         guard state != drawn else { return }
         let regionsChanged = drawn?.regions != state.regions || drawn?.routes != state.routes
         drawn = state
@@ -297,6 +328,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         window?.title = String(format: loc("stageEditor.title"), state.name)
         for control in [nameField, layerField, widthField, heightField] as [NSControl] { control.isEnabled = there }
         blackCheck.isEnabled = there
+        guidesCheck.isEnabled = there && state.guided
+        guidesCheck.state = state.guides
         newRegionPopup.isEnabled = there
         show(nameField, state.name)
         show(layerField, String(state.layer))
@@ -487,6 +520,17 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         let on = blackCheck.state == .on
         let typed = endTyping()
         setStage(after: typed, ["type": .string("keep_black"), "value": .bool(on)])
+    }
+
+    /// Shows the guides on every route of the stage, unless all show them already: then hides
+    /// them all (a mixed box shows the rest). Decided from what the routes show, whatever state
+    /// the click left the box in; the box is then drawn from the engine.
+    @objc private func guidesClicked() {
+        let typed = endTyping()
+        let routes = guidedRoutes
+        let show = guidesState != .on
+        guard !routes.isEmpty else { return }
+        edit(after: typed) { [store] in await store.setRouteGuides(routes, show: show) }
     }
 
     @objc private func newRegionChosen(_ sender: NSPopUpButton) {

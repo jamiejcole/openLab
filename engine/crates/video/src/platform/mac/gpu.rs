@@ -362,9 +362,9 @@ impl Gpu {
         let place = &guide.place;
         let clip = scissor(dest_ndc(place, size), size);
         let solid = self.solid(guide.colour)?;
-        for [l, t, r, b] in guide.bars(size) {
+        for corners in guide.quads(size) {
             let bar = Quad {
-                corners: [[l, t], [r, t], [l, b], [r, b]],
+                corners,
                 uv: [0.0, 0.0, 1.0, 1.0],
             };
             quads.push((

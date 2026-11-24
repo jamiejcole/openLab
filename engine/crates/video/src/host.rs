@@ -199,8 +199,11 @@ const GUIDE_LINE_LEAST: f64 = 2.0;
 const GUIDE_LINE_MOST: f64 = 8.0;
 /// A corner mark's centre, in from the route's corner, as a fraction of its shorter side.
 const GUIDE_MARK_IN: f64 = 0.1;
-/// A mark's arm, from its centre, as a fraction of the route's shorter side.
+/// A mark's arm, from its centre, as a fraction of the route's shorter side: the circle's
+/// diameter.
 const GUIDE_MARK_ARM: f64 = 0.05;
+/// The short quads a mark's circle is drawn with.
+const GUIDE_RING_STEPS: u32 = 32;
 /// The name's height as a fraction of the route's height, and where its centre is (fractions of
 /// the route from its top left: in the top left quarter, clear of the centre lines and marks).
 const GUIDE_LABEL_HEIGHT: f64 = 0.06;
@@ -233,10 +236,11 @@ impl Guide {
         (rw / along_x.max(1e-6), rh / along_y.max(1e-6))
     }
 
-    /// The guide's lines in route pixels (left, top, right, bottom): the outline inside the
-    /// route's edge, the two centre lines, and a mark (a cross in a square) at each corner and
-    /// at the centre. Each is a line thick on the display (`GUIDE_LINE_*`).
-    pub fn bars(&self, target: (u32, u32)) -> Vec<[f64; 4]> {
+    /// The guide's lines as quads in route pixels (each four corners: top left, top right,
+    /// bottom left, bottom right): the outline inside the route's edge, the two centre lines,
+    /// and a registration mark (a circle crossed by its two diameters, round on the display) at
+    /// each corner and at the centre. Each line is a few display pixels thick (`GUIDE_LINE_*`).
+    pub fn quads(&self, target: (u32, u32)) -> Vec<[[f64; 2]; 4]> {
         let (kx, ky) = self.route_per_pixel(target);
         let (tw, th) = self.place.screen.unwrap_or(target);
         let line =
@@ -248,16 +252,19 @@ impl Guide {
             f64::from(self.place.route.1.max(1)),
         );
         let (cx, cy) = (rw / 2.0, rh / 2.0);
-        let mut bars = vec![
-            [0.0, 0.0, rw, hy],
-            [0.0, rh - hy, rw, rh],
-            [0.0, 0.0, vx, rh],
-            [rw - vx, 0.0, rw, rh],
-            [0.0, cy - hy / 2.0, rw, cy + hy / 2.0],
-            [cx - vx / 2.0, 0.0, cx + vx / 2.0, rh],
+        let rect = |l: f64, t: f64, r: f64, b: f64| [[l, t], [r, t], [l, b], [r, b]];
+        let mut quads = vec![
+            rect(0.0, 0.0, rw, hy),
+            rect(0.0, rh - hy, rw, rh),
+            rect(0.0, 0.0, vx, rh),
+            rect(rw - vx, 0.0, rw, rh),
+            rect(0.0, cy - hy / 2.0, rw, cy + hy / 2.0),
+            rect(cx - vx / 2.0, 0.0, cx + vx / 2.0, rh),
         ];
         let short = rw.min(rh);
-        let (inset, arm) = (short * GUIDE_MARK_IN, short * GUIDE_MARK_ARM);
+        let inset = short * GUIDE_MARK_IN;
+        // The circle's radius on the display, from the mark's arm across the route's x.
+        let radius = short * GUIDE_MARK_ARM / kx / 2.0;
         let marks = [
             (inset, inset),
             (rw - inset, inset),
@@ -266,17 +273,25 @@ impl Guide {
             (cx, cy),
         ];
         for (x, y) in marks {
-            // The cross.
-            bars.push([x - arm, y - hy / 2.0, x + arm, y + hy / 2.0]);
-            bars.push([x - vx / 2.0, y - arm, x + vx / 2.0, y + arm]);
-            // The square, half the arm out.
-            let half = arm / 2.0;
-            bars.push([x - half, y - half, x + half, y - half + hy]);
-            bars.push([x - half, y + half - hy, x + half, y + half]);
-            bars.push([x - half, y - half, x - half + vx, y + half]);
-            bars.push([x + half - vx, y - half, x + half, y + half]);
+            // The diameters, reaching half a radius past the circle.
+            let (ax, ay) = (radius * 1.5 * kx, radius * 1.5 * ky);
+            quads.push(rect(x - ax, y - hy / 2.0, x + ax, y + hy / 2.0));
+            quads.push(rect(x - vx / 2.0, y - ay, x + vx / 2.0, y + ay));
+            // The circle: a ring of short quads, round on the display.
+            let ring = |r: f64, a: f64| [x + r * a.cos() * kx, y + r * a.sin() * ky];
+            let inner = (radius - line).max(0.0);
+            for k in 0..GUIDE_RING_STEPS {
+                let step = std::f64::consts::TAU / f64::from(GUIDE_RING_STEPS);
+                let (a0, a1) = (step * f64::from(k), step * f64::from(k + 1));
+                quads.push([
+                    ring(radius, a0),
+                    ring(radius, a1),
+                    ring(inner, a0),
+                    ring(inner, a1),
+                ]);
+            }
         }
-        bars
+        quads
     }
 
     /// The height in display pixels the name is drawn at on a target of `target` pixels.
@@ -3973,23 +3988,30 @@ pub(crate) mod tests {
             },
         };
         let g = guide((1920, 1080), (1920, 1080));
-        let bars = g.bars((1920, 1080));
+        let quads = g.quads((1920, 1080));
+        let rect = |l, t, r, b| [[l, t], [r, t], [l, b], [r, b]];
         assert_eq!(
-            bars[0],
-            [0.0, 0.0, 1920.0, 3.0],
+            quads[0],
+            rect(0.0, 0.0, 1920.0, 3.0),
             "top outline, 3 pixels on 1080 lines"
         );
-        assert_eq!(bars[3], [1917.0, 0.0, 1920.0, 1080.0], "right outline");
+        assert_eq!(quads[3], rect(1917.0, 0.0, 1920.0, 1080.0), "right outline");
         assert_eq!(
-            bars[4],
-            [0.0, 538.5, 1920.0, 541.5],
+            quads[4],
+            rect(0.0, 538.5, 1920.0, 541.5),
             "horizontal centre line"
         );
-        // Drawn smaller (a probe) the bars are the same in route pixels.
-        assert_eq!(g.bars((960, 540)), bars);
+        // Five marks, each two diameters and a ring.
+        assert_eq!(quads.len(), 6 + 5 * (2 + GUIDE_RING_STEPS as usize));
+        // The first corner's ring: round, 27 pixels across its radius, 108 in from the corner.
+        let ring = &quads[8];
+        assert!((ring[0][0] - (108.0 + 27.0)).abs() < 1e-9 && (ring[0][1] - 108.0).abs() < 1e-9);
+        assert!((ring[2][0] - (108.0 + 24.0)).abs() < 1e-9, "3 pixels thick");
+        // Drawn smaller (a probe) the quads are the same in route pixels.
+        assert_eq!(g.quads((960, 540)), quads);
         // A route of twice the display's pixels, stretched onto it: twice the route pixels.
         let big = guide((3840, 2160), (1920, 1080));
-        assert_eq!(big.bars((1920, 1080))[0], [0.0, 0.0, 3840.0, 6.0]);
+        assert_eq!(big.quads((1920, 1080))[0], rect(0.0, 0.0, 3840.0, 6.0));
         assert_eq!(g.label_height((1920, 1080)), 65);
         assert_eq!(
             big.label_height((1920, 1080)),

@@ -1643,3 +1643,148 @@ extension VideoCueTests {
         XCTAssertEqual(status(Self.still), loc("cue.state.running"))
     }
 }
+
+// MARK: Output route guides while cues play (#821)
+
+extension VideoCueTests {
+    /// Output 1's default guide colour.
+    static let guideColour: [UInt8] = [0x00, 0xc8, 0xff, 255]
+    /// The top of the outline on a route filling its display.
+    static let outlineTop: [[Double]] = [[0.3, 0.001]]
+
+    /// What `display` shows at `points`.
+    func colours(_ display: String, _ points: [[Double]]) async -> [[UInt8]] {
+        guard case .success(let ok) = await engine.request(.displayProbe(display: display, points: points)),
+            case .stageProbe(_, let colours)? = ok.data
+        else { return [] }
+        return colours
+    }
+
+    /// Clicks Output 1's guides box on Output Routing, as the operator does, and waits for the
+    /// row to show it.
+    func clickOutput1Guides(_ sc: WorkspaceSettingsWindowController, line: UInt = #line) async {
+        let routing = sc.videoRoutingPane
+        let want = routing.guideChecks[0].state != .on
+        routing.guideChecks[0].performClick(nil)
+        await settledVideo(sc, "the box drawn", line: line) {
+            routing.shown?.first?.guides == want && routing.guideChecks[0].state == (want ? .on : .off)
+        }
+    }
+
+    /// #821 GD5: Stage 1 keeping black after a still played and stopped (V1 black) → Output 1's
+    /// guides box ticked: the guides are drawn over the black, the rest of V1 still black;
+    /// unticked: plain black, the route shown throughout (no window down, so no desktop between).
+    func testGD5GuidesDrawOverAStagesKeptBlackAndLeaveItBlack() async throws {
+        try await openVideoShow()
+        await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
+        _ = await store.setStageDisplay(Self.stage, display: "V1")
+        _ = await store.send(
+            command: .setStage(Self.stage, .object(["type": .string("keep_black"), "value": .bool(true)])))
+        click(Self.still)
+        try await go()
+        await soon("the still on V1") { await self.frameOn("V1") == 0 }
+        try await perform(.stopSelected, on: Self.still)
+        await soon("stopped, V1 black") {
+            try? await self.play(0.5)
+            let middle = await self.colours("V1", [[0.5, 0.5]])
+            return self.status(Self.still) == nil && middle == [[0, 0, 0, 255]]
+        }
+        let sc = await videoSettings()
+        await settledVideo(sc) { sc.videoRoutingPane.guideChecks.count == 2 }
+        let probe: [[Double]] = Self.outlineTop + [[0.5, 0.5], [0.3, 0.75]]
+        await clickOutput1Guides(sc)
+        await soon("guides over the black") {
+            await self.colours("V1", probe) == [Self.guideColour, Self.guideColour, [0, 0, 0, 255]]
+        }
+        await clickOutput1Guides(sc)
+        await soon("plain black again") { await self.colours("V1", probe) == Array(repeating: [0, 0, 0, 255], count: 3) }
+        await sc.videoRoutingPane.refresh()
+        XCTAssertEqual(store.videoOutputs.route(Self.stage)?.state?.state, "shown", "the black stayed up")
+    }
+
+    /// #821 GD6: the movie playing on Stage 1 → guides ticked: drawn over the picture, which plays
+    /// on (its row and its frame count on, no restart); paused, the guides stay; unticked, the
+    /// plain picture is left where it is; stopped with the guides on, the picture goes and the
+    /// guides stay until unticked.
+    func testGD6GuidesDrawOverAPlayingPictureWhichPlaysOnUnderThem() async throws {
+        try await openVideoShow()
+        _ = await store.setStageDisplay(Self.stage, display: "V1")
+        click(Self.movie)
+        try await go()
+        try await play(1)
+        let sc = await videoSettings()
+        await settledVideo(sc) { sc.videoRoutingPane.guideChecks.count == 2 }
+        await clickOutput1Guides(sc)
+        await soon("guides over the picture") { await self.colours("V1", Self.outlineTop) == [Self.guideColour] }
+        let under = await frameOn("V1")
+        XCTAssertEqual(Double(under ?? 0), 25, accuracy: 3, "the picture under them, a second in")
+        try await play(0.5)
+        expectRowTime(Self.movie, 1.5, "the row counts on")
+        let later = await frameOn("V1")
+        XCTAssertEqual(Double(later ?? 0), 37, accuracy: 3, "the picture played on, not restarted")
+        try await perform(.pauseResumeSelected, on: Self.movie)
+        await soon("paused") { self.status(Self.movie) == loc("cue.state.paused") }
+        let held = await frameOn("V1")
+        try await play(0.5)
+        let stillHeld = await frameOn("V1")
+        XCTAssertEqual(stillHeld, held, "held")
+        let top = await colours("V1", Self.outlineTop)
+        XCTAssertEqual(top, [Self.guideColour], "the guides stay while paused")
+        await clickOutput1Guides(sc)
+        await soon("the plain picture") { await self.colours("V1", Self.outlineTop) != [Self.guideColour] }
+        let plain = await frameOn("V1")
+        XCTAssertEqual(plain, held, "where it was")
+        try await perform(.pauseResumeSelected, on: Self.movie)
+        await soon("resumed") { self.status(Self.movie) == loc("cue.state.running") }
+        await clickOutput1Guides(sc)
+        try await perform(.stopSelected, on: Self.movie)
+        await soon("stopped") { self.status(Self.movie) == nil }
+        await soon("the picture gone, the guides stay") {
+            await self.colours("V1", Self.outlineTop + [[0.75, 0.75]]) == [Self.guideColour, [0, 0, 0, 255]]
+        }
+        await clickOutput1Guides(sc)
+        await soon("cleared") { await self.colours("V1", Self.outlineTop) == [[0, 0, 0, 255]] }
+    }
+
+    /// #821 GD14: in Show Mode with the movie playing on Output 1 → Workspace Settings' guides box
+    /// ticked, a colour picked, then unticked: each applies at once as in Edit Mode, the cue runs
+    /// on, Show Mode stays, no sheet or alert. A GO while the guides show starts the next cue and
+    /// the guides stay.
+    func testGD14InShowModeGuidesShowChangeColourAndGoWhileTheCueAndGOCarryOn() async throws {
+        try await openVideoShow()
+        await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
+        _ = await store.setStageDisplay(Self.stage, display: "V1")
+        wc.setShowMode(true)
+        await soon("Show Mode") { self.store.showMode }
+        var alerts: [String] = []
+        wc.editor.notify = { alerts.append($0) }
+        click(Self.movie)
+        try await go()
+        try await play(1)
+        let sc = await videoSettings()
+        addTeardownBlock { @MainActor in NSColorPanel.shared.close() }
+        let routing = sc.videoRoutingPane
+        await settledVideo(sc) { routing.guideChecks.count == 2 }
+        await clickOutput1Guides(sc)
+        await soon("guides up") { await self.colours("V1", Self.outlineTop) == [Self.guideColour] }
+        // A colour from the swatch, through the colour panel.
+        routing.guideSwatches[0].performClick(nil)
+        let panel = NSColorPanel.shared
+        panel.color = NSColor(srgbRed: 1, green: 130 / 255, blue: 0, alpha: 1)
+        routing.guideColourPicked(panel)
+        await settledVideo(sc) { routing.shown?.first?.guideColour == "#ff8200" }
+        await soon("redrawn in it") { await self.colours("V1", Self.outlineTop) == [[0xff, 0x82, 0x00, 255]] }
+        // GO with the guides up: the still (next) starts, the guides stay.
+        try await go()
+        await soon("the next cue runs") { self.status(Self.still) == loc("cue.state.running") }
+        await soon("the guides stay") { await self.colours("V1", Self.outlineTop) == [[0xff, 0x82, 0x00, 255]] }
+        await clickOutput1Guides(sc)
+        await soon("gone") { await self.colours("V1", Self.outlineTop) != [[0xff, 0x82, 0x00, 255]] }
+        XCTAssertEqual(status(Self.movie), loc("cue.state.running"), "the movie runs on")
+        XCTAssertTrue(store.showMode, "Show Mode stays on")
+        XCTAssertNil(sc.window?.attachedSheet)
+        XCTAssertNil(wc.window?.attachedSheet)
+        XCTAssertEqual(alerts, [])
+        XCTAssertEqual(routing.messageLabel.stringValue, "")
+    }
+}

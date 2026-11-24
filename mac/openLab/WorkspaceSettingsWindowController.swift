@@ -157,8 +157,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             store.$status.map { $0?.outputs.map(\.state) }.removeDuplicates().sink { [weak self] _ in
                 self?.rereadSoon()
             })
-        // Taller than the pages need by the message row's two lines, which never take the pages' room.
-        window.contentMinSize = NSSize(width: 700, height: 552)
+        // Taller than the pages need by the message row's two lines, which never take the pages' room;
+        // wide enough that Output Routing's display choice reads whole beside its guides.
+        window.contentMinSize = NSSize(width: 790, height: 552)
         window.delegate = self
         tabs.delegate = self
         // The table takes its width only once its tab is laid out, after the lines were wrapped:

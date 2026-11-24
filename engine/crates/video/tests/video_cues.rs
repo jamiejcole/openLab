@@ -9709,6 +9709,16 @@ fn route_guides_are_drawn_over_their_display_follow_the_route_and_go_with_it() {
         [first, first, BLACK],
         "outline, centre, and the black between"
     );
+    // The route's name, in the top left quarter (a probe reads at most 64 points).
+    let grid: Vec<[f32; 2]> = (0..40)
+        .flat_map(|i| (0..8).map(move |j| (i, j)))
+        .map(|(i, j)| [0.15 + 0.2 * i as f32 / 39.0, 0.22 + 0.06 * j as f32 / 7.0])
+        .collect();
+    let name: Vec<[u8; 4]> = grid
+        .chunks(64)
+        .flat_map(|points| display_shows(&mut s, "V1", points).1)
+        .collect();
+    assert!(name.contains(&first), "the name is drawn");
     assert_eq!(display_shows(&mut s, "V2", &points).1, [BLACK; 3]);
     // A colour picked: redrawn in it at once.
     let orange = openlab_core::GuideColour([0xff, 0x82, 0x00]);
@@ -9751,8 +9761,58 @@ fn route_guides_are_drawn_over_their_display_follow_the_route_and_go_with_it() {
         "none shown"
     );
     let many: Vec<u128> = (0..=openlab_core::MAX_ROUTES as u128).collect();
+    // The engine's own check, not the link's: nothing goes to the stage host.
     assert_eq!(
         code(set_guides(&mut s, &many, true)),
         openlab_core::protocol::ErrorCode::BadRequest
     );
+}
+
+/// #821 GD13: guides on Output 2 while its display V2 is unplugged: the route says its display
+/// is missing, nothing is drawn and nothing fails (the guides stay on); V2 plugged back in draws
+/// them at once, with nothing asked. Shown while V2 is absent, they come the same way.
+#[test]
+fn guides_on_an_unplugged_display_stay_on_and_draw_when_it_is_back() {
+    let mut s = routed_show(
+        split_workspace(vec![]),
+        "V1:1920x1080,V2:1920x1080",
+        &[(1, "V1"), (2, "V2")],
+    );
+    let colour = openlab_core::GUIDE_COLOURS[1].0;
+    let second = [colour[0], colour[1], colour[2], 255];
+    set_guides(&mut s, &[2], true);
+    assert_eq!(display_shows(&mut s, "V2", &[[0.5, 0.001]]).1, [second]);
+    let v1 = s.control().displays()[0].clone();
+    let v2 = s.control().displays()[1].clone();
+    s.control_mut().set_virtual_displays(vec![v1.clone()]);
+    let missing = RouteState::DisplayMissing {
+        display: "V2".into(),
+    };
+    assert!(s.wait_for(|c| c.route_state(route_n(2)) == Some(&missing)));
+    assert!(problems_none_failed(&s));
+    s.control_mut()
+        .set_virtual_displays(vec![v1.clone(), v2.clone()]);
+    assert!(s.wait_for(|c| c.route_state(route_n(2)) == Some(&shown_on("V2").unwrap())));
+    assert_eq!(display_shows(&mut s, "V2", &[[0.5, 0.001]]).1, [second]);
+    // Ticked while V2 is absent: accepted, drawn when it is back.
+    set_guides(&mut s, &[2], false);
+    s.control_mut().set_virtual_displays(vec![v1.clone()]);
+    assert!(s.wait_for(|c| c.route_state(route_n(2)) == Some(&missing)));
+    assert!(matches!(set_guides(&mut s, &[2], true), Outcome::Ok(_)));
+    s.control_mut().set_virtual_displays(vec![v1, v2]);
+    assert!(s.wait_for(|c| c.route_state(route_n(2)) == Some(&shown_on("V2").unwrap())));
+    assert_eq!(display_shows(&mut s, "V2", &[[0.5, 0.001]]).1, [second]);
+}
+
+/// No route is failed and no error is in the show log.
+fn problems_none_failed(s: &OfflineShow) -> bool {
+    let failed = (1..=2).any(|n| {
+        matches!(
+            s.control().route_state(route_n(n)),
+            Some(RouteState::Failed { .. })
+        )
+    });
+    let errors = (s.control().show_log().tail(400).iter())
+        .any(|e| e.level == openlab_core::protocol::LogLevel::Error);
+    !failed && !errors
 }
