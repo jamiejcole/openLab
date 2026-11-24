@@ -452,7 +452,9 @@ final class VideoSettingsTests: XCTestCase {
         func type(_ text: String, into field: NSTextField) {
             field.stringValue = text
             let note = Notification(name: NSControl.textDidEndEditingNotification, object: field)
-            if field.window === editor.window { editor.controlTextDidEndEditing(note) } else {
+            if field.window === editor.window {
+                editor.controlTextDidEndEditing(note)
+            } else {
                 pane.controlTextDidEndEditing(note)
             }
         }
@@ -921,7 +923,9 @@ final class VideoSettingsTests: XCTestCase {
         await sc.present().value
         let pane = sc.videoPane
         let routing = sc.videoRoutingPane
-        await settled(sc) { pane.nameFields.count == 1 && routing.displayPopups.count == 1 && !pane.deviceCells.isEmpty }
+        await settled(sc) {
+            pane.nameFields.count == 1 && routing.displayPopups.count == 1 && !pane.deviceCells.isEmpty
+        }
         XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1"])
         XCTAssertEqual(routing.sizeLabels.map(\.stringValue), ["1920 × 1080"])
         XCTAssertEqual(routing.displayPopups.map { $0.titleOfSelectedItem }, ["Virtual V1 (1920 × 1080)"])
@@ -1184,7 +1188,9 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { routing.shown?.count == 1 }
         XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1"])
         XCTAssertEqual(rig.store.document?.undoName, "remove_route")
-        await editorSettled(sc, editor) { editor.regionRoutePopups.last?.titleOfSelectedItem == loc("stageEditor.noRoute") }
+        await editorSettled(sc, editor) {
+            editor.regionRoutePopups.last?.titleOfSelectedItem == loc("stageEditor.noRoute")
+        }
         XCTAssertNil(editor.canvas.regions[1].route, "B drawn dashed")
         XCTAssertEqual(editor.canvas.regions.map(StageCanvasView.label)[1], "B — \(loc("stageEditor.noRoute"))")
         await assertEventually("V2 freed, V1 plays on") { await self.lowerMiddles() == [self.blue, self.black] }
@@ -1204,7 +1210,8 @@ final class VideoSettingsTests: XCTestCase {
         let pane = sc.videoPane
         _ = await rig.store.setRouteDisplay(ModelID(stageA), display: "V1")
         await settled(sc) { pane.deviceCells.map(\.stringValue) == ["Virtual V1"] }
-        XCTAssertEqual(titles(pane.addPopup), [loc("settings.video.add"), loc("settings.video.addEmpty"), "On Output 1"])
+        XCTAssertEqual(
+            titles(pane.addPopup), [loc("settings.video.add"), loc("settings.video.addEmpty"), "On Output 1"])
         choose(loc("settings.video.addEmpty"), in: pane.addPopup)
         await settled(sc) { pane.shown?.count == 2 }
         XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1", "Stage 2"])

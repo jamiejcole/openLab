@@ -1443,7 +1443,8 @@ extension VideoCueTests {
         }
         pane.removeButtons[1].performClick(nil)
         await settledVideo(sc) { pane.shown?.count == 1 }
-        let reason = String(format: loc("problem.stage_missing").replacingOccurrences(of: "{stage}", with: "%@"), "Side screen")
+        let reason = String(
+            format: loc("problem.stage_missing").replacingOccurrences(of: "{stage}", with: "%@"), "Side screen")
         await soon("both cues broken") {
             self.status(Self.still) == loc("cue.state.broken") && self.status(Self.long) == loc("cue.state.broken")
         }
@@ -1554,7 +1555,9 @@ extension VideoCueTests {
             return [undoItem.title, redoItem.title]
         }
         func named(_ step: String) -> String { String(format: loc("menu.edit.undoNamed"), loc("undo.step.\(step)")) }
-        func redoNamed(_ step: String) -> String { String(format: loc("menu.edit.redoNamed"), loc("undo.step.\(step)")) }
+        func redoNamed(_ step: String) -> String {
+            String(format: loc("menu.edit.redoNamed"), loc("undo.step.\(step)"))
+        }
         let routing = sc.videoRoutingPane
         await settledVideo(sc) { routing.nameFields.count == 2 }
         var steps: [String] = []

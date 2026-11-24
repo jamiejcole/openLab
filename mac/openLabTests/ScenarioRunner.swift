@@ -529,7 +529,8 @@ final class ScenarioRunner {
         // The sheet, once it has closed, gives the steps back to the workspace window.
         if let f = focused, f is PasteSheetWindow, wc.pasteSheet?.window !== f { return wc.window! }
         // The route editor, once done, gives the steps back to the settings window.
-        if let f = focused, f.identifier?.rawValue == "route-editor", wc.existingSettingsWindow?.routeEditor?.window !== f,
+        if let f = focused, f.identifier?.rawValue == "route-editor",
+            wc.existingSettingsWindow?.routeEditor?.window !== f,
             let settings = wc.existingSettingsWindow?.window
         {
             return settings

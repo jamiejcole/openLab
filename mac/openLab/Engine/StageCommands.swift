@@ -91,7 +91,8 @@ extension Command {
 
     /// `SetRegionProperty` `route`: the route it is sent to (nil: none).
     static func setRegionRoute(stage: ModelID, _ id: ModelID, route: ModelID?) -> Command {
-        setRegion(stage: stage, id, .object(["type": .string("route"), "value": route.map { .string($0.raw) } ?? .null]))
+        setRegion(
+            stage: stage, id, .object(["type": .string("route"), "value": route.map { .string($0.raw) } ?? .null]))
     }
 
     private static func setRegion(stage: ModelID, _ id: ModelID, _ property: JSONValue) -> Command {

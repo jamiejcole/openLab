@@ -107,7 +107,8 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         displayPopup.setAX("route-editor-display", label: loc("routeEditor.display"))
         displayPopup.target = self
         displayPopup.action = #selector(displayChosen)
-        VideoSettingsPane.fillDisplays(displayPopup, displays: displays, chosen: originalDisplay, chosenName: mappingName)
+        VideoSettingsPane.fillDisplays(
+            displayPopup, displays: displays, chosen: originalDisplay, chosenName: mappingName)
         displaySizeLabel.setAX("route-editor-display-size")
         messageLabel.setAX("route-editor-message")
         messageLabel.textColor = .systemRed

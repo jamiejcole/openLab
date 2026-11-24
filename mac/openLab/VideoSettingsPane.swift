@@ -201,7 +201,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     static let iconRoom: CGFloat = 20
 
     private func build() {
-        addPopup.setAX(Self.id + "-add", label: loc(section == .routing ? "settings.video.newRoute" : "settings.video.add"))
+        addPopup.setAX(
+            Self.id + "-add", label: loc(section == .routing ? "settings.video.newRoute" : "settings.video.add"))
         addPopup.controlSize = .small
         addPopup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         addPopup.target = self
@@ -597,7 +598,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             if !routes.isEmpty { items.append(("-", nil, false)) }
             for r in routes {
                 items.append(
-                    (String(format: loc("settings.video.addOnRoute"), r.raw["name"]?.stringValue ?? ""), r.id.raw, true))
+                    (String(format: loc("settings.video.addOnRoute"), r.raw["name"]?.stringValue ?? ""), r.id.raw, true)
+                )
             }
         } else {
             if !displays.isEmpty { items.append((loc("settings.video.addRouteWith"), nil, false)) }
@@ -914,10 +916,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         let prefix = format.replacingOccurrences(of: "%d", with: "")
         // Numbers as the engine reads them (32 bits, never past the largest): a typed name with
         // a huge number cannot overflow.
-        let highest = names.compactMap { name -> UInt32? in
-            guard name.hasPrefix(prefix) else { return nil }
-            return UInt32(name.dropFirst(prefix.count))
-        }.max() ?? 0
+        let highest =
+            names.compactMap { name -> UInt32? in
+                guard name.hasPrefix(prefix) else { return nil }
+                return UInt32(name.dropFirst(prefix.count))
+            }.max() ?? 0
         let next = highest == UInt32.max ? highest : highest + 1
         return format.replacingOccurrences(of: "%d", with: String(next))
     }
@@ -962,7 +965,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         commit(nil, after: typed) { [store] in
             let added = await store.send(
                 command: .addRoute(
-                    id: id, name: name, width: display.map { Int($0.width) } ?? 1920, height: display.map { Int($0.height) } ?? 1080,
+                    id: id, name: name, width: display.map { Int($0.width) } ?? 1920,
+                    height: display.map { Int($0.height) } ?? 1080,
                     index: routes.count))
             guard case .success = added, let display else { return added }
             return await store.setRouteDisplay(id, display: display.id)

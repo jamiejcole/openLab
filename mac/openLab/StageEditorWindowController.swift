@@ -376,7 +376,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             popup.tag = i
             popup.target = self
             popup.action = #selector(regionRouteChosen(_:))
-            popup.setAX("\(Self.id)-region-route-\(n)", label: String(format: loc("stageEditor.regionRoute.ax"), letter))
+            popup.setAX(
+                "\(Self.id)-region-route-\(n)", label: String(format: loc("stageEditor.regionRoute.ax"), letter))
             popup.widthAnchor.constraint(equalToConstant: 210).isActive = true
             let remove = NSButton(title: "", target: self, action: #selector(removeRegionClicked(_:)))
             remove.image = Icon.fieldClear.image(loc("settings.video.remove"), compact: true)
@@ -514,7 +515,9 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         let region = regions[sender.tag]
         guard route != region.route else { return }
         let stage = stageID
-        edit(after: typed) { [store] in await store.send(command: .setRegionRoute(stage: stage, region.id, route: route)) }
+        edit(after: typed) { [store] in
+            await store.send(command: .setRegionRoute(stage: stage, region.id, route: route))
+        }
     }
 
     @objc private func removeRegionClicked(_ sender: NSButton) {
@@ -540,7 +543,9 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             guard !text.isEmpty else { return refuse(loc("settings.video.badName")) }
             setStage(["type": .string("name"), "value": .string(field.stringValue)])
         case layerField:
-            guard let layer = Int(text), (0...1000).contains(layer) else { return refuse(loc("settings.video.badLayer")) }
+            guard let layer = Int(text), (0...1000).contains(layer) else {
+                return refuse(loc("settings.video.badLayer"))
+            }
             setStage(["type": .string("layer"), "value": .int(Int64(layer))])
         case widthField, heightField:
             // A stage is 1 to 16384 pixels a side (QLab 5 manual p. 226); its regions follow it.
@@ -570,7 +575,9 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
                 b.y = bottom - side
             }
         default:
-            guard let v = Double(text), v.isFinite, abs(v) <= 100_000 else { return refuse(loc("stageEditor.badNumber")) }
+            guard let v = Double(text), v.isFinite, abs(v) <= 100_000 else {
+                return refuse(loc("stageEditor.badNumber"))
+            }
             if field === lowerLeftXField {
                 b.x = Int((v + Double(stageWidth) / 2).rounded())
             } else {
