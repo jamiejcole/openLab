@@ -35,8 +35,8 @@ use crate::validate::{
 };
 use crate::video::{
     MAX_REGIONS, MAX_ROUTES, MAX_STAGE_LAYER, MAX_STAGES, OutputRoute, Region, RegionProperty,
-    RouteProperty, Stage, StageProperty, region_routes_problem, regions_problem, route_problem,
-    route_shape_problem, stage_problem,
+    RouteProperty, Stage, StageProperty, next_guide_colour, next_guide_colour_except,
+    region_routes_problem, regions_problem, route_problem, route_shape_problem, stage_problem,
 };
 
 /// The inverse of a change that changed nothing. `History` ignores it.
@@ -1339,6 +1339,10 @@ fn add_route(
         }
         places.push(place);
     }
+    let mut route = route.clone();
+    if route.guide_colour.is_none() {
+        route.guide_colour = Some(next_guide_colour(&ws.routes));
+    }
     ws.routes.insert(index, route.clone());
     for (s, r) in places {
         if let Some(region) = ws.stages.get_mut(s).and_then(|s| s.regions.get_mut(r)) {
@@ -1372,6 +1376,7 @@ fn set_route_property(
     restoring: bool,
 ) -> Result<Inverse, CommandError> {
     let at = route_index(ws, id)?;
+    let fallback = next_guide_colour_except(&ws.routes, at);
     let route = ws
         .routes
         .get_mut(at)
@@ -1379,6 +1384,10 @@ fn set_route_property(
     let old = property.current(route);
     let mut changed = route.clone();
     property.write(&mut changed);
+    if changed.guide_colour.is_none() {
+        // Back to a default: one no other route has (this route's own colour does not count).
+        changed.guide_colour = Some(fallback);
+    }
     // Only a name typed now is checked as a name: undo may put back any name it held, and a
     // route a show file loaded with a blank name can still have its size, turn or scaling edited.
     let typed_name = matches!(property, RouteProperty::Name { .. }) && !restoring;

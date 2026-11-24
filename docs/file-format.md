@@ -239,7 +239,7 @@ An output route (QLab 5 manual pp. 232-234) is a raster its regions fill, turned
 | `width`, `height` | integer 1–30000 | Pixel size. 0 or above 30000 (up to 4294967295) is clamped with a warning (`RouteSize`); a negative, fractional or larger number, or null, refuses the file. |
 | `rotation` | integer, optional | Clockwise quarter turns in degrees: 0 (the default), 90, 180 or 270. Another whole number 0 to 65535 is set to 0 with a warning (`RouteRotation`). |
 | `scaling` | `"centre"`, `"fit"`, `"stretch"` or `"fill"`, optional | How the turned route is put on its display: one route pixel per display pixel, centred; as large as fits whole, shape kept; squeezed to the display's shape; covering the display, shape kept. Default `"fill"`. Another string refuses the file. |
-| `guide_colour` | `"#rrggbb"`, optional | The colour the route's alignment guides are drawn in (QLab 5 manual p. 233), as picked. Absent: the default for the route's place in the list (eight colours in turn). Anything but `#` and six hex digits refuses the file. Whether the guides show is not stored: a workspace opens with them hidden. |
+| `guide_colour` | `"#rrggbb"`, optional | The colour the route's alignment guides are drawn in (QLab 5 manual p. 233), as picked. A route is given one when it is added (the first of eight defaults no other route has, cycling when all are used) and keeps it whatever happens to the others; absent on load: one is given in list order, with no warning. Anything but `#` and six hex digits refuses the file. Whether the guides show is not stored: a workspace opens with them hidden. |
 
 At most 64 routes; a file with more keeps the first 64 with a warning (`TooManyRoutes`).
 

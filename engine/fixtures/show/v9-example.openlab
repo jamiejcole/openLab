@@ -243,7 +243,8 @@
         "width": 1920,
         "height": 1080,
         "rotation": 0,
-        "scaling": "fill"
+        "scaling": "fill",
+        "guide_colour": "#00c8ff"
       },
       {
         "id": "00000000-0000-0000-0000-000000000002",

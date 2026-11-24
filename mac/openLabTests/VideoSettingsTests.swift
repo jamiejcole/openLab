@@ -1522,7 +1522,7 @@ final class VideoSettingsTests: XCTestCase {
 // MARK: Output route guides (#821; QLab 5 manual pp. 230, 232-233)
 
 extension VideoSettingsTests {
-    /// Output 1's and Output 2's default guide colours (their places in the list).
+    /// Output 1's and Output 2's default guide colours (given as they were created).
     static let firstGuide: [UInt8] = [0x00, 0xc8, 0xff, 255]
     static let secondGuide: [UInt8] = [0xff, 0x3c, 0xc8, 255]
     static let orange: [UInt8] = [0xff, 0x82, 0x00, 255]
@@ -1737,7 +1737,10 @@ extension VideoSettingsTests {
         panel.color = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
         XCTAssertTrue(NSApp.sendAction(#selector(GuideColourPick.picked(_:)), to: GuideColourPick.shared, from: panel))
         await rig.sync()
-        XCTAssertNil(rig.store.model?.routes.first?.raw["guide_colour"], "nothing changed")
+        XCTAssertEqual(
+            rig.store.model?.routes.first?.raw["guide_colour"].flatMap { v -> String? in
+                if case .string(let hex) = v { return hex } else { return nil }
+            }, "#00c8ff", "nothing changed: still the colour it was given")
     }
 
     /// #821 GD8: Output 1 renamed (an undo step), then its guides ticked and a colour picked →
@@ -1829,6 +1832,37 @@ extension VideoSettingsTests {
         await settled(sc) { routing.shown?.count == 2 }
         XCTAssertEqual(routing.guideChecks.first?.state, .off, "back with its guides off")
         await showsGuides("V1", [black, black, black], "none drawn")
+        // Change its display and press OK: the guides, ticked again, draw on V2 in Output 1's own
+        // colour and V1 shows none; the box stays ticked.
+        await clickGuides(sc, 0)
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "back on V1")
+        routing.editButtons[0].performClick(nil)
+        editor = try XCTUnwrap(sc.routeEditor)
+        choose("Virtual V2 (1280 × 720)", in: editor.displayPopup)
+        editor.okButton.performClick(nil)
+        await editor.saving?.value
+        await settled(sc) { routing.shown?.first?.display == "V2" }
+        await showsGuides("V2", [Self.firstGuide, Self.firstGuide, black], "now on V2")
+        await showsGuides("V1", [black, black, black], "none left on V1")
+        XCTAssertEqual(routing.guideChecks.first?.state, .on, "the box stays ticked")
+    }
+
+    /// #821 GD2 (a route's colour is its own): removing Output 1 leaves Output 2's swatch and the
+    /// colour its guides are drawn in as they were, and the undo brings Output 1 back in its own.
+    func testGD2RemovingOutput1LeavesOutput2sSwatchAndGuideColourAsTheyWere() async throws {
+        let (rig, sc) = try await openGuided()
+        let routing = sc.videoRoutingPane
+        XCTAssertEqual([swatch(sc, 0), swatch(sc, 1)], [Self.firstGuide, Self.secondGuide])
+        routing.removeButtons[0].performClick(nil)
+        await settled(sc) { routing.shown?.count == 1 && routing.guideSwatches.count == 1 }
+        XCTAssertEqual(swatch(sc, 0), Self.secondGuide, "Output 2 keeps its colour")
+        await clickGuides(sc, 0)
+        await showsGuides("V2", [Self.secondGuide, Self.secondGuide, black], "drawn in Output 2's colour")
+        _ = await rig.store.undo()
+        await settled(sc) { routing.shown?.count == 2 && routing.guideSwatches.count == 2 }
+        await assertEventually("Output 1 back in its own colour") {
+            [self.swatch(sc, 0), self.swatch(sc, 1)] == [Self.firstGuide, Self.secondGuide]
+        }
     }
 
     /// The GD11 workspace: Stage 1 (G4) with regions A on Output 1 (V1), B on Output 2 (V2) and C on

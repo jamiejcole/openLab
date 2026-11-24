@@ -83,9 +83,10 @@ pub struct OutputRoute {
     #[serde(default)]
     pub scaling: RouteScaling,
     /// The colour its alignment guides are drawn in (p. 233), as the operator picked it on the
-    /// Output Routing page; `None`: the default for its place in the workspace's list
-    /// ([`OutputRoute::guide_colour_at`]). Whether the guides show is not saved: the engine
-    /// keeps it while the workspace is open.
+    /// Output Routing page. A route is given one when it is added to a workspace or loaded
+    /// without one ([`next_guide_colour`]) and keeps it whatever happens to the other routes;
+    /// `None` only before that. Whether the guides show is not saved: the engine keeps it while
+    /// the workspace is open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide_colour: Option<GuideColour>,
 }
@@ -127,8 +128,8 @@ impl<'de> Deserialize<'de> for GuideColour {
     }
 }
 
-/// The guide colours routes take by default, by their place in the workspace's list (wrapping
-/// round), so the guides of neighbouring routes can be told apart.
+/// The guide colours a new route takes by default, in turn, so the guides of routes can be told
+/// apart.
 pub const GUIDE_COLOURS: [GuideColour; 8] = [
     GuideColour([0x00, 0xc8, 0xff]),
     GuideColour([0xff, 0x3c, 0xc8]),
@@ -139,6 +140,39 @@ pub const GUIDE_COLOURS: [GuideColour; 8] = [
     GuideColour([0xff, 0x46, 0x46]),
     GuideColour([0xff, 0xff, 0xff]),
 ];
+
+/// The default colour for a route added to `routes`: the first of [`GUIDE_COLOURS`] no route
+/// there has, or, with all in use, the one the fewest have (the earliest on a tie).
+pub fn next_guide_colour(routes: &[OutputRoute]) -> GuideColour {
+    next_guide_colour_except(routes, usize::MAX)
+}
+
+/// [`next_guide_colour`] for the route at `except` (its own colour does not count).
+pub fn next_guide_colour_except(routes: &[OutputRoute], except: usize) -> GuideColour {
+    let uses = |c: &GuideColour| {
+        (routes.iter().enumerate())
+            .filter(|(at, r)| *at != except && r.guide_colour == Some(*c))
+            .count()
+    };
+    GUIDE_COLOURS
+        .iter()
+        .min_by_key(|c| uses(c))
+        .copied()
+        .unwrap_or(GUIDE_COLOURS[0])
+}
+
+/// Gives each route with no colour one, in list order (a stable repair for routes saved
+/// without).
+pub fn fill_guide_colours(routes: &mut [OutputRoute]) {
+    for at in 0..routes.len() {
+        if routes.get(at).is_some_and(|r| r.guide_colour.is_none()) {
+            let colour = next_guide_colour(routes);
+            if let Some(r) = routes.get_mut(at) {
+                r.guide_colour = Some(colour);
+            }
+        }
+    }
+}
 
 impl OutputRoute {
     /// A route sized as `width` x `height`, not turned, filling its display.
@@ -154,15 +188,10 @@ impl OutputRoute {
         }
     }
 
-    /// The colour its guides are drawn in, the route being at `index` in its workspace's list:
-    /// the one picked, else that place's default.
-    pub fn guide_colour_at(&self, index: usize) -> GuideColour {
-        self.guide_colour.unwrap_or_else(|| {
-            GUIDE_COLOURS
-                .get(index % GUIDE_COLOURS.len())
-                .copied()
-                .unwrap_or(GuideColour([0xff, 0xff, 0xff]))
-        })
+    /// The colour its guides are drawn in: the one it was given when it was created or loaded
+    /// (never changed by its place in the list). A route not yet in a workspace has none.
+    pub fn shown_guide_colour(&self) -> GuideColour {
+        self.guide_colour.unwrap_or(GUIDE_COLOURS[0])
     }
 
     /// Puts size and rotation within their limits; `(size, rotation)` say which changed.
@@ -487,8 +516,8 @@ pub enum RouteProperty {
     Scaling {
         value: RouteScaling,
     },
-    /// The colour its guides are drawn in; `None`: its place's default. Saved with the show
-    /// but no undo step (`Command::is_view_aid`).
+    /// The colour its guides are drawn in; `None`: a default no other route has
+    /// ([`next_guide_colour`]). Saved with the show but no undo step (`Command::is_view_aid`).
     GuideColour {
         #[serde(default)]
         value: Option<GuideColour>,

@@ -140,12 +140,13 @@ impl Engine {
         let (width, height) = display
             .as_ref()
             .map_or((1920, 1080), |d| (d.width, d.height));
-        let route = openlab_core::OutputRoute::new(
+        let mut route = openlab_core::OutputRoute::new(
             RouteId(super::docs::random_id()),
             "Output 1",
             width,
             height,
         );
+        route.guide_colour = Some(openlab_core::next_guide_colour(&ws.routes));
         let mut stage = openlab_core::Stage::new(
             StageId(super::docs::random_id()),
             "Stage 1".to_string(),
@@ -360,7 +361,7 @@ impl Control {
         let mut set = StageSet::default();
         for doc in &self.docs {
             let ws = doc.model.ws();
-            for (index, route) in ws.routes.iter().enumerate() {
+            for route in &ws.routes {
                 // A show copied in Finder and opened beside its original has the same route ids:
                 // the first open keeps each such route, so the set is still sent, not refused.
                 if set.routes.iter().any(|r| r.id == route.id) {
@@ -380,7 +381,7 @@ impl Control {
                         .map(|m| m.display.clone()),
                     guide: doc.guides.contains(&route.id).then(|| RouteGuide {
                         name: openlab_core::stage_link::link_text(&route.name, "Output"),
-                        colour: route.guide_colour_at(index),
+                        colour: route.shown_guide_colour(),
                     }),
                 });
             }
@@ -526,13 +527,12 @@ impl Control {
         let ws = doc.model.ws();
         ws.routes
             .iter()
-            .enumerate()
-            .map(|(index, r)| RouteEntry {
+            .map(|r| RouteEntry {
                 route: r.id,
                 mapping: self.eng.config.machine.route_display(ws.id, r.id).cloned(),
                 state: self.eng.stages.states.get(&r.id).cloned(),
                 guides: doc.guides.contains(&r.id),
-                guide_colour: Some(r.guide_colour_at(index)),
+                guide_colour: Some(r.shown_guide_colour()),
             })
             .collect()
     }

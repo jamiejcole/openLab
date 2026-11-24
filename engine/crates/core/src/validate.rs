@@ -883,7 +883,7 @@ impl Checker {
         for id in duplicates(routes.iter().map(|r| r.id)) {
             self.error(None, IssueKind::DuplicateRouteId { id });
         }
-        for route in routes {
+        for route in routes.iter_mut() {
             let (size, rotation) = route.repair();
             if size {
                 self.warn(None, IssueKind::RouteSize { route: route.id });
@@ -892,6 +892,9 @@ impl Checker {
                 self.warn(None, IssueKind::RouteRotation { route: route.id });
             }
         }
+        // A route saved without a guide colour gets one, in list order, so it never follows
+        // its place later. A repair, not a warning.
+        crate::video::fill_guide_colours(routes);
     }
 
     /// After [`Self::routes`]: regions are checked against the routes left.
