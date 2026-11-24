@@ -235,10 +235,33 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertNotEqual(io.outputFormatLabel.stringValue, loc("inspector.io.outputFormatNoDevice"))
         // A patch mapped again here is read again (the engine sends nothing for a mapping change).
         let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        let shown = io.outputFormatLabel.stringValue
+        // The patch moved to a second device that is then unplugged: the line says so.
+        let engine = rig.testEngine
+        guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("plug in")
+        }
+        try await rig.advance(1)
         let before = store.patchMappingRevision
-        _ = await store.setPatchMapping(patch, nil)
+        let second = PatchMapping(device: TestEngine.deviceNames[1], channels: [0, 1])
+        guard case .success = await store.setPatchMapping(patch, second) else { return XCTFail("map") }
         XCTAssertEqual(store.patchMappingRevision, before + 1)
-        await assertEventually { !io.outputFormatLabel.stringValue.isEmpty }
+        guard case .success = await engine.request(.loseDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("unplug")
+        }
+        await assertEventually {
+            try? await self.rig.advance(1)
+            return io.outputFormatLabel.stringValue == loc("inspector.io.outputFormatNotConnected")
+        }
+        // Back on the first device: no device comes or goes, so only the mapping change can redraw it.
+        let first = PatchMapping(device: TestEngine.deviceNames[0], channels: [0, 1])
+        guard case .success = await store.setPatchMapping(patch, first) else { return XCTFail("map back") }
+        await assertEventually {
+            try? await self.rig.advance(1)
+            let line = io.outputFormatLabel.stringValue
+            return line.hasPrefix(shown.components(separatedBy: ",")[0])
+                && line != loc("inspector.io.outputFormatNotConnected")
+        }
         XCTAssertFalse(io.divider.isHidden)
         vc.view.layoutSubtreeIfNeeded()
         func frame(_ v: NSView) -> NSRect { v.convert(v.bounds, to: nil) }
