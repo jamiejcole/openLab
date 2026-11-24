@@ -8746,7 +8746,9 @@ fn region_n(n: u128) -> RegionId {
 fn output_route(n: u128, width: u32, height: u32) -> OutputRoute {
     let mut route = OutputRoute::new(route_n(n), format!("Output {n}"), width, height);
     // As a route added in the show is given its colour (a route in a workspace never has none).
-    route.guide_colour = Some(openlab_core::GUIDE_COLOURS[(n as usize).saturating_sub(1) % 8]);
+    route.guide_colour = openlab_core::GUIDE_COLOURS
+        .get((n as usize).saturating_sub(1) % 8)
+        .copied();
     route
 }
 
