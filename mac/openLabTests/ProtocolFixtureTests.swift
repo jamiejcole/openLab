@@ -126,6 +126,7 @@ final class ProtocolFixtureTests: XCTestCase {
         else { return XCTFail("displays") }
         XCTAssertEqual(displays.map(\.name), ["Projector"])
         XCTAssertEqual(displays.map(\.width), [3840])
+        XCTAssertEqual(displays.map(\.fps), [60])
         XCTAssertEqual(video, true)
         guard
             case .result(_, .ok(let mapped)) = try ServerMessage.decode(

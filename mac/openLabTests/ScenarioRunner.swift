@@ -607,7 +607,7 @@ final class ScenarioRunner {
         let engine = try await TestEngine.start(displays: scenario.displays, settings: scenario.settings)
         self.engine = engine
         if scenario.displays != nil {
-            // A new workspace gets a stage per display: wait until the stage host has listed them.
+            // A new workspace gets a stage on the main display: wait until the stage host has listed them.
             guard
                 await eventually({
                     guard case .success(let ok) = await engine.request(.listDisplays),

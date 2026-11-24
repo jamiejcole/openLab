@@ -432,13 +432,11 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(editor.matrix.deviceOutputs, 2)
         XCTAssertEqual(drawnLevels(editor), [[0, nil], [nil, 0]])
         XCTAssertEqual(editor.outputFields.map(\.stringValue), ["0.0", "0.0"])
-        // Device outputs: one row per output of the device, with its level, mute and what reaches it.
-        XCTAssertEqual(
-            editor.deviceOutputLabels.map(\.stringValue),
-            [String(format: loc("patchEditor.feeds"), "1"), String(format: loc("patchEditor.feeds"), "2")])
+        // Device outputs: one row per output of the device, with its title and level box.
         XCTAssertEqual(editor.deviceFields.map(\.stringValue), ["0.0", "0.0"])
-        XCTAssertEqual(editor.deviceMutes.map(\.state), [.off, .off])
-        XCTAssertEqual(editor.deviceFaders.count, 2)
+        XCTAssertEqual(
+            editor.deviceTitles.map(\.stringValue), ["Device output 1:", "Device output 2:"],
+            "a title and a level box per device output, no slider, mute or feeder text")
         XCTAssertEqual(editor.problemLabel.stringValue, "")
 
         // A second Edit brings the same editor forward.
@@ -860,9 +858,6 @@ final class WorkspaceSettingsTests: XCTestCase {
         let row2 = try await rowPeak(rig, row: 1)
         XCTAssertGreaterThan(row1, 0.05, "row 1 moves")
         XCTAssertEqual(row2, 0, accuracy: 0.0001, "row 2 stays dark")
-        XCTAssertEqual(
-            editor.deviceOutputLabels.map(\.stringValue),
-            [String(format: loc("patchEditor.feeds"), "1"), String(format: loc("patchEditor.feeds"), "1, 2")])
     }
 
     // MARK: Routing matrix, device outputs and the editor's foot (AUD-07)
@@ -1012,7 +1007,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually("the editor shows the device back") {
             editor.devicePopup.titleOfSelectedItem == self.device && editor.matrix.usable == 2
                 && !editor.routingNote.stringValue.contains(loc("patchEditor.notConnectedNote"))
-                && editor.deviceOutputLabels.allSatisfy { $0.textColor == .secondaryLabelColor }
+                && editor.deviceTitles.allSatisfy { $0.textColor == .labelColor }
         }
     }
 
@@ -1073,14 +1068,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         let one = try await peak(rig, channel: 0)
         let both = try await peak(rig, channel: 1)
         editor.tabs.selectTabViewItem(withIdentifier: "deviceOutputs")
-        XCTAssertEqual(
-            editor.deviceOutputLabels.map(\.stringValue),
-            [String(format: loc("patchEditor.feeds"), "1"), String(format: loc("patchEditor.feeds"), "1, 2")])
-
         try type("-12", into: editor.deviceFields[1])
         await assertEventually { self.deviceOutputs(rig) == [[1, -12, 0]] }
         await assertEventually { editor.deviceFields[1].stringValue == "-12.0" }
-        XCTAssertEqual(editor.deviceFaders[1].doubleValue, -12, "the fader follows")
         // Heard through the meters, which run while the routing tab (with the editor's meter) shows.
         editor.tabs.selectTabViewItem(withIdentifier: "routing")
         let lowered = try await peak(rig, channel: 1)
@@ -1089,8 +1079,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(untouched, one, accuracy: one * 0.02, "device output 1 is not changed")
 
         // Mute: silent; the level is kept and the matrix says so over its column.
-        editor.tabs.selectTabViewItem(withIdentifier: "deviceOutputs")
-        editor.deviceMutes[1].performClick(nil)
+        guard
+            case .success = await rig.store.send(command: .setPatchDeviceOutputMute(patch, deviceOutput: 1, mute: true))
+        else { return XCTFail("mute") }
         await assertEventually { self.deviceOutputs(rig) == [[1, -12, 1]] }
         await assertEventually { editor.matrix.routing.deviceOutput(1).mute }
         editor.tabs.selectTabViewItem(withIdentifier: "routing")
@@ -1098,7 +1089,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(muted, 0, accuracy: 0.0001)
         XCTAssertEqual(editor.deviceFields[1].stringValue, "-12.0", "muting keeps the level")
         XCTAssertTrue(editor.unmuteButton.isEnabled)
-        editor.deviceMutes[1].performClick(nil)
+        guard
+            case .success = await rig.store.send(
+                command: .setPatchDeviceOutputMute(patch, deviceOutput: 1, mute: false))
+        else { return XCTFail("unmute") }
         await assertEventually { self.deviceOutputs(rig) == [[1, -12, 0]] }
         XCTAssertEqual(rig.store.cueStates[intro]?.state, .running)
     }
@@ -1112,8 +1106,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         let main = try await edit(in: sc)
         try type("-3", into: main.mainField)
         try typeCrosspoint("-6", row: 0, column: 1, in: main)
-        main.tabs.selectTabViewItem(withIdentifier: "deviceOutputs")
-        main.deviceMutes[0].performClick(nil)
+        guard
+            case .success = await rig.store.send(command: .setPatchDeviceOutputMute(patch, deviceOutput: 0, mute: true))
+        else { return XCTFail("mute") }
         await assertEventually {
             self.crosspoints(rig) == [[0, 1, -6]] && self.deviceOutputs(rig) == [[0, 0, 1]]
                 && self.patchLevels(rig).main == -3
@@ -1193,8 +1188,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertTrue(
             editor.routingNote.stringValue.contains(String(format: loc("patchEditor.beyond"), 2, 5)),
             editor.routingNote.stringValue)
-        XCTAssertEqual(editor.deviceFaders.count, 5)
-        XCTAssertEqual(editor.deviceMutes[4].state, .on)
+        XCTAssertEqual(editor.deviceFields.count, 5)
+        XCTAssertTrue(editor.matrix.routing.deviceOutput(4).mute)
         XCTAssertEqual(editor.deviceFields[4].stringValue, "-10.0")
         // Warned in the status window, naming the device and the patch (Q510).
         try await status(rig)
@@ -1499,16 +1494,22 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(sc.shownPage, .osc)
     }
 
-    /// The note about the red border sits under the time between GOs, above the key-up box.
-    func testTheRedBorderNoteSitsUnderTheTimeBetweenGos() async throws {
+    /// The General page carries no descriptive notes but the one under the copy-media box: the
+    /// notes for the red border, auto-numbering and the playhead lock are gone.
+    func testTheGeneralPageKeepsOnlyTheCopyMediaNote() async throws {
         let (_, sc) = try await open()
         sc.show(page: .general)
         sc.window?.contentView?.layoutSubtreeIfNeeded()
-        func minY(_ v: NSView) -> CGFloat { v.convert(v.bounds, to: nil).maxY }
-        let note = try XCTUnwrap(
-            sc.tabs.selectedTabViewItem?.view.flatMap { Self.find(loc("settings.general.keyUp.note"), in: $0) })
-        XCTAssertLessThan(minY(sc.goIntervalField), minY(note) + 40, "the note follows the field")
-        XCTAssertGreaterThan(minY(note), minY(sc.keyUpCheck), "and sits above the key-up box")
+        let page = try XCTUnwrap(sc.tabs.selectedTabViewItem?.view)
+        func notes(_ v: NSView) -> [String] {
+            var out: [String] = []
+            if let f = v as? NSTextField, !f.isEditable, f.textColor == .secondaryLabelColor {
+                out.append(f.stringValue)
+            }
+            for s in v.subviews { out += notes(s) }
+            return out
+        }
+        XCTAssertEqual(notes(page), [loc("settings.general.copyMedia.note")])
     }
 
     static func find(_ text: String, in view: NSView) -> NSTextField? {
@@ -1638,6 +1639,16 @@ final class WorkspaceSettingsTests: XCTestCase {
         // A long choice is cut in its middle, so the interface's name always shows.
         let popup = try XCTUnwrap(sc.networkInterfacePopups.first)
         XCTAssertEqual((popup.cell as? NSPopUpButtonCell)?.lineBreakMode, .byTruncatingMiddle)
+    }
+
+    /// The Network Outputs table heads the UDP/TCP column "Network", not "Type".
+    func testTheNetworkTableHeadsItsProtocolColumnNetwork() async throws {
+        let (_, sc) = try await open()
+        sc.show(page: .network)
+        let titles = (0..<sc.networkGrid.numberOfColumns).compactMap {
+            (sc.networkGrid.cell(atColumnIndex: $0, rowIndex: 0).contentView as? NSTextField)?.stringValue
+        }
+        XCTAssertEqual(titles, ["Name", "Address", "Port", "Network", "Interface", ""])
     }
 
     /// A stored interface this Mac lacks reads whole in the closed pop-up: its name and that it is missing.

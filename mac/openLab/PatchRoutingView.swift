@@ -15,7 +15,7 @@ final class PatchRoutingView: NSView {
     static let headerH: CGFloat = 22
     static let labelW: CGFloat = 132
     static let levelW: CGFloat = 60
-    static let meterW: CGFloat = 52
+    static let meterW: CGFloat = 28
     static let cellW: CGFloat = 46
     static var crossX: CGFloat { labelW + levelW + meterW }
 

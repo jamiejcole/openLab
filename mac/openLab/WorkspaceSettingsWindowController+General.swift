@@ -5,7 +5,8 @@ import AppKit
 /// The General page of the workspace settings (QLab 5, manual pp. 99-101): the time between GOs and
 /// the key-up rule, the panic fade, auto-numbering, auto-load, the playhead lock and copying media
 /// into the show folder as files are added. Each box sends
-/// its setting to the engine and the page is drawn from what the engine then holds.
+/// its setting to the engine and the page is drawn from what the engine then holds. The only
+/// descriptive note is the one under the copy-media box.
 extension WorkspaceSettingsWindowController {
     func buildGeneralTab() -> NSView {
         panicField.setAX(AX.settingsPanicField, label: loc("settings.general.panic"))
@@ -31,12 +32,12 @@ extension WorkspaceSettingsWindowController {
         }
         let stack = NSStackView(views: [
             row(loc("settings.general.goInterval"), goIntervalField, loc("settings.seconds")),
-            note("settings.general.keyUp.note"), keyUpCheck,
+            keyUpCheck,
             row(loc("settings.general.panic"), panicField, loc("settings.seconds")),
             row(loc("settings.general.autosave"), autosaveField, loc("settings.seconds")),
-            NSStackView(views: [autoNumberCheck, autoNumberField]), note("settings.general.autoNumber.note"),
+            NSStackView(views: [autoNumberCheck, autoNumberField]),
             autoLoadCheck,
-            lockPlayheadCheck, note("settings.general.lockPlayhead.note"),
+            lockPlayheadCheck,
             copyMediaCheck, note("settings.general.copyMedia.note"),
         ])
         stack.orientation = .vertical
