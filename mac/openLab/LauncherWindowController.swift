@@ -462,6 +462,11 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         let ready = state == .ready
         for b in [newButton, openButton] { b.isEnabled = ready }
         table.isEnabled = ready
+        // The window may have become key while the list was disabled and so could not take the keys:
+        // once it is enabled it takes them, unless a button or other control already has them.
+        if ready, let window, window.firstResponder === window || window.firstResponder == nil {
+            window.makeFirstResponder(table)
+        }
         table.selectionHighlightStyle = ready ? .regular : .none
         scroll.alphaValue = ready ? 1 : 0.5
         statusBox.isHidden = ready

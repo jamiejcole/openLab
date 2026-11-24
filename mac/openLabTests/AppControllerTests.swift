@@ -2377,6 +2377,27 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(recents.first, a)
     }
 
+    /// The launcher comes up while the engine starts (its list disabled), is ready later, and Return
+    /// typed into the window then opens the selected show: the list must hold the keys by then.
+    func testReturnSentThroughTheWindowAfterTheEngineBecomesReadyOpensTheSelectedRecent() async throws {
+        newestFirstRecents()
+        let a = try showFile("Alpha")
+        recents = [a]
+        app.launcher.apply(state: .starting)
+        app.showLauncher()
+        app.launcher.apply(state: .ready)
+        let window = try XCTUnwrap(app.launcher.window)
+        XCTAssertTrue(window.firstResponder === app.launcher.recentsTable, "the list holds the keys")
+        let ret = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil,
+                characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        window.sendEvent(ret)
+        await assertEventually { app.windows.values.contains { $0.window?.title.hasPrefix("Alpha") == true } }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
+    }
+
     /// Checklist: Launcher showing → click New → an untitled workspace opens and the launcher closes;
     /// click Open → the standard open panel appears, choosing a show opens it, Cancel leaves the
     /// launcher as it was.
