@@ -590,6 +590,65 @@ final class VideoCueTests: XCTestCase {
         await soon("and the picture went") { await self.shownFrame() == nil }
     }
 
+    /// A key as the app's key monitor gets it (`handleKeyDown` is the monitor's body).
+    private func key(_ chars: String, code: UInt16) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code))
+    }
+
+    /// #708 flow: the app keeps the keys while a stage covers its display: GO, the other transport
+    /// keys and Esc act though the app's windows cannot be seen. The keys go through the app's key
+    /// monitor, which acts for the front workspace whether or not its windows are visible; the stage
+    /// host's windows never take the keys (`tests/output_window.rs`). Also #795 S4 on a freshly
+    /// started engine and stage host (this is their first picture): Esc stops the playing Video
+    /// cue and takes the stage away.
+    func testTheAppKeepsTheKeysWhileAStageCoversItsDisplayEscGOAndTheTransportKeysAct() async throws {
+        try await openVideoShow()
+        guard case .success = await store.setStageDisplay(Self.stage, display: "V1") else {
+            return XCTFail("the stage on V1")
+        }
+        click(Self.movie)
+        XCTAssertNil(app.handleKeyDown(try key(" ", code: 49)), "GO takes the space bar")
+        await sync()
+        await soon("GO played the movie") { self.status(Self.movie) == loc("cue.state.running") }
+        try await play(1)
+        await soon("the picture covers its display") {
+            guard self.store.stageState(Self.stage) == "shown",
+                case .success(let ok) = await self.engine.request(.displayProbe(display: "V1", points: [[0.5, 0.5]])),
+                case .stageProbe(let frame, _)? = ok.data
+            else { return false }
+            return frame != nil
+        }
+        // Pause and resume the movie, selected again after GO moved on (this show's key: P).
+        click(Self.movie)
+        XCTAssertNil(app.handleKeyDown(try key("p", code: 35)))
+        await soon("P paused it") { self.status(Self.movie) == loc("cue.state.paused") }
+        let held = await shownFrame()
+        try await play(1)
+        let stillHeld = await shownFrame()
+        XCTAssertEqual(stillHeld, held, "the picture holds its frame")
+        XCTAssertNil(app.handleKeyDown(try key("p", code: 35)))
+        await soon("P resumed it") { self.status(Self.movie) == loc("cue.state.running") }
+        try await play(0.5)
+        // Esc while it plays: panicked (faded over the panic time), then the stage is taken away.
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        let esc = try key("\u{1b}", code: 53)
+        XCTAssertTrue(app.handleKeyDown(esc) === esc, "Esc goes on to the responder too")
+        await soon("Esc panicked it") {
+            try? await self.play(0.5)
+            return self.status(Self.movie) == nil
+        }
+        await soon("and took the stage away") {
+            let frame = await self.shownFrame()
+            return frame == nil && self.store.stageState(Self.stage) == "hidden"
+        }
+        XCTAssertEqual(store.videoOutputs.stages.first { $0.stage == Self.stage }?.panicked, true)
+        XCTAssertEqual(beeps, 0, "no beep")
+    }
+
     // MARK: Flow 4: the I/O tab
 
     /// The I/O tab of a Video cue: its file, the format the probe read, the stage and its size (a
