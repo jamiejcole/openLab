@@ -2116,6 +2116,34 @@ extension PlayheadFlowTests {
         XCTAssertNotNil(waveView.selection, "a real drag still makes a section")
     }
 
+    /// A quick click within a few points of either end, or of a slice marker, is a click on the
+    /// waves like any other: it moves the cue there and leaves the trims and markers alone.
+    func testQuickClicksNearTheEndsAndASliceMarkerSeekAndMoveNoHandle() async throws {
+        let id = try await waveTones(1, seconds: 600)[0]
+        await showWaveform(id)
+        clickWave(at: 300)
+        try keyM()
+        await assertEventually("a marker at 300") { self.waveView.sliceMarks == [300] }
+        await seekRun(1)
+        let marker = waveX(300)
+        var clicks: [CGFloat] = [waveX(0) + 2, waveX(waveView.endTime) - 3, marker + 3]
+        clicks.append(marker - 4)
+        for (n, x) in clicks.enumerated() {
+            dragWave(fromX: x, through: [x + 1])
+            XCTAssertNil(waveView.dragging, "no handle is held after the click")
+            XCTAssertEqual(waveView.insertion ?? -1, waveView.scale.seconds(x), accuracy: 1, "click at \(x) landed")
+            await seekRun(n + 2)
+        }
+        XCTAssertEqual(waveView.trimStart, 0)
+        XCTAssertNil(waveView.trimEnd)
+        XCTAssertEqual(waveView.sliceMarks, [300])
+        // A press that moves past the slop still drags the handle.
+        XCTAssertTrue(waveView.beginDrag(atX: marker))
+        waveView.drag(toX: marker + WaveformView.dragSlop + 20)
+        XCTAssertGreaterThan(waveView.sliceMarks[0], 300)
+        waveView.endDrag()
+    }
+
     func testWithASectionShiftIAndShiftOCropTheCueToItEachOneUndoStep() async throws {
         let id = try await waveTones(1)[0]
         await showWaveform(id)

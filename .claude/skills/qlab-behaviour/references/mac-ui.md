@@ -216,3 +216,4 @@ Q771 | Undoing the add of a cue that was selected and held the playhead leaves n
 Q772 | The cue list always shows three empty rows below the last cue; a click on one, or on the space under the cues, deselects everything (QLab shows blank rows and deselects on a click there) | owner 2026-11-24 (#810 U5); reference shots workspace.window, workspace.empty
 Q773 | The inspector closes while its divider is dragged past the snap line with the button still down and opens again if the drag goes back up before the release | owner 2026-11-24 (#810 U3)
 Q774 | A click in an Audio or Video cue's timeline moves the cue each time even if the pointer moves a pixel or two between press and release; only a real drag is a section | owner 2026-11-24 (#810 W1)
+Q775 | Redo of an add (and Undo of a delete) selects the cue it brings back, so the list's highlight and the inspector agree | assumed 2026-11-24 (#810; searched: undo, redo selection)

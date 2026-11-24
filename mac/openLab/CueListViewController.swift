@@ -839,6 +839,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func node(_ id: ModelID) -> CueNode? { nodes[id] }
     var nodeCount: Int { nodes.count }
+    var nodeIDs: Set<ModelID> { Set(nodes.keys) }
 
     func selectedIDs() -> [ModelID] {
         outlineView.selectedRowIndexes.compactMap { (outlineView.item(atRow: $0) as? CueNode)?.id }

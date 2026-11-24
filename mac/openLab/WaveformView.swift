@@ -210,6 +210,10 @@ class WaveformView: NSView {
     /// Where (view x) the press went down, and whether it has moved past `dragSlop` since.
     private var pressX: CGFloat = 0
     private var pulled = false
+    /// Where (view x) a handle was taken, and whether the mouse has moved past `dragSlop` since:
+    /// a handle press that never does is a click on the waves there.
+    private var handleX: CGFloat = 0
+    private var handleMoved = false
     /// The dragged slice marker is outside the view: letting go there deletes it.
     private(set) var removing = false
     /// The trims, marker and fades when the drag began: letting go there sends nothing.
@@ -269,6 +273,8 @@ class WaveformView: NSView {
         // the waveform read.
         guard !isLocked, duration != nil else { return false }
         removing = false
+        handleX = x
+        handleMoved = false
         if fadesShown, y >= waveRect.minY, y <= waveRect.minY + Self.fadeBand {
             let di = abs(scale.x(trimStart + fadeIn) - x)
             let dout = abs(scale.x(endTime - fadeOut) - x)
@@ -518,6 +524,12 @@ class WaveformView: NSView {
         if pressAt != nil {
             dragSection(toX: p.x)
         } else {
+            if dragging != nil, !handleMoved {
+                // A hand moves a pixel or two on a click, so a press on a handle that stays within
+                // the slop moves nothing and ends as a click.
+                if abs(p.x - handleX) < Self.dragSlop, p.y >= 0, p.y <= bounds.height { return }
+                handleMoved = true
+            }
             drag(toX: p.x, y: p.y)
         }
     }
@@ -525,6 +537,12 @@ class WaveformView: NSView {
     override func mouseUp(with event: NSEvent) {
         if pressAt != nil {
             endPress(atX: convert(event.locationInWindow, from: nil).x)
+        } else if dragging != nil, !handleMoved, !isLocked {
+            // A press on a handle that never moved is a click like any other on the waves.
+            dragging = nil
+            removing = false
+            onDragEnded?()
+            click(atX: handleX)
         } else {
             endDrag()
         }

@@ -1059,6 +1059,13 @@ final class CueListTests: XCTestCase {
         XCTAssertNil(fading.images[1].image, "a selected row's tint does not bring it back")
         fading.backgroundStyle = .normal
         XCTAssertEqual(fading.images[1].accessibilityLabel(), loc("cue.state.fading"), "the label stays")
+        // Hovering the dots shows the state's tooltip: the dots let the pointer through to the image view.
+        fading.frame = NSRect(x: 0, y: 0, width: 60, height: 24)
+        fading.layoutSubtreeIfNeeded()
+        let centre = NSPoint(x: fading.fadingDots.frame.midX, y: fading.fadingDots.frame.midY)
+        XCTAssertNil(fading.fadingDots.hitTest(centre), "the dots take no hit")
+        XCTAssertNotNil(fading.images[1].toolTip, "the state image holds the tooltip")
+        XCTAssertTrue(fading.hitTest(centre) === fading.images[1], "the pointer over the dots is over the state image")
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
         let idle = try XCTUnwrap(h.cell("status", H.intro))
         XCTAssertTrue(idle.fadingDots.isHidden, "idle: no dots")
@@ -1997,6 +2004,21 @@ final class PlayheadFlowTests: XCTestCase {
         let againID = await wc.editor.add(.audio)
         let again = try XCTUnwrap(againID, "a second add")
         XCTAssertEqual(wc.cueList.roots.last?.id, again, "with nothing selected the cue goes at the end")
+    }
+
+    /// D2: redoing an add brings the cue back selected, so the list's highlight and the inspector agree.
+    func testRedoingAnAddSelectsTheCueItBringsBack() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        let addedID = await wc.editor.add(.audio)
+        let added = try XCTUnwrap(addedID)
+        await wc.editor.undo()
+        await assertEventually("the add is undone") { self.wc.cueList.node(added) == nil }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [])
+        await wc.editor.redo()
+        await assertEventually("the cue is back") { self.wc.cueList.node(added) != nil }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [added], "the redone cue is the highlighted row")
+        XCTAssertEqual(wc.inspector.selection, [added], "and the inspector shows it")
     }
 
     /// U5: three empty rows stand below the last cue, and a press on one (or on the filler under a short
