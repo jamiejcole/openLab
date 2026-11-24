@@ -1,0 +1,22 @@
+{
+  "about": "A new workspace: the settings Audio page at the least settings size (device pop-up keeps its room), Network Outputs with a row (remove button centred), then the patch editor's Cue Outputs page at its least and a wide size (name fields widen).",
+  "show": "new",
+  "appearance": "dark",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"focus": "settings"},
+    {"resize": [680, 552]},
+    {"tab": "audio"},
+    {"shot": "audio-least"},
+    {"tab": "network"},
+    {"click": "settings-network-add"},
+    {"shot": "network-least"},
+    {"tab": "audio"},
+    {"click": "settings-patch-edit-1"},
+    {"focus": "patch-editor"},
+    {"tab": "cueOutputs"},
+    {"shot": "cue-outputs"},
+    {"resize": [1000, 600]},
+    {"shot": "cue-outputs-wide"}
+  ]
+}

@@ -29,6 +29,8 @@ extension WorkspaceSettingsWindowController {
         networkGrid.addRow(with: headers)
         networkGrid.rowSpacing = 8
         networkGrid.columnSpacing = 6
+        // Each cell is centred on its row, so the remove button sits on the fields' middle.
+        networkGrid.yPlacement = .center
         for (c, width) in [Self.networkNameMin, 64, Self.networkInterfaceWidth, Self.networkHostMin, 52, 24]
             .enumerated()
         {

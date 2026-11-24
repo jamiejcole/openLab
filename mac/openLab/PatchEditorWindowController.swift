@@ -32,6 +32,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     let problemLabel = NSTextField(wrappingLabelWithString: "")
     // Cue outputs
     private(set) var outputNameFields: [NSTextField] = []
+    /// Each cue output's title on the Cue Outputs page.
+    private(set) var outputTitles: [NSTextField] = []
+    /// The titles of both name pages share one width and are right-aligned beside their fields.
+    static let rowTitleWidth: CGFloat = 124
     private let namesStack = NSStackView()
     // Routing
     let mainFader = LevelFader(value: 0, minValue: LevelText.floorDb, maxValue: 0, target: nil, action: nil)
@@ -276,7 +280,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     /// A scroll view whose flipped document view is as wide as the scroll view and as tall as `content`.
-    private func scrolling(_ content: NSView, label: String) -> NSScrollView {
+    private func scrolling(_ content: NSView, label: String, fillWidth: Bool = false) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
@@ -288,7 +292,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         NSLayoutConstraint.activate([
             content.topAnchor.constraint(equalTo: holder.topAnchor, constant: 10),
             content.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 12),
-            content.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -12),
+            fillWidth
+                ? content.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -12)
+                : content.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -12),
             content.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -10),
             holder.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
@@ -300,7 +306,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         namesStack.orientation = .vertical
         namesStack.alignment = .leading
         namesStack.spacing = 6
-        let scroll = scrolling(namesStack, label: loc("patchEditor.tab.cueOutputs"))
+        let scroll = scrolling(namesStack, label: loc("patchEditor.tab.cueOutputs"), fillWidth: true)
         scroll.setAccessibilityIdentifier("patch-editor-cue-outputs")
         return scroll
     }
@@ -390,16 +396,16 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     private func buildDeviceTab() -> NSView {
         deviceOutputsNote.font = .systemFont(ofSize: 11)
         deviceOutputsNote.textColor = .secondaryLabelColor
-        deviceOutputsNote.preferredMaxLayoutWidth = 440
         deviceOutputsNote.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        deviceGrid.rowSpacing = 28
+        deviceGrid.rowSpacing = 10
         let stack = NSStackView(views: [deviceOutputsNote, deviceGrid])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
-        let scroll = scrolling(stack, label: loc("patchEditor.tab.deviceOutputs"))
+        let scroll = scrolling(stack, label: loc("patchEditor.tab.deviceOutputs"), fillWidth: true)
         scroll.setAccessibilityIdentifier(AX.patchEditorDeviceOutputs)
-        deviceOutputsNote.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor, constant: -24).isActive = true
+        // As wide as the page, so the note wraps at its edge rather than at a fixed width.
+        deviceOutputsNote.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return scroll
     }
 
@@ -520,9 +526,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         let pad: CGFloat = 4
         matrixHeader.frame = NSRect(x: 0, y: -pad, width: matrix.frame.width, height: PatchRoutingView.headerH + pad)
         matrixHeader.setBoundsOrigin(NSPoint(x: 0, y: -pad))
+        // Ends with the last row: the matrix's own bottom margin is not a row.
         matrixRows.frame = NSRect(
             x: 0, y: PatchRoutingView.headerH, width: PatchRoutingView.crossX,
-            height: matrix.frame.height - PatchRoutingView.headerH)
+            height: CGFloat(matrix.rowLabels.count) * PatchRoutingView.rowH)
         matrixHeader.needsDisplay = true
         matrixRows.needsDisplay = true
         for (d, fader) in deviceFaders.enumerated() { placeStrip(d, fader) }
@@ -591,23 +598,28 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             v.removeFromSuperview()
         }
         outputNameFields = []
+        outputTitles = []
         for f in outputFields { f.removeFromSuperview() }
         outputFields = []
         for i in 0..<count {
-            let label = NSTextField(labelWithString: String(format: loc("patchEditor.cueOutput"), i + 1))
+            let label = NSTextField(labelWithString: String(format: loc("patchEditor.cueOutputRow"), i + 1))
             label.alignment = .right
-            label.widthAnchor.constraint(equalToConstant: 110).isActive = true
+            label.widthAnchor.constraint(equalToConstant: Self.rowTitleWidth).isActive = true
+            outputTitles.append(label)
             let name = NSTextField()
             name.delegate = self
             name.tag = i
             name.lineBreakMode = .byTruncatingTail
             name.cell?.usesSingleLineMode = true
-            name.widthAnchor.constraint(equalToConstant: 180).isActive = true
+            // As wide as the page lets it: the line fills the page and the field takes what the title leaves.
+            name.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+            name.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             name.setAX(
                 "\(AX.patchEditorOutputName)-\(i + 1)", label: String(format: loc("patchEditor.cueOutput"), i + 1))
             let line = NSStackView(views: [label, name])
             line.spacing = 8
             namesStack.addArrangedSubview(line)
+            line.widthAnchor.constraint(equalTo: namesStack.widthAnchor).isActive = true
             outputNameFields.append(name)
 
             let level = NSTextField(frame: matrix.levelRect(row: i).offsetBy(dx: 0, dy: -PatchRoutingView.headerH))
@@ -641,8 +653,25 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             fader.isEnabled = editable
             set(deviceFields[d], LevelText.format(setting.level), enabled: editable)
             deviceMutes[d].state = setting.mute ? .on : .off
+            Self.paintMute(deviceMutes[d], muted: setting.mute)
             deviceMutes[d].isEnabled = editable
         }
+    }
+
+    /// A muted output's button is filled red with a white M, as a mute button is; the bezel's own
+    /// pressed look is only a lighter grey. The fill is drawn by the layer, under the title.
+    static func paintMute(_ button: NSButton, muted: Bool) {
+        button.wantsLayer = true
+        button.isBordered = !muted
+        button.layer?.backgroundColor = muted ? NSColor.systemRed.cgColor : nil
+        button.layer?.cornerRadius = muted ? 3 : 0
+        let title = loc("patchEditor.muteShort")
+        button.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 9, weight: .semibold),
+                .foregroundColor: muted ? NSColor.white : NSColor.labelColor,
+            ])
     }
 
     private func rebuildStrips(_ columns: Int) {
@@ -706,7 +735,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             deviceGrid.removeRow(at: deviceGrid.numberOfRows - 1)
         }
         deviceTitles = (0..<columns).map { d in
-            NSTextField(labelWithString: String(format: loc("patchEditor.deviceOutput"), d + 1))
+            let title = NSTextField(labelWithString: String(format: loc("patchEditor.deviceOutput"), d + 1))
+            title.alignment = .right
+            title.widthAnchor.constraint(equalToConstant: Self.rowTitleWidth).isActive = true
+            return title
         }
         for title in deviceTitles { deviceGrid.addRow(with: [title]) }
     }

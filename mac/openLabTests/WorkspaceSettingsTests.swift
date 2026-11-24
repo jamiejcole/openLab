@@ -404,6 +404,49 @@ final class WorkspaceSettingsTests: XCTestCase {
 
     // MARK: The patch editor
 
+    /// The editor's pages at the least size: the device-output note wraps inside the page, the routing
+    /// grid's left pane ends with its last row, the two name pages title their rows alike and set them
+    /// close, the cue-output name fields widen with the page, and a muted output's button is red.
+    func testTheEditorPagesFitAtTheLeastSizeAndTitleTheirRowsAlike() async throws {
+        let (_, sc) = try await open()
+        let editor = try await edit(in: sc)
+        let ew = try XCTUnwrap(editor.window)
+        ew.setContentSize(PatchEditorWindowController.minSize)
+        editor.tabs.selectTabViewItem(withIdentifier: "deviceOutputs")
+        ew.contentView?.layoutSubtreeIfNeeded()
+        editor.deviceOutputsNote.stringValue = String(repeating: "This device has 2 outputs: the routing. ", count: 3)
+        ew.contentView?.layoutSubtreeIfNeeded()
+        let page = try XCTUnwrap(editor.deviceOutputsNote.enclosingScrollView?.contentView)
+        let note = editor.deviceOutputsNote.convert(editor.deviceOutputsNote.bounds, to: page)
+        XCTAssertGreaterThan(note.width, page.bounds.width - 40, "the note takes the page's width")
+        XCTAssertLessThanOrEqual(note.maxX, page.bounds.width)
+        let needs = try XCTUnwrap(editor.deviceOutputsNote.cell).cellSize(
+            forBounds: NSRect(x: 0, y: 0, width: note.width, height: 10_000))
+        XCTAssertGreaterThanOrEqual(note.height, needs.height - 1, "no line of the note is cut")
+        let t = editor.deviceTitles.map { $0.convert($0.bounds, to: page) }
+        XCTAssertEqual(t.count, 2)
+        XCTAssertLessThan(t[1].minY - t[0].minY, 32, "device output rows sit close together")
+        editor.tabs.selectTabViewItem(withIdentifier: "cueOutputs")
+        ew.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(editor.outputTitles.map(\.stringValue), ["Cue output 1:", "Cue output 2:"])
+        XCTAssertTrue((editor.outputTitles + editor.deviceTitles).allSatisfy { $0.alignment == .right })
+        XCTAssertEqual(editor.outputTitles[0].frame.width, editor.deviceTitles[0].frame.width)
+        let small = editor.outputNameFields[0].frame.width
+        ew.setContentSize(NSSize(width: 900, height: 600))
+        ew.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(editor.outputNameFields[0].frame.width, small + 200, "names widen with the page")
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        ew.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(
+            editor.matrixRows.frame.height, CGFloat(editor.matrix.rowLabels.count) * PatchRoutingView.rowH)
+        editor.deviceMutes[0].performClick(nil)
+        await assertEventually { editor.deviceMutes[0].layer?.backgroundColor != nil }
+        XCTAssertFalse(editor.deviceMutes[0].isBordered, "muted: a red fill in place of the bezel")
+        XCTAssertNil(editor.deviceMutes[1].layer?.backgroundColor)
+        XCTAssertTrue(editor.deviceMutes[1].isBordered)
+        editor.close()
+    }
+
     /// Checklist: Edit on a row → a patch editor window with the patch name, the cue-output count and
     /// the device at the top, and tabs for cue-output names, the routing matrix (cue outputs down,
     /// device outputs across, a main level) and device outputs.
@@ -1662,6 +1705,38 @@ final class WorkspaceSettingsTests: XCTestCase {
         // A long choice is cut in its middle, so the interface's name always shows.
         let popup = try XCTUnwrap(sc.networkInterfacePopups.first)
         XCTAssertEqual((popup.cell as? NSPopUpButtonCell)?.lineBreakMode, .byTruncatingMiddle)
+    }
+
+    /// The network table's remove button is centred on its row beside the fields.
+    func testTheNetworkRemoveButtonIsCentredOnItsRow() async throws {
+        let (_, sc) = try await open()
+        await sc.model.addNetworkPatch()
+        sc.show(page: .network)
+        sc.lastDrawn = nil
+        sc.render()
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        let button = try XCTUnwrap(sc.networkDeleteButtons.first)
+        let field = try XCTUnwrap(sc.networkFields.first)
+        let b = button.convert(button.bounds, to: nil)
+        let f = field.convert(field.bounds, to: nil)
+        XCTAssertEqual(b.midY, f.midY, accuracy: 1, "the remove button is on the row's middle")
+    }
+
+    /// Audio Outputs at the least window: the device pop-up has more room than the name field, which
+    /// is the narrow column.
+    func testTheAudioTableGivesTheDeviceMoreThanTheNameAtTheLeastWindow() async throws {
+        let (_, sc) = try await open()
+        let window = try XCTUnwrap(sc.window)
+        window.setContentSize(window.contentMinSize)
+        sc.show(page: .audio)
+        sc.lastDrawn = nil
+        sc.render()
+        window.contentView?.layoutSubtreeIfNeeded()
+        let name = try XCTUnwrap(sc.patchNameFields.first)
+        let popup = try XCTUnwrap(sc.patchDevicePopups.first)
+        XCTAssertEqual(name.frame.width, WorkspaceSettingsWindowController.patchNameWidth, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(popup.frame.width, 120, "the device keeps the room it needs")
+        XCTAssertGreaterThan(popup.frame.width, name.frame.width)
     }
 
     /// The Network Outputs table heads the UDP/TCP column "Network", not "Type".

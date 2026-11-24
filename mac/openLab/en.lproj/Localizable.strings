@@ -717,6 +717,7 @@
 "patchEditor.tab.deviceOutputs" = "Device Outputs";
 "patchEditor.main" = "main";
 "patchEditor.cueOutput" = "Cue output %ld";
+"patchEditor.cueOutputRow" = "Cue output %ld:";
 "patchEditor.deviceOutput" = "Device output %ld:";
 "patchEditor.cueOutputs" = "cue outputs";
 "patchEditor.inputs" = "inputs";

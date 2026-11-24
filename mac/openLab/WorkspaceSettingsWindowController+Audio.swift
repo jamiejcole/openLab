@@ -104,7 +104,8 @@ extension WorkspaceSettingsWindowController {
         return stack
     }
 
-    static let patchNameWidth: CGFloat = 100
+    /// Narrow, so at the least window the device pop-up keeps the width it needs.
+    static let patchNameWidth: CGFloat = 60
     static let editWidth: CGFloat = 56
     static let removeWidth: CGFloat = 22
     /// A vertical scroller's width (and the border), always kept free beside the rows.
