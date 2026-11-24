@@ -147,7 +147,7 @@ extension AppController {
 
     var frontController: WorkspaceWindowController? {
         guard let key = keyWindow() else { return nil }
-        return controllers.values.first { $0.window === key || $0.existingStatusWindow?.window === key }
+        return controllers.values.first { $0.window === key }
     }
 
     /// The workspace whose window or settings window is key: Edit > Undo and Redo act on its edits,
