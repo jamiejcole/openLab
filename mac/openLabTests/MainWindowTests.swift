@@ -1789,46 +1789,92 @@ final class WindowLayoutTests: XCTestCase {
         }
     }
 
-    /// The inspector's divider dragged (a real press, drag and release) a little below the least height
-    /// leaves the inspector at its least; dragged well below it, the inspector snaps closed, as QLab 5's
-    /// does, and its footer button brings it back.
-    func testDraggingTheInspectorDividerFarDownClosesTheInspector() async throws {
+    /// U3: the inspector's divider dragged. Well below the least height the inspector is closed while the
+    /// button is still down, dragged back up while still held it is open again (only the release
+    /// decides), a little below the least height it stays at the least; left closed, the footer button
+    /// brings it back. A real press on the divider runs the same drag.
+    func testDraggingTheInspectorDividerFarDownClosesTheInspectorWhileHeldAndBackUpOpensIt() async throws {
         let url = try showFile("SnapInspector")
         let (_, wc) = try await open(url)
         wc.window?.setFrame(frame(wc), display: true)
         settle(wc)
         let split = wc.verticalSplit
-        // The test plays the split's part of a drag: a drag event is made the current event (as it is
-        // while the split tracks one) and the positions it would propose are handed to its delegate.
-        func drag(toInspectorHeight height: CGFloat) throws {
-            let window = try XCTUnwrap(wc.window)
-            let event = try XCTUnwrap(
-                NSEvent.mouseEvent(
-                    with: .leftMouseDragged, location: NSPoint(x: 10, y: 10), modifierFlags: [],
-                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
-                    eventNumber: 0, clickCount: 1, pressure: 1))
-            NSApp.postEvent(event, atStart: true)
-            _ = NSApp.nextEvent(
-                matching: .leftMouseDragged, until: .distantFuture, inMode: .eventTracking, dequeue: true)
-            XCTAssertEqual(NSApp.currentEvent?.type, .leftMouseDragged)
-            let room = split.bounds.height - split.dividerThickness
-            for h in [least + 20, least - 10, height] {
-                let at = wc.splitView(split, constrainSplitPosition: room - h, ofSubviewAt: 0)
-                split.setPosition(at, ofDividerAt: 0)
-            }
-        }
         let least = WorkspaceWindowController.minInspectorHeight
-        try drag(toInspectorHeight: least - 30)
-        try await Task.sleep(nanoseconds: 200_000_000)
+        func press() throws -> WorkspaceWindowController.DividerDrag {
+            let y = split.bounds.height - wc.inspector.view.frame.height - split.dividerThickness / 2
+            return try XCTUnwrap(
+                wc.beginDividerDrag(at: split.convert(NSPoint(x: 60, y: y), to: nil)), "a press on the divider")
+        }
+        // Just past the least height: stays open at the least.
+        var drag = try press()
+        drag.move(toInspectorHeight: least + 20)
+        drag.move(toInspectorHeight: least - 10)
+        XCTAssertTrue(wc.isVisible(.inspector), "just past the least height, still open while held")
+        drag.end()
         settle(wc)
-        XCTAssertTrue(wc.isVisible(.inspector), "a drag just past the least height leaves the inspector open")
+        XCTAssertTrue(wc.isVisible(.inspector))
         XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, least)
-        try drag(toInspectorHeight: 10)
-        await assertEventually("the inspector snapped closed") { !wc.isVisible(.inspector) }
+        // Far down: closed while the button is still down (nothing has ended the drag yet).
+        drag = try press()
+        drag.move(toInspectorHeight: least - 30)
+        XCTAssertTrue(wc.isVisible(.inspector))
+        drag.move(toInspectorHeight: 10)
+        XCTAssertFalse(wc.isVisible(.inspector), "closed the moment the drag passed the line, button still down")
+        XCTAssertEqual(wc.footer.toggles[.inspector]?.state, .off)
+        // Back up, still held: open again.
+        drag.move(toInspectorHeight: least + 40)
+        XCTAssertTrue(wc.isVisible(.inspector), "open again when dragged back up while held")
+        XCTAssertEqual(wc.footer.toggles[.inspector]?.state, .on)
+        drag.end()
+        settle(wc)
+        XCTAssertTrue(wc.isVisible(.inspector), "released above the line: open")
+        XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, least)
+        // Far down and let go there: closed for good, and the footer button brings it back.
+        drag = try press()
+        drag.move(toInspectorHeight: 10)
+        XCTAssertFalse(wc.isVisible(.inspector))
+        drag.end()
+        XCTAssertFalse(wc.isVisible(.inspector), "left closed")
         XCTAssertEqual(wc.footer.toggles[.inspector]?.state, .off)
         try toggle(.inspector, in: wc)
         XCTAssertTrue(wc.isVisible(.inspector))
         XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, least, "it comes back at a usable height")
+        // The split's own mouse-down takes a press on the divider (the window's tracking loop, the release
+        // queued): the height is kept and nothing else moves.
+        let window = try XCTUnwrap(wc.window)
+        let y = split.bounds.height - wc.inspector.view.frame.height - split.dividerThickness / 2
+        let at = split.convert(NSPoint(x: 60, y: y), to: nil)
+        func event(_ type: NSEvent.EventType, at point: NSPoint? = nil) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: point ?? at, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                    eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        NSApp.postEvent(try event(.leftMouseUp), atStart: false)
+        let before = wc.inspector.view.frame.height
+        split.mouseDown(with: try event(.leftMouseDown))
+        XCTAssertTrue(wc.isVisible(.inspector))
+        XCTAssertEqual(wc.inspector.view.frame.height, before, accuracy: 1)
+        // The same press with drag events through the split's own mouse-down: down to the window's foot and
+        // let go there closes it; down and back up before letting go leaves it open.
+        let low = split.convert(NSPoint(x: 60, y: split.bounds.height - 10), to: nil)
+        for type in [NSEvent.EventType.leftMouseDragged, .leftMouseDragged, .leftMouseUp] {
+            NSApp.postEvent(try event(type, at: low), atStart: false)
+        }
+        split.mouseDown(with: try event(.leftMouseDown))
+        XCTAssertFalse(wc.isVisible(.inspector), "a real drag to the foot closes the inspector")
+        try toggle(.inspector, in: wc)
+        settle(wc)
+        let y2 = split.bounds.height - wc.inspector.view.frame.height - split.dividerThickness / 2
+        let start = split.convert(NSPoint(x: 60, y: y2), to: nil)
+        for (type, point) in [
+            (NSEvent.EventType.leftMouseDragged, low), (.leftMouseDragged, start), (.leftMouseUp, start),
+        ] {
+            NSApp.postEvent(try event(type, at: point), atStart: false)
+        }
+        split.mouseDown(with: try event(.leftMouseDown, at: start))
+        XCTAssertTrue(wc.isVisible(.inspector), "dragged down and back up while held: still open")
     }
 
     /// A saved inspector height below the least comes back as the least.

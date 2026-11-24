@@ -119,7 +119,7 @@ extension WorkspaceWindowController {
 
     /// Moves a divider to a saved place. That is the layout being restored, not the user dragging: the
     /// split's notification carries the user-resize key, which must not change the preferred sizes.
-    private func placeDivider(_ split: NSSplitView, at position: CGFloat) {
+    func placeDivider(_ split: NSSplitView, at position: CGFloat) {
         let was = isRestoringLayout
         isRestoringLayout = true
         defer { isRestoringLayout = was }
@@ -176,39 +176,104 @@ extension WorkspaceWindowController {
     }
 #endif
 
-/// The inspector's divider dragged well below the inspector's least height closes the inspector, as
-/// QLab 5's does; the footer's inspector button (or View menu) brings it back at its last height.
+/// The vertical split, whose divider press the window tracks itself (`pressDivider`).
+final class InspectorSplitView: NSSplitView {
+    /// Takes a press on the divider; true: handled, the split does nothing with it.
+    var onPress: ((NSEvent) -> Bool)?
+
+    override func mouseDown(with event: NSEvent) {
+        if onPress?(event) == true { return }
+        super.mouseDown(with: event)
+    }
+}
+
 extension WorkspaceWindowController: NSSplitViewDelegate {
-    /// Whether a drag of the inspector's divider to `position` closes it: the inspector would be less
-    /// than half its least height. Above that the least height holds it, so a drag that just overshoots
-    /// the least height does not close it.
-    static func dragClosesInspector(position: CGFloat, splitHeight: CGFloat, divider: CGFloat) -> Bool {
-        splitHeight - divider - position < minInspectorHeight / 2
+    /// The inspector's height with the divider at `y` (the split's own coordinates, flipped).
+    fileprivate func inspectorHeight(atDividerY y: CGFloat) -> CGFloat {
+        verticalSplit.bounds.height - y - verticalSplit.dividerThickness / 2
     }
 
-    func splitView(
-        _ splitView: NSSplitView, constrainSplitPosition proposedPosition: CGFloat, ofSubviewAt dividerIndex: Int
-    ) -> CGFloat {
-        // A divider placed by code (a restored layout, a window resize) never closes the inspector.
-        guard splitView === verticalSplit, NSApp.currentEvent?.type == .leftMouseDragged else {
-            return proposedPosition
+    /// Whether the divider with the inspector `height` high closes it: less than half its least height
+    /// would be left, as QLab 5's does. Above that the least height holds it.
+    static func dragClosesInspector(height: CGFloat) -> Bool { height < minInspectorHeight / 2 }
+
+    /// A press on the inspector's divider, tracked here so the inspector goes the moment the drag passes
+    /// the line, while the button is still down, and comes back if the drag goes back up before the
+    /// release (AppKit's own tracking decides nothing until the release). A divider placed by code never
+    /// closes it.
+    func pressDivider(_ event: NSEvent) -> Bool {
+        guard let window, let drag = beginDividerDrag(at: event.locationInWindow) else { return false }
+        window.trackEvents(
+            matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking
+        ) { next, stop in
+            guard let next else { return }
+            if next.type == .leftMouseUp {
+                stop.pointee = true
+            } else {
+                drag.move(toWindowPoint: next.locationInWindow)
+            }
         }
-        // Only where the drag ends counts: a drag past the line and back up again leaves it open.
-        NSObject.cancelPreviousPerformRequests(
-            withTarget: self, selector: #selector(closeInspectorAfterDrag), object: nil)
-        if dividerIndex == 0, isVisible(.inspector), !isShowMode,
-            Self.dragClosesInspector(
-                position: proposedPosition, splitHeight: splitView.bounds.height, divider: splitView.dividerThickness)
-        {
-            // Closed once the drag's tracking ends: hiding a pane under a divider still being tracked
-            // leaves the split mid-drag with one pane.
-            perform(#selector(closeInspectorAfterDrag), with: nil, afterDelay: 0, inModes: [.default])
-        }
-        return proposedPosition
+        drag.end()
+        return true
     }
 
-    @objc private func closeInspectorAfterDrag() {
-        guard isVisible(.inspector), !isShowMode else { return }
-        setVisible(.inspector, false)
+    /// The press at `point` (window coordinates) when it is on the inspector's divider.
+    func beginDividerDrag(at point: NSPoint) -> DividerDrag? {
+        guard window != nil, !isShowMode, isVisible(.inspector) else { return nil }
+        let start = verticalSplit.convert(point, from: nil)
+        let edge = inspector.view.frame.minY
+        guard abs(start.y - edge) <= 5 else { return nil }
+        return DividerDrag(window: self, grab: start.y - edge)
+    }
+
+    /// One press-drag-release of the divider.
+    @MainActor
+    final class DividerDrag {
+        private unowned let wc: WorkspaceWindowController
+        private let grab: CGFloat
+        /// The inspector is hidden by the drag, and will stay closed if the button is let go like this.
+        private(set) var closed = false
+
+        init(window: WorkspaceWindowController, grab: CGFloat) {
+            (wc, self.grab) = (window, grab)
+        }
+
+        /// The pointer is at `point` (window coordinates), the button down.
+        func move(toWindowPoint point: NSPoint) {
+            let split = wc.verticalSplit
+            let y = split.convert(point, from: nil).y - grab
+            move(toInspectorHeight: wc.inspectorHeight(atDividerY: y))
+        }
+
+        func move(toInspectorHeight height: CGFloat) {
+            // Show Mode may have locked the window mid-drag (another client's change): leave the inspector as it is.
+            guard !wc.isShowMode else { return }
+            let split = wc.verticalSplit
+            let closes = WorkspaceWindowController.dragClosesInspector(height: height)
+            if closes != closed {
+                closed = closes
+                if closes { wc.inspector.endGestures() }
+                wc.inspector.view.isHidden = closes
+                wc.footer.toggles[.inspector]?.state = closes ? .off : .on
+            }
+            guard !closes else { return }
+            let room = split.bounds.height - split.dividerThickness
+            let held = max(height, WorkspaceWindowController.minInspectorHeight)
+            wc.inspectorHeightConstraint?.constant = held
+            wc.placeDivider(split, at: room - held)
+        }
+
+        /// The button is let go: closed for good if it was left closed, else the height is kept.
+        func end() {
+            if closed {
+                wc.setVisible(.inspector, false)
+            } else {
+                wc.window?.contentView?.layoutSubtreeIfNeeded()
+                if wc.inspector.view.frame.height > 0 {
+                    wc.inspectorHeightConstraint?.constant = wc.inspector.view.frame.height
+                }
+                wc.saveLayout()
+            }
+        }
     }
 }

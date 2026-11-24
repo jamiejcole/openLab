@@ -1050,12 +1050,22 @@ final class CueListTests: XCTestCase {
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
         let cell = try XCTUnwrap(h.cell("status", H.intro))
         XCTAssertTrue(cell.fadingDots.isHidden, "running: the still mark")
-        XCTAssertEqual(cell.images[1].alphaValue, 1)
+        XCTAssertNotNil(cell.images[1].image)
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"fading"}"#)
         let fading = try XCTUnwrap(h.cell("status", H.intro))
         XCTAssertFalse(fading.fadingDots.isHidden, "fading: the dots")
-        XCTAssertEqual(fading.images[1].alphaValue, 0, "the still glyph is not drawn under them")
+        XCTAssertNil(fading.images[1].image, "the still glyph is not under them")
+        fading.backgroundStyle = .emphasized
+        XCTAssertNil(fading.images[1].image, "a selected row's tint does not bring it back")
+        fading.backgroundStyle = .normal
         XCTAssertEqual(fading.images[1].accessibilityLabel(), loc("cue.state.fading"), "the label stays")
+        // Hovering the dots shows the state's tooltip: the dots let the pointer through to the image view.
+        fading.frame = NSRect(x: 0, y: 0, width: 60, height: 24)
+        fading.layoutSubtreeIfNeeded()
+        let centre = NSPoint(x: fading.fadingDots.frame.midX, y: fading.fadingDots.frame.midY)
+        XCTAssertNil(fading.fadingDots.hitTest(centre), "the dots take no hit")
+        XCTAssertNotNil(fading.images[1].toolTip, "the state image holds the tooltip")
+        XCTAssertTrue(fading.hitTest(centre) === fading.images[1], "the pointer over the dots is over the state image")
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
         let idle = try XCTUnwrap(h.cell("status", H.intro))
         XCTAssertTrue(idle.fadingDots.isHidden, "idle: no dots")
@@ -1972,6 +1982,79 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(app.handleKeyDown(try key("d", code: 2, windowNumber: window.windowNumber)), "taken")
         XCTAssertNil(wc.cueList.editingCell, "an Audio cue's duration is not typed")
         XCTAssertEqual(goes(), 0)
+    }
+
+    /// U1: Q1 selected, a cue added from the strip, then Undo: the cue is gone and no cue is selected (the
+    /// selection does not move to the next cue, though the playhead does); the strip's button again adds at
+    /// the end of the list.
+    func testUndoingAnAddLeavesNoCueSelectedAndTheNextAddGoesToTheEnd() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        let addedID = await wc.editor.add(.audio)
+        let added = try XCTUnwrap(addedID, "a cue added after the first")
+        XCTAssertEqual(wc.cueList.roots.firstIndex { $0.id == added }, 1, "added right after the selected cue")
+        await assertEventually("the new cue is selected and holds the playhead") {
+            self.wc.cueList.selectedIDs() == [added] && self.store.playheads[self.list] == added
+        }
+        await wc.editor.undo()
+        await assertEventually("the cue is gone and the playhead moved on") {
+            self.wc.cueList.node(added) == nil && self.store.playheads[self.list] != added
+        }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [], "no cue is selected after the undo")
+        let againID = await wc.editor.add(.audio)
+        let again = try XCTUnwrap(againID, "a second add")
+        XCTAssertEqual(wc.cueList.roots.last?.id, again, "with nothing selected the cue goes at the end")
+    }
+
+    /// D2: redoing an add brings the cue back selected, so the list's highlight and the inspector agree.
+    func testRedoingAnAddSelectsTheCueItBringsBack() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        let addedID = await wc.editor.add(.audio)
+        let added = try XCTUnwrap(addedID)
+        await wc.editor.undo()
+        await assertEventually("the add is undone") { self.wc.cueList.node(added) == nil }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [])
+        await wc.editor.redo()
+        await assertEventually("the cue is back") { self.wc.cueList.node(added) != nil }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [added], "the redone cue is the highlighted row")
+        XCTAssertEqual(wc.inspector.selection, [added], "and the inspector shows it")
+    }
+
+    /// U5: three empty rows stand below the last cue, and a press on one (or on the filler under a short
+    /// list) deselects everything; the inspector then shows no cue.
+    func testEmptyRowsBelowTheLastCueDeselectOnAPress() async throws {
+        try await editWorkspace()
+        let outline = wc.cueList.outlineView
+        let rows = outline.numberOfRows
+        let last = outline.rect(ofRow: rows - 1)
+        let spare = CGFloat(CueOutlineView.spareRows) * (outline.rowHeight + outline.intercellSpacing.height)
+        XCTAssertGreaterThanOrEqual(outline.frame.height, last.maxY + spare - 1, "three empty rows below the last cue")
+        // A list that fills its view still ends on them: the view is made shorter than the cues.
+        let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        scroll.setFrameSize(NSSize(width: scroll.frame.width, height: last.maxY - 20))
+        scroll.layoutSubtreeIfNeeded()
+        outline.tile()
+        XCTAssertGreaterThanOrEqual(
+            outline.frame.height, last.maxY + spare - 1, "a full list gets the three rows added")
+        try await focusList(on: cues[0])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]])
+        let window = try XCTUnwrap(wc.window)
+        func press(_ view: NSView, at point: NSPoint) throws {
+            let e = try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: .leftMouseDown, location: view.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            view.mouseDown(with: e)
+        }
+        try press(outline, at: NSPoint(x: 200, y: last.maxY + 30))
+        XCTAssertEqual(wc.cueList.selectedIDs(), [], "a press on an empty row deselects")
+        await assertEventually("the inspector shows no cue") { self.wc.inspector.cueForEdit == nil }
+        // The filler under a short list is the clip view's.
+        wc.cueList.selectAsUser([cues[0]])
+        let clip = try XCTUnwrap(outline.enclosingScrollView?.contentView as? BlankDeselectingClipView)
+        try press(clip, at: NSPoint(x: 20, y: 5))
+        XCTAssertEqual(wc.cueList.selectedIDs(), [], "a press on the filler deselects")
     }
 
     /// C steps the selected cues' continue mode and F flags them: every selected cue takes the first

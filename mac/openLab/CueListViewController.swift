@@ -153,6 +153,19 @@ final class TargetDropOutline: NSView {
     }
 }
 
+/// The list's clip view: a press on the filler AppKit draws under a short table (outside the table's own
+/// frame) deselects as one on the table's empty rows does.
+final class BlankDeselectingClipView: NSClipView {
+    override func mouseDown(with event: NSEvent) {
+        if let table = documentView as? NSTableView {
+            window?.makeFirstResponder(table)
+            table.deselectAll(nil)
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
+}
+
 /// The list's outline view: it tells the list when a drag leaves it.
 final class CueOutlineView: NSOutlineView {
     var onDragExit: (() -> Void)?
@@ -169,7 +182,28 @@ final class CueOutlineView: NSOutlineView {
         {
             return
         }
+        // A press on a row's empty space below the cues ends the selection (QLab), with no cue selected.
+        if row < 0, event.modifierFlags.intersection([.command, .shift, .control]).isEmpty {
+            window?.makeFirstResponder(self)
+            deselectAll(nil)
+            return
+        }
         super.mouseDown(with: event)
+    }
+
+    /// Empty rows always left below the last cue (QLab keeps blank rows to click on), so the list never
+    /// ends on its last cue.
+    static let spareRows = 3
+
+    override func setFrameSize(_ newSize: NSSize) {
+        // AppKit makes the table at least as tall as its clip view, which already shows empty rows when the
+        // cues are few; only a list that fills its view gets the room added.
+        var size = newSize
+        if numberOfRows > 0 {
+            let spare = CGFloat(Self.spareRows) * (rowHeight + intercellSpacing.height)
+            size.height = max(newSize.height, rect(ofRow: numberOfRows - 1).maxY + spare)
+        }
+        super.setFrameSize(size)
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -405,10 +439,22 @@ final class CueCell: NSTableCellView {
     /// Shows the moving dots in place of state image 1's picture (on) or the picture again (off). The
     /// image view keeps its label and tooltip either way.
     func showFading(_ on: Bool) {
+        showsDots = on
         fadingDots.isHidden = !on
-        images[1].alphaValue = on ? 0 : 1
+        // The still picture is taken out of the image view, not faded to nothing: an image view that only
+        // had its alpha lowered still holds the old mark, and anything that sets its image again (a
+        // selection's tint) drew it back under the dots.
+        if on {
+            images[1].image = nil
+        } else if let mark = tints[1] {
+            images[1].image = tinted(mark.image, mark.tint, mark.label)
+        }
+        images[1].alphaValue = 1
         if on, let mark = tints[1] { fadingDots.colour = drawnColour(mark.tint) }
     }
+
+    /// The dots stand in for state image 1's picture.
+    private(set) var showsDots = false
 
     private func tinted(_ image: NSImage, _ tint: NSColor, _ label: String) -> NSImage {
         TimeHeaderCell.tinted(image, drawnColour(tint), size: image.size, description: label)
@@ -430,7 +476,9 @@ final class CueCell: NSTableCellView {
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet {
             guard backgroundStyle != oldValue else { return }
-            for (i, mark) in tints { images[i].image = tinted(mark.image, mark.tint, mark.label) }
+            for (i, mark) in tints where !(i == 1 && showsDots) {
+                images[i].image = tinted(mark.image, mark.tint, mark.label)
+            }
             if let mark = tints[1] { fadingDots.colour = drawnColour(mark.tint) }
         }
     }
@@ -771,6 +819,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cellEditor.cell?.isScrollable = true
         cellEditor.font = .systemFont(ofSize: NSFont.systemFontSize)
         let scroll = NSScrollView()
+        scroll.contentView = BlankDeselectingClipView()
         scroll.documentView = outlineView
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
@@ -790,6 +839,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func node(_ id: ModelID) -> CueNode? { nodes[id] }
     var nodeCount: Int { nodes.count }
+    var nodeIDs: Set<ModelID> { Set(nodes.keys) }
 
     func selectedIDs() -> [ModelID] {
         outlineView.selectedRowIndexes.compactMap { (outlineView.item(atRow: $0) as? CueNode)?.id }
@@ -905,6 +955,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// is: the playhead's echo and later moves to this cue are not followed, until the selection is
     /// changed by the user or the playhead moves on.
     private var unlinkedHead: ModelID?
+
+    /// The playhead's cue was removed while selected: the playhead's move on is not followed.
+    private var headRemovedWhileSelected = false
 
     /// A press in a row's status column (QLab 5): the playhead goes there, the selection stays.
     private func statusPressed(_ row: Int) -> Bool {
@@ -1080,6 +1133,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard head != seenHead else { return }
         seenHead = head
         if head != unlinkedHead { unlinkedHead = nil }
+        if headRemovedWhileSelected {
+            headRemovedWhileSelected = false
+            return
+        }
         if playheadSends > 0 {
             headMovedWhileSending = true
         } else {
@@ -1191,6 +1248,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         listID = list?.id
         chosenList = list?.id
         seenHead = list.flatMap { store.playheads[$0.id] }
+        // A resync replaces the list: a skip waiting for an undone add's playhead move no longer applies.
+        headRemovedWhileSelected = false
         roots = (list?.cues ?? []).map { makeNode($0, parent: nil) }
         outlineView.reloadData()
         func expand(_ node: CueNode) {
@@ -1254,6 +1313,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         for case .cue(let id) in deletes { noteAncestors(id) }
         for case .cue(_, _, _, let cue) in upserts { noteAncestors(cue.id) }
         for case .cue(let id) in deletes {
+            // The cue the playhead stood on was removed while it was selected (an undone add): the
+            // engine moves the playhead on, and the selection stays empty, as in QLab.
+            if id == seenHead, selected.contains(id) { headRemovedWhileSelected = true }
             batchTouched.insert(id)
             remove(id, expanded: &expanded)
         }

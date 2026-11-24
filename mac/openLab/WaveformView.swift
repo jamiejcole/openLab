@@ -207,6 +207,13 @@ class WaveformView: NSView {
     /// Where a press away from every handle went down (file seconds): a click, or the start of a
     /// section, until the mouse goes up.
     private(set) var pressAt: Double?
+    /// Where (view x) the press went down, and whether it has moved past `dragSlop` since.
+    private var pressX: CGFloat = 0
+    private var pulled = false
+    /// Where (view x) a handle was taken, and whether the mouse has moved past `dragSlop` since:
+    /// a handle press that never does is a click on the waves there.
+    private var handleX: CGFloat = 0
+    private var handleMoved = false
     /// The dragged slice marker is outside the view: letting go there deletes it.
     private(set) var removing = false
     /// The trims, marker and fades when the drag began: letting go there sends nothing.
@@ -266,6 +273,8 @@ class WaveformView: NSView {
         // the waveform read.
         guard !isLocked, duration != nil else { return false }
         removing = false
+        handleX = x
+        handleMoved = false
         if fadesShown, y >= waveRect.minY, y <= waveRect.minY + Self.fadeBand {
             let di = abs(scale.x(trimStart + fadeIn) - x)
             let dout = abs(scale.x(endTime - fadeOut) - x)
@@ -364,6 +373,8 @@ class WaveformView: NSView {
     func beginPress(atX x: CGFloat) -> Bool {
         guard !isLocked, !isReading, let duration else { return false }
         pressAt = Self.clampRounded(scale.seconds(x), 0, duration)
+        pressX = x
+        pulled = false
         onDragBegan?()
         return true
     }
@@ -378,6 +389,10 @@ class WaveformView: NSView {
             let over = Double((x < 0 ? x : x - width) / width)
             onPan?(-min(max(over, -Self.edgeStep), Self.edgeStep))
         }
+        // A hand moves a pixel or two between press and release: that is a click, however much
+        // file a pixel covers (on a long file it is more than `minLength`).
+        if !pulled, abs(x - pressX) < Self.dragSlop { return }
+        pulled = true
         let t = Self.clampRounded(scale.seconds(min(max(x, 0), width)), 0, duration)
         let section = abs(t - from) >= Self.minLength - 1e-9 ? min(from, t)...max(from, t) : nil
         guard section != selection else { return }
@@ -391,7 +406,8 @@ class WaveformView: NSView {
     func endPress(atX x: CGFloat) {
         guard let from = pressAt else { return }
         dragSection(toX: x)
-        let section = selection
+        // A press that never left its slop is a click, whatever section was selected before it.
+        let section = pulled ? selection : nil
         pressAt = nil
         if section == nil { click(atX: scale.x(from)) }
         onDragEnded?()
@@ -406,6 +422,9 @@ class WaveformView: NSView {
         onDragEnded?()
         return true
     }
+
+    /// How far (points) the pointer must move from a press before it is a section, not a click.
+    static let dragSlop: CGFloat = 4
 
     /// The most of the view's width one move past its edge scrolls.
     static let edgeStep = 0.25
@@ -505,6 +524,12 @@ class WaveformView: NSView {
         if pressAt != nil {
             dragSection(toX: p.x)
         } else {
+            if dragging != nil, !handleMoved {
+                // A hand moves a pixel or two on a click, so a press on a handle that stays within
+                // the slop moves nothing and ends as a click.
+                if abs(p.x - handleX) < Self.dragSlop, p.y >= 0, p.y <= bounds.height { return }
+                handleMoved = true
+            }
             drag(toX: p.x, y: p.y)
         }
     }
@@ -512,6 +537,12 @@ class WaveformView: NSView {
     override func mouseUp(with event: NSEvent) {
         if pressAt != nil {
             endPress(atX: convert(event.locationInWindow, from: nil).x)
+        } else if dragging != nil, !handleMoved, !isLocked {
+            // A press on a handle that never moved is a click like any other on the waves.
+            dragging = nil
+            removing = false
+            onDragEnded?()
+            click(atX: handleX)
         } else {
             endDrag()
         }

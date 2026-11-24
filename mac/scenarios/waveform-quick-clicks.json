@@ -1,0 +1,26 @@
+{
+  "about": "Quick single clicks at different places in an Audio cue's waveform, stopped then playing: each moves the start point (loaded) or the play position.",
+  "show": "Demo",
+  "media": {"media/a.wav": 20},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 0.5},
+    {"click": "time-loops-waveform", "at": [0.2, 0.5]},
+    {"click": "time-loops-waveform", "at": [0.4, 0.5]},
+    {"click": "time-loops-waveform", "at": [0.7, 0.5]},
+    {"advance": 0.2},
+    {"shot": "stopped-three-clicks"},
+    {"key": "space"},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 1},
+    {"click": "time-loops-waveform", "at": [0.3, 0.5]},
+    {"click": "time-loops-waveform", "at": [0.8, 0.5]},
+    {"advance": 0.2},
+    {"shot": "playing-two-clicks"},
+    {"advance": 0.5},
+    {"shot": "playing-after"}
+  ]
+}
