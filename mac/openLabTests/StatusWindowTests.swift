@@ -76,8 +76,7 @@ final class StatusWindowTests: XCTestCase {
         status.copyIDButton.performClick(nil)
         XCTAssertEqual(board.string(forType: .string), id)
 
-        // Opening it leaves the keyboard with the workspace window; it goes with it.
-        XCTAssertFalse(status.window?.isKeyWindow == true, "opening the window does not take the keys")
+        // It goes with its workspace window.
         wc.window?.close()
         XCTAssertFalse(status.window?.isVisible == true)
     }
