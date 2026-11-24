@@ -1,0 +1,25 @@
+{
+  "about": "A 3-minute Audio cue: quick clicks where the pointer moves a pixel or two between press and release (as a real hand does), stopped then playing. Each still moves the start point or the play position; none becomes a section.",
+  "show": "Demo",
+  "media": {"media/a.wav": 180},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 0.5},
+    {"drag": "time-loops-waveform", "from": [0.2, 0.5], "to": [0.2012, 0.5]},
+    {"shot": "stopped-first"},
+    {"drag": "time-loops-waveform", "from": [0.5, 0.5], "to": [0.5012, 0.5]},
+    {"drag": "time-loops-waveform", "from": [0.7, 0.5], "to": [0.6988, 0.5]},
+    {"advance": 0.2},
+    {"shot": "stopped-three-clicks"},
+    {"key": "space"},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 1},
+    {"drag": "time-loops-waveform", "from": [0.3, 0.5], "to": [0.3012, 0.5]},
+    {"drag": "time-loops-waveform", "from": [0.8, 0.5], "to": [0.8012, 0.5]},
+    {"advance": 0.2},
+    {"shot": "playing-two-clicks"}
+  ]
+}

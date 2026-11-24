@@ -434,12 +434,22 @@ final class CueEditor {
 
     func undo() async {
         guard await begin() else { return }
-        _ = report(await store.undo())
+        let before = cueList?.nodeIDs ?? []
+        if report(await store.undo()) { selectBroughtBack(since: before) }
     }
 
     func redo() async {
         guard await begin() else { return }
-        _ = report(await store.redo())
+        let before = cueList?.nodeIDs ?? []
+        if report(await store.redo()) { selectBroughtBack(since: before) }
+    }
+
+    /// Cues an undo or redo brought back are selected, so the list and the inspector agree on what
+    /// the operator is looking at.
+    private func selectBroughtBack(since before: Set<ModelID>) {
+        guard let cueList else { return }
+        let added = cueList.nodeIDs.subtracting(before)
+        if !added.isEmpty { cueList.selectAsUser(Array(added)) }
     }
 
     var canUndo: Bool { !isLocked() && store.document?.canUndo == true }

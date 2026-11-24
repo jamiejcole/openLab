@@ -1,0 +1,22 @@
+{
+  "about": "An Audio cue playing and a Fade cue fading it: the fading Audio cue's row shows the turning dots (not the old fading mark), the Fade cue's own row shows its running mark, and Active Cues lists both.",
+  "show": "Demo",
+  "media": {"media/a.wav": 20},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 1},
+    {"key": "space"},
+    {"advance": 1.5},
+    {"shot": "rows-fading"},
+    {"select": "1"},
+    {"advance": 0.3},
+    {"shot": "fading-row-selected"},
+    {"click": "toggle-sidebar"},
+    {"advance": 0.3},
+    {"click": "sidebar-tabs", "at": [0.8, 0.5]},
+    {"advance": 0.3},
+    {"shot": "active-cues"}
+  ]
+}
