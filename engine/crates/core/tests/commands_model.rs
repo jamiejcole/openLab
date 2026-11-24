@@ -2663,7 +2663,12 @@ fn route_region_and_stage_steps_are_named_through_undo_and_redo() {
             StepName::AddRoute,
         ),
         (
-            route_prop(3, RouteProperty::Name { value: "Cyc".into() }),
+            route_prop(
+                3,
+                RouteProperty::Name {
+                    value: "Cyc".into(),
+                },
+            ),
             StepName::RenameRoute,
         ),
         (
@@ -2788,7 +2793,11 @@ fn route_region_and_stage_steps_are_named_through_undo_and_redo() {
         ],
     };
     history.execute(&mut ws, mixed).unwrap();
-    assert_eq!(history.undo_name(), None, "two routes' edits have no one name");
+    assert_eq!(
+        history.undo_name(),
+        None,
+        "two routes' edits have no one name"
+    );
 }
 
 // ---- Cue lists ----
