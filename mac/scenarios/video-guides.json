@@ -1,0 +1,58 @@
+{
+  "about": "#821 route guides: Output Routing's Guides column (a box and a round colour swatch per route) with none shown, then Output 1's ticked, the swatch's tooltip, the Projector on a display this Mac lacks ticked too (its warning stays); the least window; the Cyclorama stage's editor with its guides box mixed (Output 1 on, Output 2 off), then all on; the editor at its least size.",
+  "show": "video-routes.openlab",
+  "displays": "V1:1920x1080,V2:1280x720",
+  "settings": {
+    "settings_version": 1,
+    "workspaces": {
+      "00000000-0000-0000-0000-0000000000e1": {
+        "patches": {},
+        "routes": {
+          "00000000-0000-0000-0000-0000000000e3": {
+            "display": "V1",
+            "name": "Virtual V1",
+            "width": 1920,
+            "height": 1080
+          },
+          "00000000-0000-0000-0000-0000000000e4": {
+            "display": "V2",
+            "name": "Virtual V2",
+            "width": 1280,
+            "height": 720
+          },
+          "00000000-0000-0000-0000-0000000000e5": {
+            "display": "GONE",
+            "name": "Rear Projector",
+            "width": 1920,
+            "height": 1080
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    { "focus": "settings" },
+    { "tab": "videoRouting" },
+    { "shot": "routing-guides-off" },
+    { "click": "settings-video-guides-1" },
+    { "advance": 0.2 },
+    { "shot": "routing-output-1-guides" },
+    { "hover": "settings-video-guide-colour-1" },
+    { "shot": "swatch-tooltip" },
+    { "click": "settings-video-guides-3" },
+    { "advance": 0.2 },
+    { "shot": "routing-missing-display-guides" },
+    { "resize": [790, 552] },
+    { "shot": "routing-guides-least" },
+    { "resize": [1100, 640] },
+    { "tab": "video" },
+    { "click": "settings-video-edit-1" },
+    { "focus": "stage-editor" },
+    { "shot": "stage-editor-guides-mixed" },
+    { "click": "stage-editor-guides" },
+    { "advance": 0.2 },
+    { "shot": "stage-editor-guides-on" },
+    { "resize": [600, 500] },
+    { "shot": "stage-editor-guides-least" }
+  ]
+}

@@ -468,6 +468,16 @@ pub enum Request {
         stage: StageId,
         open: bool,
     },
+    /// Shows (`show`) or hides the alignment guides of the connection's workspace's output
+    /// `routes` (at most `MAX_ROUTES`): each route's display draws, over everything on it, an
+    /// outline, centre lines, marks and the route's name in its guide colour. A view aid, never
+    /// saved and not an undo step; hidden when the route goes or the workspace closes. Answers
+    /// `ok`, `not_found` (a route unknown: none changes) or `bad_request` (too many).
+    /// Workspace-bound.
+    SetRouteGuides {
+        routes: Vec<RouteId>,
+        show: bool,
+    },
     /// How long the sequence that starts at `cue` lasts: its pre-waits and actions through its
     /// auto-continue and auto-follow chain, as a run would time them (what the `load` transport
     /// action's negative time counts back from), for the Load to Time bar's slider. Answers

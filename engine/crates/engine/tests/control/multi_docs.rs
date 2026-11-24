@@ -531,6 +531,84 @@ fn closing_a_doc_while_another_plays_leaves_no_gap() {
     assert_eq!(s.control().doc_ids(), vec![db]);
 }
 
+/// Opening or closing a doc that has no stages or routes changes nothing a `video_outputs`
+/// carries, so none goes out, then or once the pushes' spacing has passed (an opened doc's
+/// connections get theirs when they bind). A push held back by that spacing used to go out at a
+/// later idle tick, whenever the wall clock got there.
+#[test]
+fn opening_and_closing_a_doc_without_video_sends_no_video_outputs() {
+    const T0: i64 = 1_700_000_000_000;
+    let clock = openlab_engine::control::ManualClock::new(T0);
+    let (a, b) = (workspace(vec![]), ws_n(1, vec![]));
+    let mut c = config(&a);
+    map_all(&mut c, &[&a, &b]);
+    c.clock = clock.clock();
+    let mut s = show_with(a, c);
+    s.tick();
+    let doc = s.open_doc(DocSource::Workspace(Box::new(b))).unwrap();
+    s.settle_media();
+    for k in 1..=5 {
+        clock.set(T0 + k * 100);
+        s.tick();
+    }
+    s.close_doc(doc, false).unwrap();
+    for k in 6..=10 {
+        clock.set(T0 + k * 100);
+        s.tick();
+    }
+    let out = s.take_outbound();
+    assert!(
+        !out.iter()
+            .any(|m| matches!(m, ServerMessage::VideoOutputs { .. })),
+        "{out:?}"
+    );
+}
+
+/// #821: a guide colour picked on an open doc's route with its guides off changes no stage or
+/// route set, yet the doc's other connections are told (their swatch follows), within the push
+/// spacing.
+#[test]
+fn a_guide_colour_picked_with_guides_off_is_pushed_to_the_docs_connections() {
+    const T0: i64 = 1_700_000_000_000;
+    let clock = openlab_engine::control::ManualClock::new(T0);
+    let route_id = openlab_core::RouteId(Uuid::from_u128(0x5821));
+    let mut a = workspace(vec![]);
+    let mut route = openlab_core::OutputRoute::new(route_id, "Output 1", 1920, 1080);
+    route.guide_colour = Some(openlab_core::GuideColour([0, 200, 255]));
+    a.routes.push(route);
+    let mut c = config(&a);
+    map_all(&mut c, &[&a]);
+    c.clock = clock.clock();
+    let mut s = show_with(a, c);
+    for k in 1..=3 {
+        clock.set(T0 + k * 100);
+        s.tick();
+    }
+    s.take_outbound();
+    let red = openlab_core::GuideColour([255, 0, 0]);
+    let id = s.request_id();
+    s.send(ClientMessage::Command {
+        id,
+        command: Box::new(Command::SetRouteProperty {
+            id: route_id,
+            property: openlab_core::RouteProperty::GuideColour { value: Some(red) },
+        }),
+        coalesce: None,
+    });
+    for k in 4..=6 {
+        clock.set(T0 + k * 100);
+        s.tick();
+    }
+    let out = s.take_outbound();
+    let pushed = out.iter().any(|m| match m {
+        ServerMessage::VideoOutputs { routes, .. } => routes
+            .iter()
+            .any(|r| r.route == route_id && r.guide_colour == Some(red) && !r.guides),
+        _ => false,
+    });
+    assert!(pushed, "{out:?}");
+}
+
 #[test]
 fn at_most_eight_docs_are_open_and_ids_are_never_reused() {
     let (mut s, mut ids) = docs_show(workspace(vec![]), vec![]);

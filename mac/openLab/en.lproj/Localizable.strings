@@ -562,6 +562,12 @@
 "settings.video.col.layer" = "Layer";
 "settings.video.col.handle" = "";
 "settings.video.col.scaling" = "Scaling";
+"settings.video.col.guides" = "Guides";
+"settings.video.guides.show" = "Visible";
+"settings.video.guides.tip" = "Draw this route’s outline, centre lines and name over its display, to line up a projector";
+"settings.video.guides.ax" = "Guides of “%@”";
+"settings.video.guideColour.tip" = "The colour this route’s guides are drawn in";
+"settings.video.guideColour.ax" = "Guide colour of “%@”";
 "settings.video.col.devices" = "Displays";
 "settings.video.col.edit" = "";
 "settings.video.col.monitor" = "";
@@ -624,6 +630,8 @@
 "stageEditor.layer" = "Layer:";
 "stageEditor.size" = "Size:";
 "stageEditor.black.tip" = "Keep the stage black between cues once a picture has played on it, until a panic";
+"stageEditor.guides" = "Guides on its output routes";
+"stageEditor.guides.tip" = "Draw the guides of every output route this stage’s regions are sent to";
 "stageEditor.newRegion" = "New Region";
 "stageEditor.newRegionOn" = "On %@";
 "stageEditor.newRegionNone" = "With no output route";

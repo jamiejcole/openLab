@@ -82,7 +82,7 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(SettingsCategory.video.pages, [.video, .videoRouting, .videoDevices])
         await settled(sc) { sc.videoPane.nameFields.count == 1 }
         XCTAssertFalse(sc.videoPane.cols.contains(.display), "the stages page chooses no display")
-        XCTAssertEqual(sc.videoRoutingPane.cols, [.handle, .name, .size, .display, .scaling, .edit, .remove])
+        XCTAssertEqual(sc.videoRoutingPane.cols, [.handle, .name, .size, .display, .scaling, .guides, .edit, .remove])
         XCTAssertEqual(sc.videoPane.cols, [.name, .size, .devices, .edit, .monitor, .remove])
         XCTAssertEqual(sc.videoDevicesPane.cols, [.device, .name, .resolution, .rate])
         sc.pageBar.selectedSegment = 1
@@ -294,10 +294,10 @@ final class VideoSettingsTests: XCTestCase {
             XCTAssertEqual(pane.grid.subviews.count, controls.count + stagesWarned, why)
             XCTAssertTrue(controls.allSatisfy { $0.superview === pane.grid }, why)
             XCTAssertEqual(pane.nameFields.map(\.stringValue), rows.map(\.name), why)
-            // The routing page: its row's seven cells, and a line for each warning.
+            // The routing page: its row's eight cells, and a line for each warning.
             XCTAssertEqual(routing.holder.subviews, [routing.grid, routing.dropLine], "\(why): one table")
             XCTAssertEqual(routing.grid.numberOfRows, routes.count + warned, why)
-            XCTAssertEqual(routing.grid.subviews.count, 7 * routes.count + warned, why)
+            XCTAssertEqual(routing.grid.subviews.count, 8 * routes.count + warned, why)
             XCTAssertTrue(routing.displayPopups.allSatisfy { $0.superview === routing.grid }, why)
         }
         for round in 1...2 {
@@ -834,6 +834,7 @@ final class VideoSettingsTests: XCTestCase {
             root["workspace"] = ws
             try JSONSerialization.data(withJSONObject: root).write(to: file)
         }
+        if !displays.isEmpty { await displaysListed() }
         for (route, display) in displays {
             guard case .success = await rig.store.setRouteDisplay(ModelID(route), display: display) else {
                 XCTFail("display \(display) for \(route)")
@@ -844,6 +845,17 @@ final class VideoSettingsTests: XCTestCase {
         addTeardownBlock { @MainActor in sc.close() }
         await sc.present().value
         return (rig, sc)
+    }
+
+    /// Returns once the stage host, started with the engine, has listed both virtual displays: a
+    /// display is chosen only once it is listed.
+    private func displaysListed() async {
+        await assertEventually("the stage host listed its displays") {
+            guard case .success(let ok) = await self.engine.request(.listDisplays),
+                case .displays(let list, _)? = ok.data
+            else { return false }
+            return list.count == 2
+        }
     }
 
     /// The G4 workspace: Stage 1 at 3840 x 1080, region A (its left half) on Output 1 shown on V1
@@ -1504,5 +1516,492 @@ final class VideoSettingsTests: XCTestCase {
         sc.videoRoutingPane.displaysButton.performClick(nil)
         XCTAssertEqual(urls, [VideoSettingsPane.displaysSettings].compactMap { $0 })
         XCTAssertEqual(urls.first?.scheme, "x-apple.systempreferences")
+    }
+}
+
+// MARK: Output route guides (#821; QLab 5 manual pp. 230, 232-233)
+
+extension VideoSettingsTests {
+    /// Output 1's and Output 2's default guide colours (given as they were created).
+    static let firstGuide: [UInt8] = [0x00, 0xc8, 0xff, 255]
+    static let secondGuide: [UInt8] = [0xff, 0x3c, 0xc8, 255]
+    static let orange: [UInt8] = [0xff, 0x82, 0x00, 255]
+
+    /// On a 16:9 route filling its display: the top outline, the centre lines' crossing, and a
+    /// point clear of every line.
+    static let guidePoints: [[Double]] = [[0.5, 0.001], [0.5, 0.5], [0.3, 0.75]]
+
+    /// G4's routes and stage (Output 1 on V1, Output 2 on V2, each a half of Stage 1), nothing
+    /// playing and keep-black off: both displays show nothing.
+    private func openGuided() async throws -> (Rig, WorkspaceSettingsWindowController) {
+        let (rig, sc) = try await openRouted(
+            routes: [(route1, "Output 1", 1920, 1080), (route2, "Output 2", 1280, 720)], width: 3840,
+            regions: [(regionA, route1, 0, 1920), (regionB, route2, 1920, 1920)],
+            displays: [(route1, "V1"), (route2, "V2")])
+        await settled(sc) { sc.videoRoutingPane.guideChecks.count == 2 }
+        addTeardownBlock { @MainActor in NSColorPanel.shared.close() }
+        return (rig, sc)
+    }
+
+    /// Clicks route `n`'s guides box (from 0), as the operator does, and waits for the row to show
+    /// what the engine then holds.
+    private func clickGuides(_ sc: WorkspaceSettingsWindowController, _ n: Int, line: UInt = #line) async {
+        let routing = sc.videoRoutingPane
+        let want = routing.guideChecks[n].state != .on
+        routing.guideChecks[n].performClick(nil)
+        await settled(sc) { routing.shown?[n].guides == want && routing.guideChecks[n].state == (want ? .on : .off) }
+    }
+
+    /// Picks `colour` for route `n` as the operator does: a click on its swatch opens the colour
+    /// panel on the colour it shows, and the panel's pick goes to the route.
+    private func pickGuideColour(
+        _ sc: WorkspaceSettingsWindowController, _ n: Int, _ colour: [UInt8], line: UInt = #line
+    ) async {
+        let routing = sc.videoRoutingPane
+        let shown = routing.guideSwatches[n].colour.flatMap(GuideSwatch.hex)
+        routing.guideSwatches[n].performClick(nil)
+        let panel = NSColorPanel.shared
+        XCTAssertTrue(panel.isVisible, "the colour panel is up", line: line)
+        XCTAssertEqual(GuideSwatch.hex(panel.color), shown, "on the swatch's colour", line: line)
+        panel.color = NSColor(
+            srgbRed: CGFloat(colour[0]) / 255, green: CGFloat(colour[1]) / 255, blue: CGFloat(colour[2]) / 255,
+            alpha: 1)
+        routing.guideColourPicked(panel)
+        let hex = String(format: "#%02x%02x%02x", colour[0], colour[1], colour[2])
+        await settled(sc) { routing.shown?[n].guideColour == hex }
+    }
+
+    /// The colour route `n`'s swatch draws.
+    private func swatch(_ sc: WorkspaceSettingsWindowController, _ n: Int) -> [UInt8]? {
+        guard let c = sc.videoRoutingPane.guideSwatches[n].colour?.usingColorSpace(.sRGB) else { return nil }
+        return [c.redComponent, c.greenComponent, c.blueComponent].map { UInt8(($0 * 255).rounded()) } + [255]
+    }
+
+    /// Waits until `display` shows `colours` at the guide points.
+    private func showsGuides(
+        _ display: String, _ colours: [[UInt8]], _ why: String, line: UInt = #line
+    ) async {
+        await assertEventually(why, line: line) { await self.displayColours(display, Self.guidePoints) == colours }
+    }
+
+    /// #821 GD1: Output 1 on V1, nothing playing → its guides box ticked: V1 shows the outline at
+    /// its edge and the centre lines in the colour its swatch shows (black between), and V2 is
+    /// untouched; unticked: V1 shows nothing again (its window down: the desktop).
+    func testGD1TickingOutput1sGuidesDrawsThemOnItsDisplayOnlyAndUntickingClearsIt() async throws {
+        let (rig, sc) = try await openGuided()
+        let routing = sc.videoRoutingPane
+        XCTAssertEqual(routing.guideChecks.map(\.state), [.off, .off])
+        XCTAssertEqual(routing.guideChecks.first?.title, loc("settings.video.guides.show"))
+        await showsGuides("V1", [black, black, black], "nothing on V1")
+        await clickGuides(sc, 0)
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "Output 1's guides on V1")
+        XCTAssertEqual(swatch(sc, 0), Self.firstGuide, "the swatch is the colour drawn")
+        await showsGuides("V2", [black, black, black], "V2 untouched")
+        XCTAssertEqual(rig.store.videoOutputs.route(ModelID(route1))?.state?.state, "shown")
+        await clickGuides(sc, 0)
+        await showsGuides("V1", [black, black, black], "cleared")
+        await assertEventually("V1's window down") {
+            await sc.videoRoutingPane.refresh()
+            return rig.store.videoOutputs.route(ModelID(self.route1))?.state?.state == "hidden"
+        }
+        XCTAssertEqual(routing.messageLabel.stringValue, "")
+    }
+
+    /// #821 GD2: Output 2's box alone → only V2 draws guides; Output 1's too → each display its
+    /// own in its own colour; Output 2's off → V2 clears and V1 keeps its guides.
+    func testGD2EachRoutesGuidesComeAndGoOnItsOwnDisplayInItsOwnColour() async throws {
+        let (_, sc) = try await openGuided()
+        await clickGuides(sc, 1)
+        await showsGuides("V2", [Self.secondGuide, Self.secondGuide, black], "Output 2's on V2")
+        await showsGuides("V1", [black, black, black], "V1 untouched")
+        await clickGuides(sc, 0)
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "Output 1's on V1")
+        await showsGuides("V2", [Self.secondGuide, Self.secondGuide, black], "V2 keeps its own")
+        XCTAssertNotEqual(swatch(sc, 0), swatch(sc, 1))
+        await clickGuides(sc, 1)
+        await showsGuides("V2", [black, black, black], "V2 clears")
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "V1 keeps its guides")
+    }
+
+    /// What the name's part of V1 shows: a grid over the top left quarter of a route filling it.
+    private func namePattern() async -> [[UInt8]] {
+        var grid: [[Double]] = []
+        for i in 0..<32 {
+            for j in 0..<6 {
+                let x: Double = 0.12 + 0.26 * Double(i) / 31
+                let y: Double = 0.225 + 0.05 * Double(j) / 5
+                grid.append([x, y])
+            }
+        }
+        // A probe reads at most 64 points.
+        var colours: [[UInt8]] = []
+        for start in stride(from: 0, to: grid.count, by: 64) {
+            colours += await displayColours("V1", Array(grid[start..<min(start + 64, grid.count)]))
+        }
+        return colours
+    }
+
+    /// #821 GD3: Output 1 renamed in place while its guides show → the name drawn on V1 changes
+    /// at once (its pixels are another pattern), the guides staying up.
+    func testGD3RenamingARouteWhileItsGuidesShowChangesTheNameDrawn() async throws {
+        let (_, sc) = try await openGuided()
+        let routing = sc.videoRoutingPane
+        await clickGuides(sc, 0)
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "guides up")
+        let before = await namePattern()
+        XCTAssertTrue(before.contains(Self.firstGuide), "the name is drawn")
+        type("Projector Left", into: routing.nameFields[0], routing)
+        await settled(sc) { routing.shown?.first?.name == "Projector Left" }
+        await assertEventually("the new name drawn") {
+            let now = await self.namePattern()
+            return now != before && now.contains(Self.firstGuide)
+        }
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "the guides stay")
+    }
+
+    /// #821 GD4: Output 1 (1920 x 1080) on a 1280 x 1024 display with guides on: filling it, the
+    /// outline's top and bottom lie on the display's edges and its sides are cut off; fitted, the
+    /// sides lie on the edges and black bars above and below; turned a quarter in the route editor,
+    /// the outline turns with it (its long sides now up the display's left and right).
+    func testGD4GuidesShowTheRoutesWholeRasterAsItsScalingAndRotationPlaceIt() async throws {
+        engine.stop()
+        engine = try await TestEngine.start(displays: "V1:1920x1080,V2:1280x1024")
+        let (rig, sc) = try await openRouted(
+            routes: [(route1, "Output 1", 1920, 1080)], width: 1920, regions: [(regionA, route1, 0, 1920)],
+            displays: [(route1, "V2")])
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.guideChecks.count == 1 }
+        await clickGuides(sc, 0)
+        let edges: [[Double]] = [[0.3, 0.001], [0.3, 0.999], [0.001, 0.3], [0.999, 0.3]]
+        let c = Self.firstGuide
+        await assertEventually("fill: top and bottom, sides cut off") {
+            await self.displayColours("V2", edges) == [c, c, self.black, self.black]
+        }
+        choose(loc("settings.video.scaling.fit"), in: routing.scalingPopups[0])
+        await settled(sc) { routing.shown?.first?.scaling == "fit" }
+        // Fitted: 1280 x 720 in the middle, black bars of 152 rows above and below.
+        await assertEventually("fit: the sides on the edges, bars above and below") {
+            await self.displayColours("V2", edges + [[0.3, 0.149], [0.3, 0.05]])
+                == [self.black, self.black, c, c, c, self.black]
+        }
+        routing.editButtons[0].performClick(nil)
+        let editor = try XCTUnwrap(sc.routeEditor)
+        editor.rotationPopup.selectItem(withTitle: "90°")
+        editor.okButton.performClick(nil)
+        await editor.saving?.value
+        await settled(sc) { rig.store.model?.routes.first?.raw["rotation"]?.doubleValue == 90 }
+        // Turned and fitted: 576 x 1024 standing in the middle, its outline from x 0.275 to 0.725.
+        await assertEventually("the outline turned with the route") {
+            await self.displayColours("V2", [[0.276, 0.3], [0.724, 0.3], [0.5, 0.001], [0.1, 0.3]])
+                == [c, c, c, self.black]
+        }
+        XCTAssertEqual(routing.guideChecks.first?.state, .on, "still on")
+    }
+
+    /// #821 GD7: the swatch opens the colour panel on its colour; a colour picked there redraws
+    /// the guides in it at once and the swatch shows it. Output 1's and 2's defaults differ. A
+    /// colour picked while the box is unticked draws nothing, and is the colour when it is ticked.
+    func testGD7AColourPickedFromTheSwatchRedrawsTheGuidesAndIsUsedWhenTickedLater() async throws {
+        let (_, sc) = try await openGuided()
+        XCTAssertEqual(swatch(sc, 0), Self.firstGuide)
+        XCTAssertEqual(swatch(sc, 1), Self.secondGuide)
+        await clickGuides(sc, 0)
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "in its default colour")
+        await pickGuideColour(sc, 0, Self.orange)
+        await showsGuides("V1", [Self.orange, Self.orange, black], "redrawn in the colour picked")
+        XCTAssertEqual(swatch(sc, 0), Self.orange)
+        // Picked while unticked: nothing drawn, then used when ticked.
+        let green: [UInt8] = [0x20, 0xe0, 0x40, 255]
+        await pickGuideColour(sc, 1, green)
+        XCTAssertEqual(swatch(sc, 1), green)
+        await showsGuides("V2", [black, black, black], "nothing drawn while unticked")
+        await clickGuides(sc, 1)
+        await showsGuides("V2", [green, green, black], "drawn in the colour picked before")
+    }
+
+    /// The colour panel outlives the settings window: a colour picked there after the window
+    /// closed and its pages went changes nothing and crashes nothing.
+    func testAColourPickedAfterTheSettingsWindowClosedGoesNowhere() async throws {
+        let (rig, sc) = try await openGuided()
+        weak var gone: VideoSettingsPane?
+        do {
+            let page = VideoSettingsPane(store: rig.store, section: .routing)
+            gone = page
+            await page.refresh()
+            page.guideSwatches[0].performClick(nil)
+            XCTAssertTrue(GuideColourPick.shared.pane === page)
+        }
+        await assertEventually("the page went") { gone == nil }
+        sc.close()
+        let panel = NSColorPanel.shared
+        panel.color = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
+        XCTAssertTrue(NSApp.sendAction(#selector(GuideColourPick.picked(_:)), to: GuideColourPick.shared, from: panel))
+        await rig.sync()
+        XCTAssertEqual(
+            rig.store.model?.routes.first?.raw["guide_colour"].flatMap { v -> String? in
+                if case .string(let hex) = v { return hex } else { return nil }
+            }, "#00c8ff", "nothing changed: still the colour it was given")
+    }
+
+    /// #821 GD8: Output 1 renamed (an undo step), then its guides ticked and a colour picked →
+    /// neither is an undo step: Edit > Undo still names the rename, and undoing it leaves the
+    /// guides showing in the colour picked.
+    func testGD8TickingGuidesAndPickingAColourAreNoUndoSteps() async throws {
+        let (rig, sc) = try await openGuided()
+        let routing = sc.videoRoutingPane
+        type("Cyc", into: routing.nameFields[0], routing)
+        await settled(sc) { routing.shown?.first?.name == "Cyc" }
+        XCTAssertEqual(rig.store.document?.undoName, "rename_route")
+        await clickGuides(sc, 0)
+        await pickGuideColour(sc, 0, Self.orange)
+        await showsGuides("V1", [Self.orange, Self.orange, black], "guides in the colour picked")
+        await rig.sync()
+        XCTAssertEqual(rig.store.document?.undoName, "rename_route", "Undo still names the rename")
+        _ = await rig.store.undo()
+        await settled(sc) { routing.shown?.first?.name == "Output 1" }
+        XCTAssertEqual(routing.guideChecks.first?.state, .on)
+        XCTAssertEqual(swatch(sc, 0), Self.orange)
+        await showsGuides("V1", [Self.orange, Self.orange, black], "the guides stay as they were")
+    }
+
+    /// #821 GD9: guides ticked on Output 1 with a colour picked, saved, closed and opened again
+    /// → no display draws guides and the box is unticked; the colour was saved with the show and
+    /// is the colour when the box is ticked again.
+    func testGD9AReopenedShowHasItsGuideColourButNoGuidesShowing() async throws {
+        let (rig, sc) = try await openGuided()
+        await clickGuides(sc, 0)
+        await pickGuideColour(sc, 0, Self.orange)
+        await showsGuides("V1", [Self.orange, Self.orange, black], "guides up")
+        let path = try XCTUnwrap(rig.store.document?.path)
+        guard case .success = await rig.store.save() else { return XCTFail("save") }
+        XCTAssertTrue(try String(contentsOfFile: path, encoding: .utf8).contains("\"guide_colour\": \"#ff8200\""))
+        sc.close()
+        guard case .success = await rig.client.send({ .close(id: $0, doc: rig.doc, discardChanges: false) })
+        else { return XCTFail("close") }
+        await showsGuides("V1", [black, black, black], "gone with the workspace")
+        let doc = try await engine.open(path: path)
+        let again = Rig(engine: engine, workspace: doc)
+        guard await again.connect() else { return XCTFail("connect") }
+        let reopened = WorkspaceSettingsWindowController(store: again.store)
+        addTeardownBlock { @MainActor in reopened.close() }
+        await reopened.present().value
+        await settled(reopened) { reopened.videoRoutingPane.guideChecks.count == 2 }
+        XCTAssertEqual(reopened.videoRoutingPane.guideChecks.first?.state, .off)
+        XCTAssertEqual(swatch(reopened, 0), Self.orange, "the colour travelled with the show")
+        await showsGuides("V1", [black, black, black], "no guides")
+        await clickGuides(reopened, 0)
+        await showsGuides("V1", [Self.orange, Self.orange, black], "drawn in the saved colour")
+    }
+
+    /// #821 GD10: guides on Output 1 → the route editor's new size and scaling redraw them for the
+    /// new route at once, still on; Cancel changes nothing. Output 1 removed: its guides go with
+    /// it, and the undo brings it back with them off.
+    func testGD10RouteEditsRedrawTheGuidesAndARemovedRouteComesBackWithThemOff() async throws {
+        let (rig, sc) = try await openGuided()
+        let routing = sc.videoRoutingPane
+        await clickGuides(sc, 0)
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "guides up")
+        let beside: [[Double]] = [[0.1, 0.5], [0.5, 0.001]]
+        let c = Self.firstGuide
+        await assertEventually { await self.displayColours("V1", beside) == [c, c] }
+        // Cancel: nothing changes.
+        routing.editButtons[0].performClick(nil)
+        var editor = try XCTUnwrap(sc.routeEditor)
+        editor.widthField.stringValue = "1080"
+        editor.cancelButton.performClick(nil)
+        await assertEventually("the sheet is down") { sc.routeEditor == nil }
+        await assertEventually { await self.displayColours("V1", beside) == [c, c] }
+        // A square route, fitted: its sides move in, the centre line no longer reaches x 0.1.
+        routing.editButtons[0].performClick(nil)
+        editor = try XCTUnwrap(sc.routeEditor)
+        editor.widthField.stringValue = "1080"
+        editor.heightField.stringValue = "1080"
+        editor.scalingPopup.selectItem(withTitle: loc("settings.video.scaling.fit"))
+        editor.okButton.performClick(nil)
+        await editor.saving?.value
+        await settled(sc) { routing.shown?.first?.width == 1080 }
+        await assertEventually("redrawn for the square route") {
+            await self.displayColours("V1", beside + [[0.2193, 0.3]]) == [self.black, c, c]
+        }
+        XCTAssertEqual(routing.guideChecks.first?.state, .on, "still on")
+        // Removed: the guides go; the undo brings the route back without them.
+        routing.removeButtons[0].performClick(nil)
+        await settled(sc) { routing.shown?.count == 1 }
+        await showsGuides("V1", [black, black, black], "gone with the route")
+        _ = await rig.store.undo()
+        await settled(sc) { routing.shown?.count == 2 }
+        XCTAssertEqual(routing.guideChecks.first?.state, .off, "back with its guides off")
+        await showsGuides("V1", [black, black, black], "none drawn")
+        // Change its display and press OK: the guides, ticked again, draw on V2 in Output 1's own
+        // colour and V1 shows none; the box stays ticked.
+        await clickGuides(sc, 0)
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "back on V1")
+        routing.editButtons[0].performClick(nil)
+        editor = try XCTUnwrap(sc.routeEditor)
+        choose("Virtual V2 (1280 × 720)", in: editor.displayPopup)
+        editor.okButton.performClick(nil)
+        await editor.saving?.value
+        await settled(sc) { routing.shown?.first?.display == "V2" }
+        await showsGuides("V2", [Self.firstGuide, Self.firstGuide, black], "now on V2")
+        await showsGuides("V1", [black, black, black], "none left on V1")
+        XCTAssertEqual(routing.guideChecks.first?.state, .on, "the box stays ticked")
+    }
+
+    /// #821 GD2 (a route's colour is its own): removing Output 1 leaves Output 2's swatch and the
+    /// colour its guides are drawn in as they were, and the undo brings Output 1 back in its own.
+    func testGD2RemovingOutput1LeavesOutput2sSwatchAndGuideColourAsTheyWere() async throws {
+        let (rig, sc) = try await openGuided()
+        let routing = sc.videoRoutingPane
+        XCTAssertEqual([swatch(sc, 0), swatch(sc, 1)], [Self.firstGuide, Self.secondGuide])
+        routing.removeButtons[0].performClick(nil)
+        await settled(sc) { routing.shown?.count == 1 && routing.guideSwatches.count == 1 }
+        XCTAssertEqual(swatch(sc, 0), Self.secondGuide, "Output 2 keeps its colour")
+        await clickGuides(sc, 0)
+        await showsGuides("V2", [Self.secondGuide, Self.secondGuide, black], "drawn in Output 2's colour")
+        _ = await rig.store.undo()
+        await settled(sc) { routing.shown?.count == 2 && routing.guideSwatches.count == 2 }
+        await assertEventually("Output 1 back in its own colour") {
+            [self.swatch(sc, 0), self.swatch(sc, 1)] == [Self.firstGuide, Self.secondGuide]
+        }
+    }
+
+    /// The GD11 workspace: Stage 1 (G4) with regions A on Output 1 (V1), B on Output 2 (V2) and C on
+    /// none; Stage 2 with one region on Output 3 (no display), used by no other stage.
+    private func openTwoStages() async throws -> (Rig, WorkspaceSettingsWindowController) {
+        let route3 = "00000000-0000-0000-0000-00000000b003"
+        let (stage1, stage2) = (stageA, stageB)
+        let (rA, rB) = (regionA, regionB)
+        let (o1, o2) = (route1, route2)
+        let rig = try await Rig.open("Demo", on: engine) { folder in
+            let file = folder.appendingPathComponent("Demo.openlab")
+            var root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+            var ws = try XCTUnwrap(root["workspace"] as? [String: Any])
+            ws["routes"] = [(o1, "Output 1"), (o2, "Output 2"), (route3, "Output 3")].map {
+                ["id": $0.0, "name": $0.1, "width": 1920, "height": 1080] as [String: Any]
+            }
+            let region = { (id: String, route: String?, x: Int) -> [String: Any] in
+                var d: [String: Any] = ["id": id, "x": x, "y": 0, "width": 1280, "height": 1080]
+                if let route { d["route"] = route }
+                return d
+            }
+            ws["stages"] = [
+                [
+                    "id": stage1, "name": "Stage 1", "width": 3840, "height": 1080, "keep_black": false,
+                    "regions": [
+                        region(rA, o1, 0), region(rB, o2, 1280),
+                        region("00000000-0000-0000-0000-00000000c003", nil, 2560),
+                    ],
+                ] as [String: Any],
+                [
+                    "id": stage2, "name": "Stage 2", "width": 1920, "height": 1080, "keep_black": false,
+                    "regions": [
+                        [
+                            "id": "00000000-0000-0000-0000-00000000c004", "route": route3, "x": 0, "y": 0,
+                            "width": 1920, "height": 1080,
+                        ]
+                    ],
+                ] as [String: Any],
+            ]
+            root["workspace"] = ws
+            try JSONSerialization.data(withJSONObject: root).write(to: file)
+        }
+        await displaysListed()
+        for (route, display) in [(route1, "V1"), (route2, "V2")] {
+            guard case .success = await rig.store.setRouteDisplay(ModelID(route), display: display) else {
+                XCTFail("display \(display) for \(route)")
+                break
+            }
+        }
+        let sc = WorkspaceSettingsWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in sc.close() }
+        await sc.present().value
+        await settled(sc) { sc.videoRoutingPane.guideChecks.count == 3 }
+        return (rig, sc)
+    }
+
+    /// #821 GD11: Stage 1 in its editor (regions on Output 1 and Output 2, one on none) → its guides
+    /// box ticked: V1 and V2 draw their routes' guides, and both routes' boxes on Output Routing
+    /// are ticked; Output 3, used only by Stage 2, is untouched; nothing is refused. Unticked:
+    /// both clear.
+    func testGD11TheStageEditorsGuidesBoxShowsTheGuidesOfEveryRouteTheStageUses() async throws {
+        let (_, sc) = try await openTwoStages()
+        let routing = sc.videoRoutingPane
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await editorSettled(sc, editor) { editor.guidesCheck.isEnabled }
+        XCTAssertEqual(editor.guidesCheck.state, .off)
+        editor.guidesCheck.performClick(nil)
+        await editorSettled(sc, editor) { editor.guidesCheck.state == .on }
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "Output 1's on V1")
+        await showsGuides("V2", [Self.secondGuide, Self.secondGuide, black], "Output 2's on V2")
+        await settled(sc) { routing.guideChecks.map(\.state) == [.on, .on, .off] }
+        XCTAssertEqual(editor.messageLabel.stringValue, "")
+        editor.guidesCheck.performClick(nil)
+        await editorSettled(sc, editor) { editor.guidesCheck.state == .off }
+        await showsGuides("V1", [black, black, black], "V1 clears")
+        await showsGuides("V2", [black, black, black], "V2 clears")
+        await settled(sc) { routing.guideChecks.map(\.state) == [.off, .off, .off] }
+    }
+
+    /// #821 GD12: Output 1's box ticked by hand on Output Routing, Output 2's not, Stage 1 using
+    /// both → the stage's box is mixed; a click ticks Output 2 and leaves Output 1 (all on); a
+    /// click again clears both.
+    func testGD12AStagesGuidesBoxIsMixedWhenSomeOfItsRoutesShowThem() async throws {
+        let (_, sc) = try await openTwoStages()
+        let routing = sc.videoRoutingPane
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await clickGuides(sc, 0)
+        await editorSettled(sc, editor) { editor.guidesCheck.state == .mixed }
+        editor.guidesCheck.performClick(nil)
+        await editorSettled(sc, editor) { editor.guidesCheck.state == .on }
+        await settled(sc) { routing.guideChecks.map(\.state) == [.on, .on, .off] }
+        await showsGuides("V2", [Self.secondGuide, Self.secondGuide, black], "Output 2's on V2")
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "Output 1's stay")
+        editor.guidesCheck.performClick(nil)
+        await editorSettled(sc, editor) { editor.guidesCheck.state == .off }
+        await settled(sc) { routing.guideChecks.map(\.state) == [.off, .off, .off] }
+        await showsGuides("V1", [black, black, black], "all cleared")
+    }
+
+    /// #821 GD13 (the app's part; the display coming back is the engine's test of the same name):
+    /// a route whose display this Mac lacks now → its box ticks with no alert or message, its row
+    /// still says the display is not connected, and nothing is drawn anywhere.
+    func testGD13GuidesTickedOnARouteWhoseDisplayIsMissingTickWithoutAnAlert() async throws {
+        let settings: [String: Any] = [
+            "settings_version": 1,
+            "workspaces": [
+                "00000000-0000-0000-0000-0000000000d1": [
+                    "patches": [String: Any](),
+                    "routes": [stageA: ["display": "GONE", "name": "Projector", "width": 1920, "height": 1080]],
+                ]
+            ],
+        ]
+        engine.stop()
+        engine = try await TestEngine.start(
+            displays: Self.displays, settings: try JSONSerialization.data(withJSONObject: settings))
+        let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.shown?.first?.warning == loc("settings.video.warn.missing") }
+        await clickGuides(sc, 0)
+        XCTAssertEqual(routing.guideChecks.first?.state, .on)
+        XCTAssertEqual(routing.warningLabels.map(\.stringValue), [loc("settings.video.warn.missing")])
+        XCTAssertEqual(routing.messageLabel.stringValue, "")
+        XCTAssertNil(sc.window?.attachedSheet)
+        await showsGuides("V1", [black, black, black], "nothing drawn on V1")
+        await showsGuides("V2", [black, black, black], "nor on V2")
+    }
+
+    /// #821 GD15: guides showing on V1 and the workspace closed → V1 shows nothing again; the
+    /// workspace opened again starts with none.
+    func testGD15ClosingTheWorkspaceTakesItsGuidesOffTheDisplay() async throws {
+        let (rig, sc) = try await openGuided()
+        await clickGuides(sc, 0)
+        await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "guides up")
+        let path = try XCTUnwrap(rig.store.document?.path)
+        sc.close()
+        guard case .success = await rig.client.send({ .close(id: $0, doc: rig.doc, discardChanges: true) })
+        else { return XCTFail("close") }
+        await showsGuides("V1", [black, black, black], "gone with the workspace")
+        _ = try await engine.open(path: path)
+        await showsGuides("V1", [black, black, black], "opened again: none")
     }
 }

@@ -20,7 +20,7 @@ use openlab_core::protocol::{
     ClientMessage, ErrorCode, Outcome, Request, ResultData, RouteEntry, ServerMessage, StageEntry,
     TransportAction,
 };
-use openlab_core::stage_link::{Display, RouteState};
+use openlab_core::stage_link::{Display, LINK_VERSION, RouteState};
 use openlab_core::{
     DisplayChoice, OutputRoute, Region, RegionId, RouteId, Stage, StageId, Workspace,
 };
@@ -744,8 +744,8 @@ fn a_stage_host_sending_garbage_is_stopped_and_sound_plays_on() {
 /// log, so it cannot flood the log or the clients.
 #[test]
 fn a_stage_host_logging_in_a_burst_is_rate_limited() {
-    let script = r#"printf '{"type":"hello","version":7,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
-    let mut host = host_config(&["-c", script]);
+    let script = r#"printf '{"type":"hello","version":LINK,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#.replace("LINK", &LINK_VERSION.to_string());
+    let mut host = host_config(&["-c", &script]);
     host.program = PathBuf::from("/bin/sh");
     let ws = with_stages(vec![], vec![stage(1)]);
     let mut c: ControlConfig = config(&ws);
@@ -1210,7 +1210,7 @@ fn the_windowed_stage_host_exits_when_its_input_closes() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, r#"{{"type":"hello","version":7}}"#).unwrap();
+    writeln!(stdin, r#"{{"type":"hello","version":{LINK_VERSION}}}"#).unwrap();
     let mut out = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
@@ -1345,7 +1345,7 @@ fn child_named(parent: u32, name: &str) -> Option<u32> {
 fn a_stage_host_reporting_in_a_burst_neither_floods_the_log_nor_grows_memory() {
     let known = route_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":7,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":{LINK_VERSION},"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
@@ -1549,7 +1549,7 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
 fn a_reporting_burst_is_pushed_at_most_once_per_gap() {
     let known = route_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":7,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":{LINK_VERSION},"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
@@ -1623,8 +1623,9 @@ fn routine_clocks_never_get_a_busy_stage_host_stopped() {
     use openlab_engine::stage::{StageEvent, StageHost};
     // Answers hello, then never reads again.
     let script =
-        r#"read line; echo '{"type":"hello","version":7,"pid":1,"video":true}'; exec sleep 600"#;
-    let mut config = host_config(&["-c", script]);
+        r#"read line; echo '{"type":"hello","version":LINK,"pid":1,"video":true}'; exec sleep 600"#
+            .replace("LINK", &LINK_VERSION.to_string());
+    let mut config = host_config(&["-c", &script]);
     config.program = PathBuf::from("/bin/sh");
     config.answer_within = Duration::from_secs(3600);
     config.max_restarts = 1;

@@ -297,6 +297,13 @@ pub struct RouteEntry {
     pub mapping: Option<crate::settings::DisplayChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<crate::stage_link::RouteState>,
+    /// Its alignment guides are shown (`set_route_guides`). Absent: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guides: bool,
+    /// The colour its guides are drawn in: the route's own, picked or given when it was added or
+    /// loaded. Absent only from an engine that predates guides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide_colour: Option<crate::GuideColour>,
 }
 
 /// One stage on this machine: whether its black is down and its monitor open.

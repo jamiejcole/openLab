@@ -20,6 +20,9 @@ struct StageRow: Equatable {
     /// Why the row's route (or every route of the stage) cannot be seen now, in words; nil when
     /// it is shown or shows nothing between cues.
     var warning: String?
+    /// A route's alignment guides show, and their colour (`#rrggbb`; nil: not said yet).
+    var guides: Bool = false
+    var guideColour: String?
 }
 
 /// The Video pages of the workspace settings (VID-01, VID-12; QLab 5 manual pp. 225-234), one
@@ -31,8 +34,10 @@ struct StageRow: Equatable {
 ///   manual p. 157) and remove it; above them a pop-up that adds an empty stage or one on a route.
 /// - Output Routing: the workspace's output routes, one row each with a handle that drags it to
 ///   another place, its name (typed in place), its size, the display it is shown on on this machine
-///   (QLab 5 manual p. 232), its scaling, a button that opens its editor (`RouteEditorController`)
-///   and one that removes it; a route that cannot be seen says why under its row. Above them a
+///   (QLab 5 manual p. 232), its scaling, its alignment guides (a box that shows them on the
+///   route's display and a swatch for their colour, p. 233), a button that opens its editor
+///   (`RouteEditorController`) and one that removes it; a route that cannot be seen says why under
+///   its row. Above them a
 ///   pop-up that adds a route (on a display, or on none) and a button that opens the Mac's
 ///   Displays settings.
 /// - Output Devices: the displays this computer has, one row each: Device N, its name, its size in
@@ -47,7 +52,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// A column of a section's table.
     enum Col: Equatable {
-        case handle, name, size, display, scaling, devices, edit, monitor, remove, device, resolution, rate
+        case handle, name, size, display, scaling, guides, devices, edit, monitor, remove, device, resolution, rate
 
         /// The key of its title (`settings.video.col.<key>`).
         var key: String {
@@ -57,6 +62,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             case .size: return "size"
             case .display: return "display"
             case .scaling: return "scaling"
+            case .guides: return "guides"
             case .devices: return "devices"
             case .edit: return "edit"
             case .monitor: return "monitor"
@@ -74,6 +80,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             case .size: return 72
             case .display: return VideoSettingsPane.leastDisplayWidth
             case .scaling: return 80  // "Centre" whole in a small pop-up
+            case .guides: return VideoSettingsPane.guidesWidth
             case .devices: return VideoSettingsPane.leastDisplayWidth
             case .edit: return 34
             case .monitor: return VideoSettingsPane.monitorWidth
@@ -124,6 +131,15 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private(set) var deviceCells: [NSTextField] = []
     private(set) var displayPopups: [NSPopUpButton] = []
     private(set) var scalingPopups: [NSPopUpButton] = []
+    /// Output Routing: each route's guides box and colour swatch.
+    private(set) var guideChecks: [NSButton] = []
+    private(set) var guideSwatches: [GuideSwatch] = []
+    /// The route whose guide colour the colour panel is picking now, if any.
+    private(set) var pickingColourFor: ModelID?
+    /// The colour picked last that is not yet sent, and whether a send is under way: the panel
+    /// sends a colour for each step of a drag, and only the newest goes to the engine.
+    private var colourWanted: (ModelID, String)?
+    private var colourSending = false
     private(set) var handles: [RowHandle] = []
     private(set) var editButtons: [NSButton] = []
     private(set) var monitorButtons: [NSButton] = []
@@ -154,7 +170,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     static func columns(of section: Section) -> [Col] {
         switch section {
         case .outputs: return [.name, .size, .devices, .edit, .monitor, .remove]
-        case .routing: return [.handle, .name, .size, .display, .scaling, .edit, .remove]
+        case .routing: return [.handle, .name, .size, .display, .scaling, .guides, .edit, .remove]
         case .devices: return [.device, .name, .resolution, .rate]
         }
     }
@@ -192,6 +208,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// The monitor button's column.
     nonisolated static let monitorWidth: CGFloat = 56
+    /// The guides column: a small box with its title and the colour swatch beside it.
+    nonisolated static let guidesWidth: CGFloat = 78
     nonisolated static let leastDisplayWidth: CGFloat = 120
     static let mostDisplayWidth: CGFloat = 260
     static let columnSpacing: CGFloat = 5
@@ -403,7 +421,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
                     // With no stage host to report a state (no video output here), a route with no
                     // display still says so.
                     warning: entry?.state.flatMap(Self.warning)
-                        ?? (entry != nil && entry?.mapping == nil ? loc("settings.video.warn.noDisplay") : nil))
+                        ?? (entry != nil && entry?.mapping == nil ? loc("settings.video.warn.noDisplay") : nil),
+                    guides: entry?.guides ?? false, guideColour: entry?.guideColour)
             }
         }
         return (store.model?.stages ?? []).map { s in
@@ -490,6 +509,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         deviceCells = []
         displayPopups = []
         scalingPopups = []
+        guideChecks = []
+        guideSwatches = []
         handles = []
         editButtons = []
         monitorButtons = []
@@ -561,7 +582,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
                 let scaling = scalingPopup(row, tag: i, enabled: enabled)
                 scaling.setAX("\(Self.id)-scaling-\(n)", label: "\(row.name), \(loc("settings.video.col.scaling"))")
                 scalingPopups.append(scaling)
-                grid.addRow(with: [handle, cell, size, popup, scaling, edit, remove])
+                let guides = guidesCell(row, tag: i, enabled: enabled)
+                grid.addRow(with: [handle, cell, size, popup, scaling, guides, edit, remove])
             } else {
                 nameWidths.append((Self.widthConstraint(of: name, nameWidth), 0))
                 let devices = Self.cellLabel(row.devices.joined(separator: ", "), key: "devices", n: n)
@@ -779,6 +801,35 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         popup.toolTip = loc("settings.video.scaling.tip")
         _ = Self.widthConstraint(of: popup, Col.scaling.width)
         return popup
+    }
+
+    /// A route's guides: a box that shows them on its display, and the swatch of their colour
+    /// that opens the colour panel (UI map `settings.video.output-routing`, our own controls).
+    private func guidesCell(_ row: StageRow, tag: Int, enabled: Bool) -> NSView {
+        let n = tag + 1
+        let check = NSButton(
+            checkboxWithTitle: loc("settings.video.guides.show"), target: self, action: #selector(guidesClicked(_:)))
+        check.controlSize = .small
+        check.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        check.state = row.guides ? .on : .off
+        check.tag = tag
+        check.isEnabled = enabled
+        check.toolTip = loc("settings.video.guides.tip")
+        check.setAX("\(Self.id)-guides-\(n)", label: String(format: loc("settings.video.guides.ax"), row.name))
+        guideChecks.append(check)
+        let swatch = GuideSwatch(target: self, action: #selector(swatchClicked(_:)))
+        swatch.colour = row.guideColour.flatMap(GuideSwatch.colour(hex:))
+        swatch.tag = tag
+        swatch.isEnabled = enabled
+        swatch.toolTip = loc("settings.video.guideColour.tip")
+        swatch.setAX(
+            "\(Self.id)-guide-colour-\(n)", label: String(format: loc("settings.video.guideColour.ax"), row.name))
+        guideSwatches.append(swatch)
+        let cell = NSStackView(views: [check, swatch])
+        cell.orientation = .horizontal
+        cell.spacing = 4
+        _ = Self.widthConstraint(of: cell, Col.guides.width)
+        return cell
     }
 
     /// Fills `popup` with the scalings and chooses `chosen`.
@@ -1006,6 +1057,53 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         commit(row.id, after: typed) { [store] in await store.setRouteDisplay(row.id, display: display) }
     }
 
+    /// Shows or hides the route's guides: a view aid, kept by the engine while the workspace is
+    /// open, never an undo step; the box is then drawn from what the engine holds.
+    @objc private func guidesClicked(_ sender: NSButton) {
+        let typed = endTyping()
+        guard let row = row(sender.tag) else { return }
+        let show = sender.state == .on
+        commit(row.id, after: typed) { [store] in await store.setRouteGuides([row.id], show: show) }
+    }
+
+    /// Opens the colour panel on the route's guide colour; what is picked there goes to the
+    /// route (`guideColourPicked`).
+    @objc private func swatchClicked(_ sender: GuideSwatch) {
+        endTyping()
+        guard let row = row(sender.tag) else { return }
+        pickingColourFor = row.id
+        let panel = NSColorPanel.shared
+        panel.setTarget(nil)
+        panel.setAction(nil)
+        if let colour = sender.colour { panel.color = colour }
+        panel.showsAlpha = false
+        // The panel outlives this page and does not keep its target: it sends to a target that
+        // lives as long as the app, which passes the pick on while this page is there.
+        GuideColourPick.shared.pane = self
+        panel.setTarget(GuideColourPick.shared)
+        panel.setAction(#selector(GuideColourPick.picked(_:)))
+        panel.orderFront(nil)
+    }
+
+    /// The colour panel's colour, for the route its swatch opened it on: saved with the show,
+    /// never an undo step, and the guides redrawn in it at once when they show. Only the newest
+    /// of a drag's colours is sent once the one before is answered.
+    @objc func guideColourPicked(_ sender: NSColorPanel) {
+        guard let route = pickingColourFor, let hex = GuideSwatch.hex(sender.color) else { return }
+        colourWanted = (route, hex)
+        guard !colourSending else { return }
+        colourSending = true
+        commit(route) { [weak self, store] in
+            var result: Result<OkBody, EngineError> = .success(OkBody(revision: nil, data: nil))
+            while let self, let (id, hex) = self.colourWanted {
+                self.colourWanted = nil
+                result = await store.send(command: .setRouteGuideColour(id, hex: hex))
+            }
+            self?.colourSending = false
+            return result
+        }
+    }
+
     @objc private func scalingChosen(_ sender: NSPopUpButton) {
         let scaling = sender.selectedItem?.representedObject as? String
         let typed = endTyping()
@@ -1028,6 +1126,65 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         let property: JSONValue = .object(["type": .string("name"), "value": .string(text)])
         let command: Command = section == .routing ? .setRoute(row.id, property) : .setStage(row.id, property)
         commit(row.id, typed: true) { [store] in await store.send(command: command) }
+    }
+}
+
+/// The shared colour panel's target while a guide colour is picked: it outlives the page that
+/// opened the panel, so a pick after the page closed goes nowhere instead of to a freed object.
+@MainActor
+final class GuideColourPick: NSObject {
+    static let shared = GuideColourPick()
+    /// The page whose swatch opened the panel last; nil once it is gone.
+    weak var pane: VideoSettingsPane?
+
+    @objc func picked(_ sender: NSColorPanel) { pane?.guideColourPicked(sender) }
+}
+
+/// A route's guide colour as a small round swatch (UI map `settings.video.output-routing`): a
+/// click opens the colour panel on it.
+final class GuideSwatch: NSButton {
+    /// The colour drawn; nil: not known yet (drawn hollow).
+    var colour: NSColor? { didSet { needsDisplay = true } }
+
+    static let side: CGFloat = 14
+
+    convenience init(target: AnyObject?, action: Selector?) {
+        self.init(frame: NSRect(x: 0, y: 0, width: Self.side, height: Self.side))
+        self.target = target
+        self.action = action
+        isBordered = false
+        title = ""
+        setButtonType(.momentaryChange)
+        widthAnchor.constraint(equalToConstant: Self.side).isActive = true
+        heightAnchor.constraint(equalToConstant: Self.side).isActive = true
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: Self.side, height: Self.side) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let ring = NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1))
+        if let colour {
+            (isEnabled ? colour : colour.withAlphaComponent(0.4)).setFill()
+            ring.fill()
+        }
+        NSColor.secondaryLabelColor.setStroke()
+        ring.lineWidth = 1
+        ring.stroke()
+    }
+
+    /// `#rrggbb` as a colour (sRGB); nil for anything else.
+    static func colour(hex: String) -> NSColor? {
+        guard hex.count == 7, hex.hasPrefix("#"), let v = UInt32(hex.dropFirst(), radix: 16) else { return nil }
+        return NSColor(
+            srgbRed: CGFloat((v >> 16) & 0xff) / 255, green: CGFloat((v >> 8) & 0xff) / 255,
+            blue: CGFloat(v & 0xff) / 255, alpha: 1)
+    }
+
+    /// A colour as `#rrggbb` (in sRGB); nil when it has no such form (a pattern).
+    static func hex(_ colour: NSColor) -> String? {
+        guard let c = colour.usingColorSpace(.sRGB) else { return nil }
+        let byte = { (v: CGFloat) in Int((min(max(v, 0), 1) * 255).rounded()) }
+        return String(format: "#%02x%02x%02x", byte(c.redComponent), byte(c.greenComponent), byte(c.blueComponent))
     }
 }
 

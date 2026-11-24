@@ -57,12 +57,18 @@ impl History {
         key: Option<&str>,
     ) -> Result<bool, CommandError> {
         let name = step_name(&command, workspace);
+        let view_aid = command.is_view_aid();
         let inverse = workspace
             .apply(command)
             .inspect_err(|e| self.drop_if_stale(e))?;
         if is_empty_transaction(&inverse) {
             // Not an edit: an open gesture stays open.
             return Ok(false);
+        }
+        if view_aid {
+            // Saved with the show but no editing step: undo and redo, and an open gesture, stay as
+            // they were.
+            return Ok(true);
         }
         self.redo.clear();
         let joins = key.is_some() && self.open.as_deref() == key;

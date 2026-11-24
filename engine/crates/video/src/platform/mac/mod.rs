@@ -21,6 +21,7 @@
 
 mod displays;
 mod gpu;
+mod label;
 mod media;
 mod monitor;
 mod probe;
@@ -54,7 +55,7 @@ use openlab_core::stage_link::{Display, FromStage, LinkLevel, ToStage};
 
 use self::displays::Found;
 use self::gpu::Gpu;
-use crate::host::{Flow, Host, Layer, PictureEvent, Platform, Presented, write_all};
+use crate::host::{Flow, Guide, Host, Layer, PictureEvent, Platform, Presented, write_all};
 use openlab_core::stage_link::{Line, read_line};
 
 pub fn run(args: Vec<String>) -> ExitCode {
@@ -169,7 +170,12 @@ impl Platform for Mac {
         self.found.iter().map(|f| f.display.clone()).collect()
     }
 
-    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<Presented, String> {
+    fn present(
+        &mut self,
+        display: &Display,
+        layers: &[Layer],
+        guides: &[Guide],
+    ) -> Result<Presented, String> {
         let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
         let Some(windows) = self.windows.as_mut() else {
             // Offscreen: the stages are drawn only when a probe asks.
@@ -205,7 +211,7 @@ impl Platform for Mac {
         let device = gpu.device_owned();
         let (media, failed) = (&mut self.media, &mut self.failed);
         let mut drawn = Vec::new();
-        let cb = gpu.draw(&drawable.texture(), layers, &mut |c| {
+        let cb = gpu.draw(&drawable.texture(), layers, guides, &mut |c| {
             drawn.push(c.picture);
             // Shown at the next refresh: the frame due then.
             let ahead = media::FRAME_AHEAD;
@@ -249,6 +255,7 @@ impl Platform for Mac {
         &mut self,
         size: (u32, u32),
         layers: &[Layer],
+        guides: &[Guide],
         points: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String> {
         let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
@@ -256,7 +263,7 @@ impl Platform for Mac {
         let (media, failed) = (&mut self.media, &mut self.failed);
         // Offscreen, a probe shows the frame at the clock exactly: it waits (within the
         // limits) for each picture's decode thread. Never on real displays.
-        gpu.probe(size, layers, points, &mut |c| {
+        gpu.probe(size, layers, guides, points, &mut |c| {
             frame_of(&device, media, failed, c, 0.0, true)
         })
     }
@@ -334,11 +341,16 @@ impl Platform for Mac {
         let device = gpu.device_owned();
         let (media, failed) = (&mut self.media, &mut self.failed);
         let mut drawn = Vec::new();
-        let cb = gpu.draw(&drawable.texture(), std::slice::from_ref(layer), &mut |c| {
-            drawn.push(c.picture);
-            // The frame the displays show at the next refresh.
-            frame_of(&device, media, failed, c, media::FRAME_AHEAD, false)
-        })?;
+        let cb = gpu.draw(
+            &drawable.texture(),
+            std::slice::from_ref(layer),
+            &[],
+            &mut |c| {
+                drawn.push(c.picture);
+                // The frame the displays show at the next refresh.
+                frame_of(&device, media, failed, c, media::FRAME_AHEAD, false)
+            },
+        )?;
         for picture in drawn {
             if let Some(p) = self.media.get_mut(&picture) {
                 p.drawn_with(&cb);
@@ -578,7 +590,7 @@ fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
     NEVER_ORDER_FRONT.with(|n| n.set(true));
     ORDERED_FRONT_AT.with(|l| l.borrow_mut().clear());
     // A drawable may not come for a window never on screen; the order front comes before it.
-    let _ = mac.present(&display, &[]);
+    let _ = mac.present(&display, &[], &[]);
     let after = mac
         .windows
         .as_ref()

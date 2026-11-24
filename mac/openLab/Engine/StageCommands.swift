@@ -65,6 +65,12 @@ extension Command {
         Command(.object(["type": .string("set_route_property"), "id": .string(id.raw), "property": property]))
     }
 
+    /// `SetRouteProperty` `guide_colour`: the colour its guides are drawn in (`#rrggbb`; nil: a default
+    /// no other route has). Saved with the show, but no undo step.
+    static func setRouteGuideColour(_ id: ModelID, hex: String?) -> Command {
+        setRoute(id, .object(["type": .string("guide_colour"), "value": hex.map { .string($0) } ?? .null]))
+    }
+
     /// `AddRegion` at `index` of `stage`: `bounds` in stage pixels from its top left, sent to
     /// `route` (nil: none).
     static func addRegion(stage: ModelID, index: Int, id: ModelID, route: ModelID?, bounds: RegionBounds) -> Command {
@@ -156,5 +162,11 @@ extension WorkspaceStore {
     /// stage the stage host draws in a window of its own.
     func setStageMonitor(_ stage: ModelID, open: Bool) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .setStageMonitor(stage: stage, open: open)) }
+    }
+
+    /// Shows or hides the alignment guides of `routes` on their displays: a view aid the engine
+    /// keeps while the workspace is open, never saved and no undo step.
+    func setRouteGuides(_ routes: [ModelID], show: Bool) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .setRouteGuides(routes: routes, show: show)) }
     }
 }

@@ -82,6 +82,96 @@ pub struct OutputRoute {
     pub rotation: u16,
     #[serde(default)]
     pub scaling: RouteScaling,
+    /// The colour its alignment guides are drawn in (p. 233), as the operator picked it on the
+    /// Output Routing page. A route is given one when it is added to a workspace or loaded
+    /// without one ([`next_guide_colour`]) and keeps it whatever happens to the other routes;
+    /// `None` only before that. Whether the guides show is not saved: the engine keeps it while
+    /// the workspace is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide_colour: Option<GuideColour>,
+}
+
+/// An alignment guide's colour (red, green, blue); `"#rrggbb"` in show files and on the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GuideColour(pub [u8; 3]);
+
+impl GuideColour {
+    /// `"#rrggbb"` (either case) as a colour; `None` for anything else.
+    pub fn parse(text: &str) -> Option<Self> {
+        let hex = text.strip_prefix('#')?;
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let part = |at: usize| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok();
+        Some(Self([part(0)?, part(2)?, part(4)?]))
+    }
+}
+
+impl std::fmt::Display for GuideColour {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [r, g, b] = self.0;
+        write!(f, "#{r:02x}{g:02x}{b:02x}")
+    }
+}
+
+impl Serialize for GuideColour {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for GuideColour {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::parse(&text)
+            .ok_or_else(|| serde::de::Error::custom("a guide colour is written #rrggbb"))
+    }
+}
+
+/// The guide colours a new route takes by default, in turn, so the guides of routes can be told
+/// apart.
+pub const GUIDE_COLOURS: [GuideColour; 8] = [
+    GuideColour([0x00, 0xc8, 0xff]),
+    GuideColour([0xff, 0x3c, 0xc8]),
+    GuideColour([0xff, 0xd2, 0x00]),
+    GuideColour([0x3c, 0xdc, 0x50]),
+    GuideColour([0xff, 0x82, 0x00]),
+    GuideColour([0x96, 0x6e, 0xff]),
+    GuideColour([0xff, 0x46, 0x46]),
+    GuideColour([0xff, 0xff, 0xff]),
+];
+
+/// The default colour for a route added to `routes`: the first of [`GUIDE_COLOURS`] no route
+/// there has, or, with all in use, the one the fewest have (the earliest on a tie).
+pub fn next_guide_colour(routes: &[OutputRoute]) -> GuideColour {
+    next_guide_colour_except(routes, usize::MAX)
+}
+
+/// [`next_guide_colour`] for the route at `except` (its own colour does not count).
+pub fn next_guide_colour_except(routes: &[OutputRoute], except: usize) -> GuideColour {
+    let uses = |c: &GuideColour| {
+        (routes.iter().enumerate())
+            .filter(|(at, r)| *at != except && r.guide_colour == Some(*c))
+            .count()
+    };
+    GUIDE_COLOURS
+        .iter()
+        .min_by_key(|c| uses(c))
+        .copied()
+        .unwrap_or(GUIDE_COLOURS[0])
+}
+
+/// Gives each route with no colour one, in list order (a stable repair for routes saved
+/// without).
+pub fn fill_guide_colours(routes: &mut [OutputRoute]) {
+    for at in 0..routes.len() {
+        if routes.get(at).is_some_and(|r| r.guide_colour.is_none()) {
+            let colour = next_guide_colour(routes);
+            if let Some(r) = routes.get_mut(at) {
+                r.guide_colour = Some(colour);
+            }
+        }
+    }
 }
 
 impl OutputRoute {
@@ -94,7 +184,14 @@ impl OutputRoute {
             height: height.clamp(1, MAX_ROUTE_PIXELS),
             rotation: 0,
             scaling: RouteScaling::Fill,
+            guide_colour: None,
         }
+    }
+
+    /// The colour its guides are drawn in: the one it was given when it was created or loaded
+    /// (never changed by its place in the list). A route not yet in a workspace has none.
+    pub fn shown_guide_colour(&self) -> GuideColour {
+        self.guide_colour.unwrap_or(GUIDE_COLOURS[0])
     }
 
     /// Puts size and rotation within their limits; `(size, rotation)` say which changed.
@@ -419,6 +516,12 @@ pub enum RouteProperty {
     Scaling {
         value: RouteScaling,
     },
+    /// The colour its guides are drawn in; `None`: a default no other route has
+    /// ([`next_guide_colour`]). Saved with the show but no undo step (`Command::is_view_aid`).
+    GuideColour {
+        #[serde(default)]
+        value: Option<GuideColour>,
+    },
 }
 
 impl RouteProperty {
@@ -437,6 +540,9 @@ impl RouteProperty {
             Self::Scaling { .. } => Self::Scaling {
                 value: route.scaling,
             },
+            Self::GuideColour { .. } => Self::GuideColour {
+                value: route.guide_colour,
+            },
         }
     }
 
@@ -449,6 +555,7 @@ impl RouteProperty {
             }
             Self::Rotation { value } => route.rotation = *value,
             Self::Scaling { value } => route.scaling = *value,
+            Self::GuideColour { value } => route.guide_colour = *value,
         }
     }
 }

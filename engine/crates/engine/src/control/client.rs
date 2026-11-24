@@ -197,6 +197,13 @@ impl Control {
                     self.set_stage_monitor(doc, id, stage, open, to);
                     Flow::Continue
                 }
+                ClientMessage::Request {
+                    id,
+                    request: Request::SetRouteGuides { routes, show },
+                } => {
+                    self.set_route_guides(doc, id, &routes, show, to);
+                    Flow::Continue
+                }
                 #[cfg(feature = "test-support")]
                 ClientMessage::Request {
                     id,

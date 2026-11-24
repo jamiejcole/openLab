@@ -149,6 +149,15 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertEqual(outputs.routes.map { $0.state?.state }, ["display_missing", "hidden"])
         XCTAssertEqual(outputs.stages.map(\.panicked), [false, true])
         XCTAssertEqual(outputs.stages.map(\.monitor), [true, false])
+        // #821: each route's guides and their colour.
+        XCTAssertEqual(outputs.routes.map(\.guides), [true, false])
+        XCTAssertEqual(outputs.routes.map(\.guideColour), ["#00c8ff", "#00c800"])
+        guard
+            case .request(_, .setRouteGuides(let shown, let show)) = try JSONDecoder().decode(
+                ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_route_guides").utf8))
+        else { return XCTFail("set_route_guides") }
+        XCTAssertEqual(shown, ["00000000-0000-0000-0000-000000000090", "00000000-0000-0000-0000-000000000091"])
+        XCTAssertTrue(show)
     }
 
     /// The Load to Time slider's span: `sequence_span` and its answer, with and without an end.

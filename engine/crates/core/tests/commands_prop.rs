@@ -853,6 +853,10 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
                     RouteScaling::Centre,
                     RouteScaling::Stretch,
                 ][p.b as usize % 4],
+                guide_colour: p
+                    .c
+                    .is_multiple_of(3)
+                    .then_some(openlab_core::GuideColour([p.a as u8, p.b as u8, p.d as u8])),
             },
             regions: if p.a.is_multiple_of(4) {
                 vec![region_id(1 + u128::from(p.b % 6))]
@@ -865,6 +869,7 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
             id: some_route(),
             index: p.b as usize % (ws.routes.len() + 1),
         },
+        // A guide colour is no undo step (`Command::is_view_aid`): commands_model.rs.
         36 => Command::SetRouteProperty {
             id: some_route(),
             property: match p.c % 4 {
@@ -1218,6 +1223,7 @@ fn base() -> Workspace {
         OutputRoute::new(route_id(1), "Output 1", 1920, 1080),
         OutputRoute::new(route_id(2), "Output 2", 1280, 720),
     ];
+    fill_guide_colours(&mut ws.routes);
     ws.stages[0].regions = vec![Region::whole(region_id(1), Some(route_id(1)), 1920, 1080)];
     ws.stages[1].regions = vec![Region::whole(region_id(2), Some(route_id(2)), 1280, 720)];
     ws

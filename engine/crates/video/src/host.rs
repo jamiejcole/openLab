@@ -180,6 +180,148 @@ impl Placement {
     }
 }
 
+/// A route's alignment guides as a display draws them, over everything on it (QLab 5 manual
+/// p. 233): an outline of the route's whole raster, its centre lines, marks at its corners and
+/// centre, and its name, in its colour, placed (turned and scaled) as the route's regions are.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Guide {
+    pub route: RouteId,
+    pub name: String,
+    pub colour: [u8; 3],
+    /// The route's whole raster on the display: `region` covers the route.
+    pub place: Placement,
+}
+
+/// A guide line's thickness, in display pixels per 360 pixels of the display's shorter side
+/// (3 on a 1080-line display), at least [`GUIDE_LINE_LEAST`] and at most [`GUIDE_LINE_MOST`].
+const GUIDE_LINE_PER: f64 = 360.0;
+const GUIDE_LINE_LEAST: f64 = 2.0;
+const GUIDE_LINE_MOST: f64 = 8.0;
+/// A corner mark's centre, in from the route's corner, as a fraction of its shorter side.
+const GUIDE_MARK_IN: f64 = 0.1;
+/// A mark's arm, from its centre, as a fraction of the route's shorter side: the circle's
+/// diameter.
+const GUIDE_MARK_ARM: f64 = 0.05;
+/// The short quads a mark's circle is drawn with.
+const GUIDE_RING_STEPS: u32 = 32;
+/// The name's height as a fraction of the route's height, and where its centre is (fractions of
+/// the route from its top left: in the top left quarter, clear of the centre lines and marks).
+const GUIDE_LABEL_HEIGHT: f64 = 0.06;
+const GUIDE_LABEL_CENTRE: (f64, f64) = (0.25, 0.25);
+/// The widest the name may be, as a fraction of the route's width (within its quarter): a
+/// longer one is drawn smaller.
+const GUIDE_LABEL_WIDEST: f64 = 0.4;
+/// The name's least and greatest height in display pixels.
+pub const GUIDE_LABEL_LEAST_PX: u32 = 10;
+pub const GUIDE_LABEL_MOST_PX: u32 = 256;
+
+impl Guide {
+    /// Route pixels per display pixel across the route's x and its y: the route as turned and
+    /// scaled onto the display (its own size when known, else the target's), so lines and the
+    /// name are as thick on a probe drawn smaller as on the display.
+    fn route_per_pixel(&self, target: (u32, u32)) -> (f64, f64) {
+        let (tw, th) = self.place.screen.unwrap_or(target);
+        let [l, t, r, b] = self.place.dest(target);
+        let (across, down) = ((r - l) * f64::from(tw), (b - t) * f64::from(th));
+        // A quarter turn lays the route's x down the display.
+        let (along_x, along_y) = if matches!(self.place.rotation, 90 | 270) {
+            (down, across)
+        } else {
+            (across, down)
+        };
+        let (rw, rh) = (
+            f64::from(self.place.route.0.max(1)),
+            f64::from(self.place.route.1.max(1)),
+        );
+        (rw / along_x.max(1e-6), rh / along_y.max(1e-6))
+    }
+
+    /// The guide's lines as quads in route pixels (each four corners: top left, top right,
+    /// bottom left, bottom right): the outline inside the route's edge, the two centre lines,
+    /// and a registration mark (a circle crossed by its two diameters, round on the display) at
+    /// each corner and at the centre. Each line is a few display pixels thick (`GUIDE_LINE_*`).
+    pub fn quads(&self, target: (u32, u32)) -> Vec<[[f64; 2]; 4]> {
+        let (kx, ky) = self.route_per_pixel(target);
+        let (tw, th) = self.place.screen.unwrap_or(target);
+        let line =
+            (f64::from(tw.min(th)) / GUIDE_LINE_PER).clamp(GUIDE_LINE_LEAST, GUIDE_LINE_MOST);
+        // Across x a vertical line is `vx` route pixels thick, across y a horizontal one `hy`.
+        let (vx, hy) = (line * kx, line * ky);
+        let (rw, rh) = (
+            f64::from(self.place.route.0.max(1)),
+            f64::from(self.place.route.1.max(1)),
+        );
+        let (cx, cy) = (rw / 2.0, rh / 2.0);
+        let rect = |l: f64, t: f64, r: f64, b: f64| [[l, t], [r, t], [l, b], [r, b]];
+        let mut quads = vec![
+            rect(0.0, 0.0, rw, hy),
+            rect(0.0, rh - hy, rw, rh),
+            rect(0.0, 0.0, vx, rh),
+            rect(rw - vx, 0.0, rw, rh),
+            rect(0.0, cy - hy / 2.0, rw, cy + hy / 2.0),
+            rect(cx - vx / 2.0, 0.0, cx + vx / 2.0, rh),
+        ];
+        let short = rw.min(rh);
+        let inset = short * GUIDE_MARK_IN;
+        // The circle's radius on the display, from the mark's arm across the route's x.
+        let radius = short * GUIDE_MARK_ARM / kx / 2.0;
+        let marks = [
+            (inset, inset),
+            (rw - inset, inset),
+            (inset, rh - inset),
+            (rw - inset, rh - inset),
+            (cx, cy),
+        ];
+        for (x, y) in marks {
+            // The diameters, reaching half a radius past the circle.
+            let (ax, ay) = (radius * 1.5 * kx, radius * 1.5 * ky);
+            quads.push(rect(x - ax, y - hy / 2.0, x + ax, y + hy / 2.0));
+            quads.push(rect(x - vx / 2.0, y - ay, x + vx / 2.0, y + ay));
+            // The circle: a ring of short quads, round on the display.
+            let ring = |r: f64, a: f64| [x + r * a.cos() * kx, y + r * a.sin() * ky];
+            let inner = (radius - line).max(0.0);
+            for k in 0..GUIDE_RING_STEPS {
+                let step = std::f64::consts::TAU / f64::from(GUIDE_RING_STEPS);
+                let (a0, a1) = (step * f64::from(k), step * f64::from(k + 1));
+                quads.push([
+                    ring(radius, a0),
+                    ring(radius, a1),
+                    ring(inner, a0),
+                    ring(inner, a1),
+                ]);
+            }
+        }
+        quads
+    }
+
+    /// The height in display pixels the name is drawn at on a target of `target` pixels.
+    pub fn label_height(&self, target: (u32, u32)) -> u32 {
+        let (_, ky) = self.route_per_pixel(target);
+        let rh = f64::from(self.place.route.1.max(1));
+        let px = rh * GUIDE_LABEL_HEIGHT / ky;
+        (px.round() as u32).clamp(GUIDE_LABEL_LEAST_PX, GUIDE_LABEL_MOST_PX)
+    }
+
+    /// Where the name drawn `size` display pixels (width, height) lands, in route pixels (left,
+    /// top, right, bottom): centred on `GUIDE_LABEL_CENTRE`, made smaller if it would be wider
+    /// than `GUIDE_LABEL_WIDEST` of the route.
+    pub fn label_box(&self, target: (u32, u32), (w, h): (u32, u32)) -> [f64; 4] {
+        let (kx, ky) = self.route_per_pixel(target);
+        let (rw, rh) = (
+            f64::from(self.place.route.0.max(1)),
+            f64::from(self.place.route.1.max(1)),
+        );
+        let (mut lw, mut lh) = (f64::from(w) * kx, f64::from(h) * ky);
+        let widest = rw * GUIDE_LABEL_WIDEST;
+        if lw > widest {
+            lh *= widest / lw;
+            lw = widest;
+        }
+        let (cx, cy) = (rw * GUIDE_LABEL_CENTRE.0, rh * GUIDE_LABEL_CENTRE.1);
+        [cx - lw / 2.0, cy - lh / 2.0, cx + lw / 2.0, cy + lh / 2.0]
+    }
+}
+
 /// Where a picture is in its run.
 #[derive(Clone, Debug, PartialEq)]
 enum Run {
@@ -381,19 +523,26 @@ pub trait Platform {
     fn video(&self) -> bool;
     /// The displays connected now.
     fn displays(&mut self) -> Vec<Display>;
-    /// Draws `layers` (bottom first, each stage fitted to the display) on `display`, opening
-    /// or moving its window as needed. An error: the display's stages cannot be drawn.
-    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<Presented, String>;
+    /// Draws `layers` (bottom first, each placed by its route) and over them `guides` on
+    /// `display`, opening or moving its window as needed. An error: the display's routes cannot
+    /// be drawn.
+    fn present(
+        &mut self,
+        display: &Display,
+        layers: &[Layer],
+        guides: &[Guide],
+    ) -> Result<Presented, String>;
     /// Takes the window of display `display` down, if it has one.
     fn close(&mut self, display: &str);
-    /// Draws `layers` (bottom first, each fitted) on a target of `size` pixels and reads the
-    /// colour (RGBA) at each point (fractions of the target, from the top left) back from the
-    /// GPU.
+    /// Draws `layers` (bottom first) and over them `guides` on a target of `size` pixels and
+    /// reads the colour (RGBA) at each point (fractions of the target, from the top left) back
+    /// from the GPU.
     #[cfg(feature = "test-support")]
     fn probe(
         &mut self,
         size: (u32, u32),
         layers: &[Layer],
+        guides: &[Guide],
         points: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String>;
     /// Test support: moves the media clock on (`--media-clock-by-hand`).
@@ -1171,6 +1320,18 @@ impl<P: Platform> Host<P> {
                     layers.push(((stage.stack, index), route.id, layer));
                 }
             }
+            let guide = route.guide.as_ref().map(|g| Guide {
+                route: route.id,
+                name: g.name.clone(),
+                colour: g.colour.0,
+                place: Placement {
+                    region: [0, 0, route.width, route.height],
+                    route: (route.width, route.height),
+                    rotation: route.rotation,
+                    scaling: route.scaling,
+                    screen,
+                },
+            });
             let state = match &route.display {
                 _ if !self.platform.video() => RouteState::Failed {
                     reason: "this computer's openLab has no video output".into(),
@@ -1181,11 +1342,15 @@ impl<P: Platform> Host<P> {
                         display: id.clone(),
                     }
                 }
-                Some(_) if layers.is_empty() => RouteState::Hidden,
+                Some(_) if layers.is_empty() && guide.is_none() => RouteState::Hidden,
                 // No app: nothing is shown, whatever plays (the cues play on unseen).
                 Some(_) if !self.app_connected => RouteState::Hidden,
                 Some(id) => {
+                    // A route showing only its guides still has its display's window up.
                     plan.on.entry(id.clone()).or_default().extend(layers);
+                    if let Some(guide) = guide {
+                        plan.guides.entry(id.clone()).or_default().push(guide);
+                    }
                     RouteState::Shown {
                         display: id.clone(),
                     }
@@ -1209,6 +1374,7 @@ impl<P: Platform> Host<P> {
         let Plan {
             mut states,
             mut on,
+            mut guides,
             watched,
         } = self.plan(now);
         // A question of the app's, or a hung engine: the operator's display's window stands back.
@@ -1228,7 +1394,10 @@ impl<P: Platform> Host<P> {
                 }
                 continue;
             };
-            let routes: BTreeSet<RouteId> = drawn.iter().map(|(_, r, _)| *r).collect();
+            let guides = guides.remove(&display.id).unwrap_or_default();
+            let routes: BTreeSet<RouteId> = (drawn.iter().map(|(_, r, _)| *r))
+                .chain(guides.iter().map(|g| g.route))
+                .collect();
             let layers: Vec<Layer> = drawn.into_iter().map(|(.., l)| l).collect();
             let tried = self.starved.get(&display.id).copied();
             let presented = match tried {
@@ -1236,7 +1405,7 @@ impl<P: Platform> Host<P> {
                 Some(t) if instant.saturating_duration_since(t) < SKIP_RETRY => {
                     Err(starved_reason())
                 }
-                _ => match self.platform.present(&display, &layers) {
+                _ => match self.platform.present(&display, &layers, &guides) {
                     Ok(Presented::Drawn) => {
                         self.skipping.remove(&display.id);
                         self.starved.remove(&display.id);
@@ -1318,9 +1487,10 @@ impl<P: Platform> Host<P> {
         &mut self,
         size: (u32, u32),
         layers: &[Layer],
+        guides: &[Guide],
         points: &[[f32; 2]],
     ) -> Result<Read, String> {
-        self.read_in(size, layers, points, [0.0, 0.0, 1.0, 1.0])
+        self.read_in(size, layers, guides, points, [0.0, 0.0, 1.0, 1.0])
     }
 
     /// [`Self::read`] with the test card's barcode read inside `card` (left, top, right,
@@ -1330,6 +1500,7 @@ impl<P: Platform> Host<P> {
         &mut self,
         size: (u32, u32),
         layers: &[Layer],
+        guides: &[Guide],
         points: &[[f32; 2]],
         [left, top, right, bottom]: [f32; 4],
     ) -> Result<Read, String> {
@@ -1338,7 +1509,7 @@ impl<P: Platform> Host<P> {
             .map(|[x, y]| [left + x * (right - left), top + y * (bottom - top)])
             .collect();
         all.extend_from_slice(points);
-        let colours = self.platform.probe(size, layers, &all)?;
+        let colours = self.platform.probe(size, layers, guides, &all)?;
         let (code, asked) = colours.split_at(colours.len().min(crate::card::CELLS));
         Ok(Read {
             frame: crate::card::read_frame(code),
@@ -1366,7 +1537,7 @@ impl<P: Platform> Host<P> {
             self.pics.values().filter(|p| p.stage == id).count(),
         );
         let read = match layer {
-            Some(l) => self.read((l.width, l.height), std::slice::from_ref(&l), points),
+            Some(l) => self.read((l.width, l.height), std::slice::from_ref(&l), &[], points),
             None => Err("no such stage".into()),
         };
         let (frame, colours) = probe_answer(read, cues, now, out);
@@ -1407,7 +1578,7 @@ impl<P: Platform> Host<P> {
             self.pics.values().filter(|p| p.stage == id).count(),
         );
         let card = layer.place.dest(size).map(|v| v as f32);
-        let read = self.read_in(size, std::slice::from_ref(&layer), points, card);
+        let read = self.read_in(size, std::slice::from_ref(&layer), &[], points, card);
         let (frame, colours) = probe_answer(read, cues, now, out);
         FromStage::MonitorProbed {
             stage: id,
@@ -1425,14 +1596,18 @@ impl<P: Platform> Host<P> {
         out: &mut Vec<FromStage>,
     ) -> FromStage {
         let now = self.now();
-        let drawn = self.plan(now).on.remove(&display).unwrap_or_default();
+        let mut plan = self.plan(now);
+        let drawn = plan.on.remove(&display).unwrap_or_default();
         // Only what is up there: a failed (or starved) route shows nothing.
+        let up = |route: &RouteId| matches!(self.states.get(route), Some(RouteState::Shown { .. }));
         let layers: Vec<Layer> = drawn
             .into_iter()
-            .filter(|(_, route, _)| {
-                matches!(self.states.get(route), Some(RouteState::Shown { .. }))
-            })
+            .filter(|(_, route, _)| up(route))
             .map(|(.., l)| l)
+            .collect();
+        let guides: Vec<Guide> = (plan.guides.remove(&display).unwrap_or_default())
+            .into_iter()
+            .filter(|g| up(&g.route))
             .collect();
         let due: usize = layers.iter().map(|l| l.cues.len()).sum();
         let cues = (due, due);
@@ -1442,7 +1617,7 @@ impl<P: Platform> Host<P> {
             .find(|d| d.id == display)
             .map(|d| (d.width, d.height));
         let read = match size {
-            Some(size) => self.read(size, &layers, points),
+            Some(size) => self.read(size, &layers, &guides, points),
             None => Err("no such display".into()),
         };
         let (frame, colours) = probe_answer(read, cues, now, out);
@@ -1474,6 +1649,8 @@ struct Plan {
     states: Vec<(RouteId, RouteState)>,
     /// By display: its layers with their order (stage stack, region index), and its routes.
     on: BTreeMap<String, Vec<Drawn>>,
+    /// By display: the guides drawn over its layers, in route order.
+    guides: BTreeMap<String, Vec<Guide>>,
     /// Each open monitor's title and its stage's whole layer.
     watched: Vec<(String, Layer)>,
 }
@@ -1691,6 +1868,8 @@ pub(crate) mod tests {
         shown: HashMap<String, Vec<StageId>>,
         /// Where each of those layers was placed.
         places: HashMap<String, Vec<Placement>>,
+        /// Each display's guides as last presented.
+        guides: HashMap<String, Vec<Guide>>,
         /// Each display's pictures as last presented, over all its layers.
         pictures_drawn: HashMap<String, Vec<u64>>,
         /// The display with the menu bar.
@@ -1726,7 +1905,12 @@ pub(crate) mod tests {
         fn displays(&mut self) -> Vec<Display> {
             self.displays.clone()
         }
-        fn present(&mut self, d: &Display, layers: &[Layer]) -> Result<Presented, String> {
+        fn present(
+            &mut self,
+            d: &Display,
+            layers: &[Layer],
+            guides: &[Guide],
+        ) -> Result<Presented, String> {
             self.presents += 1;
             if self.fail {
                 return Err("no GPU".into());
@@ -1740,6 +1924,7 @@ pub(crate) mod tests {
                 .insert(d.id.clone(), layers.iter().map(|l| l.stage).collect());
             self.places
                 .insert(d.id.clone(), layers.iter().map(|l| l.place).collect());
+            self.guides.insert(d.id.clone(), guides.to_vec());
             let pictures = layers.iter().flat_map(|l| l.cues.iter().map(|c| c.picture));
             self.pictures_drawn.insert(d.id.clone(), pictures.collect());
             Ok(Presented::Drawn)
@@ -1747,6 +1932,7 @@ pub(crate) mod tests {
         fn close(&mut self, display: &str) {
             self.closes += 1;
             self.shown.remove(display);
+            self.guides.remove(display);
             self.pictures_drawn.remove(display);
         }
         #[cfg(feature = "test-support")]
@@ -1754,6 +1940,7 @@ pub(crate) mod tests {
             &mut self,
             _: (u32, u32),
             _: &[Layer],
+            _: &[Guide],
             p: &[[f32; 2]],
         ) -> Result<Vec<[u8; 4]>, String> {
             if self.fail {
@@ -2860,6 +3047,7 @@ pub(crate) mod tests {
                 rotation: 0,
                 scaling: RouteScaling::Fill,
                 display,
+                guide: None,
             })
             .collect();
         ToStage::Stages {
@@ -2873,6 +3061,7 @@ pub(crate) mod tests {
             displays: displays.iter().map(|d| display(d)).collect(),
             shown: HashMap::new(),
             places: HashMap::new(),
+            guides: HashMap::new(),
             pictures_drawn: HashMap::new(),
             menu_bar: None,
             stood_back: None,
@@ -3338,6 +3527,7 @@ pub(crate) mod tests {
             rotation,
             scaling,
             display: display.map(Into::into),
+            guide: None,
         }
     }
 
@@ -3656,5 +3846,187 @@ pub(crate) mod tests {
         );
         assert_eq!(h.platform.shown["D1"], [id(1)]);
         assert_eq!(h.platform.shown["D2"], [id(1)]);
+    }
+
+    /// The split stage with keep-black as given and guides on the routes named (by number),
+    /// each with its name and a colour of its own.
+    fn guided(keep_black: bool, on: &[u8]) -> ToStage {
+        let (stages, mut routes) = split_parts(keep_black);
+        for (n, r) in (1u8..).zip(&mut routes) {
+            r.guide = on
+                .contains(&n)
+                .then(|| openlab_core::stage_link::RouteGuide {
+                    name: format!("Output {n}"),
+                    colour: openlab_core::GuideColour([n, 200, 255]),
+                });
+        }
+        ToStage::Stages { stages, routes }
+    }
+
+    fn guide_names(h: &Host<Fake>, display: &str) -> Vec<String> {
+        (h.platform.guides.get(display).into_iter().flatten())
+            .map(|g| g.name.clone())
+            .collect()
+    }
+
+    /// #821 GD1, GD2: a route with guides on is shown on its display with nothing else to draw
+    /// (no black, no picture): the display draws its guides alone, named and coloured as sent,
+    /// placed as the route's whole raster. Another route's display is untouched. Guides off
+    /// again take the window down at once (the desktop is back); each route's guides come and
+    /// go alone.
+    #[test]
+    fn a_route_with_guides_on_is_shown_with_them_alone_and_hidden_when_they_go() {
+        let mut h = greeted(&["D1", "D2"]);
+        let out = send(&mut h, guided(false, &[2]));
+        assert!(states(&out).contains(&(
+            id(2),
+            RouteState::Shown {
+                display: "D2".into()
+            }
+        )));
+        assert!(states(&out).contains(&(id(1), RouteState::Hidden)));
+        assert!(!h.platform.shown.contains_key("D1"), "D1 untouched");
+        assert_eq!(
+            h.platform.shown["D2"],
+            Vec::<StageId>::new(),
+            "no stage drawn"
+        );
+        assert_eq!(guide_names(&h, "D2"), ["Output 2"]);
+        let g = &h.platform.guides["D2"][0];
+        assert_eq!(g.colour, [2, 200, 255]);
+        assert_eq!(g.place.region, [0, 0, 1920, 1080]);
+        assert_eq!(g.place.route, (1920, 1080));
+        // Both on: each display its own.
+        send(&mut h, guided(false, &[1, 2]));
+        assert_eq!(guide_names(&h, "D1"), ["Output 1"]);
+        assert_eq!(guide_names(&h, "D2"), ["Output 2"]);
+        // Output 2 off: D2's window goes, D1 keeps its guides.
+        let closes = h.platform.closes;
+        let out = send(&mut h, guided(false, &[1]));
+        assert!(states(&out).contains(&(id(2), RouteState::Hidden)));
+        assert_eq!(h.platform.closes, closes + 1);
+        assert!(!h.platform.shown.contains_key("D2"));
+        assert_eq!(guide_names(&h, "D1"), ["Output 1"]);
+    }
+
+    /// #821 GD5, GD6: guides on a route keeping black, or with a picture playing, are drawn over
+    /// what the route shows; off again, the black (or picture) stays with no window taken down
+    /// in between, and the picture plays on.
+    #[test]
+    fn guides_draw_over_black_and_pictures_and_leave_them_as_they_were() {
+        let mut h = greeted(&["D1", "D2"]);
+        send(&mut h, guided(true, &[]));
+        load(&mut h, 7, 1);
+        clock(&mut h, 0);
+        play(&mut h, 7, 0);
+        clock(&mut h, 500);
+        let closes = h.platform.closes;
+        send(&mut h, guided(true, &[1]));
+        assert_eq!(h.platform.shown["D1"], [id(1)], "the stage under them");
+        assert_eq!(h.platform.pictures_drawn["D1"], [7]);
+        assert_eq!(guide_names(&h, "D1"), ["Output 1"]);
+        clock(&mut h, 1000);
+        send(&mut h, guided(true, &[]));
+        assert_eq!(h.platform.closes, closes, "no window down on the way");
+        assert_eq!(h.platform.shown["D1"], [id(1)]);
+        assert!(guide_names(&h, "D1").is_empty());
+        assert_eq!(cues(&mut h, 1)[0].1, 1.0, "the picture ran on underneath");
+    }
+
+    /// #821 GD13: guides on a route whose display is unplugged draw nothing and fail nothing
+    /// (the route says its display is missing); the display back, they are drawn at once.
+    /// The app gone takes them down with every window.
+    #[test]
+    fn guides_wait_for_their_display_and_go_with_the_app() {
+        let mut h = greeted(&["D1", "D2"]);
+        send(&mut h, guided(false, &[1]));
+        let mut out = Vec::new();
+        h.platform.displays.retain(|d| d.id != "D1");
+        h.displays_changed(&mut out);
+        assert!(states(&out).contains(&(
+            id(1),
+            RouteState::DisplayMissing {
+                display: "D1".into()
+            }
+        )));
+        assert!(!h.platform.guides.contains_key("D1"));
+        out.clear();
+        h.platform.displays.push(display("D1"));
+        h.displays_changed(&mut out);
+        assert!(states(&out).contains(&(
+            id(1),
+            RouteState::Shown {
+                display: "D1".into()
+            }
+        )));
+        assert_eq!(guide_names(&h, "D1"), ["Output 1"]);
+        send(
+            &mut h,
+            ToStage::App {
+                connected: false,
+                pid: None,
+            },
+        );
+        assert!(!h.platform.guides.contains_key("D1"));
+    }
+
+    /// #821 GD4: a guide's lines are a few display pixels thick whatever the route's size and
+    /// however small a probe draws it; the outline lies on the route's edges and the centre
+    /// lines cross at its middle; the name sits in the top left quarter, held to its width.
+    #[test]
+    fn a_guide_is_drawn_on_the_routes_edges_at_a_display_thickness() {
+        let guide = |route: (u32, u32), screen| Guide {
+            route: route_id(1),
+            name: "Output 1".into(),
+            colour: [0, 200, 255],
+            place: Placement {
+                region: [0, 0, route.0, route.1],
+                route,
+                rotation: 0,
+                scaling: RouteScaling::Stretch,
+                screen: Some(screen),
+            },
+        };
+        let g = guide((1920, 1080), (1920, 1080));
+        let quads = g.quads((1920, 1080));
+        let rect = |l, t, r, b| [[l, t], [r, t], [l, b], [r, b]];
+        assert_eq!(
+            quads[0],
+            rect(0.0, 0.0, 1920.0, 3.0),
+            "top outline, 3 pixels on 1080 lines"
+        );
+        assert_eq!(quads[3], rect(1917.0, 0.0, 1920.0, 1080.0), "right outline");
+        assert_eq!(
+            quads[4],
+            rect(0.0, 538.5, 1920.0, 541.5),
+            "horizontal centre line"
+        );
+        // Five marks, each two diameters and a ring.
+        assert_eq!(quads.len(), 6 + 5 * (2 + GUIDE_RING_STEPS as usize));
+        // The first corner's ring: round, 27 pixels across its radius, 108 in from the corner.
+        let ring = &quads[8];
+        assert!((ring[0][0] - (108.0 + 27.0)).abs() < 1e-9 && (ring[0][1] - 108.0).abs() < 1e-9);
+        assert!((ring[2][0] - (108.0 + 24.0)).abs() < 1e-9, "3 pixels thick");
+        // Drawn smaller (a probe) the quads are the same in route pixels.
+        assert_eq!(g.quads((960, 540)), quads);
+        // A route of twice the display's pixels, stretched onto it: twice the route pixels.
+        let big = guide((3840, 2160), (1920, 1080));
+        assert_eq!(big.quads((1920, 1080))[0], rect(0.0, 0.0, 3840.0, 6.0));
+        assert_eq!(g.label_height((1920, 1080)), 65);
+        assert_eq!(
+            big.label_height((1920, 1080)),
+            65,
+            "the same on the display"
+        );
+        let [l, t, r, b] = g.label_box((1920, 1080), (260, 65));
+        assert_eq!([l, t, r, b], [350.0, 237.5, 610.0, 302.5]);
+        // A long name is held to its quarter's width, its shape kept.
+        let [l, _, r, _] = g.label_box((1920, 1080), (4000, 65));
+        assert!((r - l - 768.0).abs() < 1e-9, "{l} {r}");
+        // A tiny route on a big display: the name is never under its least height.
+        assert_eq!(
+            guide((8, 8), (8, 8)).label_height((8, 8)),
+            GUIDE_LABEL_LEAST_PX
+        );
     }
 }

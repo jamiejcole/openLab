@@ -16,23 +16,28 @@
           "state": {
             "state": "shown",
             "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230"
-          }
+          },
+          "guides": true,
+          "guide_colour": "#00c8ff"
         },
         {
           "route": "00000000-0000-0000-0000-000000000091",
           "state": {
             "state": "no_display"
-          }
+          },
+          "guide_colour": "#00c800"
         },
         {
           "route": "00000000-0000-0000-0000-000000000092",
           "state": {
             "state": "failed",
             "reason": "the display gave nothing to draw into"
-          }
+          },
+          "guide_colour": "#00c800"
         },
         {
-          "route": "00000000-0000-0000-0000-000000000093"
+          "route": "00000000-0000-0000-0000-000000000093",
+          "guide_colour": "#00c800"
         }
       ],
       "stages": [

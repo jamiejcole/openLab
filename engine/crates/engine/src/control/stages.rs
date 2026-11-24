@@ -12,7 +12,7 @@ use openlab_core::protocol::{
     ServerMessage, StageEntry,
 };
 use openlab_core::stage_link::{
-    Display, LinkLevel, RegionOutput, RouteOutput, RouteState, StageOutput,
+    Display, LinkLevel, RegionOutput, RouteGuide, RouteOutput, RouteState, StageOutput,
 };
 use openlab_core::{Command, CommandError, CueKind, CueState, RouteId, StageId};
 
@@ -40,11 +40,13 @@ const ALIVE_EVERY_MS: i64 = 250;
 /// Log lines from the stage host's reports put in the show log per second.
 const MAX_REPORT_LINES_PER_SECOND: u32 = 20;
 
-/// An open doc's stages and routes, as the stage set was last made from them.
+/// An open doc's stages, routes and routes showing guides, as the stage set was last made from
+/// them.
 type DocStages = (
     DocId,
     Vec<openlab_core::Stage>,
     Vec<openlab_core::OutputRoute>,
+    std::collections::BTreeSet<RouteId>,
 );
 
 /// The stage host as the control thread knows it.
@@ -138,12 +140,13 @@ impl Engine {
         let (width, height) = display
             .as_ref()
             .map_or((1920, 1080), |d| (d.width, d.height));
-        let route = openlab_core::OutputRoute::new(
+        let mut route = openlab_core::OutputRoute::new(
             RouteId(super::docs::random_id()),
             "Output 1",
             width,
             height,
         );
+        route.guide_colour = Some(openlab_core::next_guide_colour(&ws.routes));
         let mut stage = openlab_core::Stage::new(
             StageId(super::docs::random_id()),
             "Stage 1".to_string(),
@@ -331,21 +334,37 @@ impl Control {
                         && docs
                             .iter()
                             .zip(&self.docs)
-                            .all(|((id, stages, routes), d)| {
+                            .all(|((id, stages, routes, guides), d)| {
                                 *id == d.id
                                     && *stages == d.model.ws().stages
                                     && *routes == d.model.ws().routes
+                                    && *guides == d.guides
                             })
                 });
         if unchanged {
             return;
         }
+        // A route's guide colour is in `video_outputs` too, shown or not, so an edit to a doc's
+        // routes or stages pushes even when the stage host's set stays the same. A doc opened
+        // or closed alone does not: an opened doc's connections get theirs when they bind, and
+        // the other docs' pushes would carry nothing new.
+        let edited = self.eng.stages.synced.as_ref().is_some_and(|(docs, ..)| {
+            docs.iter().any(|(id, stages, routes, guides)| {
+                self.docs.iter().any(|d| {
+                    d.id == *id
+                        && (*stages != d.model.ws().stages
+                            || *routes != d.model.ws().routes
+                            || *guides != d.guides)
+                })
+            })
+        });
+        self.eng.stages.push_due |= edited;
         self.eng.stages.synced = Some((
             self.docs
                 .iter()
                 .map(|d| {
                     let ws = d.model.ws();
-                    (d.id, ws.stages.clone(), ws.routes.clone())
+                    (d.id, ws.stages.clone(), ws.routes.clone(), d.guides.clone())
                 })
                 .collect(),
             self.eng.stages.mappings,
@@ -373,6 +392,10 @@ impl Control {
                         .machine
                         .route_display(ws.id, route.id)
                         .map(|m| m.display.clone()),
+                    guide: doc.guides.contains(&route.id).then(|| RouteGuide {
+                        name: openlab_core::stage_link::link_text(&route.name, "Output"),
+                        colour: route.shown_guide_colour(),
+                    }),
                 });
             }
             for stage in &ws.stages {
@@ -521,6 +544,8 @@ impl Control {
                 route: r.id,
                 mapping: self.eng.config.machine.route_display(ws.id, r.id).cloned(),
                 state: self.eng.stages.states.get(&r.id).cloned(),
+                guides: doc.guides.contains(&r.id),
+                guide_colour: Some(r.shown_guide_colour()),
             })
             .collect()
     }
@@ -817,6 +842,72 @@ impl Control {
             self.sync_stages();
         } else if open && let Some(host) = &self.eng.stages.host {
             host.raise_monitor(stage);
+        }
+        reply(to, ok(id, None));
+    }
+
+    /// `set_route_guides`, for doc `doc`: shows or hides the guides of `routes`, all or none (a
+    /// route the doc lacks refuses the whole ask). Not saved and no undo step; Show Mode allows
+    /// it.
+    pub(super) fn set_route_guides(
+        &mut self,
+        doc: DocId,
+        id: RequestId,
+        routes: &[RouteId],
+        show: bool,
+        to: &ReplyTx,
+    ) {
+        let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) else {
+            return reply(
+                to,
+                failed(
+                    id,
+                    ErrorBody::new(ErrorCode::NoWorkspace, "no such workspace"),
+                ),
+            );
+        };
+        if routes.len() > openlab_core::MAX_ROUTES {
+            return reply(
+                to,
+                failed(
+                    id,
+                    ErrorBody::new(
+                        ErrorCode::BadRequest,
+                        "more output routes than a workspace has",
+                    ),
+                ),
+            );
+        }
+        let ws = d.model.ws();
+        if !routes.iter().all(|r| ws.routes.iter().any(|x| x.id == *r)) {
+            return reply(
+                to,
+                failed(
+                    id,
+                    ErrorBody::new(ErrorCode::NotFound, "no such output route"),
+                ),
+            );
+        }
+        let before = d.guides.len();
+        let mut changed = false;
+        for route in routes {
+            changed |= if show {
+                d.guides.insert(*route)
+            } else {
+                d.guides.remove(route)
+            };
+        }
+        if changed {
+            let (now, word) = (d.guides.len(), if show { "shown" } else { "hidden" });
+            self.eng.log(
+                LogLevel::Info,
+                format!(
+                    "alignment guides {word} on {} output route(s)",
+                    now.abs_diff(before)
+                ),
+            );
+            // The stage host gets the new set at once, not at the next tick.
+            self.sync_stages();
         }
         reply(to, ok(id, None));
     }

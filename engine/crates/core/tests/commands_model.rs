@@ -2094,6 +2094,7 @@ fn region_prop(stage: u128, region: u128, property: RegionProperty) -> Command {
 fn two_route_workspace() -> Workspace {
     let mut ws = workspace(vec![]);
     ws.routes = vec![route_n(1), route_n(2)];
+    fill_guide_colours(&mut ws.routes);
     let mut stage = stage_n(1);
     stage.width = 3840;
     stage.regions = vec![
@@ -2117,7 +2118,15 @@ fn routes_can_be_added_removed_moved_and_edited() {
             regions: Vec::new(),
         },
     );
-    assert_eq!(added.routes[2], route_n(3));
+    // The new route is given the first colour no route has, kept when the others change.
+    assert_eq!(added.routes[2].guide_colour, Some(GUIDE_COLOURS[2]));
+    assert_eq!(
+        OutputRoute {
+            guide_colour: None,
+            ..added.routes[2].clone()
+        },
+        route_n(3)
+    );
     let moved = round_trip(
         &ws,
         Command::MoveRoute {
@@ -2199,6 +2208,189 @@ fn a_route_loaded_with_a_blank_name_can_still_be_edited() {
     ));
 }
 
+/// #821 GD7, GD8: picking a guide colour changes the model (saved with the show) but is no undo
+/// step: undo still names and undoes the edit before it, redo stays, and the colour stays as
+/// picked. The same colour again is no change; `None` goes back to a default no other route has.
+/// In a transaction it is undone with the rest.
+#[test]
+fn a_guide_colour_is_saved_in_the_model_but_is_no_undo_step() {
+    let mut ws = two_route_workspace();
+    let (first, second) = (
+        ws.routes[0].shown_guide_colour(),
+        ws.routes[1].shown_guide_colour(),
+    );
+    assert_ne!(first, second, "each route has a colour of its own");
+    assert_eq!(first, GUIDE_COLOURS[0]);
+    let mut history = History::new();
+    let rename = route_prop(
+        1,
+        RouteProperty::Name {
+            value: "Cyc".into(),
+        },
+    );
+    assert!(history.execute(&mut ws, rename).unwrap());
+    let orange = GuideColour([0xff, 0x82, 0x00]);
+    let pick = |value| route_prop(1, RouteProperty::GuideColour { value });
+    assert!(history.execute(&mut ws, pick(Some(orange))).unwrap());
+    assert_eq!(ws.routes[0].guide_colour, Some(orange));
+    assert_eq!(history.undo_len(), 1, "the colour is no step");
+    assert_eq!(history.undo_name(), Some(StepName::RenameRoute));
+    assert!(
+        !history.execute(&mut ws, pick(Some(orange))).unwrap(),
+        "same colour: no change"
+    );
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws.routes[0].name, "Output 1");
+    assert_eq!(
+        ws.routes[0].guide_colour,
+        Some(orange),
+        "undo leaves the colour"
+    );
+    // A colour picked between an undo and its redo leaves the redo there; none picked is a
+    // default no other route has.
+    assert!(history.execute(&mut ws, pick(None)).unwrap());
+    assert_eq!(ws.routes[0].guide_colour, Some(first));
+    assert!(history.can_redo());
+    assert!(history.redo(&mut ws).unwrap());
+    assert_eq!(ws.routes[0].name, "Cyc");
+    // Saved and read back with the show.
+    ws.routes[1].guide_colour = Some(orange);
+    let loaded = load_show(&save_show(&ws).unwrap()).unwrap();
+    assert_eq!(loaded.workspace.routes[1].guide_colour, Some(orange));
+    assert_eq!(loaded.workspace.routes[0].guide_colour, Some(first));
+    assert!(
+        save_show(&ws)
+            .unwrap()
+            .contains("\"guide_colour\": \"#ff8200\"")
+    );
+    // Inside a transaction it goes with the step.
+    let mut history = History::new();
+    let before = ws.clone();
+    let both = Command::Transaction {
+        commands: vec![
+            pick(Some(GuideColour([1, 2, 3]))),
+            route_prop(1, RouteProperty::Rotation { value: 90 }),
+        ],
+    };
+    assert!(history.execute(&mut ws, both).unwrap());
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws, before);
+}
+
+/// #821 GD2: a route's guide colour is its own, given when it is added and stored like a picked
+/// one, so adding, removing or moving other routes never recolours it, and undo and redo of an
+/// add or a remove bring the exact colour back. A route saved without one is given one at load,
+/// in list order, with no warning, and keeps it.
+#[test]
+fn a_routes_guide_colour_does_not_follow_its_place_in_the_list() {
+    let rid = |n: u128| RouteId(uuid::Uuid::from_u128(0x6000 + n));
+    let mut ws = workspace(vec![]);
+    let mut history = History::new();
+    let add = |index: usize, n: u128| Command::AddRoute {
+        index,
+        route: route_n(n),
+        regions: Vec::new(),
+    };
+    for (i, n) in [1u128, 2, 3].into_iter().enumerate() {
+        assert!(history.execute(&mut ws, add(i, n)).unwrap());
+    }
+    let colour_of = |ws: &Workspace, n: u128| {
+        ws.routes
+            .iter()
+            .find(|r| r.id == rid(n))
+            .and_then(|r| r.guide_colour)
+    };
+    let (c1, c2, c3) = (
+        colour_of(&ws, 1).unwrap(),
+        colour_of(&ws, 2).unwrap(),
+        colour_of(&ws, 3).unwrap(),
+    );
+    assert_eq!(
+        [c1, c2, c3],
+        [GUIDE_COLOURS[0], GUIDE_COLOURS[1], GUIDE_COLOURS[2]]
+    );
+    // Removing the first leaves the others' colours; a route added now takes the freed one.
+    assert!(
+        history
+            .execute(&mut ws, Command::RemoveRoute { id: rid(1) })
+            .unwrap()
+    );
+    assert_eq!((colour_of(&ws, 2), colour_of(&ws, 3)), (Some(c2), Some(c3)));
+    assert!(
+        history
+            .execute(
+                &mut ws,
+                Command::MoveRoute {
+                    id: rid(3),
+                    index: 0
+                }
+            )
+            .unwrap()
+    );
+    assert_eq!((colour_of(&ws, 2), colour_of(&ws, 3)), (Some(c2), Some(c3)));
+    assert!(history.execute(&mut ws, add(2, 4)).unwrap());
+    assert_eq!(colour_of(&ws, 4), Some(c1));
+    // Undo and redo are exact.
+    let after = ws.clone();
+    for _ in 0..6 {
+        assert!(history.undo(&mut ws).unwrap());
+    }
+    assert!(ws.routes.is_empty());
+    for _ in 0..6 {
+        assert!(history.redo(&mut ws).unwrap());
+    }
+    assert_eq!(ws, after);
+    // With all eight in use, a ninth cycles (the colour fewest routes have, the earliest).
+    let mut many = workspace(vec![]);
+    let mut h = History::new();
+    for n in 1..=9u128 {
+        assert!(h.execute(&mut many, add(n as usize - 1, n)).unwrap());
+    }
+    assert_eq!(colour_of(&many, 9), Some(GUIDE_COLOURS[0]));
+    // Saved without a colour: given at load in list order, no warning, and kept on a save.
+    let mut bare = two_route_workspace();
+    bare.routes[0].guide_colour = None;
+    bare.routes[1].guide_colour = Some(GUIDE_COLOURS[0]);
+    let text = save_show(&bare).unwrap();
+    let loaded = load_show(&text).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded
+            .workspace
+            .routes
+            .iter()
+            .map(|r| r.guide_colour)
+            .collect::<Vec<_>>(),
+        vec![Some(GUIDE_COLOURS[1]), Some(GUIDE_COLOURS[0])]
+    );
+}
+
+/// A guide colour reads only as `#rrggbb`: anything else in a show file refuses it as a wrong
+/// value, never a panic.
+#[test]
+fn a_guide_colour_reads_only_as_six_hex_digits() {
+    assert_eq!(
+        GuideColour::parse("#00C8ff"),
+        Some(GuideColour([0, 200, 255]))
+    );
+    for bad in [
+        "",
+        "#",
+        "00c8ff",
+        "#00c8f",
+        "#00c8fff",
+        "#0xc8ff",
+        "#+0c8ff",
+        "#00c8f\u{e9}",
+    ] {
+        assert_eq!(GuideColour::parse(bad), None, "{bad:?}");
+    }
+    let mut ws = two_route_workspace();
+    ws.routes[0].guide_colour = Some(GuideColour([0, 200, 255]));
+    let text = save_show(&ws).unwrap().replace("#00c8ff", "red");
+    assert!(load_show(&text).is_err());
+}
+
 /// R9: removing a route its regions use is allowed; they are left with none (assumed), and the
 /// undo brings the route back at its place with them on it, exactly. A client following the
 /// model changes sees the same.
@@ -2206,7 +2398,7 @@ fn a_route_loaded_with_a_blank_name_can_still_be_edited() {
 fn removing_a_route_leaves_its_regions_with_none_and_undo_puts_them_back() {
     let ws = two_route_workspace();
     let removed = round_trip(&ws, Command::RemoveRoute { id: route_n(2).id });
-    assert_eq!(removed.routes, vec![route_n(1)]);
+    assert_eq!(removed.routes, vec![ws.routes[0].clone()]);
     assert_eq!(removed.stages[0].regions[0].route, Some(route_n(1).id));
     assert_eq!(removed.stages[0].regions[1].route, None);
     let fp = Command::RemoveRoute { id: route_n(2).id }.footprint();
@@ -2224,7 +2416,7 @@ fn removing_a_route_leaves_its_regions_with_none_and_undo_puts_them_back() {
         inverse,
         Command::AddRoute {
             index: 1,
-            route: route_n(2),
+            route: ws.routes[1].clone(),
             regions: vec![region_n(2, None, 0, 1).id],
         }
     );
