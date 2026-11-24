@@ -350,8 +350,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return textEditor == nil && (appController.frontController?.canPasteProperties ?? false)
         case #selector(deleteNumbers(_:))?, #selector(deleteCues(_:))?:
             return textEditor == nil && canEditFront
-        case #selector(undoEdit(_:))?: return textEditor != nil || (undoEditor?.canUndo ?? false)
-        case #selector(redoEdit(_:))?: return textEditor != nil || (undoEditor?.canRedo ?? false)
+        case #selector(undoEdit(_:))?:
+            let document = textEditor == nil ? appController.undoController?.store.document : nil
+            item.title = MainMenu.undoTitle(redo: false, step: document?.canUndo == true ? document?.undoName : nil)
+            return textEditor != nil || (undoEditor?.canUndo ?? false)
+        case #selector(redoEdit(_:))?:
+            let document = textEditor == nil ? appController.undoController?.store.document : nil
+            item.title = MainMenu.undoTitle(redo: true, step: document?.canRedo == true ? document?.redoName : nil)
+            return textEditor != nil || (undoEditor?.canRedo ?? false)
         case #selector(saveWorkspace(_:))?, #selector(saveWorkspaceAs(_:))?:
             return appController.canSaveFront
         case #selector(recoverAutosaves(_:))?: return engineSession.connectionState == .connected

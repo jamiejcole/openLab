@@ -1,5 +1,6 @@
 {"type":"hello","version":3}
-{"type":"stages","stages":[{"id":"00000000-0000-0000-0000-000000000001","width":1920,"height":1080,"display":"D1","keep_black":true},{"id":"00000000-0000-0000-0000-000000000002","width":640,"height":480,"keep_black":false}]}
+{"type":"stages","stages":[{"id":"00000000-0000-0000-0000-000000000001","width":3840,"height":1080,"regions":[{"route":"00000000-0000-0000-0000-000000000001","x":0,"y":0,"width":1920,"height":1080},{"route":"00000000-0000-0000-0000-000000000002","x":1920,"y":0,"width":1920,"height":1080}],"keep_black":true},{"id":"00000000-0000-0000-0000-000000000002","width":640,"height":480,"keep_black":false}],"routes":[{"id":"00000000-0000-0000-0000-000000000001","width":1920,"height":1080,"rotation":90,"scaling":"centre","display":"D1"},{"id":"00000000-0000-0000-0000-000000000002","width":30000,"height":1,"rotation":270,"scaling":"stretch"}]}
+{"type":"stages","stages":[{"id":"00000000-0000-0000-0000-000000000001","width":8,"height":8,"regions":[{"route":"00000000-0000-0000-0000-000000000009","x":4294967295,"y":0,"width":2,"height":8}],"keep_black":true}],"routes":[{"id":"00000000-0000-0000-0000-000000000001","width":0,"height":1,"rotation":45,"scaling":"zoom"}]}
 {"type":"ping","seq":7}
 {"type":"test_card","stage":"00000000-0000-0000-0000-000000000001","frame":42}
 {"type":"probe","stage":"00000000-0000-0000-0000-000000000001","points":[[0.5,0.5],[0,1]]}

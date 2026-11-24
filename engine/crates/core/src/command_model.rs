@@ -28,11 +28,16 @@ use crate::model::{
     OutputPatch, PatchCrosspoint, PatchId, PatchOutput, StageId, TransportHotkeys, Workspace,
     WorkspaceSettings, hotkey_field, is_reserved_key,
 };
+use crate::model::{RegionId, RouteId};
 use crate::osc_access::{MAX_OSC_PASSCODES, OscPasscode, OscRights, is_valid_new_passcode};
 use crate::validate::{
     host_problem, interface_problem, name_problem, patch_problems, settings_problems, visit,
 };
-use crate::video::{MAX_STAGE_LAYER, MAX_STAGES, Stage, StageProperty, stage_problem};
+use crate::video::{
+    MAX_REGIONS, MAX_ROUTES, MAX_STAGE_LAYER, MAX_STAGES, OutputRoute, Region, RegionProperty,
+    RouteProperty, Stage, StageProperty, region_routes_problem, regions_problem, route_problem,
+    route_shape_problem, stage_problem,
+};
 
 /// The inverse of a change that changed nothing. `History` ignores it.
 pub(crate) fn no_change() -> Inverse {
@@ -1195,12 +1200,25 @@ fn add_stage(
             "a workspace has at most 64 stages",
         ));
     }
-    // Load clamps size and layer, so a stage in a workspace always passes; only its name may
-    // be one load keeps with a warning, which an undo must be able to put back.
+    // Load clamps size and layer and repairs regions, so a stage in a workspace always passes;
+    // only its name may be one load keeps with a warning, which an undo must be able to put back.
     if let Some(why) = stage_problem(stage)
-        && !(restoring && stage.size_ok() && stage.layer <= MAX_STAGE_LAYER)
+        && !(restoring
+            && stage.size_ok()
+            && stage.layer <= MAX_STAGE_LAYER
+            && regions_problem(stage).is_none())
     {
         return Err(CommandError::InvalidValue(why));
+    }
+    if let Some(why) = region_routes_problem(&stage.regions, &ws.routes) {
+        return Err(CommandError::InvalidValue(why));
+    }
+    if let Some(region) = stage
+        .regions
+        .iter()
+        .find(|r| find_region(ws, r.id).is_some())
+    {
+        return Err(CommandError::DuplicateRegionId(region.id));
     }
     ws.stages.insert(index, stage.clone());
     Ok(Command::RemoveStage { id: stage.id })
@@ -1224,9 +1242,6 @@ fn set_stage_property(
         .get_mut(at)
         .ok_or(CommandError::StageNotFound(id))?;
     let old = property.current(stage);
-    if old == *property {
-        return Ok(no_change());
-    }
     let mut changed = stage.clone();
     property.write(&mut changed);
     let name_only = matches!(property, StageProperty::Name { .. });
@@ -1235,8 +1250,266 @@ fn set_stage_property(
     {
         return Err(CommandError::InvalidValue(why));
     }
+    if let StageProperty::Size {
+        regions: Some(regions),
+        ..
+    } = property
+    {
+        // Regions given whole (an undo of a resize) must be the stage's own, on routes there.
+        if let Some(why) = region_routes_problem(regions, &ws.routes) {
+            return Err(CommandError::InvalidValue(why));
+        }
+        let mut theirs: Vec<RegionId> = stage.regions.iter().map(|r| r.id).collect();
+        let mut given: Vec<RegionId> = regions.iter().map(|r| r.id).collect();
+        theirs.sort();
+        given.sort();
+        if theirs != given {
+            return Err(CommandError::InvalidValue(
+                "a resize names the stage's own regions",
+            ));
+        }
+    }
+    let Some(stage) = ws.stages.get_mut(at) else {
+        return Err(CommandError::StageNotFound(id));
+    };
+    if changed == *stage {
+        return Ok(no_change());
+    }
     *stage = changed;
     Ok(Command::SetStageProperty { id, property: old })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Output routes and regions
+
+fn route_index(ws: &Workspace, id: RouteId) -> Result<usize, CommandError> {
+    ws.routes
+        .iter()
+        .position(|r| r.id == id)
+        .ok_or(CommandError::RouteNotFound(id))
+}
+
+/// The stage index and region index of region `id`, wherever it is.
+fn find_region(ws: &Workspace, id: RegionId) -> Option<(usize, usize)> {
+    ws.stages.iter().enumerate().find_map(|(s, stage)| {
+        stage
+            .regions
+            .iter()
+            .position(|r| r.id == id)
+            .map(|r| (s, r))
+    })
+}
+
+fn add_route(
+    ws: &mut Workspace,
+    index: usize,
+    route: &OutputRoute,
+    regions: &[RegionId],
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
+    if ws.routes.iter().any(|r| r.id == route.id) {
+        return Err(CommandError::DuplicateRouteId(route.id));
+    }
+    check_index(index, ws.routes.len(), true)?;
+    if ws.routes.len() >= MAX_ROUTES {
+        return Err(CommandError::InvalidValue(
+            "a workspace has at most 64 output routes",
+        ));
+    }
+    // Load repairs size and rotation; only a name load keeps may come back on an undo.
+    let mut checked = route.clone();
+    if restoring {
+        checked.name = "Output".to_owned();
+    }
+    if let Some(why) = route_problem(&checked) {
+        return Err(CommandError::InvalidValue(why));
+    }
+    let mut places = Vec::with_capacity(regions.len());
+    for id in regions {
+        let place = find_region(ws, *id).ok_or(CommandError::RegionNotFound(*id))?;
+        let routed = ws
+            .stages
+            .get(place.0)
+            .and_then(|s| s.regions.get(place.1))
+            .is_some_and(|r| r.route.is_some());
+        if routed {
+            return Err(CommandError::InvalidValue(
+                "a region given to a new route is already on a route",
+            ));
+        }
+        places.push(place);
+    }
+    ws.routes.insert(index, route.clone());
+    for (s, r) in places {
+        if let Some(region) = ws.stages.get_mut(s).and_then(|s| s.regions.get_mut(r)) {
+            region.route = Some(route.id);
+        }
+    }
+    Ok(Command::RemoveRoute { id: route.id })
+}
+
+fn remove_route(ws: &mut Workspace, id: RouteId) -> Result<Inverse, CommandError> {
+    let at = route_index(ws, id)?;
+    let route = ws.routes.remove(at);
+    let mut regions = Vec::new();
+    for region in ws.stages.iter_mut().flat_map(|s| s.regions.iter_mut()) {
+        if region.route == Some(id) {
+            region.route = None;
+            regions.push(region.id);
+        }
+    }
+    Ok(Command::AddRoute {
+        index: at,
+        route,
+        regions,
+    })
+}
+
+fn set_route_property(
+    ws: &mut Workspace,
+    id: RouteId,
+    property: &RouteProperty,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
+    let at = route_index(ws, id)?;
+    let route = ws
+        .routes
+        .get_mut(at)
+        .ok_or(CommandError::RouteNotFound(id))?;
+    let old = property.current(route);
+    let mut changed = route.clone();
+    property.write(&mut changed);
+    // Only a name typed now is checked as a name: undo may put back any name it held, and a
+    // route a show file loaded with a blank name can still have its size, turn or scaling edited.
+    let typed_name = matches!(property, RouteProperty::Name { .. }) && !restoring;
+    let problem = if typed_name {
+        route_problem(&changed)
+    } else {
+        route_shape_problem(&changed)
+    };
+    if let Some(why) = problem {
+        return Err(CommandError::InvalidValue(why));
+    }
+    if changed == *route {
+        return Ok(no_change());
+    }
+    *route = changed;
+    Ok(Command::SetRouteProperty { id, property: old })
+}
+
+fn add_region(
+    ws: &mut Workspace,
+    stage: StageId,
+    index: usize,
+    region: &Region,
+) -> Result<Inverse, CommandError> {
+    let at = stage_index(ws, stage)?;
+    if find_region(ws, region.id).is_some() {
+        return Err(CommandError::DuplicateRegionId(region.id));
+    }
+    if let Some(why) = region_routes_problem([region], &ws.routes) {
+        return Err(CommandError::InvalidValue(why));
+    }
+    let s = ws
+        .stages
+        .get_mut(at)
+        .ok_or(CommandError::StageNotFound(stage))?;
+    check_index(index, s.regions.len(), true)?;
+    if s.regions.len() >= MAX_REGIONS {
+        return Err(CommandError::InvalidValue("a stage has at most 16 regions"));
+    }
+    if !region.inside((s.width, s.height)) {
+        return Err(CommandError::InvalidValue(
+            "a region lies wholly inside its stage",
+        ));
+    }
+    s.regions.insert(index, region.clone());
+    Ok(Command::RemoveRegion {
+        stage,
+        id: region.id,
+    })
+}
+
+/// The stage `stage`'s region `id`, as (stage index, region index).
+fn region_on(ws: &Workspace, stage: StageId, id: RegionId) -> Result<(usize, usize), CommandError> {
+    let s = stage_index(ws, stage)?;
+    let r = ws
+        .stages
+        .get(s)
+        .and_then(|st| st.regions.iter().position(|r| r.id == id))
+        .ok_or(CommandError::RegionNotFound(id))?;
+    Ok((s, r))
+}
+
+fn remove_region(
+    ws: &mut Workspace,
+    stage: StageId,
+    id: RegionId,
+) -> Result<Inverse, CommandError> {
+    let (s, r) = region_on(ws, stage, id)?;
+    let st = ws
+        .stages
+        .get_mut(s)
+        .ok_or(CommandError::StageNotFound(stage))?;
+    if r >= st.regions.len() {
+        return Err(CommandError::RegionNotFound(id));
+    }
+    let region = st.regions.remove(r);
+    Ok(Command::AddRegion {
+        stage,
+        index: r,
+        region,
+    })
+}
+
+fn set_region_property(
+    ws: &mut Workspace,
+    stage: StageId,
+    id: RegionId,
+    property: &RegionProperty,
+) -> Result<Inverse, CommandError> {
+    let (s, r) = region_on(ws, stage, id)?;
+    if let RegionProperty::Route { value } = property
+        && let Some(why) = region_routes_problem(
+            [&Region {
+                id,
+                route: *value,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }],
+            &ws.routes,
+        )
+    {
+        return Err(CommandError::InvalidValue(why));
+    }
+    let st = ws
+        .stages
+        .get_mut(s)
+        .ok_or(CommandError::StageNotFound(stage))?;
+    let size = (st.width, st.height);
+    let region = st
+        .regions
+        .get_mut(r)
+        .ok_or(CommandError::RegionNotFound(id))?;
+    let old = property.current(region);
+    let mut changed = region.clone();
+    property.write(&mut changed);
+    if !changed.inside(size) {
+        return Err(CommandError::InvalidValue(
+            "a region lies wholly inside its stage",
+        ));
+    }
+    if changed == *region {
+        return Ok(no_change());
+    }
+    *region = changed;
+    Ok(Command::SetRegionProperty {
+        stage,
+        id,
+        property: old,
+    })
 }
 
 fn stage_index(ws: &Workspace, id: StageId) -> Result<usize, CommandError> {
@@ -1443,6 +1716,37 @@ pub(crate) fn apply_model(
         Command::SetStageProperty { id, property } => {
             set_stage_property(ws, *id, property, restoring)
         }
+        Command::AddRoute {
+            index,
+            route,
+            regions,
+        } => add_route(ws, *index, route, regions, restoring),
+        Command::RemoveRoute { id } => remove_route(ws, *id),
+        Command::MoveRoute { id, index } => route_index(ws, *id).and_then(|from| {
+            let moved = reposition(&mut ws.routes, from, *index)?;
+            Ok(if moved {
+                Command::MoveRoute {
+                    id: *id,
+                    index: from,
+                }
+            } else {
+                no_change()
+            })
+        }),
+        Command::SetRouteProperty { id, property } => {
+            set_route_property(ws, *id, property, restoring)
+        }
+        Command::AddRegion {
+            stage,
+            index,
+            region,
+        } => add_region(ws, *stage, *index, region),
+        Command::RemoveRegion { stage, id } => remove_region(ws, *stage, *id),
+        Command::SetRegionProperty {
+            stage,
+            id,
+            property,
+        } => set_region_property(ws, *stage, *id, property),
         Command::AddCueList { index, id, name } => add_cue_list(ws, *index, *id, name, restoring),
         Command::RemoveCueList { id } => remove_cue_list(ws, *id),
         Command::MoveCueList { id, index } => list_index(ws, *id).and_then(|from| {
@@ -1517,6 +1821,12 @@ impl Command {
             Self::SetStageProperty { id, property } => {
                 (6, id.0, hash(&|h| std::mem::discriminant(property).hash(h)))
             }
+            Self::SetRouteProperty { id, property } => {
+                (7, id.0, hash(&|h| std::mem::discriminant(property).hash(h)))
+            }
+            Self::SetRegionProperty { id, property, .. } => {
+                (8, id.0, hash(&|h| std::mem::discriminant(property).hash(h)))
+            }
             Self::RenameWorkspace { .. } => (5, uuid::Uuid::nil(), 0),
             _ => return None,
         })
@@ -1547,6 +1857,19 @@ impl Command {
                 Self::SetStageProperty { id: b, property: q },
             ) => a == b && std::mem::discriminant(p) == std::mem::discriminant(q),
             (Self::MoveStage { id: a, .. }, Self::MoveStage { id: b, .. }) => a == b,
+            (
+                Self::SetRouteProperty { id: a, property: p },
+                Self::SetRouteProperty { id: b, property: q },
+            ) => a == b && std::mem::discriminant(p) == std::mem::discriminant(q),
+            (
+                Self::SetRegionProperty {
+                    id: a, property: p, ..
+                },
+                Self::SetRegionProperty {
+                    id: b, property: q, ..
+                },
+            ) => a == b && std::mem::discriminant(p) == std::mem::discriminant(q),
+            (Self::MoveRoute { id: a, .. }, Self::MoveRoute { id: b, .. }) => a == b,
             (Self::RenameCueList { id: a, .. }, Self::RenameCueList { id: b, .. }) => a == b,
             (Self::RenameWorkspace { .. }, Self::RenameWorkspace { .. }) => true,
             (Self::MoveCue { id: a, .. }, Self::MoveCue { id: b, .. }) => a == b,

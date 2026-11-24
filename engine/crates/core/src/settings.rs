@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::backup::{DEFAULT_BACKUP_KEEP, MAX_BACKUP_KEEP};
 use crate::cue::MAX_CUE_OUTPUTS;
-use crate::model::{OutputPatch, PatchId, StageId, WorkspaceId};
+use crate::model::{OutputPatch, PatchId, RouteId, WorkspaceId};
 
 pub const SETTINGS_VERSION: u32 = 1;
 /// Larger settings files are ignored.
@@ -92,16 +92,16 @@ pub struct WorkspaceMachineSettings {
     /// Keyed by patch id (lower-case hyphenated UUID).
     #[serde(default)]
     pub patches: BTreeMap<String, PatchMapping>,
-    /// Which display each stage is shown on (VID-01), keyed by stage id. A stage with no entry
-    /// has no display on this machine.
+    /// Which display each output route is shown on (VID-01), keyed by route id. A route with no
+    /// entry has no display on this machine.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub stages: BTreeMap<String, StageMapping>,
+    pub routes: BTreeMap<String, DisplayChoice>,
 }
 
-/// The display one stage is shown on, on this machine. The name and pixel size are what the
-/// display was when it was chosen, so the operator can tell which display a missing one was.
+/// The display one output route is shown on, on this machine. The name and pixel size are what
+/// the display was when it was chosen, so the operator can tell which display a missing one was.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StageMapping {
+pub struct DisplayChoice {
     /// The display's id as the stage host lists it (on macOS its UUID).
     pub display: String,
     pub name: String,
@@ -110,7 +110,7 @@ pub struct StageMapping {
 }
 
 /// Why `mapping` cannot be stored.
-fn stage_mapping_problem(mapping: &StageMapping) -> Option<&'static str> {
+fn display_choice_problem(mapping: &DisplayChoice) -> Option<&'static str> {
     let text_ok = |t: &str| {
         !t.is_empty() && t.len() <= MAX_DEVICE_NAME_BYTES && !t.chars().any(char::is_control)
     };
@@ -318,23 +318,23 @@ fn sanitise(settings: &mut MachineSettings, warnings: &mut Vec<String>) {
                 patches.entry(patch_id.to_string()).or_insert(mapping);
             }
         }
-        let mut stages = BTreeMap::new();
-        for (stage, mapping) in machine.stages {
-            let reason = match Uuid::parse_str(&stage) {
-                Err(_) => Some("not a stage id"),
-                Ok(_) => stage_mapping_problem(&mapping),
+        let mut routes = BTreeMap::new();
+        for (route, mapping) in machine.routes {
+            let reason = match Uuid::parse_str(&route) {
+                Err(_) => Some("not an output route id"),
+                Ok(_) => display_choice_problem(&mapping),
             };
             if let Some(reason) = reason {
                 warnings.push(format!(
-                    "workspace {workspace}, stage {stage}: {reason}; display choice dropped"
+                    "workspace {workspace}, output route {route}: {reason}; display choice dropped"
                 ));
-            } else if let Ok(stage_id) = Uuid::parse_str(&stage) {
-                stages.entry(stage_id.to_string()).or_insert(mapping);
+            } else if let Ok(route_id) = Uuid::parse_str(&route) {
+                routes.entry(route_id.to_string()).or_insert(mapping);
             }
         }
         workspaces
             .entry(workspace_id.to_string())
-            .or_insert(WorkspaceMachineSettings { patches, stages });
+            .or_insert(WorkspaceMachineSettings { patches, routes });
     }
     settings.workspaces = workspaces;
 }
@@ -474,37 +474,37 @@ impl MachineSettings {
         Ok(())
     }
 
-    /// The display `stage` is shown on, if one was chosen on this machine.
-    pub fn stage_mapping(&self, workspace: WorkspaceId, stage: StageId) -> Option<&StageMapping> {
+    /// The display `route` is shown on, if one was chosen on this machine.
+    pub fn route_display(&self, workspace: WorkspaceId, route: RouteId) -> Option<&DisplayChoice> {
         self.workspaces
             .get(&workspace.to_string())?
-            .stages
-            .get(&stage.to_string())
+            .routes
+            .get(&route.to_string())
     }
 
-    /// Chooses the display `stage` is shown on (`None`: none). Refuses an invalid mapping and
+    /// Chooses the display `route` is shown on (`None`: none). Refuses an invalid choice and
     /// changes nothing.
-    pub fn set_stage_mapping(
+    pub fn set_route_display(
         &mut self,
         workspace: WorkspaceId,
-        stage: StageId,
-        mapping: Option<StageMapping>,
+        route: RouteId,
+        choice: Option<DisplayChoice>,
     ) -> Result<(), &'static str> {
-        let key = stage.to_string();
-        match mapping {
-            Some(mapping) => {
-                if let Some(reason) = stage_mapping_problem(&mapping) {
+        let key = route.to_string();
+        match choice {
+            Some(choice) => {
+                if let Some(reason) = display_choice_problem(&choice) {
                     return Err(reason);
                 }
                 self.workspaces
                     .entry(workspace.to_string())
                     .or_default()
-                    .stages
-                    .insert(key, mapping);
+                    .routes
+                    .insert(key, choice);
             }
             None => {
                 if let Some(w) = self.workspaces.get_mut(&workspace.to_string()) {
-                    w.stages.remove(&key);
+                    w.routes.remove(&key);
                 }
             }
         }
@@ -1094,8 +1094,8 @@ mod tests {
         assert!(loaded.warnings.is_empty());
     }
 
-    fn display(id: &str) -> StageMapping {
-        StageMapping {
+    fn display(id: &str) -> DisplayChoice {
+        DisplayChoice {
             display: id.into(),
             name: "Projector".into(),
             width: 1920,
@@ -1103,42 +1103,42 @@ mod tests {
         }
     }
 
-    /// VID-01: which display a stage uses is per machine: set, read back, cleared, and an
+    /// VID-01: which display a route uses is per machine: set, read back, cleared, and an
     /// invalid choice refused with nothing changed.
     #[test]
-    fn a_stage_display_is_chosen_per_machine_and_checked() {
+    fn a_route_display_is_chosen_per_machine_and_checked() {
         let mut s = MachineSettings::default();
-        let stage = StageId(Uuid::from_u128(9));
-        assert_eq!(s.stage_mapping(ws(1), stage), None);
-        s.set_stage_mapping(ws(1), stage, Some(display("D1")))
+        let route = RouteId(Uuid::from_u128(9));
+        assert_eq!(s.route_display(ws(1), route), None);
+        s.set_route_display(ws(1), route, Some(display("D1")))
             .unwrap();
-        assert_eq!(s.stage_mapping(ws(1), stage), Some(&display("D1")));
-        assert_eq!(s.stage_mapping(ws(2), stage), None);
+        assert_eq!(s.route_display(ws(1), route), Some(&display("D1")));
+        assert_eq!(s.route_display(ws(2), route), None);
         for bad in [
             display(""),
             display("D\u{7}"),
-            StageMapping {
+            DisplayChoice {
                 width: 0,
                 ..display("D2")
             },
-            StageMapping {
+            DisplayChoice {
                 name: String::new(),
                 ..display("D2")
             },
         ] {
-            assert!(s.set_stage_mapping(ws(1), stage, Some(bad)).is_err());
+            assert!(s.set_route_display(ws(1), route, Some(bad)).is_err());
         }
-        assert_eq!(s.stage_mapping(ws(1), stage), Some(&display("D1")));
-        s.set_stage_mapping(ws(1), stage, None).unwrap();
-        assert_eq!(s.stage_mapping(ws(1), stage), None);
+        assert_eq!(s.route_display(ws(1), route), Some(&display("D1")));
+        s.set_route_display(ws(1), route, None).unwrap();
+        assert_eq!(s.route_display(ws(1), route), None);
     }
 
     /// A damaged display choice in the file drops only itself, with a warning.
     #[test]
-    fn a_bad_stage_display_in_the_file_drops_only_itself() {
+    fn a_bad_route_display_in_the_file_drops_only_itself() {
         let w = Uuid::from_u128(1);
         let text = format!(
-            r#"{{"settings_version":1,"workspaces":{{"{w}":{{"patches":{{}},"stages":{{
+            r#"{{"settings_version":1,"workspaces":{{"{w}":{{"patches":{{}},"routes":{{
                 "{good}":{{"display":"D1","name":"Projector","width":1920,"height":1080}},
                 "{bad}":{{"display":"D2","name":"Projector","width":0,"height":1080}},
                 "not-an-id":{{"display":"D3","name":"P","width":1,"height":1}}}}}}}}}}"#,
@@ -1149,10 +1149,10 @@ mod tests {
         assert_eq!(loaded.warnings.len(), 2, "{:?}", loaded.warnings);
         let s = loaded.settings;
         assert_eq!(
-            s.stage_mapping(ws(1), StageId(Uuid::from_u128(2))),
+            s.route_display(ws(1), RouteId(Uuid::from_u128(2))),
             Some(&display("D1"))
         );
-        assert_eq!(s.stage_mapping(ws(1), StageId(Uuid::from_u128(3))), None);
+        assert_eq!(s.route_display(ws(1), RouteId(Uuid::from_u128(3))), None);
         // Written back with the entries kept, and a workspace with none writes no key.
         let again = load_settings(&save_settings(&s).unwrap());
         assert!(again.warnings.is_empty());
@@ -1160,7 +1160,27 @@ mod tests {
         assert!(
             !save_settings(&MachineSettings::default())
                 .unwrap()
-                .contains("stages")
+                .contains("routes")
+        );
+    }
+
+    /// Display choices are kept per route; the per-stage choices an earlier build wrote are not
+    /// read (nothing before 1.0 needs them) and leave no warning.
+    #[test]
+    fn an_old_per_stage_display_choice_is_ignored() {
+        let w = Uuid::from_u128(1);
+        let text = format!(
+            r#"{{"settings_version":1,"workspaces":{{"{w}":{{"patches":{{}},"stages":{{
+                "{s}":{{"display":"D1","name":"Projector","width":1920,"height":1080}}}}}}}}}}"#,
+            s = Uuid::from_u128(2)
+        );
+        let loaded = load_settings(&text);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(
+            loaded
+                .settings
+                .route_display(ws(1), RouteId(Uuid::from_u128(2))),
+            None
         );
     }
 }

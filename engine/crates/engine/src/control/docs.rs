@@ -2193,7 +2193,7 @@ impl Engine {
             openlab_core::NetworkPatchId(random_id()),
             seed,
         );
-        self.add_display_stages(&mut ws);
+        self.add_default_outputs(&mut ws);
         ws
     }
 }

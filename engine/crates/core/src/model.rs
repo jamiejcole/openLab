@@ -51,6 +51,14 @@ id_type!(
     /// Stable video stage id.
     StageId
 );
+id_type!(
+    /// Stable video output route id.
+    RouteId
+);
+id_type!(
+    /// Stable id of a stage's region, unique in the workspace.
+    RegionId
+);
 
 /// A complete show document (WS-01).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -60,6 +68,9 @@ pub struct Workspace {
     pub settings: WorkspaceSettings,
     pub patches: Vec<OutputPatch>,
     pub network_patches: Vec<NetworkPatch>,
+    /// Video output routes (VID-01): where stages' regions go. Absent from a file that has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<crate::video::OutputRoute>,
     /// Video stages (VID-01). Absent from a file that has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<crate::video::Stage>,
@@ -145,6 +156,7 @@ impl Workspace {
                 protocol: NetworkProtocol::Udp,
                 interface: None,
             }],
+            routes: Vec::new(),
             stages: Vec::new(),
             show_mode: false,
             cue_lists: vec![CueList {

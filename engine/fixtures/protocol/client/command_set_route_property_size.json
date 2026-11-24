@@ -1,0 +1,13 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_route_property",
+    "id": "00000000-0000-0000-0000-000000000090",
+    "property": {
+      "type": "size",
+      "width": 1280,
+      "height": 1024
+    }
+  }
+}

@@ -11,30 +11,62 @@ struct BackstopDisplay: Equatable {
     let hasMenuBar: Bool
 }
 
+/// What a workspace's last `video_outputs` said of one stage: its black, and the displays it
+/// reaches here through its regions' routes, with those routes' states.
+struct StageOutputs: Hashable, Sendable {
+    var entry: StageEntry
+    var displays: [String]
+    var states: [RouteState?]
+}
+
 /// VID-12: which displays the app holds black. A display is held when a stage of an open workspace
-/// keeps black and is shown there on this machine, and the display is connected: the one with the
-/// menu bar too, as the stage itself covers it (#708). Stage states are not read: the backstop is
-/// for the moments the stage host cannot say anything. A stage whose black is down (`panicked`:
-/// a panic took it down, or no picture has played on it since its workspace opened) holds
-/// nothing, unless its black was up when its engine went away (`carried`: a relaunched engine
-/// reopens the workspace with every stage's black down), nor one the operator's Esc took down
-/// here (`dismissed`) until the engine has said so.
+/// keeps black and reaches it on this machine (a region of the stage sent to a route shown there),
+/// and the display is connected: the one with the menu bar too, as the stage itself covers it
+/// (#708). Route states are not read: the backstop is for the moments the stage host cannot say
+/// anything. A stage whose black is down (`panicked`: a panic took it down, or no picture has
+/// played on it since its workspace opened) holds nothing, unless its black was up when its engine
+/// went away (`carried`: a relaunched engine reopens the workspace with every stage's black
+/// down), nor one the operator's Esc took down here (`dismissed`) until the engine has said so.
 enum BackstopPlan {
-    /// The stages holding a display black, with the display each is shown on.
+    /// The displays `stage` (of `model`) reaches here: each route a region of it is sent to, in
+    /// route order, on the display this machine chose for it.
+    static func displays(of stage: ModelObject, model: WorkspaceModel?, outputs: VideoOutputs) -> [String] {
+        let routes = Set((stage.raw["regions"]?.arrayValue ?? []).compactMap { $0["route"]?.stringValue })
+        var out: [String] = []
+        for route in model?.routes ?? [] where routes.contains(route.id.raw) {
+            if let display = outputs.route(route.id)?.mapping?.display, !out.contains(display) {
+                out.append(display)
+            }
+        }
+        return out
+    }
+
+    /// What `outputs` says of `stage`; nil when it does not list the stage (an engine that has
+    /// not said yet).
+    static func outputs(of stage: ModelObject, model: WorkspaceModel?, outputs: VideoOutputs) -> StageOutputs? {
+        guard let entry = outputs.stage(stage.id) else { return nil }
+        let routes = Set((stage.raw["regions"]?.arrayValue ?? []).compactMap { $0["route"]?.stringValue })
+        let states = (model?.routes ?? []).filter { routes.contains($0.id.raw) }.map { outputs.route($0.id)?.state }
+        return StageOutputs(entry: entry, displays: displays(of: stage, model: model, outputs: outputs), states: states)
+    }
+
+    /// The stages holding a display black, with each display they reach.
     static func stages(
         workspaces: [(model: WorkspaceModel?, outputs: VideoOutputs)], dismissed: Set<ModelID> = [],
-        carried: [ModelID: StageMappingEntry] = [:]
+        carried: [ModelID: StageOutputs] = [:]
     ) -> [(stage: ModelID, display: String)] {
         var out: [(stage: ModelID, display: String)] = []
         for (model, outputs) in workspaces {
             for stage in model?.stages ?? [] where stage.raw["keep_black"] == .bool(true) {
                 guard !dismissed.contains(stage.id) else { continue }
-                let entry = outputs.stages.first { $0.stage == stage.id }
-                if let display = entry?.mapping?.display, entry?.panicked != true || carried[stage.id] != nil {
-                    out.append((stage.id, display))
-                } else if entry == nil, let display = carried[stage.id]?.mapping?.display {
+                let entry = outputs.stage(stage.id)
+                if let entry, entry.panicked != true || carried[stage.id] != nil {
+                    for display in displays(of: stage, model: model, outputs: outputs) {
+                        out.append((stage.id, display))
+                    }
+                } else if entry == nil, let displays = carried[stage.id]?.displays {
                     // A relaunched engine has not said where the stage is yet.
-                    out.append((stage.id, display))
+                    for display in displays { out.append((stage.id, display)) }
                 }
             }
         }
@@ -44,7 +76,7 @@ enum BackstopPlan {
     /// The frames to hold black, by display id.
     static func covers(
         workspaces: [(model: WorkspaceModel?, outputs: VideoOutputs)], displays: [BackstopDisplay],
-        dismissed: Set<ModelID> = [], carried: [ModelID: StageMappingEntry] = [:]
+        dismissed: Set<ModelID> = [], carried: [ModelID: StageOutputs] = [:]
     ) -> [String: NSRect] {
         let held = stages(workspaces: workspaces, dismissed: dismissed, carried: carried)
         let wanted = Set(held.map(\.display))
@@ -88,7 +120,7 @@ final class BlackBackstop {
     /// relaunch, which reopens the workspace with every black down, until Esc or a picture played
     /// on the stage (the engine's word is followed again from then).
     /// With what its engine last said of it then.
-    private(set) var carried: [ModelID: StageMappingEntry] = [:]
+    private(set) var carried: [ModelID: StageOutputs] = [:]
     /// The workspaces waiting to be reattached to a relaunched engine.
     private var waiting: Set<ObjectIdentifier> = []
     private var storeSubs: [ObjectIdentifier: AnyCancellable] = [:]
@@ -143,14 +175,24 @@ final class BlackBackstop {
         update()
     }
 
-    /// Whether a store change can move a backstop: a new snapshot, a stage edit, or new display
-    /// choices (`video_outputs` arrives as `.notices`). Cue edits and runtime ticks cannot.
+    /// Whether a store change can move a backstop: a new snapshot, a stage or route edit, or new
+    /// display choices (`video_outputs` arrives as `.notices`). Cue edits and runtime ticks cannot.
     private static func mayMove(_ change: StoreChange) -> Bool {
         switch change {
         case .reset, .notices: return true
         case .model(let upserts, let deletes):
-            return upserts.contains { if case .stage = $0 { true } else { false } }
-                || deletes.contains { if case .stage = $0 { true } else { false } }
+            return upserts.contains {
+                switch $0 {
+                case .stage, .route: true
+                default: false
+                }
+            }
+                || deletes.contains {
+                    switch $0 {
+                    case .stage, .route: true
+                    default: false
+                    }
+                }
         case .runtime, .progress, .waits: return false
         }
     }
@@ -199,11 +241,16 @@ final class BlackBackstop {
         dismissed = dismissed.filter { id in
             keepsBlack(id) && workspaces.contains { $0.outputs.stages.contains { $0.stage == id && !$0.panicked } }
         }
+        // What a workspace's engine last said of one of its stages.
+        func said(_ id: ModelID, in store: WorkspaceStore) -> StageOutputs? {
+            guard let stage = store.model?.stages.first(where: { $0.id == id }) else { return nil }
+            return BackstopPlan.outputs(of: stage, model: store.model, outputs: store.videoOutputs)
+        }
         // A workspace whose engine went away carries the blacks it had up through the relaunch.
         for store in stores where waiting.contains(ObjectIdentifier(store)) {
             for (stage, _) in BackstopPlan.stages(workspaces: [(store.model, store.videoOutputs)], dismissed: dismissed)
             {
-                if carried[stage] == nil { carried[stage] = store.videoOutputs.stages.first { $0.stage == stage } }
+                if carried[stage] == nil { carried[stage] = said(stage, in: store) }
             }
         }
         // Carried until there is word otherwise from a new engine: the stage no longer keeps black
@@ -217,10 +264,8 @@ final class BlackBackstop {
             if models.count == stores.count, !models.contains(where: { $0.stages.contains { $0.id == id } }) {
                 return false
             }
-            guard let entry = stores.lazy.compactMap({ $0.videoOutputs.stages.first { $0.stage == id } }).first,
-                entry != before
-            else { return true }
-            return entry.mapping != nil && entry.panicked
+            guard let now = stores.lazy.compactMap({ said(id, in: $0) }).first, now != before else { return true }
+            return !now.displays.isEmpty && now.entry.panicked
         }
         let plan = BackstopPlan.covers(
             workspaces: workspaces, displays: displays, dismissed: dismissed, carried: carried)
@@ -261,12 +306,12 @@ final class BlackBackstop {
             .filter { !(standingBack && $0.hasMenuBar) }.map(\.frame)
     }
 
-    /// The displays a stage is shown on or the app holds black.
+    /// The displays a stage is shown on (a route showing there) or the app holds black.
     static func coveredDisplays(
         displays: [BackstopDisplay], backstops: Set<String>, outputs: [VideoOutputs]
     ) -> [BackstopDisplay] {
         var covered = backstops
-        for entry in outputs.flatMap(\.stages) where entry.state?.state == "shown" {
+        for entry in outputs.flatMap(\.routes) where entry.state?.state == "shown" {
             if let display = entry.state?.display { covered.insert(display) }
         }
         return displays.filter { covered.contains($0.id) }

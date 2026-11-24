@@ -70,6 +70,11 @@ cue, and the cue shows as broken where it cannot run.
 | A play count (§5) that is not a whole number 0 to 4294967295 or `"skip"` | Refused (wrong type) |
 | Every slice of an Audio or Video cue inside its trims has the play count `"skip"` | Loads as it is, no warning; the cue shows as broken (`nothing_plays`) once its file is read |
 | A Video cue's `stage` does not exist | Warning (`StageMissing`); kept, and the cue shows as broken. A `stage` of `null` ("none") loads quietly and the cue shows as broken |
+| Two output routes with one id, or two regions (of any stages) with one id | Refused (`DuplicateRouteId`, `DuplicateRegionId`) |
+| An output route's size outside 1 to 30000, or its rotation not 0, 90, 180 or 270 | Warning (`RouteSize`, `RouteRotation`); the size clamped, the rotation set to 0 |
+| More than 64 output routes, or more than 16 regions on a stage | Warning (`TooManyRoutes`, `TooManyRegions`); the extra ones dropped |
+| A region not wholly inside its stage | Warning (`RegionBounds`); shrunk to the stage if larger, then moved inside |
+| A region naming an output route the file does not have | Warning (`RegionRouteMissing`); it has no route |
 | A Video cue's geometry number outside its range (§5 `video`) | Warning (`InvalidValue`, the field); clamped. A `layer` that is not a whole number 0 to 65535 refuses the file (wrong type) |
 | A Fade cue's `geometry` number outside its range or not finite (§5 `fade`) | Warning (`InvalidValue`, `geometry.<field>`); clamped (not finite: the untouched value) |
 | A time below its minimum or above its maximum (24 h unless stated) | Warning; clamped |
@@ -119,6 +124,7 @@ targeting cue may target any cue except itself.
 | `settings` | object | §4.2. |
 | `patches` | array of output patches | §4.4. |
 | `network_patches` | array of network patches | §4.5. |
+| `routes` | array of output routes, optional | §4.8. Absent when the workspace has none. |
 | `stages` | array of stages, optional | §4.7. Absent when the workspace has none. |
 | `show_mode` | boolean, optional | `true`: saved in Show Mode and opens in Show Mode. Absent or `false`: Edit Mode. Written only when `true`. It is the mode in force at the last Save, Save As or autosave; changing mode does not mark the workspace unsaved. A value that is neither boolean nor `null` is damage: opens in Edit Mode with a warning (§3), and the next save writes it right. |
 | `cue_lists` | array of cue lists | §4.6. Written last so the short sections come first. |
@@ -200,7 +206,7 @@ A destination for Network cues. A new workspace starts with one, "Network 1" (`1
 
 ### 4.7 Stages
 
-A stage is a named raster Video cues are drawn on (VID-01; QLab 5 manual pp. 207, 225-227). Which display shows it is chosen per machine (`settings.json`, under the workspace id and stage id: the display's id, name and pixel size when it was chosen), not stored in the show file, so a show moves between machines as an audio patch does. A stage with no display on this machine still loads; it carries a warning.
+A stage is a named raster Video cues are drawn on (VID-01; QLab 5 manual pp. 207, 225-229). Its regions are rectangles of it, each sent to one output route (§4.8) or to none; a route is shown on a display. A stage with no region, or whose regions have no route, still plays its cues, seen only in its monitor window.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -209,8 +215,32 @@ A stage is a named raster Video cues are drawn on (VID-01; QLab 5 manual pp. 207
 | `width`, `height` | integer 1–16384 | Pixel size. 0 or a size above 16384 (up to 4294967295) is clamped with a warning (`StageSize`); a negative, fractional or larger number, or null, is a wrong type and refuses the file (§3). |
 | `keep_black` | boolean, optional | `true` (the default when absent): once a picture has played on the stage, its display shows black while no cue plays on it, until a panic (QLab's "keep rendering between cues", p. 227); before the first picture after the workspace opens, and after a panic, nothing covers the display. `false`: its window is hidden while nothing plays and the desktop shows. |
 | `layer` | integer 0–1000, optional | Stacking order among stages on the same display (QLab 5 manual p. 227): a higher layer is drawn on top; on the same layer the stage whose name sorts first is on top. Default 1. A value from 1001 to 65535 is clamped to 1000 with a warning (`StageLayer`); a negative, fractional or larger number, or null, is a wrong type and refuses the file (§3). |
+| `regions` | array of regions, optional | At most 16. Absent when the stage has none. A region's letter (A, B, ...) and colour come from its place in the list. |
 
-At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyStages`).
+A region:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | UUID | Unique among every stage's regions; a repeat refuses the file. |
+| `route` | output route id, optional | The route (§4.8) the region is drawn on, filling it. Absent: none (drawn nowhere). A route the file lacks becomes none with a warning (`RegionRouteMissing`). |
+| `x`, `y` | integer 0–4294967295 | Its top-left corner in stage pixels from the stage's top left. |
+| `width`, `height` | integer 1–4294967295 | Its size in stage pixels. The region lies wholly inside its stage; one that does not is shrunk to the stage if larger, then moved inside, with a warning (`RegionBounds`). |
+
+A stage's resize scales its regions with it. At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyStages`).
+
+### 4.8 Output routes
+
+An output route (QLab 5 manual pp. 232-234) is a raster its regions fill, turned by its rotation and put on a display by its scaling. Which display shows it is chosen per machine (`settings.json`, under the workspace id and route id: the display's id, name and pixel size when it was chosen), not stored in the show file, so a show moves between machines as an audio patch does. A route with no display on this machine still loads; its Video cues play unseen.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | UUID | Two routes with one id refuse the file. |
+| `name` | string | |
+| `width`, `height` | integer 1–30000 | Pixel size. 0 or above 30000 (up to 4294967295) is clamped with a warning (`RouteSize`); a negative, fractional or larger number, or null, refuses the file. |
+| `rotation` | integer, optional | Clockwise quarter turns in degrees: 0 (the default), 90, 180 or 270. Another whole number 0 to 65535 is set to 0 with a warning (`RouteRotation`). |
+| `scaling` | `"centre"`, `"fit"`, `"stretch"` or `"fill"`, optional | How the turned route is put on its display: one route pixel per display pixel, centred; as large as fits whole, shape kept; squeezed to the display's shape; covering the display, shape kept. Default `"fill"`. Another string refuses the file. |
+
+At most 64 routes; a file with more keeps the first 64 with a warning (`TooManyRoutes`).
 
 ## 5. Cues
 

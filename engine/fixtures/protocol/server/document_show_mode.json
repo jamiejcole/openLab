@@ -4,7 +4,9 @@
     "path": "/Users/sam/Shows/Hamlet.openlab",
     "dirty": false,
     "can_undo": true,
-    "can_redo": false,
+    "can_redo": true,
+    "undo_name": "rename_route",
+    "redo_name": "add_region",
     "show_mode": true
   }
 }

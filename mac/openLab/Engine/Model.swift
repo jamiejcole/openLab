@@ -250,13 +250,19 @@ struct WorkspaceModel: Sendable, Decodable {
     var settings: JSONValue
     var patches: [ModelObject]
     var networkPatches: [ModelObject]
-    /// VID-01: the video stages (`{id, name, width, height, keep_black, layer}`); absent from a
-    /// workspace with none.
+    /// VID-01: the video output routes (`{id, name, width, height, rotation, scaling}`); absent
+    /// from a workspace with none.
+    var routes: [ModelObject] = []
+    /// VID-01: the video stages (`{id, name, width, height, keep_black, layer, regions}`, each
+    /// region `{id, route?, x, y, width, height}`); absent from a workspace with none.
     var stages: [ModelObject] = []
     var cueLists: [CueList]
+    /// The names of stages removed since this model was read (not part of the wire model), so a
+    /// cue left on one can say which stage it misses.
+    var formerStageNames: [ModelID: String] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, settings, patches, stages
+        case id, name, settings, patches, routes, stages
         case networkPatches = "network_patches"
         case cueLists = "cue_lists"
     }
@@ -300,6 +306,7 @@ extension WorkspaceModel {
         settings = try c.decode(JSONValue.self, forKey: .settings)
         patches = try c.decode([ModelObject].self, forKey: .patches)
         networkPatches = try c.decode([ModelObject].self, forKey: .networkPatches)
+        routes = try c.decodeIfPresent([ModelObject].self, forKey: .routes) ?? []
         stages = try c.decodeIfPresent([ModelObject].self, forKey: .stages) ?? []
         cueLists = try c.decode([CueList].self, forKey: .cueLists)
     }
@@ -310,12 +317,18 @@ struct DocumentState: Hashable, Sendable, Decodable {
     var dirty: Bool
     var canUndo: Bool
     var canRedo: Bool
+    /// What the step the next undo and redo apply is called (docs/protocol.md `document`): a
+    /// code the Edit menu words (`undo.step.<code>`); nil, or a code it does not know: no name.
+    var undoName: String?
+    var redoName: String?
     /// The engine holds this workspace in Show Mode (SM-07 sleep hold); absent means false.
     var showMode: Bool
     enum CodingKeys: String, CodingKey {
         case path, dirty
         case canUndo = "can_undo"
         case canRedo = "can_redo"
+        case undoName = "undo_name"
+        case redoName = "redo_name"
         case showMode = "show_mode"
     }
 
@@ -325,6 +338,8 @@ struct DocumentState: Hashable, Sendable, Decodable {
         dirty = try c.decode(Bool.self, forKey: .dirty)
         canUndo = try c.decode(Bool.self, forKey: .canUndo)
         canRedo = try c.decode(Bool.self, forKey: .canRedo)
+        undoName = try c.decodeIfPresent(String.self, forKey: .undoName)
+        redoName = try c.decodeIfPresent(String.self, forKey: .redoName)
         showMode = try c.decodeIfPresent(Bool.self, forKey: .showMode) ?? false
     }
 }
@@ -341,6 +356,7 @@ enum Upsert: Sendable, Decodable {
     case patch(index: Int, patch: ModelObject)
     case networkPatch(index: Int, patch: ModelObject)
     case stage(index: Int, stage: ModelObject)
+    case route(index: Int, route: ModelObject)
     case settings(name: String, settings: JSONValue)
     /// A kind this client does not know: the model is now unreliable, so the caller resyncs.
     case unknown(String)
@@ -366,6 +382,9 @@ enum Upsert: Sendable, Decodable {
         case "stage":
             self = .stage(
                 index: try c.decode(Int.self, forKey: "index"), stage: try c.decode(ModelObject.self, forKey: "stage"))
+        case "route":
+            self = .route(
+                index: try c.decode(Int.self, forKey: "index"), route: try c.decode(ModelObject.self, forKey: "route"))
         case "settings":
             self = .settings(
                 name: try c.decode(String.self, forKey: "name"),
@@ -382,6 +401,7 @@ enum Delete: Sendable, Decodable {
     case patch(ModelID)
     case networkPatch(ModelID)
     case stage(ModelID)
+    case route(ModelID)
     case unknown(String)
 
     init(from decoder: Decoder) throws {
@@ -393,6 +413,7 @@ enum Delete: Sendable, Decodable {
         case "patch": self = .patch(id)
         case "network_patch": self = .networkPatch(id)
         case "stage": self = .stage(id)
+        case "route": self = .route(id)
         case let other: self = .unknown(other)
         }
     }

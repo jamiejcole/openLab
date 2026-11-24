@@ -40,8 +40,15 @@ final class VideoSettingsTests: XCTestCase {
             var root = try XCTUnwrap(
                 JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
             var ws = try XCTUnwrap(root["workspace"] as? [String: Any])
+            // Each stage has one region covering it, on an output route of its own id and size.
+            ws["routes"] = stages.enumerated().map { n, s in
+                ["id": s.0, "name": "Output \(n + 1)", "width": s.2, "height": s.3] as [String: Any]
+            }
             ws["stages"] = stages.map { s in
-                ["id": s.0, "name": s.1, "width": s.2, "height": s.3, "keep_black": false, "layer": 1] as [String: Any]
+                [
+                    "id": s.0, "name": s.1, "width": s.2, "height": s.3, "keep_black": false, "layer": 1,
+                    "regions": [["id": s.0, "route": s.0, "x": 0, "y": 0, "width": s.2, "height": s.3]],
+                ] as [String: Any]
             }
             root["workspace"] = ws
             try JSONSerialization.data(withJSONObject: root).write(to: file)
@@ -60,32 +67,6 @@ final class VideoSettingsTests: XCTestCase {
     private let stageA = "00000000-0000-0000-0000-00000000a001"
     private let stageB = "00000000-0000-0000-0000-00000000a002"
 
-    /// Flow 1: a new workspace on a Mac with two displays: the Video page lists one stage, Stage 1,
-    /// with the main display's pixel size, shown on that display.
-    func testANewWorkspaceListsOneStageOnTheMainDisplay() async throws {
-        await assertEventually("the stage host listed its displays") {
-            guard case .success(let ok) = await self.engine.request(.listDisplays),
-                case .displays(let list, _)? = ok.data
-            else { return false }
-            return list.count == 2
-        }
-        guard case .success(let ok) = await engine.request(.new), case .opened(let doc)? = ok.data else {
-            return XCTFail("new")
-        }
-        let rig = Rig(engine: engine, workspace: doc)
-        guard await rig.connect() else { return XCTFail("connect") }
-        let sc = WorkspaceSettingsWindowController(store: rig.store)
-        await sc.present().value
-        let pane = sc.videoPane
-        let routing = sc.videoRoutingPane
-        await settled(sc) { pane.nameFields.count == 1 && routing.displayPopups.count == 1 }
-        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1"])
-        XCTAssertEqual(pane.shown?.map { "\($0.width) × \($0.height)" }, ["1920 × 1080"])
-        XCTAssertEqual(routing.displayPopups.map { $0.titleOfSelectedItem }, ["Virtual V1 (1920 × 1080)"])
-        XCTAssertTrue(pane.emptyLabel.isHidden)
-        XCTAssertEqual(routing.warningLabels.map(\.stringValue), [""], "no warning: shown")
-    }
-
     /// The Video category is split into Video Outputs (the stages), Output Routing (the display
     /// each is shown on) and Output Devices (the displays), as QLab 5's are, with no Video Inputs;
     /// the page bar lists the three and the stages page has no display choice.
@@ -101,7 +82,8 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(SettingsCategory.video.pages, [.video, .videoRouting, .videoDevices])
         await settled(sc) { sc.videoPane.nameFields.count == 1 }
         XCTAssertFalse(sc.videoPane.cols.contains(.display), "the stages page chooses no display")
-        XCTAssertEqual(sc.videoRoutingPane.cols, [.name, .size, .display])
+        XCTAssertEqual(sc.videoRoutingPane.cols, [.handle, .name, .size, .display, .scaling, .edit, .remove])
+        XCTAssertEqual(sc.videoPane.cols, [.name, .size, .devices, .edit, .monitor, .remove])
         XCTAssertEqual(sc.videoDevicesPane.cols, [.device, .name, .resolution, .rate])
         sc.pageBar.selectedSegment = 1
         _ = sc.pageBar.target?.perform(sc.pageBar.action, with: sc.pageBar)
@@ -165,23 +147,24 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(popup.titleOfSelectedItem, loc("settings.video.displayNone"))
         popup.selectItem(withTitle: "Virtual V2 (1280 × 720)")
         _ = popup.sendAction(popup.action, to: popup.target)
-        await settled(sc) { pane.shown?.first?.display == "V2" }
+        await settled(sc) { routing.shown?.first?.display == "V2" }
         XCTAssertEqual(routing.displayPopups.first?.titleOfSelectedItem, "Virtual V2 (1280 × 720)")
-        XCTAssertEqual(rig.store.videoOutputs.stages.first?.mapping?.display, "V2")
+        XCTAssertEqual(rig.store.videoOutputs.routes.first?.mapping?.display, "V2")
     }
 
-    /// Flow 3: New Stage adds a stage with no display; its name is typed in place; it is removed;
-    /// each is one undo step.
+    /// Flow 3: New Stage adds a stage (with no output route in the workspace, it reaches no
+    /// display); its name is typed in place; it is removed; each is one undo step.
     func testNewStageRenameInPlaceAndRemoveAreOneUndoStepEach() async throws {
         let (rig, sc) = try await open()
         let pane = sc.videoPane
         let routing = sc.videoRoutingPane
         await settled(sc) { pane.shown?.isEmpty == true }
         XCTAssertFalse(pane.emptyLabel.isHidden, "an empty table says so")
-        pane.addButton.performClick(nil)
+        choose(loc("settings.video.addEmpty"), in: pane.addPopup)
         await settled(sc) { pane.nameFields.count == 1 }
         XCTAssertEqual(pane.nameFields[0].stringValue, String(format: loc("settings.video.newName"), 1))
-        XCTAssertEqual(routing.displayPopups[0].titleOfSelectedItem, loc("settings.video.displayNone"))
+        XCTAssertEqual(routing.shown, [], "no output route")
+        XCTAssertEqual(routing.emptyLabel.isHidden, false)
         let field = pane.nameFields[0]
         field.stringValue = "Cyc"
         pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
@@ -197,27 +180,29 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { pane.shown?.isEmpty == true }
     }
 
-    /// Flow 4: the keep-black box sets the stage's keep-black; its black comes only with the first
-    /// picture played on it (#708; black between cues itself: the engine's video_cues.rs).
+    /// Flow 4: the stage editor's keep-black box sets the stage's keep-black; its black comes only
+    /// with the first picture played on it (#708; black between cues itself: the engine's
+    /// video_cues.rs).
     func testTheKeepBlackBoxSetsTheStagesBlackWhichComesOnlyWithItsFirstPicture() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
-        let pane = sc.videoPane
+        let editor = sc.openStageEditor(ModelID(stageA))
         let routing = sc.videoRoutingPane
         await settled(sc) { routing.displayPopups.count == 1 }
         let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
-        await settled(sc) { rig.store.videoOutputs.stages.first?.state?.state == "hidden" }
-        pane.blackBoxes[0].performClick(nil)
+        await settled(sc) { rig.store.videoOutputs.routes.first?.state?.state == "hidden" }
+        editor.blackCheck.performClick(nil)
         await settled(sc) { rig.store.model?.stages.first?.raw["keep_black"] == .bool(true) }
-        XCTAssertEqual(pane.blackBoxes[0].state, .on)
+        await editor.editing?.value
+        XCTAssertEqual(editor.blackCheck.state, .on)
         // #708: no picture has played on the stage since the show opened, so its black is not up yet:
         // ticking the box never covers a display.
         await settled(sc) { rig.store.videoOutputs.stages.first?.panicked == true }
-        XCTAssertEqual(rig.store.videoOutputs.stages.first?.state?.state, "hidden")
-        pane.blackBoxes[0].performClick(nil)
+        XCTAssertEqual(rig.store.videoOutputs.routes.first?.state?.state, "hidden")
+        editor.blackCheck.performClick(nil)
         await settled(sc) { rig.store.model?.stages.first?.raw["keep_black"] == .bool(false) }
-        XCTAssertEqual(rig.store.videoOutputs.stages.first?.state?.state, "hidden")
+        XCTAssertEqual(rig.store.videoOutputs.routes.first?.state?.state, "hidden")
     }
 
     /// What `stage`'s monitor window shows at a content size of `width` x `height` pixels, read back
@@ -278,13 +263,13 @@ final class VideoSettingsTests: XCTestCase {
         let warnings = WarningRows.make(store: rig.store)
         XCTAssertTrue(
             warnings.contains {
-                $0.title == String(format: loc("warnings.stage"), "Cyc")
+                $0.title == String(format: loc("warnings.stage"), "Output 1")
                     && $0.detail == loc("warnings.stage.noDisplay")
             }, "\(warnings)")
         let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
-        await settled(sc) { pane.shown?.first?.warning == nil }
+        await settled(sc) { routing.shown?.first?.warning == nil }
         XCTAssertFalse(WarningRows.make(store: rig.store).contains { $0.id == "v:\(self.stageA)" })
     }
 
@@ -297,18 +282,22 @@ final class VideoSettingsTests: XCTestCase {
         let routing = sc.videoRoutingPane
         func check(_ why: String) {
             let rows = pane.shown ?? []
-            let warned = rows.filter { $0.warning != nil }.count
+            let routes = routing.shown ?? []
+            let warned = routes.filter { $0.warning != nil }.count
+            let stagesWarned = rows.filter { $0.warning != nil }.count
             XCTAssertEqual(pane.holder.subviews, [pane.grid], "\(why): one table")
-            XCTAssertEqual(pane.grid.numberOfRows, rows.count, why)
+            XCTAssertEqual(pane.grid.numberOfRows, rows.count + stagesWarned, why)
             let controls: [NSView] =
-                pane.nameFields + pane.layerFields + pane.blackBoxes + pane.monitorButtons + pane.removeButtons
-            // Per row its controls and its pixel-size field pair (the titles are not in the rows' grid).
-            XCTAssertEqual(pane.grid.subviews.count, controls.count + rows.count, why)
+                pane.nameFields + pane.sizeLabels + pane.deviceCells + pane.editButtons + pane.monitorButtons
+                + pane.removeButtons
+            // Per row its controls (the titles are not in the rows' grid), and a line per warning.
+            XCTAssertEqual(pane.grid.subviews.count, controls.count + stagesWarned, why)
             XCTAssertTrue(controls.allSatisfy { $0.superview === pane.grid }, why)
             XCTAssertEqual(pane.nameFields.map(\.stringValue), rows.map(\.name), why)
-            // The routing page: its row's controls and label cells, and a line for each warning.
-            XCTAssertEqual(routing.grid.numberOfRows, rows.count + warned, why)
-            XCTAssertEqual(routing.grid.subviews.count, 3 * rows.count + warned, why)
+            // The routing page: its row's seven cells, and a line for each warning.
+            XCTAssertEqual(routing.holder.subviews, [routing.grid, routing.dropLine], "\(why): one table")
+            XCTAssertEqual(routing.grid.numberOfRows, routes.count + warned, why)
+            XCTAssertEqual(routing.grid.subviews.count, 7 * routes.count + warned, why)
             XCTAssertTrue(routing.displayPopups.allSatisfy { $0.superview === routing.grid }, why)
         }
         for round in 1...2 {
@@ -319,7 +308,7 @@ final class VideoSettingsTests: XCTestCase {
             _ = popup.sendAction(popup.action, to: popup.target)
             await settled(sc) { routing.shown?.first?.warning == nil }
             check("round \(round): a warning line gone")
-            pane.addButton.performClick(nil)
+            choose(loc("settings.video.addEmpty"), in: pane.addPopup)
             await settled(sc) { pane.shown?.count == 3 }
             check("round \(round): a stage added")
             _ = await rig.store.send(
@@ -334,7 +323,7 @@ final class VideoSettingsTests: XCTestCase {
             _ = await rig.store.undo()
             _ = await rig.store.undo()
             _ = await rig.store.undo()
-            _ = await rig.store.setStageMapping(ModelID(stageA), display: nil)
+            _ = await rig.store.setRouteDisplay(ModelID(stageA), display: nil)
             await sc.videoPane.refresh()
         }
     }
@@ -349,7 +338,7 @@ final class VideoSettingsTests: XCTestCase {
         try startTyping("Cyclo", in: pane.nameFields[0], sc)
         let caret = NSRange(location: 2, length: 2)
         pane.nameFields[0].currentEditor()?.selectedRange = caret
-        guard case .success = await rig.store.setStageMapping(ModelID(stageA), display: "V1") else {
+        guard case .success = await rig.store.setRouteDisplay(ModelID(stageA), display: "V1") else {
             return XCTFail("mapping")
         }
         await caughtUp(rig, sc, "drawn while the name is typed") { routing.warningLabels.first?.stringValue == "" }
@@ -394,7 +383,7 @@ final class VideoSettingsTests: XCTestCase {
         await caughtUp(rig, sc, "the remove is drawn") { pane.nameFields.map(\.stringValue) == ["Cyc"] }
         XCTAssertEqual(rig.store.model?.stages.map { $0.raw["name"]?.stringValue }, ["Cyc"])
         try startTyping("Cyc 2", in: pane.nameFields[0], sc)
-        pane.addButton.performClick(nil)
+        choose(loc("settings.video.addEmpty"), in: pane.addPopup)
         await caughtUp(rig, sc, "the add is drawn") { pane.nameFields.count == 2 }
         XCTAssertEqual(pane.nameFields.first?.stringValue, "Cyc 2")
         // Another client adds a stage while a name is typed: drawn at once, the typing committed.
@@ -402,32 +391,36 @@ final class VideoSettingsTests: XCTestCase {
         _ = await rig.store.send(
             command: .addStage(id: ModelID(stageB), name: "Elsewhere", width: 640, height: 480, index: 2))
         await caughtUp(rig, sc, "the other client's add is drawn") { pane.nameFields.count == 3 }
-        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Cyc 3", "Stage 2", "Elsewhere"])
+        // The new stage is "Stage N", one past the highest such number in use (none here).
+        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Cyc 3", "Stage 1", "Elsewhere"])
         XCTAssertEqual(pane.messageLabel.stringValue, "")
     }
 
-    /// A layer typed out of range and then left by clicking the keep-black box: the box's edit is
-    /// made, and the layer's reason stays shown (the box's edit does not clear it).
+    /// A layer typed out of range in the stage editor and then left by clicking the keep-black
+    /// box: the box's edit is made, and the layer's reason stays shown (the box's edit does not
+    /// clear it).
     func testABadLayerLeftByClickingTheBoxKeepsItsReason() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080)])
-        let pane = sc.videoPane
-        await settled(sc) { pane.layerFields.count == 1 }
-        try startTyping("1500", in: pane.layerFields[0], sc)
-        pane.blackBoxes[0].performClick(nil)
-        await caughtUp(rig, sc, "the box's edit is made") { pane.shown?.first?.keepBlack == true }
-        XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badLayer"))
-        XCTAssertEqual(pane.layerFields[0].stringValue, "1")
+        let editor = sc.openStageEditor(ModelID(stageA))
+        XCTAssertTrue(try XCTUnwrap(editor.window).makeFirstResponder(editor.layerField))
+        try XCTUnwrap(editor.layerField.currentEditor()).string = "1500"
+        editor.blackCheck.performClick(nil)
+        await editor.editing?.value
+        await settled(sc) { rig.store.model?.stages.first?.raw["keep_black"] == .bool(true) }
+        XCTAssertEqual(editor.messageLabel.stringValue, loc("settings.video.badLayer"))
+        XCTAssertEqual(editor.layerField.stringValue, "1")
     }
 
-    /// A name the engine refuses, left by clicking the keep-black box: the box's edit is made,
-    /// and the engine's reason for the name is shown when it comes (the click does not outrun it).
-    func testANameTheEngineRefusesLeftByClickingTheBoxShowsWhy() async throws {
+    /// A name the engine refuses, left by clicking the stage's Monitor button: the button's
+    /// request is made, and the engine's reason for the name is shown when it comes (the click
+    /// does not outrun it).
+    func testANameTheEngineRefusesLeftByClickingMonitorShowsWhy() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080)])
         let pane = sc.videoPane
         await settled(sc) { pane.nameFields.count == 1 }
         try startTyping(String(repeating: "n", count: 1025), in: pane.nameFields[0], sc)
-        pane.blackBoxes[0].performClick(nil)
-        await caughtUp(rig, sc, "the box's edit is made") { pane.shown?.first?.keepBlack == true }
+        pane.monitorButtons[0].performClick(nil)
+        await caughtUp(rig, sc, "the monitor is opened") { rig.store.videoOutputs.stages.first?.monitor == true }
         XCTAssertFalse(pane.messageLabel.stringValue.isEmpty, "the engine's reason for the name")
         XCTAssertNotEqual(pane.messageLabel.stringValue, loc("settings.video.badName"))
         XCTAssertEqual(pane.nameFields[0].stringValue, "Mary")
@@ -454,20 +447,27 @@ final class VideoSettingsTests: XCTestCase {
     func testEveryRefusedValueSaysWhyAndGoesBack() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080), (stageB, "Angelica", 1920, 1080)])
         let pane = sc.videoPane
-        await settled(sc) { pane.layerFields.count == 2 }
+        await settled(sc) { pane.nameFields.count == 2 }
+        let editor = sc.openStageEditor(ModelID(stageA))
         func type(_ text: String, into field: NSTextField) {
             field.stringValue = text
-            pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+            let note = Notification(name: NSControl.textDidEndEditingNotification, object: field)
+            if field.window === editor.window {
+                editor.controlTextDidEndEditing(note)
+            } else {
+                pane.controlTextDidEndEditing(note)
+            }
         }
         // An accepted edit still on its way does not wipe the refusal typed after it.
-        type("0", into: pane.layerFields[0])
-        type("1001", into: pane.layerFields[1])
-        await caughtUp(rig, sc, "the accepted layer is drawn") { pane.shown?.first?.layer == 0 }
-        XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badLayer"))
-        XCTAssertEqual(pane.layerFields[1].stringValue, "1")
-        type("abc", into: pane.layerFields[1])
-        XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badLayer"))
-        XCTAssertEqual(pane.layerFields[1].stringValue, "1")
+        type("0", into: editor.layerField)
+        type("1001", into: editor.layerField)
+        await editor.editing?.value
+        await settled(sc) { rig.store.model?.stages.first?.raw["layer"]?.doubleValue == 0 }
+        XCTAssertEqual(editor.messageLabel.stringValue, loc("settings.video.badLayer"))
+        XCTAssertEqual(editor.layerField.stringValue, "0")
+        type("abc", into: editor.layerField)
+        XCTAssertEqual(editor.messageLabel.stringValue, loc("settings.video.badLayer"))
+        XCTAssertEqual(editor.layerField.stringValue, "0")
         type("", into: pane.nameFields[1])
         XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badName"))
         XCTAssertEqual(pane.nameFields[1].stringValue, "Angelica")
@@ -502,10 +502,10 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(pane.header.convert(pane.header.bounds, to: nil), titlesAt)
         // A display chosen, at the window's first size: its choice reads whole.
         let first = try XCTUnwrap(pane.shown?.first?.id)
-        let chosen = await rig.store.setStageMapping(first, display: "V1")
+        let chosen = await rig.store.setStageDisplay(first, display: "V1")
         guard case .success = chosen else { return XCTFail("\(chosen)") }
         await caughtUp(rig, sc, "the choice is drawn \(rig.store.videoOutputs)") {
-            pane.shown?.first?.display == "V1"
+            routing.shown?.first?.display == "V1"
         }
         window.contentView?.layoutSubtreeIfNeeded()
         for c in 0..<pane.cols.count {
@@ -514,7 +514,7 @@ final class VideoSettingsTests: XCTestCase {
         // The routing page's display choice reads whole, and its titles line up with its columns.
         sc.tabs.selectTabViewItem(withIdentifier: "videoRouting")
         window.contentView?.layoutSubtreeIfNeeded()
-        for popup in routing.displayPopups {
+        for popup in routing.displayPopups + routing.scalingPopups {
             XCTAssertLessThanOrEqual(
                 popup.intrinsicContentSize.width, popup.frame.width, popup.titleOfSelectedItem ?? "")
         }
@@ -524,7 +524,7 @@ final class VideoSettingsTests: XCTestCase {
         // At the window's least size too.
         window.setContentSize(window.contentMinSize)
         window.contentView?.layoutSubtreeIfNeeded()
-        for popup in routing.displayPopups {
+        for popup in routing.displayPopups + routing.scalingPopups {
             XCTAssertLessThanOrEqual(
                 popup.intrinsicContentSize.width, popup.frame.width, "least size: \(popup.titleOfSelectedItem ?? "")")
         }
@@ -539,13 +539,23 @@ final class VideoSettingsTests: XCTestCase {
         }
     }
 
-    /// A long stage name is cut with an ellipsis in its field and in the Warnings list, whose
-    /// reason is a short line of its own.
+    /// A long stage name is cut with an ellipsis in its field, and a long output route name in the
+    /// Warnings list, whose reason is a short line of its own.
     func testALongStageNameIsShortenedAndTheReasonStays() async throws {
         let long = "A very long stage name for the upstage cyclorama projector left half"
         let (rig, sc) = try await open(stages: [(stageA, long, 1920, 1080)])
         let pane = sc.videoPane
-        await settled(sc) { pane.nameFields.count == 1 && pane.shown?.first?.warning != nil }
+        let routing = sc.videoRoutingPane
+        let renamed = await rig.store.send(
+            command: Command(
+                .object([
+                    "type": .string("set_route_property"), "id": .string(stageA),
+                    "property": .object(["type": .string("name"), "value": .string(long)]),
+                ])))
+        guard case .success = renamed else { return XCTFail("\(renamed)") }
+        await settled(sc) {
+            pane.nameFields.count == 1 && routing.shown?.first?.warning != nil && routing.shown?.first?.name == long
+        }
         XCTAssertEqual(pane.nameFields[0].lineBreakMode, .byTruncatingTail)
         let row = try XCTUnwrap(WarningRows.make(store: rig.store).first { $0.id == "v:\(stageA)" })
         XCTAssertEqual(row.detail, loc("warnings.stage.noDisplay"), "the reason whole, on a line of its own")
@@ -558,7 +568,8 @@ final class VideoSettingsTests: XCTestCase {
     /// footer's count), from what the engine sends on connecting; and again on a new engine (an
     /// engine relaunched under the app: a fresh connection and store).
     func testAStageWithoutADisplayWarnsInTheMainWindowWithoutTheSettingsWindow() async throws {
-        let warning = String(format: loc("warnings.stage"), "Cyc")
+        // The warning names the stage's output route.
+        let warning = String(format: loc("warnings.stage"), "Output 1")
         var engines = [engine!]
         for round in 1...2 {
             let rig = try await openShow(stages: [(stageA, "Cyc", 1920, 1080)], on: engines[round - 1])
@@ -591,14 +602,15 @@ final class VideoSettingsTests: XCTestCase {
         let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080), (stageB, "Angelica", 1920, 1080)])
         let pane = sc.videoPane
         let routing = sc.videoRoutingPane
-        await settled(sc) { pane.layerFields.count == 2 }
+        await settled(sc) { pane.nameFields.count == 2 && routing.displayPopups.count == 2 }
+        let editors = [sc.openStageEditor(ModelID(stageA)), sc.openStageEditor(ModelID(stageB))]
         for (i, stage) in [stageA, stageB].enumerated() {
             let popup = routing.displayPopups[i]
             popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
             _ = popup.sendAction(popup.action, to: popup.target)
-            await settled(sc) { pane.shown?[i].display == "V1" }
-            pane.blackBoxes[i].performClick(nil)
-            await settled(sc) { pane.shown?[i].keepBlack == true }
+            await settled(sc) { routing.shown?[i].display == "V1" }
+            editors[i].blackCheck.performClick(nil)
+            await settled(sc) { rig.store.model?.stages[i].raw["keep_black"] == .bool(true) }
             let frame: UInt16 = i == 0 ? 111 : 222
             guard
                 case .success = await rig.client.send({
@@ -613,23 +625,24 @@ final class VideoSettingsTests: XCTestCase {
             return frame
         }
         func type(_ layer: String, into row: Int) {
-            let field = pane.layerFields[row]
+            let field = editors[row].layerField
             field.stringValue = layer
-            pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+            editors[row].controlTextDidEndEditing(
+                Notification(name: NSControl.textDidEndEditingNotification, object: field))
         }
+        func layer(_ row: Int) -> Double? { rig.store.model?.stages[row].raw["layer"]?.doubleValue }
         // Angelica raised to layer 100: Angelica's picture is on top.
         type("100", into: 1)
-        await settled(sc) { pane.shown?.last?.layer == 100 }
-        XCTAssertEqual(rig.store.model?.stages.last?.raw["layer"]?.doubleValue, 100)
+        await settled(sc) { layer(1) == 100 }
         await assertEventually("Angelica on top") { await onTop() == 222 }
         // The layers swapped: Mary's picture is on top.
         type("200", into: 0)
-        await settled(sc) { pane.shown?.first?.layer == 200 }
+        await settled(sc) { layer(0) == 200 }
         await assertEventually("Mary on top") { await onTop() == 111 }
-        // Out of range: refused in the page, nothing sent, the picture as it was.
+        // Out of range: refused in the editor, nothing sent, the picture as it was.
         type("1001", into: 1)
-        XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badLayer"))
-        XCTAssertEqual(pane.layerFields[1].stringValue, "100")
+        XCTAssertEqual(editors[1].messageLabel.stringValue, loc("settings.video.badLayer"))
+        XCTAssertEqual(editors[1].layerField.stringValue, "100")
         let onTopNow = await onTop()
         XCTAssertEqual(onTopNow, 111)
     }
@@ -642,6 +655,21 @@ final class VideoSettingsTests: XCTestCase {
         pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
     }
 
+    /// As `type(_:into:_:)`, in a stage editor's field.
+    private func type(_ text: String, into field: NSTextField, _ editor: StageEditorWindowController) {
+        field.stringValue = text
+        editor.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+    }
+
+    /// Picks `title` from `popup` (a pull-down's item too), as the operator's choice in its menu.
+    private func choose(_ title: String, in popup: NSPopUpButton, line: UInt = #line) {
+        guard let item = popup.menu?.items.first(where: { $0.title == title && !$0.isSeparatorItem }) else {
+            return XCTFail("no item \"\(title)\" in \(popup.itemTitles)", line: line)
+        }
+        popup.select(item)
+        _ = popup.sendAction(popup.action, to: popup.target)
+    }
+
     /// The colours display `display` shows at `points`.
     private func displayColours(_ display: String, _ points: [[Double]]) async -> [[UInt8]] {
         guard case .success(let ok) = await engine.request(.displayProbe(display: display, points: points)),
@@ -650,20 +678,21 @@ final class VideoSettingsTests: XCTestCase {
         return colours
     }
 
-    /// #674 flow 1: a stage's size is changed on the Video page: its row shows the new size, its
-    /// picture on the display is drawn at that size (a square stage on the wide V1: black bars at
-    /// the sides, the test card between them), and one undo puts it back.
-    func testAStagesSizeChangedOnTheVideoPageShowsInItsRowAndIsDrawnAtThatSizeInOneUndoStep() async throws {
+    /// #674 flow 1 and #813 G6: a stage's size is changed in its editor: its row shows the new size,
+    /// its region follows it (half the width: still the whole stage) and still fills its route on
+    /// V1, and one undo puts both back.
+    func testG6AStagesSizeChangedInItsEditorScalesItsRegionsAndOneUndoRestoresBoth() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
         let routing = sc.videoRoutingPane
-        await settled(sc) { pane.widthFields.count == 1 }
-        XCTAssertEqual(pane.widthFields[0].stringValue, "1920")
-        XCTAssertEqual(pane.heightFields[0].stringValue, "1080")
+        await settled(sc) { pane.sizeLabels.count == 1 && routing.displayPopups.count == 1 }
+        let editor = sc.openStageEditor(ModelID(stageA))
+        XCTAssertEqual(editor.widthField.stringValue, "1920")
+        XCTAssertEqual(editor.heightField.stringValue, "1080")
         let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
-        await settled(sc) { pane.shown?.first?.display == "V1" }
+        await settled(sc) { routing.shown?.first?.display == "V1" }
         guard
             case .success = await rig.client.send({ .request(id: $0, .stageTestCard(stage: ModelID(stageA), frame: 7)) }
             )
@@ -674,18 +703,24 @@ final class VideoSettingsTests: XCTestCase {
         // stage filling the display.
         let points: [[Double]] = [[0.05, 0.3], [0.3, 0.3]]
         await assertEventually("the card fills V1") { await self.displayColours("V1", points) == [red, red] }
-        type("1080", into: pane.widthFields[0], pane)
+        type("1080", into: editor.widthField, editor)
         await settled(sc) { pane.shown?.first?.width == 1080 }
-        XCTAssertEqual(pane.widthFields[0].stringValue, "1080")
-        XCTAssertEqual(pane.heightFields[0].stringValue, "1080")
-        XCTAssertEqual(rig.store.model?.stages.first?.raw["width"]?.doubleValue, 1080)
-        XCTAssertEqual(pane.messageLabel.stringValue, "")
-        await assertEventually("a square stage in V1's middle") {
-            await self.displayColours("V1", points) == [black, red]
+        await editor.editing?.value
+        XCTAssertEqual(pane.sizeLabels[0].stringValue, "1080 × 1080")
+        XCTAssertEqual(editor.widthField.stringValue, "1080")
+        XCTAssertEqual(editor.heightField.stringValue, "1080")
+        XCTAssertEqual(editor.messageLabel.stringValue, "")
+        XCTAssertEqual(editor.regions.map(\.bounds), [RegionBounds(x: 0, y: 0, width: 1080, height: 1080)])
+        XCTAssertEqual(editor.canvas.regionFrames, [editor.canvas.stageFrame], "the region still covers the stage")
+        XCTAssertEqual(rig.store.document?.undoName, "resize_stage")
+        await assertEventually("the square stage's region still fills V1") {
+            await self.displayColours("V1", points + [[0.5, 0.05]]) == [red, red, black]
         }
         _ = await rig.store.undo()
         await settled(sc) { pane.shown?.first?.width == 1920 }
-        XCTAssertEqual(pane.widthFields[0].stringValue, "1920")
+        editor.render()
+        XCTAssertEqual(editor.widthField.stringValue, "1920")
+        XCTAssertEqual(editor.regions.map(\.bounds), [RegionBounds(x: 0, y: 0, width: 1920, height: 1080)])
         await assertEventually("back across V1") { await self.displayColours("V1", points) == [red, red] }
     }
 
@@ -694,44 +729,50 @@ final class VideoSettingsTests: XCTestCase {
     func testASizeOfZeroAboveTheLimitOrNotANumberIsRefusedWithTheReasonAndTheOldSizeStays() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
-        await settled(sc) { pane.widthFields.count == 1 }
+        await settled(sc) { pane.sizeLabels.count == 1 }
+        let editor = sc.openStageEditor(ModelID(stageA))
         for (text, width) in [("0", true), ("16385", false), ("abc", true), ("-5", false), ("", true)] {
-            let field = width ? pane.widthFields[0] : pane.heightFields[0]
-            type(text, into: field, pane)
-            XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badSize"), text)
+            let field = width ? editor.widthField : editor.heightField
+            type(text, into: field, editor)
+            XCTAssertEqual(editor.messageLabel.stringValue, loc("settings.video.badSize"), text)
             XCTAssertEqual(field.stringValue, width ? "1920" : "1080", "\(text): the old size stays")
         }
-        await sc.videoPane.pending?.value
+        await editor.editing?.value
         XCTAssertEqual(rig.store.model?.stages.first?.raw["width"]?.doubleValue, 1920)
         XCTAssertEqual(rig.store.model?.stages.first?.raw["height"]?.doubleValue, 1080)
         XCTAssertEqual(rig.store.document?.canUndo, false, "nothing was sent")
         // The largest size is taken, and a good edit clears the reason.
-        type("16384", into: pane.heightFields[0], pane)
+        type("16384", into: editor.heightField, editor)
         await settled(sc) { pane.shown?.first?.height == 16384 }
-        XCTAssertEqual(pane.messageLabel.stringValue, "")
-        XCTAssertEqual(pane.heightFields[0].stringValue, "16384")
+        await editor.editing?.value
+        XCTAssertEqual(editor.messageLabel.stringValue, "")
+        XCTAssertEqual(editor.heightField.stringValue, "16384")
     }
 
-    /// A size typed and committed with Return, then undone from the workspace window: the field
-    /// shows the size the undo put back, and a click on another control of the page sends no size
-    /// (the undone one stays).
+    /// A size typed in the stage editor and committed with Return, then undone: the field shows the
+    /// size the undo put back, and a click on another control sends no size (the undone one stays).
     func testASizeUndoneAfterReturnIsShownAndAClickElsewhereNeverSendsItAgain() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080), (stageB, "Side", 1280, 720)])
         let pane = sc.videoPane
-        await settled(sc) { pane.heightFields.count == 2 }
-        try startTyping("400", in: pane.heightFields[0], sc)
-        let editor = try XCTUnwrap(pane.heightFields[0].currentEditor() as? NSTextView)
+        await settled(sc) { pane.sizeLabels.count == 2 }
+        let stageEditor = sc.openStageEditor(ModelID(stageA))
+        let window = try XCTUnwrap(stageEditor.window)
+        XCTAssertTrue(window.makeFirstResponder(stageEditor.heightField))
+        try XCTUnwrap(stageEditor.heightField.currentEditor()).string = "400"
+        let editor = try XCTUnwrap(stageEditor.heightField.currentEditor() as? NSTextView)
         editor.insertNewline(nil)
         await settled(sc) { pane.shown?.first?.height == 400 }
+        await stageEditor.editing?.value
         _ = await rig.store.undo()
         await settled(sc) { pane.shown?.first?.height == 1080 }
-        XCTAssertEqual(pane.heightFields[0].stringValue, "1080", "the undone size is shown")
-        XCTAssertNotEqual(pane.heightFields[0].currentEditor()?.string, "400")
-        pane.blackBoxes[1].performClick(nil)
-        await settled(sc) { pane.shown?.last?.keepBlack == true }
+        await assertEventually("the undone size is shown") { stageEditor.heightField.stringValue == "1080" }
+        XCTAssertNotEqual(stageEditor.heightField.currentEditor()?.string, "400")
+        stageEditor.blackCheck.performClick(nil)
+        await stageEditor.editing?.value
+        await settled(sc) { rig.store.model?.stages.first?.raw["keep_black"] == .bool(true) }
         XCTAssertEqual(rig.store.model?.stages.first?.raw["height"]?.doubleValue, 1080, "no size sent again")
-        XCTAssertEqual(pane.heightFields[0].stringValue, "1080")
-        XCTAssertEqual(pane.messageLabel.stringValue, "")
+        XCTAssertEqual(stageEditor.heightField.stringValue, "1080")
+        XCTAssertEqual(stageEditor.messageLabel.stringValue, "")
     }
 
     /// In a wide window the name column takes the room the display column leaves, so a long name
@@ -753,5 +794,715 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(pane.header.column(at: 0).width, pane.grid.column(at: 0).width)
         let right = pane.grid.convert(pane.grid.bounds, to: pane.scroll.contentView).maxX
         XCTAssertGreaterThan(right, pane.scroll.contentView.bounds.width - 40, "the table takes the page's width")
+    }
+
+    // MARK: Output routes and stage regions (#813)
+
+    private let route1 = "00000000-0000-0000-0000-00000000b001"
+    private let route2 = "00000000-0000-0000-0000-00000000b002"
+    private let regionA = "00000000-0000-0000-0000-00000000c001"
+    private let regionB = "00000000-0000-0000-0000-00000000c002"
+    private let black: [UInt8] = [0, 0, 0, 255]
+    private let blue: [UInt8] = [0, 0, 255, 255]
+    private let yellow: [UInt8] = [255, 255, 0, 255]
+
+    /// The Demo show with `routes` (`[id, name, width, height]`) and one stage "Stage 1" (id
+    /// `stageA`) of `width` x 1080 holding `regions` (`[id, route, x, width]`, each the stage's
+    /// whole height), its settings window open; each route in `displays` shown on that display here.
+    private func openRouted(
+        routes: [(String, String, Int, Int)], width: Int, regions: [(String, String?, Int, Int)],
+        displays: [(String, String)] = []
+    ) async throws -> (Rig, WorkspaceSettingsWindowController) {
+        let stage = stageA
+        let rig = try await Rig.open("Demo", on: engine) { folder in
+            let file = folder.appendingPathComponent("Demo.openlab")
+            var root = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+            var ws = try XCTUnwrap(root["workspace"] as? [String: Any])
+            ws["routes"] = routes.map { ["id": $0.0, "name": $0.1, "width": $0.2, "height": $0.3] as [String: Any] }
+            let shapes = regions.map { r -> [String: Any] in
+                var d: [String: Any] = ["id": r.0, "x": r.2, "y": 0, "width": r.3, "height": 1080]
+                if let route = r.1 { d["route"] = route }
+                return d
+            }
+            ws["stages"] = [
+                [
+                    "id": stage, "name": "Stage 1", "width": width, "height": 1080, "keep_black": false,
+                    "layer": 1, "regions": shapes,
+                ] as [String: Any]
+            ]
+            root["workspace"] = ws
+            try JSONSerialization.data(withJSONObject: root).write(to: file)
+        }
+        for (route, display) in displays {
+            guard case .success = await rig.store.setRouteDisplay(ModelID(route), display: display) else {
+                XCTFail("display \(display) for \(route)")
+                break
+            }
+        }
+        let sc = WorkspaceSettingsWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in sc.close() }
+        await sc.present().value
+        return (rig, sc)
+    }
+
+    /// The G4 workspace: Stage 1 at 3840 x 1080, region A (its left half) on Output 1 shown on V1
+    /// and region B (its right half) on Output 2 shown on V2; the stage shows its test card.
+    private func openG4() async throws -> (Rig, WorkspaceSettingsWindowController) {
+        let (rig, sc) = try await openRouted(
+            routes: [(route1, "Output 1", 1920, 1080), (route2, "Output 2", 1280, 720)], width: 3840,
+            regions: [(regionA, route1, 0, 1920), (regionB, route2, 1920, 1920)],
+            displays: [(route1, "V1"), (route2, "V2")])
+        guard
+            case .success = await rig.client.send({
+                .request(id: $0, .stageTestCard(stage: ModelID(self.stageA), frame: 5))
+            })
+        else {
+            XCTFail("test card")
+            return (rig, sc)
+        }
+        return (rig, sc)
+    }
+
+    /// What V1 and V2 show low in their middle: the card's lower-left (blue) quadrant on V1 and
+    /// its lower-right (yellow) on V2 while each shows its half of the G4 stage; black where a
+    /// display shows nothing.
+    private func lowerMiddles() async -> [[UInt8]] {
+        let v1 = await displayColours("V1", [[0.5, 0.8]])
+        let v2 = await displayColours("V2", [[0.5, 0.8]])
+        return v1 + v2
+    }
+
+    /// Waits until the stage editor shows what the engine holds.
+    private func editorSettled(
+        _ sc: WorkspaceSettingsWindowController, _ editor: StageEditorWindowController,
+        _ why: String = "the stage editor caught up", _ ok: @escaping @MainActor () -> Bool
+    ) async {
+        await assertEventually(why) {
+            await editor.editing?.value
+            await sc.videoPane.pending?.value
+            await sc.videoRoutingPane.pending?.value
+            await sc.videoPane.refresh()
+            editor.render()
+            return ok()
+        }
+    }
+
+    /// A press of the mouse at `at` (window coordinates) in `editor`'s window.
+    private func press(_ editor: StageEditorWindowController, at: NSPoint = .zero) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown, location: at, modifierFlags: [], timestamp: 0,
+                windowNumber: editor.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1,
+                pressure: 1))
+    }
+
+    /// The titles of a pop-up's items, separators left out.
+    private func titles(_ popup: NSPopUpButton) -> [String] {
+        (popup.menu?.items ?? []).filter { !$0.isSeparatorItem }.map(\.title)
+    }
+
+    /// #813 N1: a Mac with a main display V1 and a second display V2, a new workspace → Output
+    /// Routing lists one route, Output 1, sized as V1, on V1, filling it, not turned; Video Outputs
+    /// lists Stage 1, the same size, its displays column naming V1; its editor shows one region A
+    /// covering the whole stage, sent to Output 1.
+    func testN1ANewWorkspaceHasOutput1OnTheMainDisplayAndStage1FillingIt() async throws {
+        await assertEventually("the stage host listed its displays") {
+            guard case .success(let ok) = await self.engine.request(.listDisplays),
+                case .displays(let list, _)? = ok.data
+            else { return false }
+            return list.count == 2
+        }
+        guard case .success(let ok) = await engine.request(.new), case .opened(let doc)? = ok.data else {
+            return XCTFail("new")
+        }
+        let rig = Rig(engine: engine, workspace: doc)
+        guard await rig.connect() else { return XCTFail("connect") }
+        let sc = WorkspaceSettingsWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in sc.close() }
+        await sc.present().value
+        let pane = sc.videoPane
+        let routing = sc.videoRoutingPane
+        await settled(sc) {
+            pane.nameFields.count == 1 && routing.displayPopups.count == 1 && !pane.deviceCells.isEmpty
+        }
+        XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1"])
+        XCTAssertEqual(routing.sizeLabels.map(\.stringValue), ["1920 × 1080"])
+        XCTAssertEqual(routing.displayPopups.map { $0.titleOfSelectedItem }, ["Virtual V1 (1920 × 1080)"])
+        XCTAssertEqual(routing.scalingPopups.map { $0.titleOfSelectedItem }, [loc("settings.video.scaling.fill")])
+        XCTAssertEqual(routing.warningLabels.map(\.stringValue), [""], "no warning: shown")
+        XCTAssertEqual(rig.store.model?.routes.first?.raw["rotation"]?.doubleValue ?? 0, 0, "not turned")
+        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1"])
+        XCTAssertEqual(pane.sizeLabels.map(\.stringValue), ["1920 × 1080"])
+        XCTAssertEqual(pane.deviceCells.map(\.stringValue), ["Virtual V1"])
+        XCTAssertTrue(pane.emptyLabel.isHidden)
+        let stage = try XCTUnwrap(rig.store.model?.stages.first?.id)
+        pane.editButtons[0].performClick(nil)
+        let editor = try XCTUnwrap(sc.stageEditors[stage])
+        XCTAssertEqual(editor.regionChips.map(\.letter), ["A"])
+        XCTAssertEqual(editor.regionRoutePopups.map { $0.titleOfSelectedItem }, ["Output 1"])
+        XCTAssertEqual(editor.canvas.regionFrames, [editor.canvas.stageFrame], "A covers the whole stage")
+        XCTAssertEqual(editor.canvas.regions.map(StageCanvasView.label), ["A — Output 1"])
+        XCTAssertEqual(
+            [editor.regionWidthField, editor.regionHeightField, editor.lowerLeftXField, editor.lowerLeftYField]
+                .map(\.stringValue), ["1920", "1080", "-960", "-540"])
+    }
+
+    /// #813 N2 (the app's part): openLab with no video output on this Mac (no displays listed), a
+    /// new workspace → Output 1 (1920 x 1080) and Stage 1 with its region exist as in N1; the
+    /// route's row says it has no display on this Mac, and the stage's row that it is shown on none.
+    func testN2ANewWorkspaceWithNoDisplaysSaysItsRouteHasNoDisplayHere() async throws {
+        engine.stop()
+        engine = try await TestEngine.start()
+        guard case .success(let ok) = await engine.request(.new), case .opened(let doc)? = ok.data else {
+            return XCTFail("new")
+        }
+        let rig = Rig(engine: engine, workspace: doc)
+        guard await rig.connect() else { return XCTFail("connect") }
+        let sc = WorkspaceSettingsWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in sc.close() }
+        await sc.present().value
+        let pane = sc.videoPane
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.shown?.first?.warning != nil && pane.shown?.count == 1 }
+        XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1"])
+        XCTAssertEqual(routing.sizeLabels.map(\.stringValue), ["1920 × 1080"])
+        XCTAssertEqual(routing.displayPopups.map { $0.titleOfSelectedItem }, [loc("settings.video.displayNone")])
+        XCTAssertEqual(routing.warningLabels.map(\.stringValue), [loc("settings.video.warn.noDisplay")])
+        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1"])
+        XCTAssertEqual(pane.deviceCells.map(\.stringValue), [""])
+        XCTAssertEqual(pane.warningLabels.map(\.stringValue), [loc("settings.video.warn.stageNoDisplay")])
+        let editor = sc.openStageEditor(try XCTUnwrap(rig.store.model?.stages.first?.id))
+        XCTAssertEqual(editor.regionRoutePopups.map { $0.titleOfSelectedItem }, ["Output 1"])
+        XCTAssertEqual(editor.canvas.regionFrames, [editor.canvas.stageFrame])
+    }
+
+    /// #813 R1: two displays, the N1 workspace → the add-route pop-up offers each display and a
+    /// route on none; choosing V2 adds "Output 2", sized as V2, on V2, filling it, not turned.
+    /// Undo removes it; redo brings it back, still on V2.
+    func testR1ChoosingADisplayFromTheAddRoutePopUpAddsOutput2OnItAndUndoRedoKeepIt() async throws {
+        let (rig, sc) = try await openRouted(
+            routes: [(route1, "Output 1", 1920, 1080)], width: 1920, regions: [(regionA, route1, 0, 1920)],
+            displays: [(route1, "V1")])
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.nameFields.count == 1 }
+        XCTAssertEqual(
+            titles(routing.addPopup),
+            [
+                loc("settings.video.newRoute"), loc("settings.video.addRouteWith"), "   Virtual V1 (1920 × 1080)",
+                "   Virtual V2 (1280 × 720)", loc("settings.video.addRouteNone"),
+            ])
+        choose("   Virtual V2 (1280 × 720)", in: routing.addPopup)
+        await settled(sc) { routing.shown?.count == 2 && routing.shown?.last?.display == "V2" }
+        XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1", "Output 2"])
+        XCTAssertEqual(routing.sizeLabels.last?.stringValue, "1280 × 720")
+        XCTAssertEqual(routing.displayPopups.last?.titleOfSelectedItem, "Virtual V2 (1280 × 720)")
+        XCTAssertEqual(routing.scalingPopups.last?.titleOfSelectedItem, loc("settings.video.scaling.fill"))
+        XCTAssertEqual(rig.store.model?.routes.last?.raw["rotation"]?.doubleValue ?? 0, 0)
+        XCTAssertEqual(rig.store.document?.undoName, "add_route")
+        _ = await rig.store.undo()
+        await settled(sc) { routing.shown?.count == 1 }
+        _ = await rig.store.redo()
+        await settled(sc) { routing.shown?.count == 2 && routing.shown?.last?.display == "V2" }
+        XCTAssertEqual(routing.displayPopups.last?.titleOfSelectedItem, "Virtual V2 (1280 × 720)", "still on V2")
+        // With no display: 1920 x 1080 on none.
+        choose(loc("settings.video.addRouteNone"), in: routing.addPopup)
+        await settled(sc) { routing.shown?.count == 3 }
+        XCTAssertEqual(routing.nameFields.last?.stringValue, "Output 3")
+        XCTAssertEqual(routing.sizeLabels.last?.stringValue, "1920 × 1080")
+        XCTAssertEqual(routing.displayPopups.last?.titleOfSelectedItem, loc("settings.video.displayNone"))
+    }
+
+    /// #813 R2: route rows shown → a new name typed in Output 2's name cell and Return: the row and
+    /// every region route pop-up of the stage editor show it. An empty name is refused and the old
+    /// name comes back. Two routes may share a name.
+    func testR2ARouteRenamedInPlaceShowsInTheRowAndTheRegionPopUpsAndAnEmptyNameIsRefused() async throws {
+        let (rig, sc) = try await openG4()
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.nameFields.count == 2 }
+        let editor = sc.openStageEditor(ModelID(stageA))
+        type("Projector", into: routing.nameFields[1], routing)
+        await settled(sc) { routing.shown?.last?.name == "Projector" }
+        XCTAssertEqual(routing.nameFields[1].stringValue, "Projector")
+        await editorSettled(sc, editor) { editor.regionRoutePopups.last?.titleOfSelectedItem == "Projector" }
+        XCTAssertEqual(titles(editor.regionRoutePopups[0]), ["Output 1", "Projector", loc("stageEditor.noRoute")])
+        XCTAssertEqual(editor.canvas.regions.map(StageCanvasView.label), ["A — Output 1", "B — Projector"])
+        XCTAssertEqual(rig.store.document?.undoName, "rename_route")
+        // Empty: refused, the old name back.
+        type("  ", into: routing.nameFields[1], routing)
+        XCTAssertEqual(routing.messageLabel.stringValue, loc("settings.video.badRouteName"))
+        XCTAssertEqual(routing.nameFields[1].stringValue, "Projector")
+        // The same name as Output 1: taken.
+        type("Output 1", into: routing.nameFields[1], routing)
+        await settled(sc) { routing.shown?.last?.name == "Output 1" }
+        XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1", "Output 1"])
+        XCTAssertEqual(routing.messageLabel.stringValue, "")
+        await editorSettled(sc, editor) { self.titles(editor.regionRoutePopups[0]).count == 3 }
+        XCTAssertEqual(titles(editor.regionRoutePopups[0]), ["Output 1", "Output 1", loc("stageEditor.noRoute")])
+    }
+
+    /// #813 R3: two routes → Output 2 dragged by its handle above Output 1: the rows swap, the
+    /// region route pop-ups list the routes in the new order, and Undo puts them back.
+    func testR3DraggingOutput2AboveOutput1SwapsTheRowsAndThePopUpsAndUndoPutsThemBack() async throws {
+        let (rig, sc) = try await openG4()
+        let routing = sc.videoRoutingPane
+        sc.tabs.selectTabViewItem(withIdentifier: "videoRouting")
+        await settled(sc) { routing.handles.count == 2 }
+        let window = try XCTUnwrap(sc.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        let handle = routing.handles[1]
+        let from = handle.convert(NSPoint(x: handle.bounds.midX, y: handle.bounds.midY), to: nil)
+        XCTAssertTrue(window.contentView?.hitTest(from) === handle, "a press there lands on the handle")
+        let top = routing.nameFields[0].convert(routing.nameFields[0].bounds, to: routing.holder)
+        let to = routing.holder.convert(NSPoint(x: 40, y: top.minY + 1), to: nil)
+        func event(_ type: NSEvent.EventType, _ at: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: at, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        handle.mouseDown(with: try event(.leftMouseDown, from))
+        handle.mouseDragged(with: try event(.leftMouseDragged, to))
+        XCTAssertFalse(routing.dropLine.isHidden, "the line shows where it goes")
+        XCTAssertLessThanOrEqual(routing.dropLine.frame.maxY, top.minY + 1, "above Output 1")
+        handle.mouseUp(with: try event(.leftMouseUp, to))
+        XCTAssertTrue(routing.dropLine.isHidden)
+        await settled(sc) { routing.shown?.first?.name == "Output 2" }
+        XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 2", "Output 1"])
+        XCTAssertEqual(rig.store.document?.undoName, "move_route")
+        await editorSettled(sc, editor) { self.titles(editor.regionRoutePopups[0]).first == "Output 2" }
+        XCTAssertEqual(titles(editor.regionRoutePopups[0]), ["Output 2", "Output 1", loc("stageEditor.noRoute")])
+        XCTAssertEqual(
+            Array(titles(editor.newRegionPopup).dropFirst()),
+            ["On Output 2", "On Output 1", loc("stageEditor.newRegionNone")])
+        // Let go where it already is: nothing is sent.
+        routing.moveRoute(from: 0, toGap: 1)
+        await routing.pending?.value
+        XCTAssertEqual(rig.store.document?.undoName, "move_route")
+        _ = await rig.store.undo()
+        await settled(sc) { routing.shown?.first?.name == "Output 1" }
+        XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1", "Output 2"])
+        await editorSettled(sc, editor) { self.titles(editor.regionRoutePopups[0]).first == "Output 1" }
+    }
+
+    /// #813 R4: Output 1's Edit → a sheet with the name, the size and a button that takes the
+    /// display's size, the rotation (0, 90, 180, 270), the scaling with a line saying what it does,
+    /// the display and its size. Size and scaling changed, then OK: the row shows the new size and
+    /// one Undo reverts both. The same then Cancel: nothing changes. 0 or above 30000 is refused.
+    func testR4TheRouteEditorChangesSizeAndScalingInOneUndoStepCancelChangesNothing() async throws {
+        let (rig, sc) = try await openG4()
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.editButtons.count == 2 }
+        routing.editButtons[0].performClick(nil)
+        let editor = try XCTUnwrap(sc.routeEditor)
+        await assertEventually("the sheet is up") { sc.window?.attachedSheet === editor.window }
+        XCTAssertEqual(editor.nameField.stringValue, "Output 1")
+        XCTAssertEqual([editor.widthField.stringValue, editor.heightField.stringValue], ["1920", "1080"])
+        XCTAssertEqual(editor.rotationPopup.itemTitles, ["0°", "90°", "180°", "270°"])
+        XCTAssertEqual(editor.rotationPopup.titleOfSelectedItem, "0°")
+        XCTAssertEqual(
+            editor.scalingPopup.itemTitles,
+            ["centre", "fit", "stretch", "fill"].map { loc("settings.video.scaling.\($0)") })
+        XCTAssertEqual(editor.scalingPopup.titleOfSelectedItem, loc("settings.video.scaling.fill"))
+        XCTAssertEqual(editor.scalingNote.stringValue, loc("routeEditor.scaling.note.fill"))
+        XCTAssertEqual(editor.displayPopup.titleOfSelectedItem, "Virtual V1 (1920 × 1080)")
+        XCTAssertEqual(editor.displaySizeLabel.stringValue, "1920 × 1080")
+        // The scaling's line follows the choice; the display's size follows the display.
+        editor.scalingPopup.selectItem(withTitle: loc("settings.video.scaling.centre"))
+        _ = editor.scalingPopup.sendAction(editor.scalingPopup.action, to: editor.scalingPopup.target)
+        XCTAssertEqual(editor.scalingNote.stringValue, loc("routeEditor.scaling.note.centre"))
+        editor.displayPopup.selectItem(withTitle: "Virtual V2 (1280 × 720)")
+        _ = editor.displayPopup.sendAction(editor.displayPopup.action, to: editor.displayPopup.target)
+        XCTAssertEqual(editor.displaySizeLabel.stringValue, "1280 × 720")
+        editor.fromDisplayButton.performClick(nil)
+        XCTAssertEqual([editor.widthField.stringValue, editor.heightField.stringValue], ["1280", "720"])
+        // Cancel: nothing changes.
+        editor.cancelButton.performClick(nil)
+        await assertEventually("the sheet is down") { sc.window?.attachedSheet == nil && sc.routeEditor == nil }
+        XCTAssertEqual(rig.store.model?.routes.first?.raw["width"]?.doubleValue, 1920)
+        XCTAssertEqual(rig.store.model?.routes.first?.raw["scaling"]?.stringValue, "fill")
+        XCTAssertEqual(rig.store.videoOutputs.route(ModelID(route1))?.mapping?.display, "V1")
+        // Again: 0, above 30000 and not a number are refused in the sheet, which stays up.
+        routing.editButtons[0].performClick(nil)
+        let again = try XCTUnwrap(sc.routeEditor)
+        for (w, h) in [("0", "1080"), ("1920", "30001"), ("wide", "1080")] {
+            again.widthField.stringValue = w
+            again.heightField.stringValue = h
+            again.okButton.performClick(nil)
+            XCTAssertEqual(again.messageLabel.stringValue, loc("routeEditor.badSize"), "\(w) x \(h)")
+            XCTAssertTrue(sc.routeEditor === again, "still up")
+        }
+        again.widthField.stringValue = "1280"
+        again.heightField.stringValue = "720"
+        again.scalingPopup.selectItem(withTitle: loc("settings.video.scaling.fit"))
+        again.okButton.performClick(nil)
+        await again.saving?.value
+        await settled(sc) { routing.shown?.first?.width == 1280 }
+        XCTAssertNil(sc.routeEditor, "OK takes the sheet down")
+        XCTAssertEqual(routing.sizeLabels.first?.stringValue, "1280 × 720")
+        XCTAssertEqual(routing.scalingPopups.first?.titleOfSelectedItem, loc("settings.video.scaling.fit"))
+        XCTAssertEqual(rig.store.document?.undoName, "edit_route")
+        _ = await rig.store.undo()
+        await settled(sc) { routing.shown?.first?.width == 1920 }
+        XCTAssertEqual(routing.scalingPopups.first?.titleOfSelectedItem, loc("settings.video.scaling.fill"), "both")
+    }
+
+    /// A route removed while its editor is up (by another client or an undo): OK is refused with
+    /// the route named as gone, never by its id.
+    func testTheRouteEditorOfARouteRemovedMeanwhileSaysItIsGone() async throws {
+        let (rig, sc) = try await openG4()
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.editButtons.count == 2 }
+        routing.editButtons[1].performClick(nil)
+        let editor = try XCTUnwrap(sc.routeEditor)
+        let gone = editor.routeID
+        guard case .success = await rig.store.send(command: .removeRoute(gone)) else { return XCTFail("remove") }
+        await settled(sc) { rig.store.model?.routes.contains { $0.id == gone } == false }
+        editor.widthField.stringValue = "1000"
+        editor.okButton.performClick(nil)
+        await editor.saving?.value
+        XCTAssertEqual(editor.messageLabel.stringValue, loc("settings.video.routeGone"))
+        XCTAssertFalse(editor.messageLabel.stringValue.contains(gone.raw), "no id shown")
+    }
+
+    /// #813 R8 (the app's part): a route whose display this Mac does not have now → its row names
+    /// the display and marks it not connected, with a warning, and the stage's displays column
+    /// names it the same way.
+    func testR8ARoutesDisplayNotConnectedIsNamedAndMarkedInItsRowWithAWarning() async throws {
+        let settings: [String: Any] = [
+            "settings_version": 1,
+            "workspaces": [
+                "00000000-0000-0000-0000-0000000000d1": [
+                    "patches": [String: Any](),
+                    "routes": [
+                        stageA: ["display": "GONE", "name": "Projector", "width": 1920, "height": 1080]
+                    ],
+                ]
+            ],
+        ]
+        engine.stop()
+        engine = try await TestEngine.start(
+            displays: Self.displays, settings: try JSONSerialization.data(withJSONObject: settings))
+        let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let pane = sc.videoPane
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.shown?.first?.warning == loc("settings.video.warn.missing") }
+        XCTAssertEqual(routing.displayPopups.first?.titleOfSelectedItem, "Projector (not connected)")
+        XCTAssertEqual(routing.warningLabels.map(\.stringValue), [loc("settings.video.warn.missing")])
+        XCTAssertEqual(pane.deviceCells.map(\.stringValue), ["Projector (not connected)"])
+    }
+
+    /// #813 R9 (the app's part): G4 → Output 2 removed: its row goes; in the stage editor region B
+    /// has no route (its pop-up says so, the canvas draws it dashed) and V2 shows nothing while V1
+    /// keeps its half. Undo brings Output 2 back on V2 with region B on it.
+    func testR9RemovingARouteLeavesItsRegionWithNoneDashedAndUndoPutsItBackOnItsDisplay() async throws {
+        let (rig, sc) = try await openG4()
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.removeButtons.count == 2 }
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await assertEventually("both halves shown") { await self.lowerMiddles() == [self.blue, self.yellow] }
+        routing.removeButtons[1].performClick(nil)
+        await settled(sc) { routing.shown?.count == 1 }
+        XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1"])
+        XCTAssertEqual(rig.store.document?.undoName, "remove_route")
+        await editorSettled(sc, editor) {
+            editor.regionRoutePopups.last?.titleOfSelectedItem == loc("stageEditor.noRoute")
+        }
+        XCTAssertNil(editor.canvas.regions[1].route, "B drawn dashed")
+        XCTAssertEqual(editor.canvas.regions.map(StageCanvasView.label)[1], "B — \(loc("stageEditor.noRoute"))")
+        await assertEventually("V2 freed, V1 plays on") { await self.lowerMiddles() == [self.blue, self.black] }
+        _ = await rig.store.undo()
+        await settled(sc) { routing.shown?.count == 2 && routing.shown?.last?.display == "V2" }
+        XCTAssertEqual(routing.displayPopups.last?.titleOfSelectedItem, "Virtual V2 (1280 × 720)")
+        await editorSettled(sc, editor) { editor.regionRoutePopups.last?.titleOfSelectedItem == "Output 2" }
+        XCTAssertNotNil(editor.canvas.regions[1].route)
+        await assertEventually("both halves back") { await self.lowerMiddles() == [self.blue, self.yellow] }
+    }
+
+    /// #813 S1: the N1 workspace → the empty stage from the add-stage pop-up: "Stage 2" at 1920 x
+    /// 1080 with no region; its displays column is empty and its row says it is shown on no
+    /// display; its monitor window shows its picture. Undo removes it.
+    func testS1AnEmptyStageHasNoRegionNoDisplayAndAMonitorAndUndoRemovesIt() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Stage 1", 1920, 1080)])
+        let pane = sc.videoPane
+        _ = await rig.store.setRouteDisplay(ModelID(stageA), display: "V1")
+        await settled(sc) { pane.deviceCells.map(\.stringValue) == ["Virtual V1"] }
+        XCTAssertEqual(
+            titles(pane.addPopup), [loc("settings.video.add"), loc("settings.video.addEmpty"), "On Output 1"])
+        choose(loc("settings.video.addEmpty"), in: pane.addPopup)
+        await settled(sc) { pane.shown?.count == 2 }
+        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1", "Stage 2"])
+        XCTAssertEqual(pane.sizeLabels.last?.stringValue, "1920 × 1080")
+        XCTAssertEqual(pane.deviceCells.last?.stringValue, "")
+        XCTAssertEqual(pane.warningLabels.last?.stringValue, loc("settings.video.warn.stageNoDisplay"))
+        XCTAssertEqual(pane.warningLabels.first?.stringValue, "", "Stage 1 is on V1")
+        let added = try XCTUnwrap(pane.shown?.last?.id)
+        XCTAssertEqual(rig.store.model?.stages.last?.raw["regions"]?.arrayValue ?? [], [], "no region")
+        XCTAssertEqual(rig.store.document?.undoName, "add_stage")
+        // Its monitor shows it.
+        pane.monitorButtons[1].performClick(nil)
+        await settled(sc) { rig.store.videoOutputs.stages.last?.monitor == true }
+        _ = await rig.client.send { .request(id: $0, .stageTestCard(stage: added, frame: 9)) }
+        let monitor = await monitorShows(rig, added.raw, 400, 300, [[0.5, 0.5]])
+        XCTAssertEqual(monitor?.0, 9)
+        _ = await rig.store.undo()
+        await settled(sc) { pane.shown?.count == 1 }
+    }
+
+    /// #813 S2: two routes → "On Output 2" from the add-stage pop-up: Stage 2 sized as Output 2,
+    /// one region covering it sent to Output 2, its displays column naming V2. Undo and redo are
+    /// one step each.
+    func testS2AStageOnARouteIsSizedAsItWithOneRegionOnItAndIsOneUndoStep() async throws {
+        let (rig, sc) = try await openRouted(
+            routes: [(route1, "Output 1", 1920, 1080), (route2, "Output 2", 1280, 720)], width: 1920,
+            regions: [(regionA, route1, 0, 1920)], displays: [(route1, "V1"), (route2, "V2")])
+        let pane = sc.videoPane
+        await settled(sc) { pane.nameFields.count == 1 && pane.deviceCells.first?.stringValue == "Virtual V1" }
+        choose("On Output 2", in: pane.addPopup)
+        await settled(sc) { pane.shown?.count == 2 }
+        XCTAssertEqual(pane.nameFields.last?.stringValue, "Stage 2")
+        XCTAssertEqual(pane.sizeLabels.last?.stringValue, "1280 × 720")
+        XCTAssertEqual(pane.deviceCells.last?.stringValue, "Virtual V2")
+        let stage = try XCTUnwrap(rig.store.model?.stages.last)
+        XCTAssertEqual(RegionRow.of(stage).map(\.route), [ModelID(route2)])
+        XCTAssertEqual(RegionRow.of(stage).map(\.bounds), [RegionBounds(x: 0, y: 0, width: 1280, height: 720)])
+        _ = await rig.store.undo()
+        await settled(sc) { pane.shown?.count == 1 }
+        XCTAssertEqual(rig.store.document?.canUndo, false, "one step")
+        _ = await rig.store.redo()
+        await settled(sc) { pane.shown?.count == 2 }
+        XCTAssertEqual(pane.deviceCells.last?.stringValue, "Virtual V2")
+        XCTAssertEqual(rig.store.document?.canRedo, false, "one step")
+    }
+
+    /// #813 S4: stage rows → each shows its name (typed in place), its size, the displays it
+    /// reaches through its regions' routes (comma-separated, in route order) and Edit, Monitor and
+    /// remove buttons; keep-black and layer are in the stage editor, not on the row.
+    func testS4AStageRowShowsNameSizeDisplaysInRouteOrderAndEditMonitorRemove() async throws {
+        let (_, sc) = try await openG4()
+        let pane = sc.videoPane
+        await settled(sc) { pane.deviceCells.first?.stringValue == "Virtual V1, Virtual V2" }
+        XCTAssertTrue(pane.nameFields[0].isEditable)
+        XCTAssertEqual(pane.nameFields[0].stringValue, "Stage 1")
+        XCTAssertEqual(pane.sizeLabels[0].stringValue, "3840 × 1080")
+        XCTAssertEqual(pane.editButtons[0].title, loc("settings.video.edit"))
+        XCTAssertEqual(pane.monitorButtons[0].title, loc("settings.video.monitor"))
+        XCTAssertEqual(pane.removeButtons.count, 1)
+        XCTAssertEqual(
+            pane.cols.map { loc("settings.video.col.\($0.key)") }, ["Name", "Resolution", "Displays", "", "", ""])
+        XCTAssertTrue(pane.warningLabels.allSatisfy(\.stringValue.isEmpty))
+        // The routes swapped: the displays follow the route order.
+        _ = await sc.videoPane.store.send(command: .moveRoute(ModelID(route2), to: 0))
+        await settled(sc) { pane.deviceCells.first?.stringValue == "Virtual V2, Virtual V1" }
+    }
+
+    /// #813 G1: Stage 1's Edit → a window for Stage 1: name, layer, keep-black and size at the top;
+    /// the region list (letter, colour, route pop-up, remove); the canvas with each region drawn in
+    /// its colour, labelled with its letter and route. A click on a region in the canvas or the
+    /// list selects it; the selected one is drawn darker.
+    func testG1TheStageEditorShowsItsAttributesRegionListAndCanvasAndAClickSelects() async throws {
+        let (_, sc) = try await openG4()
+        let pane = sc.videoPane
+        await settled(sc) { pane.editButtons.count == 1 }
+        pane.editButtons[0].performClick(nil)
+        let editor = try XCTUnwrap(sc.stageEditors[ModelID(stageA)])
+        let window = try XCTUnwrap(editor.window)
+        XCTAssertTrue(window.isVisible)
+        XCTAssertEqual(window.title, String(format: loc("stageEditor.title"), "Stage 1"))
+        XCTAssertEqual(editor.nameField.stringValue, "Stage 1")
+        XCTAssertEqual(editor.layerField.stringValue, "1")
+        XCTAssertEqual(editor.blackCheck.state, .off)
+        XCTAssertEqual([editor.widthField.stringValue, editor.heightField.stringValue], ["3840", "1080"])
+        XCTAssertEqual(editor.regionChips.map(\.letter), ["A", "B"])
+        XCTAssertNotEqual(editor.regionChips[0].colour, editor.regionChips[1].colour)
+        XCTAssertEqual(editor.regionRoutePopups.map { $0.titleOfSelectedItem }, ["Output 1", "Output 2"])
+        XCTAssertEqual(editor.regionRemoveButtons.count, 2)
+        XCTAssertEqual(editor.canvas.regions.map(StageCanvasView.label), ["A — Output 1", "B — Output 2"])
+        XCTAssertEqual(editor.canvas.regions.map(\.colour), editor.regionChips.map(\.colour))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let stage = editor.canvas.stageFrame
+        let frames = editor.canvas.regionFrames
+        XCTAssertEqual(frames[0].minX, stage.minX, accuracy: 0.5)
+        XCTAssertEqual(frames[0].width, stage.width / 2, accuracy: 0.5)
+        XCTAssertEqual(frames[1].maxX, stage.maxX, accuracy: 0.5)
+        XCTAssertEqual(editor.canvas.selected, 0, "A selected first")
+        XCTAssertTrue(editor.regionChips[0].isSelected)
+        // A click on B in the canvas.
+        let atB = editor.canvas.convert(NSPoint(x: frames[1].midX, y: frames[1].midY), to: nil)
+        XCTAssertTrue(window.contentView?.hitTest(atB) === editor.canvas)
+        let click = try press(editor, at: atB)
+        editor.canvas.mouseDown(with: click)
+        XCTAssertEqual(editor.canvas.selected, 1)
+        XCTAssertEqual([editor.regionChips[0].isSelected, editor.regionChips[1].isSelected], [false, true])
+        XCTAssertEqual(editor.lowerLeftXField.stringValue, "0", "B's lower left: the stage's centre")
+        // A click on A in the list.
+        editor.regionChips[0].mouseDown(with: click)
+        XCTAssertEqual(editor.canvas.selected, 0)
+        XCTAssertEqual(editor.lowerLeftXField.stringValue, "-1920")
+    }
+
+    /// #813 G2: the stage editor open → "On Output 2" from the new-region pop-up: region B appears
+    /// covering the whole stage, sent to Output 2 and selected; its fields show its size and its
+    /// lower-left corner from the stage's centre. Undo removes it.
+    func testG2ANewRegionOnARouteCoversTheStageIsSelectedAndUndoRemovesIt() async throws {
+        let (rig, sc) = try await openRouted(
+            routes: [(route1, "Output 1", 1920, 1080), (route2, "Output 2", 1280, 720)], width: 1920,
+            regions: [(regionA, route1, 0, 1920)], displays: [(route1, "V1"), (route2, "V2")])
+        let editor = sc.openStageEditor(ModelID(stageA))
+        XCTAssertEqual(
+            titles(editor.newRegionPopup),
+            [loc("stageEditor.newRegion"), "On Output 1", "On Output 2", loc("stageEditor.newRegionNone")])
+        choose("On Output 2", in: editor.newRegionPopup)
+        await editorSettled(sc, editor) { editor.regionChips.count == 2 }
+        XCTAssertEqual(editor.regionChips.map(\.letter), ["A", "B"])
+        XCTAssertEqual(editor.regionRoutePopups.last?.titleOfSelectedItem, "Output 2")
+        XCTAssertEqual(editor.regions.last?.bounds, RegionBounds(x: 0, y: 0, width: 1920, height: 1080))
+        XCTAssertEqual(editor.canvas.selected, 1, "B selected")
+        XCTAssertTrue(editor.regionChips[1].isSelected)
+        XCTAssertEqual(
+            [editor.regionWidthField, editor.regionHeightField, editor.lowerLeftXField, editor.lowerLeftYField]
+                .map(\.stringValue), ["1920", "1080", "-960", "-540"])
+        XCTAssertEqual(editor.upperRightLabel.stringValue, "960, 540")
+        XCTAssertEqual(rig.store.document?.undoName, "add_region")
+        _ = await rig.store.undo()
+        await editorSettled(sc, editor) { editor.regionChips.count == 1 }
+        XCTAssertEqual(editor.canvas.selected, 0)
+    }
+
+    /// #813 G3: region B selected → a width, height or lower-left corner typed: the canvas redraws
+    /// at once, one undo step per field (the corner stays put for a size). A value that would put
+    /// any part of the region outside the stage is refused, and the field shows the old value.
+    func testG3TypedRegionSizeAndCornerRedrawOneStepEachAndOutsideTheStageIsRefused() async throws {
+        let (rig, sc) = try await openG4()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        editor.regionChips[1].mouseDown(with: try press(editor))
+        XCTAssertEqual(editor.canvas.selected, 1)
+        let stage = editor.canvas.stageFrame
+        // A width no stage can hold is refused before any sum (with B at x 1920 it once overflowed
+        // and crashed the app).
+        type("9223372036854775807", into: editor.regionWidthField, editor)
+        XCTAssertEqual(editor.messageLabel.stringValue, loc("stageEditor.badNumber"))
+        XCTAssertEqual(editor.regions[1].bounds.width, 1920)
+        type("960", into: editor.regionWidthField, editor)
+        await editorSettled(sc, editor) { editor.regions[1].bounds.width == 960 }
+        XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 960, height: 1080))
+        XCTAssertEqual(editor.canvas.regionFrames[1].width, stage.width / 4, accuracy: 0.5)
+        XCTAssertEqual(rig.store.document?.undoName, "resize_region")
+        // The height: the lower edge stays.
+        type("540", into: editor.regionHeightField, editor)
+        await editorSettled(sc, editor) { editor.regions[1].bounds.height == 540 }
+        XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 540, width: 960, height: 540))
+        XCTAssertEqual(editor.lowerLeftYField.stringValue, "-540")
+        // The corner: the size stays.
+        type("-1920", into: editor.lowerLeftXField, editor)
+        await editorSettled(sc, editor) { editor.regions[1].bounds.x == 0 }
+        XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 0, y: 540, width: 960, height: 540))
+        XCTAssertEqual(editor.canvas.regionFrames[1].minX, stage.minX, accuracy: 0.5)
+        XCTAssertEqual(rig.store.document?.undoName, "move_region")
+        type("0", into: editor.lowerLeftYField, editor)
+        await editorSettled(sc, editor) { editor.regions[1].bounds.y == 0 }
+        XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 0, y: 0, width: 960, height: 540))
+        // Outside the stage: refused, the old value back, nothing sent.
+        for (field, text) in [
+            (editor.regionWidthField, "4000"), (editor.regionHeightField, "1081"), (editor.lowerLeftXField, "1000"),
+            (editor.lowerLeftYField, "100"), (editor.lowerLeftXField, "-1921"), (editor.regionWidthField, "0"),
+        ] {
+            let before = field.stringValue
+            type(text, into: field, editor)
+            XCTAssertFalse(editor.messageLabel.stringValue.isEmpty, text)
+            XCTAssertEqual(field.stringValue, before, "\(text): the old value")
+        }
+        XCTAssertEqual(editor.messageLabel.stringValue, loc("stageEditor.badNumber"), "0 is no size")
+        type("1000", into: editor.lowerLeftXField, editor)
+        XCTAssertEqual(editor.messageLabel.stringValue, String(format: loc("stageEditor.outside"), 3840, 1080))
+        await editor.editing?.value
+        XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 0, y: 0, width: 960, height: 540))
+        // One undo per field, back to where B was.
+        for _ in 0..<4 { _ = await rig.store.undo() }
+        await editorSettled(sc, editor) { editor.regions[1].bounds.x == 1920 }
+        XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 1920, height: 1080))
+    }
+
+    /// #813 G5 (the app's part): G4 → region B's route pop-up set to none: the canvas draws B
+    /// dashed, V2 shows nothing while V1 keeps its half, and Stage 1's displays column names V1
+    /// only. Undo puts B back on V2.
+    func testG5RegionBSetToNoRouteIsDashedFreesV2AndUndoPutsItBack() async throws {
+        let (rig, sc) = try await openG4()
+        let pane = sc.videoPane
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await settled(sc) { pane.deviceCells.first?.stringValue == "Virtual V1, Virtual V2" }
+        await assertEventually("both halves shown") { await self.lowerMiddles() == [self.blue, self.yellow] }
+        choose(loc("stageEditor.noRoute"), in: editor.regionRoutePopups[1])
+        await editorSettled(sc, editor) { editor.canvas.regions[1].route == nil }
+        XCTAssertEqual(editor.regionRoutePopups[1].titleOfSelectedItem, loc("stageEditor.noRoute"))
+        XCTAssertEqual(rig.store.document?.undoName, "region_route")
+        await settled(sc) { pane.deviceCells.first?.stringValue == "Virtual V1" }
+        await assertEventually("V2 freed, V1 plays on") { await self.lowerMiddles() == [self.blue, self.black] }
+        _ = await rig.store.undo()
+        await editorSettled(sc, editor) { editor.canvas.regions[1].route == "Output 2" }
+        await settled(sc) { pane.deviceCells.first?.stringValue == "Virtual V1, Virtual V2" }
+        await assertEventually("B back on V2") { await self.lowerMiddles() == [self.blue, self.yellow] }
+    }
+
+    /// #813 G7 (the app's part): a region removed with its button leaves the list and the canvas;
+    /// undo brings it back on its route.
+    func testG7RemovingARegionTakesItOffTheListAndCanvasAndUndoBringsItBack() async throws {
+        let (rig, sc) = try await openG4()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        editor.regionRemoveButtons[1].performClick(nil)
+        await editorSettled(sc, editor) { editor.regionChips.count == 1 }
+        XCTAssertEqual(editor.canvas.regions.count, 1)
+        XCTAssertEqual(rig.store.document?.undoName, "remove_region")
+        _ = await rig.store.undo()
+        await editorSettled(sc, editor) { editor.regionChips.count == 2 }
+        XCTAssertEqual(editor.regionRoutePopups[1].titleOfSelectedItem, "Output 2")
+    }
+
+    /// Command-N on the Output Routing or Video Outputs page opens that page's add pop-up (QLab 5
+    /// manual pp. 226, 233), not New Workspace; on another page it goes on to the menu.
+    func testCommandNOnAVideoPageOpensItsAddPopUp() async throws {
+        let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        var opened: [NSPopUpButton] = []
+        sc.videoPane.openAddMenu = { opened.append($0) }
+        sc.videoRoutingPane.openAddMenu = { opened.append($0) }
+        let window = try XCTUnwrap(sc.window)
+        let key = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: "n", charactersIgnoringModifiers: "n",
+                isARepeat: false, keyCode: 45))
+        sc.tabs.selectTabViewItem(withIdentifier: "videoRouting")
+        XCTAssertTrue(window.contentView?.performKeyEquivalent(with: key) == true)
+        XCTAssertTrue(opened.last === sc.videoRoutingPane.addPopup)
+        sc.tabs.selectTabViewItem(withIdentifier: "video")
+        XCTAssertTrue(window.contentView?.performKeyEquivalent(with: key) == true)
+        XCTAssertTrue(opened.last === sc.videoPane.addPopup)
+        sc.tabs.selectTabViewItem(withIdentifier: "general")
+        XCTAssertFalse(window.contentView?.performKeyEquivalent(with: key) == true)
+        XCTAssertEqual(opened.count, 2)
+    }
+
+    /// A new stage or route is "Stage N" or "Output N", one past the highest number in use; a
+    /// typed name whose number the engine would not read, or the largest it reads, never
+    /// overflows.
+    func testNewNamesTakeTheNextNumberAndNeverOverflow() {
+        let routes = loc("settings.video.routeName")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: []), "Output 1")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: ["Output 1", "Output 4", "Cyc"]), "Output 5")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: ["Output 99999999999999999999"]), "Output 1")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: ["Output 4294967295"]), "Output 4294967295")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: ["Output -3", "Output 2"]), "Output 3")
+        XCTAssertEqual(VideoSettingsPane.nextName(loc("settings.video.newName"), after: ["Stage 1"]), "Stage 2")
+    }
+
+    /// The Output Routing page's button opens this Mac's Displays settings.
+    func testTheDisplaysButtonOpensTheMacsDisplaySettings() async throws {
+        let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        var urls: [URL] = []
+        sc.videoRoutingPane.openURL = { urls.append($0) }
+        sc.videoRoutingPane.displaysButton.performClick(nil)
+        XCTAssertEqual(urls, [VideoSettingsPane.displaysSettings].compactMap { $0 })
+        XCTAssertEqual(urls.first?.scheme, "x-apple.systempreferences")
     }
 }

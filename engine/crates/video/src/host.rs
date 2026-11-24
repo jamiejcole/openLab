@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The stage host's state, the same on every platform: which stages the engine wants, which
-//! displays exist, and where each stage is. A [`Platform`] does the drawing and the windows.
+//! The stage host's state, the same on every platform: which stages and output routes the engine
+//! wants, which displays exist, and where each route is. A [`Platform`] does the drawing and the
+//! windows.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, Write};
 use std::time::Instant;
 
 use openlab_core::stage_link::{
-    Display, FromStage, LINK_VERSION, Line, LinkLevel, StageOutput, StageState, ToStage,
-    decode_to_stage, encode, read_line,
+    Display, FromStage, LINK_VERSION, Line, LinkLevel, RouteOutput, RouteState, StageOutput,
+    ToStage, decode_to_stage, encode, read_line,
 };
 use openlab_core::{
-    HOLD_BEFORE_END, PictureFades, PictureParam, PictureRamp, PlanPass, StageId, VideoGeometry,
-    fade_factor, plan_point,
+    HOLD_BEFORE_END, PictureFades, PictureParam, PictureRamp, PlanPass, RouteId, RouteScaling,
+    StageId, VideoGeometry, fade_factor, plan_point,
 };
 
 /// What a stage shows.
@@ -87,8 +88,9 @@ impl CuePicture {
     }
 }
 
-/// One stage as a display draws it: its pixel size, what it shows behind its cues, and its
-/// cues' pictures, the earliest started first (so the later-started is drawn on top).
+/// One stage, or one region of it, as a target draws it: the stage's pixel size, what it shows
+/// behind its cues, its cues' pictures, the earliest started first (so the later-started is
+/// drawn on top), and where on the target the part drawn lands.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
     pub stage: StageId,
@@ -96,6 +98,86 @@ pub struct Layer {
     pub height: u32,
     pub picture: Picture,
     pub cues: Vec<CuePicture>,
+    pub place: Placement,
+}
+
+/// Where a rectangle of a stage lands on a target (QLab 5 manual pp. 229-234): `region` (left,
+/// top, width, height in stage pixels) fills a route of `route` pixels, which is turned clockwise
+/// by `rotation` degrees and put on the target by `scaling`, centred. What lands outside the
+/// target is cut off; the rest of the target is black.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub region: [u32; 4],
+    pub route: (u32, u32),
+    pub rotation: u16,
+    pub scaling: RouteScaling,
+    /// The pixel size of the display the route is shown on, which the scaling is worked out
+    /// against whatever size the target is drawn at (a probe draws a display smaller); `None`:
+    /// the target's own (a monitor window, a stage's own probe).
+    pub screen: Option<(u32, u32)>,
+}
+
+impl Placement {
+    /// A whole stage of `width` x `height` fitted to the target, its shape kept: a monitor
+    /// window, or a probe of the stage itself.
+    pub fn whole(width: u32, height: u32) -> Self {
+        Self {
+            region: [0, 0, width, height],
+            route: (width, height),
+            rotation: 0,
+            scaling: RouteScaling::Fit,
+            screen: None,
+        }
+    }
+
+    /// The region's rectangle on a target of `size` pixels: left, top, right, bottom as
+    /// fractions of the target from its top left (a scaling that overhangs goes past 0 or 1).
+    /// Worked out on the display's own size when it is known, so a target of another size (of
+    /// its shape) shows the same.
+    pub fn dest(&self, size: (u32, u32)) -> [f64; 4] {
+        let (tw, th) = self.screen.unwrap_or(size);
+        let (tw, th) = (f64::from(tw.max(1)), f64::from(th.max(1)));
+        let (rw, rh) = (
+            f64::from(self.route.0.max(1)),
+            f64::from(self.route.1.max(1)),
+        );
+        let (rw, rh) = if matches!(self.rotation, 90 | 270) {
+            (rh, rw)
+        } else {
+            (rw, rh)
+        };
+        let (w, h) = match self.scaling {
+            RouteScaling::Centre => (rw, rh),
+            RouteScaling::Fit => {
+                let s = (tw / rw).min(th / rh);
+                (rw * s, rh * s)
+            }
+            RouteScaling::Fill => {
+                let s = (tw / rw).max(th / rh);
+                (rw * s, rh * s)
+            }
+            RouteScaling::Stretch => (tw, th),
+        };
+        let (left, top) = ((tw - w) / 2.0, (th - h) / 2.0);
+        [left / tw, top / th, (left + w) / tw, (top + h) / th]
+    }
+
+    /// Where the stage point `[x, y]` (stage pixels from its top left) lands on a target of
+    /// `size` pixels, as fractions of the target from its top left.
+    pub fn map(&self, size: (u32, u32), [x, y]: [f64; 2]) -> [f64; 2] {
+        let [rx, ry, rw, rh] = self.region.map(f64::from);
+        // Where in the route, 0 to 1 from its top left.
+        let (u, v) = ((x - rx) / rw.max(1.0), (y - ry) / rh.max(1.0));
+        // A quarter turn clockwise takes the route's top edge down the right side.
+        let (u, v) = match self.rotation {
+            90 => (1.0 - v, u),
+            180 => (1.0 - u, 1.0 - v),
+            270 => (v, 1.0 - u),
+            _ => (u, v),
+        };
+        let [l, t, r, b] = self.dest(size);
+        [l + u * (r - l), t + v * (b - t)]
+    }
 }
 
 /// Where a picture is in its run.
@@ -438,8 +520,9 @@ pub enum Flow {
 pub struct Host<P: Platform> {
     platform: P,
     stages: Vec<StageOutput>,
+    routes: Vec<RouteOutput>,
     displays: Vec<Display>,
-    states: HashMap<StageId, StageState>,
+    states: HashMap<RouteId, RouteState>,
     pictures: HashMap<StageId, Picture>,
     /// Video cues' pictures, by the engine's id.
     pics: BTreeMap<u64, Pic>,
@@ -479,6 +562,7 @@ impl<P: Platform> Host<P> {
         Self {
             platform,
             stages: Vec::new(),
+            routes: Vec::new(),
             displays: Vec::new(),
             states: HashMap::new(),
             pictures: HashMap::new(),
@@ -866,7 +950,7 @@ impl<P: Platform> Host<P> {
                 }
                 self.displays_changed(out);
             }
-            ToStage::Stages { stages } => {
+            ToStage::Stages { stages, routes } => {
                 self.pictures
                     .retain(|id, _| stages.iter().any(|s| s.id == *id));
                 let gone: Vec<u64> = self
@@ -885,8 +969,9 @@ impl<P: Platform> Host<P> {
                 }
                 self.follow_monitors(&stages);
                 self.stages = stages;
-                // Every stage's state is reported after a new set, changed or not, so the
-                // engine knows each stage it sent has been dealt with.
+                self.routes = routes;
+                // Every route's state is reported after a new set, changed or not, so the
+                // engine knows each route it sent has been dealt with.
                 self.states.clear();
                 self.apply(out);
             }
@@ -1007,6 +1092,14 @@ impl<P: Platform> Host<P> {
     pub fn displays_changed(&mut self, out: &mut Vec<FromStage>) {
         let mut displays = self.platform.displays();
         displays.truncate(openlab_core::stage_link::MAX_DISPLAYS);
+        // The main display is the one with the menu bar, else the first listed.
+        let main = self.platform.menu_bar_display();
+        let main = main
+            .filter(|m| displays.iter().any(|d| &d.id == m))
+            .or_else(|| displays.first().map(|d| d.id.clone()));
+        for d in &mut displays {
+            d.main = main.as_deref() == Some(d.id.as_str());
+        }
         // The system's displays changed: one starved of drawables is tried again at once.
         self.starved.clear();
         if displays != self.displays {
@@ -1039,51 +1132,85 @@ impl<P: Platform> Host<P> {
         Ok(())
     }
 
-    /// Shows, hides or redraws each stage and reports each state that changed. The stages
-    /// shown on one display are drawn in one window, bottom first by their `stack`.
-    fn apply(&mut self, out: &mut Vec<FromStage>) {
-        self.redraw_due = false;
-        let now = self.now();
-        self.prune(now);
-        let mut states: Vec<(StageId, StageState)> = Vec::new();
-        let mut on: BTreeMap<String, Vec<(u32, Layer)>> = BTreeMap::new();
-        // A monitor shows what its stage draws, shown on a display or not.
-        let mut watched: Vec<(String, Layer)> = Vec::new();
+    /// What every output would show at `now`: each route's state, the layers each display draws
+    /// (bottom first: by stage stack, then region order) with the routes drawn there, and each
+    /// open monitor's title and layer.
+    fn plan(&self, now: (u64, u32)) -> Plan {
+        let mut plan = Plan::default();
+        // Each route's regions with something to draw, found in one pass over the stages.
+        let mut parts: HashMap<RouteId, Vec<StagePart<'_>>> = HashMap::new();
         for stage in &self.stages {
+            let on = self.cues_on(stage.id, now);
             let picture = self.picture(stage.id);
-            let cues = self.cues_on(stage.id, now);
             if let Some(m) = self.monitors.get(&stage.id).filter(|m| !m.closed)
                 && self.platform.video()
                 && self.app_connected
             {
-                watched.push((m.title.clone(), layer_of(stage, picture, cues.clone())));
+                let layer = layer_of(stage, picture, on.clone(), None);
+                plan.watched.push((m.title.clone(), layer));
             }
-            let state = match &stage.display {
-                _ if !self.platform.video() => StageState::Failed {
+            // Off, a stage with nothing to show draws nothing: the desktop shows there.
+            if !stage.keep_black && picture == Picture::Black && on.is_empty() {
+                continue;
+            }
+            for (index, region) in stage.regions.iter().enumerate() {
+                parts
+                    .entry(region.route)
+                    .or_default()
+                    .push((index, stage, picture, on.clone()));
+            }
+        }
+        for route in &self.routes {
+            let screen = (self.displays.iter())
+                .find(|d| Some(&d.id) == route.display.as_ref())
+                .map(|d| (d.width, d.height));
+            let mut layers: Vec<Drawn> = Vec::new();
+            for (index, stage, picture, on) in parts.remove(&route.id).unwrap_or_default() {
+                if let Some(region) = stage.regions.get(index) {
+                    let layer = layer_of(stage, picture, on, Some((region, route, screen)));
+                    layers.push(((stage.stack, index), route.id, layer));
+                }
+            }
+            let state = match &route.display {
+                _ if !self.platform.video() => RouteState::Failed {
                     reason: "this computer's openLab has no video output".into(),
                 },
-                None => StageState::NoDisplay,
+                None => RouteState::NoDisplay,
                 Some(id) if !self.displays.iter().any(|d| &d.id == id) => {
-                    StageState::DisplayMissing {
+                    RouteState::DisplayMissing {
                         display: id.clone(),
                     }
                 }
-                Some(_) if !stage.keep_black && picture == Picture::Black && cues.is_empty() => {
-                    StageState::Hidden
-                }
+                Some(_) if layers.is_empty() => RouteState::Hidden,
                 // No app: nothing is shown, whatever plays (the cues play on unseen).
-                Some(_) if !self.app_connected => StageState::Hidden,
+                Some(_) if !self.app_connected => RouteState::Hidden,
                 Some(id) => {
-                    on.entry(id.clone())
-                        .or_default()
-                        .push((stage.stack, layer_of(stage, picture, cues)));
-                    StageState::Shown {
+                    plan.on.entry(id.clone()).or_default().extend(layers);
+                    RouteState::Shown {
                         display: id.clone(),
                     }
                 }
             };
-            states.push((stage.id, state));
+            plan.states.push((route.id, state));
         }
+        for on in plan.on.values_mut() {
+            on.sort_by_key(|(order, ..)| *order);
+        }
+        plan
+    }
+
+    /// Shows, hides or redraws each route and reports each state that changed. Every region
+    /// shown on one display is drawn in one window, bottom first by its stage's `stack`, then
+    /// by region order.
+    fn apply(&mut self, out: &mut Vec<FromStage>) {
+        self.redraw_due = false;
+        let now = self.now();
+        self.prune(now);
+        let Plan {
+            mut states,
+            mut on,
+            watched,
+        } = self.plan(now);
         // A question of the app's, or a hung engine: the operator's display's window stands back.
         let back = (self.stand_back || self.silent)
             .then(|| self.platform.menu_bar_display())
@@ -1094,15 +1221,15 @@ impl<P: Platform> Host<P> {
         self.skipping.retain(|d, _| presented.contains(d));
         let instant = Instant::now();
         for display in self.displays.clone() {
-            let Some(mut layers) = on.remove(&display.id) else {
+            let Some(drawn) = on.remove(&display.id) else {
                 self.starved.remove(&display.id);
                 if self.presented.remove(&display.id) {
                     self.platform.close(&display.id);
                 }
                 continue;
             };
-            layers.sort_by_key(|(stack, _)| *stack);
-            let layers: Vec<Layer> = layers.into_iter().map(|(_, l)| l).collect();
+            let routes: BTreeSet<RouteId> = drawn.iter().map(|(_, r, _)| *r).collect();
+            let layers: Vec<Layer> = drawn.into_iter().map(|(.., l)| l).collect();
             let tried = self.starved.get(&display.id).copied();
             let presented = match tried {
                 // Starved of drawables, not due a try: still failed, nothing presented.
@@ -1135,9 +1262,10 @@ impl<P: Platform> Host<P> {
                 }
                 Err(reason) => {
                     self.skipping.remove(&display.id);
+                    // Only the routes on this display fail.
                     for (id, state) in &mut states {
-                        if layers.iter().any(|l| l.stage == *id) {
-                            *state = StageState::Failed {
+                        if routes.contains(id) {
+                            *state = RouteState::Failed {
                                 reason: reason.clone(),
                             };
                         }
@@ -1172,10 +1300,10 @@ impl<P: Platform> Host<P> {
         self.report_failures(out);
         self.states
             .retain(|id, _| states.iter().any(|(s, _)| s == id));
-        for (stage, state) in states {
-            if self.states.get(&stage) != Some(&state) {
-                self.states.insert(stage, state.clone());
-                out.push(FromStage::StageStatus { stage, state });
+        for (route, state) in states {
+            if self.states.get(&route) != Some(&state) {
+                self.states.insert(route, state.clone());
+                out.push(FromStage::RouteStatus { route, state });
             }
         }
     }
@@ -1232,7 +1360,7 @@ impl<P: Platform> Host<P> {
             .stages
             .iter()
             .find(|s| s.id == id)
-            .map(|s| layer_of(s, self.picture(id), self.cues_on(id, now)));
+            .map(|s| layer_of(s, self.picture(id), self.cues_on(id, now), None));
         let cues = (
             layer.as_ref().map_or(0, |l| l.cues.len()),
             self.pics.values().filter(|p| p.stage == id).count(),
@@ -1266,7 +1394,7 @@ impl<P: Platform> Host<P> {
             .iter()
             .find(|s| s.id == id)
             .filter(|_| open)
-            .map(|s| layer_of(s, self.picture(id), self.cues_on(id, now)));
+            .map(|s| layer_of(s, self.picture(id), self.cues_on(id, now), None));
         let Some(layer) = layer else {
             return FromStage::MonitorProbed {
                 stage: id,
@@ -1278,7 +1406,7 @@ impl<P: Platform> Host<P> {
             layer.cues.len(),
             self.pics.values().filter(|p| p.stage == id).count(),
         );
-        let card = fitted((layer.width, layer.height), size);
+        let card = layer.place.dest(size).map(|v| v as f32);
         let read = self.read_in(size, std::slice::from_ref(&layer), points, card);
         let (frame, colours) = probe_answer(read, cues, now, out);
         FromStage::MonitorProbed {
@@ -1288,7 +1416,7 @@ impl<P: Platform> Host<P> {
         }
     }
 
-    /// What display `display` shows: every stage shown on it, stacked, at its pixel size.
+    /// What display `display` shows: every region shown on it, stacked, at its pixel size.
     #[cfg(feature = "test-support")]
     fn probe_display(
         &mut self,
@@ -1297,22 +1425,15 @@ impl<P: Platform> Host<P> {
         out: &mut Vec<FromStage>,
     ) -> FromStage {
         let now = self.now();
-        let mut layers: Vec<(u32, Layer)> = self
-            .stages
-            .iter()
-            .filter(|s| {
-                s.display.as_deref() == Some(display.as_str())
-                    && matches!(self.states.get(&s.id), Some(StageState::Shown { .. }))
+        let drawn = self.plan(now).on.remove(&display).unwrap_or_default();
+        // Only what is up there: a failed (or starved) route shows nothing.
+        let layers: Vec<Layer> = drawn
+            .into_iter()
+            .filter(|(_, route, _)| {
+                matches!(self.states.get(route), Some(RouteState::Shown { .. }))
             })
-            .map(|s| {
-                (
-                    s.stack,
-                    layer_of(s, self.picture(s.id), self.cues_on(s.id, now)),
-                )
-            })
+            .map(|(.., l)| l)
             .collect();
-        layers.sort_by_key(|(stack, _)| *stack);
-        let layers: Vec<Layer> = layers.into_iter().map(|(_, l)| l).collect();
         let due: usize = layers.iter().map(|l| l.cues.len()).sum();
         let cues = (due, due);
         let size = self
@@ -1333,14 +1454,28 @@ impl<P: Platform> Host<P> {
     }
 }
 
-/// Where a stage of `stage` pixels sits when fitted to a target of `target` pixels, its shape
-/// kept and centred: left, top, right, bottom, as fractions of the target.
-pub fn fitted((sw, sh): (u32, u32), (tw, th): (u32, u32)) -> [f32; 4] {
-    let s = f64::from(sw.max(1)) / f64::from(sh.max(1));
-    let t = f64::from(tw.max(1)) / f64::from(th.max(1));
-    let (w, h) = if s > t { (1.0, t / s) } else { (s / t, 1.0) };
-    let (x, y) = ((1.0 - w) / 2.0, (1.0 - h) / 2.0);
-    [x as f32, y as f32, (x + w) as f32, (y + h) as f32]
+/// A region of a stage with something to draw: its index, its stage, the stage's picture and
+/// its cues' pictures.
+type StagePart<'a> = (usize, &'a StageOutput, Picture, Vec<CuePicture>);
+
+/// One layer a display draws: its order (stage stack, region index) and its route.
+type Drawn = ((u32, usize), RouteId, Layer);
+
+/// One region of a stage on its route, on a display of the size given (if known).
+type Part<'a> = (
+    &'a openlab_core::stage_link::RegionOutput,
+    &'a RouteOutput,
+    Option<(u32, u32)>,
+);
+
+/// What every output would show (`Host::plan`).
+#[derive(Default)]
+struct Plan {
+    states: Vec<(RouteId, RouteState)>,
+    /// By display: its layers with their order (stage stack, region index), and its routes.
+    on: BTreeMap<String, Vec<Drawn>>,
+    /// Each open monitor's title and its stage's whole layer.
+    watched: Vec<(String, Layer)>,
 }
 
 /// Test support: what a probe drew: the test card's frame read from its barcode cells, if
@@ -1395,13 +1530,30 @@ fn probe_answer(
     }
 }
 
-fn layer_of(stage: &StageOutput, picture: Picture, cues: Vec<CuePicture>) -> Layer {
+/// `stage`'s layer: one of its regions on its route, or (`None`) the whole stage fitted.
+fn layer_of(
+    stage: &StageOutput,
+    picture: Picture,
+    cues: Vec<CuePicture>,
+    part: Option<Part<'_>>,
+) -> Layer {
+    let place = match part {
+        Some((region, route, screen)) => Placement {
+            region: [region.x, region.y, region.width, region.height],
+            route: (route.width, route.height),
+            rotation: route.rotation,
+            scaling: route.scaling,
+            screen,
+        },
+        None => Placement::whole(stage.width, stage.height),
+    };
     Layer {
         stage: stage.id,
         width: stage.width,
         height: stage.height,
         picture,
         cues,
+        place,
     }
 }
 
@@ -1537,6 +1689,8 @@ pub(crate) mod tests {
         displays: Vec<Display>,
         /// Each display's layers as last presented, bottom first.
         shown: HashMap<String, Vec<StageId>>,
+        /// Where each of those layers was placed.
+        places: HashMap<String, Vec<Placement>>,
         /// Each display's pictures as last presented, over all its layers.
         pictures_drawn: HashMap<String, Vec<u64>>,
         /// The display with the menu bar.
@@ -1548,6 +1702,8 @@ pub(crate) mod tests {
         skip: bool,
         /// Presents asked for, drawn or not.
         presents: u32,
+        /// Windows taken down.
+        closes: u32,
         live: bool,
         events: Vec<PictureEvent>,
         /// Each monitor window up: its title and the stage drawn in it last, with its cues.
@@ -1582,11 +1738,14 @@ pub(crate) mod tests {
             }
             self.shown
                 .insert(d.id.clone(), layers.iter().map(|l| l.stage).collect());
+            self.places
+                .insert(d.id.clone(), layers.iter().map(|l| l.place).collect());
             let pictures = layers.iter().flat_map(|l| l.cues.iter().map(|c| c.picture));
             self.pictures_drawn.insert(d.id.clone(), pictures.collect());
             Ok(Presented::Drawn)
         }
         fn close(&mut self, display: &str) {
+            self.closes += 1;
             self.shown.remove(display);
             self.pictures_drawn.remove(display);
         }
@@ -1737,12 +1896,7 @@ pub(crate) mod tests {
     #[test]
     fn a_probe_that_reads_nothing_says_why() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         let probe = ToStage::Probe {
             stage: id(1),
             points: vec![[0.5, 0.5]],
@@ -1778,12 +1932,7 @@ pub(crate) mod tests {
     #[test]
     fn a_picture_that_fails_as_a_probe_draws_it_is_reported_before_the_answer() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 1000);
         load(&mut h, 7, 1);
         send(&mut h, plain_play(7, 1000, 0.0));
@@ -1815,12 +1964,7 @@ pub(crate) mod tests {
     #[test]
     fn a_movie_opened_again_is_one_log_line_and_stays_drawn() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 1000);
         load(&mut h, 7, 1);
         send(&mut h, plain_play(7, 1000, 0.0));
@@ -1851,12 +1995,7 @@ pub(crate) mod tests {
     #[test]
     fn a_picture_follows_the_clock_holds_when_paused_and_fades_out_when_stopped() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 1000);
         load(&mut h, 7, 1);
         assert_eq!(cues(&mut h, 1), vec![], "loaded is not drawn");
@@ -1942,12 +2081,7 @@ pub(crate) mod tests {
     #[test]
     fn a_picture_follows_its_plan_through_a_loop_fades_and_holds_at_its_end() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 0);
         load(&mut h, 7, 1);
         let linear = |duration| openlab_core::FadeSpec {
@@ -2021,12 +2155,7 @@ pub(crate) mod tests {
     #[test]
     fn a_play_without_a_plan_holds_and_one_into_its_plan_starts_there() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 0);
         load(&mut h, 7, 1);
         let mut empty = plain_play(7, 0, 1.16);
@@ -2087,12 +2216,7 @@ pub(crate) mod tests {
     #[test]
     fn the_later_started_picture_is_drawn_on_top() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 0);
         load(&mut h, 9, 1);
         load(&mut h, 3, 1);
@@ -2108,12 +2232,7 @@ pub(crate) mod tests {
     #[test]
     fn a_higher_layer_is_on_top_whatever_the_start_order() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 0);
         load(&mut h, 1, 1);
         load(&mut h, 2, 1);
@@ -2147,12 +2266,7 @@ pub(crate) mod tests {
     #[test]
     fn a_geometry_change_keeps_the_picture_running() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 0);
         load(&mut h, 1, 1);
         play(&mut h, 1, 0);
@@ -2203,12 +2317,7 @@ pub(crate) mod tests {
     #[test]
     fn a_ramp_moves_one_value_of_a_playing_picture_along_its_curve() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 0);
         load(&mut h, 1, 1);
         play(&mut h, 1, 0);
@@ -2250,12 +2359,7 @@ pub(crate) mod tests {
     #[test]
     fn a_ramp_dated_ahead_takes_over_only_from_its_sample() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         clock(&mut h, 0);
         load(&mut h, 1, 1);
         play(&mut h, 1, 0);
@@ -2288,12 +2392,7 @@ pub(crate) mod tests {
     #[test]
     fn a_picture_that_cannot_be_shown_is_reported_failed() {
         let mut h = host(&["D"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), false)]));
         let failed = |out: &[FromStage]| -> Vec<(u64, String)> {
             out.iter()
                 .filter_map(|m| match m {
@@ -2319,7 +2418,7 @@ pub(crate) mod tests {
         assert_eq!(failed(&load(&mut h, 2, 9)).len(), 1, "no such stage");
         load(&mut h, 3, 1);
         send(&mut h, plain_play(3, 0, 0.0));
-        let out = send(&mut h, ToStage::Stages { stages: vec![] });
+        let out = send(&mut h, stages_msg(vec![]));
         assert_eq!(failed(&out), vec![(3, "its stage was removed".to_owned())]);
         assert!(!h.playing());
     }
@@ -2334,12 +2433,7 @@ pub(crate) mod tests {
             let mut h = host(&["D"]);
             let version = LINK_VERSION;
             send(&mut h, ToStage::Hello { version });
-            send(
-                &mut h,
-                ToStage::Stages {
-                    stages: vec![stage(1, Some("D"), keep_black)],
-                },
-            );
+            send(&mut h, stages_msg(vec![stage(1, Some("D"), keep_black)]));
             load(&mut h, 3, 1);
             play(&mut h, 3, 0);
             clock(&mut h, 100);
@@ -2366,7 +2460,7 @@ pub(crate) mod tests {
             } else {
                 assert_eq!(h.platform.shown.get("D"), None, "taken down");
                 assert!(
-                    states(&out).contains(&(id(1), StageState::Hidden)),
+                    states(&out).contains(&(id(1), RouteState::Hidden)),
                     "{out:?}"
                 );
             }
@@ -2382,12 +2476,7 @@ pub(crate) mod tests {
         let mut out = Vec::new();
         let version = LINK_VERSION;
         send(&mut h, ToStage::Hello { version });
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D1"), true)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D1"), true)]));
         h.platform.skip = true;
         h.displays_changed(&mut out);
         let move_back = |h: &mut Host<Fake>, by: std::time::Duration| {
@@ -2407,7 +2496,7 @@ pub(crate) mod tests {
             states(&out),
             vec![(
                 id(1),
-                StageState::Failed {
+                RouteState::Failed {
                     reason: "the system gave no picture to draw into for 3 s".into()
                 }
             )]
@@ -2421,7 +2510,7 @@ pub(crate) mod tests {
             states(&out),
             vec![(
                 id(1),
-                StageState::Shown {
+                RouteState::Shown {
                     display: "D1".into()
                 }
             )]
@@ -2437,12 +2526,7 @@ pub(crate) mod tests {
         let mut out = Vec::new();
         let version = LINK_VERSION;
         send(&mut h, ToStage::Hello { version });
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D1"), true)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D1"), true)]));
         h.platform.skip = true;
         h.displays_changed(&mut out);
         let began = h.skipping.get_mut("D1").expect("a stretch of skips");
@@ -2452,7 +2536,7 @@ pub(crate) mod tests {
             states(&out),
             vec![(
                 id(1),
-                StageState::Failed {
+                RouteState::Failed {
                     reason: "the system gave no picture to draw into for 3 s".into()
                 }
             )]
@@ -2499,7 +2583,7 @@ pub(crate) mod tests {
             states(&out),
             vec![(
                 id(1),
-                StageState::Shown {
+                RouteState::Shown {
                     display: "D1".into()
                 }
             )]
@@ -2552,12 +2636,7 @@ pub(crate) mod tests {
         let mut h = host(&["D"]);
         let version = LINK_VERSION;
         send(&mut h, ToStage::Hello { version });
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), true)],
-            },
-        );
+        send(&mut h, stages_msg(vec![stage(1, Some("D"), true)]));
         load(&mut h, 3, 1);
         play(&mut h, 3, 0);
         clock(&mut h, 100);
@@ -2591,9 +2670,7 @@ pub(crate) mod tests {
         send(&mut h, ToStage::Hello { version });
         send(
             &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("M"), true), stage(2, Some("D"), true)],
-            },
+            stages_msg(vec![stage(1, Some("M"), true), stage(2, Some("D"), true)]),
         );
         h
     }
@@ -2652,7 +2729,7 @@ pub(crate) mod tests {
         assert_eq!(h.platform.operator, None);
         assert_eq!(
             states(&out),
-            vec![(id(1), StageState::Hidden), (id(2), StageState::Hidden)]
+            vec![(id(1), RouteState::Hidden), (id(2), RouteState::Hidden)]
         );
         assert!(matches!(&logs(&out)[..], [(LinkLevel::Info, m)] if m.contains("app is gone")));
         // Frames go on (the picture plays on, unseen): still nothing up.
@@ -2729,18 +2806,65 @@ pub(crate) mod tests {
             width: 1920,
             height: 1080,
             fps: 60,
+            main: false,
         }
     }
 
-    pub(crate) fn stage(n: u8, display: Option<&str>, keep_black: bool) -> StageOutput {
-        StageOutput {
-            id: id(n),
-            width: 1920,
-            height: 1080,
+    pub(crate) fn route_id(n: u8) -> RouteId {
+        RouteId(uuid::Uuid::from_u128(n.into()))
+    }
+
+    /// A stage of the tests: stage `n` with one region covering it on route `n`, which is on
+    /// `display`.
+    #[derive(Clone)]
+    pub(crate) struct TestStage {
+        pub(crate) out: StageOutput,
+        pub(crate) display: Option<String>,
+    }
+
+    pub(crate) fn stage(n: u8, display: Option<&str>, keep_black: bool) -> TestStage {
+        TestStage {
+            out: StageOutput {
+                id: id(n),
+                width: 1920,
+                height: 1080,
+                regions: vec![openlab_core::stage_link::RegionOutput {
+                    route: route_id(n),
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                }],
+                keep_black,
+                stack: u32::from(n),
+                monitor: None,
+            },
             display: display.map(Into::into),
-            keep_black,
-            stack: u32::from(n),
-            monitor: None,
+        }
+    }
+
+    /// The stage set of `stages`, each with its own route (same number) on its display.
+    pub(crate) fn stages_msg(stages: Vec<TestStage>) -> ToStage {
+        let routes = stages
+            .iter()
+            .flat_map(|s| {
+                s.out
+                    .regions
+                    .iter()
+                    .map(move |r| (r.route, s.display.clone()))
+            })
+            .map(|(id, display)| RouteOutput {
+                id,
+                width: 1920,
+                height: 1080,
+                rotation: 0,
+                scaling: RouteScaling::Fill,
+                display,
+            })
+            .collect();
+        ToStage::Stages {
+            stages: stages.into_iter().map(|s| s.out).collect(),
+            routes,
         }
     }
 
@@ -2748,12 +2872,14 @@ pub(crate) mod tests {
         Host::new(Fake {
             displays: displays.iter().map(|d| display(d)).collect(),
             shown: HashMap::new(),
+            places: HashMap::new(),
             pictures_drawn: HashMap::new(),
             menu_bar: None,
             stood_back: None,
             fail: false,
             skip: false,
             presents: 0,
+            closes: 0,
             live: false,
             events: Vec::new(),
             monitors: HashMap::new(),
@@ -2765,10 +2891,12 @@ pub(crate) mod tests {
         })
     }
 
-    fn states(out: &[FromStage]) -> Vec<(StageId, StageState)> {
+    /// The route states reported, each named by the stage of the same number (each test stage
+    /// has its own route).
+    fn states(out: &[FromStage]) -> Vec<(StageId, RouteState)> {
         out.iter()
             .filter_map(|m| match m {
-                FromStage::StageStatus { stage, state } => Some((*stage, state.clone())),
+                FromStage::RouteStatus { route, state } => Some((StageId(route.0), state.clone())),
                 _ => None,
             })
             .collect()
@@ -2787,10 +2915,14 @@ pub(crate) mod tests {
             &mut out,
         );
         assert!(matches!(out[0], FromStage::Hello { video: true, .. }));
+        // The only display is the main one.
         assert_eq!(
             out[1],
             FromStage::Displays {
-                displays: vec![display("D1")]
+                displays: vec![Display {
+                    main: true,
+                    ..display("D1")
+                }]
             }
         );
         out.clear();
@@ -2800,36 +2932,31 @@ pub(crate) mod tests {
             stage(3, Some("D9"), true),
             stage(4, Some("D1"), false),
         ];
-        h.handle(
-            ToStage::Stages {
-                stages: stages.clone(),
-            },
-            &mut out,
-        );
+        h.handle(stages_msg(stages.clone()), &mut out);
         assert_eq!(
             states(&out),
             vec![
                 (
                     id(1),
-                    StageState::Shown {
+                    RouteState::Shown {
                         display: "D1".into()
                     }
                 ),
-                (id(2), StageState::NoDisplay),
+                (id(2), RouteState::NoDisplay),
                 (
                     id(3),
-                    StageState::DisplayMissing {
+                    RouteState::DisplayMissing {
                         display: "D9".into()
                     }
                 ),
-                (id(4), StageState::Hidden),
+                (id(4), RouteState::Hidden),
             ]
         );
         assert_eq!(h.platform.shown["D1"], [id(1)]);
         // The same set again is reported again (the engine waits for each set's states) and
         // changes no window.
         out.clear();
-        h.handle(ToStage::Stages { stages }, &mut out);
+        h.handle(stages_msg(stages), &mut out);
         assert_eq!(states(&out).len(), 4);
         assert_eq!(h.platform.shown["D1"], [id(1)]);
         // A display change reports only what changed.
@@ -2850,16 +2977,11 @@ pub(crate) mod tests {
             &mut out,
         );
         let mut top = stage(1, Some("D1"), true);
-        top.stack = 9;
+        top.out.stack = 9;
         let bottom = stage(2, Some("D1"), true);
-        h.handle(
-            ToStage::Stages {
-                stages: vec![top, bottom],
-            },
-            &mut out,
-        );
+        h.handle(stages_msg(vec![top, bottom]), &mut out);
         assert_eq!(h.platform.shown["D1"], [id(2), id(1)]);
-        h.handle(ToStage::Stages { stages: vec![] }, &mut out);
+        h.handle(stages_msg(vec![]), &mut out);
         assert!(
             h.platform.shown.is_empty(),
             "the window goes with its last stage"
@@ -2878,12 +3000,7 @@ pub(crate) mod tests {
             },
             &mut out,
         );
-        h.handle(
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D1"), true)],
-            },
-            &mut out,
-        );
+        h.handle(stages_msg(vec![stage(1, Some("D1"), true)]), &mut out);
         out.clear();
         h.platform.displays.clear();
         h.displays_changed(&mut out);
@@ -2892,7 +3009,7 @@ pub(crate) mod tests {
             states(&out),
             vec![(
                 id(1),
-                StageState::DisplayMissing {
+                RouteState::DisplayMissing {
                     display: "D1".into()
                 }
             )]
@@ -2905,7 +3022,7 @@ pub(crate) mod tests {
             states(&out),
             vec![(
                 id(1),
-                StageState::Shown {
+                RouteState::Shown {
                     display: "D1".into()
                 }
             )]
@@ -2926,9 +3043,7 @@ pub(crate) mod tests {
             &mut out,
         );
         h.handle(
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D1"), true), stage(2, Some("D2"), true)],
-            },
+            stages_msg(vec![stage(1, Some("D1"), true), stage(2, Some("D2"), true)]),
             &mut out,
         );
         h.platform.shown.clear();
@@ -2951,30 +3066,20 @@ pub(crate) mod tests {
             &mut out,
         );
         out.clear();
-        h.handle(
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D1"), true)],
-            },
-            &mut out,
-        );
+        h.handle(stages_msg(vec![stage(1, Some("D1"), true)]), &mut out);
         assert_eq!(
             states(&out),
             vec![(
                 id(1),
-                StageState::Failed {
+                RouteState::Failed {
                     reason: "no GPU".into()
                 }
             )]
         );
         h.platform.fail = false;
-        h.handle(
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D1"), true)],
-            },
-            &mut out,
-        );
+        h.handle(stages_msg(vec![stage(1, Some("D1"), true)]), &mut out);
         assert_eq!(h.platform.shown.len(), 1);
-        h.handle(ToStage::Stages { stages: vec![] }, &mut out);
+        h.handle(stages_msg(vec![]), &mut out);
         assert!(h.platform.shown.is_empty());
     }
 
@@ -2991,13 +3096,8 @@ pub(crate) mod tests {
             },
             &mut out,
         );
-        h.handle(
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D1"), true)],
-            },
-            &mut out,
-        );
-        let shown = StageState::Shown {
+        h.handle(stages_msg(vec![stage(1, Some("D1"), true)]), &mut out);
+        let shown = RouteState::Shown {
             display: "D1".into(),
         };
         assert_eq!(states(&out), vec![(id(1), shown.clone())]);
@@ -3024,14 +3124,9 @@ pub(crate) mod tests {
         // A window closed mid-stretch: skipped frames in the next one warn again.
         h.platform.skip = true;
         h.displays_changed(&mut out);
-        h.handle(ToStage::Stages { stages: vec![] }, &mut out);
+        h.handle(stages_msg(vec![]), &mut out);
         out.clear();
-        h.handle(
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D1"), true)],
-            },
-            &mut out,
-        );
+        h.handle(stages_msg(vec![stage(1, Some("D1"), true)]), &mut out);
         assert_eq!(warnings(&out), 1, "{out:?}");
         h.platform.skip = false;
         h.platform.fail = true;
@@ -3041,7 +3136,7 @@ pub(crate) mod tests {
             states(&out),
             vec![(
                 id(1),
-                StageState::Failed {
+                RouteState::Failed {
                     reason: "no GPU".into()
                 }
             )]
@@ -3100,12 +3195,7 @@ pub(crate) mod tests {
             },
             &mut out,
         );
-        h.handle(
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D1"), true)],
-            },
-            &mut out,
-        );
+        h.handle(stages_msg(vec![stage(1, Some("D1"), true)]), &mut out);
         assert_eq!(h.handle(ToStage::Quit, &mut out), Flow::Quit);
         assert!(h.platform.shown.is_empty());
     }
@@ -3122,11 +3212,10 @@ pub(crate) mod tests {
         h
     }
 
-    fn watched(n: u8, display: Option<&str>) -> StageOutput {
-        StageOutput {
-            monitor: Some(format!("Stage {n}")),
-            ..stage(n, display, false)
-        }
+    fn watched(n: u8, display: Option<&str>) -> TestStage {
+        let mut s = stage(n, display, false);
+        s.out.monitor = Some(format!("Stage {n}"));
+        s
     }
 
     fn monitor_closed(out: &[FromStage]) -> Vec<StageId> {
@@ -3147,19 +3236,17 @@ pub(crate) mod tests {
         let mut out = Vec::new();
         send(
             &mut h,
-            ToStage::Stages {
-                stages: vec![
-                    watched(1, Some("D1")),
-                    watched(2, None),
-                    stage(3, None, true),
-                ],
-            },
+            stages_msg(vec![
+                watched(1, Some("D1")),
+                watched(2, None),
+                stage(3, None, true),
+            ]),
         );
         assert_eq!(h.platform.monitors.len(), 2);
         assert_eq!(h.platform.monitors[&id(1)].0, "Stage 1");
         assert_eq!(h.platform.monitors[&id(2)].1.stage, id(2));
-        assert_eq!(h.states.get(&id(2)), Some(&StageState::NoDisplay));
-        assert_eq!(h.states.get(&id(1)), Some(&StageState::Hidden));
+        assert_eq!(h.states.get(&route_id(2)), Some(&RouteState::NoDisplay));
+        assert_eq!(h.states.get(&route_id(1)), Some(&RouteState::Hidden));
         // A cue on the stage with no display: the monitor draws it all the same.
         load(&mut h, 7, 2);
         play(&mut h, 7, 0);
@@ -3168,13 +3255,8 @@ pub(crate) mod tests {
         assert_eq!(drawn.iter().map(|c| c.picture).collect::<Vec<_>>(), [7]);
         // Renamed: the title follows; dropped from the set: the window goes.
         let mut renamed = watched(1, Some("D1"));
-        renamed.monitor = Some("Front".into());
-        h.handle(
-            ToStage::Stages {
-                stages: vec![renamed, stage(2, None, false)],
-            },
-            &mut out,
-        );
+        renamed.out.monitor = Some("Front".into());
+        h.handle(stages_msg(vec![renamed, stage(2, None, false)]), &mut out);
         assert_eq!(h.platform.monitors[&id(1)].0, "Front");
         assert!(!h.platform.monitors.contains_key(&id(2)));
         assert!(
@@ -3190,22 +3272,12 @@ pub(crate) mod tests {
     #[test]
     fn a_monitor_the_operator_closes_stays_closed_until_raised() {
         let mut h = greeted(&["D1"]);
-        send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![watched(1, Some("D1"))],
-            },
-        );
+        send(&mut h, stages_msg(vec![watched(1, Some("D1"))]));
         h.platform.user_closed.push(id(1));
         let mut out = Vec::new();
         h.step(None, &mut out);
         assert_eq!(monitor_closed(&out), [id(1)]);
-        let out = send(
-            &mut h,
-            ToStage::Stages {
-                stages: vec![watched(1, Some("D1"))],
-            },
-        );
+        let out = send(&mut h, stages_msg(vec![watched(1, Some("D1"))]));
         assert!(monitor_closed(&out).is_empty());
         assert!(h.platform.monitors.is_empty(), "stays closed");
         let mut out = Vec::new();
@@ -3227,12 +3299,11 @@ pub(crate) mod tests {
         h.platform.fail_monitors = true;
         let out = send(
             &mut h,
-            ToStage::Stages {
-                stages: vec![StageOutput {
-                    keep_black: true,
-                    ..watched(1, Some("D1"))
-                }],
-            },
+            stages_msg(vec![{
+                let mut w = watched(1, Some("D1"));
+                w.out.keep_black = true;
+                w
+            }]),
         );
         assert_eq!(monitor_closed(&out), [id(1)]);
         assert!(
@@ -3244,12 +3315,346 @@ pub(crate) mod tests {
             states(&out),
             vec![(
                 id(1),
-                StageState::Shown {
+                RouteState::Shown {
                     display: "D1".into()
                 }
             )]
         );
         let out = send(&mut h, ToStage::Ping { seq: 1 });
         assert!(monitor_closed(&out).is_empty());
+    }
+
+    fn routed(
+        id: u8,
+        size: (u32, u32),
+        rotation: u16,
+        scaling: RouteScaling,
+        display: Option<&str>,
+    ) -> RouteOutput {
+        RouteOutput {
+            id: route_id(id),
+            width: size.0,
+            height: size.1,
+            rotation,
+            scaling,
+            display: display.map(Into::into),
+        }
+    }
+
+    fn region(route: u8, x: u32, width: u32) -> openlab_core::stage_link::RegionOutput {
+        openlab_core::stage_link::RegionOutput {
+            route: route_id(route),
+            x,
+            y: 0,
+            width,
+            height: 1080,
+        }
+    }
+
+    /// The G4 stage: 3840 x 1080, region A (left half) on route 1 on D1, region B (right half)
+    /// on route 2 on D2, keeping black as `keep_black` says.
+    fn split_stage(keep_black: bool) -> ToStage {
+        let (stages, routes) = split_parts(keep_black);
+        ToStage::Stages { stages, routes }
+    }
+
+    fn split_parts(keep_black: bool) -> (Vec<StageOutput>, Vec<RouteOutput>) {
+        (
+            vec![StageOutput {
+                id: id(1),
+                width: 3840,
+                height: 1080,
+                regions: vec![region(1, 0, 1920), region(2, 1920, 1920)],
+                keep_black,
+                stack: 0,
+                monitor: None,
+            }],
+            vec![
+                routed(1, (1920, 1080), 0, RouteScaling::Fill, Some("D1")),
+                routed(2, (1920, 1080), 0, RouteScaling::Fill, Some("D2")),
+            ],
+        )
+    }
+
+    fn near(a: [f64; 2], b: [f64; 2]) -> bool {
+        (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9
+    }
+
+    /// G8: a region fills its route whatever its size: a 960 x 1080 region's corners land on the
+    /// corners of a 1920 x 1080 route filling a display of its shape.
+    #[test]
+    fn a_region_fills_its_route() {
+        let place = Placement {
+            region: [960, 0, 960, 1080],
+            route: (1920, 1080),
+            rotation: 0,
+            scaling: RouteScaling::Fill,
+            screen: None,
+        };
+        let size = (1920, 1080);
+        assert!(near(place.map(size, [960.0, 0.0]), [0.0, 0.0]));
+        assert!(near(place.map(size, [1920.0, 1080.0]), [1.0, 1.0]));
+        assert!(near(place.map(size, [1440.0, 540.0]), [0.5, 0.5]));
+        assert_eq!(place.dest(size), [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    /// R5: a 1920 x 1080 route on a 1280 x 1024 display. Centre: one route pixel per display
+    /// pixel, cut off at every edge. Fit: as wide as the display, black above and below.
+    /// Stretch: the display's shape. Fill: covering, the sides cut off.
+    #[test]
+    fn each_scaling_puts_the_route_on_its_display_as_it_says() {
+        let at = |scaling| {
+            Placement {
+                region: [0, 0, 1920, 1080],
+                route: (1920, 1080),
+                rotation: 0,
+                scaling,
+                screen: None,
+            }
+            .dest((1280, 1024))
+        };
+        let centre = at(RouteScaling::Centre);
+        assert!(centre[0] < 0.0 && centre[2] > 1.0, "{centre:?}");
+        assert!((centre[2] - centre[0] - 1920.0 / 1280.0).abs() < 1e-9);
+        assert!((centre[3] - centre[1] - 1080.0 / 1024.0).abs() < 1e-9);
+        let fit = at(RouteScaling::Fit);
+        assert_eq!((fit[0], fit[2]), (0.0, 1.0));
+        assert!(
+            fit[1] > 0.0 && fit[3] < 1.0,
+            "black above and below: {fit:?}"
+        );
+        assert!((fit[3] - fit[1] - 720.0 / 1024.0).abs() < 1e-9);
+        assert_eq!(at(RouteScaling::Stretch), [0.0, 0.0, 1.0, 1.0]);
+        let fill = at(RouteScaling::Fill);
+        assert_eq!((fill[1], fill[3]), (0.0, 1.0));
+        assert!(
+            fill[0] < 0.0 && fill[2] > 1.0,
+            "the sides cut off: {fill:?}"
+        );
+        assert!((fill[2] - fill[0] - (1024.0 * 1920.0 / 1080.0) / 1280.0).abs() < 1e-9);
+        // Drawn smaller (a probe), the display's own size still decides: centre is the same.
+        let on_display = Placement {
+            region: [0, 0, 1920, 1080],
+            route: (1920, 1080),
+            rotation: 0,
+            scaling: RouteScaling::Centre,
+            screen: Some((1280, 1024)),
+        };
+        assert_eq!(on_display.dest((640, 512)), centre);
+    }
+
+    /// R6: a quarter turn is clockwise: the route's top edge runs down the display's right side;
+    /// 180 turns it upside down; 270 takes the top edge down the left side. A turned 1920 x
+    /// 1080 route fills a portrait 1080 x 1920 display.
+    #[test]
+    fn a_route_turns_clockwise_by_its_rotation() {
+        let turned = |rotation| Placement {
+            region: [0, 0, 1920, 1080],
+            route: (1920, 1080),
+            rotation,
+            scaling: RouteScaling::Fill,
+            screen: None,
+        };
+        let portrait = (1080, 1920);
+        let q = turned(90);
+        assert_eq!(q.dest(portrait), [0.0, 0.0, 1.0, 1.0]);
+        assert!(
+            near(q.map(portrait, [0.0, 0.0]), [1.0, 0.0]),
+            "top left to top right"
+        );
+        assert!(
+            near(q.map(portrait, [1920.0, 0.0]), [1.0, 1.0]),
+            "top edge down the right"
+        );
+        assert!(near(q.map(portrait, [0.0, 1080.0]), [0.0, 0.0]));
+        let h = turned(180);
+        assert!(near(h.map((1920, 1080), [0.0, 0.0]), [1.0, 1.0]));
+        let t = turned(270);
+        assert!(near(t.map(portrait, [0.0, 0.0]), [0.0, 1.0]));
+        assert!(near(t.map(portrait, [1920.0, 0.0]), [0.0, 0.0]));
+        let none = turned(0);
+        assert!(near(none.map((1920, 1080), [1920.0, 0.0]), [1.0, 0.0]));
+    }
+
+    /// G4, V1c: a stage with two regions on two routes on two displays is drawn on both, each
+    /// display its own part, and keeping black covers both; with keep-black off and nothing
+    /// playing, both show nothing. Each route reports its own state.
+    #[test]
+    fn a_stage_split_over_two_routes_draws_each_part_on_its_display() {
+        let mut h = greeted(&["D1", "D2"]);
+        let out = send(&mut h, split_stage(true));
+        let shown = |d: &str| RouteState::Shown { display: d.into() };
+        let got: Vec<(RouteId, RouteState)> = out
+            .iter()
+            .filter_map(|m| match m {
+                FromStage::RouteStatus { route, state } => Some((*route, state.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [(route_id(1), shown("D1")), (route_id(2), shown("D2"))]
+        );
+        assert_eq!(h.platform.shown["D1"], [id(1)]);
+        assert_eq!(h.platform.shown["D2"], [id(1)]);
+        assert_eq!(h.platform.places["D1"][0].region, [0, 0, 1920, 1080]);
+        assert_eq!(h.platform.places["D2"][0].region, [1920, 0, 1920, 1080]);
+        // Keep-black off with nothing playing: both displays go back to the desktop at once.
+        let out = send(&mut h, split_stage(false));
+        assert!(h.platform.shown.is_empty(), "{:?}", h.platform.shown);
+        assert_eq!(
+            out.iter()
+                .filter(|m| matches!(
+                    m,
+                    FromStage::RouteStatus {
+                        state: RouteState::Hidden,
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
+    }
+
+    /// G5, G7, R9: a region whose route is taken away (none, removed, or the route itself
+    /// removed) leaves that display: its window closes; the other display keeps its part.
+    #[test]
+    fn a_region_off_its_route_leaves_that_display_only() {
+        let mut h = greeted(&["D1", "D2"]);
+        send(&mut h, split_stage(true));
+        let (mut stages, mut routes) = split_parts(true);
+        stages[0].regions.pop();
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: stages.clone(),
+                routes: routes.clone(),
+            },
+        );
+        assert_eq!(h.platform.shown["D1"], [id(1)]);
+        assert!(
+            !h.platform.shown.contains_key("D2"),
+            "D2 back to the desktop"
+        );
+        assert_eq!(h.states.get(&route_id(2)), Some(&RouteState::Hidden));
+        routes.pop();
+        send(&mut h, ToStage::Stages { stages, routes });
+        assert_eq!(h.platform.shown["D1"], [id(1)]);
+        assert!(
+            !h.states.contains_key(&route_id(2)),
+            "a removed route has no state"
+        );
+    }
+
+    /// R7: a route moved to another display takes its picture with it at once; the picture's
+    /// run is untouched.
+    #[test]
+    fn a_route_moved_to_another_display_takes_its_picture_with_it() {
+        let mut h = greeted(&["D1", "D2"]);
+        let one = |display| ToStage::Stages {
+            stages: vec![stage(1, None, true).out],
+            routes: vec![routed(
+                1,
+                (1920, 1080),
+                0,
+                RouteScaling::Fill,
+                Some(display),
+            )],
+        };
+        send(&mut h, one("D1"));
+        load(&mut h, 7, 1);
+        clock(&mut h, 0);
+        play(&mut h, 7, 0);
+        clock(&mut h, 500);
+        assert_eq!(h.platform.pictures_drawn["D1"], [7]);
+        send(&mut h, one("D2"));
+        assert!(!h.platform.shown.contains_key("D1"));
+        assert_eq!(h.platform.pictures_drawn["D2"], [7]);
+        assert_eq!(cues(&mut h, 1)[0].1, 0.5, "at its current point");
+    }
+
+    /// A failed display fails only the routes on it.
+    #[test]
+    fn a_failed_display_fails_only_its_routes() {
+        let mut h = greeted(&["D1", "D2"]);
+        h.platform.fail = true;
+        let out = send(&mut h, split_stage(true));
+        assert!(out.iter().all(|m| !matches!(
+            m,
+            FromStage::RouteStatus {
+                state: RouteState::Shown { .. },
+                ..
+            }
+        )));
+        h.platform.fail = false;
+        let (stages, mut routes) = split_parts(true);
+        routes[1].display = Some("D9".into());
+        let out = send(&mut h, ToStage::Stages { stages, routes });
+        let got: Vec<(RouteId, RouteState)> = out
+            .iter()
+            .filter_map(|m| match m {
+                FromStage::RouteStatus { route, state } => Some((*route, state.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(got.contains(&(
+            route_id(1),
+            RouteState::Shown {
+                display: "D1".into()
+            }
+        )));
+        assert!(got.contains(&(
+            route_id(2),
+            RouteState::DisplayMissing {
+                display: "D9".into()
+            }
+        )));
+    }
+
+    /// The display with the menu bar is the main one; without one known, the first listed.
+    #[test]
+    fn the_display_with_the_menu_bar_is_the_main_one() {
+        let mut h = host(&["D1", "D2"]);
+        h.platform.menu_bar = Some("D2".into());
+        let out = send(
+            &mut h,
+            ToStage::Hello {
+                version: LINK_VERSION,
+            },
+        );
+        let main: Vec<(String, bool)> = out
+            .iter()
+            .find_map(|m| match m {
+                FromStage::Displays { displays } => {
+                    Some(displays.iter().map(|d| (d.id.clone(), d.main)).collect())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(main, [("D1".into(), false), ("D2".into(), true)]);
+    }
+
+    /// V1: keep-black unticked on a stage over two displays takes each window down once, with
+    /// nothing drawn first; ticked again, each comes back once, drawn black.
+    #[test]
+    fn keep_black_off_and_on_changes_each_window_once() {
+        let mut h = greeted(&["D1", "D2"]);
+        send(&mut h, split_stage(true));
+        let (presents, closes) = (h.platform.presents, h.platform.closes);
+        send(&mut h, split_stage(false));
+        assert_eq!(
+            h.platform.presents, presents,
+            "nothing drawn on the way down"
+        );
+        assert_eq!(h.platform.closes, closes + 2, "each window down once");
+        let closes = h.platform.closes;
+        send(&mut h, split_stage(true));
+        assert_eq!(h.platform.presents, presents + 2, "each drawn once");
+        assert_eq!(
+            h.platform.closes, closes,
+            "nothing taken down on the way up"
+        );
+        assert_eq!(h.platform.shown["D1"], [id(1)]);
+        assert_eq!(h.platform.shown["D2"], [id(1)]);
     }
 }

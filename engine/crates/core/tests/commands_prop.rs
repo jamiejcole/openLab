@@ -44,7 +44,7 @@ fn picks(max: usize) -> impl Strategy<Value = Vec<Pick>> {
 
 /// Operations 0-10 edit the cue tree; 11 and up edit settings, patches, cue lists, the OSC
 /// passcode table and the stages.
-const OPS: u8 = 33;
+const OPS: u8 = 40;
 
 /// Names and hosts a command takes or refuses: plain, empty, at and over the limits (1024 scalars,
 /// 253 bytes; multi-byte text is counted in scalars, so 1024 emoji pass), with a newline, a NUL.
@@ -665,8 +665,8 @@ fn network_property(p: &Pick) -> NetworkPatchProperty {
     }
 }
 
-/// Settings, patches, network patches, cue lists, the OSC passcode table and the stages:
-/// operations 11 to 23 and 25 to 32. Ids are drawn from a
+/// Settings, patches, network patches, cue lists, the OSC passcode table, the stages, routes and
+/// regions: operations 11 to 23 and 25 to 39. Ids are drawn from a
 /// small pool, so they collide with existing ones (refused) and re-use removed ones.
 fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
     let patch_ids: Vec<PatchId> = ws.patches.iter().map(|x| x.id).collect();
@@ -677,6 +677,12 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
         choose(&stage_ids, p.a)
             .filter(|_| p.a % 9 != 8)
             .unwrap_or(stage_id(9))
+    };
+    let route_ids: Vec<RouteId> = ws.routes.iter().map(|x| x.id).collect();
+    let some_route = || {
+        choose(&route_ids, p.b)
+            .filter(|_| p.b % 9 != 8)
+            .unwrap_or(route_id(9))
     };
     // An existing id most of the time, a made-up one now and then.
     let some_patch = || {
@@ -796,6 +802,11 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
                 height: stage_side(p.a / 7),
                 keep_black: p.c.is_multiple_of(2),
                 layer: stage_layer(p.d / 9),
+                regions: if p.b.is_multiple_of(3) {
+                    vec![region(p.d % 6, Some(some_route()), p)]
+                } else {
+                    Vec::new()
+                },
             },
         },
         30 => Command::RemoveStage { id: some_stage() },
@@ -812,6 +823,7 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
                 1 => StageProperty::Size {
                     width: stage_side(p.d),
                     height: stage_side(p.d / 7),
+                    regions: None,
                 },
                 2 => StageProperty::KeepBlack {
                     value: p.d.is_multiple_of(2),
@@ -821,8 +833,130 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
                 },
             },
         },
+        // Routes and regions: sizes, rotations and bounds at and past their limits, ids from
+        // a small pool, routes that are not there.
+        33 => Command::AddRoute {
+            index: p.b as usize % (ws.routes.len() + 2),
+            route: OutputRoute {
+                id: route_id(1 + u128::from(p.c % 4)),
+                name: if p.d.is_multiple_of(5) {
+                    String::new()
+                } else {
+                    name_pool(p.d)
+                },
+                width: route_side(p.a),
+                height: route_side(p.a / 7),
+                rotation: [0, 90, 180, 270, 45][p.d as usize % 5],
+                scaling: [
+                    RouteScaling::Fill,
+                    RouteScaling::Fit,
+                    RouteScaling::Centre,
+                    RouteScaling::Stretch,
+                ][p.b as usize % 4],
+            },
+            regions: if p.a.is_multiple_of(4) {
+                vec![region_id(1 + u128::from(p.b % 6))]
+            } else {
+                Vec::new()
+            },
+        },
+        34 => Command::RemoveRoute { id: some_route() },
+        35 => Command::MoveRoute {
+            id: some_route(),
+            index: p.b as usize % (ws.routes.len() + 1),
+        },
+        36 => Command::SetRouteProperty {
+            id: some_route(),
+            property: match p.c % 4 {
+                0 => RouteProperty::Name {
+                    value: if p.d.is_multiple_of(5) {
+                        String::new()
+                    } else {
+                        name_pool(p.d)
+                    },
+                },
+                1 => RouteProperty::Size {
+                    width: route_side(p.d),
+                    height: route_side(p.d / 7),
+                },
+                2 => RouteProperty::Rotation {
+                    value: [0, 90, 180, 270, 360][p.d as usize % 5],
+                },
+                _ => RouteProperty::Scaling {
+                    value: [RouteScaling::Fill, RouteScaling::Fit][p.d as usize % 2],
+                },
+            },
+        },
+        37 => Command::AddRegion {
+            stage: some_stage(),
+            index: p.b as usize % 3,
+            region: region(p.c % 6, Some(some_route()), p),
+        },
+        38 => Command::RemoveRegion {
+            stage: some_stage(),
+            id: region_id(1 + u128::from(p.c % 6)),
+        },
+        39 => Command::SetRegionProperty {
+            stage: some_stage(),
+            id: region_id(1 + u128::from(p.c % 6)),
+            property: if p.d.is_multiple_of(2) {
+                RegionProperty::Route {
+                    value: (!p.b.is_multiple_of(4)).then(some_route),
+                }
+            } else {
+                let r = region(0, None, p);
+                RegionProperty::Bounds {
+                    x: r.x,
+                    y: r.y,
+                    width: r.width,
+                    height: r.height,
+                }
+            },
+        },
         _ => return None,
     })
+}
+
+fn route_id(n: u128) -> RouteId {
+    RouteId(uuid::Uuid::from_u128(0x100 + n))
+}
+
+fn region_id(n: u128) -> RegionId {
+    RegionId(uuid::Uuid::from_u128(0x200 + n))
+}
+
+/// A route side: in range mostly, 0 and one past the limit now and then.
+fn route_side(n: u32) -> u32 {
+    [
+        1920,
+        1080,
+        1,
+        MAX_ROUTE_PIXELS,
+        0,
+        1280,
+        MAX_ROUTE_PIXELS + 1,
+        720,
+    ][n as usize % 8]
+}
+
+/// A region from the id pool: inside a 1280 x 720 stage mostly, past its edge now and then.
+fn region(n: u32, route: Option<RouteId>, p: &Pick) -> Region {
+    let (x, y, width, height) = [
+        (0, 0, 1280, 720),
+        (0, 0, 640, 720),
+        (640, 0, 640, 720),
+        (1000, 0, 640, 720),
+        (0, 0, 0, 10),
+        (100, 100, 200, 200),
+    ][p.a as usize % 6];
+    Region {
+        id: region_id(1 + u128::from(n)),
+        route,
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 fn stage_id(n: u128) -> StageId {
@@ -1079,6 +1213,13 @@ fn base() -> Workspace {
         Stage::new(stage_id(2), "Cyc", 1920, 1080),
         Stage::new(stage_id(3), "Floor", 1280, 720),
     ];
+    // Two routes with a region each, so route and region edits find some.
+    ws.routes = vec![
+        OutputRoute::new(route_id(1), "Output 1", 1920, 1080),
+        OutputRoute::new(route_id(2), "Output 2", 1280, 720),
+    ];
+    ws.stages[0].regions = vec![Region::whole(region_id(1), Some(route_id(1)), 1920, 1080)];
+    ws.stages[1].regions = vec![Region::whole(region_id(2), Some(route_id(2)), 1280, 720)];
     ws
 }
 
@@ -1675,6 +1816,11 @@ proptest! {
                     fp.stages.changed.len() + fp.stages.removed.len(),
                     fp.stages.reordered,
                     ws.stages.len(),
+                )
+                + part(
+                    fp.routes.changed.len() + fp.routes.removed.len(),
+                    fp.routes.reordered,
+                    ws.routes.len(),
                 );
             prop_assert!(upserts.len() <= named + extra);
             prop_assert!(deletes.len() <= named + extra);
@@ -2053,7 +2199,7 @@ fn the_generator_exercises_every_command() {
     let mut refused: HashMap<u8, usize> = HashMap::new();
     let mut dependent = 0;
     let mut readded = 0;
-    for _ in 0..200 {
+    for _ in 0..300 {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         for _ in 0..80 {
             let p = Pick {
@@ -2116,7 +2262,7 @@ fn the_generator_exercises_every_command() {
     // (A transaction is built from commands that apply, so it is never refused.)
     for op in [
         0u8, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 22, 23, 25, 26, 27, 28, 29,
-        30, 31, 32,
+        30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
     ] {
         assert!(
             refused.get(&op).copied().unwrap_or(0) >= 3,

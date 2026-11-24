@@ -1157,6 +1157,54 @@ extension WorkspaceStore {
     }
 }
 
+extension WorkspaceStore {
+    /// The output route `stage`'s first region is sent to (a test show's stage has one region,
+    /// on the route of its own id; a new workspace's Stage 1 is on Output 1).
+    func route(of stage: ModelID) -> ModelID? {
+        let regions = model?.stages.first { $0.id == stage }?.raw["regions"]?.arrayValue ?? []
+        let route: String? = regions.compactMap { $0["route"]?.stringValue }.first
+        return route.map { ModelID($0) }
+    }
+
+    /// The display `stage` is shown on here: its route's (`route(of:)`).
+    func stageDisplay(_ stage: ModelID) -> String? {
+        route(of: stage).flatMap { videoOutputs.route($0)?.mapping?.display }
+    }
+
+    /// Where `stage`'s route is now, as the engine last said (`shown`, `hidden`, ...).
+    func stageState(_ stage: ModelID) -> String? {
+        route(of: stage).flatMap { videoOutputs.route($0)?.state?.state }
+    }
+
+    /// Shows `stage` on `display` here: its route's display.
+    func setStageDisplay(_ stage: ModelID, display: String?) async -> Result<OkBody, EngineError> {
+        guard let route = route(of: stage) else { return .failure(.encoding("the stage has no route")) }
+        return await setRouteDisplay(route, display: display)
+    }
+
+    /// Adds a new output route `id` of `width` x `height` at the end, then a stage `stage` of that
+    /// size with one region covering it on the route: what a test needs for a second stage of its own.
+    func addStageOnItsOwnRoute(
+        stage: ModelID, name: String, width: Int, height: Int
+    ) async -> Result<OkBody, EngineError> {
+        let route = ModelID(UUID().uuidString.lowercased())
+        let added = await send(
+            command: Command(
+                .object([
+                    "type": .string("add_route"), "index": .int(Int64(model?.routes.count ?? 0)),
+                    "route": .object([
+                        "id": .string(route.raw), "name": .string("Output for \(name)"),
+                        "width": .int(Int64(width)), "height": .int(Int64(height)),
+                    ]),
+                ])))
+        guard case .success = added else { return added }
+        return await send(
+            command: .addStage(
+                id: stage, name: name, width: width, height: height, index: model?.stages.count ?? 0, route: route,
+                region: ModelID(UUID().uuidString.lowercased())))
+    }
+}
+
 extension Icon {
     /// Which of openLab's own drawings `image` shows, nil for any other image (a symbol, the text
     /// stand-in): read from the name the lookup tags each drawing's image with, not from pixels.

@@ -180,6 +180,7 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             ],
         }],
         network_patches: vec![],
+        routes: Vec::new(),
         stages: Vec::new(),
         show_mode: false,
         cue_lists: vec![CueList {

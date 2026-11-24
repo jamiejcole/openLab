@@ -1283,6 +1283,8 @@ impl Doc {
             dirty: self.revision != self.saved_revision,
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
+            undo_name: self.history.undo_name(),
+            redo_name: self.history.redo_name(),
             show_mode: self.show_mode,
         }
     }
@@ -1514,8 +1516,8 @@ fn request_name(r: &Request) -> &'static str {
         Request::Snapshot => "snapshot",
         Request::Waveform { .. } => "waveform",
         Request::ListDisplays => "list_displays",
-        Request::ListStageMappings => "list_stage_mappings",
-        Request::SetStageMapping { .. } => "set_stage_mapping",
+        Request::ListRouteDisplays => "list_route_displays",
+        Request::SetRouteDisplay { .. } => "set_route_display",
         Request::SetStageMonitor { .. } => "set_stage_monitor",
         #[cfg(feature = "test-support")]
         Request::StageTestCard { .. } => "stage_test_card",
@@ -1686,6 +1688,7 @@ mod tests {
             },
             patches: vec![],
             network_patches: vec![],
+            routes: Vec::new(),
             stages: Vec::new(),
             show_mode: false,
             cue_lists: vec![openlab_core::CueList {

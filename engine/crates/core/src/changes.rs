@@ -12,7 +12,9 @@ use std::collections::BTreeSet;
 
 use crate::command::Command;
 use crate::cue::{Cue, CueKind};
-use crate::model::{CueId, CueList, CueListId, NetworkPatchId, PatchId, StageId, Workspace};
+use crate::model::{
+    CueId, CueList, CueListId, NetworkPatchId, PatchId, RouteId, StageId, Workspace,
+};
 use crate::protocol::{Delete, Upsert};
 
 /// What a command did to one of the workspace's ordered collections (cue lists, patches,
@@ -50,8 +52,10 @@ pub struct Footprint {
     pub lists: Touched<CueListId>,
     pub patches: Touched<PatchId>,
     pub network_patches: Touched<NetworkPatchId>,
-    /// Stages (VID-01).
+    /// Stages (VID-01), their regions included.
     pub stages: Touched<StageId>,
+    /// Output routes (VID-01).
+    pub routes: Touched<RouteId>,
     /// Workspace settings changed.
     pub settings: bool,
     /// New cues (the top of what was added; a group's descendants come with it).
@@ -81,6 +85,7 @@ impl Footprint {
             && self.patches.is_empty()
             && self.network_patches.is_empty()
             && self.stages.is_empty()
+            && self.routes.is_empty()
             && !self.settings)
     }
 
@@ -171,6 +176,27 @@ impl Command {
             }
             Self::SetStageProperty { id, .. } => {
                 fp.stages.changed.insert(*id);
+            }
+            Self::AddRoute { route, .. } => {
+                fp.routes.changed.insert(route.id);
+                // Regions it takes back are on stages: every stage is sent again.
+                fp.stages.reordered = true;
+            }
+            Self::RemoveRoute { id } => {
+                fp.routes.removed.insert(*id);
+                fp.stages.reordered = true;
+            }
+            Self::MoveRoute { id, .. } => {
+                fp.routes.changed.insert(*id);
+                fp.routes.reordered = true;
+            }
+            Self::SetRouteProperty { id, .. } => {
+                fp.routes.changed.insert(*id);
+            }
+            Self::AddRegion { stage, .. }
+            | Self::RemoveRegion { stage, .. }
+            | Self::SetRegionProperty { stage, .. } => {
+                fp.stages.changed.insert(*stage);
             }
             Self::AddCueList { id, .. } | Self::RenameCueList { id, .. } => {
                 fp.lists.changed.insert(*id);
@@ -289,6 +315,18 @@ fn model_parts(
         |p, index| Upsert::NetworkPatch {
             index,
             patch: p.clone(),
+        },
+        upserts,
+        deletes,
+    );
+    collection(
+        &workspace.routes,
+        |r| r.id,
+        &footprint.routes,
+        |id| Delete::Route { id },
+        |r, index| Upsert::Route {
+            index,
+            route: r.clone(),
         },
         upserts,
         deletes,
@@ -435,6 +473,7 @@ impl Workspace {
                 Delete::Patch { id } => self.patches.retain(|p| p.id != *id),
                 Delete::NetworkPatch { id } => self.network_patches.retain(|p| p.id != *id),
                 Delete::Stage { id } => self.stages.retain(|s| s.id != *id),
+                Delete::Route { id } => self.routes.retain(|r| r.id != *id),
             }
         }
         for upsert in upserts {
@@ -489,6 +528,10 @@ impl Workspace {
                 Upsert::Stage { index, stage } => {
                     self.stages.retain(|s| s.id != stage.id);
                     insert_at(&mut self.stages, *index, stage.clone())?;
+                }
+                Upsert::Route { index, route } => {
+                    self.routes.retain(|r| r.id != route.id);
+                    insert_at(&mut self.routes, *index, route.clone())?;
                 }
                 Upsert::Settings { name, settings } => {
                     self.name.clone_from(name);

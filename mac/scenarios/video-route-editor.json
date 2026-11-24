@@ -1,0 +1,40 @@
+{
+  "about": "#813 R4: the output route editor sheet from Output 1's Edit (name, size and the display-size button, rotation, scaling with its line, the display and its size), then Centre chosen (its line changes), then a route on a display this Mac lacks.",
+  "show": "video-routes.openlab",
+  "displays": "V1:1920x1080,V2:1280x720",
+  "settings": {
+    "settings_version": 1,
+    "workspaces": {
+      "00000000-0000-0000-0000-0000000000e1": {
+        "patches": {},
+        "routes": {
+          "00000000-0000-0000-0000-0000000000e3": {
+            "display": "V1",
+            "name": "Virtual V1",
+            "width": 1920,
+            "height": 1080
+          },
+          "00000000-0000-0000-0000-0000000000e5": {
+            "display": "GONE",
+            "name": "Rear Projector",
+            "width": 1920,
+            "height": 1080
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    { "focus": "settings" },
+    { "tab": "videoRouting" },
+    { "click": "settings-video-edit-1" },
+    { "focus": "sheet" },
+    { "shot": "route-editor" },
+    { "choose": "route-editor-scaling", "item": "Centre" },
+    { "shot": "route-editor-centre" },
+    { "click": "route-editor-cancel" },
+    { "click": "settings-video-edit-3" },
+    { "focus": "sheet" },
+    { "shot": "route-editor-missing-display" }
+  ]
+}

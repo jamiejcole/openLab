@@ -2,6 +2,6 @@
   "type": "request",
   "id": 63,
   "request": {
-    "type": "list_stage_mappings"
+    "type": "list_route_displays"
   }
 }

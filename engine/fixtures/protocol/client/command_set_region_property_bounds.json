@@ -1,0 +1,16 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_region_property",
+    "stage": "00000000-0000-0000-0000-000000000080",
+    "id": "00000000-0000-0000-0000-0000000000a0",
+    "property": {
+      "type": "bounds",
+      "x": 960,
+      "y": 0,
+      "width": 960,
+      "height": 540
+    }
+  }
+}

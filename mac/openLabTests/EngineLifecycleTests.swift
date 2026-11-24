@@ -1070,7 +1070,7 @@ final class EngineCrashFlowTests: XCTestCase {
         await assertEventually { session.stores.values.first?.model != nil }
         let store = try XCTUnwrap(session.stores.values.first)
         let stage: ModelID = "00000000-0000-0000-0000-0000000000f1"
-        guard case .success = await store.setStageMapping(stage, display: "V1"),
+        guard case .success = await store.setStageDisplay(stage, display: "V1"),
             case .success = await store.send(
                 command: .setStage(stage, .object(["type": .string("keep_black"), "value": .bool(true)]))),
             case .success = await store.save(),
@@ -1078,7 +1078,7 @@ final class EngineCrashFlowTests: XCTestCase {
             case .success = await store.client.send({ .request(id: $0, .stageTestCard(stage: stage, frame: 1)) })
         else { return XCTFail("the stage was not set up") }
         let shown: @MainActor () -> Bool = {
-            store.videoOutputs.stages.first { $0.stage == stage }?.state?.state == "shown"
+            store.stageState(stage) == "shown"
         }
         // `video_outputs` pushes go at most every 100 ms of the stepped clock.
         let up = await eventually {
@@ -1106,8 +1106,8 @@ final class EngineCrashFlowTests: XCTestCase {
         let told = await eventually {
             covered()
             try? await self.advance(0.11)
-            let entry = store.videoOutputs.stages.first { $0.stage == stage }
-            return entry?.state?.state == "hidden" && entry?.panicked == true
+            let entry = store.videoOutputs.stage(stage)
+            return store.stageState(stage) == "hidden" && entry?.panicked == true
         }
         XCTAssertTrue(told, "the new engine's stage host has the stage hidden")
         await settle()

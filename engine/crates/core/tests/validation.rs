@@ -1769,3 +1769,161 @@ fn stages_load_within_their_limits() {
         )]
     );
 }
+
+fn route(n: u128, width: u32, height: u32) -> OutputRoute {
+    let mut r = OutputRoute::new(
+        RouteId(uuid::Uuid::from_u128(n)),
+        format!("Output {n}"),
+        1,
+        1,
+    );
+    r.width = width;
+    r.height = height;
+    r
+}
+
+fn region(n: u128, route: Option<u128>, bounds: (u32, u32, u32, u32)) -> Region {
+    Region {
+        id: RegionId(uuid::Uuid::from_u128(n)),
+        route: route.map(|r| RouteId(uuid::Uuid::from_u128(r))),
+        x: bounds.0,
+        y: bounds.1,
+        width: bounds.2,
+        height: bounds.3,
+    }
+}
+
+/// F3: a show file with a region outside its stage, a region naming a route not in the file, a
+/// route of size 0, a bad rotation, and more routes or regions than the limits opens with one
+/// warning per problem: the region moved inside, the unknown route none, the size and rotation
+/// within range, the extra routes and regions dropped.
+#[test]
+fn a_damaged_show_file_opens_with_one_warning_per_problem() {
+    let mut ws = workspace(vec![]);
+    let mut bad_rotation = route(2, 1920, 1080);
+    bad_rotation.rotation = 45;
+    ws.routes = vec![route(1, 0, MAX_ROUTE_PIXELS + 9), bad_rotation];
+    ws.routes
+        .extend((0..MAX_ROUTES as u128).map(|n| route(100 + n, 8, 8)));
+    let mut s = stage(1, 1920, 1080);
+    s.regions = vec![
+        region(1, Some(1), (1900, 1000, 100, 100)),
+        region(2, Some(99), (0, 0, 1920, 1080)),
+        region(3, None, (0, 0, 99_999, 99_999)),
+    ];
+    s.regions
+        .extend((0..MAX_REGIONS as u128).map(|n| region(100 + n, None, (0, 0, 1, 1))));
+    ws.stages = vec![s];
+    let loaded = load_show(&show_text(&ws)).unwrap();
+    let w = &loaded.workspace;
+    assert_eq!(w.routes.len(), MAX_ROUTES);
+    assert_eq!(
+        (w.routes[0].width, w.routes[0].height),
+        (1, MAX_ROUTE_PIXELS)
+    );
+    assert_eq!(w.routes[1].rotation, 0);
+    let regions = &w.stages[0].regions;
+    assert_eq!(regions.len(), MAX_REGIONS);
+    let r = |i: usize| {
+        let r = &regions[i];
+        (r.x, r.y, r.width, r.height)
+    };
+    assert_eq!(r(0), (1820, 980, 100, 100));
+    assert_eq!(regions[0].route, Some(RouteId(uuid::Uuid::from_u128(1))));
+    assert_eq!(regions[1].route, None);
+    assert_eq!(r(2), (0, 0, 1920, 1080));
+    let rid = |n| RouteId(uuid::Uuid::from_u128(n));
+    let gid = |n| RegionId(uuid::Uuid::from_u128(n));
+    let sid = StageId(uuid::Uuid::from_u128(1));
+    let expected = [
+        IssueKind::TooManyRoutes,
+        IssueKind::RouteSize { route: rid(1) },
+        IssueKind::RouteRotation { route: rid(2) },
+        IssueKind::TooManyRegions { stage: sid },
+        IssueKind::RegionBounds {
+            stage: sid,
+            region: gid(1),
+        },
+        IssueKind::RegionRouteMissing {
+            region: gid(2),
+            route: rid(99),
+        },
+        IssueKind::RegionBounds {
+            stage: sid,
+            region: gid(3),
+        },
+    ];
+    let got: Vec<IssueKind> = loaded.warnings.iter().map(|w| w.kind.clone()).collect();
+    assert_eq!(got.len(), expected.len(), "{got:?}");
+    for kind in expected {
+        assert!(got.contains(&kind), "{kind:?} in {got:?}");
+    }
+    for warning in &loaded.warnings {
+        assert!(!warning.to_string().is_empty());
+    }
+    // Saved again, it loads clean: nothing load would repair is left.
+    let again = load_show(&save_show(w).unwrap()).unwrap();
+    assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+    assert_eq!(&again.workspace, w);
+}
+
+/// Two routes, or two regions of any stages, with one id refuse the file; a region past its
+/// stage on a stage clamped smaller is moved inside the clamped stage.
+#[test]
+fn duplicate_route_or_region_ids_refuse_the_file() {
+    let mut ws = workspace(vec![]);
+    ws.routes = vec![route(1, 8, 8), route(1, 8, 8)];
+    assert_eq!(
+        refused(&ws),
+        vec![issue(
+            Severity::Error,
+            None,
+            IssueKind::DuplicateRouteId {
+                id: RouteId(uuid::Uuid::from_u128(1))
+            }
+        )]
+    );
+    let mut ws = workspace(vec![]);
+    let mut a = stage(1, 8, 8);
+    a.regions = vec![region(5, None, (0, 0, 8, 8))];
+    let mut b = stage(2, 8, 8);
+    b.regions = vec![region(5, None, (0, 0, 8, 8))];
+    ws.stages = vec![a, b];
+    assert_eq!(
+        refused(&ws),
+        vec![issue(
+            Severity::Error,
+            None,
+            IssueKind::DuplicateRegionId {
+                id: RegionId(uuid::Uuid::from_u128(5))
+            }
+        )]
+    );
+    let mut ws = workspace(vec![]);
+    let mut big = stage(1, 0, 99_999);
+    big.regions = vec![region(5, None, (0, 50_000, 1, 1))];
+    ws.stages = vec![big];
+    let loaded = load_show(&show_text(&ws)).unwrap();
+    let r = &loaded.workspace.stages[0].regions[0];
+    assert!(r.inside((1, MAX_STAGE_PIXELS)), "{r:?}");
+}
+
+/// A route's scaling that is not one of the four, or a region's corner that is negative, is a
+/// wrong type and refuses the file (never a crash).
+#[test]
+fn a_route_or_region_of_the_wrong_type_refuses_the_file() {
+    let mut ws = workspace(vec![]);
+    ws.routes = vec![route(1, 8, 8)];
+    let mut s = stage(1, 8, 8);
+    s.regions = vec![region(5, Some(1), (0, 0, 8, 8))];
+    ws.stages = vec![s];
+    let text = show_text(&ws);
+    for (from, to) in [
+        ("\"fill\"", "\"zoom\""),
+        ("\"x\":0", "\"x\":-1"),
+        ("\"rotation\":0", "\"rotation\":1.5"),
+    ] {
+        assert!(text.contains(from), "{from}");
+        assert!(load_show(&text.replacen(from, to, 1)).is_err(), "{to}");
+    }
+}

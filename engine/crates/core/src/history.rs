@@ -5,6 +5,7 @@
 
 use crate::command::{Command, CommandError, CueProperty, Inverse};
 use crate::model::Workspace;
+use crate::step_name::{StepName, step_name};
 
 /// The undo and redo stacks. Each entry is the command that reverses one step, so redo needs no
 /// memory of the original command.
@@ -13,10 +14,17 @@ use crate::model::Workspace;
 /// [`History::clear`]: entries refer to cues by id and would be refused or misapply.
 #[derive(Clone, Debug, Default)]
 pub struct History {
-    undo: Vec<Inverse>,
-    redo: Vec<Inverse>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     /// The coalesce key of the gesture whose step is on top of `undo`, while it is open.
     open: Option<String>,
+}
+
+/// One undo or redo step: the command that applies it and what it is called.
+#[derive(Clone, Debug)]
+struct Step {
+    command: Inverse,
+    name: Option<StepName>,
 }
 
 impl History {
@@ -48,6 +56,7 @@ impl History {
         command: Command,
         key: Option<&str>,
     ) -> Result<bool, CommandError> {
+        let name = step_name(&command, workspace);
         let inverse = workspace
             .apply(command)
             .inspect_err(|e| self.drop_if_stale(e))?;
@@ -57,13 +66,21 @@ impl History {
         }
         self.redo.clear();
         let joins = key.is_some() && self.open.as_deref() == key;
+        let step = Step {
+            command: inverse,
+            name,
+        };
         match self.undo.pop() {
-            Some(older) if joins => self.undo.push(merge(older, inverse)),
+            // A gesture keeps the name of its first edit.
+            Some(older) if joins => self.undo.push(Step {
+                command: merge(older.command, step.command),
+                name: older.name,
+            }),
             Some(older) => {
                 self.undo.push(older);
-                self.undo.push(inverse);
+                self.undo.push(step);
             }
-            None => self.undo.push(inverse),
+            None => self.undo.push(step),
         }
         self.open = key.map(str::to_owned);
         Ok(true)
@@ -85,12 +102,22 @@ impl History {
     /// The command the next [`undo`](Self::undo) applies: its [`footprint`](Command::footprint)
     /// is what that undo changes.
     pub fn peek_undo(&self) -> Option<&Command> {
-        self.undo.last()
+        self.undo.last().map(|s| &s.command)
     }
 
     /// As [`peek_undo`](Self::peek_undo), for [`redo`](Self::redo).
     pub fn peek_redo(&self) -> Option<&Command> {
-        self.redo.last()
+        self.redo.last().map(|s| &s.command)
+    }
+
+    /// What the step the next [`undo`](Self::undo) applies is called, if it has a name.
+    pub fn undo_name(&self) -> Option<StepName> {
+        self.undo.last().and_then(|s| s.name)
+    }
+
+    /// As [`undo_name`](Self::undo_name), for [`redo`](Self::redo).
+    pub fn redo_name(&self) -> Option<StepName> {
+        self.redo.last().and_then(|s| s.name)
     }
 
     pub fn can_undo(&self) -> bool {
@@ -228,23 +255,26 @@ fn is_empty_transaction(command: &Command) -> bool {
     matches!(command, Command::Transaction { commands } if commands.is_empty())
 }
 
-/// Pops `from`, applies it, and pushes what reverses it onto `to`.
+/// Pops `from`, applies it, and pushes what reverses it onto `to`, under the same name.
 fn step(
-    from: &mut Vec<Inverse>,
-    to: &mut Vec<Inverse>,
+    from: &mut Vec<Step>,
+    to: &mut Vec<Step>,
     workspace: &mut Workspace,
 ) -> Result<bool, CommandError> {
-    let Some(command) = from.pop() else {
+    let Some(step) = from.pop() else {
         return Ok(false);
     };
     // Applying consumes the command, so keep a copy to put back if it is refused.
-    match workspace.apply_restoring(command.clone()) {
+    match workspace.apply_restoring(step.command.clone()) {
         Ok(reverse) => {
-            to.push(reverse);
+            to.push(Step {
+                command: reverse,
+                name: step.name,
+            });
             Ok(true)
         }
         Err(error) => {
-            from.push(command);
+            from.push(step);
             Err(error)
         }
     }

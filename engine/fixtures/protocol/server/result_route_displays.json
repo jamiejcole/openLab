@@ -1,0 +1,45 @@
+{
+  "type": "result",
+  "id": 62,
+  "ok": {
+    "data": {
+      "type": "route_displays",
+      "routes": [
+        {
+          "route": "00000000-0000-0000-0000-000000000090",
+          "mapping": {
+            "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230",
+            "name": "Projector",
+            "width": 3840,
+            "height": 2160
+          },
+          "state": {
+            "state": "shown",
+            "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230"
+          }
+        },
+        {
+          "route": "00000000-0000-0000-0000-000000000091",
+          "state": {
+            "state": "no_display"
+          }
+        },
+        {
+          "route": "00000000-0000-0000-0000-000000000092",
+          "state": {
+            "state": "failed",
+            "reason": "the display gave nothing to draw into"
+          }
+        },
+        {
+          "route": "00000000-0000-0000-0000-000000000093"
+        }
+      ],
+      "stages": [
+        {
+          "stage": "00000000-0000-0000-0000-000000000080"
+        }
+      ]
+    }
+  }
+}

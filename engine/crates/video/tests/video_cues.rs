@@ -20,11 +20,11 @@ use openlab_audio::MediaError;
 use openlab_core::protocol::{
     ClientMessage, Outcome, Request, ResultData, ServerMessage, TransportAction,
 };
-use openlab_core::stage_link::StageState;
+use openlab_core::stage_link::RouteState;
 use openlab_core::video_probe::{ProbeReport, StillFormat, VideoCodec};
 use openlab_core::{
-    Crosspoint, Cue, CueKind, CueLevels, CueOutput, CueProblem, CueState, MediaRef, PatchId, Stage,
-    StageId, VideoGeometry, Workspace,
+    Crosspoint, Cue, CueKind, CueLevels, CueOutput, CueProblem, CueState, DisplayChoice, MediaRef,
+    OutputRoute, PatchId, Region, RegionId, RouteId, Stage, StageId, VideoGeometry, Workspace,
 };
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
@@ -91,6 +91,29 @@ fn slow_media_ok(c: &mut ControlConfig) {
 
 fn stage_id() -> StageId {
     StageId(Uuid::from_u128(0x5_0001))
+}
+
+/// The route a test stage's one region is sent to: the same number as the stage.
+fn route_of(stage: StageId) -> RouteId {
+    RouteId(stage.0)
+}
+
+/// Gives `ws` these stages, each with one region covering it sent to a route of its own
+/// ([`route_of`]) sized as the stage, filling its display.
+fn set_stages(ws: &mut Workspace, stages: Vec<Stage>) {
+    ws.routes.clear();
+    ws.stages.clear();
+    for mut stage in stages {
+        let route = OutputRoute::new(route_of(stage.id), "Output", stage.width, stage.height);
+        stage.regions = vec![Region::whole(
+            RegionId(stage.id.0),
+            Some(route.id),
+            stage.width,
+            stage.height,
+        )];
+        ws.routes.push(route);
+        ws.stages.push(stage);
+    }
 }
 
 /// Makes `name` in `dir`: a movie of `frames` frames at `fps` for a codec, or frame 0's card as
@@ -667,7 +690,7 @@ fn video_show_rate(
 ) -> OfflineShow {
     let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
     stage.keep_black = true;
-    ws.stages = vec![stage];
+    set_stages(&mut ws, vec![stage]);
     let mut c: ControlConfig = config_at(&ws, rate, block);
     slow_media_ok(&mut c);
     engine(&mut c);
@@ -1118,21 +1141,21 @@ fn two_stage_show(mut ws: Workspace, keep_black: [bool; 2]) -> OfflineShow {
     one.keep_black = keep_black[0];
     let mut two = Stage::new(stage_two(), "Stage 2", 1920, 1080);
     two.keep_black = keep_black[1];
-    ws.stages = vec![one, two];
+    set_stages(&mut ws, vec![one, two]);
     let mut c: ControlConfig = config_at(&ws, RATE, BLOCK);
     slow_media_ok(&mut c);
     for (stage, display, (w, h)) in [
         (stage_id(), "V1", (1920, 1080)),
         (stage_two(), "V2", (1280, 720)),
     ] {
-        let mapping = openlab_core::StageMapping {
+        let mapping = DisplayChoice {
             display: display.into(),
             name: format!("Virtual {display}"),
             width: w,
             height: h,
         };
         c.machine
-            .set_stage_mapping(ws.id, stage, Some(mapping))
+            .set_route_display(ws.id, route_of(stage), Some(mapping))
             .unwrap();
     }
     c.stage_host = Some(test_stage_host_on("V1:1920x1080,V2:1280x720", &[]));
@@ -1198,14 +1221,14 @@ fn display_shows(
 
 /// Where the stage host says `stage` is now: asked after it has drawn the stage (a probe),
 /// which brings its state up to date as a display's next frame would.
-fn stage_state(s: &mut OfflineShow, stage: StageId) -> Option<StageState> {
+fn stage_state(s: &mut OfflineShow, stage: StageId) -> Option<RouteState> {
     stage_shows(s, stage, &[[0.5, 0.5]]);
     s.settle_stages();
-    s.control().stage_state(stage).cloned()
+    s.control().route_state(route_of(stage)).cloned()
 }
 
-fn shown_on(display: &str) -> Option<StageState> {
-    Some(StageState::Shown {
+fn shown_on(display: &str) -> Option<RouteState> {
+    Some(RouteState::Shown {
         display: display.into(),
     })
 }
@@ -1321,7 +1344,7 @@ fn a_stage_with_no_display_still_shows_what_would_be_drawn_on_its_monitor() {
     let dir = tempfile::tempdir().unwrap();
     let movie = movie!(dir.path(), "clip.mov", (50, 25));
     let mut s = video_show(vec![video_cue(1, Some(&movie))]);
-    assert_eq!(stage_state(&mut s, stage_id()), Some(StageState::NoDisplay));
+    assert_eq!(stage_state(&mut s, stage_id()), Some(RouteState::NoDisplay));
     set_monitor(&mut s, stage_id(), true);
     let at = go(&mut s);
     for want in [0u16, 12, 30] {
@@ -1334,7 +1357,7 @@ fn a_stage_with_no_display_still_shows_what_would_be_drawn_on_its_monitor() {
     }
     assert_eq!(
         stage_state(&mut s, stage_id()),
-        Some(StageState::NoDisplay),
+        Some(RouteState::NoDisplay),
         "still shown on no display"
     );
 }
@@ -1401,8 +1424,8 @@ fn a_stage_display_changed_while_a_cue_plays_moves_the_picture_there_at_once() {
     assert_eq!(display_shows(&mut s, "V1", &[RED_AT]).0, Some(0), "on V1");
     let outcome = ask(
         &mut s,
-        Request::SetStageMapping {
-            stage: stage_id(),
+        Request::SetRouteDisplay {
+            route: route_of(stage_id()),
             display: Some("V2".into()),
         },
     );
@@ -1530,9 +1553,9 @@ fn removing_a_stage_a_cue_plays_on_is_refused_with_the_reason() {
 
 /// Whether a stage's black was taken down by a panic, as clients are told.
 fn panicked(s: &mut OfflineShow, stage: StageId) -> bool {
-    match ask(s, Request::ListStageMappings) {
+    match ask(s, Request::ListRouteDisplays) {
         Outcome::Ok(body) => match body.data {
-            Some(ResultData::StageMappings { stages }) => stages
+            Some(ResultData::RouteDisplays { stages, .. }) => stages
                 .into_iter()
                 .find(|e| e.stage == stage)
                 .is_some_and(|e| e.panicked),
@@ -1554,7 +1577,7 @@ fn a_stage_that_has_played_shows_black_between_cues_or_is_hidden_with_keep_black
         still_on_two(2, &png, Some(0.5)),
     ]);
     let mut s = two_stage_show(ws, [true, false]);
-    assert_eq!(stage_state(&mut s, stage_two()), Some(StageState::Hidden));
+    assert_eq!(stage_state(&mut s, stage_two()), Some(RouteState::Hidden));
     start(&mut s, 1);
     start(&mut s, 2);
     s.run(samples(0.2));
@@ -1571,7 +1594,7 @@ fn a_stage_that_has_played_shows_black_between_cues_or_is_hidden_with_keep_black
         (None, vec![BLACK; 2])
     );
     // Keep-black off: the window is down.
-    assert_eq!(stage_state(&mut s, stage_two()), Some(StageState::Hidden));
+    assert_eq!(stage_state(&mut s, stage_two()), Some(RouteState::Hidden));
     assert_eq!(display_shows(&mut s, "V2", &[RED_AT]).0, None);
     // Still so after a while (no frame comes back).
     s.run(samples(1.0));
@@ -1607,7 +1630,7 @@ fn panic_takes_every_stage_to_black_over_the_panic_time_and_closes_its_window() 
     for (stage, display) in [(stage_id(), "V1"), (stage_two(), "V2")] {
         assert_eq!(
             stage_state(&mut s, stage),
-            Some(StageState::Hidden),
+            Some(RouteState::Hidden),
             "{display}"
         );
         assert_eq!(display_shows(&mut s, display, &[RED_AT]).0, None);
@@ -1624,30 +1647,33 @@ fn panic_takes_every_stage_to_black_over_the_panic_time_and_closes_its_window() 
     assert_eq!(stage_state(&mut s, stage_id()), shown_on("V1"));
     assert_eq!(display_shows(&mut s, "V1", &[RED_AT]), (None, vec![BLACK]));
     assert!(!panicked(&mut s, stage_id()));
-    assert_eq!(stage_state(&mut s, stage_two()), Some(StageState::Hidden));
+    assert_eq!(stage_state(&mut s, stage_two()), Some(RouteState::Hidden));
 }
 
 /// A show the engine opens (as the app's New and Open do, not a running one: `open_doc`) of
 /// `ws` with stages 1 and 2 as a new workspace makes them (keeping black), shown on V1 and V2.
 fn opened_show(mut ws: Workspace) -> OfflineShow {
-    ws.stages = vec![
-        Stage::new(stage_id(), "Stage 1", 1920, 1080),
-        Stage::new(stage_two(), "Stage 2", 1280, 720),
-    ];
+    set_stages(
+        &mut ws,
+        vec![
+            Stage::new(stage_id(), "Stage 1", 1920, 1080),
+            Stage::new(stage_two(), "Stage 2", 1280, 720),
+        ],
+    );
     let mut c: ControlConfig = config_at(&ws, RATE, BLOCK);
     slow_media_ok(&mut c);
     for (stage, display, (w, h)) in [
         (stage_id(), "V1", (1920, 1080)),
         (stage_two(), "V2", (1280, 720)),
     ] {
-        let mapping = openlab_core::StageMapping {
+        let mapping = DisplayChoice {
             display: display.into(),
             name: format!("Virtual {display}"),
             width: w,
             height: h,
         };
         c.machine
-            .set_stage_mapping(ws.id, stage, Some(mapping))
+            .set_route_display(ws.id, route_of(stage), Some(mapping))
             .unwrap();
     }
     c.stage_host = Some(test_stage_host_on("V1:1920x1080,V2:1280x720", &[]));
@@ -1670,7 +1696,7 @@ fn covered_black(s: &mut OfflineShow, stage: StageId, display: &str) -> bool {
 /// Whether stage `stage` covers nothing: its window is down and its black too, as clients are
 /// told.
 fn uncovered(s: &mut OfflineShow, stage: StageId) -> bool {
-    stage_state(s, stage) == Some(StageState::Hidden) && panicked(s, stage)
+    stage_state(s, stage) == Some(RouteState::Hidden) && panicked(s, stage)
 }
 
 /// A movie cue of `movie` on `stage`.
@@ -1805,8 +1831,8 @@ fn a_new_workspace_with_nothing_played_covers_no_display_until_its_first_picture
 }
 
 /// #674 flows: a stage's size changed while a cue plays on it → the picture follows at once
-/// (fitted to the new shape, drawn there on its display) without the cue stopping; one undo
-/// step puts it back. A size of 0 or past the limit is refused with the reason and the size
+/// (fitted to the new shape; the stage's region follows the stage and still fills its route,
+/// #813 G6) without the cue stopping; one undo step puts it back. A size of 0 or past the limit is refused with the reason and the size
 /// stays.
 #[test]
 fn a_stage_size_changed_while_a_cue_plays_redraws_the_picture_at_that_size() {
@@ -1815,7 +1841,11 @@ fn a_stage_size_changed_while_a_cue_plays_redraws_the_picture_at_that_size() {
     let mut s = two_stage_show(workspace(vec![still_cue(1, &png, None)]), [true, false]);
     let size = |width, height| openlab_core::Command::SetStageProperty {
         id: stage_id(),
-        property: openlab_core::StageProperty::Size { width, height },
+        property: openlab_core::StageProperty::Size {
+            width,
+            height,
+            regions: None,
+        },
     };
     let stage_size = |s: &OfflineShow| {
         let st = &s.control().workspace().stages[0];
@@ -1825,13 +1855,15 @@ fn a_stage_size_changed_while_a_cue_plays_redraws_the_picture_at_that_size() {
     s.run(samples(0.2));
     // The card fills the 16:9 stage on the 16:9 display: red near the display's left edge.
     assert_eq!(display_shows(&mut s, "V1", &[EDGE_AT]).1, vec![RED]);
-    // Square: the stage is drawn in the display's middle, black bars either side.
+    // Square: its region follows it, so the square stage still fills the display; the card is
+    // fitted across it, black above and below.
     assert!(matches!(edit(&mut s, size(1080, 1080)), Outcome::Ok(_)));
+    s.run(BLOCK);
     s.settle_stages();
     assert_eq!(stage_size(&s), (1080, 1080));
-    let (frame, colours) = display_shows(&mut s, "V1", &[EDGE_AT, [0.3, 0.45]]);
-    assert_eq!(colours[0], BLACK, "a bar where the picture was");
-    assert_eq!(colours[1], RED, "the picture inside the square stage");
+    let (frame, colours) = display_shows(&mut s, "V1", &[EDGE_AT, [0.25, 0.1]]);
+    assert_eq!(colours[0], RED, "the picture reaches the display's edge");
+    assert_eq!(colours[1], BLACK, "the square stage's black above the card");
     assert_eq!(
         frame, None,
         "the card's barcode is no longer across the display's top"
@@ -2143,7 +2175,7 @@ fn gated_video_show(cues: Vec<Cue>) -> OfflineShow {
     let mut ws = workspace(cues);
     let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
     stage.keep_black = true;
-    ws.stages = vec![stage];
+    set_stages(&mut ws, vec![stage]);
     let mut c: ControlConfig = config(&ws);
     slow_media_ok(&mut c);
     c.stage_host = Some(test_stage_host(&[]));
@@ -5039,7 +5071,7 @@ fn a_cue_standing_by_on_a_stalled_volume_is_not_opened_ahead() {
     let mut ws = workspace(cues);
     let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
     stage.keep_black = true;
-    ws.stages = vec![stage];
+    set_stages(&mut ws, vec![stage]);
     let time = ProbeTime::new();
     let mut c: ControlConfig = config_at(&ws, RATE, BLOCK);
     slow_media_ok(&mut c);
@@ -6680,7 +6712,7 @@ fn a_video_cue_whose_picture_fails_while_playing_leaves_the_stage_at_once() {
     assert_eq!(stage_state(&mut s, stage_id()), shown_on("V1"));
     assert_eq!(
         stage_state(&mut s, stage_two()),
-        Some(StageState::Hidden),
+        Some(RouteState::Hidden),
         "the other stage's window goes"
     );
 }
@@ -6710,7 +6742,7 @@ fn after_a_video_cue_ends_normally_nothing_of_it_stays_on_the_display() {
         display_shows(&mut s, "V1", &[RED_AT, EDGE_AT]),
         (None, vec![BLACK; 2])
     );
-    assert_eq!(stage_state(&mut s, stage_two()), Some(StageState::Hidden));
+    assert_eq!(stage_state(&mut s, stage_two()), Some(RouteState::Hidden));
 }
 
 /// Flow 11 (d): seeded-mutated movies with sound (a walk over the whole file, and one over its
@@ -6917,7 +6949,7 @@ fn device_video_show_with(
 ) -> show::device::DeviceShow {
     let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
     stage.keep_black = true;
-    ws.stages = vec![stage];
+    set_stages(&mut ws, vec![stage]);
     let mut c = ControlConfig::new(RATE, BLOCK);
     c.seed = 7;
     c.watch.mode = openlab_engine::control::watch::WatchMode::Manual;
@@ -8695,4 +8727,948 @@ fn a_seek_while_stopping_is_ignored_and_one_in_a_pre_wait_starts_picture_and_sou
     expect_state(&s, 2, CueState::Idle, "the rest played");
     s.run(samples(0.2));
     assert!(silent(&s, moved + samples(1.02), s.rendered()));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Output routes and regions (#813; QLab 5 manual pp. 207, 225-234): a stage's regions are each
+// sent to a route, a route is shown on a display, turned by its rotation and put on the display
+// by its scaling. The test card's still (frame 0) or movie is stretched over its stage so each
+// region shows a known part of it.
+
+fn route_n(n: u128) -> RouteId {
+    RouteId(Uuid::from_u128(0x6_0000 + n))
+}
+
+fn region_n(n: u128) -> RegionId {
+    RegionId(Uuid::from_u128(0x7_0000 + n))
+}
+
+fn output_route(n: u128, width: u32, height: u32) -> OutputRoute {
+    OutputRoute::new(route_n(n), format!("Output {n}"), width, height)
+}
+
+/// Stage 1 (keeping black) of `width` x 1080 whose regions are `(x, width, route)`, the full
+/// height each, numbered from 1.
+fn regioned_stage(width: u32, regions: &[(u32, u32, Option<u128>)]) -> Stage {
+    let mut stage = Stage::new(stage_id(), "Stage 1", width, 1080);
+    stage.regions = regions
+        .iter()
+        .zip(1u128..)
+        .map(|(&(x, w, route), n)| Region {
+            id: region_n(n),
+            route: route.map(route_n),
+            x,
+            y: 0,
+            width: w,
+            height: 1080,
+        })
+        .collect();
+    stage
+}
+
+/// The G4 workspace: Stage 1 at 3840 x 1080; region A its left half on Output 1, region B its
+/// right half on Output 2 (both 1920 x 1080).
+fn split_workspace(cues: Vec<Cue>) -> Workspace {
+    let mut ws = workspace(cues);
+    ws.routes = vec![output_route(1, 1920, 1080), output_route(2, 1920, 1080)];
+    ws.stages = vec![regioned_stage(
+        3840,
+        &[(0, 1920, Some(1)), (1920, 1920, Some(2))],
+    )];
+    ws
+}
+
+/// A running show (its stages' black up once a picture plays) of `ws` on the virtual displays
+/// `displays`, each route `(n, display)` of `on` shown on that display on this machine.
+fn routed_show(ws: Workspace, displays: &str, on: &[(u128, &str)]) -> OfflineShow {
+    routed_show_with(ws, displays, on, |_| {})
+}
+
+/// As [`routed_show`], the engine's configuration changed by `tweak`.
+fn routed_show_with(
+    ws: Workspace,
+    displays: &str,
+    on: &[(u128, &str)],
+    tweak: impl FnOnce(&mut ControlConfig),
+) -> OfflineShow {
+    let mut c: ControlConfig = config_at(&ws, RATE, BLOCK);
+    slow_media_ok(&mut c);
+    tweak(&mut c);
+    for &(n, display) in on {
+        let choice = DisplayChoice {
+            display: display.into(),
+            name: format!("Virtual {display}"),
+            width: 1920,
+            height: 1080,
+        };
+        c.machine
+            .set_route_display(ws.id, route_n(n), Some(choice))
+            .unwrap();
+    }
+    c.stage_host = Some(test_stage_host_on(displays, &[]));
+    let mut s = OfflineShow::new(ws, mixer_config_at(RATE, BLOCK), c).unwrap();
+    s.set_settle_timeout(SETTLE);
+    s.settle_stages();
+    s.settle_media();
+    s
+}
+
+/// `cue` with its picture stretched over its stage.
+fn over_stage(mut cue: Cue) -> Cue {
+    if let CueKind::Video { geometry, .. } = &mut cue.kind {
+        geometry.fill_style = openlab_core::FillStyle::Stretch;
+    }
+    cue
+}
+
+/// Applies an edit, which must be taken, and lets the stage host have the outputs it changed
+/// (they go at the engine's next tick) before anything is read back.
+fn edited(s: &mut OfflineShow, command: openlab_core::Command) {
+    let outcome = edit(s, command);
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    s.run(BLOCK);
+    s.settle_stages();
+}
+
+/// The same as [`step`] (an undo with `undo`), its outputs given to the stage host likewise.
+fn stepped(s: &mut OfflineShow, undo: bool) {
+    let outcome = step(s, undo);
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    s.run(BLOCK);
+    s.settle_stages();
+}
+
+/// Whether each colour is within a lossy movie's error of the one wanted.
+fn near_colours(got: &[[u8; 4]], want: &[[u8; 4]]) -> bool {
+    got.len() == want.len()
+        && got
+            .iter()
+            .zip(want)
+            .all(|(g, w)| g.iter().zip(w).all(|(a, b)| a.abs_diff(*b) <= 48))
+}
+
+/// Where the stage host says route `n` is, after it has drawn (a stage probe).
+fn route_state(s: &mut OfflineShow, n: u128) -> Option<RouteState> {
+    stage_shows(s, stage_id(), &[[0.5, 0.5]]);
+    s.settle_stages();
+    s.control().route_state(route_n(n)).cloned()
+}
+
+/// The test card's frame the G4 displays show together: barcode cells 0 to 8 read on V1 (the
+/// stage's left half), 9 to 17 on V2, at one clock.
+fn split_frame(s: &mut OfflineShow) -> Option<u16> {
+    let cells = openlab_video::card::barcode_points();
+    let on = |half: usize| -> Vec<[f32; 2]> {
+        cells
+            .iter()
+            .skip(half * 9)
+            .take(9)
+            .map(|[x, y]| [x * 2.0 - half as f32, *y])
+            .collect()
+    };
+    let (_, left) = display_shows(s, "V1", &on(0));
+    let (_, right) = display_shows(s, "V2", &on(1));
+    let all: Vec<[u8; 4]> = left.into_iter().chain(right).collect();
+    openlab_video::card::read_frame(&all)
+}
+
+/// The show log's lines since entry `from` that say where a route is.
+fn route_lines(s: &OfflineShow, from: usize) -> Vec<String> {
+    s.control()
+        .show_log()
+        .tail(10_000)
+        .into_iter()
+        .skip(from)
+        .map(|e| e.message)
+        .filter(|m| m.starts_with("output route"))
+        .collect()
+}
+
+fn log_len(s: &OfflineShow) -> usize {
+    s.control().show_log().tail(10_000).len()
+}
+
+/// #813 N1: a new workspace on a Mac with a main display and another → one route, "Output 1",
+/// sized as the main display, shown on it, filling it, not turned; one stage, "Stage 1", the
+/// same size, with one region covering it sent to Output 1. A Video cue on Stage 1 shows on the
+/// main display only.
+#[test]
+fn a_new_workspace_has_output_1_on_the_main_display_and_stage_1_filling_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut c: ControlConfig = config_at(&workspace(vec![]), RATE, BLOCK);
+    slow_media_ok(&mut c);
+    // B has the menu bar: the main display, though listed second.
+    c.stage_host = Some(test_stage_host_on("A:1280x1024,B:1920x1080*", &[]));
+    let mut s = OfflineShow::empty(mixer_config_at(RATE, BLOCK), c).unwrap();
+    s.set_settle_timeout(SETTLE);
+    assert!(s.wait_for(|c| c.displays().len() == 2));
+    assert!(s.control().displays().iter().any(|d| d.id == "B" && d.main));
+    s.open_doc(openlab_engine::control::DocSource::New).unwrap();
+    s.settle_stages();
+    let ws = s.control().workspace().clone();
+    let [route] = ws.routes.as_slice() else {
+        panic!("one route: {:?}", ws.routes)
+    };
+    assert_eq!(
+        (
+            route.name.as_str(),
+            route.width,
+            route.height,
+            route.rotation,
+            route.scaling
+        ),
+        ("Output 1", 1920, 1080, 0, openlab_core::RouteScaling::Fill)
+    );
+    let [stage] = ws.stages.as_slice() else {
+        panic!("one stage: {:?}", ws.stages)
+    };
+    assert_eq!(
+        (stage.name.as_str(), stage.width, stage.height),
+        ("Stage 1", 1920, 1080)
+    );
+    let [region] = stage.regions.as_slice() else {
+        panic!("one region: {:?}", stage.regions)
+    };
+    assert_eq!(
+        (
+            region.route,
+            region.x,
+            region.y,
+            region.width,
+            region.height
+        ),
+        (Some(route.id), 0, 0, 1920, 1080)
+    );
+    // The route's display, as clients are told.
+    let entry = match ask(&mut s, Request::ListRouteDisplays) {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::RouteDisplays { routes, .. }) => routes,
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("{e:?}"),
+    };
+    assert_eq!(
+        entry
+            .first()
+            .and_then(|e| e.mapping.as_ref())
+            .map(|m| m.display.as_str()),
+        Some("B")
+    );
+    // A Video cue on Stage 1 shows on B only.
+    let mut cue = still_cue(1, &png, None);
+    if let CueKind::Video { stage: on, .. } = &mut cue.kind {
+        *on = Some(stage.id);
+    }
+    let list = ws.cue_lists[0].id;
+    let added = edit(
+        &mut s,
+        openlab_core::Command::AddCue {
+            at: openlab_core::Position {
+                list,
+                parent: None,
+                index: 0,
+            },
+            cue,
+            auto_number: false,
+        },
+    );
+    assert!(matches!(added, Outcome::Ok(_)), "{added:?}");
+    s.settle_media();
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.3));
+    assert_eq!(display_shows(&mut s, "B", &[RED_AT]), (Some(0), vec![RED]));
+    assert_eq!(display_shows(&mut s, "A", &[RED_AT]), (None, vec![BLACK]));
+    expect_state(&s, 1, CueState::Running, "plays on");
+}
+
+/// #813 N2: openLab with no display listed → a new workspace still has "Output 1" (1920 x 1080)
+/// on no display and Stage 1 with its region; a Video cue on Stage 1 runs (its time counts),
+/// unseen and not broken.
+#[test]
+fn a_new_workspace_with_no_display_routes_to_none_and_its_video_cue_plays_unseen() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut c: ControlConfig = config_at(&workspace(vec![]), RATE, BLOCK);
+    slow_media_ok(&mut c);
+    c.stage_host = Some(test_stage_host_on("A:1280x1024", &[]));
+    let mut s = OfflineShow::empty(mixer_config_at(RATE, BLOCK), c).unwrap();
+    s.set_settle_timeout(SETTLE);
+    assert!(s.wait_for(|c| c.displays().len() == 1));
+    s.control_mut().set_virtual_displays(Vec::new());
+    assert!(s.wait_for(|c| c.displays().is_empty()));
+    s.open_doc(openlab_engine::control::DocSource::New).unwrap();
+    s.settle_stages();
+    let ws = s.control().workspace().clone();
+    let route = &ws.routes[0];
+    assert_eq!(
+        (route.name.as_str(), route.width, route.height),
+        ("Output 1", 1920, 1080)
+    );
+    assert_eq!(ws.stages[0].regions[0].route, Some(route.id));
+    assert_eq!(
+        s.control().route_state(route.id),
+        Some(&RouteState::NoDisplay)
+    );
+    let mut cue = still_cue(1, &png, Some(0.5));
+    if let CueKind::Video { stage: on, .. } = &mut cue.kind {
+        *on = ws.stages.first().map(|st| st.id);
+    }
+    let added = edit(
+        &mut s,
+        openlab_core::Command::AddCue {
+            at: openlab_core::Position {
+                list: ws.cue_lists[0].id,
+                parent: None,
+                index: 0,
+            },
+            cue,
+            auto_number: false,
+        },
+    );
+    assert!(matches!(added, Outcome::Ok(_)), "{added:?}");
+    s.settle_media();
+    assert!(problems(&s, 1).is_empty(), "{:?}", problems(&s, 1));
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.25));
+    expect_state(&s, 1, CueState::Running, "its time counts");
+    run_to(&mut s, at + samples(0.5) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "and it ends");
+    assert!(problems(&s, 1).is_empty(), "not broken");
+}
+
+/// #813 R5: Output 1 at 1920 x 1080 on a 1280 x 1024 display, the card playing → each scaling in
+/// turn. Centre: one route pixel per display pixel, cut off at every edge. Fit: as wide as the
+/// display, black above and below. Stretch: the whole card squeezed to the display. Fill: the
+/// display covered, the card's sides cut off. Each shows at once; the cue keeps running.
+#[test]
+fn each_route_scaling_shows_the_picture_on_its_display_as_it_says() {
+    use openlab_core::RouteScaling::{Centre, Fill, Fit, Stretch};
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "V1:1280x1024", &[(1, "V1")]);
+    go(&mut s);
+    s.run(samples(0.2));
+    const WHITE: [u8; 4] = [255, 255, 255, 255];
+    // Points (fractions of the display) and what each mode shows there. The card is frame 0:
+    // its barcode band is black but for the white guard cells at its two ends.
+    let points = [
+        [0.01, 0.03],
+        [0.99, 0.03],
+        [0.45, 0.094],
+        [0.02, 0.5],
+        [0.98, 0.5],
+        [0.5, 0.05],
+        [0.75, 0.95],
+        [0.25, 0.99],
+    ];
+    let cases = [
+        // Centre: the card's top edge and left guard cell are off the display (cell 3 at the
+        // left edge); below the band sooner than fill; no bars.
+        (Centre, [BLACK, BLACK, RED, RED, GREEN, BLACK, YELLOW, BLUE]),
+        // Fit: full width, black bars above and below.
+        (Fit, [BLACK, BLACK, BLACK, RED, GREEN, BLACK, BLACK, BLACK]),
+        // Stretch: the whole card, its guard cells at the display's top corners.
+        (
+            Stretch,
+            [WHITE, WHITE, BLACK, RED, GREEN, BLACK, YELLOW, BLUE],
+        ),
+        // Fill: full height, the sides cut off (cell 2 at the left edge, still in the band at
+        // 9.4 % down).
+        (Fill, [BLACK, BLACK, BLACK, RED, GREEN, BLACK, YELLOW, BLUE]),
+    ];
+    for (scaling, want) in cases {
+        edited(
+            &mut s,
+            openlab_core::Command::SetRouteProperty {
+                id: route_n(1),
+                property: openlab_core::RouteProperty::Scaling { value: scaling },
+            },
+        );
+        let (_, colours) = display_shows(&mut s, "V1", &points);
+        assert_eq!(colours, want, "{scaling:?}");
+        expect_state(&s, 1, CueState::Running, "the cue keeps running");
+    }
+}
+
+/// #813 R6: Output 1 at 1920 x 1080 on a portrait 1080 x 1920 display → rotation 90: the card
+/// fills the display turned a quarter clockwise (its top edge down the display's right side);
+/// 180: upside down; 0: unturned.
+#[test]
+fn a_quarter_turn_shows_the_picture_turned_clockwise_on_a_portrait_display() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "P:1080x1920", &[(1, "P")]);
+    go(&mut s);
+    s.run(samples(0.2));
+    let turn = |s: &mut OfflineShow, value| {
+        edited(
+            s,
+            openlab_core::Command::SetRouteProperty {
+                id: route_n(1),
+                property: openlab_core::RouteProperty::Rotation { value },
+            },
+        );
+    };
+    const WHITE: [u8; 4] = [255, 255, 255, 255];
+    turn(&mut s, 90);
+    let (_, colours) = display_shows(
+        &mut s,
+        "P",
+        &[
+            [0.7, 0.25],
+            [0.7, 0.75],
+            [0.2, 0.25],
+            [0.2, 0.75],
+            [0.95, 0.02],
+            [0.95, 0.98],
+            [0.95, 0.5],
+        ],
+    );
+    assert_eq!(
+        colours,
+        [RED, GREEN, BLUE, YELLOW, WHITE, WHITE, BLACK],
+        "a quarter turn clockwise, the band down the right side"
+    );
+    // Not turned, the 1920 x 1080 route fills the portrait display: its middle shows.
+    let quads = [[0.4, 0.3], [0.6, 0.3], [0.4, 0.7], [0.6, 0.7]];
+    turn(&mut s, 180);
+    assert_eq!(
+        display_shows(&mut s, "P", &quads).1,
+        [YELLOW, BLUE, GREEN, RED],
+        "upside down"
+    );
+    turn(&mut s, 0);
+    assert_eq!(
+        display_shows(&mut s, "P", &quads).1,
+        [RED, GREEN, BLUE, YELLOW],
+        "unturned"
+    );
+    expect_state(&s, 1, CueState::Running, "the cue keeps running");
+}
+
+/// #813 R7: a Video cue playing on Stage 1, Output 1 on V1 → choose V2 for Output 1: the
+/// picture leaves V1 and shows on V2 at the movie's current point, the cue running on. The
+/// choice is this Mac's, not an undo step.
+#[test]
+fn choosing_another_display_for_a_route_moves_the_playing_picture_there_at_its_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut ws = workspace(vec![over_stage(video_cue(1, Some(&movie)))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "V1:1920x1080,V2:1280x720", &[(1, "V1")]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.42));
+    assert_eq!(
+        display_shows(&mut s, "V1", &[RED_AT]).0,
+        Some(frame_at(0.42))
+    );
+    let outcome = ask(
+        &mut s,
+        Request::SetRouteDisplay {
+            route: route_n(1),
+            display: Some("V2".into()),
+        },
+    );
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    s.settle_stages();
+    let now = (s.now() - at) as f64 / f64::from(RATE);
+    assert_eq!(
+        display_shows(&mut s, "V2", &[RED_AT]).0,
+        Some(frame_at(now))
+    );
+    assert_eq!(
+        display_shows(&mut s, "V1", &[RED_AT]).0,
+        None,
+        "gone from V1"
+    );
+    assert_eq!(route_state(&mut s, 1), shown_on("V2"));
+    expect_state(&s, 1, CueState::Running, "the cue runs on");
+    // Not an undo step: an undo now (nothing to undo) leaves it on V2.
+    step(&mut s, true);
+    s.settle_stages();
+    assert_eq!(route_state(&mut s, 1), shown_on("V2"), "not an undo step");
+}
+
+/// #813 R8: Output 1 on V2, a Video cue playing → V2 unplugged: the route says its display is
+/// missing, with a warning; the cue plays on unseen, not broken. V2 back: the picture returns
+/// at the movie's current point by itself.
+#[test]
+fn a_routes_display_unplugged_mid_cue_plays_on_unseen_and_comes_back_at_its_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (75, 25));
+    let mut ws = workspace(vec![over_stage(video_cue(1, Some(&movie)))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "V1:1920x1080,V2:1280x720", &[(1, "V2")]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.3));
+    assert!(display_shows(&mut s, "V2", &[RED_AT]).0.is_some());
+    let v1 = s.control().displays()[0].clone();
+    let v2 = s.control().displays()[1].clone();
+    let from = log_len(&s);
+    s.control_mut().set_virtual_displays(vec![v1.clone()]);
+    let missing = RouteState::DisplayMissing {
+        display: "V2".into(),
+    };
+    assert!(s.wait_for(|c| c.route_state(route_n(1)) == Some(&missing)));
+    assert!(
+        route_lines(&s, from)
+            .iter()
+            .any(|m| m.contains("is not connected")),
+        "a warning: {:?}",
+        route_lines(&s, from)
+    );
+    run_to(&mut s, at + samples(1.0));
+    expect_state(&s, 1, CueState::Running, "plays on unseen");
+    assert!(problems(&s, 1).is_empty(), "not broken");
+    s.control_mut().set_virtual_displays(vec![v1, v2]);
+    let shown = RouteState::Shown {
+        display: "V2".into(),
+    };
+    assert!(s.wait_for(|c| c.route_state(route_n(1)) == Some(&shown)));
+    let now = (s.now() - at) as f64 / f64::from(RATE);
+    assert_eq!(
+        display_shows(&mut s, "V2", &[RED_AT]).0,
+        Some(frame_at(now))
+    );
+}
+
+/// #813 G4: Stage 1 across two routes (left half on V1, right half on V2) → GO on a card movie
+/// stretched over it: each display shows its half at the same frame all the way through;
+/// pause holds both, resume runs both on; stop leaves both black (keep-black), Esc takes the
+/// black off both.
+#[test]
+fn a_stage_across_two_routes_shows_each_half_on_its_display_at_one_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (75, 25));
+    let ws = split_workspace(vec![over_stage(video_cue(1, Some(&movie)))]);
+    let mut s = routed_show(ws, "V1:1920x1080,V2:1920x1080", &[(1, "V1"), (2, "V2")]);
+    let at = go(&mut s);
+    for t in [0.1, 0.5, 1.02, 1.5] {
+        run_to(&mut s, at + samples(t));
+        let now = (s.now() - at) as f64 / f64::from(RATE);
+        assert_eq!(split_frame(&mut s), Some(frame_at(now)), "at {now} s");
+    }
+    // Each display its half: the card's left quadrants on V1, its right ones on V2.
+    let quads = [[0.5, 0.3], [0.5, 0.8]];
+    let (_, left) = display_shows(&mut s, "V1", &quads);
+    assert!(near_colours(&left, &[RED, BLUE]), "{left:?}");
+    let (_, right) = display_shows(&mut s, "V2", &quads);
+    assert!(near_colours(&right, &[GREEN, YELLOW]), "{right:?}");
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    let held = split_frame(&mut s);
+    s.run(samples(0.5));
+    assert_eq!(split_frame(&mut s), held, "pause holds both");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    s.run(samples(0.4));
+    assert_ne!(split_frame(&mut s), held, "resume runs both on");
+    assert!(split_frame(&mut s).is_some());
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    s.run(samples(0.2));
+    expect_state(&s, 1, CueState::Idle, "stopped");
+    for (n, display) in [(1, "V1"), (2, "V2")] {
+        assert_eq!(route_state(&mut s, n), shown_on(display));
+        assert_eq!(
+            display_shows(&mut s, display, &[RED_AT, EDGE_AT]),
+            (None, vec![BLACK; 2]),
+            "black stays on {display}"
+        );
+    }
+    s.panic_all();
+    s.run(BLOCK);
+    for n in [1, 2] {
+        assert_eq!(route_state(&mut s, n), Some(RouteState::Hidden), "Esc");
+    }
+    assert!(panicked(&mut s, stage_id()));
+}
+
+/// #813 G5, R9, G7: G4 running → region B set to no route: V2 goes back to the desktop, V1 plays
+/// on, undo puts B back on V2 at the current frame. Output 2 removed: the same, region B left
+/// with none, and undo brings the route back on V2 with B on it. Region B removed: the same.
+#[test]
+fn taking_a_region_off_its_route_frees_that_display_and_undo_puts_the_picture_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (150, 25));
+    let ws = split_workspace(vec![over_stage(video_cue(1, Some(&movie)))]);
+    let mut s = routed_show(ws, "V1:1920x1080,V2:1920x1080", &[(1, "V1"), (2, "V2")]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.3));
+    assert!(split_frame(&mut s).is_some());
+    let off_route = openlab_core::Command::SetRegionProperty {
+        stage: stage_id(),
+        id: region_n(2),
+        property: openlab_core::RegionProperty::Route { value: None },
+    };
+    let remove_route = openlab_core::Command::RemoveRoute { id: route_n(2) };
+    let remove_region = openlab_core::Command::RemoveRegion {
+        stage: stage_id(),
+        id: region_n(2),
+    };
+    for (what, command) in [
+        ("no route", off_route),
+        ("route removed", remove_route),
+        ("region removed", remove_region),
+    ] {
+        edited(&mut s, command);
+        assert_ne!(route_state(&mut s, 2), shown_on("V2"), "{what}: V2 freed");
+        assert_eq!(
+            display_shows(&mut s, "V2", &[RED_AT]),
+            (None, vec![BLACK]),
+            "{what}: nothing on V2"
+        );
+        let (_, left) = display_shows(&mut s, "V1", &[[0.5, 0.3]]);
+        assert!(near_colours(&left, &[RED]), "{what}: V1 plays on: {left:?}");
+        expect_state(&s, 1, CueState::Running, what);
+        let ws = s.control().workspace();
+        if what == "route removed" {
+            assert_eq!(ws.stages[0].regions[1].route, None, "B has none");
+            assert_eq!(ws.routes.len(), 1);
+        }
+        stepped(&mut s, true);
+        assert_eq!(route_state(&mut s, 2), shown_on("V2"), "{what}: back");
+        let now = (s.now() - at) as f64 / f64::from(RATE);
+        assert_eq!(
+            split_frame(&mut s),
+            Some(frame_at(now)),
+            "{what}: both halves at the current frame"
+        );
+        s.run(samples(0.2));
+    }
+    expect_state(&s, 1, CueState::Running, "never interrupted");
+    assert!(problems(&s, 1).is_empty());
+}
+
+/// #813 G6: Stage 1 at 3840 x 1080 with region A on its left half → stage resized to 1920 x
+/// 1080: region A is its left half still (960 x 1080), so V1 shows the card's left half; one
+/// undo restores both the size and the region.
+#[test]
+fn resizing_a_stage_scales_its_regions_and_one_undo_restores_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(3840, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "V1:1920x1080", &[(1, "V1")]);
+    go(&mut s);
+    s.run(samples(0.2));
+    let halves = [[0.25, 0.3], [0.75, 0.3]];
+    assert_eq!(display_shows(&mut s, "V1", &halves).1, [RED, RED]);
+    let before = s.control().workspace().stages[0].clone();
+    edited(
+        &mut s,
+        openlab_core::Command::SetStageProperty {
+            id: stage_id(),
+            property: openlab_core::StageProperty::Size {
+                width: 1920,
+                height: 1080,
+                regions: None,
+            },
+        },
+    );
+    let region = s.control().workspace().stages[0].regions[0].clone();
+    assert_eq!((region.x, region.width, region.height), (0, 960, 1080));
+    assert_eq!(
+        display_shows(&mut s, "V1", &halves).1,
+        [RED, RED],
+        "still the left half"
+    );
+    stepped(&mut s, true);
+    assert_eq!(
+        s.control().workspace().stages[0],
+        before,
+        "one undo, both back"
+    );
+    assert_eq!(display_shows(&mut s, "V1", &halves).1, [RED, RED]);
+    expect_state(&s, 1, CueState::Running, "plays on");
+}
+
+/// #813 G8: a region fills its route: the right half of a 1920 x 1080 stage (960 x 1080) on a
+/// 1920 x 1080 route covers its display with the card's right half.
+#[test]
+fn a_region_fills_its_route_on_the_display() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(960, 960, Some(1))])];
+    let mut s = routed_show(ws, "V1:1920x1080", &[(1, "V1")]);
+    go(&mut s);
+    s.run(samples(0.2));
+    assert_eq!(
+        display_shows(
+            &mut s,
+            "V1",
+            &[[0.02, 0.3], [0.98, 0.3], [0.02, 0.9], [0.98, 0.9]]
+        )
+        .1,
+        [GREEN, GREEN, YELLOW, YELLOW]
+    );
+}
+
+/// #813 V1a, V1b, V1c: Stage 1 keeping black over two routes, a picture played and ended, both
+/// displays black → untick keep-black: each route goes straight to showing nothing, once,
+/// with no other state between; tick it again: straight back to black, once. Unticked and a
+/// panic before the tick: the tick leaves both down until the next picture.
+#[test]
+fn unticking_and_ticking_keep_black_changes_each_display_once_with_no_flash() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let ws = split_workspace(vec![over_stage(still_cue(1, &png, Some(0.3)))]);
+    let mut s = routed_show(ws, "V1:1920x1080,V2:1920x1080", &[(1, "V1"), (2, "V2")]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.3) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended");
+    for n in [1, 2] {
+        assert_eq!(
+            route_state(&mut s, n),
+            shown_on(if n == 1 { "V1" } else { "V2" })
+        );
+    }
+    let keep = |s: &mut OfflineShow, value| {
+        edited(
+            s,
+            openlab_core::Command::SetStageProperty {
+                id: stage_id(),
+                property: openlab_core::StageProperty::KeepBlack { value },
+            },
+        );
+        s.run(samples(0.3));
+        s.settle_stages();
+    };
+    let from = log_len(&s);
+    keep(&mut s, false);
+    let lines = route_lines(&s, from);
+    assert_eq!(lines.len(), 2, "each route once: {lines:?}");
+    assert!(
+        lines.iter().all(|l| l.contains("shows nothing")),
+        "{lines:?}"
+    );
+    assert!(
+        !panicked(&mut s, stage_id()),
+        "its black was not taken down by a panic"
+    );
+    let from = log_len(&s);
+    keep(&mut s, true);
+    let lines = route_lines(&s, from);
+    assert_eq!(lines.len(), 2, "each route once: {lines:?}");
+    assert!(lines.iter().all(|l| l.contains("is shown on")), "{lines:?}");
+    for (n, display) in [(1, "V1"), (2, "V2")] {
+        assert_eq!(route_state(&mut s, n), shown_on(display));
+        assert_eq!(
+            display_shows(&mut s, display, &[RED_AT]),
+            (None, vec![BLACK])
+        );
+    }
+    // Unticked, then a panic, then ticked: the black stays down until the next picture, and
+    // clients are told so (the app's own black stays down too).
+    keep(&mut s, false);
+    s.panic_all();
+    s.run(samples(0.2));
+    assert!(panicked(&mut s, stage_id()), "a panic took the black down");
+    let from = log_len(&s);
+    keep(&mut s, true);
+    assert!(
+        route_lines(&s, from)
+            .iter()
+            .all(|l| !l.contains("is shown on")),
+        "{:?}",
+        route_lines(&s, from)
+    );
+    for n in [1, 2] {
+        assert_eq!(route_state(&mut s, n), Some(RouteState::Hidden));
+    }
+    assert!(panicked(&mut s, stage_id()));
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.3) + 2 * BLOCK);
+    for (n, display) in [(1, "V1"), (2, "V2")] {
+        assert_eq!(
+            route_state(&mut s, n),
+            shown_on(display),
+            "the next picture brings it"
+        );
+    }
+}
+
+/// #813 F1: the G4 workspace saved, closed and opened again on the same Mac: routes (names,
+/// sizes, rotation, scaling, order), stages and regions come back unchanged, each route on its
+/// display, and the cue plays across both displays again.
+#[test]
+fn a_saved_workspace_reopens_with_its_routes_regions_and_each_routes_display() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (75, 25));
+    let mut ws = split_workspace(vec![over_stage(video_cue(1, Some(&movie)))]);
+    ws.routes[1].rotation = 180;
+    ws.routes[1].scaling = openlab_core::RouteScaling::Fit;
+    ws.routes.reverse();
+    let support = dir.path().join("support");
+    let mut s = routed_show_with(
+        ws,
+        "V1:1920x1080,V2:1920x1080",
+        &[(1, "V1"), (2, "V2")],
+        |c| c.app_dirs = Some(openlab_engine::persist::AppDirs::new(&support)),
+    );
+    let path = dir.path().join("Split.openlab");
+    let id = s.request_id();
+    let saved = s.send(ClientMessage::Request {
+        id,
+        request: Request::SaveAs {
+            path: path.to_string_lossy().into_owned(),
+        },
+    });
+    assert!(
+        saved.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{saved:?}"
+    );
+    let before = s.control().workspace().clone();
+    let doc = s.control().doc_ids()[0];
+    s.close_doc(doc, false).unwrap();
+    s.settle_stages();
+    s.open_doc(openlab_engine::control::DocSource::Open {
+        path: path.clone(),
+        recovery: None,
+    })
+    .unwrap();
+    s.settle_stages();
+    s.settle_media();
+    let after = s.control().workspace().clone();
+    assert_eq!(after.routes, before.routes, "routes, in order");
+    assert_eq!(after.stages, before.stages, "stages and regions");
+    // Back on their displays: route 2 (first, turned and fitted) on V2, route 1 on V1.
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5));
+    assert_eq!(route_state(&mut s, 1), shown_on("V1"));
+    assert_eq!(route_state(&mut s, 2), shown_on("V2"));
+    let (_, left) = display_shows(&mut s, "V1", &[[0.5, 0.3]]);
+    assert!(near_colours(&left, &[RED]), "{left:?}");
+    // Route 2 is upside down (and fitted, which on a display of its shape is the same).
+    let (_, right) = display_shows(&mut s, "V2", &[[0.5, 0.7]]);
+    assert!(near_colours(&right, &[GREEN]), "{right:?}");
+}
+
+/// #813 F2: a workspace whose Output 1 was on a display this Mac does not have → it lists Output
+/// 1 with that display missing and warns; stages and regions are unchanged; its Video cue is not
+/// broken and plays unseen. V1 chosen for it here: the picture shows on V1. The show file keeps
+/// no display (each Mac keeps its own choice).
+#[test]
+fn a_route_whose_display_this_mac_lacks_plays_unseen_until_one_is_chosen_here() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let stages = ws.stages.clone();
+    let mut s = routed_show(ws, "V1:1920x1080", &[(1, "X")]);
+    assert_eq!(
+        route_state(&mut s, 1),
+        Some(RouteState::DisplayMissing {
+            display: "X".into()
+        })
+    );
+    assert!(
+        s.control()
+            .show_log()
+            .tail(200)
+            .iter()
+            .any(|e| e.message.contains("Virtual X is not connected")),
+        "the warning names the display it was on"
+    );
+    assert_eq!(s.control().workspace().stages, stages);
+    assert!(problems(&s, 1).is_empty(), "not broken");
+    go(&mut s);
+    s.run(samples(0.2));
+    expect_state(&s, 1, CueState::Running, "plays unseen");
+    let outcome = ask(
+        &mut s,
+        Request::SetRouteDisplay {
+            route: route_n(1),
+            display: Some("V1".into()),
+        },
+    );
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    s.settle_stages();
+    assert_eq!(display_shows(&mut s, "V1", &[RED_AT]), (Some(0), vec![RED]));
+    let text = openlab_core::save_show(s.control().workspace()).unwrap();
+    assert!(
+        !text.contains("\"V1\"") && !text.contains("\"X\""),
+        "no display in the file"
+    );
+}
+
+/// #813 F3: a show file with a region outside its stage, one naming a route not in the file, a
+/// route of size 0 and more routes and regions than the limits opens with one warning each,
+/// repaired, and plays: no crash, no hang, the stage host given only what it can draw.
+#[test]
+fn a_damaged_routes_and_regions_show_file_opens_repaired_and_plays() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.routes[0].width = 0;
+    ws.routes
+        .extend((0..openlab_core::MAX_ROUTES as u128).map(|n| output_route(100 + n, 8, 8)));
+    let mut stage = regioned_stage(1920, &[(1000, 1920, Some(1)), (0, 960, Some(99))]);
+    stage.regions.extend(
+        (0..openlab_core::MAX_REGIONS as u128)
+            .map(|n| Region::whole(region_n(100 + n), None, 1, 1)),
+    );
+    ws.stages = vec![stage];
+    let path = dir.path().join("Damaged.openlab");
+    std::fs::write(&path, openlab_core::save_show(&ws).unwrap()).unwrap();
+    let mut c: ControlConfig = config_at(&workspace(vec![]), RATE, BLOCK);
+    slow_media_ok(&mut c);
+    c.stage_host = Some(test_stage_host_on("V1:1920x1080", &[]));
+    let mut s = OfflineShow::empty(mixer_config_at(RATE, BLOCK), c).unwrap();
+    s.set_settle_timeout(SETTLE);
+    assert!(s.wait_for(|c| !c.displays().is_empty()));
+    s.open_doc(openlab_engine::control::DocSource::Open {
+        path,
+        recovery: None,
+    })
+    .unwrap();
+    s.settle_stages();
+    s.settle_media();
+    let ws = s.control().workspace().clone();
+    assert_eq!(ws.routes.len(), openlab_core::MAX_ROUTES);
+    assert_eq!(ws.routes[0].width, 1);
+    let regions = &ws.stages[0].regions;
+    assert_eq!(regions.len(), openlab_core::MAX_REGIONS);
+    assert_eq!((regions[0].x, regions[0].width), (0, 1920), "moved inside");
+    assert_eq!(regions[1].route, None, "the unknown route is none");
+    let warned = s
+        .control()
+        .show_log()
+        .tail(400)
+        .iter()
+        .filter(|e| {
+            ["output route", "region", "regions"]
+                .iter()
+                .any(|w| e.message.contains(w))
+        })
+        .count();
+    assert!(warned >= 5, "one warning each: {warned}");
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.2));
+    expect_state(&s, 1, CueState::Running, "plays");
+    assert!(
+        s.control().stage_host_pid().is_some(),
+        "the stage host lives"
+    );
 }

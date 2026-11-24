@@ -83,6 +83,9 @@ final class ScenarioRunner {
         /// the one the next steps and shots use, its `tab` the settings tab (general, audio, osc);
         /// `"workspace"` goes back to the workspace window. `"patch-editor"`: the patch editor last
         /// opened (a click on a row's Edit or the inspector's patch buttons), its `tab` the editor's.
+        /// `"stage-editor"`: the stage editor last opened (a click on a `settings-video-edit-N` of
+        /// Video Outputs). `"sheet"` also takes the output route editor a route row's Edit opened,
+        /// drawn over the settings window.
         case focus(String, launcher: LauncherLook?)
         /// `{"shot": "name"}`: `<OUT>/<n>-<name>.png`, the whole window at 2x. With `"display": "V1"`
         /// (or a list) each named virtual display's composite is shot beside it as
@@ -417,11 +420,12 @@ final class ScenarioRunner {
         case "focus":
             let which = try string("focus")
             let known = [
-                "workspace", "settings", "sheet", "patch-editor", "preferences", "status", "about", "launcher",
+                "workspace", "settings", "sheet", "patch-editor", "stage-editor", "preferences", "status", "about",
+                "launcher",
             ]
             guard known.contains(which) else {
                 throw Failure(
-                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\", \"status\", \"about\", \"launcher\" or \"sheet\""
+                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"stage-editor\", \"preferences\", \"status\", \"about\", \"launcher\" or \"sheet\""
                 )
             }
             guard which == "launcher" else {
@@ -524,6 +528,13 @@ final class ScenarioRunner {
     private var window: NSWindow {
         // The sheet, once it has closed, gives the steps back to the workspace window.
         if let f = focused, f is PasteSheetWindow, wc.pasteSheet?.window !== f { return wc.window! }
+        // The route editor, once done, gives the steps back to the settings window.
+        if let f = focused, f.identifier?.rawValue == "route-editor",
+            wc.existingSettingsWindow?.routeEditor?.window !== f,
+            let settings = wc.existingSettingsWindow?.window
+        {
+            return settings
+        }
         // The tool's question, once answered, gives the steps back to the tool.
         if let f = focused, let tool = wc.existingMissingFiles, f.sheetParent == nil, isChoiceSheet(f),
             tool.choiceSheet?.window !== f
@@ -540,6 +551,11 @@ final class ScenarioRunner {
     /// The window a sheet shown in `w` belongs over, and that sheet (nil: `w` is no sheet's).
     private func sheetOver(_ w: NSWindow) -> (base: NSWindow, sheet: NSWindow?) {
         if w is PasteSheetWindow { return (wc.window!, wc.pasteSheet?.window) }
+        if let sc = wc.existingSettingsWindow, let settings = sc.window, let route = sc.routeEditor?.window,
+            w === route || w === settings
+        {
+            return (settings, route)
+        }
         if let tool = wc.existingMissingFiles, let toolWindow = tool.window {
             if isChoiceSheet(w) || w === toolWindow { return (toolWindow, tool.choiceSheet?.window) }
         }
@@ -720,8 +736,19 @@ final class ScenarioRunner {
     /// Lets what a step started reach the engine and come back, then lays the window out.
     private func catchUp() async {
         await settle()
+        // The Video pages' and their editors' edits run as tasks of their own.
+        if let sc = wc.existingSettingsWindow {
+            await sc.videoPane.pending?.value
+            await sc.videoRoutingPane.pending?.value
+            await sc.stageEditor?.editing?.value
+            await sc.routeEditor?.saving?.value
+        }
         await rig.sync()
         await settle()
+        if let sc = wc.existingSettingsWindow {
+            await sc.videoPane.refresh()
+            sc.stageEditor?.render()
+        }
         window.contentView?.layoutSubtreeIfNeeded()
     }
 
@@ -991,10 +1018,21 @@ final class ScenarioRunner {
                 await status.logs.refresh()
                 focused = w
             } else if which == "sheet" {
-                guard let sheet = wc.existingMissingFiles?.choiceSheet?.window ?? wc.pasteSheet?.window else {
+                guard
+                    let sheet = wc.existingMissingFiles?.choiceSheet?.window ?? wc.pasteSheet?.window
+                        ?? wc.existingSettingsWindow?.routeEditor?.window
+                else {
                     throw Failure("no sheet is up")
                 }
                 focused = sheet
+            } else if which == "stage-editor" {
+                guard let editor = wc.settingsWindow.stageEditor, let w = editor.window else {
+                    throw Failure("no stage editor was opened (click a settings-video-edit-N first)")
+                }
+                w.appearance = wc.window?.appearance
+                await editor.editing?.value
+                editor.render()
+                focused = w
             } else if which == "patch-editor" {
                 guard let editor = wc.settingsWindow.patchEditor, let w = editor.window else {
                     throw Failure("no patch editor was opened (click a settings-patch-edit-N first)")
@@ -2319,7 +2357,7 @@ final class ScenarioShotTests: XCTestCase {
             of: """
                 {"show": "Video", "displays": "V1:1920x1080",
                  "settings": {"settings_version": 1, "workspaces": {"00000000-0000-0000-0000-0000000000f0": {
-                   "patches": {}, "stages": {"00000000-0000-0000-0000-0000000000f1":
+                   "patches": {}, "routes": {"00000000-0000-0000-0000-0000000000f1":
                      {"display": "V1", "name": "Stage 1", "width": 1920, "height": 1080}}}}},
                  "media": {"media/clip.mov": 4, "media/still.png": 1, "media/card.jpg": 1,
                    "media/A very long name for a projection clip used in the second act.mov": 2},

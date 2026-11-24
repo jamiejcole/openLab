@@ -36,22 +36,33 @@ final class BlackBackstopTests: XCTestCase {
 
     // MARK: Which displays are held black
 
+    /// A workspace of keep-black (or not) stages, each with one region on the route of its own id.
     private func model(_ stages: [(String, Bool)]) -> WorkspaceModel {
         WorkspaceModel(
             id: "w", name: "W", settings: .object([:]), patches: [], networkPatches: [],
-            stages: stages.map { ModelObject(id: ModelID($0.0), raw: .object(["keep_black": .bool($0.1)])) },
+            routes: stages.map { ModelObject(id: ModelID($0.0), raw: .object(["id": .string($0.0)])) },
+            stages: stages.map {
+                ModelObject(
+                    id: ModelID($0.0),
+                    raw: .object([
+                        "keep_black": .bool($0.1),
+                        "regions": .array([.object(["id": .string($0.0), "route": .string($0.0)])]),
+                    ]))
+            },
             cueLists: [])
     }
 
-    private func outputs(_ mappings: [(String, String?, String?)]) -> VideoOutputs {
+    /// What the engine says of each stage's route (its display choice and state) and of the stage.
+    private func outputs(_ mappings: [(String, String?, String?)], panicked: Set<String> = []) -> VideoOutputs {
         VideoOutputs(
             displays: [], video: true,
-            stages: mappings.map { stage, display, state in
-                StageMappingEntry(
-                    stage: ModelID(stage),
-                    mapping: display.map { StageMapping(display: $0, name: $0, width: 1920, height: 1080) },
-                    state: state.map { StageState(state: $0, display: display, reason: nil) })
-            })
+            routes: mappings.map { stage, display, state in
+                RouteEntry(
+                    route: ModelID(stage),
+                    mapping: display.map { DisplayChoice(display: $0, name: $0, width: 1920, height: 1080) },
+                    state: state.map { RouteState(state: $0, display: display, reason: nil) })
+            },
+            stages: mappings.map { StageEntry(stage: ModelID($0.0), panicked: panicked.contains($0.0)) })
     }
 
     /// A keep-black stage shown on a connected display is held black, the display with the menu bar
@@ -79,14 +90,55 @@ final class BlackBackstopTests: XCTestCase {
         let m = model([("a", true)])
         let up = outputs([("a", "V1", "shown")])
         XCTAssertEqual(BackstopPlan.covers(workspaces: [(m, up)], displays: Self.virtual), ["V1": Self.v1Frame])
-        let down = VideoOutputs(
-            displays: [], video: true,
-            stages: [
-                StageMappingEntry(
-                    stage: "a", mapping: StageMapping(display: "V1", name: "V1", width: 1920, height: 1080),
-                    state: StageState(state: "hidden", display: nil, reason: nil), panicked: true)
-            ])
+        let down = outputs([("a", "V1", "hidden")], panicked: ["a"])
         XCTAssertEqual(BackstopPlan.covers(workspaces: [(m, down)], displays: Self.virtual), [:])
+    }
+
+    /// #813 G4: a keep-black stage split over two routes holds black on each of their displays;
+    /// a region on no route holds none.
+    func testAStageOverTwoRoutesIsHeldBlackOnBothDisplays() {
+        let stage = ModelObject(
+            id: "s",
+            raw: .object([
+                "keep_black": .bool(true),
+                "regions": .array([
+                    .object(["id": .string("A"), "route": .string("r1")]),
+                    .object(["id": .string("B"), "route": .string("r2")]),
+                    .object(["id": .string("C")]),
+                ]),
+            ]))
+        let m = WorkspaceModel(
+            id: "w", name: "W", settings: .object([:]), patches: [], networkPatches: [],
+            routes: [ModelObject(id: "r1", raw: .object([:])), ModelObject(id: "r2", raw: .object([:]))],
+            stages: [stage], cueLists: [])
+        let o = VideoOutputs(
+            displays: [], video: true,
+            routes: [
+                RouteEntry(
+                    route: "r1", mapping: DisplayChoice(display: "V1", name: "V1", width: 1, height: 1), state: nil),
+                RouteEntry(
+                    route: "r2", mapping: DisplayChoice(display: "V2", name: "V2", width: 1, height: 1), state: nil),
+            ],
+            stages: [StageEntry(stage: "s")])
+        XCTAssertEqual(
+            BackstopPlan.covers(workspaces: [(m, o)], displays: Self.virtual),
+            ["V1": Self.v1Frame, "V2": Self.v2Frame])
+        XCTAssertEqual(BackstopPlan.displays(of: stage, model: m, outputs: o), ["V1", "V2"])
+    }
+
+    /// #813 V1b: keep-black ticked again on a stage whose black a panic took down while it was off
+    /// holds nothing: the engine says its black is down whatever its keep-black, so the app never
+    /// puts a black up only to take it down when the engine's next word comes (a flash).
+    func testKeepBlackTickedAfterAPanicWhileOffHoldsNoBlack() {
+        let ticked = model([("a", true)])
+        let afterPanic = outputs([("a", "V1", "hidden")], panicked: ["a"])
+        XCTAssertEqual(BackstopPlan.covers(workspaces: [(ticked, afterPanic)], displays: Self.virtual), [:])
+        let armed = outputs([("a", "V1", "hidden")])
+        XCTAssertEqual(
+            BackstopPlan.covers(workspaces: [(ticked, armed)], displays: Self.virtual), ["V1": Self.v1Frame],
+            "with its black up, ticked again: black at once")
+        let unticked = model([("a", false)])
+        XCTAssertEqual(BackstopPlan.covers(workspaces: [(unticked, armed)], displays: Self.virtual), [:])
     }
 
     /// Two workspaces whose stages share a display hold one backstop there while either keeps black.
@@ -279,19 +331,25 @@ final class BlackBackstopTests: XCTestCase {
     private func newWorkspace() async throws -> (WorkspaceStore, ModelID, ModelID) {
         guard case .success(let doc) = await app.session.newWorkspace() else { throw TestEngineError.refused("new") }
         let session = app.session
-        await pushed("the workspace and its stages' displays arrived") {
+        // A new workspace's route is on the main display (V2, with the menu bar here); these tests
+        // put Stage 1 on V1 and a second stage on V2.
+        await pushed("the workspace and its routes' displays arrived") {
             guard let store = session.stores[doc], store.model?.stages.count == 1 else { return false }
-            return store.videoOutputs.stages.compactMap(\.mapping?.display) == ["V1"]
+            return store.videoOutputs.routes.compactMap(\.mapping?.display) == ["V2"]
         }
         let store = try XCTUnwrap(session.stores[doc])
+        let first = try XCTUnwrap(store.model?.stages.first?.id)
+        guard case .success = await store.setStageDisplay(first, display: "V1") else {
+            throw TestEngineError.refused("first stage on V1")
+        }
+        await pushed("Stage 1 is on V1") { store.videoOutputs.routes.compactMap(\.mapping?.display) == ["V1"] }
         let second = ModelID(UUID().uuidString.lowercased())
         guard
-            case .success = await store.send(
-                command: .addStage(id: second, name: "Stage 2", width: 1280, height: 720, index: 1)),
-            case .success = await store.setStageMapping(second, display: "V2")
+            case .success = await store.addStageOnItsOwnRoute(stage: second, name: "Stage 2", width: 1280, height: 720),
+            case .success = await store.setStageDisplay(second, display: "V2")
         else { throw TestEngineError.refused("second stage") }
         await pushed("the second stage is on V2") {
-            store.videoOutputs.stages.compactMap(\.mapping?.display) == ["V1", "V2"]
+            store.videoOutputs.routes.compactMap(\.mapping?.display) == ["V1", "V2"]
         }
         let stages = try XCTUnwrap(store.model?.stages.map(\.id))
         return (store, stages[0], stages[1])
@@ -324,7 +382,7 @@ final class BlackBackstopTests: XCTestCase {
     }
 
     private func state(_ store: WorkspaceStore, _ stage: ModelID) -> String? {
-        store.videoOutputs.stages.first { $0.stage == stage }?.state?.state
+        store.stageState(stage)
     }
 
     private var v1: NSWindow? { app.backstop.windows["V1"] }
@@ -718,11 +776,11 @@ final class BlackBackstopTests: XCTestCase {
         await played(store, stage1)
         await pushed { self.v1 != nil }
 
-        _ = await store.setStageMapping(stage1, display: "V2")
+        _ = await store.setStageDisplay(stage1, display: "V2")
         await pushed("moved to the menu bar's display: covered there") {
             Array(self.app.backstop.windows.keys) == ["V2"]
         }
-        _ = await store.setStageMapping(stage1, display: "V1")
+        _ = await store.setStageDisplay(stage1, display: "V1")
         await pushed { self.v1 != nil && self.app.backstop.windows["V2"] == nil }
 
         app.backstop.readDisplays = { [Self.virtual[1]] }

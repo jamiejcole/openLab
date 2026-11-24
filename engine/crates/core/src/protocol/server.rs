@@ -120,15 +120,17 @@ pub enum ServerMessage {
     Closed {
         doc: DocId,
     },
-    /// To the connections bound to a workspace: the displays and where each of its stages is,
-    /// whenever that changes (a display plugged or unplugged, a stage's display chosen, a stage
-    /// shown, hidden or failing, the stage host started or stopped). Replaces the previous one;
-    /// at most about ten a second. The same data as `list_displays` and `list_stage_mappings`.
+    /// To the connections bound to a workspace: the displays, where each of its output routes
+    /// is, and its stages' black and monitors, whenever that changes (a display plugged or
+    /// unplugged, a route's display chosen, a route shown, hidden or failing, a stage's black
+    /// taken down, the stage host started or stopped). Replaces the previous one; at most about
+    /// ten a second. The same data as `list_displays` and `list_route_displays`.
     VideoOutputs {
         displays: Vec<crate::stage_link::Display>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         video: Option<bool>,
-        stages: Vec<StageMappingEntry>,
+        routes: Vec<RouteEntry>,
+        stages: Vec<StageEntry>,
     },
     /// To the connections bound to a workspace: a copy of media into its show folder is under
     /// way (WS-04). Sent when it starts and at most about four times a second; lossy like
@@ -270,8 +272,12 @@ pub enum ResultData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         video: Option<bool>,
     },
-    /// Answer to `list_stage_mappings`: every stage of the workspace, in workspace order.
-    StageMappings { stages: Vec<StageMappingEntry> },
+    /// Answer to `list_route_displays`: every output route and every stage of the workspace,
+    /// each in workspace order.
+    RouteDisplays {
+        routes: Vec<RouteEntry>,
+        stages: Vec<StageEntry>,
+    },
     /// Test support: answer to `stage_probe`: the test card's frame number if the stage shows
     /// one, and the colour (RGBA) at each point asked for.
     #[cfg(feature = "test-support")]
@@ -282,18 +288,25 @@ pub enum ResultData {
     },
 }
 
-/// One stage on this machine: the display chosen for it (absent: none), and where it is now
-/// (absent while the stage host has not said).
+/// One output route on this machine: the display chosen for it (absent: none), and where it is
+/// now (absent while the stage host has not said).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StageMappingEntry {
+pub struct RouteEntry {
+    pub route: crate::RouteId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapping: Option<crate::settings::DisplayChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<crate::stage_link::RouteState>,
+}
+
+/// One stage on this machine: whether its black is down and its monitor open.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageEntry {
     pub stage: crate::StageId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mapping: Option<crate::settings::StageMapping>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state: Option<crate::stage_link::StageState>,
-    /// A stage keeping black whose black a panic took down (QLab 5 manual p. 227): it is hidden
-    /// between cues, as a stage not keeping black is, until a cue plays on it again. Absent:
-    /// `false`.
+    /// The stage's black is down (QLab 5 manual p. 227): a panic took it down, or no picture has
+    /// played on it since its workspace opened. Kept whether or not the stage keeps black now, so
+    /// keep-black ticked again leaves it down; a stage keeping black draws nothing between cues
+    /// until a cue plays on it again. Absent: `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub panicked: bool,
     /// The stage's monitor window is open (`set_stage_monitor`). Absent: `false`.
@@ -802,7 +815,7 @@ pub enum LogLevel {
 }
 
 /// Save state and undo availability of the open workspace.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentState {
     /// Where it is saved; `null` = never saved.
     pub path: Option<String>,
@@ -810,6 +823,13 @@ pub struct DocumentState {
     pub dirty: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// What the step the next undo applies is called (absent: it has no name, or there is
+    /// none), for the client's Edit menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_name: Option<crate::StepName>,
+    /// As `undo_name`, for the next redo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redo_name: Option<crate::StepName>,
     /// The workspace is in Show Mode (SM-01, SM-07; set with `set_show_mode`): kept by the
     /// engine while it runs, not saved in the show file, so a relaunched UI gets it back.
     /// Absent: `false`.
@@ -843,10 +863,15 @@ pub enum Upsert {
         index: u64,
         patch: NetworkPatch,
     },
-    /// A video stage (VID-01).
+    /// A video stage (VID-01), with its regions.
     Stage {
         index: u64,
         stage: crate::video::Stage,
+    },
+    /// A video output route (VID-01).
+    Route {
+        index: u64,
+        route: crate::video::OutputRoute,
     },
     /// The workspace's name and settings.
     Settings {
@@ -864,6 +889,7 @@ pub enum Delete {
     Patch { id: PatchId },
     NetworkPatch { id: NetworkPatchId },
     Stage { id: crate::StageId },
+    Route { id: crate::RouteId },
 }
 
 /// Everything about the open workspace and the running show.

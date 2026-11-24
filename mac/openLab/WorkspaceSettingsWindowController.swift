@@ -102,6 +102,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let videoPane: VideoSettingsPane
     let videoRoutingPane: VideoSettingsPane
     let videoDevicesPane: VideoSettingsPane
+    /// Each stage's editor (one window per stage, as long as this window lives) and the one last
+    /// opened; the route editor sheet while it is up (`+Video`).
+    var stageEditors: [ModelID: StageEditorWindowController] = [:]
+    var stageEditor: StageEditorWindowController?
+    var routeEditor: RouteEditorController?
 
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
@@ -135,6 +140,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         super.init(window: window)
         window.contentView = buildContent()
         window.center()
+        videoPane.onEditStage = { [weak self] stage in self?.openStageEditor(stage) }
+        videoRoutingPane.onEditRoute = { [weak self] route in self?.openRouteEditor(route) }
         // Published before they change: the sinks use the delivered value and render after it.
         subs.append(store.$status.sink { [weak self] _ in self?.renderSoon() })
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
@@ -151,7 +158,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 self?.rereadSoon()
             })
         // Taller than the pages need by the message row's two lines, which never take the pages' room.
-        window.contentMinSize = NSSize(width: 680, height: 552)
+        // Wide enough for an Output Routing row (a whole display name and scaling choice) with a
+        // legacy 17 pt scroller showing, as on a Mac set to always show scroll bars.
+        window.contentMinSize = NSSize(width: 718, height: 552)
         window.delegate = self
         tabs.delegate = self
         // The table takes its width only once its tab is laid out, after the lines were wrapped:
@@ -231,6 +240,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     }
 
     func windowWillClose(_ notification: Notification) {
+        endRouteEditor()
         model.message = nil
         model.keyRefusal = nil
         messageLabel.stringValue = ""
@@ -426,6 +436,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// Goes with the workspace (and takes its patch editors along, which otherwise outlive them both).
     override func close() {
         for editor in patchEditors.values { editor.close() }
+        for editor in stageEditors.values { editor.close() }
+        endRouteEditor()
         super.close()
     }
 

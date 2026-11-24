@@ -175,19 +175,19 @@ impl Control {
                 } if self.cx_of(doc).is_some() => {
                     self.set_patch_mapping(doc, id, patch, mapping, to)
                 }
-                // Stages' displays are the machine's and the stage host the engine's.
+                // Routes' displays are the machine's and the stage host the engine's.
                 ClientMessage::Request {
                     id,
-                    request: Request::ListStageMappings,
+                    request: Request::ListRouteDisplays,
                 } => {
-                    self.list_stage_mappings(doc, id, to);
+                    self.list_route_displays(doc, id, to);
                     Flow::Continue
                 }
                 ClientMessage::Request {
                     id,
-                    request: Request::SetStageMapping { stage, display },
+                    request: Request::SetRouteDisplay { route, display },
                 } => {
-                    self.set_stage_mapping(doc, id, stage, display, to);
+                    self.set_route_display(doc, id, route, display, to);
                     Flow::Continue
                 }
                 ClientMessage::Request {

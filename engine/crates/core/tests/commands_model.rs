@@ -1901,6 +1901,7 @@ fn stages_can_be_added_removed_moved_and_edited() {
         StageProperty::Size {
             width: 3840,
             height: 2160,
+            regions: None,
         },
         StageProperty::KeepBlack { value: false },
         StageProperty::Layer { value: 1000 },
@@ -1996,10 +1997,12 @@ fn bad_stage_edits_are_refused_and_the_same_value_is_no_edit() {
         StageProperty::Size {
             width: 0,
             height: 1080,
+            regions: None,
         },
         StageProperty::Size {
             width: 1920,
             height: MAX_STAGE_PIXELS + 1,
+            regions: None,
         },
         StageProperty::Layer {
             value: MAX_STAGE_LAYER + 1,
@@ -2047,6 +2050,754 @@ fn renaming_a_stage_while_typing_is_one_undo_step() {
     assert!(history.undo(&mut ws).unwrap());
     assert_eq!(ws, before);
     assert!(!history.can_undo());
+}
+
+// ---- Output routes and regions ----
+
+fn route_n(n: u128) -> OutputRoute {
+    OutputRoute::new(
+        RouteId(uuid::Uuid::from_u128(0x6000 + n)),
+        format!("Output {n}"),
+        1920,
+        1080,
+    )
+}
+
+fn region_n(n: u128, route: Option<u128>, x: u32, width: u32) -> Region {
+    Region {
+        id: RegionId(uuid::Uuid::from_u128(0x7000 + n)),
+        route: route.map(|r| route_n(r).id),
+        x,
+        y: 0,
+        width,
+        height: 1080,
+    }
+}
+
+fn route_prop(n: u128, property: RouteProperty) -> Command {
+    Command::SetRouteProperty {
+        id: route_n(n).id,
+        property,
+    }
+}
+
+fn region_prop(stage: u128, region: u128, property: RegionProperty) -> Command {
+    Command::SetRegionProperty {
+        stage: stage_n(stage).id,
+        id: region_n(region, None, 0, 1).id,
+        property,
+    }
+}
+
+/// The G4 workspace: Stage 1 at 3840 x 1080, region A (left half) on Output 1 and region B
+/// (right half) on Output 2.
+fn two_route_workspace() -> Workspace {
+    let mut ws = workspace(vec![]);
+    ws.routes = vec![route_n(1), route_n(2)];
+    let mut stage = stage_n(1);
+    stage.width = 3840;
+    stage.regions = vec![
+        region_n(1, Some(1), 0, 1920),
+        region_n(2, Some(2), 1920, 1920),
+    ];
+    ws.stages.push(stage);
+    ws
+}
+
+/// Routes are added, removed, moved and edited (name, size, rotation, scaling), each one exact
+/// undo step; a client applying the model changes ends with the same routes and stages.
+#[test]
+fn routes_can_be_added_removed_moved_and_edited() {
+    let ws = two_route_workspace();
+    let added = round_trip(
+        &ws,
+        Command::AddRoute {
+            index: 2,
+            route: route_n(3),
+            regions: Vec::new(),
+        },
+    );
+    assert_eq!(added.routes[2], route_n(3));
+    let moved = round_trip(
+        &ws,
+        Command::MoveRoute {
+            id: route_n(2).id,
+            index: 0,
+        },
+    );
+    assert_eq!(moved.routes[0].id, route_n(2).id);
+    for property in [
+        RouteProperty::Name {
+            value: "Projector".into(),
+        },
+        RouteProperty::Size {
+            width: 1,
+            height: MAX_ROUTE_PIXELS,
+        },
+        RouteProperty::Rotation { value: 90 },
+        RouteProperty::Rotation { value: 270 },
+        RouteProperty::Scaling {
+            value: RouteScaling::Centre,
+        },
+    ] {
+        let after = round_trip(&ws, route_prop(1, property.clone()));
+        let fp = route_prop(1, property).footprint();
+        assert!(fp.is_model_wide());
+        let mut client = ws.clone();
+        let (u, d) = model_changes(&after, &fp);
+        client.apply_changes(&u, &d).unwrap();
+        assert_eq!(client, after);
+    }
+    for (command, after) in [
+        (
+            Command::AddRoute {
+                index: 2,
+                route: route_n(3),
+                regions: Vec::new(),
+            },
+            &added,
+        ),
+        (
+            Command::MoveRoute {
+                id: route_n(2).id,
+                index: 0,
+            },
+            &moved,
+        ),
+    ] {
+        let mut client = ws.clone();
+        let (u, d) = model_changes(after, &command.footprint());
+        client.apply_changes(&u, &d).unwrap();
+        assert_eq!(&client, after);
+    }
+}
+
+/// A route a damaged show file holds with a blank name can still be turned, resized and scaled;
+/// only a name typed for it is checked as a name.
+#[test]
+fn a_route_loaded_with_a_blank_name_can_still_be_edited() {
+    let mut ws = two_route_workspace();
+    ws.routes[0].name = String::new();
+    for property in [
+        RouteProperty::Rotation { value: 90 },
+        RouteProperty::Size {
+            width: 1280,
+            height: 720,
+        },
+        RouteProperty::Scaling {
+            value: RouteScaling::Fit,
+        },
+    ] {
+        round_trip(&ws, route_prop(1, property));
+    }
+    assert!(matches!(
+        refused(
+            &ws,
+            route_prop(1, RouteProperty::Name { value: " ".into() })
+        ),
+        CommandError::InvalidValue(_)
+    ));
+}
+
+/// R9: removing a route its regions use is allowed; they are left with none (assumed), and the
+/// undo brings the route back at its place with them on it, exactly. A client following the
+/// model changes sees the same.
+#[test]
+fn removing_a_route_leaves_its_regions_with_none_and_undo_puts_them_back() {
+    let ws = two_route_workspace();
+    let removed = round_trip(&ws, Command::RemoveRoute { id: route_n(2).id });
+    assert_eq!(removed.routes, vec![route_n(1)]);
+    assert_eq!(removed.stages[0].regions[0].route, Some(route_n(1).id));
+    assert_eq!(removed.stages[0].regions[1].route, None);
+    let fp = Command::RemoveRoute { id: route_n(2).id }.footprint();
+    let (u, d) = model_changes(&removed, &fp);
+    assert!(d.contains(&Delete::Route { id: route_n(2).id }));
+    let mut client = ws.clone();
+    client.apply_changes(&u, &d).unwrap();
+    assert_eq!(client, removed);
+    // The inverse is an add that takes the regions back.
+    let mut work = ws.clone();
+    let inverse = work
+        .apply(Command::RemoveRoute { id: route_n(2).id })
+        .unwrap();
+    assert_eq!(
+        inverse,
+        Command::AddRoute {
+            index: 1,
+            route: route_n(2),
+            regions: vec![region_n(2, None, 0, 1).id],
+        }
+    );
+    let (u, d) = model_changes(&ws, &inverse.footprint());
+    let mut client = removed.clone();
+    client.apply_changes(&u, &d).unwrap();
+    assert_eq!(client, ws);
+}
+
+/// R2, R4: limits hold on every path that makes or changes a route (load: `validation.rs`). A
+/// refusal changes nothing; two routes may share a name; the same value is no edit.
+#[test]
+fn bad_route_edits_are_refused_and_the_same_value_is_no_edit() {
+    let ws = two_route_workspace();
+    assert!(matches!(
+        refused(
+            &ws,
+            Command::AddRoute {
+                index: 0,
+                route: route_n(1),
+                regions: Vec::new(),
+            }
+        ),
+        CommandError::DuplicateRouteId(_)
+    ));
+    assert!(matches!(
+        refused(
+            &ws,
+            Command::AddRoute {
+                index: 3,
+                route: route_n(3),
+                regions: Vec::new(),
+            }
+        ),
+        CommandError::IndexOutOfRange { .. }
+    ));
+    let bad = |f: &dyn Fn(&mut OutputRoute)| {
+        let mut r = route_n(3);
+        f(&mut r);
+        r
+    };
+    for route in [
+        bad(&|r| r.width = 0),
+        bad(&|r| r.height = MAX_ROUTE_PIXELS + 1),
+        bad(&|r| r.rotation = 45),
+        bad(&|r| r.name = String::new()),
+        bad(&|r| r.name = "  ".into()),
+        bad(&|r| r.name = "a\u{7}".into()),
+    ] {
+        assert!(matches!(
+            refused(
+                &ws,
+                Command::AddRoute {
+                    index: 0,
+                    route,
+                    regions: Vec::new(),
+                }
+            ),
+            CommandError::InvalidValue(_)
+        ));
+    }
+    // A region given back must exist and have no route already.
+    for regions in [
+        vec![region_n(9, None, 0, 1).id],
+        vec![region_n(1, None, 0, 1).id],
+    ] {
+        assert!(matches!(
+            refused(
+                &ws,
+                Command::AddRoute {
+                    index: 0,
+                    route: route_n(3),
+                    regions,
+                }
+            ),
+            CommandError::RegionNotFound(_) | CommandError::InvalidValue(_)
+        ));
+    }
+    let mut full = workspace(vec![]);
+    full.routes = (0..MAX_ROUTES as u128).map(|n| route_n(100 + n)).collect();
+    assert!(matches!(
+        refused(
+            &full,
+            Command::AddRoute {
+                index: 0,
+                route: route_n(3),
+                regions: Vec::new(),
+            }
+        ),
+        CommandError::InvalidValue(_)
+    ));
+    for property in [
+        RouteProperty::Name {
+            value: String::new(),
+        },
+        RouteProperty::Size {
+            width: 0,
+            height: 1080,
+        },
+        RouteProperty::Size {
+            width: 1920,
+            height: MAX_ROUTE_PIXELS + 1,
+        },
+        RouteProperty::Rotation { value: 360 },
+    ] {
+        assert!(matches!(
+            refused(&ws, route_prop(1, property)),
+            CommandError::InvalidValue(_)
+        ));
+    }
+    assert!(matches!(
+        refused(&ws, Command::RemoveRoute { id: route_n(9).id }),
+        CommandError::RouteNotFound(_)
+    ));
+    // Two routes may share a name (as two stages may).
+    round_trip(
+        &ws,
+        route_prop(
+            2,
+            RouteProperty::Name {
+                value: "Output 1".into(),
+            },
+        ),
+    );
+    let mut work = ws.clone();
+    let mut history = History::new();
+    for same in [
+        route_prop(1, RouteProperty::Rotation { value: 0 }),
+        route_prop(
+            1,
+            RouteProperty::Scaling {
+                value: RouteScaling::Fill,
+            },
+        ),
+        Command::MoveRoute {
+            id: route_n(1).id,
+            index: 0,
+        },
+    ] {
+        assert!(!history.execute(&mut work, same).unwrap());
+    }
+}
+
+/// G2, G3, G5, G7: regions are added, removed and edited (bounds, route), each one exact undo
+/// step; a region outside its stage, on a route the workspace lacks, past 16, or with an id in
+/// use anywhere is refused and changes nothing.
+#[test]
+fn regions_can_be_added_removed_and_edited_within_their_stage() {
+    let ws = two_route_workspace();
+    let added = round_trip(
+        &ws,
+        Command::AddRegion {
+            stage: stage_n(1).id,
+            index: 2,
+            region: Region::whole(region_n(3, None, 0, 1).id, Some(route_n(2).id), 3840, 1080),
+        },
+    );
+    assert_eq!(added.stages[0].regions.len(), 3);
+    let removed = round_trip(
+        &ws,
+        Command::RemoveRegion {
+            stage: stage_n(1).id,
+            id: region_n(2, None, 0, 1).id,
+        },
+    );
+    assert_eq!(removed.stages[0].regions.len(), 1);
+    let none = round_trip(
+        &ws,
+        region_prop(1, 2, RegionProperty::Route { value: None }),
+    );
+    assert_eq!(none.stages[0].regions[1].route, None);
+    let moved = round_trip(
+        &ws,
+        region_prop(
+            1,
+            2,
+            RegionProperty::Bounds {
+                x: 3839,
+                y: 1079,
+                width: 1,
+                height: 1,
+            },
+        ),
+    );
+    assert_eq!(moved.stages[0].regions[1].x, 3839);
+    for (command, after) in [
+        (
+            region_prop(1, 2, RegionProperty::Route { value: None }),
+            &none,
+        ),
+        (
+            Command::RemoveRegion {
+                stage: stage_n(1).id,
+                id: region_n(2, None, 0, 1).id,
+            },
+            &removed,
+        ),
+    ] {
+        let mut client = ws.clone();
+        let (u, d) = model_changes(after, &command.footprint());
+        client.apply_changes(&u, &d).unwrap();
+        assert_eq!(&client, after);
+    }
+    for bounds in [
+        (1, 0, 3840, 1080),
+        (0, 1, 3840, 1080),
+        (0, 0, 0, 1080),
+        (0, 0, 10, 0),
+        (u32::MAX, 0, 2, 1),
+    ] {
+        let (x, y, width, height) = bounds;
+        assert!(matches!(
+            refused(
+                &ws,
+                region_prop(
+                    1,
+                    2,
+                    RegionProperty::Bounds {
+                        x,
+                        y,
+                        width,
+                        height
+                    }
+                )
+            ),
+            CommandError::InvalidValue(_)
+        ));
+    }
+    assert!(matches!(
+        refused(
+            &ws,
+            region_prop(
+                1,
+                2,
+                RegionProperty::Route {
+                    value: Some(route_n(9).id)
+                }
+            )
+        ),
+        CommandError::InvalidValue(_)
+    ));
+    let add = |region: Region| Command::AddRegion {
+        stage: stage_n(1).id,
+        index: 0,
+        region,
+    };
+    assert!(matches!(
+        refused(&ws, add(region_n(1, None, 0, 10))),
+        CommandError::DuplicateRegionId(_)
+    ));
+    assert!(matches!(
+        refused(&ws, add(region_n(5, None, 3000, 1000))),
+        CommandError::InvalidValue(_)
+    ));
+    assert!(matches!(
+        refused(&ws, add(region_n(5, Some(9), 0, 10))),
+        CommandError::InvalidValue(_)
+    ));
+    let mut full = ws.clone();
+    full.stages[0].regions = (0..MAX_REGIONS as u128)
+        .map(|n| region_n(100 + n, None, 0, 1))
+        .collect();
+    assert!(matches!(
+        refused(&full, add(region_n(5, None, 0, 10))),
+        CommandError::InvalidValue(_)
+    ));
+    // A region id is unique in the workspace, not only on its stage.
+    let mut other = ws.clone();
+    other.stages.push(stage_n(2));
+    assert!(matches!(
+        refused(
+            &other,
+            Command::AddRegion {
+                stage: stage_n(2).id,
+                index: 0,
+                region: region_n(1, None, 0, 10),
+            }
+        ),
+        CommandError::DuplicateRegionId(_)
+    ));
+    assert!(matches!(
+        refused(
+            &ws,
+            Command::RemoveRegion {
+                stage: stage_n(1).id,
+                id: region_n(9, None, 0, 1).id,
+            }
+        ),
+        CommandError::RegionNotFound(_)
+    ));
+    let mut work = ws.clone();
+    let mut history = History::new();
+    let same = region_prop(
+        1,
+        2,
+        RegionProperty::Route {
+            value: Some(route_n(2).id),
+        },
+    );
+    assert!(!history.execute(&mut work, same).unwrap());
+}
+
+/// A stage added with regions has them checked as an added region is: inside it, on routes the
+/// workspace has, ids unused, at most 16.
+#[test]
+fn a_stage_added_with_regions_has_them_checked() {
+    let ws = two_route_workspace();
+    let with = |regions: Vec<Region>| {
+        let mut stage = stage_n(2);
+        stage.regions = regions;
+        Command::AddStage { index: 1, stage }
+    };
+    let added = round_trip(&ws, with(vec![region_n(5, Some(1), 0, 1920)]));
+    assert_eq!(added.stages[1].regions.len(), 1);
+    for (regions, duplicate) in [
+        (vec![region_n(5, Some(9), 0, 1920)], false),
+        (vec![region_n(5, None, 1, 1920)], false),
+        (
+            vec![region_n(5, None, 0, 10), region_n(5, None, 0, 10)],
+            false,
+        ),
+        (
+            (0..=MAX_REGIONS as u128)
+                .map(|n| region_n(100 + n, None, 0, 1))
+                .collect(),
+            false,
+        ),
+        (vec![region_n(1, None, 0, 10)], true),
+    ] {
+        let error = refused(&ws, with(regions));
+        assert!(
+            matches!(
+                (&error, duplicate),
+                (CommandError::InvalidValue(_), false) | (CommandError::DuplicateRegionId(_), true)
+            ),
+            "{error:?}"
+        );
+    }
+}
+
+/// G6: a stage's resize scales its regions with it; one undo puts back the size and the regions
+/// exactly, even where the scaling rounded. Regions given with a resize must be the stage's own.
+#[test]
+fn resizing_a_stage_scales_its_regions_and_one_undo_restores_both() {
+    let ws = two_route_workspace();
+    let half = round_trip(
+        &ws,
+        stage_prop(
+            1,
+            StageProperty::Size {
+                width: 1920,
+                height: 1080,
+                regions: None,
+            },
+        ),
+    );
+    let a = &half.stages[0].regions[0];
+    assert_eq!((a.x, a.y, a.width, a.height), (0, 0, 960, 1080));
+    let b = &half.stages[0].regions[1];
+    assert_eq!((b.x, b.width), (960, 960));
+    // An odd size rounds; the undo is exact all the same.
+    let odd = round_trip(
+        &ws,
+        stage_prop(
+            1,
+            StageProperty::Size {
+                width: 7,
+                height: 3,
+                regions: None,
+            },
+        ),
+    );
+    for r in &odd.stages[0].regions {
+        assert!(r.inside((7, 3)), "{r:?}");
+    }
+    let tiny = round_trip(
+        &ws,
+        stage_prop(
+            1,
+            StageProperty::Size {
+                width: 1,
+                height: 1,
+                regions: None,
+            },
+        ),
+    );
+    assert!(tiny.stages[0].regions.iter().all(|r| r.inside((1, 1))));
+    let mut foreign = ws.clone();
+    foreign.stages[0].regions.pop();
+    assert!(matches!(
+        refused(
+            &foreign,
+            stage_prop(
+                1,
+                StageProperty::Size {
+                    width: 3840,
+                    height: 1080,
+                    regions: Some(ws.stages[0].regions.clone()),
+                },
+            )
+        ),
+        CommandError::InvalidValue(_)
+    ));
+}
+
+/// A new route's name is the next free "Output N".
+#[test]
+fn a_new_route_is_named_after_the_highest_output_number() {
+    assert_eq!(next_route_name(&[]), "Output 1");
+    let mut routes = vec![route_n(1), route_n(4)];
+    assert_eq!(next_route_name(&routes), "Output 5");
+    routes[1].name = "Projector".into();
+    assert_eq!(next_route_name(&routes), "Output 2");
+}
+
+/// #813 U1: each route, region and stage edit is one undo step with a name (a region's new
+/// bounds are a resize when its size changes, else a move); undo and redo keep the step's name,
+/// a coalesced gesture keeps its first edit's, and an unnamed edit has none.
+#[test]
+fn route_region_and_stage_steps_are_named_through_undo_and_redo() {
+    let mut ws = two_route_workspace();
+    let mut history = History::new();
+    let bounds = |x, width| RegionProperty::Bounds {
+        x,
+        y: 0,
+        width,
+        height: 1080,
+    };
+    let steps = [
+        (
+            Command::AddRoute {
+                index: 2,
+                route: route_n(3),
+                regions: Vec::new(),
+            },
+            StepName::AddRoute,
+        ),
+        (
+            route_prop(
+                3,
+                RouteProperty::Name {
+                    value: "Cyc".into(),
+                },
+            ),
+            StepName::RenameRoute,
+        ),
+        (
+            route_prop(
+                3,
+                RouteProperty::Size {
+                    width: 1280,
+                    height: 720,
+                },
+            ),
+            StepName::ResizeRoute,
+        ),
+        (
+            route_prop(3, RouteProperty::Rotation { value: 90 }),
+            StepName::RotateRoute,
+        ),
+        (
+            route_prop(
+                3,
+                RouteProperty::Scaling {
+                    value: RouteScaling::Fit,
+                },
+            ),
+            StepName::RouteScaling,
+        ),
+        (
+            Command::MoveRoute {
+                id: route_n(3).id,
+                index: 0,
+            },
+            StepName::MoveRoute,
+        ),
+        (region_prop(1, 2, bounds(1920, 960)), StepName::ResizeRegion),
+        (region_prop(1, 2, bounds(2000, 960)), StepName::MoveRegion),
+        (
+            region_prop(
+                1,
+                2,
+                RegionProperty::Route {
+                    value: Some(route_n(3).id),
+                },
+            ),
+            StepName::RegionRoute,
+        ),
+        (
+            Command::RemoveRegion {
+                stage: stage_n(1).id,
+                id: region_n(2, None, 0, 1).id,
+            },
+            StepName::RemoveRegion,
+        ),
+        (
+            Command::RemoveRoute { id: route_n(3).id },
+            StepName::RemoveRoute,
+        ),
+        (
+            stage_prop(1, StageProperty::Layer { value: 5 }),
+            StepName::StageLayer,
+        ),
+    ];
+    for (command, name) in steps.iter().cloned() {
+        assert!(history.execute(&mut ws, command).unwrap());
+        assert_eq!(history.undo_name(), Some(name));
+        assert_eq!(history.redo_name(), None);
+    }
+    // Undone one by one, each name moves to redo; redone, back to undo.
+    for (_, name) in steps.iter().rev() {
+        assert_eq!(history.undo_name(), Some(*name));
+        assert!(history.undo(&mut ws).unwrap());
+        assert_eq!(history.redo_name(), Some(*name));
+    }
+    assert_eq!(history.undo_name(), None);
+    assert!(history.redo(&mut ws).unwrap());
+    assert_eq!(history.undo_name(), Some(StepName::AddRoute));
+    // A typed gesture is one step under its first edit's name; an unnamed edit has none.
+    for name in ["C", "Cy"] {
+        history
+            .execute_coalescing(
+                &mut ws,
+                route_prop(3, RouteProperty::Name { value: name.into() }),
+                Some("route-name"),
+            )
+            .unwrap();
+    }
+    assert_eq!(history.undo_name(), Some(StepName::RenameRoute));
+    history
+        .execute(
+            &mut ws,
+            Command::RenameCueList {
+                id: list_id(1),
+                name: "Act 1".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(history.undo_name(), None);
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(history.undo_name(), Some(StepName::RenameRoute));
+    // The route editor's OK: several properties of one route in one transaction.
+    let edit = Command::Transaction {
+        commands: vec![
+            route_prop(
+                3,
+                RouteProperty::Size {
+                    width: 800,
+                    height: 600,
+                },
+            ),
+            route_prop(
+                3,
+                RouteProperty::Scaling {
+                    value: RouteScaling::Centre,
+                },
+            ),
+        ],
+    };
+    history.execute(&mut ws, edit).unwrap();
+    assert_eq!(history.undo_name(), Some(StepName::EditRoute));
+    let mixed = Command::Transaction {
+        commands: vec![
+            route_prop(3, RouteProperty::Rotation { value: 180 }),
+            route_prop(1, RouteProperty::Rotation { value: 180 }),
+        ],
+    };
+    history.execute(&mut ws, mixed).unwrap();
+    assert_eq!(
+        history.undo_name(),
+        None,
+        "two routes' edits have no one name"
+    );
 }
 
 // ---- Cue lists ----

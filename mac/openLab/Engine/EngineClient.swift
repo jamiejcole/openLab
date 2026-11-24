@@ -470,7 +470,7 @@ extension ClientMessage {
                 .setBufferSize,
                 .listPatchMappings, .preshowCheck, .logTail,
                 .setOutputOverrides,
-                .setShowMode, .setPatchMapping, .listDisplays, .listStageMappings, .setStageMapping,
+                .setShowMode, .setPatchMapping, .listDisplays, .listRouteDisplays, .setRouteDisplay,
                 .setStageMonitor, .sequenceSpan, .snapshot, .copyMedia:
                 return true
             #if DEBUG

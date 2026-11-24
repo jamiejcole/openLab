@@ -1,5 +1,5 @@
 {
-  "about": "A stage's pixel size typed on the Video page (#674): the still playing on Stage 1 (V1), its width typed 1080 (the row and V1's picture follow, the cue plays on), then sizes refused in the page (0, not a number, past the limit) with the reason, and a stage removed while its cue plays refused with the engine's reason (#642); the least window size.",
+  "about": "A stage's pixel size typed in its stage editor (#674, #813 G6): the still playing on Stage 1 (V1), its width typed 1080 (the row, the canvas and V1's picture follow, the cue plays on), then sizes refused in the editor (0, not a number, past the limit) with the reason, and a stage removed while its cue plays refused with the engine's reason (#642); the least window size.",
   "show": "Video",
   "displays": "V1:1920x1080,V2:1280x720",
   "media": {
@@ -13,7 +13,7 @@
     "workspaces": {
       "00000000-0000-0000-0000-0000000000f0": {
         "patches": {},
-        "stages": {
+        "routes": {
           "00000000-0000-0000-0000-0000000000f1": {
             "display": "V1",
             "name": "Virtual V1",
@@ -25,30 +25,103 @@
     }
   },
   "steps": [
-    {"advance": 0.1},
-    {"select": "2"},
-    {"key": "space"},
-    {"advance": 0.5},
-    {"select": "2"},
-    {"shot": "still-playing", "display": "V1"},
-    {"focus": "settings"},
-    {"tab": "video"},
-    {"shot": "video-page", "display": "V1"},
-    {"type": "settings-video-width-1", "text": "1080"},
-    {"advance": 0.3},
-    {"shot": "width-1080", "display": "V1"},
-    {"type": "settings-video-height-1", "text": "0"},
-    {"shot": "height-0-refused"},
-    {"type": "settings-video-width-1", "text": "wide"},
-    {"shot": "width-not-a-number-refused"},
-    {"type": "settings-video-height-2", "text": "16385"},
-    {"shot": "height-past-limit-refused"},
-    {"click": "settings-video-remove-1"},
-    {"advance": 0.3},
-    {"shot": "remove-refused-while-playing", "display": "V1"},
-    {"resize": [520, 540]},
-    {"shot": "least-size"},
-    {"focus": "workspace"},
-    {"shot": "list-still-playing"}
+    {
+      "advance": 0.1
+    },
+    {
+      "select": "2"
+    },
+    {
+      "key": "space"
+    },
+    {
+      "advance": 0.5
+    },
+    {
+      "select": "2"
+    },
+    {
+      "shot": "still-playing",
+      "display": "V1"
+    },
+    {
+      "focus": "settings"
+    },
+    {
+      "tab": "video"
+    },
+    {
+      "shot": "video-page",
+      "display": "V1"
+    },
+    {
+      "click": "settings-video-edit-1"
+    },
+    {
+      "focus": "stage-editor"
+    },
+    {
+      "type": "stage-editor-width",
+      "text": "1080"
+    },
+    {
+      "advance": 0.3
+    },
+    {
+      "shot": "width-1080",
+      "display": "V1"
+    },
+    {
+      "type": "stage-editor-height",
+      "text": "0"
+    },
+    {
+      "shot": "height-0-refused"
+    },
+    {
+      "type": "stage-editor-width",
+      "text": "wide"
+    },
+    {
+      "shot": "width-not-a-number-refused"
+    },
+    {
+      "type": "stage-editor-height",
+      "text": "16385"
+    },
+    {
+      "shot": "height-past-limit-refused"
+    },
+    {
+      "focus": "settings"
+    },
+    {
+      "shot": "row-1080"
+    },
+    {
+      "click": "settings-video-remove-1"
+    },
+    {
+      "advance": 0.3
+    },
+    {
+      "shot": "remove-refused-while-playing",
+      "display": "V1"
+    },
+    {
+      "resize": [
+        520,
+        540
+      ]
+    },
+    {
+      "shot": "least-size"
+    },
+    {
+      "focus": "workspace"
+    },
+    {
+      "shot": "list-still-playing"
+    }
   ]
 }

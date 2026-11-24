@@ -13,17 +13,19 @@ use std::io::BufRead;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::StageId;
-use crate::video::{MAX_STAGES, side_ok};
+use crate::model::{RouteId, StageId};
+use crate::video::{
+    MAX_REGIONS, MAX_ROUTES, MAX_STAGES, RouteScaling, rotation_ok, route_side_ok, side_ok,
+};
 use crate::video_geometry::{PictureParam, PictureRamp, VideoGeometry};
 use crate::video_timing::{PictureFades, PlanPass, picture_run_ok};
 
 /// The link version both ends speak; a stage host answering another version is not used.
-pub const LINK_VERSION: u32 = 6;
+pub const LINK_VERSION: u32 = 7;
 /// Longest line either end accepts, newline excluded: enough for a `stages` set of
-/// [`MAX_LINK_STAGES`] stages whose display ids and monitor titles are all [`MAX_TEXT_BYTES`]
-/// long.
-pub const MAX_LINE_BYTES: usize = 1024 * 1024;
+/// [`MAX_LINK_STAGES`] stages of [`MAX_REGIONS`] regions each whose monitor titles are all
+/// [`MAX_TEXT_BYTES`] long, and [`MAX_LINK_ROUTES`] routes whose display ids are too.
+pub const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 /// Most displays one `displays` message lists.
 pub const MAX_DISPLAYS: usize = 32;
 /// The most frames a second a display may report.
@@ -32,6 +34,8 @@ pub const MAX_DISPLAY_FPS: u32 = 1000;
 pub const MAX_TEXT_BYTES: usize = 512;
 /// Most stages one `stages` message carries: every stage of every open workspace (at most 8).
 pub const MAX_LINK_STAGES: usize = MAX_STAGES * 8;
+/// Most output routes one `stages` message carries: every route of every open workspace.
+pub const MAX_LINK_ROUTES: usize = MAX_ROUTES * 8;
 /// Most points one probe reads.
 pub const MAX_PROBE_POINTS: usize = 64;
 /// Longest media file path a `load` carries, in bytes.
@@ -47,8 +51,12 @@ pub const MAX_CLOCK_RATE: u32 = 384_000;
 pub enum ToStage {
     /// The first message: the link version the engine speaks.
     Hello { version: u32 },
-    /// Every stage the stage host should have, replacing the previous set.
-    Stages { stages: Vec<StageOutput> },
+    /// Every stage and output route the stage host should have, replacing the previous set.
+    Stages {
+        stages: Vec<StageOutput>,
+        #[serde(default)]
+        routes: Vec<RouteOutput>,
+    },
     /// Health check, answered by `pong` with the same `seq`.
     Ping { seq: u64 },
     /// Close every window and exit.
@@ -180,10 +188,12 @@ pub struct StageOutput {
     pub id: StageId,
     pub width: u32,
     pub height: u32,
-    /// The display the stage is shown on (an id from `displays`); `None`: drawn but shown nowhere.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display: Option<String>,
-    /// Black stays up while nothing plays; off, the window is hidden while nothing plays.
+    /// Its regions that are sent to a route, in the stage's order (a region on no route is not
+    /// sent): each is drawn on its route's display. None: drawn nowhere but its monitor.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<RegionOutput>,
+    /// Black stays up over its regions while nothing plays; off, they draw nothing while nothing
+    /// plays.
     pub keep_black: bool,
     /// Stacking rank among all stages, 0 at the bottom: of the stages on one display, a higher
     /// rank is drawn on top (the engine ranks them by layer, then name).
@@ -193,6 +203,33 @@ pub struct StageOutput {
     /// the stage is shown on a display) while the operator has it open; `None`: no monitor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monitor: Option<String>,
+}
+
+/// One region of a stage as the stage host draws it: a rectangle of the stage, in stage pixels
+/// from its top left, that fills `route`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegionOutput {
+    pub route: RouteId,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One output route as the stage host draws it: a raster of `width` x `height` its regions fill,
+/// turned clockwise by `rotation` degrees, then put on `display` by `scaling`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteOutput {
+    pub id: RouteId,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub rotation: u16,
+    #[serde(default)]
+    pub scaling: RouteScaling,
+    /// The display it is shown on (an id from `displays`); `None`: no display on this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 /// A message from the stage host to the engine.
@@ -210,10 +247,10 @@ pub enum FromStage {
     Displays {
         displays: Vec<Display>,
     },
-    /// Where a stage is now, sent whenever that changes.
-    StageStatus {
-        stage: StageId,
-        state: StageState,
+    /// Where an output route is now, sent whenever that changes.
+    RouteStatus {
+        route: RouteId,
+        state: RouteState,
     },
     Pong {
         seq: u64,
@@ -279,15 +316,19 @@ pub struct Display {
     /// 0 when the stage host does not know it.
     #[serde(default)]
     pub fps: u32,
+    /// The main display (the one with the menu bar): a new workspace's route goes there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub main: bool,
 }
 
-/// Where a stage is.
+/// Where an output route is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub enum StageState {
+pub enum RouteState {
     /// Up on `display`.
     Shown { display: String },
-    /// Its window is hidden: keep-black is off and nothing plays on it.
+    /// Nothing is drawn on it: no region on it keeps black and nothing plays there (or no app
+    /// is connected).
     Hidden,
     /// It has no display on this machine.
     NoDisplay,
@@ -467,23 +508,7 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
         ToStage::Pause { action, .. } if !offset_ok(*action) => {
             Err(LinkError::Invalid("picture action time out of range"))
         }
-        ToStage::Stages { stages } => {
-            if stages.len() > MAX_LINK_STAGES {
-                return Err(LinkError::Invalid("too many stages"));
-            }
-            for stage in stages {
-                if !side_ok(stage.width) || !side_ok(stage.height) {
-                    return Err(LinkError::Invalid("stage size out of range"));
-                }
-                if stage.display.as_deref().is_some_and(|d| !text_ok(d)) {
-                    return Err(LinkError::Invalid("bad display id"));
-                }
-                if stage.monitor.as_deref().is_some_and(|t| !text_ok(t)) {
-                    return Err(LinkError::Invalid("bad monitor title"));
-                }
-            }
-            Ok(())
-        }
+        ToStage::Stages { stages, routes } => check_stages(stages, routes),
         #[cfg(feature = "test-support")]
         ToStage::ProbeMonitor {
             width,
@@ -515,16 +540,65 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
     }
 }
 
+fn check_stages(stages: &[StageOutput], routes: &[RouteOutput]) -> Result<(), LinkError> {
+    if stages.len() > MAX_LINK_STAGES {
+        return Err(LinkError::Invalid("too many stages"));
+    }
+    if routes.len() > MAX_LINK_ROUTES {
+        return Err(LinkError::Invalid("too many output routes"));
+    }
+    let mut ids: Vec<RouteId> = routes.iter().map(|r| r.id).collect();
+    ids.sort();
+    if ids.windows(2).any(|w| w.first() == w.get(1)) {
+        return Err(LinkError::Invalid("an output route twice"));
+    }
+    for route in routes {
+        if !route_side_ok(route.width) || !route_side_ok(route.height) {
+            return Err(LinkError::Invalid("output route size out of range"));
+        }
+        if !rotation_ok(route.rotation) {
+            return Err(LinkError::Invalid("output route rotation out of range"));
+        }
+        if route.display.as_deref().is_some_and(|d| !text_ok(d)) {
+            return Err(LinkError::Invalid("bad display id"));
+        }
+    }
+    for stage in stages {
+        if !side_ok(stage.width) || !side_ok(stage.height) {
+            return Err(LinkError::Invalid("stage size out of range"));
+        }
+        if stage.monitor.as_deref().is_some_and(|t| !text_ok(t)) {
+            return Err(LinkError::Invalid("bad monitor title"));
+        }
+        if stage.regions.len() > MAX_REGIONS {
+            return Err(LinkError::Invalid("too many regions"));
+        }
+        for r in &stage.regions {
+            let inside = r.width >= 1
+                && r.height >= 1
+                && r.x.checked_add(r.width).is_some_and(|e| e <= stage.width)
+                && r.y.checked_add(r.height).is_some_and(|e| e <= stage.height);
+            if !inside {
+                return Err(LinkError::Invalid("region outside its stage"));
+            }
+            if ids.binary_search(&r.route).is_err() {
+                return Err(LinkError::Invalid("region on an output route not sent"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_from_stage(message: &FromStage) -> Result<(), LinkError> {
     match message {
         FromStage::Displays { displays } => check_displays(displays),
-        FromStage::StageStatus { state, .. } => match state {
-            StageState::Shown { display } | StageState::DisplayMissing { display }
+        FromStage::RouteStatus { state, .. } => match state {
+            RouteState::Shown { display } | RouteState::DisplayMissing { display }
                 if !text_ok(display) =>
             {
                 Err(LinkError::Invalid("bad display id"))
             }
-            StageState::Failed { reason } if !message_ok(reason) => {
+            RouteState::Failed { reason } if !message_ok(reason) => {
                 Err(LinkError::Invalid("bad reason"))
             }
             _ => Ok(()),
@@ -647,6 +721,31 @@ mod tests {
         StageId(Uuid::from_u128(n))
     }
 
+    fn route(n: u128) -> RouteId {
+        RouteId(Uuid::from_u128(n))
+    }
+
+    fn route_out(n: u128, display: Option<&str>) -> RouteOutput {
+        RouteOutput {
+            id: route(n),
+            width: 1920,
+            height: 1080,
+            rotation: 0,
+            scaling: RouteScaling::Fill,
+            display: display.map(str::to_owned),
+        }
+    }
+
+    fn region_out(n: u128, x: u32, width: u32) -> RegionOutput {
+        RegionOutput {
+            route: route(n),
+            x,
+            y: 0,
+            width,
+            height: 1080,
+        }
+    }
+
     #[test]
     fn messages_survive_a_round_trip_as_one_line() {
         let to = [
@@ -656,13 +755,21 @@ mod tests {
             ToStage::Stages {
                 stages: vec![StageOutput {
                     id: stage(1),
-                    width: 1920,
+                    width: 3840,
                     height: 1080,
-                    display: Some("D1".into()),
+                    regions: vec![region_out(1, 0, 1920), region_out(2, 1920, 1920)],
                     keep_black: true,
                     stack: 3,
                     monitor: Some("Stage 1".into()),
                 }],
+                routes: vec![
+                    route_out(1, Some("D1")),
+                    RouteOutput {
+                        rotation: 270,
+                        scaling: RouteScaling::Centre,
+                        ..route_out(2, None)
+                    },
+                ],
             },
             ToStage::Ping { seq: 7 },
             ToStage::Quit,
@@ -733,11 +840,12 @@ mod tests {
                     width: 3840,
                     height: 2160,
                     fps: 60,
+                    main: true,
                 }],
             },
-            FromStage::StageStatus {
-                stage: stage(1),
-                state: StageState::DisplayMissing {
+            FromStage::RouteStatus {
+                route: route(1),
+                state: RouteState::DisplayMissing {
                     display: "D1".into(),
                 },
             },
@@ -759,22 +867,39 @@ mod tests {
         }
     }
 
-    /// The largest stage set the link allows (every stage with the longest display id) fits in
-    /// one line and reads back.
+    /// The largest stage set the link allows (every stage with every region and the longest
+    /// monitor title, every route with the longest display id) fits in one line and reads back.
     #[test]
     fn the_largest_stage_set_fits_one_line() {
+        let routes: Vec<RouteOutput> = (0..MAX_LINK_ROUTES as u128)
+            .map(|n| RouteOutput {
+                width: crate::MAX_ROUTE_PIXELS,
+                height: crate::MAX_ROUTE_PIXELS,
+                rotation: 270,
+                scaling: RouteScaling::Stretch,
+                ..route_out(u128::MAX - n, Some(&"d".repeat(MAX_TEXT_BYTES)))
+            })
+            .collect();
         let stages: Vec<StageOutput> = (0..MAX_LINK_STAGES as u128)
             .map(|n| StageOutput {
                 id: stage(n),
                 width: crate::MAX_STAGE_PIXELS,
                 height: crate::MAX_STAGE_PIXELS,
-                display: Some("d".repeat(MAX_TEXT_BYTES)),
+                regions: (0..MAX_REGIONS as u128)
+                    .map(|r| RegionOutput {
+                        route: route(u128::MAX - r),
+                        x: crate::MAX_STAGE_PIXELS - 1,
+                        y: crate::MAX_STAGE_PIXELS - 1,
+                        width: 1,
+                        height: 1,
+                    })
+                    .collect(),
                 keep_black: true,
                 stack: u32::MAX,
                 monitor: Some("m".repeat(MAX_TEXT_BYTES)),
             })
             .collect();
-        let message = ToStage::Stages { stages };
+        let message = ToStage::Stages { stages, routes };
         let line = encode(&message).unwrap();
         assert!(line.len() <= MAX_LINE_BYTES + 1, "{} bytes", line.len());
         assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), message);
@@ -1005,6 +1130,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 fps: 0,
+                main: false,
             })
             .collect();
         let line = encode(&FromStage::Displays { displays: many }).unwrap();
@@ -1017,11 +1143,12 @@ mod tests {
                 id: stage(1),
                 width: 0,
                 height: 1080,
-                display: None,
+                regions: Vec::new(),
                 keep_black: true,
                 stack: 0,
                 monitor: None,
             }],
+            routes: Vec::new(),
         };
         let line = encode(&big).unwrap();
         assert_eq!(
@@ -1034,11 +1161,12 @@ mod tests {
                     id: stage(1),
                     width: 1920,
                     height: 1080,
-                    display: None,
+                    regions: Vec::new(),
                     keep_black: false,
                     stack: 0,
                     monitor: Some(title.to_owned()),
                 }],
+                routes: Vec::new(),
             };
             let line = encode(&titled).unwrap();
             assert_eq!(
@@ -1049,6 +1177,109 @@ mod tests {
         }
         let log = r#"{"type":"log","level":"warn","message":"a\u0000b"}"#;
         assert!(decode_from_stage(log.as_bytes()).is_err());
+    }
+
+    /// Routes and regions are checked as they are read: sizes, rotations, display ids, region
+    /// bounds and counts, a region on a route the set lacks, a route twice.
+    #[test]
+    fn routes_and_regions_out_of_range_are_refused() {
+        let set = |regions: Vec<RegionOutput>, routes: Vec<RouteOutput>| ToStage::Stages {
+            stages: vec![StageOutput {
+                id: stage(1),
+                width: 1920,
+                height: 1080,
+                regions,
+                keep_black: true,
+                stack: 0,
+                monitor: None,
+            }],
+            routes,
+        };
+        let refused = |m: ToStage| {
+            let line = encode(&m).unwrap();
+            decode_to_stage(line.as_bytes())
+        };
+        assert!(refused(set(vec![region_out(1, 0, 1920)], vec![route_out(1, None)])).is_ok());
+        let cases = [
+            (
+                set(
+                    vec![],
+                    vec![RouteOutput {
+                        width: 0,
+                        ..route_out(1, None)
+                    }],
+                ),
+                "output route size out of range",
+            ),
+            (
+                set(
+                    vec![],
+                    vec![RouteOutput {
+                        height: crate::MAX_ROUTE_PIXELS + 1,
+                        ..route_out(1, None)
+                    }],
+                ),
+                "output route size out of range",
+            ),
+            (
+                set(
+                    vec![],
+                    vec![RouteOutput {
+                        rotation: 45,
+                        ..route_out(1, None)
+                    }],
+                ),
+                "output route rotation out of range",
+            ),
+            (
+                set(vec![], vec![route_out(1, Some("D\u{7}"))]),
+                "bad display id",
+            ),
+            (
+                set(vec![], vec![route_out(1, None), route_out(1, None)]),
+                "an output route twice",
+            ),
+            (
+                set(vec![region_out(1, 1, 1920)], vec![route_out(1, None)]),
+                "region outside its stage",
+            ),
+            (
+                set(vec![region_out(1, 0, 0)], vec![route_out(1, None)]),
+                "region outside its stage",
+            ),
+            (
+                set(vec![region_out(1, u32::MAX, 2)], vec![route_out(1, None)]),
+                "region outside its stage",
+            ),
+            (
+                set(vec![region_out(2, 0, 1920)], vec![route_out(1, None)]),
+                "region on an output route not sent",
+            ),
+            (
+                set(
+                    vec![region_out(1, 0, 1920); MAX_REGIONS + 1],
+                    vec![route_out(1, None)],
+                ),
+                "too many regions",
+            ),
+            (
+                set(
+                    vec![],
+                    (0..=MAX_LINK_ROUTES as u128)
+                        .map(|n| route_out(n, None))
+                        .collect(),
+                ),
+                "too many output routes",
+            ),
+        ];
+        for (message, why) in cases {
+            assert_eq!(refused(message), Err(LinkError::Invalid(why)), "{why}");
+        }
+        let status = r#"{"type":"route_status","route":"00000000-0000-0000-0000-000000000001","state":{"state":"shown","display":"a\u0007"}}"#;
+        assert_eq!(
+            decode_from_stage(status.as_bytes()),
+            Err(LinkError::Invalid("bad display id"))
+        );
     }
 
     /// Any stage name becomes a title the link takes: control characters go, a long name is cut

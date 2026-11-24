@@ -248,8 +248,8 @@ struct PatchMappingEntry: Hashable, Sendable, Decodable {
     let resolution: WireVariant?
 }
 
-/// VID-01: a display the stage host can show a stage on. `id` is stable across restarts (on
-/// macOS the display's UUID); sizes are pixels.
+/// VID-01: a display the stage host can show an output route on. `id` is stable across restarts
+/// (on macOS the display's UUID); sizes are pixels.
 struct StageDisplay: Hashable, Sendable, Decodable {
     let id: String
     let name: String
@@ -257,16 +257,19 @@ struct StageDisplay: Hashable, Sendable, Decodable {
     let height: UInt32
     /// The display's fastest refresh rate in frames a second; 0 when unknown.
     let fps: UInt32
+    /// The main display (the one with the menu bar): a new workspace's route goes there.
+    let main: Bool
 
-    init(id: String, name: String, width: UInt32, height: UInt32, fps: UInt32 = 0) {
+    init(id: String, name: String, width: UInt32, height: UInt32, fps: UInt32 = 0, main: Bool = false) {
         self.id = id
         self.name = name
         self.width = width
         self.height = height
         self.fps = fps
+        self.main = main
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, width, height, fps }
+    private enum CodingKeys: String, CodingKey { case id, name, width, height, fps, main }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -275,20 +278,21 @@ struct StageDisplay: Hashable, Sendable, Decodable {
         width = try c.decode(UInt32.self, forKey: .width)
         height = try c.decode(UInt32.self, forKey: .height)
         fps = try c.decodeIfPresent(UInt32.self, forKey: .fps) ?? 0
+        main = try c.decodeIfPresent(Bool.self, forKey: .main) ?? false
     }
 }
 
-/// The display one stage is shown on, on this machine, as it was when chosen.
-struct StageMapping: Hashable, Sendable, Decodable {
+/// The display one output route is shown on, on this machine, as it was when chosen.
+struct DisplayChoice: Hashable, Sendable, Decodable {
     let display: String
     let name: String
     let width: UInt32
     let height: UInt32
 }
 
-/// Where a stage is: `shown` (on `display`), `hidden`, `no_display`, `display_missing` (its
-/// `display`), `failed` (with `reason`).
-struct StageState: Hashable, Sendable, Decodable {
+/// Where an output route is: `shown` (on `display`), `hidden`, `no_display`, `display_missing`
+/// (its `display`), `failed` (with `reason`).
+struct RouteState: Hashable, Sendable, Decodable {
     let state: String
     let display: String?
     let reason: String?
@@ -342,41 +346,48 @@ struct MediaCopyFailure: Hashable, Sendable, Decodable {
     let message: String
 }
 
-/// VID-01: what `video_outputs` carries (and `list_displays` with `list_stage_mappings`): the
-/// displays, whether this machine has video output (nil: the stage host has not said), and each
-/// stage's display choice and state.
+/// VID-01: what `video_outputs` carries (and `list_displays` with `list_route_displays`): the
+/// displays, whether this machine has video output (nil: the stage host has not said), each
+/// output route's display choice and state, and each stage's black and monitor.
 struct VideoOutputs: Hashable, Sendable {
     var displays: [StageDisplay] = []
     var video: Bool?
-    var stages: [StageMappingEntry] = []
+    var routes: [RouteEntry] = []
+    var stages: [StageEntry] = []
+
+    func route(_ id: ModelID) -> RouteEntry? { routes.first { $0.route == id } }
+    func stage(_ id: ModelID) -> StageEntry? { stages.first { $0.stage == id } }
 }
 
-struct StageMappingEntry: Hashable, Sendable, Decodable {
-    let stage: ModelID
-    let mapping: StageMapping?
+/// One output route on this machine.
+struct RouteEntry: Hashable, Sendable, Decodable {
+    let route: ModelID
+    let mapping: DisplayChoice?
     /// Nil while the stage host has not said.
-    let state: StageState?
-    /// A keep-black stage whose black a panic took down: hidden between cues until a cue plays
-    /// on it again (absent: false).
+    let state: RouteState?
+}
+
+/// One stage on this machine.
+struct StageEntry: Hashable, Sendable, Decodable {
+    let stage: ModelID
+    /// Its black is down (a panic took it down, or nothing has played on it since the workspace
+    /// opened), whether or not it keeps black now; a keep-black stage draws nothing between cues
+    /// until a cue plays on it again (absent: false).
     var panicked: Bool = false
     /// Its monitor window is open (absent: false).
     var monitor: Bool = false
 
-    init(stage: ModelID, mapping: StageMapping?, state: StageState?, panicked: Bool = false, monitor: Bool = false) {
+    init(stage: ModelID, panicked: Bool = false, monitor: Bool = false) {
         self.stage = stage
-        self.mapping = mapping
-        self.state = state
         self.panicked = panicked
         self.monitor = monitor
     }
 
-    private enum CodingKeys: String, CodingKey { case stage, mapping, state, panicked, monitor }
+    private enum CodingKeys: String, CodingKey { case stage, panicked, monitor }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         stage = try c.decode(ModelID.self, forKey: .stage)
-        mapping = try c.decodeIfPresent(StageMapping.self, forKey: .mapping)
-        state = try c.decodeIfPresent(StageState.self, forKey: .state)
         panicked = try c.decodeIfPresent(Bool.self, forKey: .panicked) ?? false
         monitor = try c.decodeIfPresent(Bool.self, forKey: .monitor) ?? false
     }
@@ -704,7 +715,7 @@ enum ResultData: Sendable, Equatable, Decodable {
     case opened(doc: ModelID)
     /// VID-01: `video` is false where this machine has no video output, nil before the stage host started.
     case displays([StageDisplay], video: Bool?)
-    case stageMappings([StageMappingEntry])
+    case routeDisplays(routes: [RouteEntry], stages: [StageEntry])
     /// Seconds a cue's sequence lasts; nil when its end is not known.
     case sequenceSpan(Double?)
     #if DEBUG
@@ -756,7 +767,10 @@ enum ResultData: Sendable, Equatable, Decodable {
             self = .displays(
                 try c.decode([StageDisplay].self, forKey: "displays"),
                 video: try c.decodeIfPresent(Bool.self, forKey: "video"))
-        case "stage_mappings": self = .stageMappings(try c.decode([StageMappingEntry].self, forKey: "stages"))
+        case "route_displays":
+            self = .routeDisplays(
+                routes: try c.decode([RouteEntry].self, forKey: "routes"),
+                stages: try c.decode([StageEntry].self, forKey: "stages"))
         case "sequence_span": self = .sequenceSpan(try c.decodeIfPresent(Double.self, forKey: "span"))
         #if DEBUG
             case "stage_probe":
@@ -875,7 +889,7 @@ enum ServerMessage: Sendable, Decodable {
     case workspaces([WorkspaceInfo])
     /// The engine closed this connection's workspace; it closes the connection next.
     case closed(doc: ModelID)
-    /// VID-01: the displays and where each of the workspace's stages is, whenever that changes.
+    /// VID-01: the displays and where each of the workspace's routes is, whenever that changes.
     case videoOutputs(VideoOutputs)
     /// WS-04: media is being copied into the show folder.
     case mediaCopyProgress(MediaCopyProgress)
@@ -922,7 +936,7 @@ enum ServerMessage: Sendable, Decodable {
             self = .videoOutputs(
                 VideoOutputs(
                     displays: try d("displays"), video: try c.decodeIfPresent(Bool.self, forKey: "video"),
-                    stages: try d("stages")))
+                    routes: try d("routes"), stages: try d("stages")))
         case "media_copy_progress": self = .mediaCopyProgress(try MediaCopyProgress(from: decoder))
         case "media_copied": self = .mediaCopied(try d("report"))
         default: self = .unknown(type: type)

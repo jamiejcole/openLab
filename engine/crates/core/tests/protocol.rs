@@ -85,6 +85,8 @@ fn snapshot() -> Snapshot {
             dirty: true,
             can_undo: true,
             can_redo: false,
+            undo_name: None,
+            redo_name: None,
             show_mode: false,
         },
         workspace: workspace(vec![sample_cue(), cue(11, fade(10))]),
@@ -309,11 +311,11 @@ fn all_requests() -> Vec<(&'static str, Request)> {
             },
         ),
         ("list_displays", Request::ListDisplays),
-        ("list_stage_mappings", Request::ListStageMappings),
+        ("list_route_displays", Request::ListRouteDisplays),
         (
-            "set_stage_mapping",
-            Request::SetStageMapping {
-                stage: StageId(uuid::Uuid::from_u128(0x80)),
+            "set_route_display",
+            Request::SetRouteDisplay {
+                route: RouteId(uuid::Uuid::from_u128(0x90)),
                 display: Some("37D8832A-2D66-02CA-B9F7-8F30A301B230".into()),
             },
         ),
@@ -1093,22 +1095,31 @@ fn fixtures() -> Vec<(String, Sample)> {
                 width: 1920,
                 height: 1080,
                 fps: 120,
+                main: true,
             }],
             video: Some(true),
-            stages: vec![
-                StageMappingEntry {
-                    stage: StageId(uuid::Uuid::from_u128(0x80)),
+            routes: vec![
+                RouteEntry {
+                    route: RouteId(uuid::Uuid::from_u128(0x90)),
                     mapping: None,
-                    state: Some(openlab_core::stage_link::StageState::DisplayMissing {
+                    state: Some(openlab_core::stage_link::RouteState::DisplayMissing {
                         display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
                     }),
+                },
+                RouteEntry {
+                    route: RouteId(uuid::Uuid::from_u128(0x91)),
+                    mapping: None,
+                    state: Some(openlab_core::stage_link::RouteState::Hidden),
+                },
+            ],
+            stages: vec![
+                StageEntry {
+                    stage: StageId(uuid::Uuid::from_u128(0x80)),
                     panicked: false,
                     monitor: true,
                 },
-                StageMappingEntry {
+                StageEntry {
                     stage: StageId(uuid::Uuid::from_u128(0x81)),
-                    mapping: None,
-                    state: Some(openlab_core::stage_link::StageState::Hidden),
                     panicked: true,
                     monitor: false,
                 },
@@ -1159,6 +1170,10 @@ fn fixtures() -> Vec<(String, Sample)> {
                     index: 0,
                     stage: sample_stage(),
                 },
+                Upsert::Route {
+                    index: 0,
+                    route: sample_route(),
+                },
                 Upsert::Settings {
                     name: "Hamlet".into(),
                     settings: Box::new(workspace(vec![]).settings),
@@ -1172,6 +1187,9 @@ fn fixtures() -> Vec<(String, Sample)> {
                 Delete::Stage {
                     id: StageId(uuid::Uuid::from_u128(0x81)),
                 },
+                Delete::Route {
+                    id: RouteId(uuid::Uuid::from_u128(0x91)),
+                },
             ],
         }),
     );
@@ -1183,6 +1201,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                 dirty: false,
                 can_undo: false,
                 can_redo: false,
+                undo_name: None,
+                redo_name: None,
                 show_mode: false,
             },
         }),
@@ -1194,7 +1214,9 @@ fn fixtures() -> Vec<(String, Sample)> {
                 path: Some("/Users/sam/Shows/Hamlet.openlab".into()),
                 dirty: false,
                 can_undo: true,
-                can_redo: false,
+                can_redo: true,
+                undo_name: Some(StepName::RenameRoute),
+                redo_name: Some(StepName::AddRegion),
                 show_mode: true,
             },
         }),
@@ -1739,6 +1761,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                         width: 3840,
                         height: 2160,
                         fps: 60,
+                        main: false,
                     }],
                     video: Some(true),
                 }),
@@ -1766,42 +1789,48 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
-        "result_stage_mappings",
+        "result_route_displays",
         server(ServerMessage::Result {
             id: rid(62),
             outcome: Outcome::Ok(OkBody {
                 revision: None,
-                data: Some(ResultData::StageMappings {
-                    stages: vec![
-                        StageMappingEntry {
-                            stage: StageId(uuid::Uuid::from_u128(0x80)),
-                            mapping: Some(StageMapping {
+                data: Some(ResultData::RouteDisplays {
+                    routes: vec![
+                        RouteEntry {
+                            route: RouteId(uuid::Uuid::from_u128(0x90)),
+                            mapping: Some(DisplayChoice {
                                 display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
                                 name: "Projector".into(),
                                 width: 3840,
                                 height: 2160,
                             }),
-                            state: Some(openlab_core::stage_link::StageState::Shown {
+                            state: Some(openlab_core::stage_link::RouteState::Shown {
                                 display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
                             }),
-                            panicked: false,
-                            monitor: false,
                         },
-                        StageMappingEntry {
-                            stage: StageId(uuid::Uuid::from_u128(0x81)),
+                        RouteEntry {
+                            route: RouteId(uuid::Uuid::from_u128(0x91)),
                             mapping: None,
-                            state: Some(openlab_core::stage_link::StageState::NoDisplay),
-                            panicked: false,
-                            monitor: false,
+                            state: Some(openlab_core::stage_link::RouteState::NoDisplay),
                         },
-                        StageMappingEntry {
-                            stage: StageId(uuid::Uuid::from_u128(0x82)),
+                        RouteEntry {
+                            route: RouteId(uuid::Uuid::from_u128(0x92)),
+                            mapping: None,
+                            state: Some(openlab_core::stage_link::RouteState::Failed {
+                                reason: "the display gave nothing to draw into".into(),
+                            }),
+                        },
+                        RouteEntry {
+                            route: RouteId(uuid::Uuid::from_u128(0x93)),
                             mapping: None,
                             state: None,
-                            panicked: false,
-                            monitor: false,
                         },
                     ],
+                    stages: vec![StageEntry {
+                        stage: StageId(uuid::Uuid::from_u128(0x80)),
+                        panicked: false,
+                        monitor: false,
+                    }],
                 }),
             }),
         }),
@@ -4118,7 +4147,26 @@ fn sample_stage() -> Stage {
     let mut stage = Stage::new(StageId(uuid::Uuid::from_u128(0x80)), "Stage 1", 1920, 1080);
     stage.keep_black = true;
     stage.layer = 10;
+    stage.regions = vec![sample_region()];
     stage
+}
+
+fn sample_route() -> OutputRoute {
+    let mut route = OutputRoute::new(RouteId(uuid::Uuid::from_u128(0x90)), "Output 1", 1920, 1080);
+    route.rotation = 90;
+    route.scaling = RouteScaling::Fit;
+    route
+}
+
+fn sample_region() -> Region {
+    Region {
+        id: RegionId(uuid::Uuid::from_u128(0xa0)),
+        route: Some(sample_route().id),
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 1080,
+    }
 }
 
 fn model_commands() -> Vec<(String, Command)> {
@@ -4405,6 +4453,7 @@ fn property_commands() -> Vec<(String, Command)> {
         StageProperty::Size {
             width: 3840,
             height: 2160,
+            regions: None,
         },
         StageProperty::KeepBlack { value: true },
         StageProperty::Layer { value: 100 },
@@ -4417,10 +4466,96 @@ fn property_commands() -> Vec<(String, Command)> {
             },
         ));
     }
+    out.push((
+        "set_stage_property_size_with_regions".into(),
+        Command::SetStageProperty {
+            id: sample_stage().id,
+            property: StageProperty::Size {
+                width: 3840,
+                height: 1080,
+                regions: Some(vec![sample_region()]),
+            },
+        },
+    ));
+    out.push((
+        "add_route".into(),
+        Command::AddRoute {
+            index: 0,
+            route: sample_route(),
+            regions: vec![sample_region().id],
+        },
+    ));
+    out.push((
+        "remove_route".into(),
+        Command::RemoveRoute {
+            id: sample_route().id,
+        },
+    ));
+    out.push((
+        "move_route".into(),
+        Command::MoveRoute {
+            id: sample_route().id,
+            index: 1,
+        },
+    ));
+    for property in [
+        RouteProperty::Name {
+            value: "Projector".into(),
+        },
+        RouteProperty::Size {
+            width: 1280,
+            height: 1024,
+        },
+        RouteProperty::Rotation { value: 270 },
+        RouteProperty::Scaling {
+            value: RouteScaling::Centre,
+        },
+    ] {
+        out.push((
+            format!("set_route_property_{}", tag(&property)),
+            Command::SetRouteProperty {
+                id: sample_route().id,
+                property,
+            },
+        ));
+    }
+    out.push((
+        "add_region".into(),
+        Command::AddRegion {
+            stage: sample_stage().id,
+            index: 1,
+            region: sample_region(),
+        },
+    ));
+    out.push((
+        "remove_region".into(),
+        Command::RemoveRegion {
+            stage: sample_stage().id,
+            id: sample_region().id,
+        },
+    ));
+    for property in [
+        RegionProperty::Bounds {
+            x: 960,
+            y: 0,
+            width: 960,
+            height: 540,
+        },
+        RegionProperty::Route { value: None },
+    ] {
+        out.push((
+            format!("set_region_property_{}", tag(&property)),
+            Command::SetRegionProperty {
+                stage: sample_stage().id,
+                id: sample_region().id,
+                property,
+            },
+        ));
+    }
     out
 }
 
-const MODEL_COMMAND_COUNT: usize = 21;
+const MODEL_COMMAND_COUNT: usize = 28;
 /// Index of a model command; `None` for the cue-tree commands. Exhaustive, so a new command
 /// stops compiling here until it has an index and a sample in [`model_commands`].
 fn model_command_idx(c: &Command) -> Option<usize> {
@@ -4457,6 +4592,13 @@ fn model_command_idx(c: &Command) -> Option<usize> {
         Command::RemoveStage { .. } => 18,
         Command::MoveStage { .. } => 19,
         Command::SetStageProperty { .. } => 20,
+        Command::AddRoute { .. } => 21,
+        Command::RemoveRoute { .. } => 22,
+        Command::MoveRoute { .. } => 23,
+        Command::SetRouteProperty { .. } => 24,
+        Command::AddRegion { .. } => 25,
+        Command::RemoveRegion { .. } => 26,
+        Command::SetRegionProperty { .. } => 27,
     })
 }
 
@@ -4891,13 +5033,13 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<u16>().prop_map(|port| Request::SetOscPort { port }),
         any::<bool>().prop_map(|on| Request::SetStandBack { on }),
         Just(Request::ListDisplays),
-        Just(Request::ListStageMappings),
+        Just(Request::ListRouteDisplays),
         any::<u128>().prop_map(|c| Request::SequenceSpan {
             cue: CueId(uuid::Uuid::from_u128(c))
         }),
-        (any::<u128>(), proptest::option::of("[!-~]{1,40}")).prop_map(|(stage, display)| {
-            Request::SetStageMapping {
-                stage: StageId(uuid::Uuid::from_u128(stage)),
+        (any::<u128>(), proptest::option::of("[!-~]{1,40}")).prop_map(|(route, display)| {
+            Request::SetRouteDisplay {
+                route: RouteId(uuid::Uuid::from_u128(route)),
                 display,
             }
         }),

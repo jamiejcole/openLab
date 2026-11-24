@@ -36,6 +36,7 @@ const V0_EXAMPLE: &str = include_str!("../../../fixtures/show/v0-example.openlab
 fn example_older() -> Workspace {
     let mut ws = load_show(EXAMPLE).unwrap().workspace;
     ws.stages.clear();
+    ws.routes.clear();
     for list in &mut ws.cue_lists {
         list.cues
             .retain(|c| !matches!(c.kind, CueKind::Video { .. } | CueKind::Target { .. }));
