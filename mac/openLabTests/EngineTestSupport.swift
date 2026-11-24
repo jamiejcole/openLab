@@ -688,7 +688,8 @@ final class EngineRuns {
 
     /// A copy of the test show `template` as `<name>/<name>.openlab` (its media beside it), the
     /// workspace named `name` with an id of its own; its path.
-    func show(_ template: String, named name: String) throws -> String {
+    /// `storedName`: the name the show stores inside, when it is to differ from the file's.
+    func show(_ template: String, named name: String, storedName: String? = nil) throws -> String {
         let source = try XCTUnwrap(TestEngine.testShows?.appendingPathComponent(template))
         let dir = folder.appendingPathComponent("shows/\(name)", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -696,7 +697,7 @@ final class EngineRuns {
         try FileManager.default.copyItem(at: source, to: dir)
         let original = dir.appendingPathComponent("\(template).openlab")
         var file = try XCTUnwrap(JSONValue.parse(try String(contentsOf: original, encoding: .utf8)))
-        file["workspace"]?.set("name", .string(name))
+        file["workspace"]?.set("name", .string(storedName ?? name))
         file["workspace"]?.set("id", .string(UUID().uuidString.lowercased()))
         try FileManager.default.removeItem(at: original)
         let path = dir.appendingPathComponent("\(name).openlab")

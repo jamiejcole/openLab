@@ -893,7 +893,7 @@ impl DocCopy {
             .is_some_and(|(ws, name)| named(*ws, name))
             || self.mirror.as_ref().is_some_and(|m| {
                 let show = MirrorShow(m);
-                named(show.workspace_id(), show.workspace_name())
+                named(show.workspace_id(), &show.workspace_name())
             })
     }
 }
@@ -1766,7 +1766,7 @@ impl Actor {
                 .iter()
                 .find(|d| d.doc == doc)
                 .and_then(|d| d.mirror.as_ref())
-                .map(|m| MirrorShow(m).workspace_name().to_owned())
+                .map(|m| MirrorShow(m).workspace_name().into_owned())
                 .unwrap_or_default();
             let _ = self.inbox.send(Inbox::Trigger {
                 source: format!("osc {ip}"),

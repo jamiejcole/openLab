@@ -10,6 +10,7 @@ Every I/O function takes its directories as arguments (`AppDirs::new(root)` is i
 The show-file JSON schema and the stored media-path spelling are in `docs/file-format.md` (section 4.3 for media). Wire messages for open/close/recovery are in `docs/protocol.md` ("Opening and closing workspaces").
 
 ## Must not break
+- **A saved doc's workspace name is its file's stem** (`workspace_shown_name`), not the name stored in the show: the `workspaces` list, OSC `/workspaces` and `/workspace/{name}` use it, so Save As renames the doc for them and a reopened file is named the same. The stored name is untouched; a never-saved doc shows it.
 - **Never overwrite a user file.** A save replaces the show file only by an atomic rename of a fresh temp file; a backup or a moved-aside stale file never replaces an existing name (`rename_no_replace`).
 - **Never delete the only copy of work.** Recovery files are removed only after the save that supersedes them has been renamed into place and the folder synced. A failed save leaves them.
 - **A workspace that would not load back is never written**, not even as a backup.

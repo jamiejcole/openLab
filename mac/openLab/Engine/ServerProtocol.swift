@@ -782,18 +782,27 @@ struct WorkspaceInfo: Hashable, Sendable, Decodable {
     init(doc: ModelID, workspaceId: ModelID, name: String, path: String?, dirty: Bool, pathHash: String? = nil) {
         self.doc = doc
         self.workspaceId = workspaceId
-        self.name = name
+        self.name = Self.shownName(stored: name, path: path)
         self.path = path
         self.dirty = dirty
         self.pathHash = pathHash
+    }
+
+    /// The name the app shows (window title, prompts, lists): a saved workspace is named after its
+    /// file, as in QLab, whatever name the show stores inside; a never-saved one keeps the stored name.
+    static func shownName(stored: String, path: String?) -> String {
+        guard let path, !path.isEmpty else { return stored }
+        let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        return stem.isEmpty ? stored : stem
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         doc = ModelID(doc: try c.decode(UInt64.self, forKey: .doc))
         workspaceId = try c.decode(ModelID.self, forKey: .workspaceId)
-        name = try c.decode(String.self, forKey: .name)
+        let stored = try c.decode(String.self, forKey: .name)
         path = try c.decodeIfPresent(String.self, forKey: .path)
+        name = Self.shownName(stored: stored, path: path)
         dirty = try c.decode(Bool.self, forKey: .dirty)
         pathHash = try c.decodeIfPresent(String.self, forKey: .pathHash)
     }

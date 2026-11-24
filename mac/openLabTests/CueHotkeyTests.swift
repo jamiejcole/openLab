@@ -897,43 +897,33 @@ final class CueHotkeyFiringTests: XCTestCase {
         await settle()
         let none = await hotkeys()
         XCTAssertEqual(none, 0)
-        // The workspace status window is its workspace's window: hotkeys fire, and the front
-        // workspace (GO, Save) is the one it belongs to.
+        // The workspace status window is a panel like the settings window: with it key, the
+        // workspace's keys do nothing (the key goes on to the window), and nothing belongs to
+        // a front workspace.
         let status = try XCTUnwrap(app.windows[demoDoc]).statusWindow
         let statusWindow = try XCTUnwrap(status.window)
         app.keyWindow = { statusWindow }
-        XCTAssertTrue(app.frontController?.existingStatusWindow === status)
-        XCTAssertNil(app.handleKeyDown(try event("x")))
-        await assertEventually { await self.hotkeys() == 1 }
-        app.handleKeyUp(try event("x", type: .keyUp))
-        // The list's own keys stay with the list's window: with the status window key, Q (edit a
-        // cue's name) opens no editor in the list behind it, so typing never reaches GO.
+        XCTAssertNil(app.frontController, "the status window is not its workspace's window")
+        let blocked = try event("x")
+        XCTAssertTrue(app.handleKeyDown(blocked) === blocked, "no cue hotkey with the status window key")
         let wc = try XCTUnwrap(app.windows[demoDoc])
         _ = wc.window?.makeFirstResponder(wc.cueList.outlineView)
         let q = try event("q")
         XCTAssertTrue(app.handleKeyDown(q) === q, "not taken as an edit key")
         XCTAssertEqual(wc.cueList.outlineView.editedRow, -1, "no cell editor opened behind the status window")
         XCTAssertFalse(wc.window?.firstResponder is NSText, "the list keeps the focus")
+        await settle()
+        let still = await hotkeys()
+        XCTAssertEqual(still, 0)
+        // With the workspace window key and the status window only open, its keys work.
+        let workspaceWindow = try XCTUnwrap(wc.window)
+        app.keyWindow = { workspaceWindow }
+        XCTAssertNil(app.handleKeyDown(try event("x")))
+        await assertEventually { await self.hotkeys() == 1 }
+        app.handleKeyUp(try event("x", type: .keyUp))
         app.keyWindow = { nil }  // app active, no key window: still fires
         XCTAssertNil(app.handleKeyDown(try event("x")))
         await assertEventually { await self.hotkeys() == 3 }
-    }
-
-    /// The waveform's own keys (M adds a slice) stay with its window: with the workspace's status
-    /// window key, a cue hotkey on M fires even if the waveform behind it had the focus.
-    func testAWaveformKeyBehindTheStatusWindowLeavesTheCueHotkeyToFire() async throws {
-        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord("m").hotkeyJSON, enabled: true)))
-        await assertEventually { self.first.model?.cue(self.intro)?.raw["triggers"]?["hotkey"] != .null }
-        let wc = try XCTUnwrap(app.windows[demoDoc])
-        let wave = WaveformView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
-        wc.window?.contentView?.addSubview(wave)
-        defer { wave.removeFromSuperview() }
-        _ = wc.window?.makeFirstResponder(wave)
-        XCTAssertTrue(wc.window?.firstResponder === wave)
-        let status = try XCTUnwrap(wc.statusWindow.window)
-        app.keyWindow = { status }
-        XCTAssertNil(app.handleKeyDown(try event("m")), "the cue hotkey takes M")
-        await assertEventually { await self.hotkeys() == 1 }
     }
 
     func testEscStillPanicsWhateverTheCueHotkeys() async throws {
