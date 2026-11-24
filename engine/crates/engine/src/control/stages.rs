@@ -344,8 +344,21 @@ impl Control {
         if unchanged {
             return;
         }
-        // A route's name or guide colour is in `video_outputs` too, shown or not.
-        self.eng.stages.push_due = true;
+        // A route's guide colour is in `video_outputs` too, shown or not, so an edit to a doc's
+        // routes or stages pushes even when the stage host's set stays the same. A doc opened
+        // or closed alone does not: an opened doc's connections get theirs when they bind, and
+        // the other docs' pushes would carry nothing new.
+        let edited = self.eng.stages.synced.as_ref().is_some_and(|(docs, ..)| {
+            docs.iter().any(|(id, stages, routes, guides)| {
+                self.docs.iter().any(|d| {
+                    d.id == *id
+                        && (*stages != d.model.ws().stages
+                            || *routes != d.model.ws().routes
+                            || *guides != d.guides)
+                })
+            })
+        });
+        self.eng.stages.push_due |= edited;
         self.eng.stages.synced = Some((
             self.docs
                 .iter()
