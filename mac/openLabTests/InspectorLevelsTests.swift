@@ -185,7 +185,7 @@ final class InspectorLevelsTests: XCTestCase {
     ) throws {
         XCTAssertEqual(try renderedInputRows(m), n, "rows drawn", file: file, line: line)
         // The captions over the crosspoint section take a band only when there are rows under them.
-        let captions = n > 0 ? LevelMatrixView.captionH : 0
+        let captions = n > 0 ? LevelMatrixView.captionGap + LevelMatrixView.captionH : 0
         XCTAssertEqual(
             m.frame.height, LevelMatrixView.headerH + captions + LevelMatrixView.cellH * CGFloat(n + 1), "frame",
             file: file, line: line)
@@ -217,22 +217,81 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(format.codec, "pcm")
         XCTAssertEqual(format.channels, 1)
         await assertEventually { io.soundLabel.stringValue.hasPrefix("PCM, 1 channel, ") }
-        XCTAssertTrue(io.fileLabel.stringValue.hasSuffix("a.wav"), io.fileLabel.stringValue)
+        // The file is the Basics tab's folder-and-file path control, not a raw path.
+        XCTAssertFalse(io.filePath.isHidden)
+        XCTAssertTrue(io.fileLabel.isHidden, "no raw path text")
+        XCTAssertEqual(io.filePath.url, vc.targetPath.url, "the same file as the Basics tab draws")
+        XCTAssertEqual(io.filePath.pathItems.last?.title, "a.wav")
+        XCTAssertEqual(io.soundTitle.stringValue, loc("inspector.io.fileFormat"))
         XCTAssertFalse(io.soundLabel.isHidden)
         XCTAssertTrue(io.trackPopup.isHidden)
         XCTAssertTrue(io.chooseButton.isEnabled)
+        XCTAssertTrue(io.clearButton.isEnabled)
         XCTAssertEqual(io.videoRows.map(\.isHidden), [true, true], "no picture format or stage")
         XCTAssertEqual(io.patchRow?.isHidden, false)
+        XCTAssertEqual(io.outputFormatRow?.isHidden, false)
+        XCTAssertFalse(io.divider.isHidden)
         vc.view.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(
-            io.fileLabel.convert(io.fileLabel.bounds, to: nil).minY,
-            io.soundLabel.convert(io.soundLabel.bounds, to: nil).maxY - 1, "the file above the format")
+        func frame(_ v: NSView) -> NSRect { v.convert(v.bounds, to: nil) }
+        // Window coordinates run up: the file, its format, the rule, the patch, its format, top to bottom.
+        let order = [io.filePath, io.soundLabel, io.divider, vc.outputPatchPopup, io.outputFormatLabel].map {
+            frame($0).maxY
+        }
+        XCTAssertEqual(order, order.sorted(by: >), "file, format, divider, patch, output format")
+        XCTAssertEqual(
+            frame(io.divider).width, frame(vc.tabView).width, accuracy: 2, "the divider spans the tab")
+        XCTAssertGreaterThan(frame(io.filePath).width, 100, "the path takes the tab's width")
+        XCTAssertEqual(io.soundLabel.stringValue, VideoIOControls.soundText(format))
+        // The labels sit right-aligned in one column over both grids.
+        XCTAssertEqual(io.soundTitle.alignment, .right)
+        // The output format is the patch's output count and the sample rate.
+        vc.clockRate = 48_000
+        vc.render()
+        let outputs = try XCTUnwrap(
+            store.model?.patches.first?.raw["outputs"]?.arrayValue?.count, "the demo patch has outputs")
+        XCTAssertEqual(
+            io.outputFormatLabel.stringValue, VideoIOControls.outputFormatText(outputs: outputs, sampleRate: 48_000))
+        XCTAssertEqual(
+            io.outputFormatLabel.stringValue,
+            String(
+                format: loc("inspector.io.outputFormatText"),
+                String(format: loc("inspector.io.outputs.many"), outputs), "48"))
+        vc.clockRate = nil
+        vc.render()
+        XCTAssertEqual(
+            io.outputFormatLabel.stringValue, VideoIOControls.outputFormatText(outputs: outputs, sampleRate: nil))
 
         showCue(TestSnapshots.radio)
         await rig.sync()
         XCTAssertNil(store.mediaDurations[TestSnapshots.radio], "its file is missing")
         XCTAssertEqual(io.soundLabel.stringValue, loc("inspector.io.formatUnknown"))
-        XCTAssertEqual(io.fileLabel.textColor, .labelColor, "the path still shows")
+        XCTAssertFalse(io.filePath.isHidden, "the path still shows")
+        XCTAssertEqual(io.soundLabel.textColor, .secondaryLabelColor)
+    }
+
+    /// The output-format line's words: a count and a rate, or the count alone while the rate is not known.
+    func testTheOutputFormatLineWords() {
+        XCTAssertEqual(VideoIOControls.outputFormatText(outputs: 2, sampleRate: 48_000), "2 outputs, 48 kHz")
+        XCTAssertEqual(VideoIOControls.outputFormatText(outputs: 1, sampleRate: 44_100), "1 output, 44.1 kHz")
+        XCTAssertEqual(VideoIOControls.outputFormatText(outputs: 8, sampleRate: nil), "8 outputs")
+        XCTAssertEqual(VideoIOControls.outputFormatText(outputs: 8, sampleRate: 0), "8 outputs")
+    }
+
+    /// A cue with no file shows "No file" where the path would be, with its clear button off, and the
+    /// output section (patch, its format, the rule) stays.
+    func testAnAudioCueWithNoFileShowsNoFileInPlaceOfThePath() async throws {
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        guard case .success = await store.send(command: .setProperty(Self.intro, .media(nil))) else {
+            return XCTFail("clearing the file")
+        }
+        await assertEventually { self.vc.videoIO.filePath.isHidden }
+        let io = vc.videoIO
+        XCTAssertFalse(io.fileLabel.isHidden)
+        XCTAssertEqual(io.fileLabel.stringValue, loc("inspector.io.noFile"))
+        XCTAssertFalse(io.clearButton.isEnabled)
+        XCTAssertFalse(io.divider.isHidden)
+        XCTAssertEqual(io.patchRow?.isHidden, false)
     }
 
     func testAMonoFileGivesTheMatrixOneRow() async throws {
@@ -1383,8 +1442,11 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertNil(m.slot(at: NSPoint(x: 5, y: row1)), "a row label")
         XCTAssertNil(m.slot(at: NSPoint(x: 5000, y: 5)))
         XCTAssertNil(m.slot(at: NSPoint(x: LevelMatrixView.headW + 5, y: LevelMatrixView.cellH + 5)), "the names")
-        let caption = LevelMatrixView.cellH + LevelMatrixView.headerH + LevelMatrixView.captionH / 2
+        let caption = LevelMatrixView.captionTop + LevelMatrixView.captionH / 2
         XCTAssertNil(m.slot(at: NSPoint(x: LevelMatrixView.headW + 5, y: caption)), "the captions over the grid")
+        XCTAssertGreaterThan(LevelMatrixView.captionGap, 0, "a gap between the output names and the captions")
+        XCTAssertEqual(
+            LevelMatrixView.captionTop, LevelMatrixView.cellH + LevelMatrixView.headerH + LevelMatrixView.captionGap)
     }
 
     func testGangedOutputsMoveTogether() async throws {

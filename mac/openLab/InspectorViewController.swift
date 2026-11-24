@@ -27,6 +27,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let targetField = TargetField()
     /// A file cue's Target, drawn as a path (shown in place of `targetField` while the cue has a file).
     let targetPath = TargetPathControl()
+    /// The tab the user last chose, for every cue: a cue without it shows its first tab and the choice
+    /// stays (`syncTabs`).
+    var chosenTab: String?
+    /// The sample rate the engine mixes at (the clock device's), for the I/O tab's output format; nil while unknown.
+    var clockRate: UInt32?
+    private var rateSub: AnyCancellable?
     let hotkeyField = HotkeyRecorder()
     let hotkeyClear = NSButton(title: loc("inspector.hotkey.clear"), target: nil, action: nil)
     let secondTriggerPopup = NSPopUpButton()
@@ -555,6 +561,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         connectionSub = store.$connectionState.sink { [weak self] state in  // willSet: use the emitted value
             MainActor.assumeIsolated { self?.updatePreviewButton(connected: state == .connected) }
         }
+        // The output-format line follows the rate the engine mixes at (willSet: use the emitted value).
+        rateSub = store.$status.map { s -> UInt32? in
+            guard let d = s?.device, d.state != .absent, d.sampleRate > 0 else { return nil }
+            return d.sampleRate
+        }.removeDuplicates().sink { [weak self] rate in
+            MainActor.assumeIsolated {
+                guard let self, self.clockRate != rate else { return }
+                self.clockRate = rate
+                if self.isViewLoaded { self.render() }
+            }
+        }
         render()
     }
 
@@ -1078,7 +1095,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             targetField, hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck,
             devampStopCheck,
             devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
-            networkSendButton, videoIO.stagePopup, videoIO.chooseButton, videoIO.trackPopup,
+            networkSendButton, videoIO.stagePopup, videoIO.chooseButton, videoIO.clearButton, videoIO.trackPopup,
             secondTriggerPopup, onReleaseCheck, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck, secondColourCheck, secondColourPopup, autoLoadCheck, skipCheck,
             hotkeyEnableCheck, fadeOthersCheck, fadeOthersScopePopup, fadeOthersTimeField, duckCheck, duckDbField,

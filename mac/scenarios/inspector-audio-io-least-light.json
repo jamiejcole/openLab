@@ -1,0 +1,47 @@
+{
+  "about": "An Audio cue's Basics, I/O and Levels tabs (light, 800 x 517): I/O shows the file as a folder-and-file path with the clear and choose buttons, the file's format, a divider, the output patch with Edit and the output format line; Levels has a gap between the names row and the captions.",
+  "show": "Demo",
+  "appearance": "light",
+  "media": {
+    "media/a.wav": 30
+  },
+  "window": {
+    "width": 800,
+    "height": 517
+  },
+  "steps": [
+    {
+      "advance": 0.1
+    },
+    {
+      "select": "1"
+    },
+    {
+      "tab": "basics"
+    },
+    {
+      "advance": 0.2
+    },
+    {
+      "shot": "basics"
+    },
+    {
+      "tab": "io"
+    },
+    {
+      "advance": 0.2
+    },
+    {
+      "shot": "io"
+    },
+    {
+      "tab": "levels"
+    },
+    {
+      "advance": 0.2
+    },
+    {
+      "shot": "levels"
+    }
+  ]
+}

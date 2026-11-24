@@ -135,7 +135,7 @@ final class InspectorTests: XCTestCase {
     /// What only reads the model or the controls needs no engine (and runs in engine-free runs).
     private static let engineFree = [
         "testEmptyAndMultipleStates", "testShowsTheSelectedCue", "testModeTabIsForGroupsOnly",
-        "testSelectionFollowsTheCueList",
+        "testSelectionFollowsTheCueList", "testTheChosenTab", "testAFallbackDoesNotChange",
         "testUnchangedSelectionMidEditKeepsTextAndMessage", "testDecimalCommaHasItsOwnMessage",
     ]
     private var vc: InspectorViewController!
@@ -317,6 +317,68 @@ final class InspectorTests: XCTestCase {
         XCTAssertEqual(vc.groupModeRadios.map(\.state), [.on, .off, .off, .off, .off], "the demo group is a timeline")
         vc.setSelection([Self.fade])
         XCTAssertFalse(hasMode())
+    }
+
+    private var shownTab: String? { vc.tabView.selectedTabViewItem?.identifier as? String }
+
+    /// A tab chosen with a click on the bar, as the user does.
+    private func clickTab(_ id: String) throws {
+        let button = try XCTUnwrap(vc.tabBar.buttons.first { $0.tabID == id }, id)
+        button.performClick(nil)
+        XCTAssertEqual(shownTab, id)
+    }
+
+    /// The owner's first sequence: an Audio cue on Time & Loops, a Fade (which has no such tab), and
+    /// back to the Audio cue shows Time & Loops again; the Fade shows its first tab meanwhile.
+    func testTheChosenTabSurvivesACueThatLacksIt() throws {
+        vc.setSelection([Self.intro])
+        try clickTab("timeLoops")
+        vc.setSelection([Self.fade])
+        XCTAssertEqual(shownTab, "basics", "a Fade has no Time & Loops: its first tab")
+        vc.setSelection([Self.group])
+        XCTAssertEqual(shownTab, "basics")
+        vc.setSelection([Self.intro])
+        XCTAssertEqual(shownTab, "timeLoops")
+        XCTAssertEqual(vc.tabBar.buttons.filter(\.isChosen).map(\.tabID), ["timeLoops"], "the bar agrees")
+    }
+
+    /// The owner's second sequence: Q1 on Time & Loops, then the user picks I/O on another Audio cue;
+    /// Q1 then shows I/O. The choice is global, not per cue.
+    func testTheChosenTabIsNotPerCue() throws {
+        vc.setSelection([Self.intro])
+        try clickTab("timeLoops")
+        vc.setSelection([Self.door])
+        XCTAssertEqual(shownTab, "timeLoops", "the same tab on another cue of the kind")
+        try clickTab("io")
+        vc.setSelection([Self.intro])
+        XCTAssertEqual(shownTab, "io")
+        vc.setSelection([Self.door])
+        XCTAssertEqual(shownTab, "io")
+    }
+
+    /// A fallback is not a choice: after a cue without the tab, nothing the user did changes it, and a
+    /// tab clicked on that cue (a Fade's Curve) becomes the choice for the cues that have it.
+    func testAFallbackDoesNotChangeTheChosenTab() throws {
+        vc.setSelection([Self.intro])
+        try clickTab("io")
+        vc.setSelection([Self.fade])
+        XCTAssertEqual(shownTab, "basics")
+        vc.setSelection([Self.group])
+        vc.setSelection([Self.intro])
+        XCTAssertEqual(shownTab, "io", "the fallbacks in between left the choice alone")
+        vc.setSelection([Self.fade])
+        try clickTab("curve")
+        vc.setSelection([Self.intro])
+        XCTAssertEqual(shownTab, "basics", "an Audio cue has no Curve tab")
+        vc.setSelection([Self.fade])
+        XCTAssertEqual(shownTab, "curve")
+    }
+
+    func testTheChosenTabPicksFromAListByTheRule() {
+        XCTAssertEqual(InspectorViewController.shownTab(chosen: "io", wanted: ["basics", "io"]), "io")
+        XCTAssertEqual(InspectorViewController.shownTab(chosen: "io", wanted: ["basics", "mode"]), "basics")
+        XCTAssertEqual(InspectorViewController.shownTab(chosen: nil, wanted: ["basics", "mode"]), "basics")
+        XCTAssertNil(InspectorViewController.shownTab(chosen: "io", wanted: []))
     }
 
     /// Group, Mode tab: one choice per mode with a line saying what it does; loop and shuffle only for a playlist.

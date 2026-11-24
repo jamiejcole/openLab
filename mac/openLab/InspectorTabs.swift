@@ -43,13 +43,14 @@ enum InspectorTabs {
 }
 
 extension InspectorViewController {
-    /// Brings the tab view to `wanted` in order, keeping the shown tab when it stays. Idempotent, so a
-    /// model change that keeps the tabs does not touch them (and a typed field keeps its focus).
+    /// Brings the tab view to `wanted` in order, showing the tab the user last chose (`chosenTab`) when
+    /// `wanted` has it, else the first. A fallback does not change the choice, so the next cue that has
+    /// the tab shows it again. Idempotent, so a model change that keeps the tabs does not touch them
+    /// (and a typed field keeps its focus).
     func syncTabs(_ wanted: [String]) {
         guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
         endGestures()  // a drag's view may be about to go; this may render, and so may do what follows
         guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
-        let selected = tabView.selectedTabViewItem
         let byID = Dictionary(
             tabView.tabViewItems.compactMap { i in (i.identifier as? String).map { ($0, i) } },
             uniquingKeysWith: { a, _ in a })
@@ -65,9 +66,17 @@ extension InspectorViewController {
         for id in wanted {
             if let item = byID[id] ?? tabItems[id] { tabView.addTabViewItem(item) }
         }
-        if let selected, tabView.tabViewItems.contains(where: { $0 === selected }) {
-            tabView.selectTabViewItem(selected)
+        if let shown = Self.shownTab(chosen: chosenTab, wanted: wanted),
+            let item = tabView.tabViewItems.first(where: { ($0.identifier as? String) == shown })
+        {
+            tabView.selectTabViewItem(item)
         }
+    }
+
+    /// The tab a tab list shows: the user's last choice when the list has it, else its first tab.
+    static func shownTab(chosen: String?, wanted: [String]) -> String? {
+        if let chosen, wanted.contains(chosen) { return chosen }
+        return wanted.first
     }
 
     /// Draws the tab bar for the tab view's tabs: every title whole, the chosen one marked.

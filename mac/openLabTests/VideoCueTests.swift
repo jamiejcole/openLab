@@ -600,7 +600,9 @@ final class VideoCueTests: XCTestCase {
         inspector.tabView.selectTabViewItem(io)
         let v = inspector.videoIO
         XCTAssertEqual(
-            v.fileLabel.stringValue, folder.appendingPathComponent("media/clip.mov").standardizedFileURL.path)
+            v.filePath.url?.standardizedFileURL.path,
+            folder.appendingPathComponent("media/clip.mov").standardizedFileURL.path)
+        XCTAssertFalse(v.filePath.isHidden)
         await soon("the format") {
             v.formatLabel.stringValue
                 == String(format: loc("inspector.io.videoFormat"), loc("inspector.io.codec.h264"), "288 × 160", "25")
@@ -937,6 +939,8 @@ final class VideoCueTests: XCTestCase {
         let v = inspector.videoIO
         XCTAssertEqual(v.stagePopup.titleOfSelectedItem, "Stage 1", "the stage both share")
         XCTAssertEqual(v.fileLabel.stringValue, loc("inspector.mixed"))
+        XCTAssertTrue(v.filePath.isHidden)
+        XCTAssertFalse(v.fileLabel.isHidden)
         v.stagePopup.selectItem(at: 1)
         XCTAssertTrue(v.stagePopup.sendAction(v.stagePopup.action, to: v.stagePopup.target))
         await soon("both on the side screen") {

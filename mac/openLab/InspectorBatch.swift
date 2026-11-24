@@ -195,9 +195,7 @@ extension InspectorViewController {
         renderBatchSound(cues)
         let v = videoIO
         if Set(cues.map { $0.raw["kind"]?["media"]?.stringValue ?? "" }).count > 1 {
-            v.fileLabel.stringValue = loc("inspector.mixed")
-            v.fileLabel.textColor = .secondaryLabelColor
-            v.fileLabel.toolTip = nil
+            v.showMixedFile()
         }
         if Set(cues.map { store.mediaDurations[$0.id]?.audioFile }).count > 1 {
             v.soundLabel.stringValue = loc("inspector.mixed")
@@ -209,6 +207,7 @@ extension InspectorViewController {
     /// mixed, and the first cue's levels with the levels that differ shown as mixed, over the most
     /// file channels and outputs any of the cues has. After `renderIO` of the first.
     private func renderBatchSound(_ cues: [Cue]) {
+        if let model = store.model { renderOutputFormat(cues, model: model) }
         // A patch that is gone shows no choice, as for one cue; a Video cue's none is the last item.
         showChoice(
             outputPatchPopup, outputPatchChoices, cues.map { $0.raw["kind"]?["patch"]?.stringValue ?? "" },
@@ -245,7 +244,7 @@ extension InspectorViewController {
         renderIO(first, model: model)
         let v = videoIO
         v.soundRow?.isHidden = !allSound
-        v.patchRow?.isHidden = !allSound
+        v.showOutputSection(allSound)
         if allSound {
             renderBatchSound(cues)
             // Each cue's own track, as text: the same on all of them, or mixed.
@@ -272,9 +271,7 @@ extension InspectorViewController {
         if Set(stages).count > 1 { v.stageSizeLabel.stringValue = "" }
         let files = Set(cues.map { $0.raw["kind"]?["media"]?.stringValue ?? "" })
         if files.count > 1 {
-            v.fileLabel.stringValue = loc("inspector.mixed")
-            v.fileLabel.textColor = .secondaryLabelColor
-            v.fileLabel.toolTip = nil
+            v.showMixedFile()
         }
         let formats = Set(cues.map { store.mediaDurations[$0.id]?.picture })
         if formats.count > 1 {

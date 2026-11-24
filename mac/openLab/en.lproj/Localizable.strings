@@ -973,6 +973,10 @@
 "inspector.io.file" = "File";
 "inspector.io.choose" = "Choose…";
 "inspector.io.noFile" = "No file";
+"inspector.io.outputFormat" = "Output format";
+"inspector.io.outputFormatText" = "%@, %@ kHz";
+"inspector.io.outputs.one" = "1 output";
+"inspector.io.outputs.many" = "%d outputs";
 "inspector.io.format" = "Video format";
 "inspector.io.formatUnknown" = "Not read";
 "inspector.io.stage" = "Stage";
@@ -995,6 +999,7 @@
 "inspector.io.still.tiff" = "TIFF";
 "inspector.io.patchNone" = "None";
 "inspector.io.soundFormat" = "Sound format";
+"inspector.io.fileFormat" = "Format";
 "inspector.io.soundFormatText" = "%@, %@, %@ kHz";
 "inspector.io.channels.one" = "1 channel";
 "inspector.io.channels.many" = "%d channels";
