@@ -1514,8 +1514,8 @@ fn request_name(r: &Request) -> &'static str {
         Request::Snapshot => "snapshot",
         Request::Waveform { .. } => "waveform",
         Request::ListDisplays => "list_displays",
-        Request::ListStageMappings => "list_stage_mappings",
-        Request::SetStageMapping { .. } => "set_stage_mapping",
+        Request::ListRouteDisplays => "list_route_displays",
+        Request::SetRouteDisplay { .. } => "set_route_display",
         Request::SetStageMonitor { .. } => "set_stage_monitor",
         #[cfg(feature = "test-support")]
         Request::StageTestCard { .. } => "stage_test_card",
@@ -1686,6 +1686,7 @@ mod tests {
             },
             patches: vec![],
             network_patches: vec![],
+            routes: Vec::new(),
             stages: Vec::new(),
             show_mode: false,
             cue_lists: vec![openlab_core::CueList {

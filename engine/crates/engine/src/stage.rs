@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, never, select};
 use openlab_core::StageId;
 use openlab_core::stage_link::{
-    Display, FromStage, LINK_VERSION, Line, LinkLevel, StageOutput, StageState, ToStage,
-    decode_from_stage, encode, read_line,
+    Display, FromStage, LINK_VERSION, Line, LinkLevel, RouteOutput, RouteState, StageOutput,
+    ToStage, decode_from_stage, encode, read_line,
 };
 
 /// Where the supervisor reads the time for its deadlines and restart counts: the system's
@@ -115,8 +115,8 @@ pub enum StageEvent {
     },
     Displays(Vec<Display>),
     Status {
-        stage: StageId,
-        state: StageState,
+        route: openlab_core::RouteId,
+        state: RouteState,
     },
     /// The stage host is gone: it exited, or was killed for `reason`. `restarting`: another is
     /// being started now; otherwise video output is off until the supervisor retries.
@@ -170,8 +170,24 @@ pub struct StageHost {
     commands: Sender<Order>,
 }
 
+/// Every stage and output route of every open workspace, as the stage host is given them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StageSet {
+    pub stages: Vec<StageOutput>,
+    pub routes: Vec<RouteOutput>,
+}
+
+impl StageSet {
+    fn message(&self) -> ToStage {
+        ToStage::Stages {
+            stages: self.stages.clone(),
+            routes: self.routes.clone(),
+        }
+    }
+}
+
 enum Order {
-    Stages(Vec<StageOutput>),
+    Stages(StageSet),
     /// The operator's app (`ToStage::App`): kept, and given to each stage host that starts
     /// before its stages, so a stage host started while the app is gone never puts a window up.
     App(ToStage),
@@ -203,9 +219,10 @@ impl StageHost {
         Ok(Self { commands })
     }
 
-    /// Sets the stages the stage host shows (every open workspace's), replacing the last set.
-    pub fn set_stages(&self, stages: Vec<StageOutput>) {
-        let _ = self.commands.send(Order::Stages(stages));
+    /// Sets the stages and routes the stage host shows (every open workspace's), replacing the
+    /// last set.
+    pub fn set_stages(&self, set: StageSet) {
+        let _ = self.commands.send(Order::Stages(set));
     }
 
     /// The operator's app connected (with its process id, if known) or gone: told to the
@@ -331,7 +348,7 @@ struct Supervisor {
     config: StageHostConfig,
     commands: Receiver<Order>,
     events: EventSink,
-    stages: Option<Vec<StageOutput>>,
+    stages: Option<StageSet>,
     /// The last `ToStage::App`, given to each stage host before its stages.
     app: Option<ToStage>,
     running: Option<Running>,
@@ -382,11 +399,11 @@ impl Supervisor {
                 });
             select! {
                 recv(self.commands) -> command => match command {
-                    Ok(Order::Stages(stages)) => {
+                    Ok(Order::Stages(set)) => {
                         if self.running.as_ref().is_some_and(|r| r.hello) {
-                            self.write(&ToStage::Stages { stages: stages.clone() });
+                            self.write(&set.message());
                         }
-                        self.stages = Some(stages);
+                        self.stages = Some(set);
                     }
                     Ok(Order::App(message)) => {
                         if self.running.as_ref().is_some_and(|r| r.hello) {
@@ -564,8 +581,8 @@ impl Supervisor {
                 if let Some(app) = self.app.clone() {
                     self.write(&app);
                 }
-                if let Some(stages) = self.stages.clone() {
-                    self.write(&ToStage::Stages { stages });
+                if let Some(message) = self.stages.as_ref().map(StageSet::message) {
+                    self.write(&message);
                 }
                 return;
             }
@@ -576,22 +593,22 @@ impl Supervisor {
                 return;
             }
             FromStage::Displays { displays } => StageEvent::Displays(displays),
-            // Only the stages it was given: an id it made up is dropped, so what it sends cannot
+            // Only the routes it was given: an id it made up is dropped, so what it sends cannot
             // grow the engine's memory.
-            FromStage::StageStatus { stage, .. }
+            FromStage::RouteStatus { route, .. }
                 if !self
                     .stages
                     .as_ref()
-                    .is_some_and(|s| s.iter().any(|o| o.id == stage)) =>
+                    .is_some_and(|s| s.routes.iter().any(|o| o.id == route)) =>
             {
                 return;
             }
-            FromStage::StageStatus { stage, state } => StageEvent::Status { stage, state },
+            FromStage::RouteStatus { route, state } => StageEvent::Status { route, state },
             FromStage::MonitorClosed { stage }
                 if !self
                     .stages
                     .as_ref()
-                    .is_some_and(|s| s.iter().any(|o| o.id == stage)) =>
+                    .is_some_and(|s| s.stages.iter().any(|o| o.id == stage)) =>
             {
                 return;
             }

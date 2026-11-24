@@ -303,9 +303,10 @@ pub struct RouteEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StageEntry {
     pub stage: crate::StageId,
-    /// A stage keeping black whose black a panic took down (QLab 5 manual p. 227): it is hidden
-    /// between cues, as a stage not keeping black is, until a cue plays on it again. Absent:
-    /// `false`.
+    /// The stage's black is down (QLab 5 manual p. 227): a panic took it down, or no picture has
+    /// played on it since its workspace opened. Kept whether or not the stage keeps black now, so
+    /// keep-black ticked again leaves it down; a stage keeping black draws nothing between cues
+    /// until a cue plays on it again. Absent: `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub panicked: bool,
     /// The stage's monitor window is open (`set_stage_monitor`). Absent: `false`.

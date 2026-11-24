@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Platforms with no video output yet (Windows, Linux): the stage host answers the engine,
-//! reports `video: false` and no displays, and every stage fails with that reason. Compiled on
+//! reports `video: false` and no displays, and every route fails with that reason. Compiled on
 //! every platform so its tests run everywhere; used where there is no other.
 
 use openlab_core::stage_link::Display;
@@ -44,10 +44,10 @@ mod tests {
     use crate::host::Host;
     use openlab_core::StageId;
     use openlab_core::stage_link::StageOutput;
-    use openlab_core::stage_link::{FromStage, LINK_VERSION, StageState, ToStage};
+    use openlab_core::stage_link::{FromStage, LINK_VERSION, RouteState, ToStage};
 
     #[test]
-    fn a_platform_without_video_says_so_and_fails_every_stage() {
+    fn a_platform_without_video_says_so_and_fails_every_route() {
         let mut host = Host::new(NoVideo);
         let mut out = Vec::new();
         host.handle(
@@ -63,7 +63,7 @@ mod tests {
             id,
             width: 8,
             height: 8,
-            display: None,
+            regions: Vec::new(),
             keep_black: true,
             stack: 0,
             monitor: Some("Stage".into()),
@@ -71,13 +71,21 @@ mod tests {
         host.handle(
             ToStage::Stages {
                 stages: vec![stage],
+                routes: vec![openlab_core::stage_link::RouteOutput {
+                    id: openlab_core::RouteId(uuid::Uuid::from_u128(1)),
+                    width: 8,
+                    height: 8,
+                    rotation: 0,
+                    scaling: openlab_core::RouteScaling::Fill,
+                    display: None,
+                }],
             },
             &mut out,
         );
         assert!(matches!(
             &out[0],
-            FromStage::StageStatus {
-                state: StageState::Failed { .. },
+            FromStage::RouteStatus {
+                state: RouteState::Failed { .. },
                 ..
             }
         ));

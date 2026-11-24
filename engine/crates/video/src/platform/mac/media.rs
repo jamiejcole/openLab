@@ -2099,7 +2099,7 @@ mod tests {
     #[test]
     fn a_movie_paused_or_loaded_within_a_refresh_of_its_end_trim_draws_the_ranges_last_frame() {
         use crate::host::Host;
-        use crate::host::tests::{Fake, clock, drawn, host, load, send, stage};
+        use crate::host::tests::{Fake, clock, drawn, host, load, send, stage, stages_msg};
         use openlab_core::stage_link::ToStage;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clip.mov");
@@ -2141,12 +2141,7 @@ mod tests {
         let refreshes =
             |from: u64, to: u64| (from * 60 / 1000..to * 60 / 1000).map(|r| r * 1000 / 60);
         let up = |h: &mut Host<Fake>| {
-            send(
-                h,
-                ToStage::Stages {
-                    stages: vec![stage(1, Some("D"), false)],
-                },
-            );
+            send(h, stages_msg(vec![stage(1, Some("D"), false)]));
             load(h, 1, 1);
             send(h, play.clone());
         };

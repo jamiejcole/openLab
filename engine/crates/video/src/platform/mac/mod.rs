@@ -949,6 +949,7 @@ fn virtual_displays(list: &str) -> Option<Vec<Display>> {
                 width: w.parse().ok()?,
                 height: h.parse().ok()?,
                 fps: 60,
+                main: false,
             })
         })
         .collect()

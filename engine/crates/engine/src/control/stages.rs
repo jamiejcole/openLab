@@ -1,22 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Video stages on the control thread (VID-01, VID-12): which display each open workspace's
-//! stages are shown on, handed to the stage host supervisor (`crate::stage`), and what the stage
-//! host says back. The stage host starts with the control loop, so its displays are known when
+//! Video stages and output routes on the control thread (VID-01, VID-12): every open
+//! workspace's stages with their regions, and its routes with the display each is shown on here,
+//! handed to the stage host supervisor (`crate::stage`), and what the stage host says back. The stage host starts with the control loop, so its displays are known when
 //! a new workspace is made; the control thread never waits on it.
 
 use std::collections::{HashMap, HashSet};
 
 use openlab_core::protocol::{
-    ErrorBody, ErrorCode, LogLevel, OkBody, Outcome, RequestId, ResultData, ServerMessage,
-    StageMappingEntry,
+    ErrorBody, ErrorCode, LogLevel, OkBody, Outcome, RequestId, ResultData, RouteEntry,
+    ServerMessage, StageEntry,
 };
-use openlab_core::stage_link::{Display, LinkLevel, StageOutput, StageState};
-use openlab_core::{Command, CommandError, CueKind, CueState, StageId};
+use openlab_core::stage_link::{
+    Display, LinkLevel, RegionOutput, RouteOutput, RouteState, StageOutput,
+};
+use openlab_core::{Command, CommandError, CueKind, CueState, RouteId, StageId};
 
 use super::inbox::reply;
 use super::{Control, DocCx, DocId, Engine, Inbox, ReplyTx, failed, ok};
-use crate::stage::{StageEvent, StageHost};
+use crate::stage::{StageEvent, StageHost, StageSet};
 
 /// What a test probe reads: one stage's own picture, or what a display shows.
 #[cfg(feature = "test-support")]
@@ -38,8 +40,12 @@ const ALIVE_EVERY_MS: i64 = 250;
 /// Log lines from the stage host's reports put in the show log per second.
 const MAX_REPORT_LINES_PER_SECOND: u32 = 20;
 
-/// An open doc's stages, as the stage set was last made from them.
-type DocStages = (DocId, Vec<openlab_core::Stage>);
+/// An open doc's stages and routes, as the stage set was last made from them.
+type DocStages = (
+    DocId,
+    Vec<openlab_core::Stage>,
+    Vec<openlab_core::OutputRoute>,
+);
 
 /// The stage host as the control thread knows it.
 #[derive(Default)]
@@ -52,14 +58,15 @@ pub(super) struct Stages {
     /// What its `hello` said; `None` before the first.
     pub(super) video: Option<bool>,
     displays: Vec<Display>,
-    states: HashMap<StageId, StageState>,
+    /// Where each route is, as the stage host last said.
+    states: HashMap<RouteId, RouteState>,
     /// The stage set last handed to the supervisor.
-    sent: Option<Vec<StageOutput>>,
-    /// What that set was made from: each open doc's stages, [`Stages::mappings`],
+    sent: Option<StageSet>,
+    /// What that set was made from: each open doc's stages and routes, [`Stages::mappings`],
     /// [`Stages::arms`] and [`Stages::monitor_changes`] then. An idle tick finds them
     /// unchanged and does no more.
     synced: Option<(Vec<DocStages>, u64, u64, u64)>,
-    /// Counts changes to this machine's stage display choices.
+    /// Counts changes to this machine's route display choices.
     mappings: u64,
     /// Stages a picture has played on since their workspace opened (or the stage was added)
     /// and its last panic. Only these keep black: a stage covers its display after its first
@@ -119,34 +126,54 @@ impl Engine {
         }
     }
 
-    /// A new workspace's stage: one, "Stage 1", sized as the main display (the first the stage
-    /// host lists) and shown on it on this machine. None while the stage host has listed no
-    /// display yet.
-    pub(super) fn add_display_stages(&mut self, ws: &mut openlab_core::Workspace) {
-        let Some(display) = self.stages.displays.first().cloned() else {
-            return;
-        };
-        let stage = openlab_core::Stage::new(
+    /// A new workspace's video outputs: one route, "Output 1", sized as the main display and
+    /// shown on it on this machine, and one stage, "Stage 1", of that size with one region
+    /// covering it sent to Output 1. With no display listed (none on this machine, or the stage
+    /// host has not listed them yet) the route is 1920 x 1080 on no display.
+    pub(super) fn add_default_outputs(&mut self, ws: &mut openlab_core::Workspace) {
+        let display = (self.stages.displays.iter())
+            .find(|d| d.main)
+            .or_else(|| self.stages.displays.first())
+            .cloned();
+        let (width, height) = display
+            .as_ref()
+            .map_or((1920, 1080), |d| (d.width, d.height));
+        let route = openlab_core::OutputRoute::new(
+            RouteId(super::docs::random_id()),
+            "Output 1",
+            width,
+            height,
+        );
+        let mut stage = openlab_core::Stage::new(
             StageId(super::docs::random_id()),
             "Stage 1".to_string(),
-            display.width,
-            display.height,
+            width,
+            height,
         );
-        let mapping = openlab_core::StageMapping {
-            display: display.id.clone(),
-            name: display.name.clone(),
-            width: display.width,
-            height: display.height,
-        };
-        // A refusal cannot happen for a display the link accepted; the stage then has no
-        // display, which is shown as such.
-        let _ = self
-            .config
-            .machine
-            .set_stage_mapping(ws.id, stage.id, Some(mapping));
-        self.stages.mappings = self.stages.mappings.wrapping_add(1);
+        stage.regions.push(openlab_core::Region::whole(
+            openlab_core::RegionId(super::docs::random_id()),
+            Some(route.id),
+            stage.width,
+            stage.height,
+        ));
+        if let Some(display) = display {
+            let choice = openlab_core::DisplayChoice {
+                display: display.id.clone(),
+                name: display.name.clone(),
+                width: display.width,
+                height: display.height,
+            };
+            // A refusal cannot happen for a display the link accepted; the route then has no
+            // display, which is shown as such.
+            let _ = self
+                .config
+                .machine
+                .set_route_display(ws.id, route.id, Some(choice));
+            self.stages.mappings = self.stages.mappings.wrapping_add(1);
+            self.save_machine();
+        }
+        ws.routes.push(route);
         ws.stages.push(stage);
-        self.save_machine();
     }
 
     /// A log line from the stage host's reports (states, displays, its own log): at most
@@ -273,7 +300,7 @@ impl Engine {
         }
         match &s.sent {
             None => true,
-            Some(sent) => s.up && sent.iter().all(|o| s.states.contains_key(&o.id)),
+            Some(sent) => s.up && sent.routes.iter().all(|o| s.states.contains_key(&o.id)),
         }
     }
 }
@@ -287,8 +314,9 @@ impl Control {
         }
     }
 
-    /// Hands the stage host every open workspace's stages, each with the display this machine
-    /// shows it on, when that set changed. Called every tick; cheap when nothing changed.
+    /// Hands the stage host every open workspace's stages and routes, each route with the display
+    /// this machine shows it on, when that set changed. Called every tick; cheap when nothing
+    /// changed.
     pub(super) fn sync_stages(&mut self) {
         let unchanged =
             self.eng
@@ -303,7 +331,11 @@ impl Control {
                         && docs
                             .iter()
                             .zip(&self.docs)
-                            .all(|((id, stages), d)| *id == d.id && *stages == d.model.ws().stages)
+                            .all(|((id, stages, routes), d)| {
+                                *id == d.id
+                                    && *stages == d.model.ws().stages
+                                    && *routes == d.model.ws().routes
+                            })
                 });
         if unchanged {
             return;
@@ -311,26 +343,59 @@ impl Control {
         self.eng.stages.synced = Some((
             self.docs
                 .iter()
-                .map(|d| (d.id, d.model.ws().stages.clone()))
+                .map(|d| {
+                    let ws = d.model.ws();
+                    (d.id, ws.stages.clone(), ws.routes.clone())
+                })
                 .collect(),
             self.eng.stages.mappings,
             self.eng.stages.arms,
             self.eng.stages.monitor_changes,
         ));
-        let mut outputs = Vec::new();
+        let mut set = StageSet::default();
         for doc in &self.docs {
             let ws = doc.model.ws();
-            for stage in &ws.stages {
-                outputs.push(StageOutput {
-                    id: stage.id,
-                    width: stage.width,
-                    height: stage.height,
+            for route in &ws.routes {
+                // Two open workspaces never share a route id (each is made by its own); if a
+                // copied show did, the first keeps it rather than the whole set being refused.
+                if set.routes.iter().any(|r| r.id == route.id) {
+                    continue;
+                }
+                set.routes.push(RouteOutput {
+                    id: route.id,
+                    width: route.width,
+                    height: route.height,
+                    rotation: route.rotation,
+                    scaling: route.scaling,
                     display: self
                         .eng
                         .config
                         .machine
-                        .stage_mapping(ws.id, stage.id)
+                        .route_display(ws.id, route.id)
                         .map(|m| m.display.clone()),
+                });
+            }
+            for stage in &ws.stages {
+                set.stages.push(StageOutput {
+                    id: stage.id,
+                    width: stage.width,
+                    height: stage.height,
+                    // Only regions sent to a route of this workspace are drawn.
+                    regions: stage
+                        .regions
+                        .iter()
+                        .filter_map(|r| {
+                            let route =
+                                r.route.filter(|id| ws.routes.iter().any(|x| x.id == *id))?;
+                            Some(RegionOutput {
+                                route,
+                                x: r.x,
+                                y: r.y,
+                                width: r.width,
+                                height: r.height,
+                            })
+                        })
+                        .collect(),
                     keep_black: self.eng.keeps_black(stage),
                     stack: 0,
                     monitor: self
@@ -344,6 +409,7 @@ impl Control {
         }
         // A closed workspace's or a removed stage's played picture is forgotten, so the set
         // stays within the stages open, and the workspace opened again starts with none.
+        let outputs = &set.stages;
         self.eng
             .stages
             .armed
@@ -359,32 +425,38 @@ impl Control {
                 .into_iter()
                 .zip(0u32..)
                 .collect();
-        for output in &mut outputs {
+        for output in &mut set.stages {
             output.stack = rank.get(&output.id).copied().unwrap_or(0);
         }
-        if self.eng.stages.sent.as_ref() == Some(&outputs)
-            || (self.eng.stages.sent.is_none() && outputs.is_empty())
+        if self.eng.stages.sent.as_ref() == Some(&set)
+            || (self.eng.stages.sent.is_none() && set.stages.is_empty() && set.routes.is_empty())
         {
             return;
         }
         self.eng.start_stage_host();
         if let Some(host) = &self.eng.stages.host {
-            host.set_stages(outputs.clone());
+            host.set_stages(set.clone());
         }
-        // A stage whose output is new or changed waits for the stage host's word on it again
-        // (a monitor opened or closed does not change where the stage is).
+        // A route whose output, or the regions drawn on it, are new or changed waits for the
+        // stage host's word on it again (a monitor opened or closed changes no route).
         let sent = self.eng.stages.sent.take().unwrap_or_default();
-        let shown = |set: &[StageOutput], id: StageId| {
-            set.iter().find(|o| o.id == id).map(|o| StageOutput {
-                monitor: None,
-                ..o.clone()
-            })
+        let drawn = |set: &StageSet, id: RouteId| {
+            let route = set.routes.iter().find(|o| o.id == id)?.clone();
+            let regions: Vec<(StageId, bool, u32, &RegionOutput)> = (set.stages.iter())
+                .flat_map(|s| {
+                    s.regions
+                        .iter()
+                        .filter(|r| r.route == id)
+                        .map(move |r| (s.id, s.keep_black, s.stack, r))
+                })
+                .collect();
+            Some((route, format!("{regions:?}")))
         };
         self.eng
             .stages
             .states
-            .retain(|id, _| shown(&outputs, *id) == shown(&sent, *id));
-        self.eng.stages.sent = Some(outputs);
+            .retain(|id, _| drawn(&set, *id) == drawn(&sent, *id));
+        self.eng.stages.sent = Some(set);
         self.eng.stages.push_due = true;
     }
 
@@ -429,25 +501,42 @@ impl Control {
         }
     }
 
-    /// `doc`'s `video_outputs`: this machine's displays and where each of its stages is.
+    /// `doc`'s `video_outputs`: this machine's displays, where each of its routes is, and its
+    /// stages' black and monitors.
     fn video_outputs(&self, doc: &super::Doc) -> ServerMessage {
         ServerMessage::VideoOutputs {
             displays: self.eng.stages.displays.clone(),
             video: self.eng.stages.video,
+            routes: self.route_entries(doc),
             stages: self.stage_entries(doc),
         }
     }
 
-    /// Each of `doc`'s stages: its display on this machine and where the stage host says it is.
-    fn stage_entries(&self, doc: &super::Doc) -> Vec<StageMappingEntry> {
+    /// Each of `doc`'s routes: its display on this machine and where the stage host says it is.
+    fn route_entries(&self, doc: &super::Doc) -> Vec<RouteEntry> {
         let ws = doc.model.ws();
-        ws.stages
+        ws.routes
             .iter()
-            .map(|s| StageMappingEntry {
+            .map(|r| RouteEntry {
+                route: r.id,
+                mapping: self.eng.config.machine.route_display(ws.id, r.id).cloned(),
+                state: self.eng.stages.states.get(&r.id).cloned(),
+            })
+            .collect()
+    }
+
+    /// Each of `doc`'s stages: whether its black is down and its monitor open.
+    fn stage_entries(&self, doc: &super::Doc) -> Vec<StageEntry> {
+        doc.model
+            .ws()
+            .stages
+            .iter()
+            .map(|s| StageEntry {
                 stage: s.id,
-                mapping: self.eng.config.machine.stage_mapping(ws.id, s.id).cloned(),
-                state: self.eng.stages.states.get(&s.id).cloned(),
-                panicked: s.keep_black && !self.eng.keeps_black(s),
+                // Whether or not it keeps black now: a stage whose keep-black is ticked again
+                // after a panic took its black down keeps it down until its next picture, and the
+                // app must not put its own black up meanwhile.
+                panicked: !self.eng.stages.armed.contains(&s.id),
                 monitor: self.eng.stages.monitors.contains(&s.id),
             })
             .collect()
@@ -501,22 +590,22 @@ impl Control {
                 self.eng
                     .report_line(LogLevel::Info, format!("displays: {text}"));
             }
-            StageEvent::Status { stage, state } => {
-                // Only stages the stage host was given are kept, so the map stays bounded by
-                // the stages that exist.
+            StageEvent::Status { route, state } => {
+                // Only routes the stage host was given are kept, so the map stays bounded by
+                // the routes that exist.
                 let known = self
                     .eng
                     .stages
                     .sent
                     .as_ref()
-                    .is_some_and(|s| s.iter().any(|o| o.id == stage));
+                    .is_some_and(|s| s.routes.iter().any(|o| o.id == route));
                 if !known {
                     return;
                 }
-                if let Some((level, message)) = self.stage_state_message(stage, &state) {
+                if let Some((level, message)) = self.route_state_message(route, &state) {
                     self.eng.report_line(level, message);
                 }
-                self.eng.stages.states.insert(stage, state);
+                self.eng.stages.states.insert(route, state);
             }
             StageEvent::Stopped {
                 reason,
@@ -612,16 +701,16 @@ impl Control {
         }
     }
 
-    /// The log line for a stage reaching `state`: a warning when it cannot be seen.
-    fn stage_state_message(
+    /// The log line for a route reaching `state`: a warning when it cannot be seen.
+    fn route_state_message(
         &self,
-        stage: StageId,
-        state: &StageState,
+        route: RouteId,
+        state: &RouteState,
     ) -> Option<(LogLevel, String)> {
-        if self.eng.stages.states.get(&stage) == Some(state) {
+        if self.eng.stages.states.get(&route) == Some(state) {
             return None;
         }
-        let name = self.stage_name(stage);
+        let name = self.route_name(route);
         let display_name = |id: &str| {
             self.eng
                 .stages
@@ -631,23 +720,26 @@ impl Control {
                 .map_or_else(|| id.to_owned(), |d| d.name.clone())
         };
         Some(match state {
-            StageState::Shown { display } => (
+            RouteState::Shown { display } => (
                 LogLevel::Info,
-                format!("stage '{name}' is shown on {}", display_name(display)),
+                format!(
+                    "output route '{name}' is shown on {}",
+                    display_name(display)
+                ),
             ),
-            StageState::Hidden if self.eng.app_gone() => (
+            RouteState::Hidden if self.eng.app_gone() => (
                 LogLevel::Info,
-                format!("stage '{name}' is down while the app is gone"),
+                format!("output route '{name}' is down while the app is gone"),
             ),
-            StageState::Hidden => (
+            RouteState::Hidden => (
                 LogLevel::Info,
-                format!("stage '{name}' is hidden while nothing plays on it"),
+                format!("output route '{name}' shows nothing while nothing plays on it"),
             ),
-            StageState::NoDisplay => (
+            RouteState::NoDisplay => (
                 LogLevel::Warn,
-                format!("stage '{name}' has no display on this computer"),
+                format!("output route '{name}' has no display on this computer"),
             ),
-            StageState::DisplayMissing { display } => {
+            RouteState::DisplayMissing { display } => {
                 let named = self
                     .docs
                     .iter()
@@ -655,20 +747,29 @@ impl Control {
                         self.eng
                             .config
                             .machine
-                            .stage_mapping(d.model.ws().id, stage)
+                            .route_display(d.model.ws().id, route)
                     })
                     .find(|m| &m.display == display)
                     .map_or_else(|| display.clone(), |m| m.name.clone());
                 (
                     LogLevel::Warn,
-                    format!("stage '{name}': its display {named} is not connected"),
+                    format!("output route '{name}': its display {named} is not connected"),
                 )
             }
-            StageState::Failed { reason } => (
+            RouteState::Failed { reason } => (
                 LogLevel::Warn,
-                format!("stage '{name}' cannot be shown: {reason}"),
+                format!("output route '{name}' cannot be shown: {reason}"),
             ),
         })
+    }
+
+    /// The name of `route` in whichever open workspace has it (its id if none does).
+    fn route_name(&self, route: RouteId) -> String {
+        self.docs
+            .iter()
+            .flat_map(|d| d.model.ws().routes.iter())
+            .find(|r| r.id == route)
+            .map_or_else(|| route.to_string(), |r| r.name.clone())
     }
 
     /// The name of `stage` in whichever open workspace has it (its id if none does).
@@ -753,8 +854,8 @@ impl Control {
         );
     }
 
-    /// `list_stage_mappings`, for doc `doc`.
-    pub(super) fn list_stage_mappings(&mut self, doc: DocId, id: RequestId, to: &ReplyTx) {
+    /// `list_route_displays`, for doc `doc`.
+    pub(super) fn list_route_displays(&mut self, doc: DocId, id: RequestId, to: &ReplyTx) {
         let Some(d) = self.docs.iter().find(|d| d.id == doc) else {
             return reply(
                 to,
@@ -764,29 +865,30 @@ impl Control {
                 ),
             );
         };
-        let stages = self.stage_entries(d);
+        let (routes, stages) = (self.route_entries(d), self.stage_entries(d));
         reply(
             to,
             ServerMessage::Result {
                 id,
                 outcome: Outcome::Ok(OkBody {
                     revision: None,
-                    data: Some(ResultData::StageMappings { stages }),
+                    data: Some(ResultData::RouteDisplays { routes, stages }),
                 }),
             },
         );
     }
 
-    /// `set_stage_mapping`, for doc `doc`: the display must be one the stage host lists now.
-    pub(super) fn set_stage_mapping(
+    /// `set_route_display`, for doc `doc`: the display must be one the stage host lists now.
+    /// Not an undo step: the choice belongs to this machine.
+    pub(super) fn set_route_display(
         &mut self,
         doc: DocId,
         id: RequestId,
-        stage: StageId,
+        route: RouteId,
         display: Option<String>,
         to: &ReplyTx,
     ) {
-        let outcome = self.apply_stage_mapping(doc, stage, display);
+        let outcome = self.apply_route_display(doc, route, display);
         reply(
             to,
             match outcome {
@@ -796,10 +898,10 @@ impl Control {
         );
     }
 
-    fn apply_stage_mapping(
+    fn apply_route_display(
         &mut self,
         doc: DocId,
-        stage: StageId,
+        route: RouteId,
         display: Option<String>,
     ) -> Result<(), ErrorBody> {
         let d = self
@@ -810,12 +912,12 @@ impl Control {
         let ws = d.model.ws();
         let workspace = ws.id;
         let name = ws
-            .stages
+            .routes
             .iter()
-            .find(|s| s.id == stage)
-            .map(|s| s.name.clone())
-            .ok_or_else(|| ErrorBody::new(ErrorCode::NotFound, "no such stage"))?;
-        let mapping = match display {
+            .find(|r| r.id == route)
+            .map(|r| r.name.clone())
+            .ok_or_else(|| ErrorBody::new(ErrorCode::NotFound, "no such output route"))?;
+        let choice = match display {
             None => None,
             Some(display) => {
                 let found = self
@@ -827,7 +929,7 @@ impl Control {
                     .ok_or_else(|| {
                         ErrorBody::new(ErrorCode::NotFound, format!("no display {display}"))
                     })?;
-                Some(openlab_core::StageMapping {
+                Some(openlab_core::DisplayChoice {
                     display: found.id.clone(),
                     name: found.name.clone(),
                     width: found.width,
@@ -836,14 +938,14 @@ impl Control {
             }
         };
         self.eng.require_saveable()?;
-        let message = match &mapping {
-            Some(m) => format!("stage '{name}' shown on {} on this machine", m.name),
-            None => format!("stage '{name}' has no display on this machine"),
+        let message = match &choice {
+            Some(m) => format!("output route '{name}' shown on {} on this machine", m.name),
+            None => format!("output route '{name}' has no display on this machine"),
         };
         self.eng
             .config
             .machine
-            .set_stage_mapping(workspace, stage, mapping)
+            .set_route_display(workspace, route, choice)
             .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
         self.eng.stages.mappings = self.eng.stages.mappings.wrapping_add(1);
         self.eng.save_machine();
@@ -1042,9 +1144,9 @@ impl Control {
         self.eng.stages_settled()
     }
 
-    /// Where the stage host last said `stage` is.
-    pub fn stage_state(&self, stage: StageId) -> Option<&StageState> {
-        self.eng.stages.states.get(&stage)
+    /// Where the stage host last said `route` is.
+    pub fn route_state(&self, route: RouteId) -> Option<&RouteState> {
+        self.eng.stages.states.get(&route)
     }
 
     /// Whether `stage`'s monitor window is open, as the engine keeps it.
@@ -1052,7 +1154,7 @@ impl Control {
         self.eng.stages.monitors.contains(&stage)
     }
 
-    /// How many stages the engine holds a state for (bounded by the stages it sent).
+    /// How many routes the engine holds a state for (bounded by the routes it sent).
     pub fn stage_states_known(&self) -> usize {
         self.eng.stages.states.len()
     }

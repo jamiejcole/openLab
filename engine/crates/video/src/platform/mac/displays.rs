@@ -69,6 +69,7 @@ pub fn active(screen_of: impl Fn(CGDirectDisplayID) -> Option<(String, u32)>) ->
                     width,
                     height,
                     fps,
+                    main: false,
                 },
             })
         })

@@ -99,6 +99,7 @@ fn ws_with(outputs: Vec<PatchOutput>) -> Workspace {
             outputs,
         }],
         network_patches: vec![],
+        routes: Vec::new(),
         stages: Vec::new(),
         show_mode: false,
         cue_lists: vec![CueList {

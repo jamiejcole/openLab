@@ -220,7 +220,10 @@ impl Mirror {
             match delete {
                 Delete::Cue { id } => push_unique(&mut touched, *id),
                 Delete::CueList { .. } => root = true,
-                Delete::Patch { .. } | Delete::NetworkPatch { .. } | Delete::Stage { .. } => {}
+                Delete::Patch { .. }
+                | Delete::NetworkPatch { .. }
+                | Delete::Stage { .. }
+                | Delete::Route { .. } => {}
             }
         }
         for upsert in upserts {
@@ -230,6 +233,7 @@ impl Mirror {
                 Upsert::Patch { .. }
                 | Upsert::NetworkPatch { .. }
                 | Upsert::Stage { .. }
+                | Upsert::Route { .. }
                 | Upsert::Settings { .. } => {}
             }
         }
@@ -814,6 +818,7 @@ mod tests {
             },
             patches: vec![],
             network_patches: vec![],
+            routes: Vec::new(),
             stages: Vec::new(),
             show_mode: false,
             cue_lists: vec![CueList {

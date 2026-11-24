@@ -17,11 +17,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use openlab_core::protocol::{
-    ClientMessage, ErrorCode, Outcome, Request, ResultData, ServerMessage, StageMappingEntry,
+    ClientMessage, ErrorCode, Outcome, Request, ResultData, RouteEntry, ServerMessage, StageEntry,
     TransportAction,
 };
-use openlab_core::stage_link::{Display, StageState};
-use openlab_core::{Stage, StageId, StageMapping, Workspace};
+use openlab_core::stage_link::{Display, RouteState};
+use openlab_core::{
+    DisplayChoice, OutputRoute, Region, RegionId, RouteId, Stage, StageId, Workspace,
+};
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::stage::StageHostConfig;
@@ -34,10 +36,27 @@ fn stage_id(n: u128) -> StageId {
     StageId(Uuid::from_u128(0x5_0000 + n))
 }
 
-/// A 1920 x 1080 stage that keeps black between cues.
+/// Stage `n`'s own route: each test stage has one region covering it, sent to a route of its
+/// size with the same number (`with_stages` makes the routes).
+fn route_id(n: u128) -> RouteId {
+    RouteId(Uuid::from_u128(0x5_0000 + n))
+}
+
+/// A 1920 x 1080 stage that keeps black between cues, its one region on route `n`.
 fn stage(n: u128) -> Stage {
-    let mut s = Stage::new(stage_id(n), format!("Stage {n}"), 1920, 1080);
+    stage_sized(n, 1920, 1080)
+}
+
+/// Stage `n` of `width` x `height` keeping black, its one region covering it on route `n`.
+fn stage_sized(n: u128, width: u32, height: u32) -> Stage {
+    let mut s = Stage::new(stage_id(n), format!("Stage {n}"), width, height);
     s.keep_black = true;
+    s.regions = vec![Region::whole(
+        RegionId(Uuid::from_u128(0x5_0000 + n)),
+        Some(route_id(n)),
+        width,
+        height,
+    )];
     s
 }
 
@@ -71,8 +90,8 @@ fn show_patient(ws: Workspace, c: ControlConfig) -> OfflineShow {
     s
 }
 
-fn mapping(display: &str) -> StageMapping {
-    StageMapping {
+fn mapping(display: &str) -> DisplayChoice {
+    DisplayChoice {
         display: display.into(),
         name: format!("Virtual {display}"),
         width: 1920,
@@ -86,7 +105,7 @@ fn stage_show(ws: Workspace, host: StageHostConfig, display: Option<&str>) -> Of
     c.stage_host = Some(host);
     if let Some(d) = display {
         c.machine
-            .set_stage_mapping(ws.id, stage_id(1), Some(mapping(d)))
+            .set_route_display(ws.id, route_id(1), Some(mapping(d)))
             .unwrap();
     }
     let mut s = show_patient(ws, c);
@@ -95,8 +114,21 @@ fn stage_show(ws: Workspace, host: StageHostConfig, display: Option<&str>) -> Of
     s
 }
 
+/// A workspace of `cues` and `stages`, with a route for each region's route, sized as its
+/// stage (so each region fills its route one stage pixel per route pixel), filling its display.
 fn with_stages(cues: Vec<openlab_core::Cue>, stages: Vec<Stage>) -> Workspace {
     let mut ws = workspace(cues);
+    for stage in &stages {
+        for region in &stage.regions {
+            if let Some(id) = region.route
+                && !ws.routes.iter().any(|r| r.id == id)
+            {
+                let n = id.0.as_u128() - 0x5_0000;
+                let route = OutputRoute::new(id, format!("Output {n}"), stage.width, stage.height);
+                ws.routes.push(route);
+            }
+        }
+    }
     ws.stages = stages;
     ws
 }
@@ -122,9 +154,13 @@ fn ok_data(outcome: Outcome) -> Option<ResultData> {
     }
 }
 
-fn mappings(s: &mut OfflineShow) -> Vec<StageMappingEntry> {
-    match ok_data(request(s, Request::ListStageMappings)) {
-        Some(ResultData::StageMappings { stages }) => stages,
+fn mappings(s: &mut OfflineShow) -> Vec<RouteEntry> {
+    route_displays(s).0
+}
+
+fn route_displays(s: &mut OfflineShow) -> (Vec<RouteEntry>, Vec<StageEntry>) {
+    match ok_data(request(s, Request::ListRouteDisplays)) {
+        Some(ResultData::RouteDisplays { routes, stages }) => (routes, stages),
         other => panic!("{other:?}"),
     }
 }
@@ -160,10 +196,11 @@ const QUADRANTS: [[u8; 4]; 4] = [
     [255, 255, 0, 255],
 ];
 
-fn state(s: &mut OfflineShow, n: u128) -> Option<StageState> {
+/// Where stage `n`'s route is.
+fn state(s: &mut OfflineShow, n: u128) -> Option<RouteState> {
     mappings(s)
         .into_iter()
-        .find(|e| e.stage == stage_id(n))
+        .find(|e| e.route == route_id(n))
         .and_then(|e| e.state)
 }
 
@@ -187,7 +224,7 @@ fn a_stage_on_its_chosen_display_shows_black_and_then_the_test_card() {
     );
     assert_eq!(
         state(&mut s, 1),
-        Some(StageState::Shown {
+        Some(RouteState::Shown {
             display: "V1".into()
         })
     );
@@ -239,8 +276,9 @@ fn a_new_workspace_has_one_stage_on_the_main_display() {
             .collect::<Vec<_>>(),
         [Some("V1")]
     );
-    assert!(entries.iter().all(|e| e.state == Some(StageState::Hidden)));
-    assert!(entries.iter().all(|e| e.panicked), "their black is down");
+    assert!(entries.iter().all(|e| e.state == Some(RouteState::Hidden)));
+    let (_, stages) = route_displays(&mut s);
+    assert!(stages.iter().all(|e| e.panicked), "their black is down");
     assert_eq!(s.stalls(), 0);
 }
 
@@ -257,33 +295,33 @@ fn a_stage_display_is_chosen_from_the_listed_displays() {
             .collect::<Vec<_>>(),
         [("V1", 1920, 1080), ("V2", 1280, 720)]
     );
-    let set = |s: &mut OfflineShow, stage: StageId, display: Option<&str>| {
+    let set = |s: &mut OfflineShow, route: RouteId, display: Option<&str>| {
         request(
             s,
-            Request::SetStageMapping {
-                stage,
+            Request::SetRouteDisplay {
+                route,
                 display: display.map(Into::into),
             },
         )
     };
-    match set(&mut s, stage_id(1), Some("nope")) {
+    match set(&mut s, route_id(1), Some("nope")) {
         Outcome::Error(e) => assert_eq!(e.code, ErrorCode::NotFound),
         o => panic!("{o:?}"),
     }
-    match set(&mut s, stage_id(9), Some("V2")) {
+    match set(&mut s, route_id(9), Some("V2")) {
         Outcome::Error(e) => assert_eq!(e.code, ErrorCode::NotFound),
         o => panic!("{o:?}"),
     }
-    assert_eq!(state(&mut s, 1), Some(StageState::NoDisplay));
+    assert_eq!(state(&mut s, 1), Some(RouteState::NoDisplay));
     assert!(matches!(
-        set(&mut s, stage_id(1), Some("V2")),
+        set(&mut s, route_id(1), Some("V2")),
         Outcome::Ok(_)
     ));
     s.settle_stages();
     let entry = mappings(&mut s).remove(0);
     assert_eq!(
         entry.mapping,
-        Some(StageMapping {
+        Some(DisplayChoice {
             display: "V2".into(),
             name: "Virtual V2".into(),
             width: 1280,
@@ -292,14 +330,14 @@ fn a_stage_display_is_chosen_from_the_listed_displays() {
     );
     assert_eq!(
         entry.state,
-        Some(StageState::Shown {
+        Some(RouteState::Shown {
             display: "V2".into()
         })
     );
     // Cleared: no display again.
-    assert!(matches!(set(&mut s, stage_id(1), None), Outcome::Ok(_)));
+    assert!(matches!(set(&mut s, route_id(1), None), Outcome::Ok(_)));
     s.settle_stages();
-    assert_eq!(state(&mut s, 1), Some(StageState::NoDisplay));
+    assert_eq!(state(&mut s, 1), Some(RouteState::NoDisplay));
 }
 
 /// A stage with no display on this machine, or whose display is not connected, is not an
@@ -310,15 +348,15 @@ fn a_stage_without_its_display_opens_with_a_warning() {
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(virtual_host());
     c.machine
-        .set_stage_mapping(ws.id, stage_id(2), Some(mapping("GONE")))
+        .set_route_display(ws.id, route_id(2), Some(mapping("GONE")))
         .unwrap();
     c.push_log = true;
     let mut s = show_patient(ws, c);
     s.settle_stages();
-    assert_eq!(state(&mut s, 1), Some(StageState::NoDisplay));
+    assert_eq!(state(&mut s, 1), Some(RouteState::NoDisplay));
     assert_eq!(
         state(&mut s, 2),
-        Some(StageState::DisplayMissing {
+        Some(RouteState::DisplayMissing {
             display: "GONE".into()
         })
     );
@@ -331,7 +369,7 @@ fn a_stage_with_keep_black_off_is_hidden_while_nothing_plays() {
     let mut st = stage(1);
     st.keep_black = false;
     let mut s = stage_show(with_stages(vec![], vec![st]), virtual_host(), Some("V1"));
-    assert_eq!(state(&mut s, 1), Some(StageState::Hidden));
+    assert_eq!(state(&mut s, 1), Some(RouteState::Hidden));
 }
 
 /// A tone long enough to outlast every wait below.
@@ -375,7 +413,7 @@ fn a_killed_stage_host_is_replaced_and_the_sound_plays_on() {
     s.settle_stages();
     assert_eq!(
         state(&mut s, 1),
-        Some(StageState::Shown {
+        Some(RouteState::Shown {
             display: "V1".into()
         })
     );
@@ -390,6 +428,7 @@ fn virtual_display(id: &str, width: u32, height: u32) -> Display {
         width,
         height,
         fps: 60,
+        main: false,
     }
 }
 
@@ -402,7 +441,7 @@ fn a_stage_display_unplugged_mid_cue_warns_and_comes_back() {
     c.stage_host = Some(virtual_host());
     c.push_log = true;
     c.machine
-        .set_stage_mapping(ws.id, stage_id(1), Some(mapping("V1")))
+        .set_route_display(ws.id, route_id(1), Some(mapping("V1")))
         .unwrap();
     let mut s = show_patient(ws, c);
     s.settle_stages();
@@ -411,14 +450,14 @@ fn a_stage_display_unplugged_mid_cue_warns_and_comes_back() {
     let playing = s.channel(0).len();
     s.control_mut()
         .set_virtual_displays(vec![virtual_display("V2", 1280, 720)]);
-    let missing = StageState::DisplayMissing {
+    let missing = RouteState::DisplayMissing {
         display: "V1".into(),
     };
-    assert!(s.wait_for(|c| c.stage_state(stage_id(1)) == Some(&missing)));
+    assert!(s.wait_for(|c| c.route_state(route_id(1)) == Some(&missing)));
     s.run(BLOCK * 8);
     assert_eq!(
         state(&mut s, 1),
-        Some(StageState::DisplayMissing {
+        Some(RouteState::DisplayMissing {
             display: "V1".into()
         })
     );
@@ -427,14 +466,14 @@ fn a_stage_display_unplugged_mid_cue_warns_and_comes_back() {
         virtual_display("V1", 1920, 1080),
         virtual_display("V2", 1280, 720),
     ]);
-    let shown = StageState::Shown {
+    let shown = RouteState::Shown {
         display: "V1".into(),
     };
-    assert!(s.wait_for(|c| c.stage_state(stage_id(1)) == Some(&shown)));
+    assert!(s.wait_for(|c| c.route_state(route_id(1)) == Some(&shown)));
     s.run(BLOCK * 8);
     assert_eq!(
         state(&mut s, 1),
-        Some(StageState::Shown {
+        Some(RouteState::Shown {
             display: "V1".into()
         })
     );
@@ -458,7 +497,7 @@ fn a_hung_stage_host_is_killed_and_replaced() {
     s.settle_stages();
     assert_eq!(
         state(&mut s, 1),
-        Some(StageState::Shown {
+        Some(RouteState::Shown {
             display: "V1".into()
         })
     );
@@ -509,7 +548,7 @@ fn control_thread_hung_the_supervisor_sleeps_still_replaces_a_hung_stage_host_an
     s.settle_stages();
     assert_eq!(
         state(&mut s, 1),
-        Some(StageState::Shown {
+        Some(RouteState::Shown {
             display: "V1".into()
         })
     );
@@ -531,7 +570,7 @@ fn menu_bar_show(hand: &HandClock, extra: &[&str]) -> OfflineShow {
     c.stage_host = Some(host);
     for (n, display) in [(1, "V1"), (2, "V2")] {
         c.machine
-            .set_stage_mapping(ws.id, stage_id(n), Some(mapping(display)))
+            .set_route_display(ws.id, route_id(n), Some(mapping(display)))
             .unwrap();
     }
     c.push_log = true;
@@ -550,7 +589,7 @@ fn menu_bar_show(hand: &HandClock, extra: &[&str]) -> OfflineShow {
 fn a_hung_engine_while_a_stage_covers_the_only_display_the_stage_stands_back_by_itself() {
     let hand = HandClock::new();
     let mut s = menu_bar_show(&hand, &["--engine-silence-ms", "2000"]);
-    let shown = |d: &str| Some(StageState::Shown { display: d.into() });
+    let shown = |d: &str| Some(RouteState::Shown { display: d.into() });
     assert_eq!(state(&mut s, 1), shown("V1"));
     assert_eq!(state(&mut s, 2), shown("V2"));
     s.take_outbound();
@@ -570,11 +609,11 @@ fn a_hung_engine_while_a_stage_covers_the_only_display_the_stage_stands_back_by_
         "the stage on the menu bar's display never stood back"
     );
     assert_eq!(
-        s.control().stage_state(stage_id(1)),
+        s.control().route_state(route_id(1)),
         shown("V1").as_ref(),
         "still drawn"
     );
-    assert_eq!(s.control().stage_state(stage_id(2)), shown("V2").as_ref());
+    assert_eq!(s.control().route_state(route_id(2)), shown("V2").as_ref());
 }
 
 /// #708: the app's `set_stand_back` reaches the stage host (the window on the display with the
@@ -705,7 +744,7 @@ fn a_stage_host_sending_garbage_is_stopped_and_sound_plays_on() {
 /// log, so it cannot flood the log or the clients.
 #[test]
 fn a_stage_host_logging_in_a_burst_is_rate_limited() {
-    let script = r#"printf '{"type":"hello","version":6,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
+    let script = r#"printf '{"type":"hello","version":7,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
     let mut host = host_config(&["-c", script]);
     host.program = PathBuf::from("/bin/sh");
     let ws = with_stages(vec![], vec![stage(1)]);
@@ -841,7 +880,8 @@ fn monitor_shows(
 }
 
 fn monitor_listed(s: &mut OfflineShow, n: u128) -> bool {
-    mappings(s)
+    route_displays(s)
+        .1
         .into_iter()
         .find(|e| e.stage == stage_id(n))
         .is_some_and(|e| e.monitor)
@@ -863,7 +903,8 @@ fn quadrants_in([left, top, right, bottom]: [f32; 4]) -> Vec<[f32; 2]> {
 /// display, a wide one (bars at the sides).
 #[test]
 fn the_monitor_button_opens_a_window_showing_the_stage_scaled_to_fit_with_black_bars() {
-    let mut tall = Stage::new(stage_id(2), "Tall".to_owned(), 1080, 1920);
+    let mut tall = stage_sized(2, 1080, 1920);
+    tall.name = "Tall".to_owned();
     tall.keep_black = false;
     let mut s = stage_show(
         with_stages(vec![], vec![stage(1), tall]),
@@ -895,7 +936,7 @@ fn the_monitor_button_opens_a_window_showing_the_stage_scaled_to_fit_with_black_
     let (_, bars) = monitor_shows(&mut s, 1, (400, 400), &[[0.5, 0.1], [0.5, 0.9]]);
     assert_eq!(bars, vec![BLACK; 2]);
     // A tall stage with no display, in a wide window: bars at the sides, the card between.
-    assert_eq!(state(&mut s, 2), Some(StageState::NoDisplay));
+    assert_eq!(state(&mut s, 2), Some(RouteState::NoDisplay));
     let wide = [0.341_796_9, 0.0, 0.658_203_1, 1.0];
     let (frame, colours) = monitor_shows(&mut s, 2, (640, 360), &quadrants_in(wide));
     assert_eq!((frame, colours), (Some(43), QUADRANTS.to_vec()));
@@ -960,7 +1001,7 @@ fn show_mode_leaves_monitors_as_they_are_and_the_app_gone_takes_monitors_and_sta
     );
     assert!(logged(&mut s, "monitor windows are closed"));
     // No stage outlives the app: off its display, its own picture kept.
-    assert!(s.wait_for(|c| c.stage_state(stage_id(1)) == Some(&StageState::Hidden)));
+    assert!(s.wait_for(|c| c.route_state(route_id(1)) == Some(&RouteState::Hidden)));
     assert_eq!(display_frame(&mut s, "V1"), None, "nothing on the display");
     assert_eq!(probe(&mut s, 1), (Some(42), QUADRANTS.to_vec()));
     // A stage host relaunched while the app is gone keeps the stage down.
@@ -972,17 +1013,17 @@ fn show_mode_leaves_monitors_as_they_are_and_the_app_gone_takes_monitors_and_sta
     assert!(killed.success());
     assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != first)));
     s.settle_stages();
-    assert_eq!(state(&mut s, 1), Some(StageState::Hidden));
+    assert_eq!(state(&mut s, 1), Some(RouteState::Hidden));
     // The app back: the stage is up again.
     s.deliver(openlab_engine::control::Inbox::AppConnected { pid: None });
     assert!(s.wait_for(|c| {
-        c.stage_state(stage_id(1))
-            .is_some_and(|st| *st != StageState::Hidden)
+        c.route_state(route_id(1))
+            .is_some_and(|st| *st != RouteState::Hidden)
     }));
     s.settle_stages();
     assert_eq!(
         state(&mut s, 1),
-        Some(StageState::Shown {
+        Some(RouteState::Shown {
             display: "V1".into()
         })
     );
@@ -1000,27 +1041,37 @@ fn new_rename_and_remove_a_stage_are_one_undo_step_each() {
         virtual_host(),
         Some("V1"),
     );
-    // New stage, no display.
-    let new = openlab_core::Stage::new(stage_id(2), "Stage 2", 1280, 720);
+    // New stage on a new route of its own, which has no display: one step.
+    let mut new = stage_sized(2, 1280, 720);
+    new.keep_black = false;
     assert!(matches!(
         command(
             &mut s,
-            openlab_core::Command::AddStage {
-                index: 1,
-                stage: new
+            openlab_core::Command::Transaction {
+                commands: vec![
+                    openlab_core::Command::AddRoute {
+                        index: 1,
+                        route: OutputRoute::new(route_id(2), "Output 2", 1280, 720),
+                        regions: Vec::new(),
+                    },
+                    openlab_core::Command::AddStage {
+                        index: 1,
+                        stage: new
+                    },
+                ]
             }
         ),
         Outcome::Ok(_)
     ));
     s.settle_stages();
     assert_eq!(stage_names(&s), ["Stage 1", "Stage 2"]);
-    assert_eq!(state(&mut s, 2), Some(StageState::NoDisplay));
+    assert_eq!(state(&mut s, 2), Some(RouteState::NoDisplay));
     // Its display chosen, then renamed in place.
     assert!(matches!(
         request(
             &mut s,
-            Request::SetStageMapping {
-                stage: stage_id(2),
+            Request::SetRouteDisplay {
+                route: route_id(2),
                 display: Some("V2".into())
             }
         ),
@@ -1042,7 +1093,7 @@ fn new_rename_and_remove_a_stage_are_one_undo_step_each() {
     assert_eq!(stage_names(&s), ["Stage 1", "Cyc"]);
     assert_eq!(
         state(&mut s, 2),
-        Some(StageState::Hidden),
+        Some(RouteState::Hidden),
         "keep-black off: hidden while nothing plays, on V2"
     );
     // Removed: gone from the stage host too.
@@ -1055,14 +1106,18 @@ fn new_rename_and_remove_a_stage_are_one_undo_step_each() {
     ));
     s.settle_stages();
     assert_eq!(stage_names(&s), ["Stage 1"]);
-    assert_eq!(s.control().stage_state(stage_id(2)), None);
+    assert_eq!(
+        s.control().route_state(route_id(2)),
+        Some(&RouteState::Hidden),
+        "its route stays, with nothing on it"
+    );
     // Each step is one undo step, back to the start.
     undo(&mut s);
     s.settle_stages();
     assert_eq!(stage_names(&s), ["Stage 1", "Cyc"]);
     assert_eq!(
         state(&mut s, 2),
-        Some(StageState::Hidden),
+        Some(RouteState::Hidden),
         "back on its display"
     );
     undo(&mut s);
@@ -1101,7 +1156,7 @@ fn two_stages_on_one_display_stack_by_layer() {
     c.stage_host = Some(virtual_host());
     for n in [1, 2] {
         c.machine
-            .set_stage_mapping(ws.id, stage_id(n), Some(mapping("V1")))
+            .set_route_display(ws.id, route_id(n), Some(mapping("V1")))
             .unwrap();
     }
     let mut s = show_patient(ws, c);
@@ -1155,7 +1210,7 @@ fn the_windowed_stage_host_exits_when_its_input_closes() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, r#"{{"type":"hello","version":6}}"#).unwrap();
+    writeln!(stdin, r#"{{"type":"hello","version":7}}"#).unwrap();
     let mut out = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
@@ -1288,18 +1343,18 @@ fn child_named(parent: u32, name: &str) -> Option<u32> {
 /// second's budget of report lines in the show log.
 #[test]
 fn a_stage_host_reporting_in_a_burst_neither_floods_the_log_nor_grows_memory() {
-    let known = stage_id(1).to_string();
+    let known = route_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":6,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":7,"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
-  printf '{{"type":"stage_status","stage":"{known}","state":{{"state":"%s"}}}}\n' $s
+  printf '{{"type":"route_status","route":"{known}","state":{{"state":"%s"}}}}\n' $s
   i=$((i+1))
 done
 i=0
 while [ $i -lt 900 ]; do
-  printf '{{"type":"stage_status","stage":"00000000-0000-0000-0000-%012d","state":{{"state":"hidden"}}}}\n' $((i+100000))
+  printf '{{"type":"route_status","route":"00000000-0000-0000-0000-%012d","state":{{"state":"hidden"}}}}\n' $((i+100000))
   i=$((i+1))
 done
 printf '{{"type":"displays","displays":[{{"id":"END","name":"End","width":8,"height":8}}]}}\n'
@@ -1318,7 +1373,7 @@ cat > /dev/null"#
     let out = s.take_outbound();
     let lines = out
         .iter()
-        .filter(|m| matches!(m, ServerMessage::Log { message, .. } if message.starts_with("stage 'Stage 1'")))
+        .filter(|m| matches!(m, ServerMessage::Log { message, .. } if message.starts_with("output route 'Output 1'")))
         .count();
     assert!((1..=20).contains(&lines), "{lines} report lines");
     let dropped = |out: &[ServerMessage]| {
@@ -1387,13 +1442,13 @@ fn a_crash_after_a_long_healthy_run_is_relaunched_at_once() {
 }
 
 /// The latest `video_outputs` push among `messages`: its displays and its stages' states.
-fn last_push(messages: &[ServerMessage]) -> Option<(Vec<String>, Vec<Option<StageState>>)> {
+fn last_push(messages: &[ServerMessage]) -> Option<(Vec<String>, Vec<Option<RouteState>>)> {
     messages.iter().rev().find_map(|m| match m {
         ServerMessage::VideoOutputs {
-            displays, stages, ..
+            displays, routes, ..
         } => Some((
             displays.iter().map(|d| d.id.clone()).collect(),
-            stages.iter().map(|e| e.state.clone()).collect(),
+            routes.iter().map(|e| e.state.clone()).collect(),
         )),
         _ => None,
     })
@@ -1431,7 +1486,7 @@ fn a_snapshot_is_followed_by_the_video_outputs() {
     // Pushed with the snapshot, before any tick.
     let (displays, states) = last_push(&s.take_outbound()).expect("pushed after the snapshot");
     assert_eq!(displays, ["V1", "V2"]);
-    assert_eq!(states, [Some(StageState::NoDisplay)]);
+    assert_eq!(states, [Some(RouteState::NoDisplay)]);
 }
 
 /// #642: the app need not poll: a display unplugged and back, and a stage's display chosen,
@@ -1449,13 +1504,13 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
     s.tick();
     let first = last_push(&s.take_outbound()).expect("a push once the stage host reported");
     assert_eq!(first.0, ["V1", "V2"]);
-    assert_eq!(first.1, [Some(StageState::NoDisplay)]);
+    assert_eq!(first.1, [Some(RouteState::NoDisplay)]);
     // Its display chosen: pushed (after the least gap between pushes).
     assert!(matches!(
         request(
             &mut s,
-            Request::SetStageMapping {
-                stage: stage_id(1),
+            Request::SetRouteDisplay {
+                route: route_id(1),
                 display: Some("V1".into())
             }
         ),
@@ -1467,17 +1522,17 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
     let shown = last_push(&s.take_outbound()).expect("pushed after the choice");
     assert_eq!(
         shown.1,
-        [Some(StageState::Shown {
+        [Some(RouteState::Shown {
             display: "V1".into()
         })]
     );
     // V1 unplugged: pushed with the stage missing its display.
     s.control_mut()
         .set_virtual_displays(vec![virtual_display("V2", 1280, 720)]);
-    let missing = StageState::DisplayMissing {
+    let missing = RouteState::DisplayMissing {
         display: "V1".into(),
     };
-    assert!(s.wait_for(|c| c.stage_state(stage_id(1)) == Some(&missing)));
+    assert!(s.wait_for(|c| c.route_state(route_id(1)) == Some(&missing)));
     clock.advance(200);
     s.tick();
     let gone = last_push(&s.take_outbound()).expect("pushed after the unplug");
@@ -1492,13 +1547,13 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
 /// A stage host reporting in a burst reaches clients as at most one push per least gap.
 #[test]
 fn a_reporting_burst_is_pushed_at_most_once_per_gap() {
-    let known = stage_id(1).to_string();
+    let known = route_id(1).to_string();
     let script = format!(
-        r#"printf '{{"type":"hello","version":6,"pid":1,"video":true}}\n'
+        r#"printf '{{"type":"hello","version":7,"pid":1,"video":true}}\n'
 i=0
 while [ $i -lt 1000 ]; do
   if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
-  printf '{{"type":"stage_status","stage":"{known}","state":{{"state":"%s"}}}}\n' $s
+  printf '{{"type":"route_status","route":"{known}","state":{{"state":"%s"}}}}\n' $s
   i=$((i+1))
 done
 printf '{{"type":"displays","displays":[{{"id":"END","name":"End","width":8,"height":8}}]}}\n'
@@ -1568,7 +1623,7 @@ fn routine_clocks_never_get_a_busy_stage_host_stopped() {
     use openlab_engine::stage::{StageEvent, StageHost};
     // Answers hello, then never reads again.
     let script =
-        r#"read line; echo '{"type":"hello","version":6,"pid":1,"video":true}'; exec sleep 600"#;
+        r#"read line; echo '{"type":"hello","version":7,"pid":1,"video":true}'; exec sleep 600"#;
     let mut config = host_config(&["-c", script]);
     config.program = PathBuf::from("/bin/sh");
     config.answer_within = Duration::from_secs(3600);
@@ -1720,7 +1775,7 @@ fn the_app_force_quit_while_a_cue_plays_takes_its_stage_down_until_the_app_is_ba
     let mut display = mapping("V1");
     (display.width, display.height) = (192, 108);
     machine
-        .set_stage_mapping(ws.id, stage_id(1), Some(display))
+        .set_route_display(ws.id, route_id(1), Some(display))
         .unwrap();
     std::fs::create_dir_all(dir.path().join("openLab")).unwrap();
     std::fs::write(
@@ -1803,14 +1858,14 @@ fn the_app_force_quit_while_a_cue_plays_takes_its_stage_down_until_the_app_is_ba
     // The stage host starts beside the engine: wait (a count of round trips, no clock) until
     // it has said where the stage is: hidden, as no picture has played on it since the show
     // opened (#708: nothing covers a display before then).
-    let hidden = Some(StageState::Hidden);
+    let hidden = Some(RouteState::Hidden);
     let up = (0..20_000u64).any(|n| {
         let outcome = call(&mut window, 1_000 + n, |id| ClientMessage::Request {
             id,
-            request: Request::ListStageMappings,
+            request: Request::ListRouteDisplays,
         });
         matches!(outcome, Outcome::Ok(body) if matches!(&body.data,
-            Some(ResultData::StageMappings { stages }) if stages.first().map(|e| &e.state) == Some(&hidden)))
+            Some(ResultData::RouteDisplays { routes, .. }) if routes.first().map(|e| &e.state) == Some(&hidden)))
     });
     assert!(up, "the stage host never said where the stage is");
     let go = call(&mut window, 2, |id| ClientMessage::Transport {
@@ -1825,14 +1880,14 @@ fn the_app_force_quit_while_a_cue_plays_takes_its_stage_down_until_the_app_is_ba
     drop(app);
     // The stage comes down (a count of round trips, no clock); the engine plays on.
     let (mut window, snapshot) = connect(port, &token, Some(doc));
-    let state_is = |ws: &mut Socket, from: u64, want: &Option<StageState>| {
+    let state_is = |ws: &mut Socket, from: u64, want: &Option<RouteState>| {
         (0..20_000u64).any(|n| {
             let outcome = call(ws, from + n, |id| ClientMessage::Request {
                 id,
-                request: Request::ListStageMappings,
+                request: Request::ListRouteDisplays,
             });
             matches!(outcome, Outcome::Ok(body) if matches!(&body.data,
-                Some(ResultData::StageMappings { stages }) if stages.first().map(|e| &e.state) == Some(want)))
+                Some(ResultData::RouteDisplays { routes, .. }) if routes.first().map(|e| &e.state) == Some(want)))
         })
     };
     assert!(
@@ -1847,7 +1902,7 @@ fn the_app_force_quit_while_a_cue_plays_takes_its_stage_down_until_the_app_is_ba
     advance(&mut window, 5, 0.5);
     // The app back: the stage is shown again with the cue's picture.
     let (mut app, _) = connect(port, &token, None);
-    let shown = Some(StageState::Shown {
+    let shown = Some(RouteState::Shown {
         display: "V1".into(),
     });
     assert!(

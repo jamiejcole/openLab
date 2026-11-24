@@ -24,7 +24,7 @@ use openlab_core::VideoGeometry;
 use openlab_core::{Quad, quad};
 
 use crate::hap::Variant;
-use crate::host::{CuePicture, Layer, Picture};
+use crate::host::{CuePicture, Layer, Picture, Placement};
 
 /// A texture the stage drawing samples.
 pub type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
@@ -122,40 +122,19 @@ struct QuadBytes {
 }
 
 impl QuadBytes {
-    /// A rect (x0, y0, x1, y1 in normalised device coordinates) showing a whole texture.
-    fn rect(r: [f32; 4], opacity: f32, smooth: bool) -> Self {
-        Self {
-            pos: [[r[0], r[3]], [r[2], r[3]], [r[0], r[1]], [r[2], r[1]]],
-            uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
-            opacity,
-            smooth: if smooth { 1.0 } else { 0.0 },
-            mode: Colour::Premultiplied.mode(),
-            pad: 0.0,
-        }
-    }
-
-    /// `quad` (stage pixels from the top left, y down) on a stage of `size` that sits at
-    /// `stage` in normalised device coordinates.
+    /// `quad` (stage pixels from the top left, y down: top left, top right, bottom left, bottom
+    /// right) placed on a target of `target` pixels by `place`.
     fn placed(
         quad: &Quad,
-        size: (u32, u32),
-        stage: [f32; 4],
+        place: &Placement,
+        target: (u32, u32),
         opacity: f32,
         smooth: bool,
         colour: Colour,
     ) -> Self {
-        let (w, h) = (f64::from(size.0.max(1)), f64::from(size.1.max(1)));
-        let (x0, y0, x1, y1) = (
-            f64::from(stage[0]),
-            f64::from(stage[1]),
-            f64::from(stage[2]),
-            f64::from(stage[3]),
-        );
-        let ndc = |[x, y]: [f64; 2]| {
-            [
-                (x0 + x / w * (x1 - x0)) as f32,
-                (y1 - y / h * (y1 - y0)) as f32,
-            ]
+        let ndc = |point: [f64; 2]| {
+            let [x, y] = place.map(target, point);
+            [(x * 2.0 - 1.0) as f32, (1.0 - y * 2.0) as f32]
         };
         let [u0, v0, u1, v1] = quad.uv.map(|v| v as f32);
         Self {
@@ -169,8 +148,20 @@ impl QuadBytes {
     }
 }
 
+/// Where `place` puts its region on a target of `target` pixels, in normalised device
+/// coordinates (x0, y0, x1, y1; y up), past the target where the scaling overhangs it.
+fn dest_ndc(place: &Placement, target: (u32, u32)) -> [f32; 4] {
+    let [l, t, r, b] = place.dest(target);
+    [
+        (l * 2.0 - 1.0) as f32,
+        (1.0 - b * 2.0) as f32,
+        (r * 2.0 - 1.0) as f32,
+        (1.0 - t * 2.0) as f32,
+    ]
+}
+
 /// The pixels of a target of `size` that `ndc` (normalised device coordinates) covers, as a
-/// scissor rect: a stage's pictures never draw outside their stage.
+/// scissor rect: a region's pictures never draw outside where the region lands.
 fn scissor(ndc: [f32; 4], (w, h): (u32, u32)) -> MTLScissorRect {
     let (w, h) = (f64::from(w), f64::from(h));
     let px = |v: f32, side: f64| ((f64::from(v) + 1.0) / 2.0 * side).round().clamp(0.0, side);
@@ -256,9 +247,10 @@ impl Gpu {
         self.device.clone()
     }
 
-    /// Encodes a clear to black and then `layers` (bottom first) into `target`, each stage
-    /// fitted to the target, shape kept, and on each stage its cues' pictures (bottom first),
-    /// each placed by its geometry, clipped to the stage, at its opacity.
+    /// Encodes a clear to black and then `layers` (bottom first) into `target`, each stage's
+    /// part placed by the layer's placement (its region filling its route, turned and scaled),
+    /// and on each its cues' pictures (bottom first), each placed by its geometry, clipped to
+    /// where the region lands, at its opacity.
     pub fn draw(
         &mut self,
         target: &ProtocolObject<dyn MTLTexture>,
@@ -271,10 +263,15 @@ impl Gpu {
         );
         let mut quads = Vec::with_capacity(layers.len());
         for layer in layers {
-            let stage = fit((layer.width, layer.height), size);
-            let clip = scissor(stage, size);
+            let place = &layer.place;
+            let clip = scissor(dest_ndc(place, size), size);
+            let (w, h) = (f64::from(layer.width), f64::from(layer.height));
+            let whole = Quad {
+                corners: [[0.0, 0.0], [w, 0.0], [0.0, h], [w, h]],
+                uv: [0.0, 0.0, 1.0, 1.0],
+            };
             quads.push((
-                QuadBytes::rect(stage, 1.0, false),
+                QuadBytes::placed(&whole, place, size, 1.0, false, Colour::Premultiplied),
                 self.texture_for(layer.picture)?,
                 clip,
             ));
@@ -288,14 +285,7 @@ impl Gpu {
                 };
                 let opacity = (cue.opacity * g.opacity as f32).clamp(0.0, 1.0);
                 quads.push((
-                    QuadBytes::placed(
-                        &quad,
-                        (layer.width, layer.height),
-                        stage,
-                        opacity,
-                        g.smooth,
-                        colour,
-                    ),
+                    QuadBytes::placed(&quad, place, size, opacity, g.smooth, colour),
                     texture,
                     clip,
                 ));
@@ -572,21 +562,13 @@ fn texture(
     Ok(texture)
 }
 
-/// Where a stage of `stage` pixels sits in a display of `display` pixels: as large as fits,
-/// its shape kept, centred (black bars elsewhere), in normalised device coordinates.
-pub fn fit((sw, sh): (u32, u32), (dw, dh): (u32, u32)) -> [f32; 4] {
-    let s = f64::from(sw.max(1)) / f64::from(sh.max(1));
-    let d = f64::from(dw.max(1)) / f64::from(dh.max(1));
-    let (x, y) = if s > d { (1.0, d / s) } else { (s / d, 1.0) };
-    [-x as f32, -y as f32, x as f32, y as f32]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_stage_fits_its_display_keeping_its_shape() {
+    fn a_whole_stage_fits_its_target_keeping_its_shape() {
+        let fit = |stage: (u32, u32), target| dest_ndc(&Placement::whole(stage.0, stage.1), target);
         assert_eq!(fit((1920, 1080), (1920, 1080)), [-1.0, -1.0, 1.0, 1.0]);
         assert_eq!(
             fit((1080, 1080), (1920, 1080)),
@@ -607,6 +589,7 @@ mod tests {
             stage: openlab_core::StageId(uuid::Uuid::from_u128(n)),
             width: 1920,
             height: 1080,
+            place: Placement::whole(1920, 1080),
             picture,
             cues: Vec::new(),
         };
@@ -632,6 +615,121 @@ mod tests {
         assert_eq!(probe_size((16_384, 1)), (1024, 1));
     }
 
+    /// On this machine's GPU: a region draws only its part of the stage, filling where its
+    /// route lands; a quarter turn is clockwise (the card's red top left lands top right); fit
+    /// leaves black where the route does not reach.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_region_draws_its_part_turned_and_scaled_by_its_route() {
+        use crate::card::{BLUE, GREEN, RED, YELLOW};
+        let mut gpu = Gpu::new().unwrap();
+        let corners = [[0.1, 0.4], [0.9, 0.4], [0.1, 0.9], [0.9, 0.9]];
+        let draw = |gpu: &mut Gpu, place: Placement, target: (u32, u32)| {
+            let layer = Layer {
+                stage: openlab_core::StageId(uuid::Uuid::nil()),
+                width: 1920,
+                height: 1080,
+                place,
+                picture: Picture::TestCard(1),
+                cues: Vec::new(),
+            };
+            gpu.probe(target, &[layer], &corners, &mut |_| None)
+                .unwrap()
+        };
+        let place = |region, route, rotation, scaling| Placement {
+            region,
+            route,
+            rotation,
+            scaling,
+            screen: None,
+        };
+        // The stage's left half alone, filling a route of its own shape: red above, blue below.
+        let left = draw(
+            &mut gpu,
+            place(
+                [0, 0, 960, 1080],
+                (960, 1080),
+                0,
+                openlab_core::RouteScaling::Fill,
+            ),
+            (960, 1080),
+        );
+        assert_eq!(left, [RED, RED, BLUE, BLUE]);
+        // The whole stage turned a quarter clockwise on a portrait target.
+        let turned = draw(
+            &mut gpu,
+            place(
+                [0, 0, 1920, 1080],
+                (1920, 1080),
+                90,
+                openlab_core::RouteScaling::Fill,
+            ),
+            (1080, 1920),
+        );
+        let probe = |gpu: &mut Gpu, points: &[[f32; 2]]| {
+            let layer = Layer {
+                stage: openlab_core::StageId(uuid::Uuid::nil()),
+                width: 1920,
+                height: 1080,
+                place: place(
+                    [0, 0, 1920, 1080],
+                    (1920, 1080),
+                    90,
+                    openlab_core::RouteScaling::Fill,
+                ),
+                picture: Picture::TestCard(1),
+                cues: Vec::new(),
+            };
+            gpu.probe((1080, 1920), &[layer], points, &mut |_| None)
+                .unwrap()
+        };
+        assert_eq!(turned.len(), 4);
+        // Below the barcode band (now down the right edge): top left blue, top right red,
+        // bottom left yellow, bottom right green.
+        assert_eq!(
+            probe(
+                &mut gpu,
+                &[[0.3, 0.25], [0.6, 0.25], [0.3, 0.75], [0.6, 0.75]]
+            ),
+            [BLUE, RED, YELLOW, GREEN]
+        );
+        // Fit on a square target: black above and below the route.
+        let fit = draw(
+            &mut gpu,
+            place(
+                [0, 0, 1920, 1080],
+                (1920, 1080),
+                0,
+                openlab_core::RouteScaling::Fit,
+            ),
+            (1000, 1000),
+        );
+        assert_eq!(fit[0], RED);
+        let edges = {
+            let layer = Layer {
+                stage: openlab_core::StageId(uuid::Uuid::nil()),
+                width: 1920,
+                height: 1080,
+                place: place(
+                    [0, 0, 1920, 1080],
+                    (1920, 1080),
+                    0,
+                    openlab_core::RouteScaling::Fit,
+                ),
+                picture: Picture::TestCard(1),
+                cues: Vec::new(),
+            };
+            gpu.probe(
+                (1000, 1000),
+                &[layer],
+                &[[0.5, 0.05], [0.5, 0.95]],
+                &mut |_| None,
+            )
+            .unwrap()
+        };
+        assert_eq!(edges, [[0, 0, 0, 255], [0, 0, 0, 255]]);
+    }
+
     /// The draw itself, on this machine's GPU: a black stage reads black; the test card reads
     /// its frame number and its four colours. (Fails, not skips, on a Mac without Metal.)
     #[cfg(feature = "test-support")]
@@ -644,6 +742,7 @@ mod tests {
             stage: openlab_core::StageId(uuid::Uuid::nil()),
             width: 1280,
             height: 720,
+            place: Placement::whole(1280, 720),
             picture,
             cues: Vec::new(),
         };
@@ -690,6 +789,7 @@ mod tests {
             stage: openlab_core::StageId(uuid::Uuid::nil()),
             width: stage.0,
             height: stage.1,
+            place: Placement::whole(stage.0, stage.1),
             picture: Picture::Black,
             cues: cues
                 .iter()
@@ -822,6 +922,7 @@ mod tests {
             stage: openlab_core::StageId(uuid::Uuid::nil()),
             width: 64,
             height: 64,
+            place: Placement::whole(64, 64),
             picture: Picture::Black,
             cues: vec![CuePicture {
                 picture: 0,
@@ -951,6 +1052,7 @@ mod tests {
             stage: openlab_core::StageId(uuid::Uuid::nil()),
             width: 64,
             height: 64,
+            place: Placement::whole(64, 64),
             picture: Picture::Black,
             cues: vec![cue(0), cue(1)],
         };
