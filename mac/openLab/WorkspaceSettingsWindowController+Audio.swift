@@ -57,9 +57,18 @@ extension WorkspaceSettingsWindowController {
         }
         let limitsTitle = NSTextField(labelWithString: loc("settings.audio.limits"))
         limitsTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+        func limitNote(_ key: String) -> NSTextField {
+            let label = NSTextField(wrappingLabelWithString: loc(key))
+            label.font = .systemFont(ofSize: 11)
+            label.textColor = .secondaryLabelColor
+            label.preferredMaxLayoutWidth = 140
+            label.widthAnchor.constraint(equalToConstant: 140).isActive = true
+            return label
+        }
         let limits = NSStackView(views: [
             limitsTitle, limitRow(loc("settings.audio.limitMaxShort"), maxLimitField),
-            limitRow(loc("settings.audio.limitMinShort"), minLimitField),
+            limitNote("settings.audio.limitMaxNote"), limitRow(loc("settings.audio.limitMinShort"), minLimitField),
+            limitNote("settings.audio.limitMinNote"),
         ])
         limits.orientation = .vertical
         limits.alignment = .leading
@@ -71,7 +80,10 @@ extension WorkspaceSettingsWindowController {
         }
         limits.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let body = NSStackView(views: [scroll, limits])
+        // A rule between the table and the limits, as in the reference.
+        let divider = DividerView()
+        divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        let body = NSStackView(views: [scroll, divider, limits])
         body.orientation = .horizontal
         body.alignment = .top
         body.spacing = 12
@@ -79,6 +91,7 @@ extension WorkspaceSettingsWindowController {
         scroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         scroll.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         scroll.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
+        divider.heightAnchor.constraint(equalTo: scroll.heightAnchor).isActive = true
 
         let stack = NSStackView(views: [top, body])
         stack.orientation = .vertical
@@ -299,4 +312,14 @@ struct PatchTableState: Equatable {
     var patches: [PatchRow]
     var devices: [DeviceEntry]
     var loaded: Bool
+}
+
+/// A hairline rule one point wide, drawn in the separator colour.
+@MainActor
+private final class DividerView: NSView {
+    override var isOpaque: Bool { false }
+    override func draw(_ dirty: NSRect) {
+        NSColor.separatorColor.setFill()
+        bounds.fill()
+    }
 }

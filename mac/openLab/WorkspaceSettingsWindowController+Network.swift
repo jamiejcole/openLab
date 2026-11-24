@@ -21,7 +21,7 @@ extension WorkspaceSettingsWindowController {
         top.orientation = .horizontal
         top.spacing = 12
 
-        let headers = ["name", "host", "port", "protocol", "interface", "delete"].map { key -> NSView in
+        let headers = ["name", "protocol", "interface", "host", "port", "delete"].map { key -> NSView in
             let label = NSTextField(labelWithString: loc("settings.network.col.\(key)"))
             label.font = .systemFont(ofSize: 12, weight: .semibold)
             return label
@@ -29,7 +29,7 @@ extension WorkspaceSettingsWindowController {
         networkGrid.addRow(with: headers)
         networkGrid.rowSpacing = 8
         networkGrid.columnSpacing = 6
-        for (c, width) in [Self.networkNameMin, Self.networkHostMin, 52, 64, Self.networkInterfaceWidth, 24]
+        for (c, width) in [Self.networkNameMin, 64, Self.networkInterfaceWidth, Self.networkHostMin, 52, 24]
             .enumerated()
         {
             networkGrid.column(at: c).width = width
@@ -102,8 +102,8 @@ extension WorkspaceSettingsWindowController {
         for c in networkHostWidths { c.constant = host }
         for c in networkInterfaceWidths { c.constant = interface }
         networkGrid.column(at: 0).width = name
-        networkGrid.column(at: 1).width = host
-        networkGrid.column(at: 4).width = interface
+        networkGrid.column(at: 3).width = host
+        networkGrid.column(at: 2).width = interface
     }
 
     /// Draws the table. One that is as drawn is left alone, and so is one being typed in: a rebuild
@@ -184,9 +184,9 @@ extension WorkspaceSettingsWindowController {
             delete.isEnabled = enabled
             delete.setAX("\(AX.settingsNetwork)-delete-\(n)", label: "\(loc("settings.network.delete")) \(row.name)")
             networkGrid.addRow(with: [
-                field("name", row.name, width: Self.networkNameMin),
+                field("name", row.name, width: Self.networkNameMin), popup, interface,
                 field("host", row.host, width: Self.networkHostMin),
-                field("port", String(row.port), width: 52), popup, interface, delete,
+                field("port", String(row.port), width: 52), delete,
             ])
             networkTransportPopups.append(popup)
             networkInterfacePopups.append(interface)
