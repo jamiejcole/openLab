@@ -142,7 +142,7 @@ fn a_new_workspace_plays_without_a_mapping_step() {
     let msgs = s.take_outbound();
     assert_eq!(
         infos(&msgs),
-        vec!["mapped patch 'Main Outputs' to Offline outputs 1\u{2013}2".to_owned()]
+        vec!["mapped patch 'Patch 1' to Offline outputs 1\u{2013}2".to_owned()]
     );
     let m = mapping(&snap.workspace, s.control().machine()).unwrap();
     assert_eq!(
@@ -167,11 +167,10 @@ fn a_new_workspace_plays_without_a_mapping_step() {
     assert_eq!(mapping(&snap.workspace, &loaded.settings), Some(m));
 }
 
-/// A new workspace gets a patch for each connected output device only up to the number of
-/// devices the engine plays on at once: more devices get none, and each patch made is mapped
-/// to its own device.
+/// A new workspace gets one patch, "Patch 1", on the primary device however many devices are
+/// connected: it has no disconnected patches a machine without them never asked for.
 #[test]
-fn a_new_workspace_has_no_more_patches_than_devices_the_engine_can_open() {
+fn a_new_workspace_has_one_patch_however_many_devices_are_connected() {
     let env = env();
     let devices = (0..MAX_OUTPUTS + 4)
         .map(|n| device(&format!("Device {n}"), 2))
@@ -181,19 +180,14 @@ fn a_new_workspace_has_no_more_patches_than_devices_the_engine_can_open() {
     let mut s = show_with(workspace(vec![]), c);
     let snap = new_workspace(&mut s);
     let ws = &snap.workspace;
-    assert_eq!(ws.patches.len(), MAX_OUTPUTS);
-    assert_eq!(
-        ws.patches[MAX_OUTPUTS - 1].name,
-        format!("Patch {MAX_OUTPUTS}")
-    );
-    for (n, patch) in ws.patches.iter().enumerate() {
-        let m = s
-            .control()
-            .machine()
-            .patch_mapping(ws.id, patch.id)
-            .unwrap();
-        assert_eq!(m.device, format!("Device {n}"));
-    }
+    assert_eq!(ws.patches.len(), 1);
+    assert_eq!(ws.patches[0].name, "Patch 1");
+    let m = s
+        .control()
+        .machine()
+        .patch_mapping(ws.id, ws.patches[0].id)
+        .unwrap();
+    assert_eq!(m.device, "Device 0");
 }
 
 #[test]

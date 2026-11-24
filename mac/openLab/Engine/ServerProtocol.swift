@@ -255,6 +255,27 @@ struct StageDisplay: Hashable, Sendable, Decodable {
     let name: String
     let width: UInt32
     let height: UInt32
+    /// The display's fastest refresh rate in frames a second; 0 when unknown.
+    let fps: UInt32
+
+    init(id: String, name: String, width: UInt32, height: UInt32, fps: UInt32 = 0) {
+        self.id = id
+        self.name = name
+        self.width = width
+        self.height = height
+        self.fps = fps
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, width, height, fps }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        width = try c.decode(UInt32.self, forKey: .width)
+        height = try c.decode(UInt32.self, forKey: .height)
+        fps = try c.decodeIfPresent(UInt32.self, forKey: .fps) ?? 0
+    }
 }
 
 /// The display one stage is shown on, on this machine, as it was when chosen.

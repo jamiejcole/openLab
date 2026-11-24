@@ -1092,6 +1092,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                 name: "Projector".into(),
                 width: 1920,
                 height: 1080,
+                fps: 120,
             }],
             video: Some(true),
             stages: vec![
@@ -1737,6 +1738,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                         name: "Projector".into(),
                         width: 3840,
                         height: 2160,
+                        fps: 60,
                     }],
                     video: Some(true),
                 }),

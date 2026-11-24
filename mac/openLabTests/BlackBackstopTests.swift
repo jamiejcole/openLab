@@ -215,9 +215,9 @@ final class BlackBackstopTests: XCTestCase {
 
     // MARK: The app on the real engine
 
-    /// The app on a real engine with two virtual displays, a new workspace made (one stage per
-    /// display: Stage 1 on V1, Stage 2 on V2, keeping black, their black down until a picture
-    /// plays); its store and stage ids.
+    /// The app on a real engine with two virtual displays, a new workspace made (its one stage, Stage 1,
+    /// on V1) and a second stage added on V2, both keeping black, their black down until a picture
+    /// plays; its store and stage ids.
     private func start() async throws -> (WorkspaceStore, ModelID, ModelID) {
         engine = try await TestEngine.start(displays: Self.displays)
         let url = engine.infoURL
@@ -244,12 +244,19 @@ final class BlackBackstopTests: XCTestCase {
         guard case .success(let doc) = await app.session.newWorkspace() else { throw TestEngineError.refused("new") }
         let session = app.session
         await pushed("the workspace and its stages' displays arrived") {
-            guard let store = session.stores[doc], let stages = store.model?.stages, stages.count == 2 else {
-                return false
-            }
-            return store.videoOutputs.stages.compactMap(\.mapping?.display) == ["V1", "V2"]
+            guard let store = session.stores[doc], store.model?.stages.count == 1 else { return false }
+            return store.videoOutputs.stages.compactMap(\.mapping?.display) == ["V1"]
         }
         let store = try XCTUnwrap(session.stores[doc])
+        let second = ModelID(UUID().uuidString.lowercased())
+        guard
+            case .success = await store.send(
+                command: .addStage(id: second, name: "Stage 2", width: 1280, height: 720, index: 1)),
+            case .success = await store.setStageMapping(second, display: "V2")
+        else { throw TestEngineError.refused("second stage") }
+        await pushed("the second stage is on V2") {
+            store.videoOutputs.stages.compactMap(\.mapping?.display) == ["V1", "V2"]
+        }
         let stages = try XCTUnwrap(store.model?.stages.map(\.id))
         return (store, stages[0], stages[1])
     }

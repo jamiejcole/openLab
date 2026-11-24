@@ -1,9 +1,10 @@
 {
-  "about": "Cue 1 routed to cue output 1 on its Levels tab and played; in the patch editor cue output 1 is taken off device output 1 (emptied) and sent to device output 2: row 1's meter moves though device output 1 is silent, and row 2 stays dark.",
+  "about": "Cue 1 routed to cue output 1 on its Levels tab and played: the patch editor's routing draws a meter bar beside cue output 1's row while it sounds and nothing beside the silent row 2; after Panic every row is blank again.",
   "show": "Demo",
   "media": {
     "media/a.wav": 30
   },
+  "appearance": "dark",
   "steps": [
     {
       "select": "1"
@@ -21,9 +22,6 @@
     {
       "type": "levels-field",
       "text": "0"
-    },
-    {
-      "shot": "levels-routed"
     },
     {
       "key": "space"
@@ -50,35 +48,25 @@
       "advance": 1
     },
     {
-      "shot": "meters-mapped"
+      "shot": "playing"
     },
     {
-      "double_click": "patch-editor-matrix",
-      "at": [
-        0.47,
-        0.47
-      ]
+      "focus": "workspace"
     },
     {
-      "type": "patch-editor-crosspoint-field",
-      "text": ""
+      "key": "escape"
     },
     {
-      "double_click": "patch-editor-matrix",
-      "at": [
-        0.553,
-        0.47
-      ]
+      "advance": 2
     },
     {
-      "type": "patch-editor-crosspoint-field",
-      "text": "0"
+      "focus": "patch-editor"
     },
     {
       "advance": 1
     },
     {
-      "shot": "meters-routed-off-mapping"
+      "shot": "silent"
     }
   ]
 }

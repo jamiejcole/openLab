@@ -3,7 +3,9 @@
 import AppKit
 
 /// The routing matrix of the patch editor (QLab 5 manual p. 190): a row per cue output (its number
-/// and name, a level box laid over it by the editor, its meter) and a column per device output. Each
+/// and name, a level box laid over it by the editor, its meter) and a column per device output, under a
+/// strip per column (the fader, mute and level box the editor lays over the header, and the label drawn
+/// here) and the captions of the left columns, the inputs and the crosspoints. Each
 /// box is that crosspoint's level: lit with its level where the cue output reaches the device output,
 /// empty where it does not. A double-click (or Return on the chosen box) types a level in it. Drawn
 /// by hand and only where visible, so 128 rows by 64 columns is one view. Device outputs openLab
@@ -12,12 +14,21 @@ import AppKit
 @MainActor
 final class PatchRoutingView: NSView {
     static let rowH: CGFloat = 22
-    static let headerH: CGFloat = 22
-    static let labelW: CGFloat = 132
+    /// The strips and their captions: the header is as tall as both.
+    static let headerH: CGFloat = 178
+    static let labelW: CGFloat = 92
     static let levelW: CGFloat = 60
-    static let meterW: CGFloat = 52
+    /// The meter's column, drawn only while a cue plays through the row: a silent row shows nothing there.
+    static let meterW: CGFloat = 20
     static let cellW: CGFloat = 46
     static var crossX: CGFloat { labelW + levelW + meterW }
+
+    // The strip's parts, top to bottom, in the header's coordinates.
+    static let faderRect = (y: CGFloat(4), h: CGFloat(86), w: CGFloat(20))
+    static let muteRect = (y: CGFloat(94), h: CGFloat(16), w: CGFloat(24))
+    static let stripBoxY: CGFloat = 114
+    static let stripLabelY: CGFloat = 138
+    static let captionY: CGFloat = 156
 
     /// Each cue output's label: its number, and its name when it has one.
     var rowLabels: [String] = [] {
@@ -93,9 +104,30 @@ final class PatchRoutingView: NSView {
     /// Where the meter goes: one bar per row, for the first `rows` rows.
     func meterRect(rows: Int) -> NSRect {
         NSRect(
-            x: Self.labelW + Self.levelW + 2, y: Self.headerH + 4, width: Self.meterW - 10,
+            x: Self.labelW + Self.levelW + 2, y: Self.headerH + 4, width: Self.meterW - 8,
             height: CGFloat(rows) * Self.rowH - 6)
     }
+
+    /// Where a strip's fader goes: centred on `midX`.
+    static func faderFrame(midX: CGFloat) -> NSRect {
+        NSRect(x: midX - faderRect.w / 2, y: faderRect.y, width: faderRect.w, height: faderRect.h)
+    }
+
+    /// Where a device output's mute toggle goes.
+    static func muteFrame(midX: CGFloat) -> NSRect {
+        NSRect(x: midX - muteRect.w / 2, y: muteRect.y, width: muteRect.w, height: muteRect.h)
+    }
+
+    /// Where a strip's level box goes: as wide as a crosspoint box, so the two line up.
+    static func stripBoxFrame(midX: CGFloat) -> NSRect {
+        NSRect(x: midX - (cellW - 4) / 2, y: stripBoxY, width: cellW - 4, height: rowH - 2)
+    }
+
+    /// The middle of the strip over device output `column`: the middle of its crosspoint column.
+    static func stripMidX(column: Int) -> CGFloat { crossX + (CGFloat(column) + 0.5) * cellW }
+
+    /// The middle of the main strip: over the input boxes.
+    static var mainMidX: CGFloat { labelW + 2 + (levelW - 6) / 2 }
 
     func cellRect(row: Int, column: Int) -> NSRect {
         NSRect(
@@ -166,24 +198,31 @@ final class PatchRoutingView: NSView {
 
     // MARK: The floating panes
 
-    /// The header row: what each column is (fixed above the rows as they scroll).
+    /// The header's text styles.
     private static let small: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor,
     ]
+    private static let strip: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 10, weight: .medium), .foregroundColor: NSColor.labelColor,
+    ]
 
-    /// The titles of the left columns, in the corner that stays put however the matrix scrolls.
+    /// The main strip's label and the captions of the left columns, in the corner that stays put
+    /// however the matrix scrolls.
     func drawCorner() {
-        draw(
-            loc("patchEditor.cueOutputs"), in: NSRect(x: 4, y: 0, width: Self.labelW - 8, height: Self.headerH),
-            Self.small)
         centred(
-            loc("patchEditor.level"), in: NSRect(x: Self.labelW, y: 0, width: Self.levelW, height: Self.headerH),
-            Self.small)
+            loc("patchEditor.main"),
+            in: NSRect(x: Self.mainMidX - 24, y: Self.stripLabelY, width: 48, height: 14), Self.strip)
+        draw(
+            loc("patchEditor.cueOutputs"),
+            in: NSRect(x: 4, y: Self.captionY, width: Self.labelW - 8, height: 18), Self.small)
+        centred(
+            loc("patchEditor.inputs"),
+            in: NSRect(x: Self.labelW + 2, y: Self.captionY, width: Self.levelW - 6, height: 18), Self.small)
     }
 
-    /// The device outputs' numbers over their columns (the corner covers the left columns' part).
+    /// The device outputs' labels under their strips and the crosspoints caption (the corner covers
+    /// the left columns' part).
     func drawHeader(in pane: NSRect) {
-        let small = Self.small
         let muted: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: NSColor.systemRed,
         ]
@@ -191,14 +230,19 @@ final class PatchRoutingView: NSView {
         // theirs shows at its edge.
         let shown = visibleRect.minX + Self.crossX
         for c in 0..<deviceOutputs {
-            let r = NSRect(x: Self.crossX + CGFloat(c) * Self.cellW, y: 0, width: Self.cellW, height: Self.headerH)
+            let r = NSRect(x: Self.crossX + CGFloat(c) * Self.cellW, y: Self.stripLabelY, width: Self.cellW, height: 14)
             guard r.intersects(pane), r.maxX > shown else { continue }
-            // A muted device output says so over its column.
+            // A muted device output says so under its strip.
             if routing.deviceOutput(c).mute {
                 centred(String(format: loc("patchEditor.mutedColumn"), c + 1), in: r, muted)
             } else {
-                centred("\(c + 1)", in: r, small)
+                centred("\(c + 1)", in: r, Self.strip)
             }
+        }
+        if deviceOutputs > 0 {
+            draw(
+                loc("patchEditor.crosspoints"),
+                in: NSRect(x: Self.crossX + 2, y: Self.captionY, width: 160, height: 18), Self.small)
         }
     }
 
@@ -283,8 +327,8 @@ final class PatchRoutingView: NSView {
 }
 
 /// A part of the routing matrix that stays in view as the matrix scrolls: the header row (above the
-/// rows, as they scroll up and down), the left columns with the cue outputs' labels, level boxes
-/// and meter (beside the boxes, as they scroll sideways), or the corner where the two meet, with the
+/// rows, as they scroll up and down), the left columns with the cue outputs' labels and level boxes
+/// (beside the boxes, as they scroll sideways), or the corner where the two meet, with the
 /// left columns' titles, which stays put either way. Opaque, so what scrolls under it is hidden.
 @MainActor
 final class PatchRoutingPane: NSView {

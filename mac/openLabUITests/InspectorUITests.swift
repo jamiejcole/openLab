@@ -296,9 +296,10 @@ final class VideoUITests: XCTestCase {
         return shown
     }
 
-    /// A new workspace on two virtual displays has a stage on each; a Video cue made with Cmd-3,
-    /// given a movie with the file chooser (T) and the second stage in its I/O tab, plays there on
-    /// GO and is gone from it once stopped (QLab 5 manual, Video cues).
+    /// A new workspace has one stage, on the first of two virtual displays; a second stage is added
+    /// in the settings and shown on the second display. A Video cue made with Cmd-3, given a movie
+    /// with the file chooser (T) and the second stage in its I/O tab, plays there on GO and is gone
+    /// from it once stopped (QLab 5 manual, Video cues).
     func testVideoCueCreatedGivenAFileAndAStagePlaysOnGoAndStops() async throws {
         var movie = URL(fileURLWithPath: "/")
         let app = launchApp(opening: [], displays: "V1:1920x1080,V2:1280x720") { copies in
@@ -314,6 +315,22 @@ final class VideoUITests: XCTestCase {
             "a new workspace: \(app.dialogs.staticTexts.allElementsBoundByIndex.map { $0.value as? String ?? "" })")
         app.typeKey("3", modifierFlags: .command)
         XCTAssertTrue(waitFor("count == 1", rows), "a Video cue is made")
+        // The workspace has only Stage 1: a second stage is added on the settings' Video Outputs
+        // page and shown on the second display on the Output Routing page.
+        app.buttons["settings-button"].click()
+        let video = app.staticTexts["settings-category-video"]
+        XCTAssertTrue(video.waitForExistence(timeout: 10), "the Video category")
+        video.click()
+        let add = app.buttons["settings-video-add"]
+        XCTAssertTrue(add.waitForExistence(timeout: 10), "the Video Outputs page")
+        add.click()
+        app.radioButtons["Output Routing"].click()
+        let display = app.popUpButtons["settings-video-display-2"]
+        XCTAssertTrue(display.waitForExistence(timeout: 10), "the second stage is listed")
+        display.click()
+        app.menuItems.matching(NSPredicate(format: "title CONTAINS '1280'")).firstMatch.click()
+        XCTAssertTrue(waitFor("value CONTAINS '1280'", display), "Stage 2 is on the second display")
+        app.typeKey("w", modifierFlags: .command)
         let row = rows.element(boundBy: 0)
         row.click()
 

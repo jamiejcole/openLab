@@ -2194,7 +2194,6 @@ impl Engine {
             seed,
         );
         self.add_display_stages(&mut ws);
-        self.add_device_patches(&mut ws);
         ws
     }
 }

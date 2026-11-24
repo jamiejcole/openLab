@@ -119,36 +119,34 @@ impl Engine {
         }
     }
 
-    /// A new workspace's stages (QLab 5 manual p. 226): one per connected display, named
-    /// "Stage 1", "Stage 2"... in the stage host's display order, sized as the display and
-    /// shown on it on this machine. None while the stage host has listed no display yet.
+    /// A new workspace's stage: one, "Stage 1", sized as the main display (the first the stage
+    /// host lists) and shown on it on this machine. None while the stage host has listed no
+    /// display yet.
     pub(super) fn add_display_stages(&mut self, ws: &mut openlab_core::Workspace) {
-        let displays = self.stages.displays.clone();
-        for (n, display) in displays.iter().enumerate().take(openlab_core::MAX_STAGES) {
-            let stage = openlab_core::Stage::new(
-                StageId(super::docs::random_id()),
-                format!("Stage {}", n + 1),
-                display.width,
-                display.height,
-            );
-            let mapping = openlab_core::StageMapping {
-                display: display.id.clone(),
-                name: display.name.clone(),
-                width: display.width,
-                height: display.height,
-            };
-            // A refusal cannot happen for a display the link accepted; the stage then has no
-            // display, which is shown as such.
-            let _ = self
-                .config
-                .machine
-                .set_stage_mapping(ws.id, stage.id, Some(mapping));
-            self.stages.mappings = self.stages.mappings.wrapping_add(1);
-            ws.stages.push(stage);
-        }
-        if !displays.is_empty() {
-            self.save_machine();
-        }
+        let Some(display) = self.stages.displays.first().cloned() else {
+            return;
+        };
+        let stage = openlab_core::Stage::new(
+            StageId(super::docs::random_id()),
+            "Stage 1".to_string(),
+            display.width,
+            display.height,
+        );
+        let mapping = openlab_core::StageMapping {
+            display: display.id.clone(),
+            name: display.name.clone(),
+            width: display.width,
+            height: display.height,
+        };
+        // A refusal cannot happen for a display the link accepted; the stage then has no
+        // display, which is shown as such.
+        let _ = self
+            .config
+            .machine
+            .set_stage_mapping(ws.id, stage.id, Some(mapping));
+        self.stages.mappings = self.stages.mappings.wrapping_add(1);
+        ws.stages.push(stage);
+        self.save_machine();
     }
 
     /// A log line from the stage host's reports (states, displays, its own log): at most

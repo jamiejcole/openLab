@@ -1,5 +1,5 @@
 {
-  "about": "A new workspace with two virtual displays: the Video page lists Stage 1 and Stage 2, each with its pixel size and display, hidden between cues (no warning).",
+  "about": "A new workspace with two virtual displays: the Video Outputs page lists only Stage 1, with its pixel size, hidden between cues (no warning); Output Devices lists both displays.",
   "show": "new",
   "displays": "V1:1920x1080,V2:1280x720",
   "steps": [
@@ -11,6 +11,12 @@
     },
     {
       "shot": "video"
+    },
+    {
+      "tab": "videoDevices"
+    },
+    {
+      "shot": "devices"
     }
   ]
 }

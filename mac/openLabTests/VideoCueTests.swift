@@ -78,7 +78,7 @@ final class VideoCueTests: XCTestCase {
         }
     }
 
-    /// A new untitled workspace (one stage per display, as File > New makes it).
+    /// A new untitled workspace (one stage, as File > New makes it).
     func openNewWorkspace() async throws {
         await assertEventually("the stage host listed its display") {
             guard case .success(let ok) = await self.engine.request(.listDisplays),
@@ -194,7 +194,7 @@ final class VideoCueTests: XCTestCase {
     /// name is its file's); with no file it is broken with that reason, as an Audio cue with no file is.
     func testTheVideoToolbarButtonOrItsShortcutAddsAVideoCueBrokenWithNoFile() async throws {
         try await openNewWorkspace()
-        let firstStage = try XCTUnwrap(store.model?.stages.first?.id, "a new workspace has a stage per display")
+        let firstStage = try XCTUnwrap(store.model?.stages.first?.id, "a new workspace has a stage")
         let group = try XCTUnwrap(CueToolbarView.kinds.firstIndex { $0 == [.video] }, "the Video button")
         XCTAssertEqual(group, 2, "after Audio, as QLab's toolbar")
         let before = wc.cueList.roots.count

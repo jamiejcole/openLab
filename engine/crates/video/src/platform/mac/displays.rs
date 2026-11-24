@@ -24,9 +24,9 @@ pub struct Found {
     pub display: Display,
 }
 
-/// The active displays. Names come from `name_of` (AppKit's screen names need the main
-/// thread); a display it does not name gets a plain one.
-pub fn active(name_of: impl Fn(CGDirectDisplayID) -> Option<String>) -> Vec<Found> {
+/// The active displays. Names and refresh rates come from `screen_of` (AppKit's screens need
+/// the main thread): a display it does not name gets a plain name, and no rate is 0.
+pub fn active(screen_of: impl Fn(CGDirectDisplayID) -> Option<(String, u32)>) -> Vec<Found> {
     let mut ids = [0 as CGDirectDisplayID; MAX_DISPLAYS];
     let mut count = 0u32;
     // SAFETY: `ids` holds MAX_DISPLAYS entries, which is the capacity passed; `count` is a
@@ -53,10 +53,14 @@ pub fn active(name_of: impl Fn(CGDirectDisplayID) -> Option<String>) -> Vec<Foun
             } else {
                 format!("Display {}", n + 1)
             };
-            let name = name_of(cg)
+            let (name, fps) = screen_of(cg).unzip();
+            let name = name
                 .filter(|n| !n.is_empty() && !n.chars().any(char::is_control))
                 .map(|n| truncate(n, openlab_core::stage_link::MAX_TEXT_BYTES))
                 .unwrap_or(fallback);
+            let fps = fps
+                .unwrap_or(0)
+                .min(openlab_core::stage_link::MAX_DISPLAY_FPS);
             Some(Found {
                 cg,
                 display: Display {
@@ -64,6 +68,7 @@ pub fn active(name_of: impl Fn(CGDirectDisplayID) -> Option<String>) -> Vec<Foun
                     name,
                     width,
                     height,
+                    fps,
                 },
             })
         })
@@ -103,6 +108,7 @@ mod tests {
             assert_eq!(uuid_of(f.cg).as_deref(), Some(d.id.as_str()));
             assert!(openlab_core::side_ok(d.width) && openlab_core::side_ok(d.height));
             assert!(!d.name.is_empty());
+            assert!(d.fps <= openlab_core::stage_link::MAX_DISPLAY_FPS);
         }
         // A machine running tests has a display, a CI runner a virtual one.
         assert!(!found.is_empty());
