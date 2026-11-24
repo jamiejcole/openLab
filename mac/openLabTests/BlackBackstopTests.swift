@@ -134,6 +134,7 @@ final class BlackBackstopTests: XCTestCase {
         pointer.unhide = { calls.append("unhide") }
         pointer.location = { at }
         pointer.isActive = { active }
+        pointer.worksInBackground = { false }
         pointer.frames = [Self.v1Frame]
         XCTAssertEqual(calls, ["hide"], "over the stage, the app active")
         pointer.update()
@@ -168,6 +169,7 @@ final class BlackBackstopTests: XCTestCase {
             pointer.unhide = { unhides += 1 }
             pointer.location = { at }
             pointer.isActive = { active }
+            pointer.worksInBackground = { false }
             pointer.startPolling = { fire in
                 tick = fire
                 return { tick = nil }
@@ -197,6 +199,40 @@ final class BlackBackstopTests: XCTestCase {
         pointer = nil
         XCTAssertEqual(hides, unhides, "gone: the pointer is shown again")
         XCTAssertNil(tick, "and the timer stopped")
+    }
+
+    /// #812 S1 (reopened): with another app active (Finder in front) the pointer over a showing stage
+    /// is still hidden, and shown when it leaves; the timer runs the whole time a display is covered.
+    /// This Mac lets a process set the cursor from the background, which was measured by hand: the
+    /// pointer shot over a stage with Finder active showed no arrow once hidden this way, and
+    /// `NSCursor.hide` alone showed it.
+    func testThePointerOverAStageIsHiddenWhileAnotherAppIsActive() {
+        XCTAssertTrue(BackgroundCursor.enabled, "this system lets the app hide the pointer from the background")
+        var calls: [String] = []
+        var at = NSPoint(x: Self.v1Frame.midX, y: Self.v1Frame.midY)
+        let pointer = StagePointer()
+        pointer.hide = { calls.append("hide") }
+        pointer.unhide = { calls.append("unhide") }
+        pointer.location = { at }
+        pointer.isActive = { false }  // Finder is the active app
+        pointer.worksInBackground = { true }
+        var tick: (@MainActor () -> Void)?
+        pointer.startPolling = { fire in
+            tick = fire
+            return { tick = nil }
+        }
+        pointer.frames = [Self.v1Frame]
+        XCTAssertEqual(calls, ["hide"], "over the stage with another app active")
+        XCTAssertTrue(pointer.isPolling, "its place is read while the app is in the background")
+        at = NSPoint(x: Self.v2Frame.midX, y: Self.v2Frame.midY)
+        tick?()
+        XCTAssertEqual(calls, ["hide", "unhide"], "off the stage: shown")
+        at = NSPoint(x: Self.v1Frame.midX, y: Self.v1Frame.midY)
+        pointer.update(appActive: false)
+        XCTAssertEqual(calls, ["hide", "unhide", "hide"], "resigning active does not show it over the stage")
+        pointer.frames = []
+        XCTAssertEqual(calls.last, "unhide")
+        XCTAssertFalse(pointer.isPolling)
     }
 
     /// This Mac's displays as the backstop reads them: ColorSync's UUIDs (the stage host's display
