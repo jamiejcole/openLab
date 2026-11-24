@@ -36,7 +36,7 @@ use crate::validate::{
 use crate::video::{
     MAX_REGIONS, MAX_ROUTES, MAX_STAGE_LAYER, MAX_STAGES, OutputRoute, Region, RegionProperty,
     RouteProperty, Stage, StageProperty, region_routes_problem, regions_problem, route_problem,
-    stage_problem,
+    route_shape_problem, stage_problem,
 };
 
 /// The inverse of a change that changed nothing. `History` ignores it.
@@ -1379,10 +1379,15 @@ fn set_route_property(
     let old = property.current(route);
     let mut changed = route.clone();
     property.write(&mut changed);
-    let name_only = matches!(property, RouteProperty::Name { .. });
-    if let Some(why) = route_problem(&changed)
-        && !(restoring && name_only)
-    {
+    // Only a name typed now is checked as a name: undo may put back any name it held, and a
+    // route a show file loaded with a blank name can still have its size, turn or scaling edited.
+    let typed_name = matches!(property, RouteProperty::Name { .. }) && !restoring;
+    let problem = if typed_name {
+        route_problem(&changed)
+    } else {
+        route_shape_problem(&changed)
+    };
+    if let Some(why) = problem {
         return Err(CommandError::InvalidValue(why));
     }
     if changed == *route {

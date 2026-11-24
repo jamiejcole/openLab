@@ -356,8 +356,8 @@ impl Control {
         for doc in &self.docs {
             let ws = doc.model.ws();
             for route in &ws.routes {
-                // Two open workspaces never share a route id (each is made by its own); if a
-                // copied show did, the first keeps it rather than the whole set being refused.
+                // A show copied in Finder and opened beside its original has the same route ids:
+                // the first open keeps each such route, so the set is still sent, not refused.
                 if set.routes.iter().any(|r| r.id == route.id) {
                     continue;
                 }

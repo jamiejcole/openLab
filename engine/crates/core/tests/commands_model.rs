@@ -2172,6 +2172,33 @@ fn routes_can_be_added_removed_moved_and_edited() {
     }
 }
 
+/// A route a damaged show file holds with a blank name can still be turned, resized and scaled;
+/// only a name typed for it is checked as a name.
+#[test]
+fn a_route_loaded_with_a_blank_name_can_still_be_edited() {
+    let mut ws = two_route_workspace();
+    ws.routes[0].name = String::new();
+    for property in [
+        RouteProperty::Rotation { value: 90 },
+        RouteProperty::Size {
+            width: 1280,
+            height: 720,
+        },
+        RouteProperty::Scaling {
+            value: RouteScaling::Fit,
+        },
+    ] {
+        round_trip(&ws, route_prop(1, property));
+    }
+    assert!(matches!(
+        refused(
+            &ws,
+            route_prop(1, RouteProperty::Name { value: " ".into() })
+        ),
+        CommandError::InvalidValue(_)
+    ));
+}
+
 /// R9: removing a route its regions use is allowed; they are left with none (assumed), and the
 /// undo brings the route back at its place with them on it, exactly. A client following the
 /// model changes sees the same.

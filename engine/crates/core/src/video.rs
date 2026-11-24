@@ -124,13 +124,22 @@ pub fn route_side_ok(side: u32) -> bool {
     (1..=MAX_ROUTE_PIXELS).contains(&side)
 }
 
-/// Why `route` cannot be added or become what it is.
-pub(crate) fn route_problem(route: &OutputRoute) -> Option<&'static str> {
+/// Why a route's size or rotation is refused, if it is: what an edit of its size, rotation or
+/// scaling is checked by, so a route loaded with a blank name can still be edited.
+pub(crate) fn route_shape_problem(route: &OutputRoute) -> Option<&'static str> {
     if !route_side_ok(route.width) || !route_side_ok(route.height) {
         return Some("an output route is 1 to 30000 pixels a side");
     }
     if !rotation_ok(route.rotation) {
         return Some("an output route turns by 0, 90, 180 or 270 degrees");
+    }
+    None
+}
+
+/// Why `route` cannot be added or become what it is.
+pub(crate) fn route_problem(route: &OutputRoute) -> Option<&'static str> {
+    if let Some(why) = route_shape_problem(route) {
+        return Some(why);
     }
     if route.name.trim().is_empty() {
         return Some("an output route needs a name");
