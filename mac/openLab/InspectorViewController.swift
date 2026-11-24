@@ -41,6 +41,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     var openOutputs: [OutputStatus] = []
     private var rateSub: AnyCancellable?
     private var mappingSub: AnyCancellable?
+    private var warningsSub: AnyCancellable?
     var patchReading: Task<Void, Never>?
     var patchReadAgain = false
     /// The patches the last read of their devices was for: the I/O tab reads again only when the
@@ -590,6 +591,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         }
         // A patch moved to another device here: read where the patches play again.
         mappingSub = store.$patchMappingRevision.dropFirst().sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.readPatchDevices() }
+        }
+        // A device that goes before the engine could open it stays "opening" in the status: only the
+        // engine's patch warnings (the device not connected) say where the patches play now.
+        warningsSub = store.$warnings.removeDuplicates().dropFirst().sink { [weak self] _ in
             MainActor.assumeIsolated { self?.readPatchDevices() }
         }
         readPatchDevices()

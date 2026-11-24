@@ -205,6 +205,35 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(vc.audioLevels.matrix.outputCount, 2, "the columns still come from the cue's outputs")
     }
 
+    /// A patch mapped to a device that is unplugged before the engine could open it: the device stays
+    /// "opening" in the engine's status, so only its dropping off the device list tells the I/O tab.
+    func testAPatchWhoseDeviceGoesBeforeItOpensReadsNotConnected() async throws {
+        let own = try await TestEngine.start()
+        defer { own.stop() }
+        try await reopen(on: own) { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        let io = vc.videoIO
+        await assertEventually { !io.outputFormatLabel.stringValue.isEmpty }
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        let engine = rig.testEngine
+        guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("plug in")
+        }
+        try await rig.advance(1)
+        // Unplugged before the mapping: the engine still lists it until its next list read, so it
+        // tries to open it, and that open fails.
+        guard case .success = await engine.request(.loseDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("unplug")
+        }
+        let second = PatchMapping(device: TestEngine.deviceNames[1], channels: [0, 1])
+        guard case .success = await store.setPatchMapping(patch, second) else { return XCTFail("map") }
+        await assertEventually {
+            try? await self.rig.advance(1)
+            return io.outputFormatLabel.stringValue == loc("inspector.io.outputFormatNotConnected")
+        }
+    }
+
     /// An Audio cue's I/O tab shows its file with Choose and the format the engine's probe read
     /// (the Video cue's rows), above the output patch; a file that is not there says it is not read.
     func testAnAudioCuesIOTabShowsItsFileAndTheFilesFormat() async throws {
