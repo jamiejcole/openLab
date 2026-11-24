@@ -497,7 +497,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         selectWhenAdded = id
         let stage = stageID
         let route = object.isEmpty ? nil : ModelID(object)
-        // A new region covers the whole stage (Q816).
+        // A new region covers the whole stage.
         edit(after: typed) { [store] in
             await store.send(
                 command: .addRegion(

@@ -909,14 +909,17 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     var pending: Task<Void, Never>? { commits }
 
     /// "<format> N", N one past the highest such number `names` use (as the engine names a new
-    /// route, Q813).
+    /// route).
     static func nextName(_ format: String, after names: [String]) -> String {
         let prefix = format.replacingOccurrences(of: "%d", with: "")
-        let highest = names.compactMap { name -> Int? in
+        // Numbers as the engine reads them (32 bits, never past the largest): a typed name with
+        // a huge number cannot overflow.
+        let highest = names.compactMap { name -> UInt32? in
             guard name.hasPrefix(prefix) else { return nil }
-            return Int(name.dropFirst(prefix.count))
+            return UInt32(name.dropFirst(prefix.count))
         }.max() ?? 0
-        return String(format: format, highest + 1)
+        let next = highest == UInt32.max ? highest : highest + 1
+        return format.replacingOccurrences(of: "%d", with: String(next))
     }
 
     @objc private func addChosen(_ sender: NSPopUpButton) {

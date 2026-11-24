@@ -315,21 +315,26 @@ final class VideoUITests: XCTestCase {
             "a new workspace: \(app.dialogs.staticTexts.allElementsBoundByIndex.map { $0.value as? String ?? "" })")
         app.typeKey("3", modifierFlags: .command)
         XCTAssertTrue(waitFor("count == 1", rows), "a Video cue is made")
-        // The workspace has only Stage 1: a second stage is added on the settings' Video Outputs
-        // page and shown on the second display on the Output Routing page.
+        // The workspace has only Stage 1 on Output 1: a route on the second display is added on
+        // the settings' Output Routing page, then a stage on it on the Video Outputs page.
         app.buttons["settings-button"].click()
         let video = app.staticTexts["settings-category-video"]
         XCTAssertTrue(video.waitForExistence(timeout: 10), "the Video category")
         video.click()
-        let add = app.buttons["settings-video-add"]
+        app.radioButtons["Output Routing"].click()
+        let addRoute = app.popUpButtons["settings-video-add"]
+        XCTAssertTrue(addRoute.waitForExistence(timeout: 10), "the Output Routing page")
+        addRoute.click()
+        app.menuItems.matching(NSPredicate(format: "title CONTAINS '1280'")).firstMatch.click()
+        let display = app.popUpButtons["settings-video-display-2"]
+        XCTAssertTrue(waitFor("value CONTAINS '1280'", display), "Output 2 is on the second display")
+        app.radioButtons["Video Outputs"].click()
+        let add = app.popUpButtons["settings-video-add"]
         XCTAssertTrue(add.waitForExistence(timeout: 10), "the Video Outputs page")
         add.click()
-        app.radioButtons["Output Routing"].click()
-        let display = app.popUpButtons["settings-video-display-2"]
-        XCTAssertTrue(display.waitForExistence(timeout: 10), "the second stage is listed")
-        display.click()
-        app.menuItems.matching(NSPredicate(format: "title CONTAINS '1280'")).firstMatch.click()
-        XCTAssertTrue(waitFor("value CONTAINS '1280'", display), "Stage 2 is on the second display")
+        app.menuItems["On Output 2"].click()
+        XCTAssertTrue(
+            app.textFields["settings-video-name-2"].waitForExistence(timeout: 10), "Stage 2 is listed")
         app.typeKey("w", modifierFlags: .command)
         let row = rows.element(boundBy: 0)
         row.click()

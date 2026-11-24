@@ -1453,6 +1453,19 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(opened.count, 2)
     }
 
+    /// A new stage or route is "Stage N" or "Output N", one past the highest number in use; a
+    /// typed name whose number the engine would not read, or the largest it reads, never
+    /// overflows.
+    func testNewNamesTakeTheNextNumberAndNeverOverflow() {
+        let routes = loc("settings.video.routeName")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: []), "Output 1")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: ["Output 1", "Output 4", "Cyc"]), "Output 5")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: ["Output 99999999999999999999"]), "Output 1")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: ["Output 4294967295"]), "Output 4294967295")
+        XCTAssertEqual(VideoSettingsPane.nextName(routes, after: ["Output -3", "Output 2"]), "Output 3")
+        XCTAssertEqual(VideoSettingsPane.nextName(loc("settings.video.newName"), after: ["Stage 1"]), "Stage 2")
+    }
+
     /// The Output Routing page's button opens this Mac's Displays settings.
     func testTheDisplaysButtonOpensTheMacsDisplaySettings() async throws {
         let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
