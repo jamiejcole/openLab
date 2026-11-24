@@ -1719,6 +1719,27 @@ extension VideoSettingsTests {
         await showsGuides("V2", [green, green, black], "drawn in the colour picked before")
     }
 
+    /// The colour panel outlives the settings window: a colour picked there after the window
+    /// closed and its pages went changes nothing and crashes nothing.
+    func testAColourPickedAfterTheSettingsWindowClosedGoesNowhere() async throws {
+        let (rig, sc) = try await openGuided()
+        weak var gone: VideoSettingsPane?
+        do {
+            let page = VideoSettingsPane(store: rig.store, section: .routing)
+            gone = page
+            await page.refresh()
+            page.guideSwatches[0].performClick(nil)
+            XCTAssertTrue(GuideColourPick.shared.pane === page)
+        }
+        await assertEventually("the page went") { gone == nil }
+        sc.close()
+        let panel = NSColorPanel.shared
+        panel.color = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
+        XCTAssertTrue(NSApp.sendAction(#selector(GuideColourPick.picked(_:)), to: GuideColourPick.shared, from: panel))
+        await rig.sync()
+        XCTAssertNil(rig.store.model?.routes.first?.raw["guide_colour"], "nothing changed")
+    }
+
     /// #821 GD8: Output 1 renamed (an undo step), then its guides ticked and a colour picked →
     /// neither is an undo step: Edit > Undo still names the rename, and undoing it leaves the
     /// guides showing in the colour picked.

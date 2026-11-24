@@ -1077,8 +1077,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         panel.setAction(nil)
         if let colour = sender.colour { panel.color = colour }
         panel.showsAlpha = false
-        panel.setTarget(self)
-        panel.setAction(#selector(guideColourPicked(_:)))
+        // The panel outlives this page and does not keep its target: it sends to a target that
+        // lives as long as the app, which passes the pick on while this page is there.
+        GuideColourPick.shared.pane = self
+        panel.setTarget(GuideColourPick.shared)
+        panel.setAction(#selector(GuideColourPick.picked(_:)))
         panel.orderFront(nil)
     }
 
@@ -1124,6 +1127,17 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         let command: Command = section == .routing ? .setRoute(row.id, property) : .setStage(row.id, property)
         commit(row.id, typed: true) { [store] in await store.send(command: command) }
     }
+}
+
+/// The shared colour panel's target while a guide colour is picked: it outlives the page that
+/// opened the panel, so a pick after the page closed goes nowhere instead of to a freed object.
+@MainActor
+final class GuideColourPick: NSObject {
+    static let shared = GuideColourPick()
+    /// The page whose swatch opened the panel last; nil once it is gone.
+    weak var pane: VideoSettingsPane?
+
+    @objc func picked(_ sender: NSColorPanel) { pane?.guideColourPicked(sender) }
 }
 
 /// A route's guide colour as a small round swatch (UI map `settings.video.output-routing`): a
