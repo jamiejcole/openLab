@@ -2383,7 +2383,8 @@ final class AppControllerTests: XCTestCase {
         table.keyDown(with: ret)
         await assertEventually { app.windows.values.contains { $0.window?.title.hasPrefix("Beta") == true } }
         await assertEventually { !(app.launcher.window?.isVisible ?? true) }
-        XCTAssertEqual(recents.first, b, "Beta is now first")
+        // The show is noted as recent once its open returns, just after its window appears.
+        await assertEventually("Beta is now first") { self.recents.first == b }
         // A double-click on a row: the table's own action.
         app.showLauncher()
         XCTAssertEqual(app.launcher.recents.map(\.name), ["Beta", "Alpha"])
@@ -2396,7 +2397,28 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(app.windows.count, before)
         app.launcher.openSelected()
         await assertEventually { app.windows.count == before + 1 }
-        XCTAssertEqual(recents.first, a)
+        await assertEventually("Alpha is now first") { self.recents.first == a }
+    }
+
+    /// The launcher comes up while the engine starts (its list disabled), is ready later, and Return
+    /// typed into the window then opens the selected show: the list must hold the keys by then.
+    func testReturnSentThroughTheWindowAfterTheEngineBecomesReadyOpensTheSelectedRecent() async throws {
+        newestFirstRecents()
+        let a = try showFile("Alpha")
+        recents = [a]
+        app.launcher.apply(state: .starting)
+        app.showLauncher()
+        app.launcher.apply(state: .ready)
+        let window = try XCTUnwrap(app.launcher.window)
+        XCTAssertTrue(window.firstResponder === app.launcher.recentsTable, "the list holds the keys")
+        let ret = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil,
+                characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        window.sendEvent(ret)
+        await assertEventually { app.windows.values.contains { $0.window?.title.hasPrefix("Alpha") == true } }
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
     }
 
     /// Checklist: Launcher showing → click New → an untitled workspace opens and the launcher closes;

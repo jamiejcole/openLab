@@ -128,9 +128,9 @@ final class InspectorLevelsTests: XCTestCase {
     // MARK: Matrix rows follow the file (AUD-06)
 
     /// Replaces the setUp rig with the demo show opened after `edit`, which can rewrite its files.
-    private func reopen(_ edit: @escaping (URL) throws -> Void) async throws {
+    private func reopen(on engine: TestEngine? = nil, _ edit: @escaping (URL) throws -> Void) async throws {
         rig.client.stop()
-        rig = try await Rig.open("Demo", edit: edit)
+        rig = try await Rig.open("Demo", on: engine, edit: edit)
         store = rig.store
         vc = InspectorViewController(store: store)
         window.contentView = vc.view
@@ -205,10 +205,43 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(vc.audioLevels.matrix.outputCount, 2, "the columns still come from the cue's outputs")
     }
 
+    /// A patch mapped to a device that is unplugged before the engine could open it: the device stays
+    /// "opening" in the engine's status, so only its dropping off the device list tells the I/O tab.
+    func testAPatchWhoseDeviceGoesBeforeItOpensReadsNotConnected() async throws {
+        let own = try await TestEngine.start()
+        defer { own.stop() }
+        try await reopen(on: own) { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        let io = vc.videoIO
+        await assertEventually { !io.outputFormatLabel.stringValue.isEmpty }
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        let engine = rig.testEngine
+        guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("plug in")
+        }
+        try await rig.advance(1)
+        // Unplugged before the mapping: the engine still lists it until its next list read, so it
+        // tries to open it, and that open fails.
+        guard case .success = await engine.request(.loseDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("unplug")
+        }
+        let second = PatchMapping(device: TestEngine.deviceNames[1], channels: [0, 1])
+        guard case .success = await store.setPatchMapping(patch, second) else { return XCTFail("map") }
+        await assertEventually {
+            try? await self.rig.advance(1)
+            return io.outputFormatLabel.stringValue == loc("inspector.io.outputFormatNotConnected")
+        }
+    }
+
     /// An Audio cue's I/O tab shows its file with Choose and the format the engine's probe read
     /// (the Video cue's rows), above the output patch; a file that is not there says it is not read.
     func testAnAudioCuesIOTabShowsItsFileAndTheFilesFormat() async throws {
-        try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
+        // An engine of its own: it plugs in, maps and unplugs a device, which the class's shared
+        // engine would carry into the next test.
+        let own = try await TestEngine.start()
+        defer { own.stop() }
+        try await reopen(on: own) { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
         showCue(Self.intro)
         vc.tabView.selectTabViewItem(withIdentifier: "io")
         await assertEventually { self.store.mediaDurations[Self.intro]?.audioFile != nil }
