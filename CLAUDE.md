@@ -56,6 +56,7 @@ This file is the only copy of every rule below; other files link here instead of
 ## Behaviour: match QLab 5
 - openLab builds what QLab 5 has and drops what it doesn't, including openLab extras already built (user decision 2026-10-29/30).
 - Where QLab's behaviour is known, copy it and say so in your report. Look it up: `~/qlab-ref/qlab-ref search "<words>"` then `show <page>` if it exists, then https://qlab.app/docs/v5/. Paraphrase and cite pages. UI layout: `~/qlab-ref/ui` (`README.md`, `surfaces.json`, `menus.json`, `cue-types.json`, `shots/`); cite its surface ids.
+- Every UI element is built and checked against its `~/qlab-ref/ui` shot (owner decision 2026-11-24): the brief names the shots, the report lists the differences side by side. With no shot, never guess: the orchestrator tells the owner so more can be captured (video surfaces: assume and list them on #816).
 - Where it is unknown: search skill `qlab-behaviour` (every user answer is there; never ask twice), then implement the likeliest behaviour and add an `assumed` row to its references (assumption, what you searched).
 - Public repo: never copy QLab text, labels, tooltips, icons, artwork or screenshots into the repo, issues or PRs. Describe in our own words; give our controls our own similar names. Never put personal account or machine details in the repo, issues or PRs.
 

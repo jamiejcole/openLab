@@ -10,3 +10,6 @@ Rules learned:
 - A mac test run from a new worktree builds a new UI test runner, and macOS asks again for accessibility access; until it is answered the UI smoke tests fail. Reuse one worktree for mac runs where possible.
 - Test several small branches in one integration worktree (one build), then land them as one PR when the user asks for combined PRs.
 - A test that compares against the list's visible width must force always-shown scroll bars (`scrollerStyle = .legacy`): the CI Mac shows them, a dev Mac may not.
+- An agent short of disk must never link its build/ or engine/target into another worktree (its builds overwrote another branch's binaries, 2026-11-24): it deletes its own build output or stops and reports. Say so in every brief that builds.
+- A test engine is shared by its whole test class: a test that plugs, unplugs or maps devices runs on its own `TestEngine.start()`.
+- A CI app shard that goes silent with WindowServer stuck in the GPU driver (exit 75) is the hosted runner: record it on #743 and re-run that job once.
