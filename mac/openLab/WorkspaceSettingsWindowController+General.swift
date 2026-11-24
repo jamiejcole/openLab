@@ -5,7 +5,8 @@ import AppKit
 /// The General page of the workspace settings (QLab 5, manual pp. 99-101): the time between GOs and
 /// the key-up rule, the panic fade, auto-numbering, auto-load, the playhead lock and copying media
 /// into the show folder as files are added. Each box sends
-/// its setting to the engine and the page is drawn from what the engine then holds.
+/// its setting to the engine and the page is drawn from what the engine then holds. The only
+/// descriptive note is the one under the copy-media box.
 extension WorkspaceSettingsWindowController {
     func buildGeneralTab() -> NSView {
         panicField.setAX(AX.settingsPanicField, label: loc("settings.general.panic"))
@@ -29,27 +30,47 @@ extension WorkspaceSettingsWindowController {
             box.target = self
             box.action = action
         }
-        let stack = NSStackView(views: [
-            row(loc("settings.general.goInterval"), goIntervalField, loc("settings.seconds")),
-            note("settings.general.keyUp.note"), keyUpCheck,
-            row(loc("settings.general.panic"), panicField, loc("settings.seconds")),
-            row(loc("settings.general.autosave"), autosaveField, loc("settings.seconds")),
-            NSStackView(views: [autoNumberCheck, autoNumberField]), note("settings.general.autoNumber.note"),
-            autoLoadCheck,
-            lockPlayheadCheck, note("settings.general.lockPlayhead.note"),
-            copyMediaCheck, note("settings.general.copyMedia.note"),
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        return stack
+        // Labels down the left, boxes in a column, units beside them, the one note in its own
+        // column on the right; a rule between groups of settings.
+        let label = { (key: String) in NSTextField(labelWithString: loc(key)) }
+        let unit = { NSTextField(labelWithString: loc("settings.seconds")) }
+        let grid = NSGridView()
+        grid.columnSpacing = 10
+        grid.rowSpacing = 10
+        var rules: [NSGridRow] = []
+        func rule() {
+            let line = NSBox()
+            line.boxType = .separator
+            let row = grid.addRow(with: [line])
+            row.topPadding = 4
+            row.bottomPadding = 4
+            rules.append(row)
+        }
+        grid.addRow(with: [label("settings.general.goInterval"), goIntervalField, unit()])
+        grid.addRow(with: [keyUpCheck])
+        rule()
+        grid.addRow(with: [label("settings.general.panic"), panicField, unit()])
+        rule()
+        grid.addRow(with: [label("settings.general.autosave"), autosaveField, unit()])
+        rule()
+        grid.addRow(with: [autoNumberCheck, autoNumberField])
+        grid.addRow(with: [autoLoadCheck])
+        rule()
+        grid.addRow(with: [lockPlayheadCheck])
+        grid.addRow(with: [copyMediaCheck])
+        // The note runs under its box, the width of the page (a column beside it would not fit the
+        // smallest window).
+        let noteRow = grid.addRow(with: [note("settings.general.copyMedia.note")])
+        // A rule and the note run the whole width: their cells are merged once every column exists.
+        for row in rules + [noteRow] { row.mergeCells(in: NSRange(location: 0, length: grid.numberOfColumns)) }
+        return grid
     }
 
     private func note(_ key: String) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: loc(key))
         label.font = .systemFont(ofSize: 11)
         label.textColor = .secondaryLabelColor
-        label.preferredMaxLayoutWidth = 420
+        label.preferredMaxLayoutWidth = 340
         return label
     }
 

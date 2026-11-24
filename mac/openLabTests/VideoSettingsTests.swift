@@ -60,9 +60,9 @@ final class VideoSettingsTests: XCTestCase {
     private let stageA = "00000000-0000-0000-0000-00000000a001"
     private let stageB = "00000000-0000-0000-0000-00000000a002"
 
-    /// Flow 1: a new workspace on a Mac with two displays: the Video page lists one stage per
-    /// display, named, with its pixel size and its display.
-    func testANewWorkspaceListsOneStagePerDisplayWithItsSizeAndDisplay() async throws {
+    /// Flow 1: a new workspace on a Mac with two displays: the Video page lists one stage, Stage 1,
+    /// with the main display's pixel size, shown on that display.
+    func testANewWorkspaceListsOneStageOnTheMainDisplay() async throws {
         await assertEventually("the stage host listed its displays") {
             guard case .success(let ok) = await self.engine.request(.listDisplays),
                 case .displays(let list, _)? = ok.data
@@ -78,15 +78,12 @@ final class VideoSettingsTests: XCTestCase {
         await sc.present().value
         let pane = sc.videoPane
         let routing = sc.videoRoutingPane
-        await settled(sc) { pane.nameFields.count == 2 && routing.displayPopups.count == 2 }
-        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1", "Stage 2"])
-        XCTAssertEqual(
-            pane.shown?.map { "\($0.width) × \($0.height)" }, ["1920 × 1080", "1280 × 720"])
-        XCTAssertEqual(
-            routing.displayPopups.map { $0.titleOfSelectedItem },
-            ["Virtual V1 (1920 × 1080)", "Virtual V2 (1280 × 720)"])
+        await settled(sc) { pane.nameFields.count == 1 && routing.displayPopups.count == 1 }
+        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1"])
+        XCTAssertEqual(pane.shown?.map { "\($0.width) × \($0.height)" }, ["1920 × 1080"])
+        XCTAssertEqual(routing.displayPopups.map { $0.titleOfSelectedItem }, ["Virtual V1 (1920 × 1080)"])
         XCTAssertTrue(pane.emptyLabel.isHidden)
-        XCTAssertEqual(routing.warningLabels.map(\.stringValue), ["", ""], "no warnings: both shown or hidden")
+        XCTAssertEqual(routing.warningLabels.map(\.stringValue), [""], "no warning: shown")
     }
 
     /// The Video category is split into Video Outputs (the stages), Output Routing (the display
@@ -105,30 +102,44 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { sc.videoPane.nameFields.count == 1 }
         XCTAssertFalse(sc.videoPane.cols.contains(.display), "the stages page chooses no display")
         XCTAssertEqual(sc.videoRoutingPane.cols, [.name, .size, .display])
-        XCTAssertEqual(sc.videoDevicesPane.cols, [.name, .resolution, .shownOn])
+        XCTAssertEqual(sc.videoDevicesPane.cols, [.device, .name, .resolution, .rate])
         sc.pageBar.selectedSegment = 1
         _ = sc.pageBar.target?.perform(sc.pageBar.action, with: sc.pageBar)
         XCTAssertEqual(sc.shownPage, .videoRouting)
     }
 
-    /// The Output Devices page lists the Mac's displays with their size and the stages shown on
-    /// each, and says when none is used.
-    func testTheDevicesPageListsEachDisplayWithTheStagesShownOnIt() async throws {
-        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+    /// The Output Devices page is a table of the Mac's displays, one row each: "Device N:", the
+    /// display's name, its size in pixels and its refresh rate, with no stage column.
+    func testTheDevicesPageListsEachDisplayWithItsNameResolutionAndRate() async throws {
+        let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let devices = sc.videoDevicesPane
         await settled(sc) { devices.deviceLabels.count == 2 }
         XCTAssertEqual(
             devices.deviceLabels.map { $0.map(\.stringValue) },
             [
-                ["Virtual V1", "1920 × 1080", loc("settings.video.unused")],
-                ["Virtual V2", "1280 × 720", loc("settings.video.unused")],
+                ["Device 1:", "Virtual V1", "1920 × 1080", "60 fps"],
+                ["Device 2:", "Virtual V2", "1280 × 720", "60 fps"],
             ])
         XCTAssertTrue(devices.emptyLabel.isHidden)
-        guard case .success = await rig.store.setStageMapping(ModelID(stageA), display: "V2") else {
-            return XCTFail("mapping")
-        }
-        await settled(sc) { devices.deviceLabels.last?.last?.stringValue == "Cyc" }
-        XCTAssertEqual(devices.deviceLabels.first?.last?.stringValue, loc("settings.video.unused"))
+        XCTAssertEqual(
+            devices.cols.map { loc("settings.video.col.\($0.key)") }, ["", "Name", "Resolution", "Refresh rate"])
+    }
+
+    /// A display's refresh rate reads as the system gave it (120 and 240 on a laptop and a gaming
+    /// monitor), and nothing where the stage host did not know it.
+    func testDeviceRowsShowTheRefreshRateTheDisplayReports() {
+        let rows = [
+            StageDisplay(id: "A", name: "Built-in Retina Display", width: 3024, height: 1964, fps: 120),
+            StageDisplay(id: "B", name: "GO27Q24", width: 2560, height: 1440, fps: 240),
+            StageDisplay(id: "C", name: "Old", width: 1024, height: 768),
+        ]
+        XCTAssertEqual(
+            rows.enumerated().map { VideoSettingsPane.deviceTexts(number: $0.offset + 1, display: $0.element) },
+            [
+                ["Device 1:", "Built-in Retina Display", "3024 × 1964", "120 fps"],
+                ["Device 2:", "GO27Q24", "2560 × 1440", "240 fps"],
+                ["Device 3:", "Old", "1024 × 768", ""],
+            ])
     }
 
     /// The monitor button says what it does: its title and tooltip name a monitor window and a live

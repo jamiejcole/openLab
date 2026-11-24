@@ -27,7 +27,8 @@ struct StageRow: Equatable {
 ///   adds one.
 /// - Output Routing: the display each stage is shown on on this machine; a stage that cannot be
 ///   seen says why in its row.
-/// - Output Devices: the displays this computer has, their size and the stages shown on each.
+/// - Output Devices: the displays this computer has, one row each: Device N, its name, its size in
+///   pixels and its refresh rate.
 /// Every control sends its edit to the engine and a page is drawn from what the engine then holds
 /// (the model for the stages, `video_outputs` for displays and states), so a refused edit shows the
 /// old state.
@@ -38,7 +39,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// A column of a section's table.
     enum Col: Equatable {
-        case name, size, display, black, layer, monitor, remove, resolution, shownOn
+        case name, size, display, black, layer, monitor, remove, device, resolution, rate
 
         /// The key of its title (`settings.video.col.<key>`).
         var key: String {
@@ -50,8 +51,9 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             case .layer: return "layer"
             case .monitor: return "monitor"
             case .remove: return "remove"
+            case .device: return "device"
             case .resolution: return "resolution"
-            case .shownOn: return "shownOn"
+            case .rate: return "rate"
             }
         }
 
@@ -59,12 +61,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             switch self {
             case .name: return 90
             case .size: return VideoSettingsPane.sizeWidth
-            case .display, .shownOn: return VideoSettingsPane.leastDisplayWidth
+            case .display: return VideoSettingsPane.leastDisplayWidth
             case .black: return 32
             case .layer: return 30
             case .monitor: return VideoSettingsPane.monitorWidth
             case .remove: return 16
-            case .resolution: return 92
+            case .device: return 70
+            case .resolution: return 100
+            case .rate: return 80
             }
         }
     }
@@ -103,7 +107,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private(set) var monitorButtons: [NSButton] = []
     private(set) var removeButtons: [NSButton] = []
     private(set) var warningLabels: [NSTextField] = []
-    /// The Output Devices rows: each display's name, size and the stages shown on it.
+    /// The Output Devices rows: each display's number, name, size and refresh rate.
     private(set) var deviceLabels: [[NSTextField]] = []
     private var subs: [AnyCancellable] = []
     /// Edits on their way to the engine, one after another.
@@ -116,7 +120,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         switch section {
         case .outputs: return [.name, .size, .black, .layer, .monitor, .remove]
         case .routing: return [.name, .size, .display]
-        case .devices: return [.name, .resolution, .shownOn]
+        case .devices: return [.device, .name, .resolution, .rate]
         }
     }
 
@@ -252,16 +256,20 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         return grid
     }
 
-    /// The table's second flexible column after the name: the display choice, or the stages a
-    /// display shows.
-    private var wideIndex: Int? { cols.firstIndex { $0 == .display || $0 == .shownOn } }
+    /// The table's second flexible column after the name: the display choice.
+    private var wideIndex: Int? { cols.firstIndex { $0 == .display } }
+
+    /// The name's column: the table's first flexible one (a devices table leads with the device's
+    /// number).
+    private var nameIndex: Int { cols.firstIndex { $0 == .name } ?? 0 }
 
     /// Shares what the table's width leaves after the fixed columns: the display column first
     /// (so a display's name and "not connected" read whole), then the name, in the titles and the
     /// rows alike.
     func fitColumns() {
         let wide = wideIndex
-        let fixed = cols.enumerated().filter { $0.offset != 0 && $0.offset != wide }
+        let nameIndex = nameIndex
+        let fixed = cols.enumerated().filter { $0.offset != nameIndex && $0.offset != wide }
             .reduce(0) { $0 + $1.element.width }
         let spare =
             (scroll.contentView.bounds.width - 2 * Self.inset - fixed
@@ -279,7 +287,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         displayWidth = display
         nameWidth = name
         for g in [header, grid] {
-            g.column(at: 0).width = name
+            g.column(at: nameIndex).width = name
             if let wide { g.column(at: wide).width = display }
         }
         for c in popupWidths { c.constant = display }
@@ -392,18 +400,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         }
         if section == .devices {
             for (i, d) in list.enumerated() {
-                let used = rows.filter { $0.display == d.id }.map(\.name).joined(separator: ", ")
-                let name = Self.cellLabel(d.name, key: "name", n: i + 1, width: nameWidth)
+                let texts = Self.deviceTexts(number: i + 1, display: d)
+                let number = Self.cellLabel(texts[0], key: "number", n: i + 1)
+                let name = Self.cellLabel(texts[1], key: "name", n: i + 1, width: nameWidth)
                 nameWidths.append(contentsOf: Self.widthConstraints(of: name))
-                let size = Self.cellLabel(
-                    String(format: loc("settings.video.resolution"), String(d.width), String(d.height)),
-                    key: "resolution", n: i + 1)
-                let shownOn = Self.cellLabel(
-                    used.isEmpty ? loc("settings.video.unused") : used, key: "shown-on", n: i + 1, width: displayWidth)
-                popupWidths.append(contentsOf: Self.widthConstraints(of: shownOn))
-                shownOn.textColor = used.isEmpty ? .secondaryLabelColor : .labelColor
-                grid.addRow(with: [name, size, shownOn])
-                deviceLabels.append([name, size, shownOn])
+                let size = Self.cellLabel(texts[2], key: "resolution", n: i + 1)
+                let rate = Self.cellLabel(texts[3], key: "rate", n: i + 1)
+                grid.addRow(with: [number, name, size, rate])
+                deviceLabels.append([number, name, size, rate])
             }
         }
         for (i, row) in (section == .devices ? [] : rows).enumerated() {
@@ -506,6 +510,17 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             label.widthAnchor.constraint(equalToConstant: width).isActive = true
         }
         return label
+    }
+
+    /// What an Output Devices row shows for the display numbered `number`: "Device N:", its name,
+    /// its size in pixels and its refresh rate (empty when the stage host did not know it).
+    static func deviceTexts(number: Int, display d: StageDisplay) -> [String] {
+        [
+            String(format: loc("settings.video.deviceNumber"), number),
+            d.name,
+            String(format: loc("settings.video.resolution"), String(d.width), String(d.height)),
+            d.fps > 0 ? String(format: loc("settings.video.rate"), d.fps) : "",
+        ]
     }
 
     /// The width constraint `cellLabel` gave `label`, to move with the table's columns.

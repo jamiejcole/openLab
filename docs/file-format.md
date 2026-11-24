@@ -166,8 +166,7 @@ openLab writes the paths it creates in Unicode NFC (macOS reports names decompos
 A patch is a named set of logical outputs that Audio cues play to. Which device a patch plays on,
 and the device output each cue output goes to by default, are configured per machine; the
 crosspoints and device-output levels below travel with the show. A new workspace starts with one
-two-output patch for each output device connected then (QLab 5 manual p. 106); a file loads with
-the patches it has.
+two-output patch, "Patch 1" (QLab 5 manual p. 106); a file loads with the patches it has.
 
 | Field | Type | Meaning |
 |---|---|---|

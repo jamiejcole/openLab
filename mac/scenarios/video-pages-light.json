@@ -1,5 +1,5 @@
 {
-  "about": "Workspace Settings > Video split into Video Outputs (stages, Monitor), Output Routing (display per stage with its warning) and Output Devices (the Mac's displays and the stages on each): each page at a wide size and the least size, light.",
+  "about": "Workspace Settings > Video split into Video Outputs (stages, Monitor), Output Routing (display per stage with its warning) and Output Devices (the Mac's displays: name, resolution, refresh rate): each page at a wide size and the least size, light.",
   "show": "video-stages.openlab",
   "displays": "V1:1920x1080,V2:1280x720",
   "settings": {

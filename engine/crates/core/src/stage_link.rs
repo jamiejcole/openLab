@@ -26,6 +26,8 @@ pub const LINK_VERSION: u32 = 6;
 pub const MAX_LINE_BYTES: usize = 1024 * 1024;
 /// Most displays one `displays` message lists.
 pub const MAX_DISPLAYS: usize = 32;
+/// The most frames a second a display may report.
+pub const MAX_DISPLAY_FPS: u32 = 1000;
 /// Longest display id, display name or log message, in bytes.
 pub const MAX_TEXT_BYTES: usize = 512;
 /// Most stages one `stages` message carries: every stage of every open workspace (at most 8).
@@ -273,6 +275,10 @@ pub struct Display {
     /// Pixel size (not points: QLab shows pixels, p. 212).
     pub width: u32,
     pub height: u32,
+    /// The display's refresh rate in frames a second (its fastest mode, as the system names it),
+    /// 0 when the stage host does not know it.
+    #[serde(default)]
+    pub fps: u32,
 }
 
 /// Where a stage is.
@@ -397,6 +403,9 @@ fn check_displays(displays: &[Display]) -> Result<(), LinkError> {
         }
         if !side_ok(d.width) || !side_ok(d.height) {
             return Err(LinkError::Invalid("display size out of range"));
+        }
+        if d.fps > MAX_DISPLAY_FPS {
+            return Err(LinkError::Invalid("display refresh rate out of range"));
         }
     }
     Ok(())
@@ -723,6 +732,7 @@ mod tests {
                     name: "Projector".into(),
                     width: 3840,
                     height: 2160,
+                    fps: 60,
                 }],
             },
             FromStage::StageStatus {
@@ -961,6 +971,17 @@ mod tests {
             )
         };
         assert!(decode_from_stage(display("D", "N", 1920).as_bytes()).is_ok());
+        // A refresh rate is optional (0: unknown) and at most MAX_DISPLAY_FPS.
+        let with_fps = |fps: u32| {
+            format!(
+                r#"{{"type":"displays","displays":[{{"id":"D","name":"N","width":1,"height":1,"fps":{fps}}}]}}"#
+            )
+        };
+        assert!(decode_from_stage(with_fps(MAX_DISPLAY_FPS).as_bytes()).is_ok());
+        assert_eq!(
+            decode_from_stage(with_fps(MAX_DISPLAY_FPS + 1).as_bytes()),
+            Err(LinkError::Invalid("display refresh rate out of range"))
+        );
         for bad in [
             display("", "N", 1920),
             display("D", "", 1920),
@@ -983,6 +1004,7 @@ mod tests {
                 name: "N".into(),
                 width: 1,
                 height: 1,
+                fps: 0,
             })
             .collect();
         let line = encode(&FromStage::Displays { displays: many }).unwrap();

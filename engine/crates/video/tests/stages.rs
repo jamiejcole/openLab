@@ -211,11 +211,11 @@ fn a_stage_on_its_chosen_display_shows_black_and_then_the_test_card() {
     assert_eq!(s.stalls(), 0);
 }
 
-/// A new workspace on a Mac with two displays has one stage per display (QLab 5 manual
-/// p. 226): named, with its display's pixel size, shown on it on this machine, keeping black,
-/// and hidden until a picture plays on it (#708), so no display is covered before then.
+/// A new workspace on a Mac with two displays has one stage, "Stage 1", on the main display
+/// (the first listed): with its pixel size, shown on it on this machine, keeping black, and
+/// hidden until a picture plays on it (#708), so no display is covered before then.
 #[test]
-fn a_new_workspace_has_one_stage_per_display() {
+fn a_new_workspace_has_one_stage_on_the_main_display() {
     let mut c: ControlConfig = config(&workspace(vec![]));
     c.stage_host = Some(virtual_host());
     let mut s = OfflineShow::empty(mixer_config(), c).unwrap();
@@ -229,7 +229,7 @@ fn a_new_workspace_has_one_stage_per_display() {
             .iter()
             .map(|st| (st.name.as_str(), st.width, st.height, st.keep_black))
             .collect::<Vec<_>>(),
-        [("Stage 1", 1920, 1080, true), ("Stage 2", 1280, 720, true)]
+        [("Stage 1", 1920, 1080, true)]
     );
     let entries = mappings(&mut s);
     assert_eq!(
@@ -237,7 +237,7 @@ fn a_new_workspace_has_one_stage_per_display() {
             .iter()
             .map(|e| e.mapping.as_ref().map(|m| m.display.as_str()))
             .collect::<Vec<_>>(),
-        [Some("V1"), Some("V2")]
+        [Some("V1")]
     );
     assert!(entries.iter().all(|e| e.state == Some(StageState::Hidden)));
     assert!(entries.iter().all(|e| e.panicked), "their black is down");
@@ -389,6 +389,7 @@ fn virtual_display(id: &str, width: u32, height: u32) -> Display {
         name: format!("Virtual {id}"),
         width,
         height,
+        fps: 60,
     }
 }
 
