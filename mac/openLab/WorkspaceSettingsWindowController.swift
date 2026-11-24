@@ -158,7 +158,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 self?.rereadSoon()
             })
         // Taller than the pages need by the message row's two lines, which never take the pages' room.
-        window.contentMinSize = NSSize(width: 700, height: 552)
+        // Wide enough for an Output Routing row (a whole display name and scaling choice) with a
+        // legacy 17 pt scroller showing, as on a Mac set to always show scroll bars.
+        window.contentMinSize = NSSize(width: 718, height: 552)
         window.delegate = self
         tabs.delegate = self
         // The table takes its width only once its tab is laid out, after the lines were wrapped:
