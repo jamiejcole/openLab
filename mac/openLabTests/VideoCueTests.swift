@@ -626,6 +626,7 @@ final class VideoCueTests: XCTestCase {
         XCTAssertNil(app.handleKeyDown(try key("p", code: 35)))
         await soon("P paused it") { self.status(Self.movie) == loc("cue.state.paused") }
         let held = await shownFrame()
+        XCTAssertNotNil(held, "a picture is on V1 while paused, not black")
         try await play(1)
         let stillHeld = await shownFrame()
         XCTAssertEqual(stillHeld, held, "the picture holds its frame")
