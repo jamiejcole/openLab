@@ -2095,6 +2095,26 @@ extension PlayheadFlowTests {
         await assertEventually("loaded") { self.rowMark(id) == loc("cue.state.loaded") }
     }
 
+    /// W1: a hand moves a pixel or two between press and release. On a long file that is far more
+    /// than 50 ms, and it made a section (no seek) out of what the user meant as a click.
+    func testQuickClicksWithAPixelOfHandMovementEachMoveTheCueOnALongFile() async throws {
+        let id = try await waveTones(1, seconds: 600)[0]
+        await showWaveform(id)
+        var wanted: [Double] = []
+        for (t, dx) in [(100.0, 2.0), (300.0, -2.0), (450.0, 1.0)] {
+            let x = waveX(t)
+            XCTAssertGreaterThan(abs(waveView.scale.seconds(x + dx) - t), WaveformView.minLength, "a pixel is over minLength here")
+            dragWave(fromX: x, through: [x + dx])
+            XCTAssertNil(waveView.selection, "a pixel of movement is no section")
+            XCTAssertEqual(waveView.insertion ?? -1, t, accuracy: 1, "click at \(t) landed")
+            wanted.append(t)
+        }
+        await seekRun(3)
+        XCTAssertEqual(seeks.map { ($0 / 10).rounded() * 10 }, wanted.map { ($0 / 10).rounded() * 10 })
+        dragWave(fromX: waveX(200), through: [waveX(200) + WaveformView.dragSlop + 6])
+        XCTAssertNotNil(waveView.selection, "a real drag still makes a section")
+    }
+
     func testWithASectionShiftIAndShiftOCropTheCueToItEachOneUndoStep() async throws {
         let id = try await waveTones(1)[0]
         await showWaveform(id)

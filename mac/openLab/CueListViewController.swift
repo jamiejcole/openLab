@@ -153,6 +153,19 @@ final class TargetDropOutline: NSView {
     }
 }
 
+/// The list's clip view: a press on the filler AppKit draws under a short table (outside the table's own
+/// frame) deselects as one on the table's empty rows does.
+final class BlankDeselectingClipView: NSClipView {
+    override func mouseDown(with event: NSEvent) {
+        if let table = documentView as? NSTableView {
+            window?.makeFirstResponder(table)
+            table.deselectAll(nil)
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
+}
+
 /// The list's outline view: it tells the list when a drag leaves it.
 final class CueOutlineView: NSOutlineView {
     var onDragExit: (() -> Void)?
@@ -169,7 +182,22 @@ final class CueOutlineView: NSOutlineView {
         {
             return
         }
+        // A press on a row's empty space below the cues ends the selection (QLab), with no cue selected.
+        if row < 0, event.modifierFlags.intersection([.command, .shift]).isEmpty {
+            window?.makeFirstResponder(self)
+            deselectAll(nil)
+            return
+        }
         super.mouseDown(with: event)
+    }
+
+    /// Empty rows always left below the last cue (QLab keeps blank rows to click on), so the list never
+    /// ends on its last cue.
+    static let spareRows = 3
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let spare = CGFloat(numberOfRows > 0 ? Self.spareRows : 0) * (rowHeight + intercellSpacing.height)
+        super.setFrameSize(NSSize(width: newSize.width, height: newSize.height + spare))
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -771,6 +799,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cellEditor.cell?.isScrollable = true
         cellEditor.font = .systemFont(ofSize: NSFont.systemFontSize)
         let scroll = NSScrollView()
+        scroll.contentView = BlankDeselectingClipView()
         scroll.documentView = outlineView
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
@@ -905,6 +934,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// is: the playhead's echo and later moves to this cue are not followed, until the selection is
     /// changed by the user or the playhead moves on.
     private var unlinkedHead: ModelID?
+
+    /// The playhead's cue was removed while selected: the playhead's move on is not followed.
+    private var headRemovedWhileSelected = false
 
     /// A press in a row's status column (QLab 5): the playhead goes there, the selection stays.
     private func statusPressed(_ row: Int) -> Bool {
@@ -1080,6 +1112,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard head != seenHead else { return }
         seenHead = head
         if head != unlinkedHead { unlinkedHead = nil }
+        if headRemovedWhileSelected {
+            headRemovedWhileSelected = false
+            return
+        }
         if playheadSends > 0 {
             headMovedWhileSending = true
         } else {
@@ -1254,6 +1290,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         for case .cue(let id) in deletes { noteAncestors(id) }
         for case .cue(_, _, _, let cue) in upserts { noteAncestors(cue.id) }
         for case .cue(let id) in deletes {
+            // The cue the playhead stood on was removed while it was selected (an undone add): the
+            // engine moves the playhead on, and the selection stays empty, as in QLab.
+            if id == seenHead, selected.contains(id) { headRemovedWhileSelected = true }
             batchTouched.insert(id)
             remove(id, expanded: &expanded)
         }

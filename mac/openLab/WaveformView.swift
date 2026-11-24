@@ -207,6 +207,9 @@ class WaveformView: NSView {
     /// Where a press away from every handle went down (file seconds): a click, or the start of a
     /// section, until the mouse goes up.
     private(set) var pressAt: Double?
+    /// Where (view x) the press went down, and whether it has moved past `dragSlop` since.
+    private var pressX: CGFloat = 0
+    private var pulled = false
     /// The dragged slice marker is outside the view: letting go there deletes it.
     private(set) var removing = false
     /// The trims, marker and fades when the drag began: letting go there sends nothing.
@@ -364,6 +367,8 @@ class WaveformView: NSView {
     func beginPress(atX x: CGFloat) -> Bool {
         guard !isLocked, !isReading, let duration else { return false }
         pressAt = Self.clampRounded(scale.seconds(x), 0, duration)
+        pressX = x
+        pulled = false
         onDragBegan?()
         return true
     }
@@ -378,6 +383,10 @@ class WaveformView: NSView {
             let over = Double((x < 0 ? x : x - width) / width)
             onPan?(-min(max(over, -Self.edgeStep), Self.edgeStep))
         }
+        // A hand moves a pixel or two between press and release: that is a click, however much
+        // file a pixel covers (on a long file it is more than `minLength`).
+        if !pulled, abs(x - pressX) < Self.dragSlop { return }
+        pulled = true
         let t = Self.clampRounded(scale.seconds(min(max(x, 0), width)), 0, duration)
         let section = abs(t - from) >= Self.minLength - 1e-9 ? min(from, t)...max(from, t) : nil
         guard section != selection else { return }
@@ -391,7 +400,8 @@ class WaveformView: NSView {
     func endPress(atX x: CGFloat) {
         guard let from = pressAt else { return }
         dragSection(toX: x)
-        let section = selection
+        // A press that never left its slop is a click, whatever section was selected before it.
+        let section = pulled ? selection : nil
         pressAt = nil
         if section == nil { click(atX: scale.x(from)) }
         onDragEnded?()
@@ -406,6 +416,9 @@ class WaveformView: NSView {
         onDragEnded?()
         return true
     }
+
+    /// How far (points) the pointer must move from a press before it is a section, not a click.
+    static let dragSlop: CGFloat = 4
 
     /// The most of the view's width one move past its edge scrolls.
     static let edgeStep = 0.25
