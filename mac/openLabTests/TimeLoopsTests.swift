@@ -1776,6 +1776,11 @@ extension PlayheadFlowTests {
         let id = try await waveTones(1)[0]
         await showWaveform(id)
         clickWave(at: 12)
+        // The engine reports the first stand before the other clicks reach it, the order a busy host
+        // gives: that report reaches the app after the last click, and the line passes from the click
+        // to the engine's stand. The engine reports at most 30 times a second of the show's time,
+        // which this test's engine moves only when told.
+        await seekRun(1)
         for (n, t) in [(2, 20.0), (3, 8.0), (2, 25.0)] {
             pressWave(x: waveX(t), clicks: n)
             waveView.mouseUp(with: waveMouse(.leftMouseUp, x: waveX(t), clicks: n))
@@ -1783,9 +1788,12 @@ extension PlayheadFlowTests {
         }
         await seekRun(4)
         XCTAssertEqual(seeks.map { ($0 * 10).rounded() / 10 }, [12, 20, 8, 25])
+        try await play(0.1)  // the engine's next report: where it stands now, after the last click
         await assertEventually("the row shows the cue loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+        // The click's own line, or the engine's stand once it has reported an earlier click's point
+        // after the last click (which hands the line over): one line, drawn at the last click.
         await assertEventually("one line, at the last click") {
-            self.waveView.playhead == nil && abs((self.waveView.insertion ?? -1) - 25) < 0.1
+            abs(((self.waveView.playhead ?? self.waveView.insertion) ?? -1) - 25) < 0.1
         }
         XCTAssertTrue(try lineDrawn(at: waveX(25)))
         for t in [12.0, 20, 8] { XCTAssertFalse(try lineDrawn(at: waveX(t)), "no line left at \(t)") }
