@@ -564,6 +564,51 @@ fn opening_and_closing_a_doc_without_video_sends_no_video_outputs() {
     );
 }
 
+/// #821: a guide colour picked on an open doc's route with its guides off changes no stage or
+/// route set, yet the doc's other connections are told (their swatch follows), within the push
+/// spacing.
+#[test]
+fn a_guide_colour_picked_with_guides_off_is_pushed_to_the_docs_connections() {
+    const T0: i64 = 1_700_000_000_000;
+    let clock = openlab_engine::control::ManualClock::new(T0);
+    let route_id = openlab_core::RouteId(Uuid::from_u128(0x5821));
+    let mut a = workspace(vec![]);
+    let mut route = openlab_core::OutputRoute::new(route_id, "Output 1", 1920, 1080);
+    route.guide_colour = Some(openlab_core::GuideColour([0, 200, 255]));
+    a.routes.push(route);
+    let mut c = config(&a);
+    map_all(&mut c, &[&a]);
+    c.clock = clock.clock();
+    let mut s = show_with(a, c);
+    for k in 1..=3 {
+        clock.set(T0 + k * 100);
+        s.tick();
+    }
+    s.take_outbound();
+    let red = openlab_core::GuideColour([255, 0, 0]);
+    let id = s.request_id();
+    s.send(ClientMessage::Command {
+        id,
+        command: Box::new(Command::SetRouteProperty {
+            id: route_id,
+            property: openlab_core::RouteProperty::GuideColour { value: Some(red) },
+        }),
+        coalesce: None,
+    });
+    for k in 4..=6 {
+        clock.set(T0 + k * 100);
+        s.tick();
+    }
+    let out = s.take_outbound();
+    let pushed = out.iter().any(|m| match m {
+        ServerMessage::VideoOutputs { routes, .. } => routes
+            .iter()
+            .any(|r| r.route == route_id && r.guide_colour == Some(red) && !r.guides),
+        _ => false,
+    });
+    assert!(pushed, "{out:?}");
+}
+
 #[test]
 fn at_most_eight_docs_are_open_and_ids_are_never_reused() {
     let (mut s, mut ids) = docs_show(workspace(vec![]), vec![]);
