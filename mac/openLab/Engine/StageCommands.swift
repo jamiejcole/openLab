@@ -120,7 +120,8 @@ struct RegionBounds: Equatable, Sendable {
 
     /// Whether it lies wholly inside a stage of `width` x `height`, at least a pixel each way.
     func inside(width stageWidth: Int, height stageHeight: Int) -> Bool {
-        x >= 0 && y >= 0 && width >= 1 && height >= 1 && x + width <= stageWidth && y + height <= stageHeight
+        // Compared by subtraction, which cannot overflow once x and y are at least 0.
+        x >= 0 && y >= 0 && width >= 1 && height >= 1 && width <= stageWidth - x && height <= stageHeight - y
     }
 }
 

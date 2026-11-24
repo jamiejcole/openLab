@@ -388,6 +388,8 @@ final class ProtocolFixtureTests: XCTestCase {
             return XCTFail("document_show_mode")
         }
         XCTAssertTrue(on.showMode)
+        XCTAssertEqual(on.undoName, "rename_route")
+        XCTAssertEqual(on.redoName, "add_region")
         guard case .welcome(_, let snapshot) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
             return XCTFail("welcome")
         }

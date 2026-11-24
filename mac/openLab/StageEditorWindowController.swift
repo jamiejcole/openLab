@@ -567,7 +567,10 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         let bottom = b.y + b.height
         switch field {
         case regionWidthField, regionHeightField:
-            guard let side = Int(text), side >= 1 else { return refuse(loc("stageEditor.badNumber")) }
+            // No wider than a stage can be, so no sum below can overflow.
+            guard let side = Int(text), (1...16384).contains(side) else {
+                return refuse(loc("stageEditor.badNumber"))
+            }
             if field === regionWidthField {
                 b.width = side
             } else {

@@ -1148,6 +1148,24 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(routing.scalingPopups.first?.titleOfSelectedItem, loc("settings.video.scaling.fill"), "both")
     }
 
+    /// A route removed while its editor is up (by another client or an undo): OK is refused with
+    /// the route named as gone, never by its id.
+    func testTheRouteEditorOfARouteRemovedMeanwhileSaysItIsGone() async throws {
+        let (rig, sc) = try await openG4()
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.editButtons.count == 2 }
+        routing.editButtons[1].performClick(nil)
+        let editor = try XCTUnwrap(sc.routeEditor)
+        let gone = editor.routeID
+        guard case .success = await rig.store.send(command: .removeRoute(gone)) else { return XCTFail("remove") }
+        await settled(sc) { rig.store.model?.routes.contains { $0.id == gone } == false }
+        editor.widthField.stringValue = "1000"
+        editor.okButton.performClick(nil)
+        await editor.saving?.value
+        XCTAssertEqual(editor.messageLabel.stringValue, loc("settings.video.routeGone"))
+        XCTAssertFalse(editor.messageLabel.stringValue.contains(gone.raw), "no id shown")
+    }
+
     /// #813 R8 (the app's part): a route whose display this Mac does not have now → its row names
     /// the display and marks it not connected, with a warning, and the stage's displays column
     /// names it the same way.
@@ -1361,6 +1379,11 @@ final class VideoSettingsTests: XCTestCase {
         editor.regionChips[1].mouseDown(with: try press(editor))
         XCTAssertEqual(editor.canvas.selected, 1)
         let stage = editor.canvas.stageFrame
+        // A width no stage can hold is refused before any sum (with B at x 1920 it once overflowed
+        // and crashed the app).
+        type("9223372036854775807", into: editor.regionWidthField, editor)
+        XCTAssertEqual(editor.messageLabel.stringValue, loc("stageEditor.badNumber"))
+        XCTAssertEqual(editor.regions[1].bounds.width, 1920)
         type("960", into: editor.regionWidthField, editor)
         await editorSettled(sc, editor) { editor.regions[1].bounds.width == 960 }
         XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 960, height: 1080))

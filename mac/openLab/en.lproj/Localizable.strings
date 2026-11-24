@@ -37,7 +37,7 @@
 "undo.step.resize_stage" = "Stage Size";
 "undo.step.stage_keep_black" = "Black Between Cues";
 "undo.step.stage_layer" = "Stage Layer";
-"undo.step.add_route" = "New Output Route";
+"undo.step.add_route" = "Add Output Route";
 "undo.step.remove_route" = "Delete Output Route";
 "undo.step.move_route" = "Move Output Route";
 "undo.step.rename_route" = "Route Name";
@@ -584,7 +584,7 @@
 "settings.video.routeGone" = "That output route is no longer in the workspace.";
 "settings.video.badRouteName" = "An output route needs a name.";
 "settings.video.warn.stageNoDisplay" = "Shown on no display: none of its regions goes to a route with a display on this computer.";
-"settings.video.newRoute" = "New Output Route";
+"settings.video.newRoute" = "Add Output Route";
 "settings.video.routeName" = "Output %d";
 "settings.video.addEmpty" = "Empty Stage";
 "settings.video.addOnRoute" = "On %@";

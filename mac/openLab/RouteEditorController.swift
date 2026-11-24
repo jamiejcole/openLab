@@ -257,15 +257,22 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         let original = originalDisplay
         saving = Task { [weak self, store] in
             if let command = Command.transaction(changes), case .failure(let e) = await store.send(command: command) {
-                self?.messageLabel.stringValue = e.detailText
+                self?.refused(e)
                 return
             }
             if display != original, case .failure(let e) = await store.setRouteDisplay(route, display: display) {
-                self?.messageLabel.stringValue = e.detailText
+                self?.refused(e)
                 return
             }
             self?.onDone?()
         }
+    }
+
+    /// Shows why OK was refused: a route removed meanwhile (by another client or an undo) is
+    /// named as gone, never by its id.
+    private func refused(_ error: EngineError) {
+        let gone = store.model?.routes.contains { $0.id == routeID } == false
+        messageLabel.stringValue = gone ? loc("settings.video.routeGone") : error.detailText
     }
 
     /// Return in a field is OK, as in any sheet.
