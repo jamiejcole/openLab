@@ -128,9 +128,9 @@ final class InspectorLevelsTests: XCTestCase {
     // MARK: Matrix rows follow the file (AUD-06)
 
     /// Replaces the setUp rig with the demo show opened after `edit`, which can rewrite its files.
-    private func reopen(_ edit: @escaping (URL) throws -> Void) async throws {
+    private func reopen(on engine: TestEngine? = nil, _ edit: @escaping (URL) throws -> Void) async throws {
         rig.client.stop()
-        rig = try await Rig.open("Demo", edit: edit)
+        rig = try await Rig.open("Demo", on: engine, edit: edit)
         store = rig.store
         vc = InspectorViewController(store: store)
         window.contentView = vc.view
@@ -208,7 +208,11 @@ final class InspectorLevelsTests: XCTestCase {
     /// An Audio cue's I/O tab shows its file with Choose and the format the engine's probe read
     /// (the Video cue's rows), above the output patch; a file that is not there says it is not read.
     func testAnAudioCuesIOTabShowsItsFileAndTheFilesFormat() async throws {
-        try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
+        // An engine of its own: it plugs in, maps and unplugs a device, which the class's shared
+        // engine would carry into the next test.
+        let own = try await TestEngine.start()
+        defer { own.stop() }
+        try await reopen(on: own) { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
         showCue(Self.intro)
         vc.tabView.selectTabViewItem(withIdentifier: "io")
         await assertEventually { self.store.mediaDurations[Self.intro]?.audioFile != nil }
