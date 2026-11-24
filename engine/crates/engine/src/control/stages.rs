@@ -12,7 +12,7 @@ use openlab_core::protocol::{
     ServerMessage, StageEntry,
 };
 use openlab_core::stage_link::{
-    Display, LinkLevel, RegionOutput, RouteOutput, RouteState, StageOutput,
+    Display, LinkLevel, RegionOutput, RouteGuide, RouteOutput, RouteState, StageOutput,
 };
 use openlab_core::{Command, CommandError, CueKind, CueState, RouteId, StageId};
 
@@ -40,11 +40,13 @@ const ALIVE_EVERY_MS: i64 = 250;
 /// Log lines from the stage host's reports put in the show log per second.
 const MAX_REPORT_LINES_PER_SECOND: u32 = 20;
 
-/// An open doc's stages and routes, as the stage set was last made from them.
+/// An open doc's stages, routes and routes showing guides, as the stage set was last made from
+/// them.
 type DocStages = (
     DocId,
     Vec<openlab_core::Stage>,
     Vec<openlab_core::OutputRoute>,
+    std::collections::BTreeSet<RouteId>,
 );
 
 /// The stage host as the control thread knows it.
@@ -331,21 +333,24 @@ impl Control {
                         && docs
                             .iter()
                             .zip(&self.docs)
-                            .all(|((id, stages, routes), d)| {
+                            .all(|((id, stages, routes, guides), d)| {
                                 *id == d.id
                                     && *stages == d.model.ws().stages
                                     && *routes == d.model.ws().routes
+                                    && *guides == d.guides
                             })
                 });
         if unchanged {
             return;
         }
+        // A route's name or guide colour is in `video_outputs` too, shown or not.
+        self.eng.stages.push_due = true;
         self.eng.stages.synced = Some((
             self.docs
                 .iter()
                 .map(|d| {
                     let ws = d.model.ws();
-                    (d.id, ws.stages.clone(), ws.routes.clone())
+                    (d.id, ws.stages.clone(), ws.routes.clone(), d.guides.clone())
                 })
                 .collect(),
             self.eng.stages.mappings,
@@ -355,7 +360,7 @@ impl Control {
         let mut set = StageSet::default();
         for doc in &self.docs {
             let ws = doc.model.ws();
-            for route in &ws.routes {
+            for (index, route) in ws.routes.iter().enumerate() {
                 // A show copied in Finder and opened beside its original has the same route ids:
                 // the first open keeps each such route, so the set is still sent, not refused.
                 if set.routes.iter().any(|r| r.id == route.id) {
@@ -373,6 +378,10 @@ impl Control {
                         .machine
                         .route_display(ws.id, route.id)
                         .map(|m| m.display.clone()),
+                    guide: doc.guides.contains(&route.id).then(|| RouteGuide {
+                        name: openlab_core::stage_link::link_text(&route.name, "Output"),
+                        colour: route.guide_colour_at(index),
+                    }),
                 });
             }
             for stage in &ws.stages {
@@ -517,10 +526,13 @@ impl Control {
         let ws = doc.model.ws();
         ws.routes
             .iter()
-            .map(|r| RouteEntry {
+            .enumerate()
+            .map(|(index, r)| RouteEntry {
                 route: r.id,
                 mapping: self.eng.config.machine.route_display(ws.id, r.id).cloned(),
                 state: self.eng.stages.states.get(&r.id).cloned(),
+                guides: doc.guides.contains(&r.id),
+                guide_colour: Some(r.guide_colour_at(index)),
             })
             .collect()
     }
@@ -817,6 +829,72 @@ impl Control {
             self.sync_stages();
         } else if open && let Some(host) = &self.eng.stages.host {
             host.raise_monitor(stage);
+        }
+        reply(to, ok(id, None));
+    }
+
+    /// `set_route_guides`, for doc `doc`: shows or hides the guides of `routes`, all or none (a
+    /// route the doc lacks refuses the whole ask). Not saved and no undo step; Show Mode allows
+    /// it.
+    pub(super) fn set_route_guides(
+        &mut self,
+        doc: DocId,
+        id: RequestId,
+        routes: &[RouteId],
+        show: bool,
+        to: &ReplyTx,
+    ) {
+        let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) else {
+            return reply(
+                to,
+                failed(
+                    id,
+                    ErrorBody::new(ErrorCode::NoWorkspace, "no such workspace"),
+                ),
+            );
+        };
+        if routes.len() > openlab_core::MAX_ROUTES {
+            return reply(
+                to,
+                failed(
+                    id,
+                    ErrorBody::new(
+                        ErrorCode::BadRequest,
+                        "more output routes than a workspace has",
+                    ),
+                ),
+            );
+        }
+        let ws = d.model.ws();
+        if !routes.iter().all(|r| ws.routes.iter().any(|x| x.id == *r)) {
+            return reply(
+                to,
+                failed(
+                    id,
+                    ErrorBody::new(ErrorCode::NotFound, "no such output route"),
+                ),
+            );
+        }
+        let before = d.guides.len();
+        let mut changed = false;
+        for route in routes {
+            changed |= if show {
+                d.guides.insert(*route)
+            } else {
+                d.guides.remove(route)
+            };
+        }
+        if changed {
+            let (now, word) = (d.guides.len(), if show { "shown" } else { "hidden" });
+            self.eng.log(
+                LogLevel::Info,
+                format!(
+                    "alignment guides {word} on {} output route(s)",
+                    now.abs_diff(before)
+                ),
+            );
+            // The stage host gets the new set at once, not at the next tick.
+            self.sync_stages();
         }
         reply(to, ok(id, None));
     }

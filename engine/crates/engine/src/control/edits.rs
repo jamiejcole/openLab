@@ -14,6 +14,11 @@ use super::voices::{Effects, Env};
 impl DocCx<'_> {
     /// A command, undo or redo changed the workspace.
     pub(super) fn edited(&mut self, now: SampleTime, footprint: &Footprint) {
+        // A route that went takes its guides with it, so its undo brings it back without them.
+        let routes = &self.doc.model.ws().routes;
+        self.doc
+            .guides
+            .retain(|id| routes.iter().any(|r| r.id == *id));
         let inputs = self.model_changed(footprint);
         self.document();
         for input in inputs {

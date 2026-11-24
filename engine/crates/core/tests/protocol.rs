@@ -355,7 +355,6 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 open: true,
             },
         ),
-
         (
             "monitor_probe",
             Request::MonitorProbe {

@@ -2207,8 +2207,14 @@ fn a_route_loaded_with_a_blank_name_can_still_be_edited() {
 #[test]
 fn a_guide_colour_is_saved_in_the_model_but_is_no_undo_step() {
     let mut ws = two_route_workspace();
-    let (first, second) = (ws.routes[0].guide_colour_at(0), ws.routes[1].guide_colour_at(1));
-    assert_ne!(first, second, "each route's default differs from its neighbour's");
+    let (first, second) = (
+        ws.routes[0].guide_colour_at(0),
+        ws.routes[1].guide_colour_at(1),
+    );
+    assert_ne!(
+        first, second,
+        "each route's default differs from its neighbour's"
+    );
     assert_eq!(first, GUIDE_COLOURS[0]);
     let mut history = History::new();
     let rename = route_prop(
@@ -2225,10 +2231,17 @@ fn a_guide_colour_is_saved_in_the_model_but_is_no_undo_step() {
     assert_eq!(ws.routes[0].guide_colour_at(0), orange);
     assert_eq!(history.undo_len(), 1, "the colour is no step");
     assert_eq!(history.undo_name(), Some(StepName::RenameRoute));
-    assert!(!history.execute(&mut ws, pick(Some(orange))).unwrap(), "same colour: no change");
+    assert!(
+        !history.execute(&mut ws, pick(Some(orange))).unwrap(),
+        "same colour: no change"
+    );
     assert!(history.undo(&mut ws).unwrap());
     assert_eq!(ws.routes[0].name, "Output 1");
-    assert_eq!(ws.routes[0].guide_colour, Some(orange), "undo leaves the colour");
+    assert_eq!(
+        ws.routes[0].guide_colour,
+        Some(orange),
+        "undo leaves the colour"
+    );
     // A colour picked between an undo and its redo leaves the redo there.
     assert!(history.execute(&mut ws, pick(None)).unwrap());
     assert_eq!(ws.routes[0].guide_colour_at(0), first);
@@ -2240,7 +2253,11 @@ fn a_guide_colour_is_saved_in_the_model_but_is_no_undo_step() {
     let loaded = load_show(&save_show(&ws).unwrap()).unwrap();
     assert_eq!(loaded.workspace.routes[1].guide_colour, Some(orange));
     assert_eq!(loaded.workspace.routes[0].guide_colour, None);
-    assert!(save_show(&ws).unwrap().contains("\"guide_colour\": \"#ff8200\""));
+    assert!(
+        save_show(&ws)
+            .unwrap()
+            .contains("\"guide_colour\": \"#ff8200\"")
+    );
     // Inside a transaction it goes with the step.
     let mut history = History::new();
     let before = ws.clone();
@@ -2259,8 +2276,20 @@ fn a_guide_colour_is_saved_in_the_model_but_is_no_undo_step() {
 /// value, never a panic.
 #[test]
 fn a_guide_colour_reads_only_as_six_hex_digits() {
-    assert_eq!(GuideColour::parse("#00C8ff"), Some(GuideColour([0, 200, 255])));
-    for bad in ["", "#", "00c8ff", "#00c8f", "#00c8fff", "#0xc8ff", "#+0c8ff", "#00c8f\u{e9}"] {
+    assert_eq!(
+        GuideColour::parse("#00C8ff"),
+        Some(GuideColour([0, 200, 255]))
+    );
+    for bad in [
+        "",
+        "#",
+        "00c8ff",
+        "#00c8f",
+        "#00c8fff",
+        "#0xc8ff",
+        "#+0c8ff",
+        "#00c8f\u{e9}",
+    ] {
         assert_eq!(GuideColour::parse(bad), None, "{bad:?}");
     }
     let mut ws = two_route_workspace();

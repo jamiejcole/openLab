@@ -3,3 +3,4 @@ garbage
 {"type":"pong","seq":-1}
 
 {"type":"ramp","picture":1,"param":"opacity","ramp":{"from":1.0,"to":2.0,"at":0,"frames":10,"curve":"linear"}}
+{"type":"stages","stages":[],"routes":[{"id":"00000000-0000-0000-0000-000000000001","width":8,"height":8,"guide":{"name":"","colour":"#zz0000"}}]}

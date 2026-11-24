@@ -615,6 +615,10 @@ struct Doc {
     /// saved or autosaved copy (`saved_workspace`); changing it does not mark the doc unsaved.
     /// Holds off sleep (SM-07).
     show_mode: bool,
+    /// Output routes whose alignment guides show (`set_route_guides`): a view aid, never saved
+    /// and no undo step, so a reopened workspace shows none. A route that goes takes its
+    /// guides with it (`DocCx::edited`), and the doc's closing takes them all.
+    guides: std::collections::BTreeSet<openlab_core::RouteId>,
     /// Underruns per cue in the last ten seconds: each cue's `underrun` notice goes out at
     /// most once per ten seconds with how many since its previous one.
     underruns: std::collections::HashMap<CueId, Throttle>,
@@ -1261,6 +1265,7 @@ impl Doc {
             meters_live: false,
             waveforms: waveforms::Waveforms::default(),
             show_mode: false,
+            guides: std::collections::BTreeSet::new(),
             underruns: std::collections::HashMap::new(),
             wall_clock: openlab_core::WallClockWatch::new(),
             wall_clock_unknown: None,
@@ -1519,6 +1524,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::ListRouteDisplays => "list_route_displays",
         Request::SetRouteDisplay { .. } => "set_route_display",
         Request::SetStageMonitor { .. } => "set_stage_monitor",
+        Request::SetRouteGuides { .. } => "set_route_guides",
         #[cfg(feature = "test-support")]
         Request::StageTestCard { .. } => "stage_test_card",
         #[cfg(feature = "test-support")]
