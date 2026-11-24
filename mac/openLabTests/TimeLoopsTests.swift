@@ -1797,6 +1797,9 @@ extension PlayheadFlowTests {
         }
         XCTAssertTrue(try lineDrawn(at: waveX(25)))
         for t in [12.0, 20, 8] { XCTAssertFalse(try lineDrawn(at: waveX(t)), "no line left at \(t)") }
+        // The late report of the first click did not take the click's point away: the keys still act there.
+        try shiftI()
+        await assertEventually("Shift-I sets the start at the last click") { self.loops.startTime == 25 }
     }
 
     func testACueLoadedToATimeByALoadCueShowsThePositionLineThere() async throws {

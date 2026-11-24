@@ -229,6 +229,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     var onReset: (() -> Void)?
     /// A click in the waveform asks the shown cue to play from this file time (seconds, 0 or more).
     var onSeek: ((ModelID, Double) -> Void)?
+    /// The points clicks have asked the engine to stand at that it has not yet reported, oldest
+    /// first: a report of an earlier one, arriving after a later click, is stale, not a move away.
+    private var sentSeeks: [Double] = []
     /// A drag on the waveform starts or ends: its commit must reach the cue it started on.
     var onHold: ((Bool) -> Void)?
     /// A typed value was refused here (its `Localizable.strings` key); the field shows the model's again.
@@ -353,6 +356,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         waveform.onSeek = { [weak self] t in
             // Only once the file's length is known: before that the engine has nothing to place it in.
             guard let self, !isLocked, let file, t.isFinite else { return }
+            sentSeeks.append(max(0, t))
+            if sentSeeks.count > 16 { sentSeeks.removeFirst() }
             onSeek?(file.cue, max(0, t))
         }
         waveform.onEditKey = { [weak self] key in
@@ -502,6 +507,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         // A position line, section or count edit belongs to the cue it was made on.
         if cue != shownCue {
             shownCue = cue
+            sentSeeks.removeAll()
             waveform.insertion = nil
             waveform.selection = nil
             // A press held on the cue shown before must not, let go, move this one.
@@ -578,9 +584,18 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         let at = position ?? loadedAt
         var shown = at
         if let at, let clicked = waveform.insertion {
+            let reported = sentSeeks.lastIndex { abs($0 - at) < 0.05 }
+            if let reported { sentSeeks.removeSubrange(...reported) } else { sentSeeks.removeAll() }
             if abs(clicked - at) >= 0.05 {
-                waveform.insertion = nil
-                applyLock()
+                // A report of a point clicked earlier is late, not the cue moved on: the click's own
+                // line and its keys stay until the engine reports the click's point or another.
+                let late = reported != nil && !sentSeeks.isEmpty
+                if late {
+                    shown = nil
+                } else {
+                    waveform.insertion = nil
+                    applyLock()
+                }
             } else if position == nil {
                 shown = nil
             }
