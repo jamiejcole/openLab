@@ -196,8 +196,14 @@ final class CueOutlineView: NSOutlineView {
     static let spareRows = 3
 
     override func setFrameSize(_ newSize: NSSize) {
-        let spare = CGFloat(numberOfRows > 0 ? Self.spareRows : 0) * (rowHeight + intercellSpacing.height)
-        super.setFrameSize(NSSize(width: newSize.width, height: newSize.height + spare))
+        // AppKit makes the table at least as tall as its clip view, which already shows empty rows when the
+        // cues are few; only a list that fills its view gets the room added.
+        var size = newSize
+        if numberOfRows > 0 {
+            let spare = CGFloat(Self.spareRows) * (rowHeight + intercellSpacing.height)
+            size.height = max(newSize.height, rect(ofRow: numberOfRows - 1).maxY + spare)
+        }
+        super.setFrameSize(size)
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -433,10 +439,22 @@ final class CueCell: NSTableCellView {
     /// Shows the moving dots in place of state image 1's picture (on) or the picture again (off). The
     /// image view keeps its label and tooltip either way.
     func showFading(_ on: Bool) {
+        showsDots = on
         fadingDots.isHidden = !on
-        images[1].alphaValue = on ? 0 : 1
+        // The still picture is taken out of the image view, not faded to nothing: an image view that only
+        // had its alpha lowered still holds the old mark, and anything that sets its image again (a
+        // selection's tint) drew it back under the dots.
+        if on {
+            images[1].image = nil
+        } else if let mark = tints[1] {
+            images[1].image = tinted(mark.image, mark.tint, mark.label)
+        }
+        images[1].alphaValue = 1
         if on, let mark = tints[1] { fadingDots.colour = drawnColour(mark.tint) }
     }
+
+    /// The dots stand in for state image 1's picture.
+    private(set) var showsDots = false
 
     private func tinted(_ image: NSImage, _ tint: NSColor, _ label: String) -> NSImage {
         TimeHeaderCell.tinted(image, drawnColour(tint), size: image.size, description: label)
@@ -458,7 +476,7 @@ final class CueCell: NSTableCellView {
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet {
             guard backgroundStyle != oldValue else { return }
-            for (i, mark) in tints { images[i].image = tinted(mark.image, mark.tint, mark.label) }
+            for (i, mark) in tints where !(i == 1 && showsDots) { images[i].image = tinted(mark.image, mark.tint, mark.label) }
             if let mark = tints[1] { fadingDots.colour = drawnColour(mark.tint) }
         }
     }
