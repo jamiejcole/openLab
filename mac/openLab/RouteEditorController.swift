@@ -37,6 +37,8 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
     private(set) var saving: Task<Void, Never>?
 
     static let rotations = [0, 90, 180, 270]
+    /// The sheet's width (its height is what its rows need).
+    static let width: CGFloat = 520
     /// A route is 1 to 30000 pixels a side (QLab 5 manual p. 233).
     static let sides = 1...30000
 
@@ -58,8 +60,11 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         window.identifier = NSUserInterfaceItemIdentifier("route-editor")
         window.isReleasedWhenClosed = false
         super.init(window: window)
-        window.contentView = build(mappingName: entry?.mapping?.name)
+        let content = build(mappingName: entry?.mapping?.name)
+        window.contentView = content
         fill()
+        content.layoutSubtreeIfNeeded()
+        window.setContentSize(content.fittingSize)
     }
 
     @available(*, unavailable)
@@ -147,14 +152,23 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         divider.boxType = .separator
         let buttons = NSStackView(views: [messageLabel, cancelButton, okButton])
         buttons.spacing = 10
+        buttons.distribution = .fill
         messageLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let stack = NSStackView(views: [grid, divider, lower, buttons])
+        messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // A sheet has no title bar: the title heads it, as the window's would.
+        let heading = NSTextField(labelWithString: loc("routeEditor.title"))
+        heading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        heading.alignment = .center
+        heading.setAX("route-editor-title")
+        let stack = NSStackView(views: [heading, grid, divider, lower, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 16, right: 20)
-        divider.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
-        buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
+        for v in [heading, divider, buttons] {
+            v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
+        }
+        stack.widthAnchor.constraint(equalToConstant: Self.width).isActive = true
         // The two grids' label columns line up.
         grid.column(at: 0).width = 130
         lower.column(at: 0).width = 130

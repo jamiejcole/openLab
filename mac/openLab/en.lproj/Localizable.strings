@@ -544,7 +544,7 @@
 "settings.tab.video" = "Video";
 "settings.video.add" = "New Stage";
 "settings.video.note.outputs" = "A stage is a picture Video cues are drawn on; its regions go to output routes.";
-"settings.video.note.routing" = "Output routes take regions of stages to a display. Each route’s display is chosen on this Mac.";
+"settings.video.note.routing" = "Output routes take the regions of stages to displays.";
 "settings.video.noRoutes" = "No output routes.";
 "settings.video.note.devices" = "The displays connected to this computer.";
 "settings.video.noDisplays" = "No displays.";

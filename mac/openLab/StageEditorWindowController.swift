@@ -143,7 +143,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         nameField.controlSize = .small
         nameField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         nameField.delegate = self
-        nameField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+        nameField.widthAnchor.constraint(equalToConstant: 240).isActive = true
         number(layerField, "layer", loc("settings.video.col.layer"), width: 44)
         number(widthField, "width", loc("settings.video.width"))
         number(heightField, "height", loc("settings.video.height"))
@@ -163,6 +163,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         top.column(at: 0).xPlacement = .trailing
         top.column(at: 2).xPlacement = .trailing
         top.cell(atColumnIndex: 3, rowIndex: 1).xPlacement = .leading
+        // As wide as its fields, not the window.
+        top.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         regionGrid.rowSpacing = 4
         regionGrid.columnSpacing = 6

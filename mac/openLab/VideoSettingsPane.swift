@@ -214,10 +214,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         displaysButton.toolTip = loc("settings.video.displaysButton.tip")
         displaysButton.target = self
         displaysButton.action = #selector(displaysClicked)
-        let note = NSTextField(wrappingLabelWithString: loc("settings.video.note.\(noteKey)"))
+        // One line, as the page's caption; cut with an ellipsis in a narrow window, whole in its tip.
+        let note = NSTextField(labelWithString: loc("settings.video.note.\(noteKey)"))
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
-        note.preferredMaxLayoutWidth = 320
+        note.lineBreakMode = .byTruncatingTail
+        note.toolTip = note.stringValue
         note.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         note.setAX("\(Self.id)-\(noteKey)-note")
         var topViews: [NSView] = section == .devices ? [note] : [addPopup, note]
@@ -501,6 +503,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             if row.warning != nil {
                 let r = grid.addRow(with: [warning])
                 r.mergeCells(in: NSRange(location: 0, length: cols.count))
+                // Under the row from its start, whatever the first column's own placement.
+                grid.cell(for: warning)?.xPlacement = .leading
             }
         }
         if section == .devices {

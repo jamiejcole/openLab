@@ -1,0 +1,44 @@
+{
+  "about": "#813 G1-G5: the stage editor of a stage across two routes (region list, new-region pop-up, the selected region's size and corners, the canvas); region B selected, then sent to no route (dashed); a region typed outside the stage refused; the least window.",
+  "show": "video-routes.openlab",
+  "displays": "V1:1920x1080,V2:1280x720",
+  "settings": {
+    "settings_version": 1,
+    "workspaces": {
+      "00000000-0000-0000-0000-0000000000e1": {
+        "patches": {},
+        "routes": {
+          "00000000-0000-0000-0000-0000000000e3": {
+            "display": "V1",
+            "name": "Virtual V1",
+            "width": 1920,
+            "height": 1080
+          },
+          "00000000-0000-0000-0000-0000000000e4": {
+            "display": "V2",
+            "name": "Virtual V2",
+            "width": 1280,
+            "height": 720
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    { "focus": "settings" },
+    { "tab": "video" },
+    { "click": "settings-video-edit-1" },
+    { "focus": "stage-editor" },
+    { "shot": "stage-editor" },
+    { "click": "stage-editor-region-2" },
+    { "shot": "region-b-selected" },
+    { "open_menu": "stage-editor-new-region" },
+    { "shot": "new-region-menu" },
+    { "choose": "stage-editor-region-route-2", "item": "No output route" },
+    { "shot": "region-b-no-route" },
+    { "type": "stage-editor-region-width", "text": "2500" },
+    { "shot": "region-outside-refused" },
+    { "resize": [600, 500] },
+    { "shot": "stage-editor-least" }
+  ]
+}
