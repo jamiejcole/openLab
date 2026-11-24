@@ -149,7 +149,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     let footer = FooterBar()
     /// The audio file chosen for an Audio cue (nil: cancelled). A seam for tests.
     var pickFile: @MainActor (NewCueKind) -> URL? = WorkspaceWindowController.filePanel
-    let verticalSplit = NSSplitView()
+    let verticalSplit = InspectorSplitView()
     let horizontalSplit = NSSplitView()
     /// The GO area, toolbar, Find and Load bars and the cue list, one above the next.
     private(set) var topColumn = NSView()
@@ -889,6 +889,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
         verticalSplit.isVertical = false
         verticalSplit.delegate = self
+        verticalSplit.onPress = { [weak self] in self?.pressDivider($0) ?? false }
         verticalSplit.dividerStyle = .thin
         verticalSplit.addArrangedSubview(horizontalSplit)
         verticalSplit.addArrangedSubview(inspector.view)
