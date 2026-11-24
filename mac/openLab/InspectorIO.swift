@@ -8,8 +8,23 @@ import AppKit
 /// Held by the inspector. An Audio cue's I/O tab uses its file and sound-format rows and the patch.
 @MainActor
 final class VideoIOControls {
-    let fileLabel = NSTextField(labelWithString: "")
-    let chooseButton = NSButton(title: loc("inspector.io.choose"), target: nil, action: nil)
+    /// The file as the Basics tab draws it: folders and name with their icons, from the home folder down.
+    let filePath = TargetPathControl()
+    /// Beside the path while the file is missing or unusable: the note the Basics tab shows.
+    let fileProblem = NSTextField(labelWithString: "")
+    /// The file's clear and show-in-Finder buttons, the Basics tab's (glyph only). The file is chosen
+    /// by a double-click on the path.
+    let clearButton = NSButton(title: "", target: nil, action: nil)
+    let revealButton = NSButton(title: "", target: nil, action: nil)
+    /// The title of the sound-format row: "Format" for an Audio cue (the file's), "Sound format" for a movie's.
+    let soundTitle = NSTextField(labelWithString: "")
+    /// The full-width rule between the file's rows and the output's.
+    let divider = NSBox()
+    /// The patch's output format under the patch row: its output count and the sample rate.
+    let outputFormatLabel = NSTextField(labelWithString: "")
+    var outputFormatRow: NSGridRow?
+    /// The grid holding the patch and output-format rows (hidden with the divider for a cue with no sound).
+    var outputSection: NSView?
     let formatLabel = NSTextField(labelWithString: "")
     let stagePopup = NSPopUpButton()
     let stageSizeLabel = NSTextField(labelWithString: "")
@@ -28,29 +43,62 @@ final class VideoIOControls {
     var soundRow: NSGridRow?
     /// The output patch's row: an Audio cue's, and a Video cue's whose movie has sound.
     var patchRow: NSGridRow?
+
+    /// Several cues whose files differ: "mixed" where the path would be.
+    func showMixedFile() {
+        fileProblem.isHidden = true
+        filePath.showNote(loc("inspector.mixed"))
+    }
+
+    /// Shows or hides everything under the divider: the patch, its output format and the rule itself.
+    func showOutputSection(_ shown: Bool) {
+        patchRow?.isHidden = !shown
+        outputFormatRow?.isHidden = !shown
+        outputSection?.isHidden = !shown
+        divider.isHidden = !shown
+    }
     /// Item i of the stage pop-up is `stageIDs[i]`'s stage; nil is the separator or "none".
     var stageIDs: [ModelID?] = []
     var stageNames: [String] = []
 
     init() {
-        fileLabel.setAX("inspector-io-file", label: loc("inspector.io.file"))
-        fileLabel.lineBreakMode = .byTruncatingMiddle  // the file name at the end is the part that matters
-        // A long path truncates; it must not hold the inspector, and so the window, wider.
-        fileLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        fileLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        chooseButton.setAX("inspector-io-choose", label: loc("inspector.io.choose"))
-        chooseButton.controlSize = .small
-        chooseButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        filePath.configure(id: "inspector-io-file", label: loc("inspector.io.file")) {}
+        fileProblem.setAX("inspector-io-file-problem")
+        fileProblem.font = Self.valueFont
+        fileProblem.textColor = .systemOrange
+        fileProblem.lineBreakMode = .byTruncatingTail
+        fileProblem.setContentHuggingPriority(.required, for: .horizontal)
+        fileProblem.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        fileProblem.isHidden = true
+        clearButton.setAX("inspector-io-clear", label: loc("inspector.target.clear"))
+        clearButton.isBordered = false
+        clearButton.image = Icon.fieldClear.image(loc("inspector.target.clear"), compact: true)
+        clearButton.toolTip = loc("inspector.target.clear")
+        clearButton.setContentHuggingPriority(.required, for: .horizontal)
+        clearButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        divider.boxType = .separator
+        divider.setAX("inspector-io-divider")
+        outputFormatLabel.font = Self.valueFont
+        outputFormatLabel.setAX("inspector-io-output-format", label: loc("inspector.io.outputFormat"))
+        outputFormatLabel.lineBreakMode = .byTruncatingTail
+        outputFormatLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        outputFormatLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        formatLabel.font = Self.valueFont
         formatLabel.setAX("inspector-io-format", label: loc("inspector.io.format"))
         formatLabel.lineBreakMode = .byTruncatingTail
         formatLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        formatLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         stagePopup.setAX("inspector-io-stage", label: loc("inspector.io.stage"))
+        Self.makeSmall(stagePopup)
+        Self.makeSmall(trackPopup)
+        Self.makeSmall(stageSizeLabel)
         stageSizeLabel.setAX("inspector-io-stage-size", label: loc("inspector.io.stageSize"))
         stageSizeLabel.textColor = .secondaryLabelColor
         monitorButton.setAX("inspector-io-monitor", label: loc("inspector.io.monitor.ax"))
-        monitorButton.controlSize = .small
+        Self.makeSmall(monitorButton)
         monitorButton.toolTip = loc("inspector.io.monitor.tip")
         monitorButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        soundLabel.font = Self.valueFont
         soundLabel.setAX("inspector-io-sound-format", label: loc("inspector.io.soundFormat"))
         soundLabel.lineBreakMode = .byTruncatingTail
         soundLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -62,6 +110,15 @@ final class VideoIOControls {
         trackNote.lineBreakMode = .byTruncatingTail
         trackNote.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         trackNote.isHidden = true
+    }
+
+    /// The small size every control and value of the tab is drawn in, as the reference's rows are.
+    static let valueFont = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+
+    /// Draws a control in the tab's small size.
+    static func makeSmall(_ control: NSControl) {
+        control.controlSize = .small
+        control.font = valueFont
     }
 
     /// A frame rate to three decimals, trailing zeros dropped: 25, 29.97, 23.976, 59.94.
@@ -95,6 +152,17 @@ final class VideoIOControls {
         return String(format: loc("inspector.io.soundFormatText"), name, count, kHzText(sampleRate))
     }
 
+    /// The patch's output format line: the output count of the device the patch plays on and the
+    /// rate it runs at; either alone while the other is not known.
+    nonisolated static func outputFormatText(outputs: Int?, sampleRate: UInt32?) -> String {
+        let count = outputs.map { n in
+            n == 1 ? loc("inspector.io.outputs.one") : String(format: loc("inspector.io.outputs.many"), n)
+        }
+        guard let sampleRate, sampleRate > 0 else { return count ?? "" }
+        let rate = "\(kHzText(Int(sampleRate))) kHz"
+        return count.map { String(format: loc("inspector.io.outputFormatText"), $0, kHzText(Int(sampleRate))) } ?? rate
+    }
+
     /// What the format row says for a probed file: a movie's codec, pixel size and frame rate, or
     /// a still's format and pixel size.
     nonisolated static func formatText(_ p: PictureFormat) -> String {
@@ -118,12 +186,17 @@ extension InspectorViewController {
         outputPatchPopup.target = self
         outputPatchPopup.action = #selector(outputPatchChosen)
         outputPatchPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+        // The patch pop-up takes the row's spare width, with Edit at the far right.
+        outputPatchPopup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        outputPatchPopup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        VideoIOControls.makeSmall(outputPatchPopup)
+        VideoIOControls.makeSmall(editPatchButton)
+        editPatchButton.setContentHuggingPriority(.required, for: .horizontal)
+        editPatchButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         editPatchButton.setAX(AX.inspectorEditPatch, label: loc("inspector.io.editPatch"))
         editPatchButton.target = self
         editPatchButton.action = #selector(editPatchClicked)
         let v = videoIO
-        v.chooseButton.target = self
-        v.chooseButton.action = #selector(chooseClicked)
         v.stagePopup.target = self
         v.stagePopup.action = #selector(stageChosen)
         v.stagePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
@@ -133,48 +206,95 @@ extension InspectorViewController {
         v.trackPopup.action = #selector(audioTrackChosen)
         func label(_ key: String) -> NSTextField {
             let l = NSTextField(labelWithString: loc(key))
-            l.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            l.font = VideoIOControls.valueFont
             l.textColor = .secondaryLabelColor
             l.alignment = .right
+            l.setContentHuggingPriority(.required, for: .horizontal)
             return l
         }
         func line(_ views: [NSView]) -> NSStackView {
             let s = NSStackView(views: views)
             s.spacing = 8
+            s.alignment = .centerY
+            // A row takes the tab's width; its first control stretches (the path, the patch pop-up).
+            s.setHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             return s
         }
+        v.clearButton.target = self
+        v.clearButton.action = #selector(clearTargetClicked)
+        configureRevealButton(v.revealButton, id: "inspector-io-reveal")
+        v.filePath.onDoubleClick = { [weak self] in self?.chooseClicked() }
+        v.soundTitle.stringValue = loc("inspector.io.soundFormat")
+        v.soundTitle.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        v.soundTitle.textColor = .secondaryLabelColor
+        v.soundTitle.alignment = .right
         let labels = [
-            "inspector.io.file", "inspector.io.format", "inspector.io.soundFormat", "inspector.io.stage",
-            "inspector.io.patch",
-        ].map(label)
-        let grid = NSGridView(views: [
-            [labels[0], line([v.fileLabel, v.chooseButton])],
+            label("inspector.io.file"), label("inspector.io.format"), v.soundTitle, label("inspector.io.stage"),
+            label("inspector.io.patch"), label("inspector.io.outputFormat"),
+        ]
+        // Both grids share one label column width, so the labels and the controls line up across the rule.
+        let labelWidth = labels.map { ceil($0.fittingSize.width) }.max() ?? 0
+        func grid(_ rows: [[NSView]]) -> NSGridView {
+            let g = NSGridView(views: rows)
+            g.rowSpacing = 8
+            g.columnSpacing = 8
+            g.rowAlignment = .firstBaseline
+            g.column(at: 0).xPlacement = .trailing
+            // The label column is as wide as its longest label; the grid would otherwise give it the
+            // spare width.
+            g.column(at: 0).width = labelWidth
+            // Every row's control takes the tab's width: the path, and the patch pop-up up to Edit.
+            g.column(at: 1).xPlacement = .fill
+            return g
+        }
+        // The file, then its format: the Basics tab's path field with its clear and show-in-Finder buttons.
+        let fileGrid = grid([
+            [labels[0], line([v.filePath.box, v.fileProblem, v.clearButton, v.revealButton])],
             [labels[1], v.formatLabel],
             [labels[2], line([v.soundLabel, v.trackPopup, v.trackNote])],
             [labels[3], line([v.stagePopup, v.monitorButton, v.stageSizeLabel])],
-            [labels[4], line([outputPatchPopup, editPatchButton])],
         ])
-        grid.rowSpacing = 8
-        grid.columnSpacing = 8
-        grid.rowAlignment = .firstBaseline
-        grid.column(at: 0).xPlacement = .trailing
-        // The label column is as wide as its longest label; the grid would otherwise give it the
-        // spare width.
-        grid.column(at: 0).width = labels.map { ceil($0.fittingSize.width) }.max() ?? 0
-        // The file row takes the tab's width, so a long path shows as much as fits.
-        grid.cell(atColumnIndex: 1, rowIndex: 0).xPlacement = .fill
-        v.videoRows = [grid.row(at: 1), grid.row(at: 3)]
-        v.soundRow = grid.row(at: 2)
-        v.patchRow = grid.row(at: 4)
-        // The grid fills the tab's width: a long path takes the room there is, then gives up its middle.
+        v.videoRows = [fileGrid.row(at: 1), fileGrid.row(at: 3)]
+        v.soundRow = fileGrid.row(at: 2)
+        let patchLine = line([outputPatchPopup, editPatchButton])
+        patchLine.distribution = .fill
+        // Under the rule: the patch with Edit, and the patch's output format.
+        let outputGrid = grid([
+            [labels[4], patchLine],
+            [labels[5], v.outputFormatLabel],
+        ])
+        v.patchRow = outputGrid.row(at: 0)
+        v.outputFormatRow = outputGrid.row(at: 1)
+        // The grids sit 12 pt in from the tab's sides; the rule runs edge to edge.
+        func padded(_ g: NSGridView) -> NSView {
+            let holder = NSView()
+            g.translatesAutoresizingMaskIntoConstraints = false
+            holder.addSubview(g)
+            NSLayoutConstraint.activate([
+                g.topAnchor.constraint(equalTo: holder.topAnchor),
+                g.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
+                g.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 12),
+                g.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -12),
+            ])
+            return holder
+        }
+        let top = padded(fileGrid)
+        let bottom = padded(outputGrid)
+        v.outputSection = bottom
+        let stack = NSStackView(views: [top, v.divider, bottom])
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 12
+        stack.setHuggingPriority(.defaultLow, for: .horizontal)
+        // The stack fills the tab's width: a long path takes the room there is, then gives up its middle.
         let content = NSView()
-        grid.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(grid)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
         NSLayoutConstraint.activate([
-            grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
-            grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
-            grid.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            grid.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -8),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -8),
         ])
         let item = NSTabViewItem(identifier: "io")
         item.label = loc("inspector.tab.io")
@@ -190,10 +310,14 @@ extension InspectorViewController {
         guard cue.takesFile else { return }
         let video = cue.kindType == "video"
         let sounds = cue.sounds(store.mediaDurations[cue.id])
-        for r in videoIO.videoRows { r.isHidden = !video }
+        let hasFile = !(cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
+        // A format row with no file has nothing to say, so it is left out.
+        videoIO.videoRows.first?.isHidden = !video || !hasFile
+        videoIO.videoRows.last?.isHidden = !video
         // An Audio cue's sound format is its file's; a Video cue's is its movie's, when it has sound.
-        videoIO.soundRow?.isHidden = video && !sounds
-        videoIO.patchRow?.isHidden = !sounds
+        videoIO.soundRow?.isHidden = video ? !sounds : !hasFile
+        videoIO.soundTitle.stringValue = loc(video ? "inspector.io.soundFormat" : "inspector.io.fileFormat")
+        videoIO.showOutputSection(sounds)
         let patches = model.patches
         let names = patches.map { p -> String in
             let name = p.raw["name"]?.stringValue ?? ""
@@ -201,6 +325,7 @@ extension InspectorViewController {
         }
         let ids = patches.map(\.id)
         if ids != outputPatchIDs || names != outputPatchNames || video != outputPatchHasNone {
+            if ids != patchDevicesReadIDs { readPatchDevices() }
             outputPatchIDs = ids
             outputPatchNames = names
             outputPatchHasNone = video
@@ -214,12 +339,13 @@ extension InspectorViewController {
                     NSMenuItem(title: loc("inspector.io.patchNone"), action: nil, keyEquivalent: ""))
             }
         }
-        renderFile(cue)
+        renderFile(cue, model: model)
         if video { renderVideoIO(cue, model: model) } else { renderAudioFormat(cue) }
         let current = cue.raw["kind"]?["patch"]?.stringValue
         let chosen = outputPatchChoices.firstIndex(of: current ?? "") ?? -1
         if outputPatchPopup.indexOfSelectedItem != chosen { outputPatchPopup.selectItem(at: chosen) }
         outputPatchPopup.isEnabled = !isLocked
+        renderOutputFormat([cue], model: model)
         // A patch that is gone or none is not one to edit (several cues: `renderBatchSound`).
         editPatchButton.isEnabled = !isLocked && outputPatchIDs.indices.contains(chosen) && !isBatch
     }
@@ -230,15 +356,117 @@ extension InspectorViewController {
         outputPatchIDs.map(\.raw) + (outputPatchHasNone ? ["\u{2}", ""] : [])
     }
 
-    /// The file row of an Audio or Video cue: its path as the Basics tab shows it, and Choose.
-    private func renderFile(_ cue: Cue) {
+    /// The file row of an Audio or Video cue: the folder-and-file path control the Basics tab draws (the
+    /// same items, from the home folder down), with its clear and show-in-Finder buttons; "No file" in its place
+    /// while the cue has none.
+    private func renderFile(_ cue: Cue, model: WorkspaceModel? = nil) {
         let v = videoIO
         let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
-        let path = CueRowMenu.mediaURL(media, showPath: store.document?.path)?.path ?? media
-        v.fileLabel.stringValue = media.isEmpty ? loc("inspector.io.noFile") : path
-        v.fileLabel.textColor = media.isEmpty ? .secondaryLabelColor : .labelColor
-        v.fileLabel.toolTip = media.isEmpty ? nil : path
-        v.chooseButton.isEnabled = !isLocked && !isBatch
+        let url = media.isEmpty ? nil : CueRowMenu.mediaURL(media, showPath: store.document?.path)
+        if url == nil { v.filePath.showNote(loc("inspector.io.noFile")) } else { v.filePath.show(url: url) }
+        let problem = (store.problems[cue.id] ?? []).first {
+            $0.type == "media_missing" || $0.type == "media_unsupported"
+        }
+        v.fileProblem.isHidden = problem == nil
+        if let problem {
+            v.fileProblem.stringValue = loc(
+                problem.type == "media_missing" ? "inspector.target.fileMissing" : "inspector.target.fileUnsupported")
+            v.fileProblem.toolTip = model.map { ProblemText.problem(problem, label: WarningRows.labeler($0)) }
+        }
+        v.clearButton.isEnabled = !isLocked && !isBatch && !media.isEmpty
+        v.revealButton.isEnabled = url != nil && !isBatch
+    }
+
+    /// The output-format line under the patch (QLab 5 manual p. 177): the channels and sample rate of the
+    /// audio device the patch the shown cues share plays on, on this Mac; "not connected" for a device
+    /// that is missing or lost, "no device" for a patch with none here; empty for no patch, several, or one the show lacks, and before the engine has said.
+    func renderOutputFormat(_ cues: [Cue], model: WorkspaceModel) {
+        let label = videoIO.outputFormatLabel
+        label.stringValue = ""
+        label.textColor = .labelColor
+        // A line with nothing to say leaves its row out, as the rule's section does with no sound.
+        defer { videoIO.outputFormatRow?.isHidden = label.stringValue.isEmpty || videoIO.divider.isHidden }
+        guard let id = Self.sharedPatch(of: cues, model: model), model.patches.contains(where: { $0.id == id }),
+            let patchDevices
+        else { return }
+        let device = patchDevices[id]
+        let open = device.flatMap { name in openOutputs.first { $0.name == name } }
+        // A device the engine has lost (or failed to open), or one the patch names that is not here.
+        if missingPatches.contains(id) || (open.map { $0.state == .lost || $0.state == .failed } ?? false) {
+            label.stringValue = loc("inspector.io.outputFormatNotConnected")
+            label.textColor = .secondaryLabelColor
+            return
+        }
+        let channels =
+            open.flatMap { $0.channels > 0 ? Int($0.channels) : nil } ?? device.flatMap { deviceChannels[$0] }
+        let rate = open.flatMap { $0.sampleRate > 0 ? $0.sampleRate : nil }
+        if channels == nil, rate == nil {
+            label.stringValue = loc("inspector.io.outputFormatNoDevice")
+            label.textColor = .secondaryLabelColor
+        } else {
+            label.stringValue = VideoIOControls.outputFormatText(outputs: channels, sampleRate: rate)
+        }
+    }
+
+    /// Reads where each patch plays on this Mac (and each device's channels) from the engine; one read at
+    /// a time, a request during it read again after. The line shows what it finds.
+    func readPatchDevices() {
+        patchDevicesReadIDs = store.model?.patches.map(\.id) ?? []
+        guard patchReading == nil else {
+            patchReadAgain = true
+            return
+        }
+        patchReading = Task { [weak self] in
+            repeat {
+                guard let self else { return }
+                self.patchReadAgain = false
+                async let mappings = self.store.listPatchMappings()
+                async let devices = self.store.listDevices()
+                if case .success(let entries) = await mappings {
+                    var list: [DeviceEntry] = []
+                    if case .success(let ok) = await devices, case .devices(let found, _)? = ok.data { list = found }
+                    self.applyPatchMappings(entries, devices: list)
+                }
+            } while self?.patchReadAgain == true
+            self?.patchReading = nil
+        }
+    }
+
+    /// Takes the engine's answer: a patch is on the device its resolution names, unless that is not
+    /// here (unmapped, or its device is missing).
+    func applyPatchMappings(_ entries: [PatchMappingEntry], devices: [DeviceEntry]) {
+        var found: [ModelID: String] = [:]
+        var missing: Set<ModelID> = []
+        for e in entries {
+            // A device the patch names that is not on this Mac's list, or is listed lost, is not connected;
+            // one listed and only not open yet is the device (its channels come from the list).
+            if let r = e.resolution, r.type == "device_missing", let name = r.json["device"]?.stringValue {
+                let listed = devices.first { $0.name == name }
+                if let listed, listed.state != .lost, listed.state != .failed {
+                    found[e.patch] = name
+                } else {
+                    missing.insert(e.patch)
+                }
+                continue
+            }
+            guard let r = e.resolution, r.type != "unmapped", r.type != "device_missing",
+                let name = r.json["device"]?.stringValue, !name.isEmpty
+            else { continue }
+            found[e.patch] = name
+        }
+        let channels = Dictionary(devices.map { ($0.name, $0.outputChannels) }, uniquingKeysWith: { a, _ in a })
+        guard found != patchDevices || channels != deviceChannels || missing != missingPatches else { return }
+        missingPatches = missing
+        patchDevices = found
+        deviceChannels = channels
+        redrawOutputFormat()
+    }
+
+    /// Draws the output-format line again for the shown cues; nothing else on screen is redrawn, so
+    /// a message the inspector is showing stays.
+    func redrawOutputFormat() {
+        guard isViewLoaded, let model = store.model else { return }
+        renderOutputFormat(editCues, model: model)
     }
 
     /// An Audio cue's sound-format row: the codec, channels and rate the engine's probe read, or

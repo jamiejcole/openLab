@@ -31,8 +31,8 @@ pub const MAX_MATCHES: usize = 1024;
 /// answered "nothing there" until a show says otherwise.
 pub trait OscShow {
     fn workspace_id(&self) -> WorkspaceId;
-    fn workspace_name(&self) -> &str {
-        ""
+    fn workspace_name(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed("")
     }
     /// The passcode table: what a peer may do without `/connect` and with each passcode.
     fn access(&self) -> &OscAccess;

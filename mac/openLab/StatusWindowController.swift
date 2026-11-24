@@ -7,8 +7,9 @@ import Combine
 /// one window with a Warnings page (what is wrong now, live, a row selecting its cue), a Logs page
 /// (the show log) and an Info page (this workspace's name, id and file). Window > Workspace Status
 /// (Shift-Command-W), View > Warnings and a click on the footer's warnings button or device alarm
-/// open it, the last two on the Warnings page. Opening it does not take the keyboard (GO and the
-/// transport keys keep reaching the workspace window); a click on it does, and Command-W then closes it.
+/// open it, the last two on the Warnings page. Opening it makes it the key window, so Command-W
+/// then closes it; while it is key the workspace's keys (GO, the transport and cue hotkeys) do not
+/// act, as with the settings window, and a click on the workspace gives them back.
 @MainActor
 final class StatusWindowController: NSWindowController {
     enum Page: String, CaseIterable {
@@ -25,6 +26,9 @@ final class StatusWindowController: NSWindowController {
     let idValue = NSTextField(labelWithString: "")
     let fileValue = NSTextField(labelWithString: "")
     let copyIDButton = NSButton(title: loc("status.info.copy"), target: nil, action: nil)
+    /// How the window is brought up as the key window (a test records the call: the test host is
+    /// never the active app, where no window can become key).
+    var bringUp: @MainActor (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) }
     /// Where the Copy button puts the id (a test gives its own pasteboard).
     var pasteboard = NSPasteboard.general
     private var subs: [AnyCancellable] = []
@@ -83,12 +87,12 @@ final class StatusWindowController: NSWindowController {
         tabs.selectedTabViewItem.flatMap { ($0.identifier as? String).flatMap(Page.init) }
     }
 
-    /// Shows the window on `page` without taking the keyboard, and reads what the page shows: the log
-    /// reads the engine's tail. The task's value tells tests it is done.
+    /// Shows the window on `page` as the key window, and reads what the page shows: the log reads
+    /// the engine's tail. The task's value tells tests it is done.
     @discardableResult
     func present(_ page: Page) -> Task<Void, Never> {
         tabs.selectTabViewItem(withIdentifier: page.rawValue)
-        window?.orderFront(nil)
+        if let window { bringUp(window) }
         return Task {
             switch page {
             case .logs: await logs.refresh()
@@ -156,7 +160,8 @@ final class StatusWindowController: NSWindowController {
     var workspaceID: String? { store.model?.id.raw.uppercased() }
 
     private func renderInfo() {
-        nameValue.stringValue = store.model?.name ?? ""
+        nameValue.stringValue =
+            store.model.map { WorkspaceInfo.shownName(stored: $0.name, path: store.document?.path) } ?? ""
         idValue.stringValue = workspaceID ?? ""
         fileValue.stringValue = store.document?.path ?? loc("status.info.notSaved")
         copyIDButton.isEnabled = workspaceID != nil

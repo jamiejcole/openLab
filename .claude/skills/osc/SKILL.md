@@ -30,7 +30,8 @@ The address space follows QLab 5's OSC dictionary so existing remotes work. Anyt
 - Without a passcode, OSC is for trusted networks only: any host can read, subscribe, and direct our replies at a forged source (bounded by the per-IP budget). The passcode travels in clear and is compared without early exit (time depends on the longer string).
 
 ## Which doc a message reaches
-- Workspace addresses may be prefixed `/workspace/{id}`. `{id}` is an open doc's id in **upper case** as replies write it, or its name exactly as written. An id is tried first, then the one doc with that name. A name containing `/` cannot be addressed.
+- Workspace addresses may be prefixed `/workspace/{id}`. `{id}` is an open doc's id in **upper case** as replies write it, or its name exactly as written. An id is tried first, then the one doc with that name.
+- A doc's name here, and in `/workspaces` `displayName`, is the name the app shows (`openlab_core::workspace_shown_name`): the saved file's name without its extension, whatever name the show stores inside (so `frozen.openlab` is `/workspace/frozen/...`); a never-saved doc keeps its stored name. The engine's `workspaces` list sends that name too. A name containing `/` cannot be addressed.
 - A name shared by several open docs is refused with the same `error` as an unknown workspace, plus one show-log warning per peer and name (a Finder copy keeps its name).
 - A message for no open workspace (other id, lower-case id, name in another case) gets one `error` with only `address` and `status` (counted `wrong_workspace`).
 - **Un-prefixed workspace messages go to every open doc**, whichever window is front: `/go` fires every doc's GO. Each doc judges the message with its own passcode table, the peer's session in it, and its cues. A query gets one reply per doc, in open order, each with that doc's `workspace_id` and its address rewritten to `/workspace/{ID}/...`; a doc where it fails answers with that status.

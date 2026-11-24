@@ -1,0 +1,14 @@
+{
+  "about": "Launcher (#812 L1): ten recents of mixed name and folder lengths, at the window's opening size (640x400), at its least size, and with the missing-file notice: every row shows whole or the list scrolls inside the window, nothing runs past the window's edge, dark.",
+  "show": "new",
+  "steps": [
+    {"focus": "launcher", "recents": ["Hamlet@/Shows/Season Two", "Lear", "A Midsummer Night's Dream@/Shows/Rehearsal Files/Archive/Old Versions/Backups", "frozen", "A Very Long Show Name That Keeps Going And Going Past The Edge Of The List@/Shows", "Macbeth", "Othello", "The Tempest", "Twelfth Night", "Much Ado About Nothing"], "size": [640, 400]},
+    {"shot": "launcher-many-default"},
+    {"focus": "launcher", "recents": ["Hamlet@/Shows/Season Two", "Lear", "A Midsummer Night's Dream@/Shows/Rehearsal Files/Archive/Old Versions/Backups", "frozen", "A Very Long Show Name That Keeps Going And Going Past The Edge Of The List@/Shows", "Macbeth", "Othello", "The Tempest", "Twelfth Night", "Much Ado About Nothing"], "size": [560, 380]},
+    {"shot": "launcher-many-least"},
+    {"focus": "launcher", "recents": ["Hamlet", "Lear", "!Old Season", "A Midsummer Night's Dream", "Macbeth", "Othello", "The Tempest"], "size": [560, 380], "notice": true},
+    {"shot": "launcher-many-notice-least"},
+    {"focus": "launcher", "recents": ["Hamlet", "Lear", "A Midsummer Night's Dream"], "size": [640, 400]},
+    {"shot": "launcher-three-default"}
+  ]
+}

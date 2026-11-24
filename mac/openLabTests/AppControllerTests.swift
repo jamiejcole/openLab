@@ -2234,6 +2234,28 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { store.document?.path == self.savePath("Fresh").path }
     }
 
+    /// Flow: a workspace saved as "frozen" is titled "frozen — <list>", and opened again from the file
+    /// it is titled the same, not by the name stored inside the show ("Untitled").
+    func testTheWindowTitleFollowsTheFilesNameAfterSaveAsAndOnReopen() async throws {
+        let second = try await addWorkspace()
+        let store = try XCTUnwrap(app.session.stores[second])
+        XCTAssertTrue(try XCTUnwrap(app.windows[second]).window?.title.hasPrefix("Untitled") == true)
+        saveURL = savePath("frozen")
+        let ok = await app.saveWorkspace(store, asNew: true)
+        XCTAssertTrue(ok)
+        await assertEventually("Save As renames the window") {
+            app.windows[second]?.window?.title.hasPrefix("frozen \u{2014} ") == true
+        }
+        let closed = await app.closeWorkspace(second)
+        XCTAssertTrue(closed)
+        await app.openWorkspace(url: savePath("frozen"))
+        await assertEventually("the reopened file's window") {
+            app.windows.values.contains { $0.window?.title.hasPrefix("frozen \u{2014} ") == true }
+        }
+        let info = try XCTUnwrap(app.session.workspaces.first { $0.path == savePath("frozen").path })
+        XCTAssertEqual(info.name, "frozen")
+    }
+
     func testRecentsHideWorkspacesWhoseFileIsGone() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -1522,19 +1522,27 @@ struct RealLoop {
     server: Option<WsServer>,
     client: UdpSocket,
     target: SocketAddr,
+    asked: std::sync::atomic::AtomicI32,
     _mixer: Mixer,
 }
 
 impl RealLoop {
     async fn start(ws: Workspace) -> Self {
+        Self::start_in(ws, None).await
+    }
+
+    /// As [`RealLoop::start`], with an application folder in `dir` (what Save As and Open need).
+    async fn start_in(ws: Workspace, dir: Option<&std::path::Path>) -> Self {
         let (ctl, mixer) = Mixer::new(show::mixer_config()).unwrap();
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
         let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
+        let mut config = show::config(&ws);
+        config.app_dirs = dir.map(|d| openlab_engine::persist::AppDirs::new(d.join("support")));
         let control = Control::new(
             ws.clone(),
             ctl,
             Backend::Offline,
-            show::config(&ws),
+            config,
             inbox_tx.clone(),
             out_tx,
         )
@@ -1562,7 +1570,59 @@ impl RealLoop {
             server: Some(server),
             client,
             target,
+            asked: std::sync::atomic::AtomicI32::new(0),
             _mixer: mixer,
+        }
+    }
+
+    /// Sends an app request to the control loop and waits for its reply.
+    async fn ask(&self, request: Request) {
+        let (tx, mut rx) = openlab_engine::control::reply_channel();
+        let id = RequestId(7);
+        self.inbox
+            .send(Inbox::Client {
+                message: ClientMessage::Request { id, request },
+                reply: tx,
+            })
+            .unwrap();
+        loop {
+            match guard("a reply", rx.recv()).await.unwrap() {
+                ServerMessage::Result {
+                    outcome: Outcome::Ok { .. },
+                    ..
+                } => return,
+                ServerMessage::Result { outcome, .. } => panic!("{outcome:?}"),
+                _ => {}
+            }
+        }
+    }
+
+    /// The `displayName`s `/workspaces` lists.
+    async fn workspace_names(&self) -> Vec<String> {
+        // A message equal to the peer's last one a moment before is dropped, so each ask differs.
+        let n = self
+            .asked
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.send(msg("/workspaces", vec![OscType::Int(n)])).await;
+        body(&self.recv_at("/reply/workspaces").await)["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["displayName"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// Sends `/workspace/{name}/go` and waits for the update that says cue `cue` of the first test
+    /// workspace started.
+    async fn go_in(&self, name: &str, cue: u128) {
+        self.send(msg(&format!("/workspace/{name}/go"), vec![]))
+            .await;
+        let ws_id = test_workspace().id.to_string().to_uppercase();
+        loop {
+            let m = self.recv().await;
+            if m.addr == format!("/update/workspace/{ws_id}/cue_id/{}", id(cue)) {
+                return;
+            }
         }
     }
 
@@ -1625,6 +1685,62 @@ async fn go_over_the_wire_starts_the_cue_in_the_real_control_loop() {
         started |= m.addr == format!("/update/workspace/{ws_id}/cue_id/{}", id(1));
         moved |= m.addr.ends_with("/playbackPosition") && m.args == vec![text(&id(2).to_string())];
     }
+    real.stop();
+}
+
+/// Flow: a show saved as frozen.openlab whose stored name is "Untitled" is the workspace
+/// "frozen" to OSC (QLab names a workspace by its file): `/workspaces` lists it so and
+/// `/workspace/frozen/go` fires, both after a Save As and when the file is opened again.
+#[tokio::test]
+async fn a_saved_show_goes_by_its_file_name_over_osc() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = test_workspace();
+    ws.name = "Untitled".into();
+    let real = RealLoop::start_in(ws.clone(), Some(dir.path())).await;
+    real.send(msg("/updates", vec![OscType::Int(1)])).await;
+    real.send(msg("/version", vec![])).await;
+    real.recv_at("/reply/version").await;
+    assert_eq!(real.workspace_names().await, ["Untitled"]);
+
+    let frozen = dir.path().join("frozen.openlab");
+    real.ask(Request::SaveAs {
+        path: frozen.to_string_lossy().into_owned(),
+    })
+    .await;
+    // As with the open below, the OSC side learns the new path a moment after the app's reply.
+    let mut names = real.workspace_names().await;
+    for _ in 0..1000 {
+        if names == ["frozen"] {
+            break;
+        }
+        tokio::task::yield_now().await;
+        names = real.workspace_names().await;
+    }
+    assert_eq!(names, ["frozen"]);
+    real.go_in("frozen", 1).await;
+
+    // Opened again, beside a differently named show that is already open.
+    let mut other = other_workspace();
+    other.name = "Untitled".into();
+    let again = dir.path().join("again.openlab");
+    std::fs::write(&again, openlab_core::save_show(&other).unwrap()).unwrap();
+    real.ask(Request::Open {
+        path: again.to_string_lossy().into_owned(),
+        recovery: None,
+    })
+    .await;
+    // The OSC side learns of the new doc a moment after the app's reply.
+    let mut names = real.workspace_names().await;
+    for _ in 0..1000 {
+        if names.len() == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+        names = real.workspace_names().await;
+    }
+    names.sort();
+    assert_eq!(names, ["again", "frozen"]);
+    real.go_in("frozen", 2).await;
     real.stop();
 }
 

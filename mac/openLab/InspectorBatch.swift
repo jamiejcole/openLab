@@ -42,7 +42,6 @@ extension InspectorViewController {
     var singleCueControls: [NSControl] {
         [
             numberField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton,
-            videoIO.chooseButton,
         ]
     }
 
@@ -164,9 +163,10 @@ extension InspectorViewController {
         }
         targetField.toolTip = nil
         targetField.isHidden = false
-        targetPath.isHidden = true
-        targetPath.url = nil
-        for v in [chooseButton, clearTargetButton, jumpTargetButton, targetNote] as [NSView] { v.isHidden = true }
+        targetPath.show(url: nil)
+        for v in [chooseButton, clearTargetButton, jumpTargetButton, revealTargetButton, targetNote] as [NSView] {
+            v.isHidden = true
+        }
     }
 
     private func renderBatchMode(_ cues: [Cue], first: Cue) {
@@ -195,20 +195,25 @@ extension InspectorViewController {
         renderBatchSound(cues)
         let v = videoIO
         if Set(cues.map { $0.raw["kind"]?["media"]?.stringValue ?? "" }).count > 1 {
-            v.fileLabel.stringValue = loc("inspector.mixed")
-            v.fileLabel.textColor = .secondaryLabelColor
-            v.fileLabel.toolTip = nil
+            v.showMixedFile()
         }
         if Set(cues.map { store.mediaDurations[$0.id]?.audioFile }).count > 1 {
             v.soundLabel.stringValue = loc("inspector.mixed")
             v.soundLabel.textColor = .secondaryLabelColor
         }
+        // The first cue may have no file while others do: the row shows when any of them has one.
+        if cues.contains(where: Self.hasFile) { v.soundRow?.isHidden = false }
+    }
+
+    static func hasFile(_ cue: Cue) -> Bool {
+        !(cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
     }
 
     /// The output patch and the Levels tab of several cues with sound: the patch they share or
     /// mixed, and the first cue's levels with the levels that differ shown as mixed, over the most
     /// file channels and outputs any of the cues has. After `renderIO` of the first.
     private func renderBatchSound(_ cues: [Cue]) {
+        if let model = store.model { renderOutputFormat(cues, model: model) }
         // A patch that is gone shows no choice, as for one cue; a Video cue's none is the last item.
         showChoice(
             outputPatchPopup, outputPatchChoices, cues.map { $0.raw["kind"]?["patch"]?.stringValue ?? "" },
@@ -244,8 +249,10 @@ extension InspectorViewController {
     private func renderBatchVideo(_ cues: [Cue], first: Cue, model: WorkspaceModel, allSound: Bool) {
         renderIO(first, model: model)
         let v = videoIO
+        // The first cue may have no file while others do: the picture format row shows when any has one.
+        if cues.contains(where: Self.hasFile) { v.videoRows.first?.isHidden = false }
         v.soundRow?.isHidden = !allSound
-        v.patchRow?.isHidden = !allSound
+        v.showOutputSection(allSound)
         if allSound {
             renderBatchSound(cues)
             // Each cue's own track, as text: the same on all of them, or mixed.
@@ -272,9 +279,7 @@ extension InspectorViewController {
         if Set(stages).count > 1 { v.stageSizeLabel.stringValue = "" }
         let files = Set(cues.map { $0.raw["kind"]?["media"]?.stringValue ?? "" })
         if files.count > 1 {
-            v.fileLabel.stringValue = loc("inspector.mixed")
-            v.fileLabel.textColor = .secondaryLabelColor
-            v.fileLabel.toolTip = nil
+            v.showMixedFile()
         }
         let formats = Set(cues.map { store.mediaDurations[$0.id]?.picture })
         if formats.count > 1 {

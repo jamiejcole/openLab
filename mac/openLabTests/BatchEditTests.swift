@@ -314,6 +314,23 @@ extension PlayheadFlowTests {
         XCTAssertFalse(inspector.flaggedCheck.allowsMixedState)
     }
 
+    /// Two Audio cues with different files show Mixed where the I/O tab's path would be, with the path
+    /// field gone and the show-in-Finder button off; one cue again shows its path.
+    func testSeveralAudioCuesWithDifferentFilesShowMixedOnTheIOTab() async throws {
+        try await pasteWorkspace()
+        await selectAll([cues[0], cues[1]])  // a.wav and b.wav
+        inspector.tabView.selectTabViewItem(withIdentifier: "io")
+        let io = inspector.videoIO
+        XCTAssertFalse(io.filePath.box.isHidden, "the field box stays and holds the note")
+        XCTAssertNil(io.filePath.url)
+        XCTAssertEqual(io.filePath.pathItems.map(\.title), [loc("inspector.mixed")])
+        XCTAssertFalse(io.revealButton.isEnabled)
+        XCTAssertFalse(io.clearButton.isEnabled)
+        await selectAll([cues[1]])
+        XCTAssertNotNil(io.filePath.url)
+        XCTAssertEqual(io.filePath.pathItems.last?.title, "b.wav")
+    }
+
     func testAnAudioCueAndAFadeCueAreSelectedOnlyBasicsAndTriggersAreShown() async throws {
         try await pasteWorkspace()
         await selectAll([cues[0], fade])

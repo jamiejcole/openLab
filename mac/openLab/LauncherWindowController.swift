@@ -355,6 +355,10 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         let only = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("recent"))
         table.addTableColumn(only)
         table.headerView = nil
+        // Rows run the list's whole width, as the reference's list does: the default (inset) style
+        // pads the rows by about ten points, which put the last row's lower edge past the list's
+        // height, so it was cut off.
+        table.style = .fullWidth
         table.rowHeight = 44
         table.intercellSpacing = NSSize(width: 0, height: 0)
         table.allowsEmptySelection = true

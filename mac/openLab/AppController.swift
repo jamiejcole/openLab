@@ -346,14 +346,13 @@ final class AppController {
     }
 
     /// Keys stay with a modal panel or alert, a sheet (the window it is on, or the sheet itself as
-    /// key window), the launcher and a panel that is not ours (file open/save). Monitoring windows
-    /// such as the workspace status window (it counts as its workspace's window), and no key window at all (app active, windows behind), still let
-    /// hotkeys fire.
+    /// key window), the launcher and any panel (file open/save, the settings and status windows).
+    /// With no key window at all (app active, windows behind), hotkeys still fire.
     private func cueHotkeysBlocked() -> Bool {
         if isModalUp() { return true }
         guard let key = keyWindow() else { return false }
         return key.attachedSheet != nil || key.sheetParent != nil || key is PasteSheetWindow
-            || key === launcher.window || (key is NSPanel && frontController == nil)
+            || key === launcher.window || key is NSPanel
     }
 
     /// The cue hotkeys of `store` that fire: a chord equal to one of its keys of the map belongs to
