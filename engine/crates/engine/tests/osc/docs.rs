@@ -70,8 +70,8 @@ impl OscShow for Show {
     fn workspace_id(&self) -> WorkspaceId {
         self.id
     }
-    fn workspace_name(&self) -> &str {
-        &self.name
+    fn workspace_name(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.name)
     }
     fn access(&self) -> &OscAccess {
         &self.access

@@ -29,8 +29,8 @@ impl OscShow for FuzzShow {
     fn workspace_id(&self) -> WorkspaceId {
         WorkspaceId(Uuid::from_u128(self.id))
     }
-    fn workspace_name(&self) -> &str {
-        if self.id == 1 { "one" } else { "two" }
+    fn workspace_name(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(if self.id == 1 { "one" } else { "two" })
     }
     fn access(&self) -> &OscAccess {
         &self.access

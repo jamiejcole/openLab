@@ -104,6 +104,25 @@ impl Parts {
     }
 }
 
+/// The name a workspace goes by: a saved one is named after its file (its stem, as the window
+/// title and an OSC `/workspace/{name}` address use it), whatever name the show stores; a
+/// never-saved one, or a path with no stem, keeps the stored name.
+pub fn workspace_shown_name(stored: &str, path: Option<&str>) -> String {
+    let Some(path) = path else {
+        return stored.to_owned();
+    };
+    let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let stem = match file.rfind('.') {
+        Some(dot) if dot > 0 => &file[..dot],
+        _ => file,
+    };
+    if stem.is_empty() {
+        stored.to_owned()
+    } else {
+        stem.to_owned()
+    }
+}
+
 /// Collapses `.`, `..` and repeated separators, lexically (symlinks are not consulted). A `..`
 /// that climbs above the root of an absolute path is dropped; in a relative path it is kept.
 pub fn lexical_normalize(portable: &str) -> String {
@@ -432,5 +451,23 @@ mod tests {
         assert_eq!(r("/Lib/a.wav", None, P), "/Lib/a.wav");
         // A relative show dir is not usable as a base.
         assert_eq!(r("/Lib/a.wav", Some("rel"), P), "/Lib/a.wav");
+    }
+
+    #[test]
+    fn a_saved_workspace_is_named_after_its_file() {
+        assert_eq!(workspace_shown_name("Untitled", None), "Untitled");
+        assert_eq!(
+            workspace_shown_name("Untitled", Some("/s/frozen.openlab")),
+            "frozen"
+        );
+        assert_eq!(
+            workspace_shown_name("Untitled", Some("C:\\s\\frozen.v2.openlab")),
+            "frozen.v2"
+        );
+        assert_eq!(
+            workspace_shown_name("Untitled", Some("/s/.openlab")),
+            ".openlab"
+        );
+        assert_eq!(workspace_shown_name("Untitled", Some("/s/")), "Untitled");
     }
 }

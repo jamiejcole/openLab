@@ -64,7 +64,10 @@ impl Control {
             .map(|d| WorkspaceInfo {
                 doc: d.id,
                 workspace_id: d.model.ws().id,
-                name: d.model.ws().name.clone(),
+                name: openlab_core::workspace_shown_name(
+                    &d.model.ws().name,
+                    d.show_path.as_deref().and_then(|p| p.to_str()),
+                ),
                 path: d
                     .show_path
                     .as_ref()

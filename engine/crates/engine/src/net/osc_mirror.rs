@@ -566,8 +566,11 @@ impl OscShow for MirrorShow<'_> {
         self.0.workspace.id
     }
 
-    fn workspace_name(&self) -> &str {
-        &self.0.workspace.name
+    fn workspace_name(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(openlab_core::workspace_shown_name(
+            &self.0.workspace.name,
+            self.0.document.path.as_deref(),
+        ))
     }
 
     fn access(&self) -> &OscAccess {
