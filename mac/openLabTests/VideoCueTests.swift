@@ -600,7 +600,9 @@ final class VideoCueTests: XCTestCase {
         inspector.tabView.selectTabViewItem(io)
         let v = inspector.videoIO
         XCTAssertEqual(
-            v.fileLabel.stringValue, folder.appendingPathComponent("media/clip.mov").standardizedFileURL.path)
+            v.filePath.url?.standardizedFileURL.path,
+            folder.appendingPathComponent("media/clip.mov").standardizedFileURL.path)
+        XCTAssertFalse(v.filePath.isHidden)
         await soon("the format") {
             v.formatLabel.stringValue
                 == String(format: loc("inspector.io.videoFormat"), loc("inspector.io.codec.h264"), "288 × 160", "25")
@@ -644,7 +646,7 @@ final class VideoCueTests: XCTestCase {
         await soon { inspector.cue?.id == audioID }
         XCTAssertTrue(inspector.outputPatchPopup.isEnabled)
         XCTAssertTrue(v.videoRows.allSatisfy(\.isHidden))
-        XCTAssertEqual(v.soundRow?.isHidden, false, "an Audio cue's file format is the sound row")
+        XCTAssertEqual(v.soundRow?.isHidden, true, "a new Audio cue has no file, so no format to show")
         XCTAssertEqual(v.patchRow?.isHidden, false)
     }
 
@@ -936,7 +938,9 @@ final class VideoCueTests: XCTestCase {
             inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }, ["basics", "triggers", "io"])
         let v = inspector.videoIO
         XCTAssertEqual(v.stagePopup.titleOfSelectedItem, "Stage 1", "the stage both share")
-        XCTAssertEqual(v.fileLabel.stringValue, loc("inspector.mixed"))
+        XCTAssertEqual(v.filePath.pathItems.map(\.title), [loc("inspector.mixed")])
+        XCTAssertNil(v.filePath.url)
+        XCTAssertFalse(v.filePath.box.isHidden)
         v.stagePopup.selectItem(at: 1)
         XCTAssertTrue(v.stagePopup.sendAction(v.stagePopup.action, to: v.stagePopup.target))
         await soon("both on the side screen") {

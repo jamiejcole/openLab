@@ -340,14 +340,34 @@ private final class BlackView: NSView {
     }
 }
 
-/// #795: the pointer is hidden while it is over a display a stage covers (its picture or its black)
-/// and the app is active, so it neither shows over the audience's picture nor takes the shape an
-/// app behind the stage would give it. The stage host cannot hide it (macOS lets only the active
-/// app hide the pointer); a click on a stage makes the app active (the stage host hands it the
-/// keys). Shown again as soon as it leaves those displays, the app is not active, no display is
-/// covered or this goes away. The place is read on a short timer while the app is active and a
-/// display is covered: no window of the app asks for mouse-moved events and the app's own events
-/// never reach a global monitor, so events alone miss a move from a stage onto the app's window.
+/// Lets this process hide and show the pointer while another app is active. macOS lets only the
+/// active app change the pointer unless the process's window-server connection says otherwise;
+/// the "SetsCursorInBackground" connection property (a private, long-standing CoreGraphics
+/// call, looked up by name so a system without it only loses this) says so. `NSCursor.hide` and
+/// `CGDisplayHideCursor` alone do nothing from the background (measured on this machine).
+enum BackgroundCursor {
+    /// Whether the property was set, once.
+    static let enabled: Bool = {
+        typealias MainConnection = @convention(c) () -> Int32
+        typealias SetProperty = @convention(c) (Int32, Int32, CFString, CFTypeRef) -> Int32
+        guard let handle = dlopen(nil, RTLD_NOW),
+            let mainSymbol = dlsym(handle, "CGSMainConnectionID"),
+            let setSymbol = dlsym(handle, "CGSSetConnectionProperty")
+        else { return false }
+        let connection = unsafeBitCast(mainSymbol, to: MainConnection.self)()
+        let set = unsafeBitCast(setSymbol, to: SetProperty.self)
+        return set(connection, connection, "SetsCursorInBackground" as CFString, kCFBooleanTrue) == 0
+    }()
+}
+
+/// #795: the pointer is hidden while it is over a display a stage covers (its picture or its black),
+/// so it neither shows over the audience's picture nor takes the shape an app behind the stage
+/// would give it, whichever app is active (`BackgroundCursor`; where that is not available, only
+/// while this app is active, and a click on a stage makes it active: the stage host hands it the
+/// keys). Shown again as soon as it leaves those displays, no display is covered or this goes
+/// away. The place is read on a short timer while a display is covered: no window of the app asks
+/// for mouse-moved events and the app's own events never reach a global monitor, so events alone
+/// miss a move from a stage onto the app's window.
 @MainActor
 final class StagePointer {
     /// How often the place is read while the app is active over covered displays.
@@ -356,6 +376,8 @@ final class StagePointer {
     var hide: @MainActor () -> Void = { NSCursor.hide() }
     var unhide: @MainActor () -> Void = { NSCursor.unhide() }
     var isActive: @MainActor () -> Bool = { NSApp.isActive }
+    /// Whether the pointer can be hidden while another app is active.
+    var worksInBackground: @MainActor () -> Bool = { BackgroundCursor.enabled }
     var location: @MainActor () -> NSPoint = { NSEvent.mouseLocation }
     /// Starts a repeating call of `fire` every `pollEvery` seconds and returns what stops it.
     var startPolling: @MainActor (_ fire: @escaping @MainActor () -> Void) -> @MainActor () -> Void = { fire in
@@ -421,7 +443,7 @@ final class StagePointer {
 
     /// Hides or shows the pointer for where it is now, and polls while it may need to change.
     func update(appActive: Bool? = nil) {
-        let active = appActive ?? isActive()
+        let active = (appActive ?? isActive()) || worksInBackground()
         let over = active && frames.contains { NSMouseInRect(location(), $0, false) }
         if over != hidden {
             hidden = over

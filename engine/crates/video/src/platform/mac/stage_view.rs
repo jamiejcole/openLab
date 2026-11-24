@@ -87,9 +87,12 @@ pub fn set_operator(pid: Option<u32>) {
     OPERATOR.with(|o| o.set(pid));
 }
 
-/// A click on a stage: the operator's app comes forward, every window of it, its key window
-/// taking the keys again. With no operator's app known (or one that cannot be found), the
-/// stage host only lets go of the keys (the app active before it gets them back).
+/// A click on a stage: the operator's app comes forward and its key window takes the keys again.
+/// Nothing is done when it is the active app already (the stage's window does not activate the
+/// stage host, so a click then changes nothing on screen); only its key and main windows are
+/// brought forward, never every window, so no window of it is ordered or redrawn without need.
+/// With no operator's app known (or one that cannot be found), the stage host only lets go of
+/// the keys (the app active before it gets them back).
 pub fn hand_keys_to_operator(mtm: MainThreadMarker) {
     HANDED.with(|h| h.set(Some(Instant::now())));
     #[cfg(feature = "test-support")]
@@ -108,7 +111,10 @@ pub fn hand_keys_to_operator(mtm: MainThreadMarker) {
         app.deactivate();
         return;
     };
-    let options = NSApplicationActivationOptions::ActivateAllWindows;
+    if target.isActive() {
+        return;
+    }
+    let options = NSApplicationActivationOptions::empty();
     let handed = if objc2::available!(macos = 14.0) {
         // Cooperative activation: the stage host, active from the click, hands it on.
         app.yieldActivationToApplication(&target);

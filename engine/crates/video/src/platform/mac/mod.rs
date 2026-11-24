@@ -38,8 +38,8 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSNormalWindowLevel,
-    NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowLevel,
-    NSWindowStyleMask,
+    NSPanel, NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior,
+    NSWindowLevel, NSWindowStyleMask,
 };
 use objc2_core_foundation::CGSize;
 use objc2_core_graphics::{
@@ -489,19 +489,21 @@ fn output_behaviour() -> NSWindowCollectionBehavior {
 }
 
 /// An output window covering `frame`, not yet ordered front: borderless (so it can never
-/// become key or main), at screen-saver level, without a shadow, black. Its content is a
-/// [`stage_view::StageView`]: every click and the pointer over it stay with it.
+/// become key or main), at screen-saver level, without a shadow, black. It is a non-activating
+/// panel: a click on it is delivered without making the stage host the active app, so the
+/// operator's app (active or not) is not deactivated and drawn inactive for a moment, which
+/// flashed its windows. Its content is a [`stage_view::StageView`]: every click and the pointer
+/// over it stay with it.
 fn output_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
-    // SAFETY: AppKit on the main thread (the marker proves it); a borderless buffered window.
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            mtm.alloc::<NSWindow>(),
-            frame,
-            NSWindowStyleMask::Borderless,
-            NSBackingStoreType::Buffered,
-            false,
-        )
-    };
+    // The non-activating style is given at creation: AppKit ignores it when set afterwards.
+    let window = NSPanel::initWithContentRect_styleMask_backing_defer(
+        mtm.alloc::<NSPanel>(),
+        frame,
+        NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+        NSBackingStoreType::Buffered,
+        false,
+    )
+    .into_super();
     // SAFETY: the window is released by our `Retained`, not by AppKit on close.
     unsafe { window.setReleasedWhenClosed(false) };
     window.setLevel(NSScreenSaverWindowLevel);
@@ -612,6 +614,8 @@ pub struct WindowReport {
     pub can_become_main: bool,
     pub has_shadow: bool,
     pub borderless: bool,
+    /// A click on it never makes the stage host the active app.
+    pub non_activating: bool,
     pub frame_is_the_screens: bool,
     pub visible: bool,
     /// A monitor window built for a 1920 x 1080 stage titled "Stage 1", never ordered front.
@@ -668,7 +672,11 @@ pub fn window_report() -> Option<WindowReport> {
         can_become_key: window.canBecomeKeyWindow(),
         can_become_main: window.canBecomeMainWindow(),
         has_shadow: window.hasShadow(),
-        borderless: window.styleMask() == NSWindowStyleMask::Borderless,
+        borderless: window.styleMask() & !NSWindowStyleMask::NonactivatingPanel
+            == NSWindowStyleMask::Borderless,
+        non_activating: window
+            .styleMask()
+            .contains(NSWindowStyleMask::NonactivatingPanel),
         frame_is_the_screens: got.origin.x == frame.origin.x
             && got.origin.y == frame.origin.y
             && got.size.width == frame.size.width

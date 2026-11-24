@@ -185,7 +185,7 @@ final class InspectorLevelsTests: XCTestCase {
     ) throws {
         XCTAssertEqual(try renderedInputRows(m), n, "rows drawn", file: file, line: line)
         // The captions over the crosspoint section take a band only when there are rows under them.
-        let captions = n > 0 ? LevelMatrixView.captionH : 0
+        let captions = n > 0 ? LevelMatrixView.captionGap + LevelMatrixView.captionH : 0
         XCTAssertEqual(
             m.frame.height, LevelMatrixView.headerH + captions + LevelMatrixView.cellH * CGFloat(n + 1), "frame",
             file: file, line: line)
@@ -217,22 +217,280 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(format.codec, "pcm")
         XCTAssertEqual(format.channels, 1)
         await assertEventually { io.soundLabel.stringValue.hasPrefix("PCM, 1 channel, ") }
-        XCTAssertTrue(io.fileLabel.stringValue.hasSuffix("a.wav"), io.fileLabel.stringValue)
+        // The file is the Basics tab's folder-and-file path control, not a raw path.
+        XCTAssertFalse(io.filePath.isHidden)
+        XCTAssertEqual(io.filePath.url, vc.targetPath.url, "the same file as the Basics tab draws")
+        XCTAssertEqual(io.filePath.pathItems.last?.title, "a.wav")
+        XCTAssertEqual(io.soundTitle.stringValue, loc("inspector.io.fileFormat"))
         XCTAssertFalse(io.soundLabel.isHidden)
         XCTAssertTrue(io.trackPopup.isHidden)
-        XCTAssertTrue(io.chooseButton.isEnabled)
+        XCTAssertTrue(io.revealButton.isEnabled)
+        XCTAssertTrue(io.clearButton.isEnabled)
         XCTAssertEqual(io.videoRows.map(\.isHidden), [true, true], "no picture format or stage")
         XCTAssertEqual(io.patchRow?.isHidden, false)
+        XCTAssertEqual(io.outputFormatRow?.isHidden, io.outputFormatLabel.stringValue.isEmpty)
+        // The line comes from the engine: the patch's device as the engine reads it, not an empty row.
+        await assertEventually { !io.outputFormatLabel.stringValue.isEmpty && io.outputFormatRow?.isHidden == false }
+        XCTAssertNotEqual(io.outputFormatLabel.stringValue, loc("inspector.io.outputFormatNotConnected"))
+        XCTAssertNotEqual(io.outputFormatLabel.stringValue, loc("inspector.io.outputFormatNoDevice"))
+        // A patch mapped again here is read again (the engine sends nothing for a mapping change).
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        let shown = io.outputFormatLabel.stringValue
+        // The patch moved to a second device that is then unplugged: the line says so.
+        let engine = rig.testEngine
+        guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("plug in")
+        }
+        try await rig.advance(1)
+        let before = store.patchMappingRevision
+        let second = PatchMapping(device: TestEngine.deviceNames[1], channels: [0, 1])
+        guard case .success = await store.setPatchMapping(patch, second) else { return XCTFail("map") }
+        XCTAssertEqual(store.patchMappingRevision, before + 1)
+        guard case .success = await engine.request(.loseDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("unplug")
+        }
+        await assertEventually {
+            try? await self.rig.advance(1)
+            return io.outputFormatLabel.stringValue == loc("inspector.io.outputFormatNotConnected")
+        }
+        // Back on the first device: no device comes or goes, so only the mapping change can redraw it.
+        let first = PatchMapping(device: TestEngine.deviceNames[0], channels: [0, 1])
+        guard case .success = await store.setPatchMapping(patch, first) else { return XCTFail("map back") }
+        await assertEventually {
+            try? await self.rig.advance(1)
+            let line = io.outputFormatLabel.stringValue
+            return line.hasPrefix(shown.components(separatedBy: ",")[0])
+                && line != loc("inspector.io.outputFormatNotConnected")
+        }
+        XCTAssertFalse(io.divider.isHidden)
         vc.view.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(
-            io.fileLabel.convert(io.fileLabel.bounds, to: nil).minY,
-            io.soundLabel.convert(io.soundLabel.bounds, to: nil).maxY - 1, "the file above the format")
-
+        func frame(_ v: NSView) -> NSRect { v.convert(v.bounds, to: nil) }
+        // Window coordinates run up: the file, its format, the rule, the patch, its format, top to bottom.
+        let order = [io.filePath, io.soundLabel, io.divider, vc.outputPatchPopup, io.outputFormatLabel].map {
+            frame($0).maxY
+        }
+        XCTAssertEqual(order, order.sorted(by: >), "file, format, divider, patch, output format")
+        XCTAssertEqual(
+            frame(io.divider).width, frame(vc.tabView).width, accuracy: 2, "the divider spans the tab")
+        XCTAssertGreaterThan(frame(io.filePath).width, 100, "the path takes the tab's width")
+        // The patch pop-up runs across the tab up to Edit, which sits at the right edge, as the file row does.
+        let tab = frame(vc.tabView)
+        XCTAssertEqual(
+            frame(vc.outputPatchPopup).maxX, frame(vc.editPatchButton).minX - 8, accuracy: 3, "pop-up up to Edit")
+        XCTAssertEqual(frame(vc.editPatchButton).maxX, tab.maxX - 12, accuracy: 3, "Edit at the right edge")
+        XCTAssertGreaterThan(frame(vc.outputPatchPopup).width, tab.width / 2, "the pop-up spans the width")
+        XCTAssertEqual(frame(io.revealButton).maxX, tab.maxX - 12, accuracy: 3, "the file row ends at the same edge")
+        // The path sits in a bordered field box that reaches the clear button; the control is small.
+        let box = io.filePath.box
+        XCTAssertEqual(box.borderWidth, 1)
+        XCTAssertTrue(io.filePath.isDescendant(of: box))
+        XCTAssertEqual(frame(box).maxX, frame(io.clearButton).minX - 8, accuracy: 3, "the box runs up to the buttons")
+        XCTAssertEqual(io.filePath.controlSize, .small)
+        for c in [vc.outputPatchPopup, vc.editPatchButton] as [NSControl] { XCTAssertEqual(c.controlSize, .small) }
+        XCTAssertEqual(io.formatLabel.font, VideoIOControls.valueFont)
+        XCTAssertEqual(io.outputFormatLabel.font, VideoIOControls.valueFont)
+        // VoiceOver and a test read the file's path as the control's value.
+        XCTAssertEqual(io.filePath.accessibilityValue() as? String, io.filePath.url?.path)
+        XCTAssertTrue((io.filePath.accessibilityValue() as? String)?.hasSuffix("a.wav") == true)
+        // The "File" label sits on the path text's baseline.
+        func labelNamed(_ text: String, in view: NSView) -> NSTextField? {
+            if let f = view as? NSTextField, f.stringValue == text { return f }
+            return view.subviews.lazy.compactMap { labelNamed(text, in: $0) }.first
+        }
+        let fileLabel = try XCTUnwrap(labelNamed(loc("inspector.io.file"), in: vc.tabView))
+        let labelBase = frame(fileLabel).maxY - fileLabel.firstBaselineOffsetFromTop
+        let pathBase = frame(io.filePath).maxY - io.filePath.firstBaselineOffsetFromTop
+        XCTAssertEqual(labelBase, pathBase, accuracy: 1.5, "label and path text share a baseline")
+        // Show in Finder selects the file; the Basics tab's button does the same.
+        var revealed: [URL] = []
+        vc.revealFile = { revealed.append($0) }
+        io.revealButton.performClick(nil)
+        vc.revealTargetButton.performClick(nil)
+        XCTAssertEqual(revealed, [try XCTUnwrap(io.filePath.url)].flatMap { [$0, $0] })
+        XCTAssertEqual(io.soundLabel.stringValue, VideoIOControls.soundText(format))
+        // The labels sit right-aligned in one column over both grids.
+        XCTAssertEqual(io.soundTitle.alignment, .right)
         showCue(TestSnapshots.radio)
         await rig.sync()
         XCTAssertNil(store.mediaDurations[TestSnapshots.radio], "its file is missing")
         XCTAssertEqual(io.soundLabel.stringValue, loc("inspector.io.formatUnknown"))
-        XCTAssertEqual(io.fileLabel.textColor, .labelColor, "the path still shows")
+        XCTAssertFalse(io.filePath.isHidden, "the path still shows")
+        XCTAssertEqual(io.soundLabel.textColor, .secondaryLabelColor)
+    }
+
+    /// The output-format line's words: a count and a rate, either alone while the other is not known.
+    func testTheOutputFormatLineWords() {
+        XCTAssertEqual(VideoIOControls.outputFormatText(outputs: 2, sampleRate: 48_000), "2 outputs, 48 kHz")
+        XCTAssertEqual(VideoIOControls.outputFormatText(outputs: 1, sampleRate: 44_100), "1 output, 44.1 kHz")
+        XCTAssertEqual(VideoIOControls.outputFormatText(outputs: 8, sampleRate: nil), "8 outputs")
+        XCTAssertEqual(VideoIOControls.outputFormatText(outputs: 8, sampleRate: 0), "8 outputs")
+        XCTAssertEqual(VideoIOControls.outputFormatText(outputs: nil, sampleRate: 96_000), "96 kHz")
+    }
+
+    private func outputsStatus(_ outputs: String) throws -> ServerMessage {
+        let text = try Fixtures.text("server", "status")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        var status = try XCTUnwrap(object["status"] as? [String: Any])
+        status["outputs"] = try JSONSerialization.jsonObject(with: Data(outputs.utf8))
+        let data = try JSONSerialization.data(withJSONObject: ["type": "status", "status": status])
+        return try ServerMessage.decode(String(decoding: data, as: UTF8.self))
+    }
+
+    private func mappings(_ patch: ModelID, device: String?) throws -> [PatchMappingEntry] {
+        let resolution =
+            device.map { #"{"type":"mapped","device":"\#($0)","channels":[0,1]}"# } ?? #"{"type":"unmapped"}"#
+        let json = #"[{"patch":"\#(patch.raw)","resolution":\#(resolution)}]"#
+        return try JSONDecoder().decode([PatchMappingEntry].self, from: Data(json.utf8))
+    }
+
+    /// The output format is the channels and rate of the device the patch plays on on this Mac, not
+    /// the patch's own output count: a 2-output patch on a 6-channel device says 6; no device says so; a
+    /// device that comes up at another rate re-draws the line (the `status` subscription).
+    func testTheOutputFormatLineIsTheDevicesAndFollowsStatus() async throws {
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        await rig.sync()
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        let line = vc.videoIO.outputFormatLabel
+        let up =
+            #"[{"name":"Scarlett 2i2","state":"up","primary":true,"sample_rate":48000,"channels":6,"block_frames":256}]"#
+        XCTAssertEqual(store.receive(try outputsStatus(up)), .applied)
+        vc.applyPatchMappings(try mappings(patch, device: "Scarlett 2i2"), devices: [])
+        XCTAssertEqual(line.stringValue, "6 outputs, 48 kHz")
+        // The same device at another rate: the line re-draws from the status push alone.
+        let other = up.replacingOccurrences(of: "48000", with: "44100")
+        XCTAssertEqual(store.receive(try outputsStatus(other)), .applied)
+        XCTAssertEqual(line.stringValue, "6 outputs, 44.1 kHz")
+        // A device not open yet: its channels from the device list, no rate.
+        XCTAssertEqual(store.receive(try outputsStatus("[]")), .applied)
+        vc.applyPatchMappings(
+            try mappings(patch, device: "Scarlett 2i2"),
+            devices: try JSONDecoder().decode(
+                [DeviceEntry].self,
+                from: Data(#"[{"name":"Scarlett 2i2","output_channels":4,"buffer_frames":256}]"#.utf8)))
+        XCTAssertEqual(line.stringValue, "4 outputs")
+        // No device on this Mac.
+        vc.applyPatchMappings(try mappings(patch, device: nil), devices: [])
+        XCTAssertEqual(line.stringValue, loc("inspector.io.outputFormatNoDevice"))
+    }
+
+    /// A device that is lost or gone does not keep its old format on the line: it says so, and says
+    /// the format again when the device is back.
+    func testTheOutputFormatLineSaysWhenTheDeviceIsNotConnected() async throws {
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        await rig.sync()
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        let line = vc.videoIO.outputFormatLabel
+        let up = #"[{"name":"Dev","state":"up","primary":true,"sample_rate":48000,"channels":2}]"#
+        XCTAssertEqual(store.receive(try outputsStatus(up)), .applied)
+        vc.applyPatchMappings(try mappings(patch, device: "Dev"), devices: [])
+        XCTAssertEqual(line.stringValue, "2 outputs, 48 kHz")
+        // The engine keeps the lost device in its status, with its old format.
+        XCTAssertEqual(
+            store.receive(try outputsStatus(up.replacingOccurrences(of: "\"up\"", with: "\"lost\""))), .applied)
+        XCTAssertEqual(line.stringValue, loc("inspector.io.outputFormatNotConnected"))
+        // The patch's resolution says its device is missing, and the list does not have it.
+        XCTAssertEqual(store.receive(try outputsStatus("[]")), .applied)
+        let gone = try JSONDecoder().decode(
+            [PatchMappingEntry].self,
+            from: Data(#"[{"patch":"\#(patch.raw)","resolution":{"type":"device_missing","device":"Dev"}}]"#.utf8))
+        vc.applyPatchMappings(gone, devices: [])
+        XCTAssertEqual(line.stringValue, loc("inspector.io.outputFormatNotConnected"))
+        XCTAssertEqual(store.receive(try outputsStatus(up)), .applied)
+        vc.applyPatchMappings(try mappings(patch, device: "Dev"), devices: [])
+        XCTAssertEqual(line.stringValue, "2 outputs, 48 kHz")
+        // A lost device the list still names (state lost) is not connected either; one listed and only
+        // not open yet shows its channels from the list.
+        func listed(_ state: String) throws -> [DeviceEntry] {
+            try JSONDecoder().decode(
+                [DeviceEntry].self,
+                from: Data(
+                    #"[{"name":"Dev","output_channels":2,"buffer_frames":256,"state":"\#(state)"}]"#.utf8))
+        }
+        XCTAssertEqual(store.receive(try outputsStatus("[]")), .applied)
+        vc.applyPatchMappings(gone, devices: try listed("lost"))
+        XCTAssertEqual(line.stringValue, loc("inspector.io.outputFormatNotConnected"))
+        vc.applyPatchMappings(gone, devices: try listed("opening"))
+        XCTAssertEqual(line.stringValue, "2 outputs")
+    }
+
+    /// Several Audio cues on one patch show that patch's device format; on different patches the line is empty.
+    func testABatchOutputFormatIsTheSharedPatchsOrEmpty() async throws {
+        try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
+        await rig.sync()
+        let patches = try XCTUnwrap(store.model?.patches.map(\.id))
+        XCTAssertFalse(patches.isEmpty, "the show's patches are loaded")
+        guard let patch = patches.first else { return }
+        let up = #"[{"name":"Dev","state":"up","primary":true,"sample_rate":48000,"channels":2}]"#
+        XCTAssertEqual(store.receive(try outputsStatus(up)), .applied)
+        vc.applyPatchMappings(try mappings(patch, device: "Dev"), devices: [])
+        let model = try XCTUnwrap(store.model)
+        let audio = model.cueLists.flatMap(\.cues).filter { $0.kindType == "audio" }
+        var a = try XCTUnwrap(audio.first)
+        var b = a
+        func on(_ cue: Cue, _ patch: String) throws -> Cue {
+            var raw = cue.raw
+            var kind = try XCTUnwrap(raw["kind"])
+            kind.set("patch", .string(patch))
+            raw.set("kind", kind)
+            return try Cue(json: raw)
+        }
+        a = try on(a, patch.raw)
+        b = try on(b, patch.raw)
+        vc.renderOutputFormat([a, b], model: model)
+        XCTAssertEqual(vc.videoIO.outputFormatLabel.stringValue, "2 outputs, 48 kHz")
+        b = try on(b, "no-such-patch")
+        vc.renderOutputFormat([a, b], model: model)
+        XCTAssertEqual(vc.videoIO.outputFormatLabel.stringValue, "", "mixed patches")
+        XCTAssertEqual(vc.videoIO.outputFormatRow?.isHidden, true, "a line with nothing to say leaves its row out")
+    }
+
+    /// A cue with no file shows "No file" where the path would be, with its clear button off, and the
+    /// output section (patch, its format, the rule) stays.
+    func testAnAudioCueWithNoFileShowsNoFileInPlaceOfThePath() async throws {
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        guard case .success = await store.send(command: .setProperty(Self.intro, .media(nil))) else {
+            return XCTFail("clearing the file")
+        }
+        await assertEventually { self.vc.videoIO.filePath.url == nil }
+        let io = vc.videoIO
+        XCTAssertEqual(io.filePath.pathItems.map(\.title), [loc("inspector.io.noFile")])
+        XCTAssertFalse(io.clearButton.isEnabled)
+        XCTAssertFalse(io.divider.isHidden)
+        XCTAssertEqual(io.patchRow?.isHidden, false)
+        // The note sits in the same bordered box as the path, on the "File" label's baseline.
+        vc.view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(io.filePath.box.isHidden)
+        XCTAssertEqual(io.filePath.box.borderWidth, 1)
+        XCTAssertTrue(io.filePath.isDescendant(of: io.filePath.box))
+        XCTAssertGreaterThan(io.filePath.box.frame.width, 100, "the same wide box as with a file")
+        func find(_ text: String, in view: NSView) -> NSTextField? {
+            if let f = view as? NSTextField, f.stringValue == text { return f }
+            return view.subviews.lazy.compactMap { find(text, in: $0) }.first
+        }
+        let title = try XCTUnwrap(find(loc("inspector.io.file"), in: vc.tabView))
+        func base(_ v: NSView) -> CGFloat {
+            v.convert(v.bounds, to: nil).maxY - v.firstBaselineOffsetFromTop
+        }
+        XCTAssertEqual(base(title), base(io.filePath), accuracy: 1.5, "label and note share a baseline")
+        // No file, so no format to name: the rows leave out their empty values.
+        XCTAssertEqual(io.soundRow?.isHidden, true, "an Audio cue with no file has no Format row")
+    }
+
+    /// A cue whose file is missing says so beside the path on the I/O tab, as the Basics tab does.
+    func testACueWhoseFileIsMissingSaysSoOnTheIOTab() async throws {
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        await rig.sync()
+        XCTAssertTrue(vc.videoIO.fileProblem.isHidden, "a file that is there says nothing")
+        guard case .success = await store.send(command: .setProperty(Self.intro, .media("media/not-there.wav")))
+        else { return XCTFail("media") }
+        try await rig.advance(0.5)
+        await assertEventually("the reason shows") { !self.vc.videoIO.fileProblem.isHidden }
+        XCTAssertEqual(vc.videoIO.fileProblem.stringValue, loc("inspector.target.fileMissing"))
+        XCTAssertFalse(vc.videoIO.filePath.isHidden, "the path still shows")
     }
 
     func testAMonoFileGivesTheMatrixOneRow() async throws {
@@ -1383,8 +1641,11 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertNil(m.slot(at: NSPoint(x: 5, y: row1)), "a row label")
         XCTAssertNil(m.slot(at: NSPoint(x: 5000, y: 5)))
         XCTAssertNil(m.slot(at: NSPoint(x: LevelMatrixView.headW + 5, y: LevelMatrixView.cellH + 5)), "the names")
-        let caption = LevelMatrixView.cellH + LevelMatrixView.headerH + LevelMatrixView.captionH / 2
+        let caption = LevelMatrixView.captionTop + LevelMatrixView.captionH / 2
         XCTAssertNil(m.slot(at: NSPoint(x: LevelMatrixView.headW + 5, y: caption)), "the captions over the grid")
+        XCTAssertGreaterThan(LevelMatrixView.captionGap, 0, "a gap between the output names and the captions")
+        XCTAssertEqual(
+            LevelMatrixView.captionTop, LevelMatrixView.cellH + LevelMatrixView.headerH + LevelMatrixView.captionGap)
     }
 
     func testGangedOutputsMoveTogether() async throws {
@@ -1829,7 +2090,9 @@ final class InspectorBasicsLayoutTests: XCTestCase {
             ]
             for (name, v) in fields {
                 let f = frame(v)
-                XCTAssertGreaterThanOrEqual(f.width, name == "target" ? 90 : 60, "\(name) at \(width)")
+                // A file cue's target row also holds clear and reveal beside Choose (reveal greyed
+                // with no file, as in the reference), so at the least width the field keeps 80 pt.
+                XCTAssertGreaterThanOrEqual(f.width, name == "target" ? 80 : 60, "\(name) at \(width)")
                 XCTAssertGreaterThanOrEqual(f.height, 14, "\(name) height at \(width)")
                 XCTAssertTrue(vc.view.bounds.insetBy(dx: -1, dy: -1).contains(f), "\(name) clipped at \(width)")
             }

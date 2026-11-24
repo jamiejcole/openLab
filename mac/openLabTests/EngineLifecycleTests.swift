@@ -1456,6 +1456,26 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(store.document?.dirty, true, "the autosave was opened")
     }
 
+    /// The offer to restore names the workspace as its window will be titled: after the file
+    /// ("B"), not the name the show stores inside.
+    func testTheRecoveryOfferNamesTheShowAfterItsFile() async throws {
+        try await runs.start()
+        let b = try runs.show("Demo", named: "B", storedName: "Untitled")
+        let doc = try await runs.open(b)
+        try await runs.rename(intro, in: doc, to: "Autosaved")
+        try await runs.advance(31)
+        await runs.autosaved("Untitled")  // listed by its stored name
+        try await runs.crash()
+
+        try await launch()
+        let scanned = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(scanned, "the launch offered the autosaves")
+        presenter.dismiss()
+        alerts.recoveryChoice = nil
+        await app.openWorkspace(url: URL(fileURLWithPath: b))
+        XCTAssertEqual(alerts.log.filter { $0.hasPrefix("recoveryOffer") }, ["recoveryOffer:B"])
+    }
+
     /// The crashed run left autosaves of B and C. Returns with the new run's launch scan sent and
     /// its answer held, so the engine's document request is still the app's to finish.
     private func relaunchWithScanInFlight() async throws {

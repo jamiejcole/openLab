@@ -76,8 +76,7 @@ final class StatusWindowTests: XCTestCase {
         status.copyIDButton.performClick(nil)
         XCTAssertEqual(board.string(forType: .string), id)
 
-        // Opening it leaves the keyboard with the workspace window; it goes with it.
-        XCTAssertFalse(status.window?.isKeyWindow == true, "opening the window does not take the keys")
+        // It goes with its workspace window.
         wc.window?.close()
         XCTAssertFalse(status.window?.isVisible == true)
     }
@@ -113,5 +112,26 @@ final class StatusWindowTests: XCTestCase {
         panel.performClose(nil)
         XCTAssertFalse(panel.isVisible, "Close closed the status window")
         XCTAssertTrue(wc.window?.isVisible == true, "and left the workspace open")
+    }
+
+    /// Flow (#812 D1): the footer's warnings button opens the status window as the key window (so
+    /// Command-W closes it with no click first); the test host is never the active app, where no
+    /// window can be key, so the call that makes it key is recorded.
+    func testOpeningTheStatusWindowFromTheFooterBringsItUpAsTheKeyWindow() async throws {
+        let (_, wc) = try await open()
+        let status = wc.statusWindow
+        var broughtUp: [NSWindow] = []
+        status.bringUp = { broughtUp.append($0) }
+        wc.footer.warningsButton.performClick(nil)
+        XCTAssertEqual(broughtUp.count, 1)
+        XCTAssertTrue(broughtUp.first === status.window, "the status window itself is made key")
+        let panel = try XCTUnwrap(status.window)
+        XCTAssertTrue(panel.canBecomeKey)
+        XCTAssertEqual(status.page, .warnings)
+        // Command-W reaches the key window: File > Close closes it and leaves the workspace.
+        panel.makeKeyAndOrderFront(nil)
+        panel.performClose(nil)
+        XCTAssertFalse(panel.isVisible)
+        XCTAssertTrue(wc.window?.isVisible == true)
     }
 }

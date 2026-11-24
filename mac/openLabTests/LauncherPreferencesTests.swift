@@ -47,6 +47,27 @@ final class LauncherPreferencesTests: XCTestCase {
 
     /// Checklist: No recent shows (first launch) → the list area shows a short empty-state line, not
     /// a blank gap; the window works in light and dark mode and does not clip at its smallest size.
+    /// Flow (#812 L1): with ten recents the list shows every row whole, the last one's lower edge
+    /// included (the default inset style padded the rows and cut it off).
+    func testTenRecentsAreAllShownWholeInTheList() throws {
+        let launcher = LauncherWindowController()
+        let window = try XCTUnwrap(launcher.window)
+        let names =
+            ["Hamlet", "Lear", "frozen", "A Very Long Show Name That Keeps Going", "Macbeth"]
+            + (6...10).map { "Show \($0)" }
+        launcher.reload(recents: names.map { URL(fileURLWithPath: "/Shows/\($0).openlab") })
+        window.setContentSize(LauncherWindowController.defaultSize)
+        let content = try XCTUnwrap(window.contentView)
+        content.layoutSubtreeIfNeeded()
+        let table = launcher.recentsTable
+        let scroll = try XCTUnwrap(table.enclosingScrollView)
+        XCTAssertEqual(table.numberOfRows, 10)
+        let last = table.convert(table.rect(ofRow: 9), to: scroll.contentView)
+        XCTAssertLessThanOrEqual(last.maxY, scroll.contentView.bounds.height + 0.5, "the last row ends inside the list")
+        XCTAssertEqual(scroll.contentInsets.top, 0, "no padding above the first row")
+        XCTAssertEqual(scroll.contentInsets.bottom, 0)
+    }
+
     func testNoRecentShowsShowsAnEmptyStateAndDoesNotClipAtItsSmallestSizeInLightAndDark() throws {
         let launcher = LauncherWindowController()
         let window = try XCTUnwrap(launcher.window)

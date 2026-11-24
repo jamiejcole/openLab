@@ -43,13 +43,14 @@ enum InspectorTabs {
 }
 
 extension InspectorViewController {
-    /// Brings the tab view to `wanted` in order, keeping the shown tab when it stays. Idempotent, so a
-    /// model change that keeps the tabs does not touch them (and a typed field keeps its focus).
+    /// Brings the tab view to `wanted` in order, showing the tab the user last chose (`chosenTab`) when
+    /// `wanted` has it, else the first. A fallback does not change the choice, so the next cue that has
+    /// the tab shows it again. Idempotent, so a model change that keeps the tabs does not touch them
+    /// (and a typed field keeps its focus).
     func syncTabs(_ wanted: [String]) {
         guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
         endGestures()  // a drag's view may be about to go; this may render, and so may do what follows
         guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
-        let selected = tabView.selectedTabViewItem
         let byID = Dictionary(
             tabView.tabViewItems.compactMap { i in (i.identifier as? String).map { ($0, i) } },
             uniquingKeysWith: { a, _ in a })
@@ -65,8 +66,29 @@ extension InspectorViewController {
         for id in wanted {
             if let item = byID[id] ?? tabItems[id] { tabView.addTabViewItem(item) }
         }
-        if let selected, tabView.tabViewItems.contains(where: { $0 === selected }) {
-            tabView.selectTabViewItem(selected)
+        if let shown = Self.shownTab(chosen: chosenTab, wanted: wanted),
+            let item = tabView.tabViewItems.first(where: { ($0.identifier as? String) == shown })
+        {
+            tabView.selectTabViewItem(item)
+        }
+    }
+
+    /// The tab a tab list shows: the user's last choice when the list has it, else its first tab.
+    static func shownTab(chosen: String?, wanted: [String]) -> String? {
+        if let chosen {
+            let kind = tabKind(chosen)
+            if let same = wanted.first(where: { tabKind($0) == kind }) { return same }
+        }
+        return wanted.first
+    }
+
+    /// What a tab is to the user: a Fade's Levels and Geometry tabs carry the same titles as an Audio
+    /// or Video cue's, so choosing one on either shows the other.
+    static func tabKind(_ id: String) -> String {
+        switch id {
+        case "fadeLevels": return "levels"
+        case "fadeGeometry": return "geometry"
+        default: return id
         }
     }
 
@@ -166,15 +188,10 @@ extension InspectorViewController {
         // A file is drawn as its folders and name with their icons, from the home folder down
         // (QLab 5's Target row); the plain field stays for a cue with no file, and for cue targets.
         let fileURL = isFile && !media.isEmpty ? CueRowMenu.mediaURL(media, showPath: store.document?.path) : nil
-        targetPath.isHidden = fileURL == nil
+        targetPath.show(url: fileURL)
         targetField.isHidden = fileURL != nil
-        if let fileURL, targetPath.url != fileURL {
-            targetPath.url = fileURL
-            targetPath.setFullItems(Self.shownPathItems(targetPath.pathItems, of: fileURL))
-        } else if fileURL == nil {
-            targetPath.url = nil
-        }
-        targetPath.toolTip = fileURL?.path
+        revealTargetButton.isHidden = !isFile
+        revealTargetButton.isEnabled = fileURL != nil
         chooseButton.isHidden = !isFile
         chooseButton.isEnabled = isFile && !isLocked
         clearTargetButton.isHidden = !isFile && !isCueTarget
@@ -225,6 +242,32 @@ extension InspectorViewController {
         }
     }
 
+    /// Gives a file row's reveal button its glyph, name and action (the Target row's and the I/O tab's).
+    func configureRevealButton(_ button: NSButton, id: String) {
+        button.setAX(id, label: loc("inspector.target.reveal"))
+        button.isBordered = false
+        button.image = Icon.fieldReveal.image(loc("inspector.target.reveal"), compact: true)
+        button.imagePosition = .imageOnly
+        button.toolTip = loc("inspector.target.reveal")
+        button.target = self
+        button.action = #selector(revealClicked)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    /// The reveal button: the shown cue's file selected in Finder; a file that is gone shows its folder.
+    @objc func revealClicked() {
+        guard let cue = cueForEdit, cue.takesFile, let media = cue.raw["kind"]?["media"]?.stringValue,
+            let url = CueRowMenu.mediaURL(media, showPath: store.document?.path)
+        else { return }
+        let fm = FileManager.default
+        if fm.fileExists(atPath: url.path) {
+            revealFile(url)
+        } else if fm.fileExists(atPath: url.deletingLastPathComponent().path) {
+            revealFile(url.deletingLastPathComponent())
+        }
+    }
+
     /// Selects the target cue as a click on its row would.
     @objc func jumpToTargetClicked() {
         guard let id = cue?.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }), store.model?.cue(id) != nil
@@ -254,6 +297,57 @@ extension InspectorViewController {
 /// mid-word; the tooltip holds the whole path.
 final class TargetPathControl: NSPathControl {
     var onDoubleClick: (() -> Void)?
+    /// The bordered field the path sits in: rows hold this, not the control, and it hides with it.
+    let box = PathFieldBox()
+    override var isHidden: Bool { didSet { box.isHidden = isHidden } }
+
+    /// The path as the Target row and the I/O tab's file row draw it: small, read-only, in a field box,
+    /// giving up its middle folders before it holds the inspector wider.
+    func configure(id: String, label: String, onDoubleClick: @escaping () -> Void) {
+        setAX(id, label: label)
+        self.onDoubleClick = onDoubleClick
+        pathStyle = .standard
+        isEditable = false
+        controlSize = .small
+        font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        isHidden = true
+        setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        box.hold(self)
+        InspectorViewController.prefersWidth(box)
+    }
+
+    /// Shows `text` (no file, several files) in the path's own box and place, in the secondary colour,
+    /// so the field looks the same with or without a file.
+    func showNote(_ text: String) {
+        isHidden = false
+        url = nil
+        let item = NSPathControlItem()
+        item.title = text
+        item.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .font: font ?? NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            ])
+        setFullItems([item])
+        toolTip = nil
+    }
+
+    /// Shows a file's folders and name (the control hides for none); the tooltip holds the whole path.
+    func show(url: URL?) {
+        isHidden = url == nil
+        if let url, self.url != url {
+            self.url = url
+            setFullItems(InspectorViewController.shownPathItems(pathItems, of: url))
+        } else if url == nil {
+            self.url = nil
+        }
+        toolTip = url?.path
+    }
+
+    /// The file's path is the value VoiceOver reads and a test finds the file by.
+    override func accessibilityValue() -> Any? { url?.path }
     private var fullItems: [NSPathControlItem] = []
     private var shownCount = -1
 
@@ -319,6 +413,36 @@ final class TargetPathControl: NSPathControl {
 
     override func mouseDown(with event: NSEvent) {
         if isEnabled, event.clickCount == 2 { onDoubleClick?() }
+    }
+}
+
+/// A path control's field box: a thin rounded border round the control, as a text field has. Its
+/// first baseline is the path text's, so a row label lines up with the text and not the box.
+final class PathFieldBox: NSBox {
+    private weak var path: NSControl?
+
+    func hold(_ control: NSControl) {
+        path = control
+        boxType = .custom
+        borderType = .lineBorder
+        borderWidth = 1
+        cornerRadius = 3
+        borderColor = .tertiaryLabelColor
+        // A text field's white in light mode; in dark mode a step lighter than the tab, as the reference's.
+        fillColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(white: 1, alpha: 0.08) : .textBackgroundColor
+        }
+        titlePosition = .noTitle
+        contentViewMargins = NSSize(width: 2, height: 1)
+        contentView = control
+        heightAnchor.constraint(equalToConstant: 20).isActive = true
+    }
+
+    override var firstBaselineOffsetFromTop: CGFloat {
+        guard let path, let parent = path.superview else { return super.firstBaselineOffsetFromTop }
+        let top = bounds.height - parent.convert(NSPoint(x: 0, y: path.frame.maxY), to: self).y
+        return top + path.firstBaselineOffsetFromTop
     }
 }
 

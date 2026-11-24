@@ -23,8 +23,12 @@ final class LevelMatrixView: NSView {
     /// The captions over the crosspoint section ("inputs" over the row numbers, "crosspoints" over
     /// the grid), which tell the sliders above from the matrix below.
     static let captionH: CGFloat = 20
+    /// The clear space between the output names and the captions, so the two bands read as separate parts.
+    static let captionGap: CGFloat = 8
+    /// Where the captions are drawn.
+    static var captionTop: CGFloat { cellH + headerH + captionGap }
     /// Where the crosspoint rows start.
-    static var crossTop: CGFloat { cellH + headerH + captionH }
+    static var crossTop: CGFloat { captionTop + captionH }
 
     var levels: LevelSet? {
         didSet { needsDisplay = true }
@@ -152,7 +156,7 @@ final class LevelMatrixView: NSView {
             }
         }
         guard inputs > 0 else { return }
-        let captions = NSRect(x: 0, y: Self.cellH + Self.headerH, width: bounds.width, height: Self.captionH)
+        let captions = NSRect(x: 0, y: Self.captionTop, width: bounds.width, height: Self.captionH)
         if dirty.intersects(captions) {
             centred(
                 loc("levels.inputs"), in: NSRect(x: 0, y: captions.minY, width: Self.headW, height: Self.captionH),
