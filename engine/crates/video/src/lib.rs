@@ -13,4 +13,4 @@ mod platform;
 
 pub use platform::run;
 #[cfg(all(target_os = "macos", feature = "test-support"))]
-pub use platform::{MonitorReport, WindowReport, window_report};
+pub use platform::{MonitorReport, Presentation, WindowReport, window_report};

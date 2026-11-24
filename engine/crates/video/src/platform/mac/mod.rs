@@ -563,11 +563,25 @@ thread_local! {
 }
 
 /// Test support: a stage presented through the shipped `present` on the display with the menu
-/// bar (the operator's, a laptop's only one), never ordered front: the levels its window had as
-/// it was ordered front, and its level after. `None` without a GPU or a display with the menu
-/// bar.
+/// bar (the operator's, a laptop's only one), never ordered front: covering, then standing back
+/// (`Platform::stand_back`, as for an app's question or a silent engine), then covering again.
 #[cfg(feature = "test-support")]
-fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
+pub struct Presentation {
+    /// The window's level each time it was ordered front.
+    pub ordered_front_at: Vec<isize>,
+    /// Its level after each of the three presents: covering, standing back, covering again.
+    pub levels: [isize; 3],
+    /// Its frame after the first present is the screen's whole frame.
+    pub frame_is_the_screens: bool,
+    /// That frame holds all of the screen's visible frame, and more where the menu bar and the
+    /// Dock take room on this screen (`visible_is_smaller`).
+    pub holds_the_visible_frame: bool,
+    pub visible_is_smaller: bool,
+}
+
+/// Test support: see [`Presentation`]. `None` without a GPU or a display with the menu bar.
+#[cfg(feature = "test-support")]
+fn presented_on_main(mtm: MainThreadMarker) -> Option<Presentation> {
     let mut mac = Mac {
         gpu: Gpu::new(),
         windows: Some(Windows {
@@ -587,19 +601,44 @@ fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
     mac.displays();
     let main = CGMainDisplayID();
     let display = mac.found.iter().find(|f| f.cg == main)?.display.clone();
+    let screen = screen_of(mtm, main)?;
+    let (whole, visible) = (screen.frame(), screen.visibleFrame());
     NEVER_ORDER_FRONT.with(|n| n.set(true));
     ORDERED_FRONT_AT.with(|l| l.borrow_mut().clear());
+    let window = |mac: &Mac| {
+        (mac.windows.as_ref())
+            .and_then(|w| w.open.get(&display.id))
+            .map(|w| (w.window.level(), w.window.frame()))
+    };
     // A drawable may not come for a window never on screen; the order front comes before it.
     let _ = mac.present(&display, &[], &[]);
-    let after = mac
-        .windows
-        .as_ref()
-        .and_then(|w| w.open.get(&display.id))
-        .map(|w| w.window.level());
+    let covering = window(&mac);
+    mac.stand_back(Some(&display.id));
+    let _ = mac.present(&display, &[], &[]);
+    let standing_back = window(&mac);
+    mac.stand_back(None);
+    let _ = mac.present(&display, &[], &[]);
+    let covering_again = window(&mac);
     mac.close(&display.id);
     NEVER_ORDER_FRONT.with(|n| n.set(false));
-    let at = ORDERED_FRONT_AT.with(|l| std::mem::take(&mut *l.borrow_mut()));
-    Some((at, after?))
+    let ordered_front_at = ORDERED_FRONT_AT.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    let (level, got) = covering?;
+    let same = |a: NSRect, b: NSRect| {
+        a.origin.x == b.origin.x
+            && a.origin.y == b.origin.y
+            && a.size.width == b.size.width
+            && a.size.height == b.size.height
+    };
+    Some(Presentation {
+        ordered_front_at,
+        levels: [level, standing_back?.0, covering_again?.0],
+        frame_is_the_screens: same(got, whole),
+        holds_the_visible_frame: got.origin.x <= visible.origin.x
+            && got.origin.y <= visible.origin.y
+            && got.origin.x + got.size.width >= visible.origin.x + visible.size.width
+            && got.origin.y + got.size.height >= visible.origin.y + visible.size.height,
+        visible_is_smaller: !same(visible, whole),
+    })
 }
 
 /// Test support: what an output window built for the main screen's frame is, read back from
@@ -610,8 +649,8 @@ pub struct WindowReport {
     pub screen_saver_level: isize,
     pub normal_level: isize,
     /// A stage presented on the menu bar's display through the shipped path (never really
-    /// ordered front): its window's level each time it was ordered front, and after.
-    pub presented_on_main: Option<(Vec<isize>, isize)>,
+    /// ordered front).
+    pub presented_on_main: Option<Presentation>,
     pub menu_bar_level: isize,
     pub behaviour_as_built: bool,
     pub ignores_mouse: bool,

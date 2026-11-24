@@ -34,18 +34,50 @@ fn main() {
         r.behaviour_as_built,
         "every Space, stationary, out of cycling"
     );
-    // The shipped present on the menu bar's display: ordered front once, at screen-saver level,
-    // and left there.
-    let (at_order_front, after) = r
+    // #708 flow (one display with the menu bar, a stage on it, GO a Video cue → the picture covers
+    // the whole display, over the app's windows, the menu bar and the Dock): the shipped present
+    // on the menu bar's display orders the window front at screen-saver level over the screen's
+    // whole frame (the menu bar's and the Dock's places included), and leaves it there.
+    let p = r
         .presented_on_main
-        .clone()
+        .as_ref()
         .expect("a stage presented on the display with the menu bar");
     assert_eq!(
-        at_order_front,
-        [r.screen_saver_level],
-        "present orders the window front once, over everything"
+        p.ordered_front_at.first(),
+        Some(&r.screen_saver_level),
+        "present orders the window front over everything"
     );
-    assert_eq!(after, r.screen_saver_level, "and leaves it there");
+    let [covering, standing_back, covering_again] = p.levels;
+    assert_eq!(covering, r.screen_saver_level, "and leaves it there");
+    assert!(
+        p.frame_is_the_screens,
+        "the window's frame is the screen's whole frame"
+    );
+    assert!(
+        p.holds_the_visible_frame,
+        "the frame holds the screen's visible frame and the menu bar's and Dock's places"
+    );
+    // #708 flow (a hung engine while a stage covers the only display → the cover comes down by
+    // itself): standing back (a silent engine, or the app's question) puts that window just under
+    // every app's windows, still over the desktop; covering again puts it back over everything.
+    assert_eq!(
+        standing_back,
+        r.normal_level - 1,
+        "standing back: under every app's windows"
+    );
+    assert_eq!(covering_again, r.screen_saver_level, "covering again");
+    assert_eq!(
+        p.ordered_front_at,
+        [
+            r.screen_saver_level,
+            r.normal_level - 1,
+            r.screen_saver_level
+        ],
+        "each level set before the window is ordered front"
+    );
+    if !p.visible_is_smaller {
+        println!("output_window: the main screen's menu bar and Dock take no room here");
+    }
     // #795: a click on a stage never reaches an app behind it, and brings the operator's app
     // forward with the keys (the stage host hands them over), the first click too.
     assert!(!r.ignores_mouse, "takes every click over the stage");
