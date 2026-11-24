@@ -68,6 +68,10 @@ fn main() {
     assert!(!r.can_become_main);
     assert!(!r.has_shadow);
     assert!(r.borderless);
+    assert!(
+        r.non_activating,
+        "a click on it never makes the stage host active, so the operator's app is not drawn inactive"
+    );
     assert!(r.frame_is_the_screens, "covers the display's whole frame");
     assert!(!r.visible, "built, never shown");
     // #648: a stage's monitor window, as its monitor button opens it: titled with the stage's
