@@ -2090,7 +2090,9 @@ final class InspectorBasicsLayoutTests: XCTestCase {
             ]
             for (name, v) in fields {
                 let f = frame(v)
-                XCTAssertGreaterThanOrEqual(f.width, name == "target" ? 90 : 60, "\(name) at \(width)")
+                // A file cue's target row also holds clear and reveal beside Choose (reveal greyed
+                // with no file, as in the reference), so at the least width the field keeps 80 pt.
+                XCTAssertGreaterThanOrEqual(f.width, name == "target" ? 80 : 60, "\(name) at \(width)")
                 XCTAssertGreaterThanOrEqual(f.height, 14, "\(name) height at \(width)")
                 XCTAssertTrue(vc.view.bounds.insetBy(dx: -1, dy: -1).contains(f), "\(name) clipped at \(width)")
             }

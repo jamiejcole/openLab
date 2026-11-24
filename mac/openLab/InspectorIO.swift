@@ -325,7 +325,7 @@ extension InspectorViewController {
         }
         let ids = patches.map(\.id)
         if ids != outputPatchIDs || names != outputPatchNames || video != outputPatchHasNone {
-            if ids != outputPatchIDs { readPatchDevices() }
+            if ids != patchDevicesReadIDs { readPatchDevices() }
             outputPatchIDs = ids
             outputPatchNames = names
             outputPatchHasNone = video
@@ -411,6 +411,7 @@ extension InspectorViewController {
     /// Reads where each patch plays on this Mac (and each device's channels) from the engine; one read at
     /// a time, a request during it read again after. The line shows what it finds.
     func readPatchDevices() {
+        patchDevicesReadIDs = store.model?.patches.map(\.id) ?? []
         guard patchReading == nil else {
             patchReadAgain = true
             return
