@@ -367,8 +367,8 @@ struct RouteEntry: Hashable, Sendable, Decodable {
     let state: RouteState?
     /// Its alignment guides show (absent: false).
     var guides: Bool = false
-    /// The colour its guides are drawn in, `#rrggbb`: the one picked, else its place's default
-    /// (nil only from an engine that predates guides).
+    /// The colour its guides are drawn in, `#rrggbb`: the route's own, picked or given when it
+    /// was added or loaded (nil only from an engine that predates guides).
     var guideColour: String?
 
     init(

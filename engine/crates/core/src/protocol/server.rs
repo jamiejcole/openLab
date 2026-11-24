@@ -300,8 +300,8 @@ pub struct RouteEntry {
     /// Its alignment guides are shown (`set_route_guides`). Absent: `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub guides: bool,
-    /// The colour its guides are drawn in: the one picked, else its place's default. Absent
-    /// only from an engine that predates guides.
+    /// The colour its guides are drawn in: the route's own, picked or given when it was added or
+    /// loaded. Absent only from an engine that predates guides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide_colour: Option<crate::GuideColour>,
 }

@@ -65,8 +65,8 @@ extension Command {
         Command(.object(["type": .string("set_route_property"), "id": .string(id.raw), "property": property]))
     }
 
-    /// `SetRouteProperty` `guide_colour`: the colour its guides are drawn in (`#rrggbb`; nil: its
-    /// place's default). Saved with the show, but no undo step.
+    /// `SetRouteProperty` `guide_colour`: the colour its guides are drawn in (`#rrggbb`; nil: a default
+    /// no other route has). Saved with the show, but no undo step.
     static func setRouteGuideColour(_ id: ModelID, hex: String?) -> Command {
         setRoute(id, .object(["type": .string("guide_colour"), "value": hex.map { .string($0) } ?? .null]))
     }

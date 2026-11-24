@@ -8925,6 +8925,38 @@ fn a_new_workspace_has_output_1_on_the_main_display_and_stage_1_filling_it() {
         ),
         ("Output 1", 1920, 1080, 0, openlab_core::RouteScaling::Fill)
     );
+    // #821: Output 1 gets its own guide colour when the workspace is made, so a route added next
+    // gets another, not the same default.
+    let first = route
+        .guide_colour
+        .expect("a new workspace's route has a guide colour");
+    edited(
+        &mut s,
+        openlab_core::Command::AddRoute {
+            index: 1,
+            route: OutputRoute::new(
+                RouteId(uuid::Uuid::from_u128(0x9821)),
+                "Output 2",
+                1280,
+                720,
+            ),
+            regions: Vec::new(),
+        },
+    );
+    let routes = s.control().workspace().routes.clone();
+    assert_eq!(routes.len(), 2);
+    assert_eq!(routes[0].guide_colour, Some(first));
+    let second = routes[1]
+        .guide_colour
+        .expect("an added route has a guide colour");
+    assert_ne!(first, second, "each route its own colour");
+    assert!(matches!(
+        edit(
+            &mut s,
+            openlab_core::Command::RemoveRoute { id: routes[1].id }
+        ),
+        Outcome::Ok(_)
+    ));
     let [stage] = ws.stages.as_slice() else {
         panic!("one stage: {:?}", ws.stages)
     };
