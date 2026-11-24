@@ -1621,7 +1621,7 @@ final class EngineCrashFlowTests: XCTestCase {
         let doc = try await runs.open(path)
         try await runs.rename(intro, in: doc, to: "Unsaved")
         try await runs.advance(31)
-        await runs.autosaved("Untitled")  // listed by its stored name
+        await runs.autosaved("B")
         try await runs.crash()
         try spoil()
         try await launch(launchDefaults: prefs)
@@ -1758,7 +1758,7 @@ final class EngineCrashFlowTests: XCTestCase {
         let doc = try await runs.open(path)
         try await runs.rename(intro, in: doc, to: "Turned down")
         try await runs.advance(31)
-        await runs.autosaved("Untitled")  // listed by its stored name
+        await runs.autosaved("B")
         try await runs.crash()
 
         try await launch()
@@ -2148,7 +2148,7 @@ final class EngineCrashFlowTests: XCTestCase {
         let doc = try await runs.open(b)
         try await runs.rename(intro, in: doc, to: "Autosaved")
         try await runs.advance(31)
-        await runs.autosaved("Untitled")  // listed by its stored name
+        await runs.autosaved("B")
         try await runs.crash()
         let a = try runs.show("Demo", named: "A")
         var file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: a, encoding: .utf8)))
