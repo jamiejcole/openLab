@@ -163,6 +163,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         guidesCheck.controlSize = .small
         guidesCheck.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         guidesCheck.allowsMixedState = true
+        // Its whole title, however narrow the window: the grid's column gives way instead.
+        guidesCheck.setContentCompressionResistancePriority(.required, for: .horizontal)
         guidesCheck.target = self
         guidesCheck.action = #selector(guidesClicked)
         guidesCheck.toolTip = loc("stageEditor.guides.tip")

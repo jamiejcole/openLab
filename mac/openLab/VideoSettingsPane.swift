@@ -209,7 +209,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     /// The monitor button's column.
     nonisolated static let monitorWidth: CGFloat = 56
     /// The guides column: a small box with its title and the colour swatch beside it.
-    nonisolated static let guidesWidth: CGFloat = 86
+    nonisolated static let guidesWidth: CGFloat = 78
     nonisolated static let leastDisplayWidth: CGFloat = 120
     static let mostDisplayWidth: CGFloat = 260
     static let columnSpacing: CGFloat = 5
