@@ -7,7 +7,8 @@ import Combine
 /// workspace settings' patch table, from the I/O tab's edit button or from the Levels tab. At the
 /// top: the patch's name, how many cue outputs it has and the device it plays on. Three tabs: the
 /// cue outputs' names (what a cue's Levels tab shows under its faders); the routing matrix (the
-/// main level, and a row per cue output with its level box and a box per device output holding
+/// main level, and a row per cue output with its level box, its meter (drawn only while sound plays
+/// through it) and a box per device output holding
 /// the level it reaches that device output at, under a strip of fader, mute and level box for the main
 /// level and for each device output); and the device outputs, one titled row each. At the foot: copying the routing from another patch or back to the
 /// defaults, and unmuting everything (QLab 5 manual pp. 189-190).
@@ -41,6 +42,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     let matrixRows = PatchRoutingPane(.rows)
     /// Over both, at the scroll view's top left: the header row scrolls sideways under it.
     let matrixCorner = PatchRoutingPane(.corner)
+    let meter = MeterView()
     /// What the routing tab cannot show or do here: openLab's limits on this device and this patch.
     let routingNote = NSTextField(wrappingLabelWithString: "")
     /// One level box per cue output, laid over the matrix's level column.
@@ -340,11 +342,19 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         crosspointField.isHidden = true
         crosspointField.setAX(AX.patchEditorCrosspointField)
         matrix.addSubview(crosspointField)
+        meter.bank = store.meters
+        meter.drawsIdleTrack = false
+        meter.setAX(AX.patchEditorMeter)
+        matrixRows.addSubview(meter)
         matrixHeader.matrix = matrix
         matrixRows.matrix = matrix
         matrix.onChange = { [weak self] in self?.placePanes() }
         let scroll = TilingScrollView()
         scroll.onTile = { [weak self] in self?.placeCorner() }
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(matrixScrolled), name: NSView.boundsDidChangeNotification,
+            object: scroll.contentView)
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
@@ -470,6 +480,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         matrix.isEnabled = state.loaded && row?.mapping != nil && editable
         if let cell = typingCell, !matrix.canType(row: cell.row, column: cell.column) { endTyping() }
         fitMatrixWidth()
+        let metered = state.levels.count
+        meter.frame = matrix.meterRect(rows: metered).offsetBy(dx: 0, dy: -PatchRoutingView.headerH)
+        meter.fixedRows = metered
+        meter.source = .output(patchID)
 
         var notes: [String] = []
         if row?.mapping == nil { notes.append(loc("patchEditor.noDevice")) }
@@ -512,7 +526,23 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         matrixHeader.needsDisplay = true
         matrixRows.needsDisplay = true
         for (d, fader) in deviceFaders.enumerated() { placeStrip(d, fader) }
+        hideStripsLeftOfView()
         placeCorner()
+    }
+
+    @objc private func matrixScrolled() { hideStripsLeftOfView() }
+
+    /// A strip scrolled out to the left of the visible columns is hidden: the corner covers the
+    /// columns' part of the view, but not the scroll view's own border, where a strip's edge would
+    /// show as a sliver.
+    func hideStripsLeftOfView() {
+        let edge = matrix.visibleRect.minX + PatchRoutingView.crossX
+        for d in deviceFaders.indices {
+            let gone = PatchRoutingView.stripMidX(column: d) + PatchRoutingView.cellW / 2 <= edge
+            for v in [deviceFaders[d], deviceMutes[d], deviceFields[d]] as [NSView] where v.isHidden != gone {
+                v.isHidden = gone
+            }
+        }
     }
 
     private func placeStrip(_ d: Int, _ fader: LevelFader) {
@@ -656,6 +686,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             deviceFields.append(field)
             placeStrip(d, fader)
         }
+        hideStripsLeftOfView()
     }
 
     /// The Device Outputs tab: a titled row per device output. Rows are made again only when their

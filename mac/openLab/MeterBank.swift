@@ -210,6 +210,11 @@ final class MeterView: NSView {
     var columns: Columns? {
         didSet { if oldValue != columns { invalidate() } }
     }
+    /// Whether a row with no signal still draws its empty track. Off, a silent row draws nothing,
+    /// so the meter beside a patch editor's level boxes is not a column of blank boxes.
+    var drawsIdleTrack = true {
+        didSet { if oldValue != drawsIdleTrack { invalidate() } }
+    }
     private var attachedTo: MeterBank?
     #if DEBUG
         /// Redraws requested so far (tests count them: a view that cannot draw ignores `needsDisplay`).
@@ -338,9 +343,12 @@ final class MeterView: NSView {
         let rows = shownRows
         for row in 0..<rows {
             let r = rowRect(row)
-            NSColor.quaternaryLabelColor.setFill()
-            r.fill()
-            guard count > 0, let source, let level = bank?.level(source, channel: row), level > 0 else { continue }
+            let level = count > 0 ? source.flatMap { bank?.level($0, channel: row) } ?? 0 : 0
+            if drawsIdleTrack || level > 0 {
+                NSColor.quaternaryLabelColor.setFill()
+                r.fill()
+            }
+            guard level > 0 else { continue }
             Self.colour(level).setFill()
             NSRect(x: r.minX, y: r.minY, width: r.width * Self.fill(level), height: r.height).fill()
         }

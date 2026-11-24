@@ -177,6 +177,7 @@ enum AX {
     /// `-N`: cue output N's name on the cue outputs tab.
     static let patchEditorOutputName = "patch-editor-output-name"
     static let patchEditorMatrix = "patch-editor-matrix"
+    static let patchEditorMeter = "patch-editor-meter"
     static let patchEditorDeviceOutputs = "patch-editor-device-outputs"
     static let patchEditorDone = "patch-editor-done"
     static let patchEditorCrosspointField = "patch-editor-crosspoint-field"

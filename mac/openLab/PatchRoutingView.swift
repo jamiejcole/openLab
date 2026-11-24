@@ -3,7 +3,7 @@
 import AppKit
 
 /// The routing matrix of the patch editor (QLab 5 manual p. 190): a row per cue output (its number
-/// and name, and a level box laid over it by the editor) and a column per device output, under a
+/// and name, a level box laid over it by the editor, its meter) and a column per device output, under a
 /// strip per column (the fader, mute and level box the editor lays over the header, and the label drawn
 /// here) and the captions of the left columns, the inputs and the crosspoints. Each
 /// box is that crosspoint's level: lit with its level where the cue output reaches the device output,
@@ -16,11 +16,12 @@ final class PatchRoutingView: NSView {
     static let rowH: CGFloat = 22
     /// The strips and their captions: the header is as tall as both.
     static let headerH: CGFloat = 178
-    static let labelW: CGFloat = 104
+    static let labelW: CGFloat = 92
     static let levelW: CGFloat = 60
-    static let gapW: CGFloat = 8
+    /// The meter's column, drawn only while a cue plays through the row: a silent row shows nothing there.
+    static let meterW: CGFloat = 20
     static let cellW: CGFloat = 46
-    static var crossX: CGFloat { labelW + levelW + gapW }
+    static var crossX: CGFloat { labelW + levelW + meterW }
 
     // The strip's parts, top to bottom, in the header's coordinates.
     static let faderRect = (y: CGFloat(4), h: CGFloat(86), w: CGFloat(20))
@@ -98,6 +99,13 @@ final class PatchRoutingView: NSView {
         NSRect(
             x: Self.labelW + 2, y: Self.headerH + CGFloat(row) * Self.rowH + 1, width: Self.levelW - 6,
             height: Self.rowH - 2)
+    }
+
+    /// Where the meter goes: one bar per row, for the first `rows` rows.
+    func meterRect(rows: Int) -> NSRect {
+        NSRect(
+            x: Self.labelW + Self.levelW + 2, y: Self.headerH + 4, width: Self.meterW - 8,
+            height: CGFloat(rows) * Self.rowH - 6)
     }
 
     /// Where a strip's fader goes: centred on `midX`.

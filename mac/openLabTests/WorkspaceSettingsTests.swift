@@ -510,6 +510,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         let (rig, sc) = try await open(edit: sounding())
         let editor = try await edit(in: sc)
         editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        editor.meter.updateLive()
         try type("3", into: editor.countField)
         await editor.editing?.value
         await assertEventually { editor.outputFields.count == 3 }
@@ -553,8 +554,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(commands(rig).count, sent, "nothing out of range is sent")
     }
 
-    /// 128 cue outputs (QLab's most): every row is in the editor and the matrix scrolls.
-    func testA128OutputPatchShowsEveryRow() async throws {
+    /// 128 cue outputs (QLab's most): every row is in the editor, each with its meter, and the
+    /// matrix scrolls.
+    func testA128OutputPatchShowsEveryRowWithItsMeter() async throws {
         let (rig, sc) = try await open()
         let editor = try await edit(in: sc)
         await sc.model.setOutputCount(patch, 128)
@@ -562,6 +564,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         editor.render()
         XCTAssertEqual(editor.outputFields.count, 128)
         XCTAssertEqual(editor.matrix.rowLabels.count, 128)
+        XCTAssertEqual(editor.meter.fixedRows, 128, "a meter bar beside every row")
+        XCTAssertEqual(editor.meter.frame.maxY, editor.matrix.meterRect(rows: 128).maxY - PatchRoutingView.headerH)
         XCTAssertGreaterThan(editor.matrix.frame.height, PatchRoutingView.rowH * 128)
         // Each level box is inside the matrix, on its own row.
         let last = try XCTUnwrap(editor.outputFields.last)
@@ -586,6 +590,80 @@ final class WorkspaceSettingsTests: XCTestCase {
         // The device's two outputs take cue outputs 1 and 2; the rest have none of their own (Q515).
         let mapped = try await mapping(rig)
         XCTAssertEqual(mapped?.channels, [0, 1])
+    }
+
+    /// A cue routed to cue output 100 of a 128-output patch plays: the editor's meter row 100
+    /// lights, drawn beside its row, and a row the cue does not reach stays dark.
+    func testA128OutputPatchsEditorMetersRow100WhileACueRoutedThereplays() async throws {
+        let intro = intro
+        let (rig, _, editor) = try await playing { url in
+            try writeWAV(url.appendingPathComponent("media/a.wav"), seconds: 10)
+            try editShow(url.appendingPathComponent("Demo.openlab")) { ws in
+                guard var patches = ws["patches"]?.arrayValue, let first = patches[0]["outputs"]?.arrayValue?.first,
+                    var lists = ws["cue_lists"]?.arrayValue, var cues = lists[0]["cues"]?.arrayValue,
+                    let i = cues.firstIndex(where: { $0["id"]?.stringValue == intro.raw }),
+                    var kind = cues[i]["kind"], var levels = kind["levels"]
+                else { return XCTFail("the demo show has its patch and intro") }
+                patches[0].set("outputs", .array(Array(repeating: first, count: 128)))
+                ws.set("patches", .array(patches))
+                let unity = JSONValue.object(["db": .double(0), "mute": .bool(false)])
+                levels.set("outputs", .array(Array(repeating: unity, count: 128)))
+                levels.set(
+                    "crosspoints",
+                    .array([
+                        .object(["input": .int(0), "output": .int(99), "db": .double(0), "mute": .bool(false)])
+                    ]))
+                kind.set("levels", levels)
+                cues[i].set("kind", kind)
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+        editor.render()
+        XCTAssertEqual(editor.meter.fixedRows, 128)
+        XCTAssertTrue(editor.meter.isOnScreen, "the editor's meter is live")
+        let row100 = try await rowPeak(rig, row: 99)
+        XCTAssertGreaterThan(row100, 0.01, "row 100 moves")
+        let row1 = try await rowPeak(rig, row: 0)
+        XCTAssertEqual(row1, 0, accuracy: 0.0001, "row 1 carries nothing")
+        // Row 100's bar is drawn lit, level with its row's boxes.
+        let bar = editor.meter.rowRect(99)
+        let box = editor.matrix.cellRect(row: 99, column: 0)
+        let barInMatrix = editor.matrix.convert(bar, from: editor.meter)
+        XCTAssertTrue(
+            barInMatrix.midY > box.minY && barInMatrix.midY < box.maxY, "the bar \(barInMatrix) is on row 100 \(box)")
+        try await rig.advance(0.1)
+        rig.store.meters.tick(0)
+        let rep = try renderView(editor.meter)
+        func lit(_ r: NSRect) -> Int {
+            let scale = CGFloat(rep.pixelsWide) / editor.meter.bounds.width
+            var n = 0
+            for py in Int(r.minY * scale)..<max(Int(r.minY * scale) + 1, Int(r.maxY * scale)) {
+                for px in 0..<rep.pixelsWide {
+                    guard let c = rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB) else { continue }
+                    let hi = max(c.redComponent, c.greenComponent, c.blueComponent)
+                    if hi - min(c.redComponent, c.greenComponent, c.blueComponent) > 0.4 { n += 1 }
+                }
+            }
+            return n
+        }
+        XCTAssertGreaterThan(lit(bar), 0, "row 100's bar is lit")
+        XCTAssertEqual(lit(editor.meter.rowRect(0)), 0, "row 1's bar is dark")
+    }
+
+    /// A silent patch draws no meter at all: no empty track beside the level boxes.
+    func testTheRoutingMeterDrawsNothingWhileNoCuePlays() async throws {
+        let (_, sc) = try await open()
+        let editor = try await edit(in: sc)
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        editor.render()
+        XCTAssertFalse(editor.meter.drawsIdleTrack)
+        let rep = try renderView(editor.meter)
+        for py in 0..<rep.pixelsHigh {
+            for px in 0..<rep.pixelsWide {
+                XCTAssertEqual(rep.colorAt(x: px, y: py)?.alphaComponent ?? 0, 0, accuracy: 0.001)
+            }
+        }
     }
 
     /// Checklist: an Audio cue is selected → the I/O tab's edit button, and a button on the Levels
@@ -771,8 +849,10 @@ final class WorkspaceSettingsTests: XCTestCase {
     /// Checklist: a cue is playing on the patch while the editor's routing is changed → the change is
     /// heard at once. Cue output 2 is silenced first, so device
     /// output 2 is quiet until cue output 1 is sent there too.
-    func testRoutingChangedUnderAPlayingCueIsHeardAtOnce() async throws {
+    func testRoutingChangedUnderAPlayingCueIsHeardAtOnceAndTheEditorMetersMove() async throws {
         let (rig, _, editor) = try await playing(sounding())
+        XCTAssertTrue(editor.meter.isOnScreen, "the editor's meter is live")
+        XCTAssertEqual(editor.meter.source, .output(patch))
         try type("-inf", into: editor.outputFields[1])
         await assertEventually { self.patchLevels(rig).outputs == [0, -120] }
         let quiet = try await peak(rig, channel: 1)
@@ -785,6 +865,14 @@ final class WorkspaceSettingsTests: XCTestCase {
         let heard = try await peak(rig, channel: 1)
         XCTAssertGreaterThan(heard, 0.05, "device output 2 now carries cue output 1")
         XCTAssertEqual(rig.store.cueStates[intro]?.state, .running, "the cue plays on")
+        // The editor's meter rows are the cue outputs themselves: row 1 moves, row 2 (silenced in
+        // the patch) stays dark though device output 2 now carries cue output 1.
+        XCTAssertTrue(editor.meter.bank === rig.store.meters)
+        XCTAssertGreaterThan(rig.store.meters.visibleCount, 0, "the editor's meter is registered")
+        let row1 = try await rowPeak(rig, row: 0)
+        let row2 = try await rowPeak(rig, row: 1)
+        XCTAssertGreaterThan(row1, 0.05, "row 1 moves")
+        XCTAssertEqual(row2, 0, accuracy: 0.0001, "row 2 stays dark")
     }
 
     // MARK: Routing matrix, device outputs and the editor's foot (AUD-07)
@@ -848,6 +936,28 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually { self.crosspoints(rig).isEmpty }
     }
 
+    /// ui-qa: the patch editor's row meter shows its cue output wherever the crosspoints send it.
+    /// Cue output 1 taken off its mapped device output (1→1 at -inf) and sent to device output 2
+    /// lights row 1 though device output 1 is silent; cue output 2, silenced in the patch, keeps
+    /// row 2 dark though device output 2 is sounding.
+    func testARowMeterFollowsItsCueOutputNotTheDeviceOutputItIsMappedTo() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        try type("-inf", into: editor.outputFields[1])
+        try typeCrosspoint("", row: 0, column: 0, in: editor)
+        try typeCrosspoint("0", row: 0, column: 1, in: editor)
+        await assertEventually { self.crosspoints(rig) == [[0, 0, -120], [0, 1, 0]] }
+        await assertEventually { self.patchLevels(rig).outputs == [0, -120] }
+        let deviceOne = try await peak(rig, channel: 0)
+        let deviceTwo = try await peak(rig, channel: 1)
+        XCTAssertEqual(deviceOne, 0, accuracy: 0.0001, "device output 1 hears nothing")
+        XCTAssertGreaterThan(deviceTwo, 0.05, "device output 2 carries cue output 1")
+        let row1 = try await rowPeak(rig, row: 0)
+        let row2 = try await rowPeak(rig, row: 1)
+        XCTAssertGreaterThan(row1, 0.05, "row 1 lights")
+        XCTAssertEqual(row2, 0, accuracy: 0.0001, "row 2 stays dark")
+        XCTAssertEqual(rig.store.cueStates[intro]?.state, .running)
+    }
+
     /// A show whose patch routes cue output 1 to device output `to` (from 1) and, with `muted`, has
     /// cue output 2 muted.
     private func routedFar(to: Int, muted: Bool = false) -> (URL) throws -> Void {
@@ -891,6 +1001,17 @@ final class WorkspaceSettingsTests: XCTestCase {
         // Over everything else in the scroll view: the floating panes' container too.
         XCTAssertTrue(scroll.subviews.last === editor.matrixCorner, "\(scroll.subviews)")
         XCTAssertTrue(editor.matrixCorner.isOpaque, "what passes under it is hidden")
+        // A strip scrolled out left of the visible columns is hidden, not left as a sliver at the
+        // scroll view's border; the strips still in view stay.
+        let edge = scroll.contentView.bounds.minX + PatchRoutingView.crossX
+        for d in 0..<editor.deviceFaders.count {
+            let gone = PatchRoutingView.stripMidX(column: d) + PatchRoutingView.cellW / 2 <= edge
+            for v in [editor.deviceFaders[d], editor.deviceMutes[d], editor.deviceFields[d]] as [NSView] {
+                XCTAssertEqual(v.isHidden, gone, "strip \(d + 1)")
+            }
+        }
+        XCTAssertTrue(editor.deviceFaders[0].isHidden)
+        XCTAssertFalse(editor.deviceFaders[39].isHidden)
     }
 
     /// ui-qa D3, D6: an editor left open while its device is lost says the device is not connected
@@ -1779,12 +1900,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         let (rig, sc) = try await open(edit: edit)
         let editor = try await self.edit(in: sc)
         editor.tabs.selectTabViewItem(withIdentifier: "routing")
-        // The engine reports levels only while a meter for the patch is on screen.
-        let meter = MeterView()
-        meter.bank = rig.store.meters
-        meter.source = .output(patch)
-        editor.window?.contentView?.addSubview(meter)
-        addTeardownBlock { @MainActor in meter.removeFromSuperview() }
+        editor.meter.updateLive()
         guard case .success = await rig.store.transport(.start(cue: intro)) else { throw TestEngineError.notConnected }
         try await rig.advance(1)
         return (rig, sc, editor)
@@ -1799,6 +1915,20 @@ final class WorkspaceSettingsTests: XCTestCase {
         for _ in 0..<5 { try await rig.advance(0.1) }
         let peaks = rig.wire.devicePeaks[patch] ?? []
         return peaks.indices.contains(channel) ? peaks[channel] : 0
+    }
+
+    /// The loudest the patch editor's meter drew for cue output `row` (from 0) over the next half
+    /// second of device time, read as each report arrives.
+    private func rowPeak(_ rig: Rig, row: Int) async throws -> Float {
+        try await rig.advance(0.5)
+        rig.store.meters.reset()
+        var loudest: Float = 0
+        for _ in 0..<5 {
+            try await rig.advance(0.1)
+            rig.store.meters.tick(0)
+            loudest = max(loudest, rig.store.meters.level(.output(patch), channel: row))
+        }
+        return loudest
     }
 
     private func patchLevels(_ rig: Rig) -> (main: Double?, outputs: [Double]) {

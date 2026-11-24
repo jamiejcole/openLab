@@ -128,6 +128,11 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertEqual(displays.map(\.width), [3840])
         XCTAssertEqual(displays.map(\.fps), [60])
         XCTAssertEqual(video, true)
+        // A display from a stage host that predates the refresh rate reads as unknown (0).
+        let old = try JSONDecoder().decode(
+            StageDisplay.self,
+            from: Data(#"{"id":"A","name":"Old","width":1920,"height":1080}"#.utf8))
+        XCTAssertEqual(old.fps, 0)
         guard
             case .result(_, .ok(let mapped)) = try ServerMessage.decode(
                 try Fixtures.text("server", "result_stage_mappings")),
