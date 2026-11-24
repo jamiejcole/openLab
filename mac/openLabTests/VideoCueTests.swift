@@ -29,7 +29,7 @@ final class VideoCueTests: XCTestCase {
     static let longName = "A very long name for a projection clip used in the second act.mov"
 
     override func setUp() async throws {
-        engine = try await TestEngine.start(displays: "V1:1920x1080")
+        engine = try await TestEngine.start(displays: "V1:1920x1080,V2:1280x720")
         let url = engine.infoURL
         let session = EngineSession(
             transport: WebSocketTransport(), infoProvider: { EngineConnectionInfo.load(from: url) })
@@ -456,7 +456,7 @@ final class VideoCueTests: XCTestCase {
         await soon("ended after its duration") { self.status(Self.timedStill) == nil }
     }
 
-    /// #674 flow 3: a stage's size is changed on the Video page while a cue plays on it: the
+    /// #674 flow 3: a stage's size is changed in its editor while a cue plays on it: the
     /// picture follows at once (fitted to the square stage, black above and below the card) and
     /// the cue plays on, its row still running.
     func testTheSizeChangedWhileACuePlaysOnTheStageThePictureFollowsWithoutTheCueStopping() async throws {
@@ -482,13 +482,17 @@ final class VideoCueTests: XCTestCase {
         addTeardownBlock { @MainActor in sc.close() }
         await sc.present().value
         let pane = sc.videoPane
-        await soon("the Video page lists the stages") { pane.widthFields.count == 2 }
-        let field = pane.widthFields[0]
+        await soon("the Video page lists the stages") { pane.sizeLabels.count == 2 }
+        let editor = sc.openStageEditor(Self.stage)
+        let field = editor.widthField
         field.stringValue = "1080"
-        pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
-        await pane.pending?.value
-        await soon("the row shows the square stage") { pane.shown?.first?.width == 1080 }
-        XCTAssertEqual(pane.widthFields[0].stringValue, "1080")
+        editor.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        await editor.editing?.value
+        await soon("the row shows the square stage") {
+            await pane.refresh()
+            return pane.shown?.first?.width == 1080
+        }
+        XCTAssertEqual(pane.sizeLabels[0].stringValue, "1080 × 1080")
         try await play(0.2)
         let square = await colours()
         XCTAssertEqual(square, [black, red], "the card fitted across the square stage")
@@ -1375,5 +1379,264 @@ final class VideoCueTests: XCTestCase {
         await soon { self.status(Self.movie) == loc("cue.state.running") }
         let first = await shownFrame()
         XCTAssertEqual(Double(first ?? 0), 37, accuracy: 1, "1.5 s into the file")
+    }
+}
+
+// MARK: Output routes, stages and regions while cues play (#813)
+
+extension VideoCueTests {
+    /// The test card frame `display` shows in its middle (nil: none).
+    func frameOn(_ display: String) async -> UInt16? {
+        guard case .success(let ok) = await engine.request(.displayProbe(display: display, points: [[0.5, 0.5]])),
+            case .stageProbe(let frame, _)? = ok.data
+        else { return nil }
+        return frame
+    }
+
+    /// The workspace's settings window, open with its Video pages read.
+    func videoSettings() async -> WorkspaceSettingsWindowController {
+        let sc = wc.settingsWindow
+        await sc.present().value
+        return sc
+    }
+
+    /// Picks `title` from `popup` (a pull-down's item too), as the operator's choice in its menu.
+    func choose(_ title: String, in popup: NSPopUpButton, line: UInt = #line) {
+        guard let item = popup.menu?.items.first(where: { $0.title == title && !$0.isSeparatorItem }) else {
+            return XCTFail("no item \"\(title)\" in \(popup.itemTitles)", line: line)
+        }
+        popup.select(item)
+        _ = popup.sendAction(popup.action, to: popup.target)
+    }
+
+    /// Waits for every edit the Video pages and the stage editor sent, and their redraws.
+    func settledVideo(
+        _ sc: WorkspaceSettingsWindowController, _ why: String = "the Video pages caught up", line: UInt = #line,
+        _ ok: @escaping @MainActor () -> Bool
+    ) async {
+        await soon(why, line: line) {
+            await sc.videoPane.pending?.value
+            await sc.videoRoutingPane.pending?.value
+            await sc.stageEditor?.editing?.value
+            await sc.videoPane.refresh()
+            sc.stageEditor?.render()
+            return ok()
+        }
+    }
+
+    /// #813 S3: Side screen used by two idle Video cues → removed with its row's button: it goes,
+    /// and both cues show broken, the reason naming the missing stage. Undo brings it back with its
+    /// region on its route, and the cues are no longer broken. With one of them playing the removal
+    /// is refused: the page names the stage and the cue, and nothing changes.
+    func testS3RemovingAStageBreaksItsIdleCuesNamingItAndUndoMendsThemAndAPlayingCueRefusesIt() async throws {
+        try await openVideoShow()
+        await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
+        guard case .success = await store.send(command: .setProperty(Self.still, .stage(Self.side))) else {
+            return XCTFail("the still on the side screen")
+        }
+        _ = await store.setStageDisplay(Self.side, display: "V2")
+        let sc = await videoSettings()
+        let pane = sc.videoPane
+        await settledVideo(sc) { pane.removeButtons.count == 2 && pane.deviceCells.last?.stringValue == "Virtual V2" }
+        await soon("both cues on the side screen play") {
+            self.status(Self.still) == nil && self.status(Self.long) == nil
+        }
+        pane.removeButtons[1].performClick(nil)
+        await settledVideo(sc) { pane.shown?.count == 1 }
+        let reason = String(format: loc("problem.stage_missing").replacingOccurrences(of: "{stage}", with: "%@"), "Side screen")
+        await soon("both cues broken") {
+            self.status(Self.still) == loc("cue.state.broken") && self.status(Self.long) == loc("cue.state.broken")
+        }
+        for cue in [Self.still, Self.long] {
+            XCTAssertTrue(brokenTip(cue)?.contains(reason) == true, "\(brokenTip(cue) ?? "")")
+        }
+        _ = await store.undo()
+        await settledVideo(sc) { pane.shown?.count == 2 }
+        XCTAssertEqual(pane.deviceCells.last?.stringValue, "Virtual V2", "back with its region on its route")
+        await soon("no longer broken") { self.status(Self.still) == nil && self.status(Self.long) == nil }
+        // One of them playing: refused, named, nothing changed.
+        click(Self.still)
+        try await go()
+        try await play(0.3)
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"))
+        pane.removeButtons[1].performClick(nil)
+        await soon("the engine's reason is shown") {
+            await pane.pending?.value
+            return !pane.messageLabel.stringValue.isEmpty
+        }
+        XCTAssertEqual(pane.messageLabel.stringValue, String(format: loc("settings.video.inUse"), "Side screen", "2"))
+        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1", "Side screen"])
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"))
+        let shown = await frameOn("V2")
+        XCTAssertEqual(shown, 0, "the picture stays up")
+    }
+
+    /// #813 M1: Show Mode, a Video cue playing → Workspace Settings > Video: another display chosen
+    /// for Output 1, a route added and a region's route changed each take effect at once (the
+    /// picture moves, the cue keeps running); Show Mode stays on, with no alert or sheet. Removing
+    /// the stage the cue plays on is refused as in S3.
+    func testM1InShowModeRouteAndRegionEditsMoveThePictureAndAPlayingStageIsNotRemoved() async throws {
+        try await openVideoShow()
+        await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
+        _ = await store.setStageDisplay(Self.stage, display: "V1")
+        click(Self.still)
+        try await go()
+        try await play(0.3)
+        var onV1 = await frameOn("V1")
+        XCTAssertEqual(onV1, 0, "the still on V1")
+        wc.setShowMode(true)
+        await soon("Show Mode") { self.store.showMode }
+        var alerts: [String] = []
+        wc.editor.notify = { alerts.append($0) }
+        let sc = await videoSettings()
+        let routing = sc.videoRoutingPane
+        await settledVideo(sc) { routing.displayPopups.count == 2 }
+        // Output 1 to V2: the picture moves.
+        choose("Virtual V2 (1280 × 720)", in: routing.displayPopups[0])
+        await settledVideo(sc) { routing.shown?.first?.display == "V2" }
+        await soon("the picture on V2") { await self.frameOn("V2") == 0 }
+        onV1 = await frameOn("V1")
+        XCTAssertNil(onV1, "V1 freed")
+        // A route added on V1.
+        choose("   Virtual V1 (1920 × 1080)", in: routing.addPopup)
+        await settledVideo(sc) { routing.shown?.count == 3 && routing.shown?.last?.display == "V1" }
+        XCTAssertEqual(routing.nameFields.last?.stringValue, "Output 3")
+        // Stage 1's region to the new route: the picture moves to V1.
+        let editor = sc.openStageEditor(Self.stage)
+        choose("Output 3", in: editor.regionRoutePopups[0])
+        await settledVideo(sc) { editor.regionRoutePopups[0].titleOfSelectedItem == "Output 3" }
+        await soon("the picture on V1") { await self.frameOn("V1") == 0 }
+        let onV2 = await frameOn("V2")
+        XCTAssertNil(onV2, "V2 freed")
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"), "the cue keeps running")
+        XCTAssertTrue(store.showMode, "Show Mode stays on")
+        XCTAssertNil(sc.window?.attachedSheet)
+        XCTAssertNil(wc.window?.attachedSheet)
+        XCTAssertEqual(alerts, [])
+        XCTAssertEqual(editor.messageLabel.stringValue, "")
+        // Removing the stage the cue plays on: refused, as in Edit Mode.
+        let pane = sc.videoPane
+        pane.removeButtons[0].performClick(nil)
+        await soon("the engine's reason is shown") {
+            await pane.pending?.value
+            return !pane.messageLabel.stringValue.isEmpty
+        }
+        XCTAssertEqual(pane.messageLabel.stringValue, String(format: loc("settings.video.inUse"), "Stage 1", "2"))
+        XCTAssertEqual(store.model?.stages.count, 2)
+        XCTAssertTrue(store.showMode)
+        XCTAssertNil(sc.window?.attachedSheet)
+    }
+
+    /// #813 U1: routes and regions edited one after another (add, rename, resize, rotate, scaling,
+    /// reorder, region size, position and route, remove) → each is one undo step named in the Edit
+    /// menu, and Redo applies it again. Undo during a cue moves the picture at once without
+    /// restarting the cue. A route's display choice is never an undo step.
+    func testU1EachRouteAndRegionEditIsOneNamedUndoStepAndUndoMovesThePictureWithoutRestartingTheCue()
+        async throws
+    {
+        try await openVideoShow()
+        await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
+        _ = await store.setStageDisplay(Self.stage, display: "V1")
+        _ = await store.setStageDisplay(Self.side, display: "V2")
+        click(Self.still)
+        try await go()
+        try await play(0.3)
+        let sc = await videoSettings()
+        app.keyWindow = { sc.window }
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let edit = try XCTUnwrap(MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.edit") })
+        let undoItem = try XCTUnwrap(edit.items.first { $0.action == #selector(AppDelegate.undoEdit(_:)) })
+        let redoItem = try XCTUnwrap(edit.items.first { $0.action == #selector(AppDelegate.redoEdit(_:)) })
+        func menuTitles() -> [String] {
+            _ = delegate.validateMenuItem(undoItem)
+            _ = delegate.validateMenuItem(redoItem)
+            return [undoItem.title, redoItem.title]
+        }
+        func named(_ step: String) -> String { String(format: loc("menu.edit.undoNamed"), loc("undo.step.\(step)")) }
+        func redoNamed(_ step: String) -> String { String(format: loc("menu.edit.redoNamed"), loc("undo.step.\(step)")) }
+        let routing = sc.videoRoutingPane
+        await settledVideo(sc) { routing.nameFields.count == 2 }
+        var steps: [String] = []
+        func expectStep(_ step: String, line: UInt = #line) async {
+            await soon("the Edit menu names \(step)", line: line) {
+                await self.sync()
+                return menuTitles()[0] == named(step)
+            }
+            steps.append(step)
+        }
+        choose(loc("settings.video.addRouteNone"), in: routing.addPopup)
+        await expectStep("add_route")
+        await settledVideo(sc) { routing.nameFields.count == 3 }
+        routing.nameFields[2].stringValue = "Cyc"
+        routing.controlTextDidEndEditing(
+            Notification(name: NSControl.textDidEndEditingNotification, object: routing.nameFields[2]))
+        await expectStep("rename_route")
+        await settledVideo(sc) { routing.shown?.last?.name == "Cyc" }
+        func editRoute(_ change: (RouteEditorController) -> Void) async throws {
+            routing.editButtons[2].performClick(nil)
+            let editor = try XCTUnwrap(sc.routeEditor)
+            change(editor)
+            editor.okButton.performClick(nil)
+            await editor.saving?.value
+        }
+        try await editRoute { $0.widthField.stringValue = "1280" }
+        await expectStep("resize_route")
+        try await editRoute { $0.rotationPopup.selectItem(withTitle: "90°") }
+        await expectStep("rotate_route")
+        await settledVideo(sc) { routing.scalingPopups.count == 3 }
+        choose(loc("settings.video.scaling.stretch"), in: routing.scalingPopups[2])
+        await expectStep("route_scaling")
+        routing.moveRoute(from: 2, toGap: 0)
+        await expectStep("move_route")
+        // The display choice is no step: the menu still names the reorder.
+        await settledVideo(sc) { routing.shown?.first?.name == "Cyc" }
+        choose("Virtual V2 (1280 × 720)", in: routing.displayPopups[0])
+        await settledVideo(sc) { routing.shown?.first?.display == "V2" }
+        XCTAssertEqual(menuTitles()[0], named("move_route"), "a display choice is not an undo step")
+        let editor = sc.openStageEditor(Self.stage)
+        app.keyWindow = { editor.window }
+        choose("On Output 1", in: editor.newRegionPopup)
+        await expectStep("add_region")
+        await settledVideo(sc) { editor.regionChips.count == 2 }
+        editor.regionWidthField.stringValue = "960"
+        editor.controlTextDidEndEditing(
+            Notification(name: NSControl.textDidEndEditingNotification, object: editor.regionWidthField))
+        await expectStep("resize_region")
+        await settledVideo(sc) { editor.regions.last?.bounds.width == 960 }
+        editor.lowerLeftXField.stringValue = "0"
+        editor.controlTextDidEndEditing(
+            Notification(name: NSControl.textDidEndEditingNotification, object: editor.lowerLeftXField))
+        await expectStep("move_region")
+        // Region A to the side screen's route (on V2): the picture moves there.
+        choose("Output 2", in: editor.regionRoutePopups[0])
+        await expectStep("region_route")
+        await soon("the picture on V2") { await self.frameOn("V2") == 0 }
+        editor.regionRemoveButtons[1].performClick(nil)
+        await expectStep("remove_region")
+        // Undone one by one: each names itself for redo; the region route's undo takes the
+        // picture off V2 at once and the new region's puts the whole card back on V1, the cue
+        // running on.
+        for step in steps.reversed() {
+            _ = await store.undo()
+            await soon("undone: redo names \(step)") {
+                await self.sync()
+                return menuTitles()[1] == redoNamed(step)
+            }
+            if step == "region_route" {
+                await soon("the picture leaves V2") { await self.frameOn("V2") == nil }
+            }
+            if step == "add_region" {
+                await soon("the whole card back on V1") { await self.frameOn("V1") == 0 }
+            }
+            XCTAssertEqual(status(Self.still), loc("cue.state.running"), "\(step): the cue runs on")
+        }
+        XCTAssertEqual(menuTitles(), [loc("menu.edit.undo"), redoNamed("add_route")], "nothing left to undo")
+        _ = await store.redo()
+        await soon("redone") {
+            await self.sync()
+            return menuTitles() == [named("add_route"), redoNamed("rename_route")]
+        }
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"))
     }
 }

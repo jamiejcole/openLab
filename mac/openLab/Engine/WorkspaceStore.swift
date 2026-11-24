@@ -524,7 +524,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .cueList(let id): m.cueLists.removeAll { $0.id == id }
             case .patch(let id): m.patches.removeAll { $0.id == id }
             case .networkPatch(let id): m.networkPatches.removeAll { $0.id == id }
-            case .stage(let id): m.stages.removeAll { $0.id == id }
+            case .stage(let id):
+                if let name = m.stages.first(where: { $0.id == id })?.raw["name"]?.stringValue {
+                    m.formerStageNames[id] = name
+                }
+                m.stages.removeAll { $0.id == id }
             case .route(let id): m.routes.removeAll { $0.id == id }
             case .unknown: return .gap
             }

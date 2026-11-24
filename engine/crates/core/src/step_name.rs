@@ -29,6 +29,8 @@ pub enum StepName {
     ResizeRoute,
     RotateRoute,
     RouteScaling,
+    /// Several properties of one route changed together (its editor's OK).
+    EditRoute,
     AddRegion,
     RemoveRegion,
     ResizeRegion,
@@ -81,6 +83,13 @@ pub fn step_name(command: &Command, workspace: &Workspace) -> Option<StepName> {
         // A transaction of one named command (as a client may send any edit) is named by it.
         Command::Transaction { commands } => match commands.as_slice() {
             [only] => return step_name(only, workspace),
+            [Command::SetRouteProperty { id: first, .. }, rest @ ..]
+                if rest
+                    .iter()
+                    .all(|c| matches!(c, Command::SetRouteProperty { id, .. } if id == first)) =>
+            {
+                StepName::EditRoute
+            }
             _ => return None,
         },
         _ => return None,

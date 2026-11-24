@@ -110,7 +110,7 @@ enum ProblemText {
         return out
     }
 
-    private static let idKeys: Set<String> = ["cue", "target", "patch", "list"]
+    private static let idKeys: Set<String> = ["cue", "target", "patch", "list", "stage"]
 
     /// Notice codes whose engine text quotes cue, list, patch or stage ids: the show file's repairs.
     static let idQuotingNotices: Set<String> = ["load_repair"]
@@ -379,6 +379,7 @@ enum WarningRows {
             if let name = patches.first(where: { $0.id == id })?.raw["name"]?.stringValue { return name }
             if let list = model?.cueLists.first(where: { $0.id == id }) { return list.name }
             if let stage = model?.stages.first(where: { $0.id == id })?.raw["name"]?.stringValue { return stage }
+            if let stage = model?.formerStageNames[id] { return stage }
             // Never the id itself: it means nothing to the operator.
             return loc("warnings.unknownItem")
         }

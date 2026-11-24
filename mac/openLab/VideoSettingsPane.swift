@@ -4,32 +4,37 @@ import AppKit
 import Combine
 
 /// One stage as the Video Outputs page lists it, or one output route as the Output Routing page
-/// does (its keep-black and layer then unused).
+/// does.
 struct StageRow: Equatable {
     var id: ModelID
     var name: String
     var width: Int
     var height: Int
-    var keepBlack: Bool
-    var layer: Int
+    /// A stage's: the displays it reaches through its regions' routes, in route order.
+    var devices: [String] = []
+    /// A route's scaling (`centre`, `fit`, `stretch`, `fill`).
+    var scaling: String = "fill"
     /// A route's display chosen on this machine (an id `list_displays` gives), and its name then.
     var display: String?
     var displayName: String?
-    /// Why a route cannot be seen now, in words; nil when it is shown or shows nothing between
-    /// cues.
+    /// Why the row's route (or every route of the stage) cannot be seen now, in words; nil when
+    /// it is shown or shows nothing between cues.
     var warning: String?
 }
 
-/// The Video pages of the workspace settings (VID-01, VID-12; QLab 5 manual pp. 225-227), one
+/// The Video pages of the workspace settings (VID-01, VID-12; QLab 5 manual pp. 225-234), one
 /// `VideoSettingsPane` per section as QLab 5 splits them (UI map `settings.video.*`), only for what
 /// openLab has:
-/// - Video Outputs: the workspace's stages, one row each with its name and pixel size (typed in
-///   place), whether black stays up between cues, its layer, a button that opens its monitor
-///   window (a live copy of the stage, QLab 5 manual p. 157) and a remove button; and a button that
-///   adds one.
-/// - Output Routing: the workspace's output routes, one row each with its name, its size and the
-///   display it is shown on on this machine (QLab 5 manual p. 232); a route that cannot be seen
-///   says why in its row.
+/// - Video Outputs: the workspace's stages, one row each with its name (typed in place), its pixel
+///   size, the displays it reaches through its regions' output routes, and buttons that open its
+///   editor (`StageEditorWindowController`) and its monitor window (a live copy of the stage, QLab 5
+///   manual p. 157) and remove it; above them a pop-up that adds an empty stage or one on a route.
+/// - Output Routing: the workspace's output routes, one row each with a handle that drags it to
+///   another place, its name (typed in place), its size, the display it is shown on on this machine
+///   (QLab 5 manual p. 232), its scaling, a button that opens its editor (`RouteEditorController`)
+///   and one that removes it; a route that cannot be seen says why under its row. Above them a
+///   pop-up that adds a route (on a display, or on none) and a button that opens the Mac's
+///   Displays settings.
 /// - Output Devices: the displays this computer has, one row each: Device N, its name, its size in
 ///   pixels and its refresh rate.
 /// Every control sends its edit to the engine and a page is drawn from what the engine then holds
@@ -42,16 +47,18 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// A column of a section's table.
     enum Col: Equatable {
-        case name, size, display, black, layer, monitor, remove, device, resolution, rate
+        case handle, name, size, display, scaling, devices, edit, monitor, remove, device, resolution, rate
 
         /// The key of its title (`settings.video.col.<key>`).
         var key: String {
             switch self {
+            case .handle: return "handle"
             case .name: return "name"
             case .size: return "size"
             case .display: return "display"
-            case .black: return "black"
-            case .layer: return "layer"
+            case .scaling: return "scaling"
+            case .devices: return "devices"
+            case .edit: return "edit"
             case .monitor: return "monitor"
             case .remove: return "remove"
             case .device: return "device"
@@ -62,11 +69,13 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
         var width: CGFloat {
             switch self {
+            case .handle: return 12
             case .name: return 90
-            case .size: return VideoSettingsPane.sizeWidth
+            case .size: return 72
             case .display: return VideoSettingsPane.leastDisplayWidth
-            case .black: return 32
-            case .layer: return 30
+            case .scaling: return 62
+            case .devices: return VideoSettingsPane.leastDisplayWidth
+            case .edit: return 34
             case .monitor: return VideoSettingsPane.monitorWidth
             case .remove: return 16
             case .device: return 70
@@ -76,10 +85,16 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         }
     }
 
+    /// A route's scalings, in the order its pop-ups list them (QLab 5 manual p. 233).
+    static let scalings = ["centre", "fit", "stretch", "fill"]
+
     let section: Section
     let store: WorkspaceStore
-    let view: NSStackView
-    let addButton = NSButton(title: loc("settings.video.add"), target: nil, action: nil)
+    let view: PageStack
+    /// Adds a stage (empty, or on a route) or a route (on a display, or on none).
+    let addPopup = NSPopUpButton(frame: .zero, pullsDown: true)
+    /// Output Routing: opens the Mac's Displays settings.
+    let displaysButton = NSButton(title: loc("settings.video.displaysButton"), target: nil, action: nil)
     /// The table, built afresh on each draw: an `NSGridView` cannot remove a row holding merged
     /// cells (a warning line), so rows are never removed from it.
     private(set) var grid = NSGridView()
@@ -87,42 +102,59 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     let header: NSGridView
     let holder = FlippedView()
     let scroll = NSScrollView()
-    /// The display and name columns' widths: what the table's width leaves after the other
-    /// columns goes to the display choice first, then to the name.
+    /// The flexible columns' widths: what the table's width leaves after the other columns goes
+    /// to the display (or devices) column first, then to the name.
     private(set) var displayWidth: CGFloat = VideoSettingsPane.leastDisplayWidth
     private(set) var nameWidth: CGFloat = Col.name.width
-    private var popupWidths: [NSLayoutConstraint] = []
-    private var nameWidths: [NSLayoutConstraint] = []
+    private var wideWidths: [NSLayoutConstraint] = []
+    /// Each name cell's width constraint and what the cell holds beside it (a route's icon).
+    private var nameWidths: [(NSLayoutConstraint, CGFloat)] = []
     /// Counts edits tried, so an older edit's answer does not overwrite a newer one's reason.
     private var attempt = 0
     let emptyLabel: NSTextField
     let noVideoLabel = NSTextField(wrappingLabelWithString: loc("settings.video.noVideo"))
     let messageLabel = NSTextField(wrappingLabelWithString: "")
-    /// The rows as last drawn; the controls find their stage here by their tag.
+    /// The rows as last drawn; the controls find their stage or route here by their tag.
     private(set) var shown: [StageRow]?
     private(set) var displays: [StageDisplay] = []
+    /// The add pop-up's items as last drawn.
+    private var shownAddItems: [String] = []
     private(set) var nameFields: [NSTextField] = []
-    private(set) var layerFields: [NSTextField] = []
-    private(set) var widthFields: [NSTextField] = []
-    private(set) var heightFields: [NSTextField] = []
+    private(set) var sizeLabels: [NSTextField] = []
+    private(set) var deviceCells: [NSTextField] = []
     private(set) var displayPopups: [NSPopUpButton] = []
-    private(set) var blackBoxes: [NSButton] = []
+    private(set) var scalingPopups: [NSPopUpButton] = []
+    private(set) var handles: [RowHandle] = []
+    private(set) var editButtons: [NSButton] = []
     private(set) var monitorButtons: [NSButton] = []
     private(set) var removeButtons: [NSButton] = []
     private(set) var warningLabels: [NSTextField] = []
     /// The Output Devices rows: each display's number, name, size and refresh rate.
     private(set) var deviceLabels: [[NSTextField]] = []
+    /// The line drawn where a dragged route would go.
+    let dropLine = NSBox()
     private var subs: [AnyCancellable] = []
     /// Edits on their way to the engine, one after another.
     private var commits: Task<Void, Never>?
 
+    /// Opens a stage's or a route's editor (the settings window owns them).
+    var onEditStage: ((ModelID) -> Void)?
+    var onEditRoute: ((ModelID) -> Void)?
+    /// Opens a URL outside the app (the Displays settings); tests give their own.
+    var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// Opens the add pop-up's menu, as Command-N on the page does (tests give their own: a menu
+    /// opened by code waits for real input).
+    var openAddMenu: ((NSPopUpButton) -> Void)?
+
     static let id = "settings-video"
+    /// macOS's Displays settings.
+    static let displaysSettings = URL(string: "x-apple.systempreferences:com.apple.preference.displays")
 
     /// The columns of `section`'s table, left to right.
     static func columns(of section: Section) -> [Col] {
         switch section {
-        case .outputs: return [.name, .size, .black, .layer, .monitor, .remove]
-        case .routing: return [.name, .size, .display]
+        case .outputs: return [.name, .size, .devices, .edit, .monitor, .remove]
+        case .routing: return [.handle, .name, .size, .display, .scaling, .edit, .remove]
         case .devices: return [.device, .name, .resolution, .rate]
         }
     }
@@ -132,7 +164,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     init(store: WorkspaceStore, section: Section = .outputs) {
         self.store = store
         self.section = section
-        view = NSStackView()
+        view = PageStack()
         header = Self.makeGrid(rows: false, cols: Self.columns(of: section))
         emptyLabel = NSTextField(
             labelWithString: loc(
@@ -160,26 +192,41 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// The monitor button's column.
     nonisolated static let monitorWidth: CGFloat = 56
-    /// A width or height field: five digits.
-    nonisolated static let sideWidth: CGFloat = 40
-    /// The pixels column: width, "×", height.
-    nonisolated static let sizeWidth: CGFloat = 2 * sideWidth + 14
     nonisolated static let leastDisplayWidth: CGFloat = 120
     static let mostDisplayWidth: CGFloat = 260
-    static let columnSpacing: CGFloat = 6
+    static let columnSpacing: CGFloat = 5
     /// Between the table's edge and its rows.
     static let inset: CGFloat = 6
+    /// A route's icon and the gap after it, in its name cell.
+    static let iconRoom: CGFloat = 20
 
     private func build() {
-        addButton.setAX(Self.id + "-add", label: loc("settings.video.add"))
-        addButton.bezelStyle = .rounded
-        addButton.target = self
-        addButton.action = #selector(addClicked)
+        addPopup.setAX(Self.id + "-add", label: loc(section == .routing ? "settings.video.newRoute" : "settings.video.add"))
+        addPopup.controlSize = .small
+        addPopup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        addPopup.target = self
+        addPopup.action = #selector(addChosen(_:))
+        addPopup.setContentHuggingPriority(.required, for: .horizontal)
+        displaysButton.setAX(Self.id + "-displays-settings")
+        displaysButton.controlSize = .small
+        displaysButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        displaysButton.bezelStyle = .rounded
+        displaysButton.toolTip = loc("settings.video.displaysButton.tip")
+        displaysButton.target = self
+        displaysButton.action = #selector(displaysClicked)
         let note = NSTextField(wrappingLabelWithString: loc("settings.video.note.\(noteKey)"))
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
         note.preferredMaxLayoutWidth = 320
-        let top = NSStackView(views: section == .outputs ? [addButton, note] : [note])
+        note.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        note.setAX("\(Self.id)-\(noteKey)-note")
+        var topViews: [NSView] = section == .devices ? [note] : [addPopup, note]
+        if section == .routing {
+            let spring = NSView()
+            spring.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            topViews += [spring, displaysButton]
+        }
+        let top = NSStackView(views: topViews)
         top.orientation = .horizontal
         top.spacing = 12
         noVideoLabel.textColor = .systemOrange
@@ -197,6 +244,10 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         holder.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = holder
         install(Self.makeGrid(rows: true, cols: cols))
+        dropLine.boxType = .custom
+        dropLine.fillColor = .controlAccentColor
+        dropLine.borderWidth = 0
+        dropLine.isHidden = true
         NSLayoutConstraint.activate([
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
@@ -227,7 +278,16 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         // The table takes the page's width; the display column takes what the others leave.
         scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
         titles.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
+        top.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
         view.setAX(section == .outputs ? Self.id : "\(Self.id)-\(noteKey)")
+        // Command-N on the page opens its add pop-up (QLab 5 manual pp. 226, 233).
+        if section != .devices {
+            view.onCommandN = { [weak self] in
+                guard let self, self.addPopup.isEnabled else { return false }
+                if let open = self.openAddMenu { open(self.addPopup) } else { self.addPopup.performClick(nil) }
+                return true
+            }
+        }
     }
 
     /// The section's name in identifiers and the key of its note.
@@ -256,18 +316,22 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         grid.columnSpacing = columnSpacing
         for (c, col) in cols.enumerated() {
             grid.column(at: c).width = col.width
-            if col == .black || col == .monitor || col == .remove { grid.column(at: c).xPlacement = .center }
+            if [.edit, .monitor, .remove, .handle].contains(col) { grid.column(at: c).xPlacement = .center }
         }
         grid.yPlacement = .center
         return grid
     }
 
-    /// The table's second flexible column after the name: the display choice.
-    private var wideIndex: Int? { cols.firstIndex { $0 == .display } }
+    /// The table's second flexible column after the name: the display choice, or the displays a
+    /// stage reaches.
+    private var wideIndex: Int? { cols.firstIndex { $0 == .display || $0 == .devices } }
 
-    /// The name's column: the table's first flexible one (a devices table leads with the device's
-    /// number).
+    /// The name's column: the table's first flexible one.
     private var nameIndex: Int { cols.firstIndex { $0 == .name } ?? 0 }
+
+    /// The name column's least width: a route's (icon and a short name) gives up a little to the
+    /// display beside it, so a display's name reads whole at the window's least size.
+    private var leastName: CGFloat { section == .routing ? 74 : Col.name.width }
 
     /// Shares what the table's width leaves after the fixed columns: the display column first
     /// (so a display's name and "not connected" read whole), then the name, in the titles and the
@@ -283,12 +347,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         let display: CGFloat
         let name: CGFloat
         if wide != nil {
-            display = min(Self.mostDisplayWidth, max(Self.leastDisplayWidth, spare - Col.name.width))
+            display = min(Self.mostDisplayWidth, max(Self.leastDisplayWidth, spare - leastName))
             // The name takes all the rest, so a wide window shows a long name whole.
-            name = max(Col.name.width, spare - display)
+            name = max(leastName, spare - display)
         } else {
             display = Self.leastDisplayWidth
-            name = max(Col.name.width, spare)
+            name = max(leastName, spare)
         }
         displayWidth = display
         nameWidth = name
@@ -296,8 +360,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             g.column(at: nameIndex).width = name
             if let wide { g.column(at: wide).width = display }
         }
-        for c in popupWidths { c.constant = display }
-        for c in nameWidths { c.constant = name }
+        for c in wideWidths { c.constant = display }
+        for (c, beside) in nameWidths { c.constant = name - beside }
     }
 
     /// Puts `new` in the old table's place (the old one goes with every view it holds).
@@ -305,7 +369,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         grid.removeFromSuperview()
         grid = new
         new.translatesAutoresizingMaskIntoConstraints = false
-        holder.addSubview(new)
+        holder.addSubview(new, positioned: .below, relativeTo: nil)
         NSLayoutConstraint.activate([
             new.topAnchor.constraint(equalTo: holder.topAnchor, constant: Self.inset),
             new.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: Self.inset),
@@ -321,27 +385,52 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     // MARK: Drawing
 
     /// The stages (Video Outputs) or routes (Output Routing) as the engine has them, a route with
-    /// its display on this machine and its state.
+    /// its display on this machine and its state, a stage with the displays it reaches.
     func rows() -> [StageRow] {
         let outputs = store.videoOutputs
+        let routes = store.model?.routes ?? []
         if section == .routing {
-            return (store.model?.routes ?? []).map { r in
+            return routes.map { r in
                 let entry = outputs.route(r.id)
                 return StageRow(
                     id: r.id, name: r.raw["name"]?.stringValue ?? "", width: Int(r.raw["width"]?.doubleValue ?? 0),
-                    height: Int(r.raw["height"]?.doubleValue ?? 0), keepBlack: false, layer: 0,
+                    height: Int(r.raw["height"]?.doubleValue ?? 0),
+                    scaling: r.raw["scaling"]?.stringValue ?? "fill",
                     display: entry?.mapping?.display, displayName: entry?.mapping?.name,
-                    warning: entry?.state.flatMap(Self.warning))
+                    // With no stage host to report a state (no video output here), a route with no
+                    // display still says so.
+                    warning: entry?.state.flatMap(Self.warning)
+                        ?? (entry != nil && entry?.mapping == nil ? loc("settings.video.warn.noDisplay") : nil))
             }
         }
         return (store.model?.stages ?? []).map { s in
             let raw = s.raw
-            let name = raw["name"]?.stringValue ?? ""
+            let devices = Self.devices(of: s, routes: routes, outputs: outputs)
             return StageRow(
-                id: s.id, name: name, width: Int(raw["width"]?.doubleValue ?? 0),
-                height: Int(raw["height"]?.doubleValue ?? 0), keepBlack: raw["keep_black"] == .bool(true),
-                layer: Int(raw["layer"]?.doubleValue ?? 1))
+                id: s.id, name: raw["name"]?.stringValue ?? "", width: Int(raw["width"]?.doubleValue ?? 0),
+                height: Int(raw["height"]?.doubleValue ?? 0), devices: devices,
+                warning: devices.isEmpty ? loc("settings.video.warn.stageNoDisplay") : nil)
         }
+    }
+
+    /// The displays `stage` reaches through its regions' routes on this machine, in route order,
+    /// each once: a display not connected now is named as missing.
+    static func devices(of stage: ModelObject, routes: [ModelObject], outputs: VideoOutputs) -> [String] {
+        let used = Set(
+            (stage.raw["regions"]?.arrayValue ?? []).compactMap { $0["route"]?.stringValue })
+        var names: [String] = []
+        var seen: Set<String> = []
+        for route in routes where used.contains(route.id.raw) {
+            guard let mapping = outputs.route(route.id)?.mapping, seen.insert(mapping.display).inserted else {
+                continue
+            }
+            if let d = outputs.displays.first(where: { $0.id == mapping.display }) {
+                names.append(d.name)
+            } else {
+                names.append(String(format: loc("settings.video.displayAbsent"), mapping.name))
+            }
+        }
+        return names
     }
 
     /// What a route's state says to the operator; nil for a route that is fine.
@@ -358,14 +447,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.render() } }
     }
 
-    /// Every field typed in: names, sizes and layers.
-    private var textFields: [NSTextField] { nameFields + widthFields + heightFields + layerFields }
+    /// Every field typed in.
+    private var textFields: [NSTextField] { nameFields }
 
-    /// Whether a name, size or layer is being typed in.
+    /// Whether a name is being typed in.
     var typing: Bool { textFields.contains { $0.currentEditor() != nil } }
 
-    /// Ends the typing in a name or layer field, which commits it (before what the operator
-    /// clicked next). True when typing ended: that edit's reason, if refused, must stand.
+    /// Ends the typing in a name field, which commits it (before what the operator clicked next).
+    /// True when typing ended: that edit's reason, if refused, must stand.
     @discardableResult
     private func endTyping() -> Bool {
         guard typing else { return false }
@@ -373,14 +462,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         return true
     }
 
-    /// Draws the page: always what the workspace and the engine hold now, while a name or layer
-    /// is typed in too. That field is drawn again with what was typed and the caret where it was
-    /// (unless its stage is gone); nothing typed is committed by the redraw.
+    /// Draws the page: always what the workspace and the engine hold now, while a name is typed
+    /// in too. That field is drawn again with what was typed and the caret where it was (unless
+    /// its row is gone); nothing typed is committed by the redraw.
     func render(forced: Bool = false) {
         let rows = rows()
         let list = store.videoOutputs.displays
         let enabled = store.model != nil
-        addButton.isEnabled = enabled
+        renderAddPopup(enabled: enabled, displays: list)
         noVideoLabel.isHidden = store.videoOutputs.video != false
         emptyLabel.isHidden = section == .devices ? !list.isEmpty : !rows.isEmpty
         if !forced, shown == rows, displays == list { return }
@@ -389,16 +478,17 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         for field in textFields { field.delegate = nil }
         shown = rows
         displays = list
-        popupWidths = []
+        wideWidths = []
         nameWidths = []
         let grid = Self.makeGrid(rows: true, cols: cols)
         deviceLabels = []
         nameFields = []
-        widthFields = []
-        heightFields = []
-        layerFields = []
+        sizeLabels = []
+        deviceCells = []
         displayPopups = []
-        blackBoxes = []
+        scalingPopups = []
+        handles = []
+        editButtons = []
         monitorButtons = []
         removeButtons = []
         warningLabels = []
@@ -417,8 +507,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             for (i, d) in list.enumerated() {
                 let texts = Self.deviceTexts(number: i + 1, display: d)
                 let number = Self.cellLabel(texts[0], key: "number", n: i + 1)
-                let name = Self.cellLabel(texts[1], key: "name", n: i + 1, width: nameWidth)
-                nameWidths.append(contentsOf: Self.widthConstraints(of: name))
+                let name = Self.cellLabel(texts[1], key: "name", n: i + 1)
+                nameWidths.append((Self.widthConstraint(of: name, nameWidth), 0))
                 let size = Self.cellLabel(texts[2], key: "resolution", n: i + 1)
                 let rate = Self.cellLabel(texts[3], key: "rate", n: i + 1)
                 grid.addRow(with: [number, name, size, rate])
@@ -427,72 +517,16 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         }
         for (i, row) in (section == .devices ? [] : rows).enumerated() {
             let n = i + 1
-            if section == .routing {
-                let name = Self.cellLabel(row.name, key: "name", n: n, width: nameWidth)
-                nameWidths.append(contentsOf: Self.widthConstraints(of: name))
-                let size = Self.cellLabel(
-                    String(format: loc("settings.video.resolution"), String(row.width), String(row.height)),
-                    key: "size", n: n)
-                let popup = displayPopup(row, tag: i, enabled: enabled)
-                popup.setAX("\(Self.id)-display-\(n)", label: "\(row.name), \(loc("settings.video.col.display"))")
-                grid.addRow(with: [name, size, popup])
-                displayPopups.append(popup)
-                addWarning(row, n)
-                continue
-            }
-            let name = NSTextField(string: row.name)
-            name.controlSize = .small
-            name.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            name.usesSingleLineMode = true
-            name.lineBreakMode = .byTruncatingTail
-            name.cell?.truncatesLastVisibleLine = true
-            name.toolTip = row.name
-            name.isEditable = enabled
-            name.delegate = self
-            name.tag = i
-            name.identifier = NSUserInterfaceItemIdentifier("name")
-            let nameWidth = name.widthAnchor.constraint(equalToConstant: self.nameWidth)
-            nameWidth.isActive = true
-            nameWidths.append(nameWidth)
-            name.setAX("\(Self.id)-name-\(n)", label: "\(row.name), \(loc("settings.video.col.name"))")
-            let width = sideField(row.width, kind: .width, tag: i, enabled: enabled)
-            width.setAX("\(Self.id)-width-\(n)", label: "\(row.name), \(loc("settings.video.width"))")
-            let height = sideField(row.height, kind: .height, tag: i, enabled: enabled)
-            height.setAX("\(Self.id)-height-\(n)", label: "\(row.name), \(loc("settings.video.height"))")
-            let by = NSTextField(labelWithString: "×")
-            by.font = .systemFont(ofSize: 11)
-            by.textColor = .secondaryLabelColor
-            let size = NSStackView(views: [width, by, height])
-            size.orientation = .horizontal
-            size.spacing = 2
-            size.setAX("\(Self.id)-size-\(n)")
-            widthFields.append(width)
-            heightFields.append(height)
-            let black = NSButton(checkboxWithTitle: "", target: self, action: #selector(blackClicked(_:)))
-            black.controlSize = .small
-            black.state = row.keepBlack ? .on : .off
-            black.tag = i
-            black.isEnabled = enabled
-            black.setAX("\(Self.id)-black-\(n)", label: "\(row.name), \(loc("settings.video.black"))")
-            let layer = NSTextField(string: String(row.layer))
-            layer.controlSize = .small
-            layer.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-            layer.isEditable = enabled
-            layer.alignment = .right
-            layer.delegate = self
-            layer.tag = i
-            layer.identifier = NSUserInterfaceItemIdentifier("layer")
-            layer.widthAnchor.constraint(equalToConstant: Col.layer.width).isActive = true
-            layer.setAX("\(Self.id)-layer-\(n)", label: "\(row.name), \(loc("settings.video.col.layer"))")
-            let monitor = NSButton(
-                title: loc("settings.video.monitor"), target: self, action: #selector(monitorClicked(_:)))
-            monitor.controlSize = .small
-            monitor.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            monitor.bezelStyle = .rounded
-            monitor.tag = i
-            monitor.isEnabled = enabled && store.videoOutputs.video != false
-            monitor.toolTip = loc("settings.video.monitor.tip")
-            monitor.setAX("\(Self.id)-monitor-\(n)", label: "\(row.name), \(loc("settings.video.monitor.ax"))")
+            let name = nameField(row, tag: i, enabled: enabled)
+            let size = Self.cellLabel(
+                String(format: loc("settings.video.resolution"), String(row.width), String(row.height)),
+                key: "size", n: n)
+            sizeLabels.append(size)
+            let edit = smallButton(loc("settings.video.edit"), action: #selector(editClicked(_:)), tag: i)
+            edit.isEnabled = enabled
+            edit.setAX("\(Self.id)-edit-\(n)", label: String(format: loc("settings.video.edit.ax"), row.name))
+            edit.toolTip = String(format: loc("settings.video.edit.ax"), row.name)
+            editButtons.append(edit)
             let remove = NSButton(title: "", target: self, action: #selector(removeClicked(_:)))
             remove.image = Icon.fieldClear.image(loc("settings.video.remove"), compact: true)
             remove.isBordered = false
@@ -500,31 +534,143 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             remove.tag = i
             remove.isEnabled = enabled
             remove.setAX("\(Self.id)-remove-\(n)", label: "\(loc("settings.video.remove")) \(row.name)")
-            grid.addRow(with: [name, size, black, layer, monitor, remove])
-            nameFields.append(name)
-            layerFields.append(layer)
-            blackBoxes.append(black)
-            monitorButtons.append(monitor)
             removeButtons.append(remove)
+            if section == .routing {
+                let handle = RowHandle()
+                handle.tag = i
+                handle.isEnabled = enabled
+                handle.setAX("\(Self.id)-handle-\(n)", label: String(format: loc("settings.video.handle.ax"), row.name))
+                handle.onDrag = { [weak self] handle, point in self?.dragged(handle, to: point) }
+                handle.onDrop = { [weak self] handle, point in self?.dropped(handle, at: point) }
+                handles.append(handle)
+                let icon = NSImageView(image: Icon.videoRoute.image(loc("settings.video.routeIcon")))
+                icon.contentTintColor = .secondaryLabelColor
+                icon.setContentHuggingPriority(.required, for: .horizontal)
+                let cell = NSStackView(views: [icon, name])
+                cell.orientation = .horizontal
+                cell.spacing = Self.iconRoom - 16
+                nameWidths.append((Self.widthConstraint(of: name, nameWidth - Self.iconRoom), Self.iconRoom))
+                let popup = displayPopup(row, tag: i, enabled: enabled)
+                popup.setAX("\(Self.id)-display-\(n)", label: "\(row.name), \(loc("settings.video.col.display"))")
+                displayPopups.append(popup)
+                let scaling = scalingPopup(row, tag: i, enabled: enabled)
+                scaling.setAX("\(Self.id)-scaling-\(n)", label: "\(row.name), \(loc("settings.video.col.scaling"))")
+                scalingPopups.append(scaling)
+                grid.addRow(with: [handle, cell, size, popup, scaling, edit, remove])
+            } else {
+                nameWidths.append((Self.widthConstraint(of: name, nameWidth), 0))
+                let devices = Self.cellLabel(row.devices.joined(separator: ", "), key: "devices", n: n)
+                wideWidths.append(Self.widthConstraint(of: devices, displayWidth))
+                deviceCells.append(devices)
+                let monitor = smallButton(loc("settings.video.monitor"), action: #selector(monitorClicked(_:)), tag: i)
+                monitor.isEnabled = enabled && store.videoOutputs.video != false
+                monitor.toolTip = loc("settings.video.monitor.tip")
+                monitor.setAX("\(Self.id)-monitor-\(n)", label: "\(row.name), \(loc("settings.video.monitor.ax"))")
+                monitorButtons.append(monitor)
+                grid.addRow(with: [name, size, devices, edit, monitor, remove])
+            }
+            nameFields.append(name)
+            addWarning(row, n)
         }
         install(grid)
+        if section == .routing { holder.addSubview(dropLine) }
+        dropLine.isHidden = true
         fitColumns()
         grid.layoutSubtreeIfNeeded()
         if let resume { self.resume(resume) }
     }
 
+    /// The add pop-up's items: an empty stage and a stage on each route (Video Outputs), or a
+    /// route on each display and one on none (Output Routing). Rebuilt only when they change, so
+    /// an open menu is not pulled from under the operator.
+    private func renderAddPopup(enabled: Bool, displays: [StageDisplay]) {
+        addPopup.isEnabled = enabled
+        guard section != .devices else { return }
+        var items: [(String, String?, Bool)] = []  // title, represented object, enabled
+        if section == .outputs {
+            items.append((loc("settings.video.addEmpty"), "", true))
+            let routes = store.model?.routes ?? []
+            if !routes.isEmpty { items.append(("-", nil, false)) }
+            for r in routes {
+                items.append(
+                    (String(format: loc("settings.video.addOnRoute"), r.raw["name"]?.stringValue ?? ""), r.id.raw, true))
+            }
+        } else {
+            if !displays.isEmpty { items.append((loc("settings.video.addRouteWith"), nil, false)) }
+            for d in displays {
+                items.append(
+                    (
+                        "   " + String(format: loc("settings.video.displayItem"), d.name, d.width, d.height), d.id,
+                        true
+                    ))
+            }
+            if !displays.isEmpty { items.append(("-", nil, false)) }
+            items.append((loc("settings.video.addRouteNone"), "", true))
+        }
+        let key = items.map { "\($0.0)\u{0}\($0.1 ?? "\u{1}")" }
+        guard key != shownAddItems else { return }
+        shownAddItems = key
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let title = NSMenuItem(
+            title: loc(section == .routing ? "settings.video.newRoute" : "settings.video.add"), action: nil,
+            keyEquivalent: "")
+        menu.addItem(title)
+        for (text, object, on) in items {
+            if text == "-" {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+            item.representedObject = object
+            item.isEnabled = on
+            menu.addItem(item)
+        }
+        addPopup.menu = menu
+    }
+
+    /// A name typed in place.
+    private func nameField(_ row: StageRow, tag: Int, enabled: Bool) -> NSTextField {
+        let name = NSTextField(string: row.name)
+        name.controlSize = .small
+        name.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        name.usesSingleLineMode = true
+        name.lineBreakMode = .byTruncatingTail
+        name.cell?.truncatesLastVisibleLine = true
+        name.toolTip = row.name
+        name.isEditable = enabled
+        name.delegate = self
+        name.tag = tag
+        name.identifier = NSUserInterfaceItemIdentifier(TypedField.name.rawValue)
+        name.setAX("\(Self.id)-name-\(tag + 1)", label: "\(row.name), \(loc("settings.video.col.name"))")
+        return name
+    }
+
+    private func smallButton(_ title: String, action: Selector, tag: Int) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        button.bezelStyle = .rounded
+        button.tag = tag
+        return button
+    }
+
     /// A read-only cell: one line, cut at the end, its whole text in the tooltip.
-    private static func cellLabel(_ text: String, key: String, n: Int, width: CGFloat? = nil) -> NSTextField {
+    private static func cellLabel(_ text: String, key: String, n: Int) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         label.lineBreakMode = .byTruncatingTail
         label.toolTip = text
         label.setAX("\(id)-\(key)-\(n)", label: text)
-        if let width {
-            label.translatesAutoresizingMaskIntoConstraints = false
-            label.widthAnchor.constraint(equalToConstant: width).isActive = true
-        }
         return label
+    }
+
+    /// Holds `view` at `width`, to move with the table's columns.
+    private static func widthConstraint(of view: NSView, _ width: CGFloat) -> NSLayoutConstraint {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        let c = view.widthAnchor.constraint(equalToConstant: width)
+        c.isActive = true
+        return c
     }
 
     /// What an Output Devices row shows for the display numbered `number`: "Device N:", its name,
@@ -538,51 +684,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         ]
     }
 
-    /// The width constraint `cellLabel` gave `label`, to move with the table's columns.
-    private static func widthConstraints(of label: NSTextField) -> [NSLayoutConstraint] {
-        label.constraints.filter { $0.firstAttribute == .width && $0.relation == .equal }
-    }
-
-    /// A width or height field of the size column.
-    private func sideField(_ value: Int, kind: TypedField, tag: Int, enabled: Bool) -> NSTextField {
-        let field = NSTextField(string: String(value))
-        field.controlSize = .small
-        field.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        field.isEditable = enabled
-        field.alignment = .right
-        field.delegate = self
-        field.tag = tag
-        field.identifier = NSUserInterfaceItemIdentifier(kind.rawValue)
-        field.widthAnchor.constraint(equalToConstant: Self.sideWidth).isActive = true
-        return field
-    }
-
     /// The fields typed in place, by their identifier.
-    enum TypedField: String { case name, width, height, layer }
+    enum TypedField: String { case name }
 
-    private func fields(_ kind: TypedField) -> [NSTextField] {
-        switch kind {
-        case .name: return nameFields
-        case .width: return widthFields
-        case .height: return heightFields
-        case .layer: return layerFields
-        }
-    }
-
-    /// What the workspace holds for `kind` of `row`, as its field shows it.
-    private static func text(_ kind: TypedField, _ row: StageRow) -> String {
-        switch kind {
-        case .name: return row.name
-        case .width: return String(row.width)
-        case .height: return String(row.height)
-        case .layer: return String(row.layer)
-        }
-    }
-
-    /// The field being typed in: its kind, its stage, the text so far and the selection.
+    /// The field being typed in: its row, the text so far and the selection.
     private struct Typed {
-        var kind: TypedField
-        var stage: ModelID
+        var row: ModelID
         var text: String?
         var selection: NSRange
     }
@@ -592,18 +699,17 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     /// workspace's value (an undo's, another client's), never a stale one a later click would send.
     private func typedIn() -> Typed? {
         guard let field = textFields.first(where: { $0.currentEditor() != nil }),
-            let editor = field.currentEditor(), let row = row(field.tag),
-            let kind = field.identifier.flatMap({ TypedField(rawValue: $0.rawValue) })
+            let editor = field.currentEditor(), let row = row(field.tag)
         else { return nil }
-        let typed = editor.string == Self.text(kind, row) ? nil : editor.string
-        return Typed(kind: kind, stage: row.id, text: typed, selection: editor.selectedRange)
+        let typed = editor.string == row.name ? nil : editor.string
+        return Typed(row: row.id, text: typed, selection: editor.selectedRange)
     }
 
-    /// Puts the caret back in the redrawn field of the stage that was being typed in, with what
+    /// Puts the caret back in the redrawn field of the row that was being typed in, with what
     /// was typed, or the workspace's value when nothing new was.
     private func resume(_ typed: Typed) {
-        guard let i = shown?.firstIndex(where: { $0.id == typed.stage }) else { return }
-        let field = fields(typed.kind)[i]
+        guard let i = shown?.firstIndex(where: { $0.id == typed.row }) else { return }
+        let field = nameFields[i]
         guard view.window?.makeFirstResponder(field) == true, let editor = field.currentEditor() else { return }
         let text = typed.text ?? field.stringValue
         editor.string = text
@@ -617,33 +723,111 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
         popup.controlSize = .small
         popup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        popup.addItem(withTitle: loc("settings.video.displayNone"))
-        popup.lastItem?.representedObject = nil
-        for d in displays {
-            popup.addItem(withTitle: String(format: loc("settings.video.displayItem"), d.name, d.width, d.height))
-            popup.lastItem?.representedObject = d.id
-        }
-        if let chosen = row.display {
-            if let i = displays.firstIndex(where: { $0.id == chosen }) {
-                popup.selectItem(at: i + 1)
-            } else {
-                popup.addItem(
-                    withTitle: String(format: loc("settings.video.displayAbsent"), row.displayName ?? chosen))
-                popup.lastItem?.representedObject = chosen
-                popup.selectItem(at: popup.numberOfItems - 1)
-            }
-        } else {
-            popup.selectItem(at: 0)
-        }
+        Self.fillDisplays(popup, displays: displays, chosen: row.display, chosenName: row.displayName)
         popup.tag = tag
         popup.target = self
         popup.action = #selector(displayChosen(_:))
         popup.isEnabled = enabled
         popup.toolTip = popup.titleOfSelectedItem
-        let width = popup.widthAnchor.constraint(equalToConstant: displayWidth)
-        width.isActive = true
-        popupWidths.append(width)
+        wideWidths.append(Self.widthConstraint(of: popup, displayWidth))
         return popup
+    }
+
+    /// Fills `popup` with "None", then `displays`, and chooses `chosen`; a chosen display that is
+    /// not connected stays listed, marked (the route editor's pop-up too).
+    static func fillDisplays(_ popup: NSPopUpButton, displays: [StageDisplay], chosen: String?, chosenName: String?) {
+        let menu = NSMenu()
+        let none = NSMenuItem(title: loc("settings.video.displayNone"), action: nil, keyEquivalent: "")
+        menu.addItem(none)
+        var selected = none
+        for d in displays {
+            let item = NSMenuItem(
+                title: String(format: loc("settings.video.displayItem"), d.name, d.width, d.height), action: nil,
+                keyEquivalent: "")
+            item.representedObject = d.id
+            menu.addItem(item)
+            if d.id == chosen { selected = item }
+        }
+        if let chosen, !displays.contains(where: { $0.id == chosen }) {
+            let item = NSMenuItem(
+                title: String(format: loc("settings.video.displayAbsent"), chosenName ?? chosen), action: nil,
+                keyEquivalent: "")
+            item.representedObject = chosen
+            menu.addItem(item)
+            selected = item
+        }
+        popup.menu = menu
+        popup.select(selected)
+    }
+
+    /// The route's scaling, chosen beside its display (QLab 5 manual p. 233).
+    private func scalingPopup(_ row: StageRow, tag: Int, enabled: Bool) -> NSPopUpButton {
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.controlSize = .small
+        popup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        Self.fillScalings(popup, chosen: row.scaling)
+        popup.tag = tag
+        popup.target = self
+        popup.action = #selector(scalingChosen(_:))
+        popup.isEnabled = enabled
+        popup.toolTip = loc("settings.video.scaling.tip")
+        _ = Self.widthConstraint(of: popup, Col.scaling.width)
+        return popup
+    }
+
+    /// Fills `popup` with the scalings and chooses `chosen`.
+    static func fillScalings(_ popup: NSPopUpButton, chosen: String) {
+        popup.removeAllItems()
+        for s in scalings {
+            popup.addItem(withTitle: loc("settings.video.scaling.\(s)"))
+            popup.lastItem?.representedObject = s
+        }
+        popup.selectItem(at: scalings.firstIndex(of: chosen) ?? 3)
+    }
+
+    // MARK: Dragging a route
+
+    /// The gap among the routes `point` (in the window) is nearest: 0 above the first, the count
+    /// below the last.
+    func gap(at point: NSPoint) -> Int {
+        let y = holder.convert(point, from: nil).y
+        return nameFields.filter { field in
+            let frame = field.convert(field.bounds, to: holder)
+            return frame.midY < y
+        }.count
+    }
+
+    /// Where the line for `gap` goes, in the table's view.
+    private func lineY(_ gap: Int) -> CGFloat {
+        guard !nameFields.isEmpty else { return Self.inset }
+        if gap < nameFields.count {
+            let f = nameFields[gap].convert(nameFields[gap].bounds, to: holder)
+            return f.minY - grid.rowSpacing / 2 - 1
+        }
+        let last = nameFields[nameFields.count - 1]
+        let f = last.convert(last.bounds, to: holder)
+        return f.maxY + grid.rowSpacing / 2 - 1
+    }
+
+    private func dragged(_ handle: RowHandle, to point: NSPoint) {
+        let y = lineY(gap(at: point))
+        dropLine.frame = NSRect(x: Self.inset, y: y, width: max(0, holder.bounds.width - 2 * Self.inset), height: 2)
+        dropLine.isHidden = false
+    }
+
+    private func dropped(_ handle: RowHandle, at point: NSPoint) {
+        dropLine.isHidden = true
+        moveRoute(from: handle.tag, toGap: gap(at: point))
+    }
+
+    /// Moves the route at `from` into `gap` (0 above the first route, the count below the last):
+    /// one undo step; nothing when it lands where it is.
+    func moveRoute(from: Int, toGap gap: Int) {
+        let typed = endTyping()
+        guard let row = row(from) else { return }
+        let index = gap > from ? gap - 1 : gap
+        guard index != from, let count = shown?.count, (0..<count).contains(index) else { return }
+        commit(row.id, after: typed) { [store] in await store.send(command: .moveRoute(row.id, to: index)) }
     }
 
     // MARK: Editing
@@ -660,13 +844,13 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         messageLabel.stringValue = reason
     }
 
-    /// Runs `edit` for `stage` after the edits before it, shows its refusal (or clears the last
+    /// Runs `edit` for `item` after the edits before it, shows its refusal (or clears the last
     /// one, unless a newer edit has said something since), and redraws from the engine.
-    /// A refused edit of a typed `field` puts its value back. `after` is
-    /// true for a click that ended typing: the typed edit's reason (shown now, or on its way from
-    /// the engine) is not cleared or outrun by the click's edit.
+    /// A refused edit of a typed name puts its value back. `after` is true for a click that ended
+    /// typing: the typed edit's reason (shown now, or on its way from the engine) is not cleared
+    /// or outrun by the click's edit.
     private func commit(
-        _ stage: ModelID?, field: TypedField? = nil, after typed: Bool = false,
+        _ item: ModelID?, typed field: Bool = false, after typed: Bool = false,
         _ edit: @escaping @MainActor () async -> Result<OkBody, EngineError>
     ) {
         if !typed { tell("") }
@@ -678,32 +862,31 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             guard let self else { return }
             await refresh()
             if case .failure(let e) = result {
-                if let stage, let field { putBack(stage, field) }
-                if mine == attempt { messageLabel.stringValue = reason(e, stage) }
+                if let item, field { putBack(item) }
+                if mine == attempt { messageLabel.stringValue = reason(e, item) }
             }
             render(forced: true)
         }
     }
 
-    /// Puts the stage's value of `kind` as the workspace has it back in its field (the one drawn
-    /// now), also while it is typed in.
-    private func putBack(_ stage: ModelID, _ kind: TypedField) {
-        guard let i = shown?.firstIndex(where: { $0.id == stage }), let row = rows().first(where: { $0.id == stage })
+    /// Puts the row's name as the workspace has it back in its field (the one drawn now), also
+    /// while it is typed in.
+    private func putBack(_ item: ModelID) {
+        guard let i = shown?.firstIndex(where: { $0.id == item }), let row = rows().first(where: { $0.id == item })
         else { return }
-        let field = fields(kind)[i]
-        let value = Self.text(kind, row)
-        field.stringValue = value
-        field.currentEditor()?.string = value
+        let field = nameFields[i]
+        field.stringValue = row.name
+        field.currentEditor()?.string = row.name
     }
 
     /// A refusal in words, never with an internal id: a stage or route gone since it was drawn
     /// says so.
-    private func reason(_ e: EngineError, _ stage: ModelID?) -> String {
+    private func reason(_ e: EngineError, _ item: ModelID?) -> String {
         let listed = section == .routing ? store.model?.routes : store.model?.stages
-        if let stage, listed?.contains(where: { $0.id == stage }) != true {
-            return loc("settings.video.gone")
+        if let item, listed?.contains(where: { $0.id == item }) != true {
+            return loc(section == .routing ? "settings.video.routeGone" : "settings.video.gone")
         }
-        if let stage, let cue = Self.cueUsing(e), let name = rows().first(where: { $0.id == stage })?.name {
+        if let item, let cue = Self.cueUsing(e), let name = rows().first(where: { $0.id == item })?.name {
             return String(format: loc("settings.video.inUse"), name, cue)
         }
         return e.detailText
@@ -721,36 +904,79 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     /// The edits still on their way (tests wait for them).
     var pending: Task<Void, Never>? { commits }
 
-    /// A new stage, 1920 x 1080, with one region covering it on the workspace's first output
-    /// route (none: no region, so it is drawn nowhere but its monitor).
-    @objc private func addClicked() {
+    /// "<format> N", N one past the highest such number `names` use (as the engine names a new
+    /// route, Q813).
+    static func nextName(_ format: String, after names: [String]) -> String {
+        let prefix = format.replacingOccurrences(of: "%d", with: "")
+        let highest = names.compactMap { name -> Int? in
+            guard name.hasPrefix(prefix) else { return nil }
+            return Int(name.dropFirst(prefix.count))
+        }.max() ?? 0
+        return String(format: format, highest + 1)
+    }
+
+    @objc private func addChosen(_ sender: NSPopUpButton) {
+        let object = sender.selectedItem?.representedObject as? String
         let typed = endTyping()
-        let count = store.model?.stages.count ?? 0
+        guard let object else { return }
+        if section == .routing {
+            addRoute(on: object.isEmpty ? nil : displays.first { $0.id == object }, after: typed)
+        } else {
+            addStage(on: object.isEmpty ? nil : ModelID(object), after: typed)
+        }
+    }
+
+    /// A new stage: 1920 x 1080 with no region (QLab 5 manual p. 226: an empty stage), or sized as
+    /// `route` with one region covering it sent there.
+    private func addStage(on route: ModelID?, after typed: Bool) {
+        let stages = store.model?.stages ?? []
         let id = ModelID(UUID().uuidString.lowercased())
-        let region = ModelID(UUID().uuidString.lowercased())
-        let route = store.model?.routes.first?.id
-        let name = String(format: loc("settings.video.newName"), count + 1)
+        let name = Self.nextName(
+            loc("settings.video.newName"), after: stages.map { $0.raw["name"]?.stringValue ?? "" })
+        let routeRow = route.flatMap { r in store.model?.routes.first { $0.id == r } }
+        let width = routeRow.map { Int($0.raw["width"]?.doubleValue ?? 1920) } ?? 1920
+        let height = routeRow.map { Int($0.raw["height"]?.doubleValue ?? 1080) } ?? 1080
+        let region = routeRow.map { _ in ModelID(UUID().uuidString.lowercased()) }
         commit(nil, after: typed) { [store] in
             await store.send(
                 command: .addStage(
-                    id: id, name: name, width: 1920, height: 1080, index: count, route: route, region: region))
+                    id: id, name: name, width: width, height: height, index: stages.count, route: routeRow?.id,
+                    region: region))
         }
+    }
+
+    /// A new route "Output N": sized as `display` and shown on it on this machine (QLab 5 manual
+    /// p. 233), or 1920 x 1080 on none. The display is this machine's choice, not an undo step.
+    private func addRoute(on display: StageDisplay?, after typed: Bool) {
+        let routes = store.model?.routes ?? []
+        let id = ModelID(UUID().uuidString.lowercased())
+        let name = Self.nextName(
+            loc("settings.video.routeName"), after: routes.map { $0.raw["name"]?.stringValue ?? "" })
+        commit(nil, after: typed) { [store] in
+            let added = await store.send(
+                command: .addRoute(
+                    id: id, name: name, width: display.map { Int($0.width) } ?? 1920, height: display.map { Int($0.height) } ?? 1080,
+                    index: routes.count))
+            guard case .success = added, let display else { return added }
+            return await store.setRouteDisplay(id, display: display.id)
+        }
+    }
+
+    @objc private func displaysClicked() {
+        if let url = Self.displaysSettings { openURL(url) }
+    }
+
+    @objc private func editClicked(_ sender: NSButton) {
+        endTyping()
+        guard let row = row(sender.tag) else { return }
+        if section == .routing { onEditRoute?(row.id) } else { onEditStage?(row.id) }
     }
 
     @objc private func removeClicked(_ sender: NSButton) {
         let typed = endTyping()
         guard let row = row(sender.tag) else { return }
-        commit(row.id, after: typed) { [store] in await store.send(command: .removeStage(row.id)) }
-    }
-
-    @objc private func blackClicked(_ sender: NSButton) {
-        let on = sender.state == .on
-        let typed = endTyping()
-        guard let row = row(sender.tag) else { return }
-        commit(row.id, after: typed) { [store] in
-            await store.send(
-                command: .setStage(row.id, .object(["type": .string("keep_black"), "value": .bool(on)])))
-        }
+        let command: Command = section == .routing ? .removeRoute(row.id) : .removeStage(row.id)
+        commit(row.id, after: typed) { [store] in await store.send(command: command) }
     }
 
     /// Opens the stage's monitor window, or brings it to the front when it is open (the stage host
@@ -769,49 +995,100 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         commit(row.id, after: typed) { [store] in await store.setRouteDisplay(row.id, display: display) }
     }
 
+    @objc private func scalingChosen(_ sender: NSPopUpButton) {
+        let scaling = sender.selectedItem?.representedObject as? String
+        let typed = endTyping()
+        guard let row = row(sender.tag), let scaling, scaling != row.scaling else { return }
+        commit(row.id, after: typed) { [store] in
+            await store.send(
+                command: .setRoute(row.id, .object(["type": .string("scaling"), "value": .string(scaling)])))
+        }
+    }
+
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField, let row = row(field.tag) else { return }
         let text = field.stringValue
-        let kind = field.identifier.flatMap { TypedField(rawValue: $0.rawValue) }
-        if kind == .width || kind == .height {
-            // A stage is 1 to 16384 pixels a side (QLab 5 manual p. 226).
-            guard let side = Int(text.trimmingCharacters(in: .whitespaces)), (1...16384).contains(side) else {
-                tell(loc("settings.video.badSize"))
-                field.stringValue = kind == .width ? String(row.width) : String(row.height)
-                return
-            }
-            let (width, height) = kind == .width ? (side, row.height) : (row.width, side)
-            guard (width, height) != (row.width, row.height) else { return }
-            commit(row.id, field: kind) { [store] in
-                await store.send(
-                    command: .setStage(
-                        row.id,
-                        .object([
-                            "type": .string("size"), "width": .int(Int64(width)), "height": .int(Int64(height)),
-                        ])))
-            }
-        } else if kind == .layer {
-            guard let layer = Int(text.trimmingCharacters(in: .whitespaces)), (0...1000).contains(layer) else {
-                tell(loc("settings.video.badLayer"))
-                field.stringValue = String(row.layer)
-                return
-            }
-            guard layer != row.layer else { return }
-            commit(row.id, field: .layer) { [store] in
-                await store.send(
-                    command: .setStage(row.id, .object(["type": .string("layer"), "value": .int(Int64(layer))])))
-            }
-        } else {
-            guard text != row.name else { return }
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                tell(loc("settings.video.badName"))
-                field.stringValue = row.name
-                return
-            }
-            commit(row.id, field: .name) { [store] in
-                await store.send(
-                    command: .setStage(row.id, .object(["type": .string("name"), "value": .string(text)])))
-            }
+        guard text != row.name else { return }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            tell(loc(section == .routing ? "settings.video.badRouteName" : "settings.video.badName"))
+            field.stringValue = row.name
+            return
         }
+        let property: JSONValue = .object(["type": .string("name"), "value": .string(text)])
+        let command: Command = section == .routing ? .setRoute(row.id, property) : .setStage(row.id, property)
+        commit(row.id, typed: true) { [store] in await store.send(command: command) }
+    }
+}
+
+/// A settings page's stack: Command-N on it is the page's own add (not New Workspace).
+@MainActor
+final class PageStack: NSStackView {
+    /// Answers Command-N; false lets it go on to the menu.
+    var onCommandN: (() -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let onCommandN, window != nil, !isHiddenOrHasHiddenAncestor,
+            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+            event.charactersIgnoringModifiers == "n", onCommandN()
+        {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
+/// A row's drag handle (three lines): a press and drag moves the row to where it is let go.
+@MainActor
+final class RowHandle: NSView {
+    /// The row it drags, as the other controls' tags say.
+    private var row = 0
+    override var tag: Int {
+        get { row }
+        set { row = newValue }
+    }
+    var isEnabled = true
+    /// The pointer moved while pressed, and where it was let go (window coordinates).
+    var onDrag: ((RowHandle, NSPoint) -> Void)?
+    var onDrop: ((RowHandle, NSPoint) -> Void)?
+    private var pressed = false
+    private var moved = false
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 14, height: 14) }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .handle }
+
+    override func resetCursorRects() {
+        if isEnabled { addCursorRect(bounds, cursor: .openHand) }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSBezierPath.clip(bounds)
+        (isEnabled ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor).setFill()
+        let w = min(bounds.width, 12)
+        let x = (bounds.width - w) / 2
+        for i in 0..<3 {
+            let y = bounds.midY - 4 + CGFloat(i) * 3.5
+            NSRect(x: x, y: y, width: w, height: 1.2).fill()
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        pressed = true
+        moved = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard pressed else { return }
+        moved = true
+        onDrag?(self, event.locationInWindow)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard pressed else { return }
+        pressed = false
+        if moved { onDrop?(self, event.locationInWindow) }
     }
 }

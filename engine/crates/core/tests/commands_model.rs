@@ -2761,6 +2761,34 @@ fn route_region_and_stage_steps_are_named_through_undo_and_redo() {
     assert_eq!(history.undo_name(), None);
     assert!(history.undo(&mut ws).unwrap());
     assert_eq!(history.undo_name(), Some(StepName::RenameRoute));
+    // The route editor's OK: several properties of one route in one transaction.
+    let edit = Command::Transaction {
+        commands: vec![
+            route_prop(
+                3,
+                RouteProperty::Size {
+                    width: 800,
+                    height: 600,
+                },
+            ),
+            route_prop(
+                3,
+                RouteProperty::Scaling {
+                    value: RouteScaling::Centre,
+                },
+            ),
+        ],
+    };
+    history.execute(&mut ws, edit).unwrap();
+    assert_eq!(history.undo_name(), Some(StepName::EditRoute));
+    let mixed = Command::Transaction {
+        commands: vec![
+            route_prop(3, RouteProperty::Rotation { value: 180 }),
+            route_prop(1, RouteProperty::Rotation { value: 180 }),
+        ],
+    };
+    history.execute(&mut ws, mixed).unwrap();
+    assert_eq!(history.undo_name(), None, "two routes' edits have no one name");
 }
 
 // ---- Cue lists ----

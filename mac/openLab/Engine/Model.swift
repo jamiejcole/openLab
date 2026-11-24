@@ -257,6 +257,9 @@ struct WorkspaceModel: Sendable, Decodable {
     /// region `{id, route?, x, y, width, height}`); absent from a workspace with none.
     var stages: [ModelObject] = []
     var cueLists: [CueList]
+    /// The names of stages removed since this model was read (not part of the wire model), so a
+    /// cue left on one can say which stage it misses.
+    var formerStageNames: [ModelID: String] = [:]
 
     enum CodingKeys: String, CodingKey {
         case id, name, settings, patches, routes, stages
