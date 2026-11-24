@@ -1,0 +1,16 @@
+{
+  "about": "A list longer than its view: scrolled to the end, three empty rows stand below the last cue; a click on one of them, or on the space below the cues, deselects everything and the inspector says no cue is selected.",
+  "show": "Demo",
+  "media": {"media/a.wav": 20},
+  "window": {"width": 1200, "height": 680},
+  "steps": [
+    {"select": "2.3"},
+    {"shot": "last-selected"},
+    {"scroll": "cue-list", "dy": -600},
+    {"advance": 0.2},
+    {"shot": "scrolled-to-the-end"},
+    {"click": "cue-list", "at": [0.5, 0.97]},
+    {"advance": 0.2},
+    {"shot": "empty-row-clicked"}
+  ]
+}

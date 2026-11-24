@@ -1,0 +1,18 @@
+{
+  "about": "Q1 selected, a cue added from the cue strip, then Undo: the new cue is gone and no cue is selected (the selection does not move to the next cue); the strip button again adds at the end of the list.",
+  "show": "Demo",
+  "media": {"media/a.wav": 20},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"click": "cue-toolbar", "at": [0.17, 0.5]},
+    {"advance": 0.3},
+    {"shot": "added-after-q1"},
+    {"menu_command": "undo"},
+    {"advance": 0.3},
+    {"shot": "after-undo-nothing-selected"},
+    {"click": "cue-toolbar", "at": [0.17, 0.5]},
+    {"advance": 0.3},
+    {"shot": "added-at-the-end"}
+  ]
+}
