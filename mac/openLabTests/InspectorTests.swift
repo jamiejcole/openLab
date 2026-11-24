@@ -374,6 +374,35 @@ final class InspectorTests: XCTestCase {
         XCTAssertEqual(shownTab, "curve")
     }
 
+    /// A Fade's Levels tab is the same tab to the user as an Audio cue's: the choice carries across, both ways.
+    func testLevelsChosenOnAnAudioCueShowsOnAFadeAndBack() throws {
+        vc.setSelection([Self.intro])
+        try clickTab("levels")
+        vc.setSelection([Self.fade])
+        XCTAssertEqual(shownTab, "fadeLevels")
+        vc.setSelection([Self.intro])
+        XCTAssertEqual(shownTab, "levels")
+        vc.setSelection([Self.fade])
+        try clickTab("fadeLevels")
+        vc.setSelection([Self.intro])
+        XCTAssertEqual(shownTab, "levels")
+    }
+
+    func testTabsThatMeanTheSameThingMatchAcrossCueKinds() {
+        let pick = InspectorViewController.shownTab(chosen:wanted:)
+        XCTAssertEqual(pick("levels", ["basics", "fadeLevels"]), "fadeLevels")
+        XCTAssertEqual(pick("fadeLevels", ["basics", "levels"]), "levels")
+        XCTAssertEqual(pick("geometry", ["basics", "fadeGeometry"]), "fadeGeometry")
+        XCTAssertEqual(pick("fadeGeometry", ["basics", "geometry"]), "geometry")
+        // Every other id means one thing on every kind that has it.
+        let kinds = ["audio", "fade", "group", "load", "target", "devamp", "network", "video", ""]
+        for kind in kinds {
+            for id in InspectorTabs.ids(forKind: kind) where !id.hasPrefix("fade") {
+                XCTAssertEqual(InspectorViewController.tabKind(id), id)
+            }
+        }
+    }
+
     func testTheChosenTabPicksFromAListByTheRule() {
         XCTAssertEqual(InspectorViewController.shownTab(chosen: "io", wanted: ["basics", "io"]), "io")
         XCTAssertEqual(InspectorViewController.shownTab(chosen: "io", wanted: ["basics", "mode"]), "basics")

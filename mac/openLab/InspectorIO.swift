@@ -10,8 +10,8 @@ import AppKit
 final class VideoIOControls {
     /// The file as the Basics tab draws it: folders and name with their icons, from the home folder down.
     let filePath = TargetPathControl()
-    /// Stands where `filePath` is hidden: no file, or several cues whose files differ.
-    let fileLabel = NSTextField(labelWithString: "")
+    /// Beside the path while the file is missing or unusable: the note the Basics tab shows.
+    let fileProblem = NSTextField(labelWithString: "")
     /// The file's clear and show-in-Finder buttons, the Basics tab's (glyph only). The file is chosen
     /// by a double-click on the path.
     let clearButton = NSButton(title: "", target: nil, action: nil)
@@ -46,11 +46,8 @@ final class VideoIOControls {
 
     /// Several cues whose files differ: "mixed" where the path would be.
     func showMixedFile() {
-        filePath.isHidden = true
-        fileLabel.isHidden = false
-        fileLabel.stringValue = loc("inspector.mixed")
-        fileLabel.textColor = .secondaryLabelColor
-        fileLabel.toolTip = nil
+        fileProblem.isHidden = true
+        filePath.showNote(loc("inspector.mixed"))
     }
 
     /// Shows or hides everything under the divider: the patch, its output format and the rule itself.
@@ -66,11 +63,13 @@ final class VideoIOControls {
 
     init() {
         filePath.configure(id: "inspector-io-file", label: loc("inspector.io.file")) {}
-        fileLabel.font = Self.valueFont
-        fileLabel.setAX("inspector-io-file-note")
-        fileLabel.lineBreakMode = .byTruncatingTail
-        fileLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        fileLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        fileProblem.setAX("inspector-io-file-problem")
+        fileProblem.font = Self.valueFont
+        fileProblem.textColor = .systemOrange
+        fileProblem.lineBreakMode = .byTruncatingTail
+        fileProblem.setContentHuggingPriority(.required, for: .horizontal)
+        fileProblem.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        fileProblem.isHidden = true
         clearButton.setAX("inspector-io-clear", label: loc("inspector.target.clear"))
         clearButton.isBordered = false
         clearButton.image = Icon.fieldClear.image(loc("inspector.target.clear"), compact: true)
@@ -250,7 +249,7 @@ extension InspectorViewController {
         }
         // The file, then its format: the Basics tab's path field with its clear and show-in-Finder buttons.
         let fileGrid = grid([
-            [labels[0], line([v.filePath.box, v.fileLabel, v.clearButton, v.revealButton])],
+            [labels[0], line([v.filePath.box, v.fileProblem, v.clearButton, v.revealButton])],
             [labels[1], v.formatLabel],
             [labels[2], line([v.soundLabel, v.trackPopup, v.trackNote])],
             [labels[3], line([v.stagePopup, v.monitorButton, v.stageSizeLabel])],
@@ -311,9 +310,12 @@ extension InspectorViewController {
         guard cue.takesFile else { return }
         let video = cue.kindType == "video"
         let sounds = cue.sounds(store.mediaDurations[cue.id])
-        for r in videoIO.videoRows { r.isHidden = !video }
+        let hasFile = !(cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
+        // A format row with no file has nothing to say, so it is left out.
+        videoIO.videoRows.first?.isHidden = !video || !hasFile
+        videoIO.videoRows.last?.isHidden = !video
         // An Audio cue's sound format is its file's; a Video cue's is its movie's, when it has sound.
-        videoIO.soundRow?.isHidden = video && !sounds
+        videoIO.soundRow?.isHidden = video ? !sounds : !hasFile
         videoIO.soundTitle.stringValue = loc(video ? "inspector.io.soundFormat" : "inspector.io.fileFormat")
         videoIO.showOutputSection(sounds)
         let patches = model.patches
@@ -337,7 +339,7 @@ extension InspectorViewController {
                     NSMenuItem(title: loc("inspector.io.patchNone"), action: nil, keyEquivalent: ""))
             }
         }
-        renderFile(cue)
+        renderFile(cue, model: model)
         if video { renderVideoIO(cue, model: model) } else { renderAudioFormat(cue) }
         let current = cue.raw["kind"]?["patch"]?.stringValue
         let chosen = outputPatchChoices.firstIndex(of: current ?? "") ?? -1
@@ -357,31 +359,44 @@ extension InspectorViewController {
     /// The file row of an Audio or Video cue: the folder-and-file path control the Basics tab draws (the
     /// same items, from the home folder down), with its clear and show-in-Finder buttons; "No file" in its place
     /// while the cue has none.
-    private func renderFile(_ cue: Cue) {
+    private func renderFile(_ cue: Cue, model: WorkspaceModel? = nil) {
         let v = videoIO
         let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
         let url = media.isEmpty ? nil : CueRowMenu.mediaURL(media, showPath: store.document?.path)
-        v.filePath.show(url: url)
-        v.fileLabel.isHidden = url != nil
-        v.fileLabel.stringValue = loc("inspector.io.noFile")
-        v.fileLabel.textColor = .secondaryLabelColor
-        v.fileLabel.toolTip = nil
+        if url == nil { v.filePath.showNote(loc("inspector.io.noFile")) } else { v.filePath.show(url: url) }
+        let problem = (store.problems[cue.id] ?? []).first {
+            $0.type == "media_missing" || $0.type == "media_unsupported"
+        }
+        v.fileProblem.isHidden = problem == nil
+        if let problem {
+            v.fileProblem.stringValue = loc(
+                problem.type == "media_missing" ? "inspector.target.fileMissing" : "inspector.target.fileUnsupported")
+            v.fileProblem.toolTip = model.map { ProblemText.problem(problem, label: WarningRows.labeler($0)) }
+        }
         v.clearButton.isEnabled = !isLocked && !isBatch && !media.isEmpty
         v.revealButton.isEnabled = url != nil && !isBatch
     }
 
     /// The output-format line under the patch (QLab 5 manual p. 177): the channels and sample rate of the
-    /// audio device the patch the shown cues share plays on, on this Mac; "no device" for a patch with
-    /// none here; empty for no patch, several, or one the show lacks, and before the engine has said.
+    /// audio device the patch the shown cues share plays on, on this Mac; "not connected" for a device
+    /// that is missing or lost, "no device" for a patch with none here; empty for no patch, several, or one the show lacks, and before the engine has said.
     func renderOutputFormat(_ cues: [Cue], model: WorkspaceModel) {
         let label = videoIO.outputFormatLabel
         label.stringValue = ""
         label.textColor = .labelColor
+        // A line with nothing to say leaves its row out, as the rule's section does with no sound.
+        defer { videoIO.outputFormatRow?.isHidden = label.stringValue.isEmpty || videoIO.divider.isHidden }
         guard let id = Self.sharedPatch(of: cues, model: model), model.patches.contains(where: { $0.id == id }),
             let patchDevices
         else { return }
         let device = patchDevices[id]
         let open = device.flatMap { name in openOutputs.first { $0.name == name } }
+        // A device the engine has lost (or failed to open), or one the patch names that is not here.
+        if missingPatches.contains(id) || (open.map { $0.state == .lost || $0.state == .failed } ?? false) {
+            label.stringValue = loc("inspector.io.outputFormatNotConnected")
+            label.textColor = .secondaryLabelColor
+            return
+        }
         let channels =
             open.flatMap { $0.channels > 0 ? Int($0.channels) : nil } ?? device.flatMap { deviceChannels[$0] }
         let rate = open.flatMap { $0.sampleRate > 0 ? $0.sampleRate : nil }
@@ -420,14 +435,22 @@ extension InspectorViewController {
     /// here (unmapped, or its device is missing).
     func applyPatchMappings(_ entries: [PatchMappingEntry], devices: [DeviceEntry]) {
         var found: [ModelID: String] = [:]
+        var missing: Set<ModelID> = []
         for e in entries {
+            // Missing means not on this Mac's list; a listed device that is only not open yet is not.
+            if let r = e.resolution, r.type == "device_missing",
+                !devices.contains(where: { $0.name == r.json["device"]?.stringValue })
+            {
+                missing.insert(e.patch)
+            }
             guard let r = e.resolution, r.type != "unmapped", r.type != "device_missing",
                 let name = r.json["device"]?.stringValue, !name.isEmpty
             else { continue }
             found[e.patch] = name
         }
         let channels = Dictionary(devices.map { ($0.name, $0.outputChannels) }, uniquingKeysWith: { a, _ in a })
-        guard found != patchDevices || channels != deviceChannels else { return }
+        guard found != patchDevices || channels != deviceChannels || missing != missingPatches else { return }
+        missingPatches = missing
         patchDevices = found
         deviceChannels = channels
         redrawOutputFormat()

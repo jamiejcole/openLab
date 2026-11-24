@@ -973,6 +973,7 @@
 "inspector.io.file" = "File";
 "inspector.io.noFile" = "No file";
 "inspector.io.outputFormat" = "Output format";
+"inspector.io.outputFormatNotConnected" = "Device not connected";
 "inspector.io.outputFormatNoDevice" = "No device on this Mac";
 "inspector.io.outputFormatText" = "%@, %@ kHz";
 "inspector.io.outputs.one" = "1 output";

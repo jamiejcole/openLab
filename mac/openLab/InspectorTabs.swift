@@ -75,8 +75,21 @@ extension InspectorViewController {
 
     /// The tab a tab list shows: the user's last choice when the list has it, else its first tab.
     static func shownTab(chosen: String?, wanted: [String]) -> String? {
-        if let chosen, wanted.contains(chosen) { return chosen }
+        if let chosen {
+            let kind = tabKind(chosen)
+            if let same = wanted.first(where: { tabKind($0) == kind }) { return same }
+        }
         return wanted.first
+    }
+
+    /// What a tab is to the user: a Fade's Levels and Geometry tabs carry the same titles as an Audio
+    /// or Video cue's, so choosing one on either shows the other.
+    static func tabKind(_ id: String) -> String {
+        switch id {
+        case "fadeLevels": return "levels"
+        case "fadeGeometry": return "geometry"
+        default: return id
+        }
     }
 
     /// Draws the tab bar for the tab view's tabs: every title whole, the chosen one marked.
@@ -302,6 +315,23 @@ final class TargetPathControl: NSPathControl {
         setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         box.hold(self)
         InspectorViewController.prefersWidth(box)
+    }
+
+    /// Shows `text` (no file, several files) in the path's own box and place, in the secondary colour,
+    /// so the field looks the same with or without a file.
+    func showNote(_ text: String) {
+        isHidden = false
+        url = nil
+        let item = NSPathControlItem()
+        item.title = text
+        item.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .font: font ?? NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            ])
+        setFullItems([item])
+        toolTip = nil
     }
 
     /// Shows a file's folders and name (the control hides for none); the tooltip holds the whole path.

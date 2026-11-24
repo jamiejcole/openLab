@@ -219,7 +219,6 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { io.soundLabel.stringValue.hasPrefix("PCM, 1 channel, ") }
         // The file is the Basics tab's folder-and-file path control, not a raw path.
         XCTAssertFalse(io.filePath.isHidden)
-        XCTAssertTrue(io.fileLabel.isHidden, "no raw path text")
         XCTAssertEqual(io.filePath.url, vc.targetPath.url, "the same file as the Basics tab draws")
         XCTAssertEqual(io.filePath.pathItems.last?.title, "a.wav")
         XCTAssertEqual(io.soundTitle.stringValue, loc("inspector.io.fileFormat"))
@@ -229,7 +228,7 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertTrue(io.clearButton.isEnabled)
         XCTAssertEqual(io.videoRows.map(\.isHidden), [true, true], "no picture format or stage")
         XCTAssertEqual(io.patchRow?.isHidden, false)
-        XCTAssertEqual(io.outputFormatRow?.isHidden, false)
+        XCTAssertEqual(io.outputFormatRow?.isHidden, io.outputFormatLabel.stringValue.isEmpty)
         XCTAssertFalse(io.divider.isHidden)
         vc.view.layoutSubtreeIfNeeded()
         func frame(_ v: NSView) -> NSRect { v.convert(v.bounds, to: nil) }
@@ -342,13 +341,44 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(line.stringValue, loc("inspector.io.outputFormatNoDevice"))
     }
 
+    /// A device that is lost or gone does not keep its old format on the line: it says so, and says
+    /// the format again when the device is back.
+    func testTheOutputFormatLineSaysWhenTheDeviceIsNotConnected() async throws {
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        await rig.sync()
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        let line = vc.videoIO.outputFormatLabel
+        let up = #"[{"name":"Dev","state":"up","primary":true,"sample_rate":48000,"channels":2}]"#
+        XCTAssertEqual(store.receive(try outputsStatus(up)), .applied)
+        vc.applyPatchMappings(try mappings(patch, device: "Dev"), devices: [])
+        XCTAssertEqual(line.stringValue, "2 outputs, 48 kHz")
+        // The engine keeps the lost device in its status, with its old format.
+        XCTAssertEqual(
+            store.receive(try outputsStatus(up.replacingOccurrences(of: "\"up\"", with: "\"lost\""))), .applied)
+        XCTAssertEqual(line.stringValue, loc("inspector.io.outputFormatNotConnected"))
+        // The patch's resolution says its device is missing, and the list does not have it.
+        XCTAssertEqual(store.receive(try outputsStatus("[]")), .applied)
+        let gone = try JSONDecoder().decode(
+            [PatchMappingEntry].self,
+            from: Data(#"[{"patch":"\#(patch.raw)","resolution":{"type":"device_missing","device":"Dev"}}]"#.utf8))
+        vc.applyPatchMappings(gone, devices: [])
+        XCTAssertEqual(line.stringValue, loc("inspector.io.outputFormatNotConnected"))
+        XCTAssertEqual(store.receive(try outputsStatus(up)), .applied)
+        vc.applyPatchMappings(try mappings(patch, device: "Dev"), devices: [])
+        XCTAssertEqual(line.stringValue, "2 outputs, 48 kHz")
+    }
+
     /// Several Audio cues on one patch show that patch's device format; on different patches the line is empty.
     func testABatchOutputFormatIsTheSharedPatchsOrEmpty() async throws {
         try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
+        await rig.sync()
         let patches = try XCTUnwrap(store.model?.patches.map(\.id))
+        XCTAssertFalse(patches.isEmpty, "the show's patches are loaded")
+        guard let patch = patches.first else { return }
         let up = #"[{"name":"Dev","state":"up","primary":true,"sample_rate":48000,"channels":2}]"#
         XCTAssertEqual(store.receive(try outputsStatus(up)), .applied)
-        vc.applyPatchMappings(try mappings(patches[0], device: "Dev"), devices: [])
+        vc.applyPatchMappings(try mappings(patch, device: "Dev"), devices: [])
         let model = try XCTUnwrap(store.model)
         let audio = model.cueLists.flatMap(\.cues).filter { $0.kindType == "audio" }
         var a = try XCTUnwrap(audio.first)
@@ -360,13 +390,14 @@ final class InspectorLevelsTests: XCTestCase {
             raw.set("kind", kind)
             return try Cue(json: raw)
         }
-        a = try on(a, patches[0].raw)
-        b = try on(b, patches[0].raw)
+        a = try on(a, patch.raw)
+        b = try on(b, patch.raw)
         vc.renderOutputFormat([a, b], model: model)
         XCTAssertEqual(vc.videoIO.outputFormatLabel.stringValue, "2 outputs, 48 kHz")
         b = try on(b, "no-such-patch")
         vc.renderOutputFormat([a, b], model: model)
         XCTAssertEqual(vc.videoIO.outputFormatLabel.stringValue, "", "mixed patches")
+        XCTAssertEqual(vc.videoIO.outputFormatRow?.isHidden, true, "a line with nothing to say leaves its row out")
     }
 
     /// A cue with no file shows "No file" where the path would be, with its clear button off, and the
@@ -377,13 +408,43 @@ final class InspectorLevelsTests: XCTestCase {
         guard case .success = await store.send(command: .setProperty(Self.intro, .media(nil))) else {
             return XCTFail("clearing the file")
         }
-        await assertEventually { self.vc.videoIO.filePath.isHidden }
+        await assertEventually { self.vc.videoIO.filePath.url == nil }
         let io = vc.videoIO
-        XCTAssertFalse(io.fileLabel.isHidden)
-        XCTAssertEqual(io.fileLabel.stringValue, loc("inspector.io.noFile"))
+        XCTAssertEqual(io.filePath.pathItems.map(\.title), [loc("inspector.io.noFile")])
         XCTAssertFalse(io.clearButton.isEnabled)
         XCTAssertFalse(io.divider.isHidden)
         XCTAssertEqual(io.patchRow?.isHidden, false)
+        // The note sits in the same bordered box as the path, on the "File" label's baseline.
+        vc.view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(io.filePath.box.isHidden)
+        XCTAssertEqual(io.filePath.box.borderWidth, 1)
+        XCTAssertTrue(io.filePath.isDescendant(of: io.filePath.box))
+        XCTAssertGreaterThan(io.filePath.box.frame.width, 100, "the same wide box as with a file")
+        func find(_ text: String, in view: NSView) -> NSTextField? {
+            if let f = view as? NSTextField, f.stringValue == text { return f }
+            return view.subviews.lazy.compactMap { find(text, in: $0) }.first
+        }
+        let title = try XCTUnwrap(find(loc("inspector.io.file"), in: vc.tabView))
+        func base(_ v: NSView) -> CGFloat {
+            v.convert(v.bounds, to: nil).maxY - v.firstBaselineOffsetFromTop
+        }
+        XCTAssertEqual(base(title), base(io.filePath), accuracy: 1.5, "label and note share a baseline")
+        // No file, so no format to name: the rows leave out their empty values.
+        XCTAssertEqual(io.soundRow?.isHidden, true, "an Audio cue with no file has no Format row")
+    }
+
+    /// A cue whose file is missing says so beside the path on the I/O tab, as the Basics tab does.
+    func testACueWhoseFileIsMissingSaysSoOnTheIOTab() async throws {
+        showCue(Self.intro)
+        vc.tabView.selectTabViewItem(withIdentifier: "io")
+        await rig.sync()
+        XCTAssertTrue(vc.videoIO.fileProblem.isHidden, "a file that is there says nothing")
+        guard case .success = await store.send(command: .setProperty(Self.intro, .media("media/not-there.wav")))
+        else { return XCTFail("media") }
+        try await rig.advance(0.5)
+        await assertEventually("the reason shows") { !self.vc.videoIO.fileProblem.isHidden }
+        XCTAssertEqual(vc.videoIO.fileProblem.stringValue, loc("inspector.target.fileMissing"))
+        XCTAssertFalse(vc.videoIO.filePath.isHidden, "the path still shows")
     }
 
     func testAMonoFileGivesTheMatrixOneRow() async throws {

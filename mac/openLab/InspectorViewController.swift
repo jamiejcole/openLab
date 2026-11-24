@@ -33,6 +33,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The device each patch plays on on this Mac, as the engine last said (nil until it has); a patch
     /// not in it has no device here. For the I/O tab's output format.
     var patchDevices: [ModelID: String]?
+    /// The patches whose device is not connected now (`device_missing`).
+    var missingPatches: Set<ModelID> = []
     /// The output channel count of each device on this Mac, by name.
     var deviceChannels: [String: Int] = [:]
     /// The output devices the engine has open, as its last status said (their rates and channels).
@@ -574,7 +576,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         rateSub = store.$status.map { $0?.outputs ?? [] }.removeDuplicates().sink { [weak self] outputs in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                let devicesChanged = Set(self.openOutputs.map(\.name)) != Set(outputs.map(\.name))
+                let devicesChanged =
+                    Set(self.openOutputs.map { "\($0.name)|\($0.state.raw)" })
+                    != Set(outputs.map { "\($0.name)|\($0.state.raw)" })
                 self.openOutputs = outputs
                 if devicesChanged { self.readPatchDevices() }
                 self.redrawOutputFormat()

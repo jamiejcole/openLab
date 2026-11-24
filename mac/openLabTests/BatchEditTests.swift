@@ -321,15 +321,14 @@ extension PlayheadFlowTests {
         await selectAll([cues[0], cues[1]])  // a.wav and b.wav
         inspector.tabView.selectTabViewItem(withIdentifier: "io")
         let io = inspector.videoIO
-        XCTAssertTrue(io.filePath.isHidden)
-        XCTAssertTrue(io.filePath.box.isHidden, "the field box goes with the path")
-        XCTAssertFalse(io.fileLabel.isHidden)
-        XCTAssertEqual(io.fileLabel.stringValue, loc("inspector.mixed"))
+        XCTAssertFalse(io.filePath.box.isHidden, "the field box stays and holds the note")
+        XCTAssertNil(io.filePath.url)
+        XCTAssertEqual(io.filePath.pathItems.map(\.title), [loc("inspector.mixed")])
         XCTAssertFalse(io.revealButton.isEnabled)
         XCTAssertFalse(io.clearButton.isEnabled)
         await selectAll([cues[1]])
-        XCTAssertFalse(io.filePath.isHidden)
-        XCTAssertTrue(io.fileLabel.isHidden)
+        XCTAssertNotNil(io.filePath.url)
+        XCTAssertEqual(io.filePath.pathItems.last?.title, "b.wav")
     }
 
     func testAnAudioCueAndAFadeCueAreSelectedOnlyBasicsAndTriggersAreShown() async throws {
