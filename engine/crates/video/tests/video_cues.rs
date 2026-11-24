@@ -1676,7 +1676,8 @@ fn opened_show(mut ws: Workspace) -> OfflineShow {
             .set_route_display(ws.id, route_of(stage), Some(mapping))
             .unwrap();
     }
-    c.stage_host = Some(test_stage_host_on("V1:1920x1080,V2:1280x720", &[]));
+    // V1 has the menu bar (`*`): a laptop's only display.
+    c.stage_host = Some(test_stage_host_on("V1:1920x1080*,V2:1280x720", &[]));
     let mut s = OfflineShow::empty(mixer_config_at(RATE, BLOCK), c).unwrap();
     s.set_settle_timeout(SETTLE);
     s.open_doc(openlab_engine::control::DocSource::Workspace(Box::new(ws)))
@@ -1715,6 +1716,8 @@ fn covers_then_black_until_esc(stage: StageId, display: &str) {
     let dir = tempfile::tempdir().unwrap();
     let movie = movie!(dir.path(), "clip.mov", (25, 25));
     let mut s = opened_show(workspace(vec![movie_on(1, &movie, stage)]));
+    let main: Vec<bool> = (s.control().displays().iter()).map(|d| d.main).collect();
+    assert_eq!(main, [true, false], "V1 is the display with the menu bar");
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(0.5));
     assert_eq!(stage_state(&mut s, stage), shown_on(display));
@@ -1756,8 +1759,8 @@ fn covers_then_black_until_esc(stage: StageId, display: &str) {
 /// #708 flow (one display with the menu bar; the engine's side): GO a Video cue → the picture
 /// covers the whole display; its media ends → black that stays; Esc → the black goes; the next
 /// Video cue covers the display again and black follows it again. That the window is over
-/// every app's windows, the menu bar and the Dock is its level, the same on every display
-/// (`tests/output_window.rs`).
+/// every app's windows, the menu bar and the Dock, over the screen's whole frame, is the
+/// shipped present on the real display with the menu bar (`tests/output_window.rs`).
 #[test]
 fn one_display_go_covers_it_black_follows_the_media_and_esc_takes_the_black_away() {
     covers_then_black_until_esc(stage_id(), "V1");
