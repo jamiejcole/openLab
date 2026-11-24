@@ -1314,7 +1314,9 @@ final class CueTargetFlowTests: XCTestCase {
         wc.window?.makeKeyAndOrderFront(nil)
         await assertEventually { self.wc.cueList.roots.isEmpty == false }
         // The inspector reads where the patches play when it loads; that is not an edit under test.
-        await assertEventually("the inspector's first read of where the patches play") { self.inspector.patchReading == nil }
+        await assertEventually("the inspector's first read of where the patches play") {
+            self.inspector.patchReading == nil
+        }
     }
 
     // MARK: Doing what the operator does

@@ -1709,7 +1709,16 @@ async fn a_saved_show_goes_by_its_file_name_over_osc() {
         path: frozen.to_string_lossy().into_owned(),
     })
     .await;
-    assert_eq!(real.workspace_names().await, ["frozen"]);
+    // As with the open below, the OSC side learns the new path a moment after the app's reply.
+    let mut names = real.workspace_names().await;
+    for _ in 0..1000 {
+        if names == ["frozen"] {
+            break;
+        }
+        tokio::task::yield_now().await;
+        names = real.workspace_names().await;
+    }
+    assert_eq!(names, ["frozen"]);
     real.go_in("frozen", 1).await;
 
     // Opened again, beside a differently named show that is already open.
