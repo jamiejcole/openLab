@@ -6,7 +6,7 @@
 
 use openlab_core::stage_link::Display;
 
-use crate::host::{Layer, Platform, Presented};
+use crate::host::{Guide, Layer, Platform, Presented};
 
 pub const NO_VIDEO: &str = "this computer's openLab has no video output";
 
@@ -21,7 +21,7 @@ impl Platform for NoVideo {
         Vec::new()
     }
 
-    fn present(&mut self, _: &Display, _: &[Layer]) -> Result<Presented, String> {
+    fn present(&mut self, _: &Display, _: &[Layer], _: &[Guide]) -> Result<Presented, String> {
         Err(NO_VIDEO.into())
     }
 
@@ -32,6 +32,7 @@ impl Platform for NoVideo {
         &mut self,
         _: (u32, u32),
         _: &[Layer],
+        _: &[Guide],
         _: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String> {
         Err(NO_VIDEO.into())
@@ -78,6 +79,7 @@ mod tests {
                     rotation: 0,
                     scaling: openlab_core::RouteScaling::Fill,
                     display: None,
+                    guide: None,
                 }],
             },
             &mut out,

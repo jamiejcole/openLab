@@ -9672,3 +9672,87 @@ fn a_damaged_routes_and_regions_show_file_opens_repaired_and_plays() {
         "the stage host lives"
     );
 }
+
+/// Shows (`show`) or hides the guides of routes `n`, as the app's boxes do.
+fn set_guides(s: &mut OfflineShow, routes: &[u128], show: bool) -> Outcome {
+    let routes = routes.iter().map(|&n| route_n(n)).collect();
+    let outcome = ask(s, Request::SetRouteGuides { routes, show });
+    s.run(BLOCK);
+    s.settle_stages();
+    outcome
+}
+
+/// #821 GD1, GD2, GD7, GD10: on the real engine and stage host, guides shown on Output 1 are
+/// drawn on its display over the stage's black in the route's default colour (the outline at its
+/// edge, the centre lines), V2 untouched; a colour picked redraws them at once; Output 2's in its
+/// own default colour beside them; hidden again, only that display clears. A route removed takes
+/// its guides with it and its undo brings it back without them. A route the workspace lacks, or
+/// more routes than a workspace has, is refused with nothing changed.
+#[test]
+fn route_guides_are_drawn_over_their_display_follow_the_route_and_go_with_it() {
+    let mut s = routed_show(
+        split_workspace(vec![]),
+        "V1:1920x1080,V2:1920x1080",
+        &[(1, "V1"), (2, "V2")],
+    );
+    let points = [[0.5, 0.001], [0.5, 0.5], [0.25, 0.75]];
+    let rgba = |c: openlab_core::GuideColour| [c.0[0], c.0[1], c.0[2], 255];
+    let (first, second) = (
+        rgba(openlab_core::GUIDE_COLOURS[0]),
+        rgba(openlab_core::GUIDE_COLOURS[1]),
+    );
+    const BLACK: [u8; 4] = [0, 0, 0, 255];
+    assert_eq!(display_shows(&mut s, "V1", &points).1, [BLACK; 3]);
+    assert!(matches!(set_guides(&mut s, &[1], true), Outcome::Ok(_)));
+    assert_eq!(
+        display_shows(&mut s, "V1", &points).1,
+        [first, first, BLACK],
+        "outline, centre, and the black between"
+    );
+    assert_eq!(display_shows(&mut s, "V2", &points).1, [BLACK; 3]);
+    // A colour picked: redrawn in it at once.
+    let orange = openlab_core::GuideColour([0xff, 0x82, 0x00]);
+    edited(
+        &mut s,
+        openlab_core::Command::SetRouteProperty {
+            id: route_n(1),
+            property: openlab_core::RouteProperty::GuideColour {
+                value: Some(orange),
+            },
+        },
+    );
+    assert_eq!(display_shows(&mut s, "V1", &points).1[0], rgba(orange));
+    // Output 2 too, in its own default colour; then Output 1 off: only V1 clears.
+    set_guides(&mut s, &[2], true);
+    assert_eq!(display_shows(&mut s, "V2", &points).1[0], second);
+    set_guides(&mut s, &[1], false);
+    assert_eq!(display_shows(&mut s, "V1", &points).1, [BLACK; 3]);
+    assert_eq!(display_shows(&mut s, "V2", &points).1[0], second);
+    // Output 2 removed: its guides go with it; the undo brings it back without them.
+    edited(
+        &mut s,
+        openlab_core::Command::RemoveRoute { id: route_n(2) },
+    );
+    stepped(&mut s, true);
+    assert_eq!(s.control().workspace().routes.len(), 2);
+    assert_eq!(display_shows(&mut s, "V2", &points).1, [BLACK; 3]);
+    // Refusals change nothing.
+    let code = |o: Outcome| match o {
+        Outcome::Error(e) => e.code,
+        Outcome::Ok(_) => panic!("not refused"),
+    };
+    assert_eq!(
+        code(set_guides(&mut s, &[1, 77], true)),
+        openlab_core::protocol::ErrorCode::NotFound
+    );
+    assert_eq!(
+        display_shows(&mut s, "V1", &points).1,
+        [BLACK; 3],
+        "none shown"
+    );
+    let many: Vec<u128> = (0..=openlab_core::MAX_ROUTES as u128).collect();
+    assert_eq!(
+        code(set_guides(&mut s, &many, true)),
+        openlab_core::protocol::ErrorCode::BadRequest
+    );
+}

@@ -24,7 +24,7 @@ use openlab_core::VideoGeometry;
 use openlab_core::{Quad, quad};
 
 use crate::hap::Variant;
-use crate::host::{CuePicture, Layer, Picture, Placement};
+use crate::host::{CuePicture, Guide, Layer, Picture, Placement};
 
 /// A texture the stage drawing samples.
 pub type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
@@ -184,6 +184,13 @@ const MAX_PROBE_SIDE: u32 = 1024;
 #[cfg(feature = "test-support")]
 const MAX_CARDS: usize = 8;
 
+/// Guide colours and names kept: as many as a workspace has routes, so every guide up at once
+/// is drawn from what was made for it, not made again each frame.
+const MAX_GUIDE_TEXTURES: usize = openlab_core::MAX_ROUTES;
+
+/// A guide's name as drawn: its text, colour and height in pixels.
+type LabelKey = (String, [u8; 3], u32);
+
 pub struct Gpu {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
@@ -193,6 +200,10 @@ pub struct Gpu {
     /// Test cards drawn lately, by frame number.
     #[cfg(feature = "test-support")]
     cards: Vec<(u16, Retained<ProtocolObject<dyn MTLTexture>>)>,
+    /// One pixel of each guide colour drawn lately, oldest first.
+    solids: Vec<([u8; 3], Texture)>,
+    /// Guide names drawn lately, oldest first, with their size in pixels.
+    labels: Vec<(LabelKey, Texture, (u32, u32))>,
 }
 
 impl Gpu {
@@ -235,6 +246,8 @@ impl Gpu {
             black,
             #[cfg(feature = "test-support")]
             cards: Vec::new(),
+            solids: Vec::new(),
+            labels: Vec::new(),
         })
     }
 
@@ -250,11 +263,13 @@ impl Gpu {
     /// Encodes a clear to black and then `layers` (bottom first) into `target`, each stage's
     /// part placed by the layer's placement (its region filling its route, turned and scaled),
     /// and on each its cues' pictures (bottom first), each placed by its geometry, clipped to
-    /// where the region lands, at its opacity.
+    /// where the region lands, at its opacity; then `guides` over all of it, each placed as its
+    /// route's whole raster.
     pub fn draw(
         &mut self,
         target: &ProtocolObject<dyn MTLTexture>,
         layers: &[Layer],
+        guides: &[Guide],
         pictures: &mut Pictures<'_>,
     ) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, String> {
         let size = (
@@ -290,6 +305,9 @@ impl Gpu {
                     clip,
                 ));
             }
+        }
+        for guide in guides {
+            self.guide_quads(guide, size, &mut quads)?;
         }
         let cb = self
             .queue
@@ -332,6 +350,74 @@ impl Gpu {
         Ok(cb)
     }
 
+    /// `guide`'s lines and name on a target of `size` pixels, added to `quads`. A name that
+    /// cannot be drawn leaves the lines (one log line from the caller's failure would repeat
+    /// every frame, so it is simply not drawn).
+    fn guide_quads(
+        &mut self,
+        guide: &Guide,
+        size: (u32, u32),
+        quads: &mut Vec<(QuadBytes, Texture, MTLScissorRect)>,
+    ) -> Result<(), String> {
+        let place = &guide.place;
+        let clip = scissor(dest_ndc(place, size), size);
+        let solid = self.solid(guide.colour)?;
+        for [l, t, r, b] in guide.bars(size) {
+            let bar = Quad {
+                corners: [[l, t], [r, t], [l, b], [r, b]],
+                uv: [0.0, 0.0, 1.0, 1.0],
+            };
+            quads.push((
+                QuadBytes::placed(&bar, place, size, 1.0, false, Colour::Premultiplied),
+                solid.clone(),
+                clip,
+            ));
+        }
+        if let Some((texture, drawn)) = self.label(guide, size) {
+            let [l, t, r, b] = guide.label_box(size, drawn);
+            let name = Quad {
+                corners: [[l, t], [r, t], [l, b], [r, b]],
+                uv: [0.0, 0.0, 1.0, 1.0],
+            };
+            quads.push((
+                QuadBytes::placed(&name, place, size, 1.0, true, Colour::Premultiplied),
+                texture,
+                clip,
+            ));
+        }
+        Ok(())
+    }
+
+    /// One pixel of `colour`, opaque.
+    fn solid(&mut self, colour: [u8; 3]) -> Result<Texture, String> {
+        if let Some((_, t)) = self.solids.iter().find(|(c, _)| *c == colour) {
+            return Ok(t.clone());
+        }
+        let [r, g, b] = colour;
+        let t = texture(&self.device, 1, 1, &mut [b, g, r, 255])?;
+        if self.solids.len() >= MAX_GUIDE_TEXTURES {
+            self.solids.remove(0);
+        }
+        self.solids.push((colour, t.clone()));
+        Ok(t)
+    }
+
+    /// `guide`'s name drawn at its height on a target of `size`, and its size in pixels; `None`
+    /// when it cannot be drawn.
+    fn label(&mut self, guide: &Guide, size: (u32, u32)) -> Option<(Texture, (u32, u32))> {
+        let key = (guide.name.clone(), guide.colour, guide.label_height(size));
+        if let Some((_, t, drawn)) = self.labels.iter().find(|(k, ..)| *k == key) {
+            return Some((t.clone(), *drawn));
+        }
+        let (drawn, mut px) = super::label::label(&key.0, key.2, key.1).ok()?;
+        let t = texture(&self.device, drawn.0 as usize, drawn.1 as usize, &mut px).ok()?;
+        if self.labels.len() >= MAX_GUIDE_TEXTURES {
+            self.labels.remove(0);
+        }
+        self.labels.push((key, t.clone(), drawn));
+        Some((t, drawn))
+    }
+
     /// The texture `picture` is drawn from.
     fn texture_for(
         &mut self,
@@ -372,6 +458,7 @@ impl Gpu {
         &mut self,
         size: (u32, u32),
         layers: &[Layer],
+        guides: &[Guide],
         points: &[[f32; 2]],
         pictures: &mut Pictures<'_>,
     ) -> Result<Vec<[u8; 4]>, String> {
@@ -396,7 +483,7 @@ impl Gpu {
             .device
             .newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
             .ok_or("could not create the probe buffer")?;
-        let cb = self.draw(&target, layers, pictures)?;
+        let cb = self.draw(&target, layers, guides, pictures)?;
         let blit = cb
             .blitCommandEncoder()
             .ok_or("could not create a Metal blit encoder")?;
@@ -596,7 +683,7 @@ mod tests {
         let points = card::barcode_points();
         let read = |gpu: &mut Gpu, layers: &[Layer]| {
             card::read_frame(
-                &gpu.probe((1920, 1080), layers, &points, &mut |_| None)
+                &gpu.probe((1920, 1080), layers, &[], &points, &mut |_| None)
                     .unwrap(),
             )
         };
@@ -633,7 +720,7 @@ mod tests {
                 picture: Picture::TestCard(1),
                 cues: Vec::new(),
             };
-            gpu.probe(target, &[layer], &corners, &mut |_| None)
+            gpu.probe(target, &[layer], &[], &corners, &mut |_| None)
                 .unwrap()
         };
         let place = |region, route, rotation, scaling| Placement {
@@ -680,7 +767,7 @@ mod tests {
                 picture: Picture::TestCard(1),
                 cues: Vec::new(),
             };
-            gpu.probe((1080, 1920), &[layer], points, &mut |_| None)
+            gpu.probe((1080, 1920), &[layer], &[], points, &mut |_| None)
                 .unwrap()
         };
         assert_eq!(turned.len(), 4);
@@ -722,6 +809,7 @@ mod tests {
             gpu.probe(
                 (1000, 1000),
                 &[layer],
+                &[],
                 &[[0.5, 0.05], [0.5, 0.95]],
                 &mut |_| None,
             )
@@ -747,9 +835,13 @@ mod tests {
             cues: Vec::new(),
         };
         let black = gpu
-            .probe((1920, 1080), &[layer(Picture::Black)], &quads, &mut |_| {
-                None
-            })
+            .probe(
+                (1920, 1080),
+                &[layer(Picture::Black)],
+                &[],
+                &quads,
+                &mut |_| None,
+            )
             .unwrap();
         assert_eq!(black, vec![[0, 0, 0, 255]; 4]);
         let mut points = card::barcode_points().to_vec();
@@ -758,6 +850,7 @@ mod tests {
             .probe(
                 (1280, 720),
                 &[layer(Picture::TestCard(4242))],
+                &[],
                 &points,
                 &mut |_| None,
             )
@@ -767,6 +860,111 @@ mod tests {
             read[card::CELLS..],
             [card::RED, card::GREEN, card::BLUE, card::YELLOW]
         );
+    }
+
+    /// #821 GD1, GD4, GD5: on this machine's GPU a route's guides are drawn over the stage
+    /// in the guide's colour: the outline on the route's edges as its scaling puts it on the
+    /// display (fill on a display of another shape cuts the sides off, so only the top and
+    /// bottom lines show), the centre lines, and the name in the top left quarter; everything
+    /// else is the stage as drawn without guides. Turned a quarter, the outline and the name turn
+    /// with the route.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn guides_draw_their_outline_centre_lines_and_name_over_the_stage_as_the_route_is_placed() {
+        use openlab_core::RouteScaling;
+        const CYAN: [u8; 4] = [0, 200, 255, 255];
+        let mut gpu = Gpu::new().unwrap();
+        let display = (1280, 1024);
+        let place = |rotation, scaling| Placement {
+            region: [0, 0, 1920, 1080],
+            route: (1920, 1080),
+            rotation,
+            scaling,
+            screen: Some(display),
+        };
+        let layer = |rotation, scaling| Layer {
+            stage: openlab_core::StageId(uuid::Uuid::nil()),
+            width: 1920,
+            height: 1080,
+            place: place(rotation, scaling),
+            picture: Picture::TestCard(1),
+            cues: Vec::new(),
+        };
+        let guide = |rotation, scaling| Guide {
+            route: openlab_core::RouteId(uuid::Uuid::nil()),
+            name: "Output 1".into(),
+            colour: [0, 200, 255],
+            place: place(rotation, scaling),
+        };
+        let mut read = |rotation, scaling, guided: bool, points: &[[f32; 2]]| {
+            let guides = if guided {
+                vec![guide(rotation, scaling)]
+            } else {
+                Vec::new()
+            };
+            gpu.probe(
+                display,
+                &[layer(rotation, scaling)],
+                &guides,
+                points,
+                &mut |_| None,
+            )
+            .unwrap()
+        };
+        // Fill: top and bottom outline, centre lines; the sides are cut off, so the card shows
+        // at the display's left and right edges.
+        let lines = [[0.3, 0.001], [0.3, 0.999], [0.5, 0.8], [0.2, 0.5]];
+        let fill = RouteScaling::Fill;
+        assert_eq!(read(0, fill, true, &lines), [CYAN; 4]);
+        let clear = [[0.001, 0.75], [0.999, 0.75], [0.75, 0.75], [0.62, 0.62]];
+        assert_eq!(read(0, fill, true, &clear), read(0, fill, false, &clear));
+        assert!(read(0, fill, true, &clear).iter().all(|c| *c != CYAN));
+        // The name: some of its pixels in the colour, in the top left quarter of the route.
+        let grid = |x0: f32, y0: f32, x1: f32, y1: f32| -> Vec<[f32; 2]> {
+            (0..24)
+                .flat_map(|i| (0..8).map(move |j| (i, j)))
+                .map(|(i, j)| {
+                    [
+                        x0 + (x1 - x0) * i as f32 / 23.0,
+                        y0 + (y1 - y0) * j as f32 / 7.0,
+                    ]
+                })
+                .collect()
+        };
+        // The route's top left quarter at fill: placed 1820 pixels wide from x -270, the name
+        // centred a quarter across (x 0.14) and a quarter down.
+        let name = grid(0.08, 0.225, 0.2, 0.275);
+        assert!(
+            read(0, fill, true, &name).contains(&CYAN),
+            "the name is drawn"
+        );
+        assert!(!read(0, fill, false, &name).contains(&CYAN));
+        // Turned a quarter clockwise and fitted: the route's top edge runs down the right of
+        // its place, so the outline's lines stand left and right, and the name moves to the
+        // top right quarter of the turned route.
+        let fit = RouteScaling::Fit;
+        // Fitted, the turned route is 576 x 1024, centred: from x 0.275 to 0.725.
+        assert_eq!(
+            read(
+                90,
+                fit,
+                true,
+                &[[0.277, 0.3], [0.723, 0.3], [0.5, 0.001], [0.5, 0.999]]
+            ),
+            [CYAN; 4]
+        );
+        assert_eq!(
+            read(90, fit, true, &[[0.1, 0.5]]),
+            [[0, 0, 0, 255]],
+            "fit: black beside it"
+        );
+        let turned = grid(0.6, 0.16, 0.66, 0.34);
+        assert!(
+            read(90, fit, true, &turned).contains(&CYAN),
+            "the name turned with the route"
+        );
+        let unturned = grid(0.3, 0.225, 0.45, 0.275);
+        assert!(!read(90, fit, true, &unturned).contains(&CYAN));
     }
 
     /// Draws stage-sized pictures over black on a stage of `stage` in a target of `target`,
@@ -807,7 +1005,7 @@ mod tests {
                 })
                 .collect(),
         };
-        gpu.probe(target, &[layer], points, &mut |c| {
+        gpu.probe(target, &[layer], &[], points, &mut |c| {
             let i = c.picture as usize;
             Some((textures[i].clone(), cues[i].1, Colour::Premultiplied))
         })
@@ -940,7 +1138,7 @@ mod tests {
                 },
             }],
         };
-        gpu.probe((64, 64), &[layer], points, &mut |_| {
+        gpu.probe((64, 64), &[layer], &[], points, &mut |_| {
             Some((texture.clone(), size, colour))
         })
         .unwrap()
@@ -1057,7 +1255,7 @@ mod tests {
             cues: vec![cue(0), cue(1)],
         };
         let read = gpu
-            .probe((64, 64), &[layer], &[[0.5, 0.5]], &mut |c| {
+            .probe((64, 64), &[layer], &[], &[[0.5, 0.5]], &mut |c| {
                 Some(if c.picture == 0 {
                     (red.clone(), (1, 1), Colour::Premultiplied)
                 } else {

@@ -33,7 +33,7 @@ snap = "1.1.2"
 # The system frameworks' bindings, default features off: only the headers used are built.
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std"] }
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "objc2-core-foundation", "objc2-quartz-core", "NSApplication", "NSColor", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSPanel", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core", "NSApplication", "NSColor", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSPanel", "NSStringDrawing", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFData", "CFString", "CFURL", "CFUUID"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "libc", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGImage"] }
 # Video files and still images: AVFoundation reads movies, ImageIO stills (approved 2026-11-13).
