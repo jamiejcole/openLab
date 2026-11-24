@@ -12,4 +12,4 @@ Rules learned:
 - A test that compares against the list's visible width must force always-shown scroll bars (`scrollerStyle = .legacy`): the CI Mac shows them, a dev Mac may not.
 - An agent short of disk must never link its build/ or engine/target into another worktree (its builds overwrote another branch's binaries, 2026-11-24): it deletes its own build output or stops and reports. Say so in every brief that builds.
 - A test engine is shared by its whole test class: a test that plugs, unplugs or maps devices runs on its own `TestEngine.start()`.
-- A CI app shard that goes silent with WindowServer stuck in the GPU driver (exit 75) is the hosted runner: record it on #743 and re-run that job once.
+- A CI app shard that run-mac-tests.sh ends with exit 75 (its sample shows WindowServer stuck in the GPU driver) is the hosted runner, so the cause is known: note it on the PR and re-run that job once; a second stall on the same PR is investigated.
