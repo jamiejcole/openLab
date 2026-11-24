@@ -179,6 +179,8 @@ final class TriggersTabTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = vc.view
         vc.setSelection([intro])
+        // The inspector reads where the patches play when it loads; that is not an edit under test.
+        await assertEventually("the inspector's first read of where the patches play") { self.vc.patchReading == nil }
     }
 
     override func tearDown() async throws {

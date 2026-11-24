@@ -43,6 +43,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var mappingSub: AnyCancellable?
     var patchReading: Task<Void, Never>?
     var patchReadAgain = false
+    /// The patches the last read of their devices was for: the I/O tab reads again only when the
+    /// patch list changed, not when it first fills after the read at load.
+    var patchDevicesReadIDs: [ModelID] = []
     let hotkeyField = HotkeyRecorder()
     let hotkeyClear = NSButton(title: loc("inspector.hotkey.clear"), target: nil, action: nil)
     let secondTriggerPopup = NSPopUpButton()

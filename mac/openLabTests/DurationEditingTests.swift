@@ -172,6 +172,8 @@ final class InspectorDurationTests: XCTestCase {
             defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = vc.view
+        // The inspector reads where the patches play when it loads; that is not an edit under test.
+        await assertEventually("the inspector's first read of where the patches play") { self.vc.patchReading == nil }
         log = CueEditingTests.SendLog(rig)
     }
 
@@ -418,6 +420,7 @@ final class InspectorDurationTests: XCTestCase {
         rig = try await DurationEditingTests.openRig(on: engine)
         vc = InspectorViewController(store: rig.store)
         window.contentView = vc.view
+        await assertEventually("the inspector's first read of where the patches play") { self.vc.patchReading == nil }
         log = CueEditingTests.SendLog(rig)
         vc.setSelection([CueListHarness.fade])
         let editor = CueEditor(store: rig.store, cueList: CueListViewController(store: rig.store))
