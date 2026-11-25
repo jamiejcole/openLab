@@ -26,6 +26,10 @@ final class TransportUITests: XCTestCase {
         app.menuBars.menuItems["Workspace Status"].click()
         let status = app.descendants(matching: .any).matching(identifier: "status-window").firstMatch
         XCTAssertTrue(status.waitForExistence(timeout: 10), "the status window opens")
+        // Before any click in it, which would make any panel key.
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        XCTAssertFalse(
+            cueStates("Running", in: app).firstMatch.waitForExistence(timeout: 2), "opened, it is key: no GO")
         tabButton("Logs", in: app).click()
         let log = app.tables.matching(identifier: "log-table").firstMatch
         XCTAssertTrue(log.waitForExistence(timeout: 10), "on its Logs page")
@@ -41,11 +45,16 @@ final class TransportUITests: XCTestCase {
         XCTAssertTrue(
             cueState("Running", of: "Intro", in: app).waitForExistence(timeout: 10),
             "GO fires with the workspace key again")
-        XCTAssertEqual(cueStates("Running", in: app).count, 1, "one GO, the first Space fired none")
+        XCTAssertEqual(cueStates("Running", in: app).count, 1, "one GO, the Spaces before fired none")
         XCTAssertTrue(status.exists, "the status window is still open")
 
         app.menuBars.menuBarItems["Window"].click()
-        app.menuBars.menuItems["Workspace Status"].click()  // key again
+        app.menuBars.menuItems["Workspace Status"].click()
+        // Key again with no click in it: a GO would start the Fade after Intro, and Intro would be fading.
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        XCTAssertFalse(
+            waitFor("exists == false", cueState("Running", of: "Intro", in: app), timeout: 3),
+            "brought up again, it is key: no GO")
         app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
         XCTAssertTrue(waitFor("count == 0", cueStates("Running", in: app)), "Esc stopped Intro")
         XCTAssertTrue(status.exists, "and left the status window open")
