@@ -665,6 +665,125 @@ final class WorkspaceSettingsTests: XCTestCase {
         editor.close()
     }
 
+    /// Every view under `root`, hidden or not.
+    private func allViews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(allViews) }
+
+    /// The page of a tab as the editor lays it out.
+    private func page(_ id: String, of editor: PatchEditorWindowController) throws -> NSView {
+        editor.window?.contentView?.layoutSubtreeIfNeeded()
+        let item = editor.tabs.tabViewItem(at: editor.tabs.indexOfTabViewItem(withIdentifier: id))
+        return try XCTUnwrap(item.view)
+    }
+
+    /// Checklist (device outputs page, reference shot window.audio-output-patch-editor.device-outputs):
+    /// the page is a titled row per device output and nothing else a user can set: no mute, no "From"
+    /// text, no slider, no pop-up, no field, however the routing is set (a muted and a lowered
+    /// output are the routing tab's).
+    func testThePatchEditorsDeviceOutputsPageHasOnlyTheTitledRows() async throws {
+        let (rig, sc) = try await open()
+        let editor = try await edit(in: sc)
+        // Routing that once drew extras on this page: a mute and a lowered level.
+        guard
+            case .success = await rig.store.send(
+                command: .setPatchDeviceOutputMute(patch, deviceOutput: 1, mute: true))
+        else { return XCTFail("mute") }
+        guard
+            case .success = await rig.store.send(
+                command: .setPatchDeviceOutputLevel(patch, deviceOutput: 0, db: -6))
+        else { return XCTFail("level") }
+        await assertEventually { editor.matrix.routing.deviceOutput(1).mute }
+        editor.tabs.selectTabViewItem(withIdentifier: "deviceOutputs")
+        editor.render()
+        let page = try page("deviceOutputs", of: editor)
+        let views = allViews(page)
+        let controls = views.filter { $0 is NSControl && !($0 is NSTextField) && !($0 is NSScroller) }
+        XCTAssertTrue(controls.isEmpty, "\(controls.map { Swift.type(of: $0) })")
+        let texts = views.compactMap { $0 as? NSTextField }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        XCTAssertEqual(texts.map(\.stringValue), ["Device output 1:", "Device output 2:"], "titles and nothing else")
+        XCTAssertTrue(texts.allSatisfy { !$0.isEditable && !$0.stringValue.contains("From") })
+        XCTAssertEqual(editor.deviceTitles.count, 2)
+        editor.close()
+    }
+
+    /// Checklist (routing page, reference shot window.audio-output-patch-editor.patch-routing): the
+    /// main strip over the input boxes has a fader and a level box and no mute; each device output's
+    /// strip has fader, mute and level box centred over its crosspoint column, its box exactly as wide
+    /// and as far across as the crosspoints under it; all boxes one width, levels centred, row labels
+    /// right-aligned beside their boxes; a cue output's row is its label, one level box and nothing else, with no blank box beside it while
+    /// no cue sounds.
+    func testThePatchEditorsRoutingPageHasNoStrayBoxAndItsColumnsAndLabelsLineUp() async throws {
+        let (_, sc) = try await open()
+        let editor = try await edit(in: sc)
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        editor.render()
+        _ = try page("routing", of: editor)
+        await assertEventually { editor.deviceFields.count == 2 && editor.outputFields.count == 2 }
+        // The header's views are the strips and nothing more: three per device output.
+        let header = editor.matrixHeader.subviews
+        XCTAssertEqual(header.count, 6, "\(header.map { Swift.type(of: $0) })")
+        XCTAssertEqual(editor.matrixCorner.subviews.count, 2, "the main strip: fader and level box, no mute")
+        // The rows: one level box per cue output and the (silent) meter.
+        XCTAssertEqual(editor.matrixRows.subviews.count, editor.outputFields.count + 1)
+        XCTAssertTrue(
+            editor.matrixRows.subviews.allSatisfy { v in v === editor.meter || editor.outputFields.contains { $0 === v }
+            })
+        XCTAssertFalse(editor.meter.drawsIdleTrack, "no blank box where the meter would be")
+        // Across: each strip is centred on its crosspoint column, its level box lined up with the
+        // boxes under it, and the main strip's box over the input boxes.
+        for d in 0..<2 {
+            let column = PatchRoutingView.stripMidX(column: d)
+            let box = editor.matrix.boxRect(row: 0, column: d)
+            XCTAssertEqual(
+                editor.deviceFields[d].frame.minX, box.minX, accuracy: 0.5, "level box \(d + 1) over its boxes")
+            XCTAssertEqual(editor.deviceFields[d].frame.width, box.width, accuracy: 0.5)
+            XCTAssertEqual(editor.deviceFaders[d].frame.midX, column, accuracy: 0.5)
+            XCTAssertEqual(editor.deviceMutes[d].frame.midX, column, accuracy: 0.5)
+            // Top to bottom: fader, mute, level box, none overlapping.
+            XCTAssertLessThanOrEqual(editor.deviceFaders[d].frame.maxY, editor.deviceMutes[d].frame.minY)
+            XCTAssertLessThanOrEqual(editor.deviceMutes[d].frame.maxY, editor.deviceFields[d].frame.minY)
+        }
+        XCTAssertEqual(
+            editor.deviceFields[1].frame.minX - editor.deviceFields[0].frame.minX, PatchRoutingView.cellW)
+        XCTAssertEqual(editor.mainField.frame.minX, editor.outputFields[0].frame.minX, accuracy: 0.5)
+        XCTAssertEqual(editor.mainFader.frame.midX, editor.mainField.frame.midX, accuracy: 0.5)
+        // One box width, as the shot has (its main, input and crosspoint boxes are all 38 to 39 points
+        // wide, 43 to 44 apart): the old page had 54 for the inputs and main and 42 for the rest.
+        let widths =
+            [editor.mainField.frame.width] + editor.outputFields.map(\.frame.width)
+            + editor.deviceFields.map(\.frame.width) + [editor.matrix.boxRect(row: 0, column: 0).width]
+        for w in widths { XCTAssertEqual(w, 39, accuracy: 1, "\(widths)") }
+        XCTAssertEqual(PatchRoutingView.cellW, 43, accuracy: 1, "the shot's columns are 43 to 44 apart")
+        // The levels are centred in their boxes, as the shot's are.
+        let fields = [editor.mainField] + editor.outputFields + editor.deviceFields
+        XCTAssertTrue(
+            (fields + [editor.crosspointField]).allSatisfy { $0.alignment == .center }, "centred levels")
+        // The longest level text still shows whole in a box this wide.
+        for text in ["-120.0", "-inf", "-60.0", "+12.0"] {
+            for f in fields {
+                f.stringValue = text
+                let need = try XCTUnwrap(f.cell).cellSize(forBounds: NSRect(x: 0, y: 0, width: 1000, height: 100)).width
+                XCTAssertLessThanOrEqual(need, f.frame.width, "\(text) fits whole in a level box")
+            }
+        }
+        // A row's label is right-aligned and ends close to its level box (the shot's numbers do), not
+        // at the left edge of the pane.
+        XCTAssertEqual(PatchRoutingView.rowLabelStyle.alignment, .right)
+        let label = PatchRoutingView.rowLabelRect(y: 0)
+        XCTAssertLessThanOrEqual(editor.outputFields[0].frame.minX - label.maxX, 12, "label ends beside its box")
+        XCTAssertGreaterThanOrEqual(editor.outputFields[0].frame.minX, label.maxX)
+        // The level box sits clear of where the meter goes (its own column between the boxes and the
+        // crosspoints, drawn only while sound plays).
+        XCTAssertLessThanOrEqual(editor.outputFields[0].frame.maxX, editor.matrix.meterRect(rows: 2).minX)
+        // Down: the rows' boxes sit on the grid's rows.
+        for row in 0..<2 {
+            XCTAssertEqual(
+                editor.outputFields[row].frame.midY + PatchRoutingView.headerH,
+                editor.matrix.boxRect(row: row, column: 0).midY, accuracy: 0.5,
+                "row \(row + 1)'s level box on its crosspoints")
+        }
+        editor.close()
+    }
+
     /// Checklist: Edit on a row → a patch editor window with the patch name, the cue-output count and
     /// the device at the top, and tabs for cue-output names, the routing matrix (cue outputs down,
     /// device outputs across, a main level) and device outputs.

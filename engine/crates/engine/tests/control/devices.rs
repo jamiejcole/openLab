@@ -2684,6 +2684,8 @@ fn two_patches_on_two_devices_each_play_only_their_own_cue() {
 fn a_new_workspace_has_one_output_patch_whatever_devices_are_connected() {
     let ws = workspace(vec![]);
     let mut c = device_config(&ws);
+    let env = crate::common::env();
+    c.app_dirs = Some(env.dirs.clone());
     c.mixer_patches = 3;
     let devices = vec![
         listed(DEV, DEV_NAME, 2),
@@ -2701,6 +2703,43 @@ fn a_new_workspace_has_one_output_patch_whatever_devices_are_connected() {
         .patch_mapping(new.id, new.patches[0].id)
         .map(|m| (m.device.clone(), m.channels.clone()));
     assert_eq!(m, Some((DEV_NAME.to_owned(), vec![0, 1])));
+
+    // Really saved, then opened on a machine with only the primary device: no patch is reported
+    // missing, because nothing was ever mapped to the devices that are gone.
+    let first = s.control().doc_ids()[0];
+    s.control_mut().close_doc(first, true).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("new.openlab");
+    let id = s.request_id();
+    let target = file.clone();
+    s.send_until(
+        ClientMessage::Request {
+            id,
+            request: Request::SaveAs {
+                path: file.to_string_lossy().into_owned(),
+            },
+        },
+        move |_| target.exists(),
+    );
+    assert!(file.exists(), "the file was written");
+    let machine = s.control().machine().clone();
+    let other = workspace(vec![]);
+    let mut c = device_config(&other);
+    c.app_dirs = Some(env.dirs.clone());
+    c.machine = machine;
+    let mut again = DeviceShow::new(other, vec![listed(DEV, DEV_NAME, 2)], c);
+    let doc = again.open_file(&file);
+    again.wait_wall(Duration::from_secs(1), 1);
+    let msgs = again.take_outbound();
+    let notices = notice_texts(&msgs).unwrap_or_default();
+    assert!(
+        !notices
+            .iter()
+            .any(|(code, _)| code == "patch_device_missing"),
+        "{notices:?}"
+    );
+    let patches = again.control().doc(doc).unwrap().workspace().patches.len();
+    assert_eq!(patches, 1, "the saved file holds one patch");
 }
 
 /// A start on the second device lands on the sample the master date translates to there:

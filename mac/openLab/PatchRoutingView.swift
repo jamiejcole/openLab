@@ -17,10 +17,10 @@ final class PatchRoutingView: NSView {
     /// The strips and their captions: the header is as tall as both.
     static let headerH: CGFloat = 178
     static let labelW: CGFloat = 92
-    static let levelW: CGFloat = 60
+    static let levelW: CGFloat = 45
     /// The meter's column, drawn only while a cue plays through the row: a silent row shows nothing there.
     static let meterW: CGFloat = 20
-    static let cellW: CGFloat = 46
+    static let cellW: CGFloat = 43
     static var crossX: CGFloat { labelW + levelW + meterW }
 
     // The strip's parts, top to bottom, in the header's coordinates.
@@ -121,6 +121,11 @@ final class PatchRoutingView: NSView {
     /// Where a strip's level box goes: as wide as a crosspoint box, so the two line up.
     static func stripBoxFrame(midX: CGFloat) -> NSRect {
         NSRect(x: midX - (cellW - 4) / 2, y: stripBoxY, width: cellW - 4, height: rowH - 2)
+    }
+
+    /// Where the main strip's level box goes: exactly over the cue outputs' level boxes below it.
+    static var mainBoxFrame: NSRect {
+        NSRect(x: labelW + 2, y: stripBoxY, width: levelW - 6, height: rowH - 2)
     }
 
     /// The middle of the strip over device output `column`: the middle of its crosspoint column.
@@ -251,7 +256,7 @@ final class PatchRoutingView: NSView {
     func drawRowLabels(in dirty: NSRect, width: CGFloat) {
         let label: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: Self.truncating,
+            .paragraphStyle: Self.rowLabelStyle,
         ]
         let firstRow = max(0, Int(dirty.minY / Self.rowH))
         let lastRow = min(rowLabels.count - 1, Int(dirty.maxY / Self.rowH))
@@ -262,15 +267,22 @@ final class PatchRoutingView: NSView {
                 NSColor.labelColor.withAlphaComponent(0.04).setFill()
                 NSRect(x: 0, y: y, width: width, height: Self.rowH).fill()
             }
-            draw(rowLabels[row], in: NSRect(x: 4, y: y, width: Self.labelW - 8, height: Self.rowH), label)
+            draw(rowLabels[row], in: Self.rowLabelRect(y: y), label)
         }
     }
 
-    private static let truncating: NSParagraphStyle = {
+    /// A cue output's label sits against its level box, right-aligned.
+    static let rowLabelStyle: NSParagraphStyle = {
         let p = NSMutableParagraphStyle()
         p.lineBreakMode = .byTruncatingTail
+        p.alignment = .right
         return p
     }()
+
+    /// Where a row's label is drawn, in the left pane's coordinates, `y` the row's top.
+    static func rowLabelRect(y: CGFloat) -> NSRect {
+        NSRect(x: 4, y: y, width: labelW - 8, height: rowH)
+    }
 
     private func draw(_ text: String, in r: NSRect, _ attributes: [NSAttributedString.Key: Any]) {
         let s = NSAttributedString(string: text, attributes: attributes)
@@ -323,6 +335,56 @@ final class PatchRoutingView: NSView {
             }
         }
         return parts.joined(separator: ", ")
+    }
+}
+
+/// A level box laid over the routing matrix: drawn as the matrix draws its own boxes (a plain rounded
+/// outline, no bezel), so that its text has room in a box as narrow as a crosspoint's.
+@MainActor
+final class LevelBoxField: NSTextField {
+    override class var cellClass: AnyClass? {
+        get { LevelBoxCell.self }
+        set {}
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        isBezeled = false
+        isBordered = false
+        drawsBackground = false
+        focusRingType = .none
+        wantsLayer = true
+        layer?.cornerRadius = 3
+        layer?.borderWidth = 0.5
+        refreshColours()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    private func refreshColours() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+            layer?.borderColor = NSColor.separatorColor.cgColor
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshColours()
+    }
+}
+
+/// Draws and edits its text in the middle of the box, as the matrix draws its own levels.
+final class LevelBoxCell: NSTextFieldCell {
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        var r = super.drawingRect(forBounds: rect)
+        let h = cellSize(forBounds: r).height
+        if h < r.height {
+            r.origin.y += (r.height - h) / 2
+            r.size.height = h
+        }
+        return r
     }
 }
 
