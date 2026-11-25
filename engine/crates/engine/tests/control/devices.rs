@@ -2701,6 +2701,21 @@ fn a_new_workspace_has_one_output_patch_whatever_devices_are_connected() {
         .patch_mapping(new.id, new.patches[0].id)
         .map(|m| (m.device.clone(), m.channels.clone()));
     assert_eq!(m, Some((DEV_NAME.to_owned(), vec![0, 1])));
+
+    // Saved and opened on a machine with only the primary device: nothing is missing, because
+    // nothing was ever mapped to the devices that are gone.
+    let machine = s.control().machine().clone();
+    let mut c = device_config(&new);
+    c.machine = machine;
+    let mut again = DeviceShow::new(new.clone(), vec![listed(DEV, DEV_NAME, 2)], c);
+    let resolved = resolutions(&mut again);
+    assert_eq!(resolved.len(), 1, "one patch, one row");
+    assert!(
+        matches!(resolved[0], Some(WireResolution::Mapped { .. })),
+        "{resolved:?}"
+    );
+    let warned = logs(&again.take_outbound(), LogLevel::Warn);
+    assert!(warned.is_empty(), "{warned:?}");
 }
 
 /// A start on the second device lands on the sample the master date translates to there:
