@@ -613,15 +613,16 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         let bottom = b.y + b.height
         switch field {
         case regionWidthField, regionHeightField:
-            // No wider than a stage can be, so no sum below can overflow.
-            guard let side = Int(text), (1...16384).contains(side) else {
-                return refuse(loc("stageEditor.badNumber"))
-            }
+            // Any whole number of a pixel or more: `inside` says whether the region still fits, and
+            // no sum here can overflow before it does.
+            guard let side = Int(text), side >= 1 else { return refuse(loc("stageEditor.badNumber")) }
             if field === regionWidthField {
                 b.width = side
             } else {
                 b.height = side
-                b.y = bottom - side
+                let (top, overflow) = bottom.subtractingReportingOverflow(side)
+                guard !overflow else { return refuse(String(format: loc("stageEditor.outside"), stageWidth, stageHeight)) }
+                b.y = top
             }
         default:
             guard let v = Double(text), v.isFinite, abs(v) <= 100_000 else {

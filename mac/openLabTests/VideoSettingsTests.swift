@@ -1400,11 +1400,16 @@ final class VideoSettingsTests: XCTestCase {
         editor.regionChips[1].mouseDown(with: try press(editor))
         XCTAssertEqual(editor.canvas.selected, 1)
         let stage = editor.canvas.stageFrame
-        // A width no stage can hold is refused before any sum (with B at x 1920 it once overflowed
-        // and crashed the app).
-        type("9223372036854775807", into: editor.regionWidthField, editor)
-        XCTAssertEqual(editor.messageLabel.stringValue, loc("stageEditor.badNumber"))
-        XCTAssertEqual(editor.regions[1].bounds.width, 1920)
+        // A size no stage can hold is a number, refused as outside the stage, with no sum overflowing
+        // (with B at x 1920 a width of Int.max once overflowed and crashed the app).
+        let outside = String(format: loc("stageEditor.outside"), 3840, 1080)
+        for field in [editor.regionWidthField, editor.regionHeightField] {
+            for text in ["9223372036854775807", "20000"] {
+                type(text, into: field, editor)
+                XCTAssertEqual(editor.messageLabel.stringValue, outside, "\(text)")
+                XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 1920, height: 1080))
+            }
+        }
         type("960", into: editor.regionWidthField, editor)
         await editorSettled(sc, editor) { editor.regions[1].bounds.width == 960 }
         XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 960, height: 1080))
@@ -1443,6 +1448,28 @@ final class VideoSettingsTests: XCTestCase {
         for _ in 0..<4 { _ = await rig.store.undo() }
         await editorSettled(sc, editor) { editor.regions[1].bounds.x == 1920 }
         XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 1920, height: 1080))
+    }
+
+    /// A region lies inside a stage only when every pixel of it does; the test never overflows, so
+    /// a typed size of any value is judged, not trapped on.
+    func testRegionBoundsInsideAtItsEdges() {
+        let stage = (3840, 1080)
+        func inside(_ x: Int, _ y: Int, _ w: Int, _ h: Int) -> Bool {
+            RegionBounds(x: x, y: y, width: w, height: h).inside(width: stage.0, height: stage.1)
+        }
+        XCTAssertTrue(inside(0, 0, 3840, 1080), "an exact fit")
+        XCTAssertTrue(inside(3839, 1079, 1, 1), "the last pixel")
+        XCTAssertFalse(inside(0, 0, 3841, 1080), "one past the width")
+        XCTAssertFalse(inside(0, 0, 3840, 1081), "one past the height")
+        XCTAssertFalse(inside(1, 0, 3840, 1080), "moved one right")
+        XCTAssertFalse(inside(0, 1, 3840, 1080), "moved one down")
+        XCTAssertFalse(inside(-1, 0, 100, 100), "left of the stage")
+        XCTAssertFalse(inside(0, -1, 100, 100), "above the stage")
+        XCTAssertFalse(inside(0, 0, 0, 10), "no width")
+        XCTAssertFalse(inside(0, 0, 10, 0), "no height")
+        XCTAssertFalse(inside(1920, 0, Int.max, 1080), "Int.max wide, which a sum would overflow")
+        XCTAssertFalse(inside(0, 540, 1920, Int.max), "Int.max high")
+        XCTAssertFalse(inside(Int.max, 0, 1, 1), "at Int.max")
     }
 
     /// #813 G5 (the app's part): G4 → region B's route pop-up set to none: the canvas draws B
