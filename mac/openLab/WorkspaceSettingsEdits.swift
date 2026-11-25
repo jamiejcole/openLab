@@ -92,6 +92,11 @@ final class SettingsField: NSTextField {
         self.key = key
         self.row = row
         super.init(frame: .zero)
+        // One line that scrolls: a port as wide as its field is never wrapped.
+        cell?.wraps = false
+        cell?.isScrollable = true
+        lineBreakMode = .byClipping
+        alignment = .natural
     }
 
     @available(*, unavailable)

@@ -2464,6 +2464,8 @@ final class WorkspaceSettingsTests: XCTestCase {
                 f.maxX, clip.bounds.width + 0.5, "\(v.accessibilityIdentifier()) is cut at the right")
         }
         XCTAssertEqual(window.contentLayoutRect.width, window.contentMinSize.width, accuracy: 0.5)
+        // Every field is one line: a five-digit port is drawn whole, not wrapped.
+        XCTAssertTrue(sc.networkFields.allSatisfy { $0.cell?.wraps == false && $0.cell?.isScrollable == true })
         // A long choice is cut in its middle, so the interface's name always shows.
         let popup = try XCTUnwrap(sc.networkInterfacePopups.first)
         XCTAssertEqual((popup.cell as? NSPopUpButtonCell)?.lineBreakMode, .byTruncatingMiddle)
