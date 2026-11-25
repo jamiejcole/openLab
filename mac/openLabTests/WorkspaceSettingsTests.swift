@@ -168,7 +168,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually("the third patch has no device") {
             sc.model.patches.first { $0.name == third }?.mapping?.device == nil
         }
-        XCTAssertEqual(sc.model.patches.first { $0.name == second }?.mapping?.device, device, "\(second) is not touched")
+        XCTAssertEqual(
+            sc.model.patches.first { $0.name == second }?.mapping?.device, device, "\(second) is not touched")
     }
 
     /// Checklist: a different device is picked in a row while no cue plays → the next cue on that
