@@ -349,8 +349,10 @@ final class VideoUITests: XCTestCase {
         XCTAssertTrue(panel.waitForExistence(timeout: 10), "the file chooser opens")
         app.typeKey("g", modifierFlags: [.command, .shift])
         app.typeText(movie.path + "\r")
-        // Return chooses only once the chooser has gone to the file: its button is off until then.
-        XCTAssertTrue(waitFor("isEnabled == true", panel.buttons["OKButton"]), "the chooser has the movie selected")
+        // Return chooses only once the chooser has gone to the file: its button is off until then. A
+        // slow runner takes several seconds to read the chooser once, so 10 s allows only two looks.
+        XCTAssertTrue(
+            waitFor("isEnabled == true", panel.buttons["OKButton"], timeout: 30), "the chooser has the movie selected")
         app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
         XCTAssertTrue(waitFor("exists == false", panel), "the chooser closes")
         tabButton("I/O", in: app).click()
