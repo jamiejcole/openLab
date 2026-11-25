@@ -641,7 +641,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         // The rows: one level box per cue output and the (silent) meter.
         XCTAssertEqual(editor.matrixRows.subviews.count, editor.outputFields.count + 1)
         XCTAssertTrue(
-            editor.matrixRows.subviews.allSatisfy { v in v === editor.meter || editor.outputFields.contains { $0 === v } })
+            editor.matrixRows.subviews.allSatisfy { v in v === editor.meter || editor.outputFields.contains { $0 === v }
+            })
         XCTAssertFalse(editor.meter.drawsIdleTrack, "no blank box where the meter would be")
         // Across: each strip is centred on its crosspoint column, its level box lined up with the
         // boxes under it, and the main strip's box over the input boxes.
@@ -675,7 +676,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
         // The shot's words: the main strip, the captions.
         XCTAssertEqual(
-            [loc("patchEditor.main"), loc("patchEditor.cueOutputs"), loc("patchEditor.inputs"), loc("patchEditor.crosspoints")],
+            [
+                loc("patchEditor.main"), loc("patchEditor.cueOutputs"), loc("patchEditor.inputs"),
+                loc("patchEditor.crosspoints"),
+            ],
             ["main", "cue outputs", "inputs", "crosspoints"])
     }
 

@@ -2184,7 +2184,8 @@ extension PlayheadFlowTests {
             let ov = wc.cueList.outlineView
             let node = try XCTUnwrap(wc.cueList.node(cue))
             let column = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
-            return try XCTUnwrap(ov.view(atColumn: column, row: ov.row(forItem: node), makeIfNecessary: true) as? CueCell)
+            return try XCTUnwrap(
+                ov.view(atColumn: column, row: ov.row(forItem: node), makeIfNecessary: true) as? CueCell)
         }
         // Every cue that fades or is fading draws the dots in place of the picture; no cell draws the
         // old mark, whichever state its cue is in.
@@ -2217,11 +2218,15 @@ extension PlayheadFlowTests {
 
         // Active Cues: both cues are listed and no row draws a state mark.
         let table = wc.sidebar.activeTable
-        let cells = (0..<table.numberOfRows).compactMap { table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? ActiveCueCell }
+        let cells = (0..<table.numberOfRows).compactMap {
+            table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? ActiveCueCell
+        }
         XCTAssertEqual(cells.count, 2, "the Audio cue and the Fade are listed")
         for cell in cells {
             let marks = allViewsIn(cell).compactMap { $0 as? NSImageView }
-            XCTAssertTrue(marks.isEmpty, "an Active Cues row draws no state picture: \(marks.map { $0.accessibilityLabel() ?? "?" })")
+            XCTAssertTrue(
+                marks.isEmpty,
+                "an Active Cues row draws no state picture: \(marks.map { $0.accessibilityLabel() ?? "?" })")
             let stateImages = allViewsIn(cell).compactMap { ($0 as? NSButton)?.image?.accessibilityDescription }
             XCTAssertFalse(stateImages.contains(loc("cue.state.fading")), "\(stateImages)")
         }
