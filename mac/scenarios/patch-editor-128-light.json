@@ -60,10 +60,7 @@
       "focus": "settings"
     },
     {
-      "resize": [
-        520,
-        552
-      ]
+      "resize": [808, 552]
     },
     {
       "shot": "table-least-size"

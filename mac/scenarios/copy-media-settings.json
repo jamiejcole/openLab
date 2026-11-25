@@ -8,7 +8,7 @@
     {"click": "settings-copy-media"},
     {"advance": 0.1},
     {"shot": "general-copy-on"},
-    {"resize": [680, 552]},
+    {"resize": [808, 552]},
     {"shot": "general-least"}
   ]
 }

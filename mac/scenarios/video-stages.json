@@ -35,10 +35,7 @@
       "shot": "video"
     },
     {
-      "resize": [
-        520,
-        540
-      ]
+      "resize": [808, 552]
     },
     {
       "shot": "video-least-size"

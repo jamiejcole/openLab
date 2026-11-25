@@ -35,10 +35,7 @@
       "shot": "outputs"
     },
     {
-      "resize": [
-        520,
-        540
-      ]
+      "resize": [808, 552]
     },
     {
       "shot": "outputs-least"
@@ -56,10 +53,7 @@
       "shot": "routing"
     },
     {
-      "resize": [
-        520,
-        540
-      ]
+      "resize": [808, 552]
     },
     {
       "shot": "routing-least"
@@ -77,10 +71,7 @@
       "shot": "devices"
     },
     {
-      "resize": [
-        520,
-        540
-      ]
+      "resize": [808, 552]
     },
     {
       "shot": "devices-least"
