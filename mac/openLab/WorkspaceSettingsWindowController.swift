@@ -74,6 +74,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var shownOsc: OscAccessTable?
     /// The last passcode edit on its way to the engine; the next waits for it.
     var oscCommits: Task<Void, Never>?
+    /// The newest action of the patch table (add, remove, device, name) on its way (tests wait for it).
+    var patchActions: Task<Void, Never>?
 
     let networkAddButton = NSButton(title: loc("settings.network.add"), target: nil, action: nil)
     let networkGrid = NSGridView()
