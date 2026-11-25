@@ -87,10 +87,12 @@ extension WorkspaceSettingsWindowController {
     static let networkInterfaceWidth: CGFloat = 136
     /// The widest the Interface column takes, so a usual choice ("en0 (192.168.1.20)") reads whole.
     static let networkInterfaceMost: CGFloat = 164
+    /// Just under required: a grid column takes a new width later than a field does, and a required field
+    /// width wider than its column meanwhile would be dropped by the layout engine.
+    private static let fieldWidthPriority = NSLayoutConstraint.Priority(999)
     /// The columns' widths for the table's width: Interface first takes what is left over the least
     /// widths (up to `networkInterfaceMost`), then Name and Address share the rest, so every column is
-    /// whole at the least window. The fields' widths change before the grid's columns, so no required
-    /// width ever contradicts a column's.
+    /// whole at the least window.
     func fitNetworkColumns() {
         guard let scroll = networkScroll else { return }
         let room = scroll.contentView.bounds.width - 16 - (52 + 64 + 24) - 5 * networkGrid.columnSpacing
@@ -180,6 +182,7 @@ extension WorkspaceSettingsWindowController {
                 f.delegate = self
                 f.identifier = NSUserInterfaceItemIdentifier(column)
                 let w = f.widthAnchor.constraint(equalToConstant: width)
+                w.priority = Self.fieldWidthPriority
                 w.isActive = true
                 if column == "name" {
                     networkNameWidths.append(w)
@@ -202,6 +205,7 @@ extension WorkspaceSettingsWindowController {
             // Cut in the middle: "en0 (192…20)" keeps the interface's name in a narrow column.
             (interface.cell as? NSPopUpButtonCell)?.lineBreakMode = .byTruncatingMiddle
             let interfaceWidth = interface.widthAnchor.constraint(equalToConstant: Self.networkInterfaceWidth)
+            interfaceWidth.priority = Self.fieldWidthPriority
             interfaceWidth.isActive = true
             networkInterfaceWidths.append(interfaceWidth)
             interface.setAX("\(AX.settingsNetwork)-interface-\(n)", label: "")
