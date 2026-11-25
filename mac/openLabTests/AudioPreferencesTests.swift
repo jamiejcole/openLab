@@ -76,25 +76,24 @@ final class AudioPreferencesTests: XCTestCase {
     }
 
     /// A buffer size chosen in a device's pop-up is for that device, even when the engine's list has
-    /// changed (a device came or went) since the row was drawn: it never lands on the device now at
-    /// the pop-up's old place in the list.
+    /// changed since the row was drawn: with two devices, the first unplugged and the list read
+    /// again before the rows are drawn again, the second device is not the one that is changed.
     func testABufferSizeChoiceIsForTheDeviceItsPopUpWasDrawnFor() async throws {
+        try await secondDevice()
         let prefs = try await open()
         let model = try XCTUnwrap(prefs.audio)
-        func list(_ names: [String]) throws -> [DeviceEntry] {
-            let items = names.map { "{\"name\":\"\($0)\",\"output_channels\":2,\"buffer_frames\":512}" }
-            return try JSONDecoder().decode([DeviceEntry].self, from: Data("[\(items.joined(separator: ","))]".utf8))
-        }
-        model.devices = try list(["Alpha", "Beta"])
-        prefs.renderAudio()
-        let alpha = prefs.bufferPopups[0]
-        // The list is read again with a device first, before the rows are drawn again.
-        model.devices = try list(["Beta", "Alpha"])
-        try pick("128", in: alpha)
+        XCTAssertEqual(prefs.bufferPopups.count, 2)
+        let first = prefs.bufferPopups[0]
+        guard case .success = await engine.request(.loseDevice()) else { return XCTFail("lose_device") }
+        try await engine.advance(seconds: 1.5)
+        await model.refresh()
+        XCTAssertEqual(model.devices.map(\.name), [TestEngine.deviceNames[1]], "the list has lost the first device")
+        try pick("128", in: first)
         await prefs.refreshing?.value
-        let said = try XCTUnwrap(model.message, "the engine refuses a device it does not have")
-        XCTAssertTrue(said.contains("Alpha"), "the choice was for Alpha: \(said)")
-        XCTAssertFalse(said.contains("Beta"), "not for Beta: \(said)")
+        let now = try await listed()
+        XCTAssertEqual(
+            now.devices.first { $0.name == TestEngine.deviceNames[1] }?.bufferFrames, 512,
+            "the second device keeps its size")
     }
 
     /// Drawn again, the device table holds only what the engine lists now: the rows of an earlier
