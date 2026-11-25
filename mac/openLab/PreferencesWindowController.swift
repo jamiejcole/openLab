@@ -368,6 +368,8 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
             popup.target = self
             popup.action = #selector(bufferChosen(_:))
             popup.tag = i
+            // The device it was drawn for: the list may be read again before the rows are drawn again.
+            popup.identifier = NSUserInterfaceItemIdentifier(d.name)
             popup.isEnabled = loaded
             bufferPopups.append(popup)
             deviceGrid.addRow(with: [deviceLabel(d.name, details), popup])
@@ -430,10 +432,7 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
     }
 
     @objc private func bufferChosen(_ sender: NSPopUpButton) {
-        guard let audio, audio.devices.indices.contains(sender.tag), let frames = sender.selectedItem?.tag else {
-            return
-        }
-        let device = audio.devices[sender.tag].name
+        guard let audio, let device = sender.identifier?.rawValue, let frames = sender.selectedItem?.tag else { return }
         refreshing = Task {
             await audio.setBufferSize(device, frames: frames)
             renderAudio()

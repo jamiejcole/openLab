@@ -75,6 +75,28 @@ final class AudioPreferencesTests: XCTestCase {
         XCTAssertTrue(prefs.audioMessage.isHidden)
     }
 
+    /// A buffer size chosen in a device's pop-up is for that device, even when the engine's list has
+    /// changed (a device came or went) since the row was drawn: it never lands on the device now at
+    /// the pop-up's old place in the list.
+    func testABufferSizeChoiceIsForTheDeviceItsPopUpWasDrawnFor() async throws {
+        let prefs = try await open()
+        let model = try XCTUnwrap(prefs.audio)
+        func list(_ names: [String]) throws -> [DeviceEntry] {
+            let items = names.map { "{\"name\":\"\($0)\",\"output_channels\":2,\"buffer_frames\":512}" }
+            return try JSONDecoder().decode([DeviceEntry].self, from: Data("[\(items.joined(separator: ","))]".utf8))
+        }
+        model.devices = try list(["Alpha", "Beta"])
+        prefs.renderAudio()
+        let alpha = prefs.bufferPopups[0]
+        // The list is read again with a device first, before the rows are drawn again.
+        model.devices = try list(["Beta", "Alpha"])
+        try pick("128", in: alpha)
+        await prefs.refreshing?.value
+        let said = try XCTUnwrap(model.message, "the engine refuses a device it does not have")
+        XCTAssertTrue(said.contains("Alpha"), "the choice was for Alpha: \(said)")
+        XCTAssertFalse(said.contains("Beta"), "not for Beta: \(said)")
+    }
+
     /// Drawn again, the device table holds only what the engine lists now: the rows of an earlier
     /// drawing are gone, an unplugged device's with them.
     func testReloadingDrawsOnlyTheListedDevices() async throws {
