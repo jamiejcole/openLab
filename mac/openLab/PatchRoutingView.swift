@@ -123,6 +123,11 @@ final class PatchRoutingView: NSView {
         NSRect(x: midX - (cellW - 4) / 2, y: stripBoxY, width: cellW - 4, height: rowH - 2)
     }
 
+    /// Where the main strip's level box goes: exactly over the cue outputs' level boxes below it.
+    static var mainBoxFrame: NSRect {
+        NSRect(x: labelW + 2, y: stripBoxY, width: levelW - 6, height: rowH - 2)
+    }
+
     /// The middle of the strip over device output `column`: the middle of its crosspoint column.
     static func stripMidX(column: Int) -> CGFloat { crossX + (CGFloat(column) + 0.5) * cellW }
 

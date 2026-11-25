@@ -333,7 +333,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         matrixCorner.addSubview(mainFader)
         matrixCorner.addSubview(mainField)
         mainFader.frame = PatchRoutingView.faderFrame(midX: PatchRoutingView.mainMidX)
-        mainField.frame = PatchRoutingView.stripBoxFrame(midX: PatchRoutingView.mainMidX)
+        mainField.frame = PatchRoutingView.mainBoxFrame
         routingNote.font = .systemFont(ofSize: 11)
         routingNote.textColor = .secondaryLabelColor
         routingNote.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)

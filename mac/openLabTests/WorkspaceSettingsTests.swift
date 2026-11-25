@@ -582,6 +582,103 @@ final class WorkspaceSettingsTests: XCTestCase {
         editor.close()
     }
 
+    /// Every view under `root`, hidden or not.
+    private func allViews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(allViews) }
+
+    /// The page of a tab as the editor lays it out.
+    private func page(_ id: String, of editor: PatchEditorWindowController) throws -> NSView {
+        editor.window?.contentView?.layoutSubtreeIfNeeded()
+        let item = editor.tabs.tabViewItem(at: editor.tabs.indexOfTabViewItem(withIdentifier: id))
+        return try XCTUnwrap(item.view)
+    }
+
+    /// Checklist (device outputs page, reference shot window.audio-output-patch-editor.device-outputs):
+    /// the page is a titled row per device output and nothing else a user can set: no mute, no "From"
+    /// text, no slider, no pop-up, no field, however the routing is set (a muted and a lowered
+    /// output are the routing tab's).
+    func testThePatchEditorsDeviceOutputsPageHasOnlyTheTitledRows() async throws {
+        let (rig, sc) = try await open()
+        let editor = try await edit(in: sc)
+        // Routing that once drew extras on this page: a mute and a lowered level.
+        guard
+            case .success = await rig.store.send(
+                command: .setPatchDeviceOutputMute(patch, deviceOutput: 1, mute: true))
+        else { return XCTFail("mute") }
+        guard
+            case .success = await rig.store.send(
+                command: .setPatchDeviceOutputLevel(patch, deviceOutput: 0, db: -6))
+        else { return XCTFail("level") }
+        await assertEventually { editor.matrix.routing.deviceOutput(1).mute }
+        editor.tabs.selectTabViewItem(withIdentifier: "deviceOutputs")
+        editor.render()
+        let page = try page("deviceOutputs", of: editor)
+        let views = allViews(page)
+        let controls = views.filter { $0 is NSControl && !($0 is NSTextField) && !($0 is NSScroller) }
+        XCTAssertTrue(controls.isEmpty, "\(controls.map { Swift.type(of: $0) })")
+        let texts = views.compactMap { $0 as? NSTextField }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        XCTAssertEqual(texts.map(\.stringValue), ["Device output 1:", "Device output 2:"], "titles and nothing else")
+        XCTAssertTrue(texts.allSatisfy { !$0.isEditable && !$0.stringValue.contains("From") })
+        XCTAssertEqual(editor.deviceTitles.count, 2)
+    }
+
+    /// Checklist (routing page, reference shot window.audio-output-patch-editor.patch-routing): the
+    /// main strip over the input boxes has a fader and a level box and no mute; each device output's
+    /// strip has fader, mute and level box centred over its crosspoint column, its box exactly as wide
+    /// and as far across as the crosspoints under it; the captions are the shot's four words; a cue
+    /// output's row is its label, one level box and nothing else, with no blank box beside it while
+    /// no cue sounds.
+    func testThePatchEditorsRoutingPageHasNoStrayBoxAndItsColumnsAndLabelsLineUp() async throws {
+        let (_, sc) = try await open()
+        let editor = try await edit(in: sc)
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        editor.render()
+        _ = try page("routing", of: editor)
+        await assertEventually { editor.deviceFields.count == 2 && editor.outputFields.count == 2 }
+        // The header's views are the strips and nothing more: three per device output.
+        let header = editor.matrixHeader.subviews
+        XCTAssertEqual(header.count, 6, "\(header.map { Swift.type(of: $0) })")
+        XCTAssertEqual(editor.matrixCorner.subviews.count, 2, "the main strip: fader and level box, no mute")
+        // The rows: one level box per cue output and the (silent) meter.
+        XCTAssertEqual(editor.matrixRows.subviews.count, editor.outputFields.count + 1)
+        XCTAssertTrue(
+            editor.matrixRows.subviews.allSatisfy { v in v === editor.meter || editor.outputFields.contains { $0 === v } })
+        XCTAssertFalse(editor.meter.drawsIdleTrack, "no blank box where the meter would be")
+        // Across: each strip is centred on its crosspoint column, its level box lined up with the
+        // boxes under it, and the main strip's box over the input boxes.
+        for d in 0..<2 {
+            let column = PatchRoutingView.stripMidX(column: d)
+            let box = editor.matrix.boxRect(row: 0, column: d)
+            XCTAssertEqual(
+                editor.deviceFields[d].frame.minX, box.minX, accuracy: 0.5, "level box \(d + 1) over its boxes")
+            XCTAssertEqual(editor.deviceFields[d].frame.width, box.width, accuracy: 0.5)
+            XCTAssertEqual(editor.deviceFaders[d].frame.midX, column, accuracy: 0.5)
+            XCTAssertEqual(editor.deviceMutes[d].frame.midX, column, accuracy: 0.5)
+            // Top to bottom: fader, mute, level box, none overlapping.
+            XCTAssertLessThanOrEqual(editor.deviceFaders[d].frame.maxY, editor.deviceMutes[d].frame.minY)
+            XCTAssertLessThanOrEqual(editor.deviceMutes[d].frame.maxY, editor.deviceFields[d].frame.minY)
+        }
+        XCTAssertEqual(
+            editor.deviceFields[1].frame.minX - editor.deviceFields[0].frame.minX, PatchRoutingView.cellW)
+        XCTAssertEqual(editor.mainField.frame.minX, editor.outputFields[0].frame.minX, accuracy: 0.5)
+        XCTAssertEqual(editor.mainField.frame.width, editor.outputFields[0].frame.width, accuracy: 0.5)
+        XCTAssertEqual(editor.mainFader.frame.midX, editor.mainField.frame.midX, accuracy: 0.5)
+        // The level box sits clear of the row's label and of where the meter would be.
+        XCTAssertGreaterThanOrEqual(editor.outputFields[0].frame.minX, PatchRoutingView.labelW)
+        XCTAssertLessThanOrEqual(editor.outputFields[0].frame.maxX, PatchRoutingView.labelW + PatchRoutingView.levelW)
+        XCTAssertLessThanOrEqual(editor.outputFields[0].frame.maxX, editor.matrix.meterRect(rows: 2).minX)
+        // Down: the rows' boxes sit on the grid's rows.
+        for row in 0..<2 {
+            XCTAssertEqual(
+                editor.outputFields[row].frame.midY + PatchRoutingView.headerH,
+                editor.matrix.boxRect(row: row, column: 0).midY, accuracy: 0.5,
+                "row \(row + 1)'s level box on its crosspoints")
+        }
+        // The shot's words: the main strip, the captions.
+        XCTAssertEqual(
+            [loc("patchEditor.main"), loc("patchEditor.cueOutputs"), loc("patchEditor.inputs"), loc("patchEditor.crosspoints")],
+            ["main", "cue outputs", "inputs", "crosspoints"])
+    }
+
     /// Checklist: Edit on a row → a patch editor window with the patch name, the cue-output count and
     /// the device at the top, and tabs for cue-output names, the routing matrix (cue outputs down,
     /// device outputs across, a main level) and device outputs.
