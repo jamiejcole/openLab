@@ -177,6 +177,31 @@ extension WorkspaceSettingsTests {
         XCTAssertEqual(again.oscCodeFields.map(\.stringValue), ["4821", "2222"])
     }
 
+    /// A code committed is the code of the row its field was drawn in, even when another client
+    /// removes a row above it before the commit is carried out (commits wait for the ones before).
+    func testACommittedCodeChangesTheRowItWasTypedIn() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all), ("3333", .all)])
+        await assertEventually { self.shown(sc).count == 4 }
+        // An earlier commit still on its way holds the queue.
+        final class Gate { var open = false }
+        let gate = Gate()
+        sc.oscCommits = Task { while !gate.open { await Task.yield() } }
+        let field = sc.oscCodeFields[1]
+        field.stringValue = "5555"
+        sc.oscCodeCommitted(field)
+        // Meanwhile another client removes the first row; the table is drawn again.
+        guard case .success = await rig.store.send(command: .removeOscPasscode("1111")) else {
+            return XCTFail("remove")
+        }
+        await assertEventually("the table follows") { self.shown(sc).map(\.code) == ["none", "2222", "3333"] }
+        gate.open = true
+        await sc.oscCommits?.value
+        await assertEventually("2222 became 5555, 3333 stayed") { self.codes(rig) == ["5555", "3333"] }
+    }
+
     func testDuplicateCodeRefused() async throws {
         let (rig, wc) = try await newWorkspace()
         let sc = wc.settingsWindow

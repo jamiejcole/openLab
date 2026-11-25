@@ -227,11 +227,11 @@ extension WorkspaceSettingsWindowController {
     /// its field stands for, so leaving one field for the next never drops either.
     func oscCodeCommitted(_ field: NSTextField) {
         let text = field.stringValue
-        let tag = field.tag
+        // The code its row shows now: the table may be drawn again before this commit runs.
+        guard let old = shownOsc?.rows[safe: field.tag]?.passcode else { return }
         let previous = oscCommits
         oscCommits = Task {
             await previous?.value
-            guard let old = shownOsc?.rows[safe: tag]?.passcode else { return }
             let taken = await model.changeOscPasscode(old, to: text)
             // The redraw waits while another code field is being typed in: this one shows the old code now.
             if !taken { field.stringValue = old }
