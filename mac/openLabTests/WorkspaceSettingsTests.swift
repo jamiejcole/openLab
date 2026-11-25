@@ -141,6 +141,36 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(sc.minLimitField.stringValue, "-60")
     }
 
+    /// A patch name holds the caret, so the table is not redrawn when an undo brings a patch back
+    /// above the drawn ones: a device chosen in the row drawn "Patch 3" is Patch 3's, not that of
+    /// the patch now at its place in the list.
+    func testAControlOfADrawnPatchRowActsOnThatPatchWhileANameHoldsTheCaret() async throws {
+        let (rig, sc) = try await open()
+        sc.patchAddButton.performClick(nil)
+        await assertEventually { sc.patchNameFields.count == 2 }
+        sc.patchAddButton.performClick(nil)
+        await assertEventually { sc.patchNameFields.count == 3 }
+        XCTAssertEqual(sc.patchNameFields.map(\.stringValue).count, 3)
+        let second = try XCTUnwrap(sc.patchNameFields[1].stringValue)
+        sc.patchRemoveButtons[1].performClick(nil)
+        await assertEventually { sc.patchNameFields.count == 2 }
+        let third = sc.patchNameFields[1].stringValue
+        // The caret in Main's name; the removal is undone from the workspace.
+        XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
+        _ = await rig.store.undo()
+        try await rig.advance(1.5)
+        await assertEventually("natural reread") { sc.model.patches.count == 3 }
+        XCTAssertEqual(sc.model.patches.map(\.name), ["Main", second, third], "the model has all three")
+        XCTAssertEqual(sc.patchNameFields.map(\.stringValue), ["Main", third], "the table is as drawn")
+        // "No device" chosen in the drawn row of the third patch (a new patch starts on the device).
+        XCTAssertEqual(sc.model.patches.map { $0.mapping?.device }, [device, device, device])
+        try pick(loc("settings.audio.noDevice"), in: sc.patchDevicePopups[1])
+        await assertEventually("the third patch has no device") {
+            sc.model.patches.first { $0.name == third }?.mapping?.device == nil
+        }
+        XCTAssertEqual(sc.model.patches.first { $0.name == second }?.mapping?.device, device, "\(second) is not touched")
+    }
+
     /// Checklist: a different device is picked in a row while no cue plays → the next cue on that
     /// patch is heard on that device; no restart notice is shown. The virtual output is the only
     /// device, so the patch starts on none and is put on it.
