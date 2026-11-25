@@ -159,6 +159,7 @@ extension WorkspaceSettingsWindowController {
         }
         shownPatchTable = state
         placeNewPatchGrid()
+        forget(patchNameFields)
         patchNameFields = []
         patchDevicePopups = []
         patchEditButtons = []
@@ -238,6 +239,7 @@ extension WorkspaceSettingsWindowController {
             problemRow.isHidden = problem.stringValue.isEmpty
             problemRow.topPadding = -4
 
+            remember(name)
             patchNameFields.append(name)
             patchDevicePopups.append(popup)
             patchEditButtons.append(edit)
@@ -326,16 +328,22 @@ extension WorkspaceSettingsWindowController {
     /// A patch name was committed (Return or leaving the field): sent; the engine's name comes back.
     func patchNameCommitted(_ field: NSTextField) {
         guard let row = row(of: field) else { return }
-        let text = field.stringValue
-        // Only clicked into: nothing typed, so nothing to send (it would put the drawn name back
-        // over a rename made meanwhile).
-        guard text != row.name else {
-            // The table may have waited for the caret: drawn once the field is left.
+        guard takeTyped(field) else {
+            // Only clicked into: nothing to send. The table may have waited for the caret.
             patchActions = Task { redrawPatches() }
             return
         }
+        let text = field.stringValue
+        fieldBaselines[ObjectIdentifier(field)] = text
+        let previous = patchActions
         patchActions = Task {
-            await model.renamePatch(row.id, to: text)
+            await previous?.value
+            if await model.renamePatch(row.id, to: text) == false {
+                // Refused: the field shows what the engine has.
+                let now = model.store.model?.patches.first { $0.id == row.id }?.raw["name"]?.stringValue ?? row.name
+                field.stringValue = now
+                fieldBaselines[ObjectIdentifier(field)] = now
+            }
             redrawPatches()
         }
     }

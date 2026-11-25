@@ -74,6 +74,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var shownOsc: OscAccessTable?
     /// The last passcode edit on its way to the engine; the next waits for it.
     var oscCommits: Task<Void, Never>?
+    /// Each text field of the patch, network and OSC tables: the text it was drawn with or last
+    /// committed with (an OSC code field: the code it stands for now).
+    var fieldBaselines: [ObjectIdentifier: String] = [:]
+    /// The fields typed in since they were drawn or last committed.
+    var typedFields: Set<ObjectIdentifier> = []
     /// The newest action of the patch table (add, remove, device, name) on its way (tests wait for it).
     var patchActions: Task<Void, Never>?
 
@@ -453,6 +458,31 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         super.close()
     }
 
+    /// Starts a table field's record: its text now is what the engine has for it.
+    func remember(_ field: NSTextField) { fieldBaselines[ObjectIdentifier(field)] = field.stringValue }
+
+    /// Drops the records of fields a table is about to replace.
+    func forget(_ fields: [NSTextField]) {
+        for f in fields {
+            fieldBaselines[ObjectIdentifier(f)] = nil
+            typedFields.remove(ObjectIdentifier(f))
+        }
+    }
+
+    /// Whether something was typed in the field since it was drawn or last committed, whatever the
+    /// text now equals (typed back to what it was is still typed); clears the mark. A field only
+    /// clicked into sends nothing, so it never puts its text over a change made meanwhile.
+    func takeTyped(_ field: NSTextField) -> Bool {
+        let key = ObjectIdentifier(field)
+        let marked = typedFields.remove(key) != nil
+        return marked || field.stringValue != fieldBaselines[key]
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField, fieldBaselines[ObjectIdentifier(field)] != nil else { return }
+        typedFields.insert(ObjectIdentifier(field))
+    }
+
     /// Return in a field commits it and leaves the window open (the Done button's Return key
     /// would otherwise close the window with the typed text never sent).
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -460,6 +490,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // the field shows the engine's value again and nothing is sent.
         if selector == #selector(NSResponder.cancelOperation(_:)) {
             control.abortEditing()
+            typedFields.remove(ObjectIdentifier(control))
             shownPatchTable = nil
             lastDrawn = nil
             render()

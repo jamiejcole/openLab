@@ -125,6 +125,7 @@ extension WorkspaceSettingsWindowController {
             for c in 0..<last.numberOfCells { last.cell(at: c).contentView?.removeFromSuperview() }
             networkGrid.removeRow(at: networkGrid.numberOfRows - 1)
         }
+        forget(networkFields)
         networkFields = []
         networkTransportPopups = []
         networkInterfacePopups = []
@@ -147,6 +148,7 @@ extension WorkspaceSettingsWindowController {
                 if key == "name" { networkNameWidths.append(w) } else if key == "host" { networkHostWidths.append(w) }
                 f.setAccessibilityIdentifier("\(AX.settingsNetwork)-\(key)-\(n)")
                 f.setAccessibilityLabel("\(row.name), \(loc("settings.network.col.\(key)"))")
+                remember(f)
                 networkFields.append(f)
                 return f
             }
@@ -259,14 +261,14 @@ extension WorkspaceSettingsWindowController {
         guard let rows = shownNetwork, rows.indices.contains(field.tag), let key = field.identifier?.rawValue else {
             return
         }
-        let row = rows[field.tag]
-        let text = field.stringValue
-        let old = key == "name" ? row.name : key == "host" ? row.host : String(row.port)
-        guard text != old else {
-            // The table may have waited for the caret: drawn once the field is left.
+        guard takeTyped(field) else {
+            // Only clicked into: nothing to send. The table may have waited for the caret.
             networkActions = Task { redrawNetwork() }
             return
         }
+        let row = rows[field.tag]
+        let text = field.stringValue
+        fieldBaselines[ObjectIdentifier(field)] = text
         let previous = networkCommits
         networkCommits = Task {
             await previous?.value
@@ -276,7 +278,13 @@ extension WorkspaceSettingsWindowController {
             case "host": taken = await model.setNetworkPatchHost(row.id, text)
             default: taken = await model.setNetworkPatchPort(row.id, text)
             }
-            if !taken { field.stringValue = old }
+            if !taken {
+                // Refused: the field shows what the engine has.
+                let now = model.networkPatches.first { $0.id == row.id } ?? row
+                let value = key == "name" ? now.name : key == "host" ? now.host : String(now.port)
+                field.stringValue = value
+                fieldBaselines[ObjectIdentifier(field)] = value
+            }
             redrawNetwork()
         }
     }

@@ -254,6 +254,147 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(hostsSent(), before + 1)
     }
 
+    /// Types `text` into `field` and leaves the caret there, as keys do (no Return, no Tab yet).
+    func typeKeeping(_ text: String, in field: NSTextField) throws {
+        let window = try XCTUnwrap(field.window)
+        window.makeFirstResponder(field)
+        let editor = try XCTUnwrap(field.currentEditor(), "the field is being edited")
+        editor.string = text
+        (field.delegate as? NSTextFieldDelegate)?.controlTextDidChange?(
+            Notification(name: NSControl.textDidChangeNotification, object: field))
+    }
+
+    private func networkField(_ sc: WorkspaceSettingsWindowController, _ key: String) throws -> NSTextField {
+        try XCTUnwrap(sc.networkFields.first { $0.identifier?.rawValue == key })
+    }
+
+    private func engineNetwork(_ rig: Rig, _ key: String) -> JSONValue? {
+        rig.store.model?.networkPatches.first?.raw[key]
+    }
+
+    private func networkSent(_ rig: Rig) -> Int {
+        rig.wire.commands.filter { $0.json["type"]?.stringValue == "set_network_patch_property" }.count
+    }
+
+    /// The network page with its one destination drawn.
+    private func openNetwork() async throws -> (Rig, WorkspaceSettingsWindowController) {
+        let (rig, sc) = try await open()
+        sc.tabs.selectTabViewItem(withIdentifier: "network")
+        await assertEventually { sc.shownNetwork?.count == 1 }
+        return (rig, sc)
+    }
+
+    /// Typed wrong, Tab to the next field, Shift-Tab back, the right value typed again, Tab on: the
+    /// engine has the right value, whatever the table was drawn with.
+    func testAnAddressTypedWrongThenRightAgainAcrossTabsEndsRightInTheEngine() async throws {
+        let (rig, sc) = try await openNetwork()
+        let original = try XCTUnwrap(engineNetwork(rig, "host")?.stringValue)
+        let host = try networkField(sc, "host")
+        let port = try networkField(sc, "port")
+        try typeKeeping("10.9.9.9", in: host)
+        sc.window?.makeFirstResponder(port)
+        await sc.networkCommits?.value
+        await assertEventually("the wrong address is stored") { engineNetwork(rig, "host")?.stringValue == "10.9.9.9" }
+        try typeKeeping(original, in: host)
+        sc.window?.makeFirstResponder(port)
+        await sc.networkCommits?.value
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("the right address is back") { engineNetwork(rig, "host")?.stringValue == original }
+        XCTAssertEqual(host.stringValue, original)
+    }
+
+    func testAPortTypedWrongThenRightAgainAcrossTabsEndsRightInTheEngine() async throws {
+        let (rig, sc) = try await openNetwork()
+        let original = try XCTUnwrap(engineNetwork(rig, "port")?.doubleValue)
+        let host = try networkField(sc, "host")
+        let port = try networkField(sc, "port")
+        try typeKeeping("9999", in: port)
+        sc.window?.makeFirstResponder(host)
+        await sc.networkCommits?.value
+        await assertEventually("the wrong port is stored") { engineNetwork(rig, "port")?.doubleValue == 9999 }
+        try typeKeeping(String(Int(original)), in: port)
+        sc.window?.makeFirstResponder(host)
+        await sc.networkCommits?.value
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("the right port is back") { engineNetwork(rig, "port")?.doubleValue == original }
+        XCTAssertEqual(port.stringValue, String(Int(original)))
+    }
+
+    /// A field clicked into and left untouched sends nothing and does not put its text over a change
+    /// made meanwhile; Esc drops what was typed and sends nothing.
+    func testAnUntouchedNetworkFieldSendsNothingAndEscRestoresIt() async throws {
+        let (rig, sc) = try await openNetwork()
+        let host = try networkField(sc, "host")
+        let before = networkSent(rig)
+        sc.window?.makeFirstResponder(host)
+        let other = await rig.store.send(
+            command: .setNetworkPatch(try XCTUnwrap(sc.shownNetwork?.first?.id), "host", .string("10.1.1.1")))
+        guard case .success = other else { return XCTFail("another client") }
+        sc.window?.makeFirstResponder(nil)
+        await sc.networkActions?.value
+        XCTAssertEqual(networkSent(rig), before + 1, "only the other client's command")
+        XCTAssertEqual(engineNetwork(rig, "host")?.stringValue, "10.1.1.1")
+        await assertEventually("drawn with the engine's address") {
+            (try? self.networkField(sc, "host"))?.stringValue == "10.1.1.1"
+        }
+        // Esc: typed, then dropped.
+        let again = try networkField(sc, "host")
+        try typeKeeping("172.16.0.9", in: again)
+        _ = sc.control(
+            again, textView: try XCTUnwrap(again.currentEditor() as? NSTextView),
+            doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        sc.window?.makeFirstResponder(nil)
+        await sc.networkActions?.value
+        XCTAssertEqual(networkSent(rig), before + 1, "Esc sent nothing")
+        XCTAssertEqual(engineNetwork(rig, "host")?.stringValue, "10.1.1.1")
+        await assertEventually("the field shows the engine's address") {
+            (try? self.networkField(sc, "host"))?.stringValue == "10.1.1.1"
+        }
+    }
+
+    /// A typed value equal to what the field was drawn with still leaves the engine equal to the field;
+    /// a refused one shows its message and the engine's value.
+    func testATypedNetworkValueNeverLeavesTheEngineDifferentFromTheField() async throws {
+        let (rig, sc) = try await openNetwork()
+        let same = try XCTUnwrap(engineNetwork(rig, "host")?.stringValue)
+        try typeKeeping(same, in: try networkField(sc, "host"))
+        sc.window?.makeFirstResponder(nil)
+        await sc.networkCommits?.value
+        XCTAssertEqual(engineNetwork(rig, "host")?.stringValue, same)
+        XCTAssertEqual(try networkField(sc, "host").stringValue, same)
+        let port = try XCTUnwrap(engineNetwork(rig, "port")?.doubleValue)
+        try typeKeeping("not a port", in: try networkField(sc, "port"))
+        sc.window?.makeFirstResponder(nil)
+        await sc.networkCommits?.value
+        XCTAssertEqual(sc.model.message, loc("settings.network.badPort"))
+        XCTAssertEqual(engineNetwork(rig, "port")?.doubleValue, port)
+        await assertEventually("the port field shows the engine's") {
+            (try? self.networkField(sc, "port"))?.stringValue == String(Int(port))
+        }
+    }
+
+    /// The same sequence for a patch name: typed wrong, to the next name, back, typed right again.
+    func testAPatchNameTypedWrongThenRightAgainAcrossTabsEndsRightInTheEngine() async throws {
+        let (rig, sc) = try await open()
+        sc.patchAddButton.performClick(nil)
+        await assertEventually { sc.patchNameFields.count == 2 }
+        await sc.patchActions?.value
+        let first = sc.patchNameFields[0]
+        let second = sc.patchNameFields[1]
+        func engineName() -> String? { rig.store.model?.patches.first?.raw["name"]?.stringValue }
+        XCTAssertEqual(engineName(), "Main")
+        try typeKeeping("Wrong", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.patchActions?.value
+        await assertEventually("wrong is stored") { engineName() == "Wrong" }
+        try typeKeeping("Main", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.patchActions?.value
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("Main is back") { engineName() == "Main" }
+        XCTAssertEqual(first.stringValue, "Main")
+    }
+
     /// The patch on no device with `count` cue outputs, and the table drawn so.
     private func unmappedPatch(_ sc: WorkspaceSettingsWindowController, count: Int) async {
         await sc.model.setOutputCount(patch, count)

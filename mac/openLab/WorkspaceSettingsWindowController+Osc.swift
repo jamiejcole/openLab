@@ -119,6 +119,7 @@ extension WorkspaceSettingsWindowController {
             for c in 0..<last.numberOfCells { last.cell(at: c).contentView?.removeFromSuperview() }
             oscGrid.removeRow(at: oscGrid.numberOfRows - 1)
         }
+        forget(oscCodeFields)
         oscCodeFields = []
         oscViewBoxes = []
         oscEditBoxes = []
@@ -150,6 +151,7 @@ extension WorkspaceSettingsWindowController {
             delete.isEnabled = enabled
             delete.setAX("\(AX.settingsOsc)-delete-\(n)", label: "\(loc("settings.osc.delete")) \(row.passcode)")
             oscGrid.addRow(with: [field] + boxes + [delete])
+            remember(field)
             oscCodeFields.append(field)
             oscViewBoxes.append(boxes[0])
             oscEditBoxes.append(boxes[1])
@@ -189,8 +191,15 @@ extension WorkspaceSettingsWindowController {
         }
     }
 
+    /// The code row `tag` stands for now: what its field was drawn with or last committed with (the
+    /// table is not drawn again while the caret hops between code fields, so the code the table was
+    /// drawn with may be another row's by now).
+    private func oscCode(ofRow tag: Int) -> String? {
+        oscCodeFields[safe: tag].flatMap { fieldBaselines[ObjectIdentifier($0)] }
+    }
+
     @objc private func oscDeleteClicked(_ sender: NSButton) {
-        guard let code = shownOsc?.rows[safe: sender.tag]?.passcode else { return }
+        guard let code = oscCode(ofRow: sender.tag) else { return }
         Task {
             await model.removeOscPasscode(code)
             redrawOsc()
@@ -208,7 +217,7 @@ extension WorkspaceSettingsWindowController {
     /// Sends what the row's boxes show: boxes clicked in quick succession each carry the others'
     /// new state, not the table's as of the first click.
     @objc private func oscRightToggled(_ sender: NSButton) {
-        guard let code = shownOsc?.rows[safe: sender.tag]?.passcode, oscViewBoxes.indices.contains(sender.tag) else {
+        guard let code = oscCode(ofRow: sender.tag), oscViewBoxes.indices.contains(sender.tag) else {
             return
         }
         let rights = Self.rights(of: [oscViewBoxes[sender.tag], oscEditBoxes[sender.tag], oscControlBoxes[sender.tag]])
@@ -226,15 +235,25 @@ extension WorkspaceSettingsWindowController {
     /// one comes back with a line saying why not. Commits run one after another, each on the row
     /// its field stands for, so leaving one field for the next never drops either.
     func oscCodeCommitted(_ field: NSTextField) {
+        let key = ObjectIdentifier(field)
+        // The code this field stands for now (an earlier commit of it counts as taken until refused).
+        guard let old = fieldBaselines[key] else { return }
+        guard takeTyped(field) else {
+            // Only clicked into: nothing to send. The table may have waited for the caret.
+            oscCommits = Task { redrawOsc() }
+            return
+        }
         let text = field.stringValue
-        // The code its row shows now: the table may be drawn again before this commit runs.
-        guard let old = shownOsc?.rows[safe: field.tag]?.passcode else { return }
+        fieldBaselines[key] = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let previous = oscCommits
         oscCommits = Task {
             await previous?.value
             let taken = await model.changeOscPasscode(old, to: text)
             // The redraw waits while another code field is being typed in: this one shows the old code now.
-            if !taken { field.stringValue = old }
+            if !taken {
+                field.stringValue = old
+                fieldBaselines[key] = old
+            }
             redrawOsc()
         }
     }

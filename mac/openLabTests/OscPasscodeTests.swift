@@ -202,6 +202,88 @@ extension WorkspaceSettingsTests {
         await assertEventually("2222 became 5555, 3333 stayed") { self.codes(rig) == ["5555", "3333"] }
     }
 
+    /// A new code typed, Tab away, back, the old code typed again: the engine has the old code again
+    /// (it is an access code, so the field and the engine must agree), and a third code goes through.
+    func testACodeTypedThenTheOldOneAgainAcrossTabsEndsRightInTheEngine() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all)])
+        await assertEventually { self.shown(sc).count == 3 }
+        let first = sc.oscCodeFields[0]
+        let second = sc.oscCodeFields[1]
+        try typeKeeping("3333", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.oscCommits?.value
+        await assertEventually("3333 is stored") { self.codes(rig) == ["3333", "2222"] }
+        try typeKeeping("1111", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.oscCommits?.value
+        await assertEventually("1111 is back") { self.codes(rig) == ["1111", "2222"] }
+        XCTAssertEqual(first.stringValue, "1111")
+        // A third code goes through too.
+        try typeKeeping("4444", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.oscCommits?.value
+        await assertEventually("4444 is stored") { self.codes(rig) == ["4444", "2222"] }
+        sc.window?.makeFirstResponder(nil)
+        await sc.oscCommits?.value
+        XCTAssertEqual(sc.model.message, nil)
+    }
+
+    /// A code field clicked into and left untouched sends nothing, and Esc drops what was typed.
+    func testAnUntouchedCodeFieldSendsNothingAndEscRestoresIt() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all)])
+        await assertEventually { self.shown(sc).count == 2 }
+        let before = oscCommands(rig).count
+        sc.window?.makeFirstResponder(sc.oscCodeFields[0])
+        sc.window?.makeFirstResponder(nil)
+        await sc.oscCommits?.value
+        XCTAssertEqual(oscCommands(rig).count, before, "untouched: nothing sent")
+        let field = sc.oscCodeFields[0]
+        try typeKeeping("9999", in: field)
+        _ = sc.control(
+            field, textView: try XCTUnwrap(field.currentEditor() as? NSTextView),
+            doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        sc.window?.makeFirstResponder(nil)
+        await sc.oscCommits?.value
+        XCTAssertEqual(oscCommands(rig).count, before, "Esc sent nothing")
+        XCTAssertEqual(codes(rig), ["1111"])
+        await assertEventually("the field shows the engine's code") { sc.oscCodeFields.first?.stringValue == "1111" }
+    }
+
+    /// Codes swapped through the fields (the table is not drawn again while the caret hops): a box
+    /// clicked in a row changes the rights of the code that row shows now, not of the one it was
+    /// drawn with, which another row holds by then.
+    func testARightsBoxActsOnTheCodeItsRowShowsAfterCodesWereRenamedInPlace() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all)])
+        await assertEventually { self.shown(sc).count == 3 }
+        let first = sc.oscCodeFields[0]
+        let second = sc.oscCodeFields[1]
+        try typeKeeping("3333", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.oscCommits?.value
+        try typeKeeping("1111", in: second)
+        sc.window?.makeFirstResponder(first)
+        await sc.oscCommits?.value
+        await assertEventually("renamed in place") { self.codes(rig) == ["3333", "1111"] }
+        XCTAssertEqual(sc.shownOsc?.rows.map(\.passcode), ["1111", "2222"], "the table is as drawn")
+        // The first row's Control box (the row shows 3333 now) is clicked off.
+        sc.oscControlBoxes[0].performClick(nil)
+        await sc.oscCommits?.value
+        await assertEventually("the rights of 3333 changed, 1111's did not") {
+            let rows = self.table(rig).rows
+            return rows.map(\.passcode) == ["3333", "1111"] && rows[0].rights.control == false
+                && rows[1].rights.control == true
+        }
+    }
+
     func testDuplicateCodeRefused() async throws {
         let (rig, wc) = try await newWorkspace()
         let sc = wc.settingsWindow
