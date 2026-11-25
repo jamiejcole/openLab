@@ -89,10 +89,9 @@ sanitize-thread:
 # Subset: core unit tests with a short proptest budget (Miri is ~100x slower). Skipped by name:
 #   too_many_workspaces_are_truncated_quickly: serialises thousands of settings entries; hours under Miri.
 MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly
-# CI only: a local run took 30 GB and the machine rebooted.
+# Outside CI under a memory cap: two local runs once took 30 GB and the machine rebooted.
 miri:
-	@if [ "$$CI" != true ]; then echo "make miri: runs in CI only (it can exhaust this machine's memory)" >&2; exit 1; fi
-	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
+	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" $(if $(filter true,$(CI)),,../scripts/mem-capped.py --gb 4 --) cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
 # Two test processes one after the other: $(1) names the target in messages, $(2) the first selection, $(3)
 # the second. The second does not start after a run cut short by a proven stall (exit 75 of

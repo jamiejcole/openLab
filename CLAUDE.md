@@ -61,8 +61,8 @@ This file is the only copy of every rule below; other files link here instead of
 - Public repo: never copy QLab text, labels, tooltips, icons, artwork or screenshots into the repo, issues or PRs. Describe in our own words; give our controls our own similar names. Never put personal account or machine details in the repo, issues or PRs.
 
 ## The owner's Mac
-- Never run Miri on it, by any command (owner rule 2026-11-25: two agent runs took 30 GB of its 16 GB and it rebooted). Miri runs in CI only; `make miri` refuses elsewhere.
-- Its memory is shared with the owner's virtual machines. A run whose memory use is not known is started alone at its smallest size, watched, and stopped if memory grows out of proportion; two such runs never overlap. An agent ends what it started before it reports, and nothing it did not start.
+- Never run it hard enough to force a reboot (owner rule 2026-11-25: two agent Miri runs took 30 GB of its 16 GB, which it shares with the owner's virtual machines). Miri is allowed, through `make miri`, which caps it at 4 GB and one run at a time outside CI.
+- Any other run whose memory use is not known (a scaling, stress or fuzz experiment, a tool not run here before) goes through `scripts/mem-capped.py`, smallest size first. Exit 86 (killed for memory) or 87 (refused) is a result to report: never raise the cap or go round it.
 - After a gap in a session the orchestrator checks `last reboot` and the JetsamEvent and panic reports before resuming any agent, and rules out the run that caused the stop first.
 
 ## Findings policy
