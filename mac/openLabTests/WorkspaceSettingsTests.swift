@@ -262,7 +262,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually { sc.patchNameFields.count == 2 }
         let other = try XCTUnwrap(rig.store.model?.patches.last?.id)
         XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
-        let removed = await rig.store.send(command: Command(.object(["type": .string("remove_patch"), "id": .string(other.raw)])))
+        let removal = Command(.object(["type": .string("remove_patch"), "id": .string(other.raw)]))
+        let removed = await rig.store.send(command: removal)
         guard case .success = removed else { return XCTFail("remove") }
         XCTAssertEqual(sc.patchNameFields.count, 2, "still drawn")
         sc.patchEditButtons[1].performClick(nil)
