@@ -24,7 +24,7 @@ extension WorkspaceSettingsModel {
     func assignKey(_ key: WorkspaceKey, _ chord: KeyChord) async -> Bool {
         let map = keyMap
         if map.bound[key] == chord {
-            keyRefusal = nil
+            if keyRefusal?.key == key { keyRefusal = nil }
             return true
         }
         let cueHotkeys = store.model?.storedCueHotkeys ?? []
@@ -42,7 +42,7 @@ extension WorkspaceSettingsModel {
     @discardableResult
     func clearKey(_ key: WorkspaceKey) async -> Bool {
         guard keyMap.bound[key] != nil || store.model?.hotkey(key) != nil else {
-            keyRefusal = nil
+            if keyRefusal?.key == key { keyRefusal = nil }
             return true
         }
         return await sendKey(key, nil)
@@ -51,7 +51,7 @@ extension WorkspaceSettingsModel {
     private func sendKey(_ key: WorkspaceKey, _ hotkey: JSONValue?) async -> Bool {
         switch await store.send(command: .setWorkspaceKey(key, hotkey)) {
         case .success:
-            keyRefusal = nil
+            if keyRefusal?.key == key { keyRefusal = nil }
             return true
         case .failure(let e):
             keyRefusal = KeyRefusal(key: key, text: e.detailText)

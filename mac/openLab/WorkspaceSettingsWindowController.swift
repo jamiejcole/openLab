@@ -94,6 +94,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var keyFields: [WorkspaceKey: HotkeyRecorder] = [:]
     var keyClearButtons: [WorkspaceKey: NSButton] = [:]
     var keyReasons: [WorkspaceKey: NSTextField] = [:]
+    /// The action a key was just pressed for: its field is about to be left with it.
+    var keyPressed: WorkspaceKey?
 
     /// The Video pages (stages, their routing to displays, the displays), in their own file.
     let videoPane: VideoSettingsPane
@@ -110,6 +112,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// The operator closed the window: a refusal that comes later brings it back. Not when it went with
     /// its workspace, nor while it was never on screen.
     private var returnsOnRefusal = false
+    /// Another workspace's show is running (its window is in Show Mode); the app says.
+    var showElsewhere: () -> Bool = { false }
+    /// Carries a refusal's reason to the workspace's footer and show log while a show runs, when this
+    /// window must not come in front of it.
+    var onQuietRefusal: (String) -> Void = { _ in }
 
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
@@ -223,7 +230,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// A refusal line is about the tab it came from.
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         syncCategories()
-        edits.forgetRefusals()
+        // A refusal that came while the window was closed is read at its next opening, on any page.
+        if !returnsOnRefusal { edits.forgetRefusals() }
+        for pane in [videoPane, videoRoutingPane] { pane.messageLabel.stringValue = "" }
         model.keyRefusal = nil
         render()
     }
@@ -252,8 +261,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         if changed { window?.contentView?.layoutSubtreeIfNeeded() }
     }
 
-    /// However the window goes (Done, Cmd-W, its close button, with its workspace), what is typed in
-    /// it is committed now, never by the next opening. A refusal brings the window back (`answered`).
+    /// However the operator closes the window (Done, Cmd-W, its close button), what is typed in it is
+    /// committed now, never by the next opening. A refusal brings the window back (`answered`).
     func windowWillClose(_ notification: Notification) {
         window?.makeFirstResponder(nil)
         endRouteEditor()
@@ -272,8 +281,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     @discardableResult
     func present() -> Task<Void, Never> {
         showWindow(nil)
-        // No caret in a field: the next Space (GO, in an operator's hands) would replace its text.
-        window?.makeFirstResponder(nil)
+        // No caret in a field: the next Space (GO, in an operator's hands) would replace its text. One
+        // typed in already keeps it: opening the window again is not leaving the field.
+        if !fieldWithCaretIsTyped { window?.makeFirstResponder(nil) }
         return Task {
             await model.refresh()
             await videoPane.refresh()
@@ -455,7 +465,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     @objc private func doneClicked() { window?.close() }
 
     /// Goes with the workspace (and takes its patch editors along, which otherwise outlive them both).
+    /// The workspace is gone: text still typed is dropped (`commitPendingEdits` came before, in Edit Mode).
     override func close() {
+        if let field = fieldWithCaret {
+            if let field = field as? SettingsField { field.dropTyped() } else { field.abortEditing() }
+        }
         for editor in patchEditors.values { editor.close() }
         for editor in stageEditors.values { editor.close() }
         endRouteEditor()
@@ -463,16 +477,37 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         returnsOnRefusal = false
     }
 
-    /// Commits what is being typed and waits for the engine's answers (Save, Close, Quit). False: an
-    /// edit was refused; the window is in front (not key: GO stays with the workspace) with the reason.
+    /// Commits what is being typed and waits for the engine's answers (entering Show Mode, Close, Quit;
+    /// never Save). False: an edit was refused; the window is in front (not key: GO stays with the
+    /// workspace) with the reason. In Show Mode nothing typed is committed and nothing is refused: only
+    /// the operator leaving a field puts it into a running show.
     func commitPendingEdits() async -> Bool {
+        guard !model.store.showMode else {
+            await edits.answered()
+            return true
+        }
         let mark = edits.mark
+        let panes = [videoPane, videoRoutingPane]
+        let pane = panes.first { pane in pane.nameFields.contains { $0 === fieldWithCaret } }
+        pane?.messageLabel.stringValue = ""
+        // The OSC port is the machine's: another workspace's show may be run over it.
+        if oscPortField.isHeld, showElsewhere() { oscPortField.dropTyped() }
         endTyping()
         await edits.answered()
-        for pane in [videoPane, videoRoutingPane] { await pane.pending?.value }
-        guard edits.refusedSince(mark) else { return true }
-        if window?.isVisible == true || returnsOnRefusal { showAgain() }
+        for pane in panes { await pane.pending?.value }
+        let paneRefusal = pane?.messageLabel.stringValue ?? ""
+        guard edits.refusedSince(mark) || !paneRefusal.isEmpty else { return true }
+        if window?.isVisible == true || returnsOnRefusal { bringBack(model.message ?? paneRefusal) }
         return false
+    }
+
+    /// The text field that holds the caret.
+    private var fieldWithCaret: NSTextField? {
+        (window?.firstResponder as? NSTextView)?.delegate as? NSTextField
+    }
+
+    private var fieldWithCaretIsTyped: Bool {
+        window?.isVisible == true && (fieldWithCaret as? SettingsField)?.isTyped == true
     }
 
     /// Ends the typing in whichever field holds the caret, which commits it.
@@ -490,11 +525,13 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     private func answered(refused: Bool) {
         redraw()
         // Refused after the window was closed: the operator still sees what the engine has and why.
-        if refused, returnsOnRefusal { showAgain() }
+        if refused, returnsOnRefusal { bringBack(model.message ?? "") }
     }
 
-    /// In front without taking the keys.
-    private func showAgain() {
+    /// In front without taking the keys. Never while a show runs: a click landing on it would take GO
+    /// away; the reason goes to the footer and the show log, and stays here for the next opening.
+    private func bringBack(_ reason: String) {
+        guard !model.store.showMode, !showElsewhere() else { return onQuietRefusal(reason) }
         returnsOnRefusal = false
         trackMenus()
         window?.orderFront(nil)
@@ -515,7 +552,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // Esc drops what was typed (the app has already panicked, which Esc does from any window):
         // the field shows the engine's value again and nothing is sent.
         if selector == #selector(NSResponder.cancelOperation(_:)) {
-            (control as? SettingsField)?.dropTyped()
+            if let field = control as? SettingsField {
+                field.dropTyped()
+                edits.forgetRefusal(of: field.key)
+            }
             redraw()
             return true
         }
@@ -534,6 +574,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 if row != nil, engineText() == nil { return model.rowGone() }
                 return await send(text)
             }
+        } else if !edits.isWaiting(field.key) {
+            edits.forgetRefusal(of: field.key)
         }
         // The caret has left: rows that waited for it are drawn, once the editing has ended.
         DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.redraw() } }

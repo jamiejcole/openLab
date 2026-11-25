@@ -375,6 +375,22 @@ final class VideoSettingsTests: XCTestCase {
         }
     }
 
+    /// A size typed in a stage editor is committed as its window goes, not at its next opening.
+    func testASizeTypedInTheStageEditorIsSentWhenItsWindowGoes() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        await settled(sc) { sc.videoPane.nameFields.count == 1 }
+        let editor = sc.openStageEditor(ModelID(stageA))
+        let window = try XCTUnwrap(editor.window)
+        window.makeFirstResponder(editor.layerField)
+        editor.layerField.currentEditor()?.string = "5"
+        window.performClose(nil)
+        await assertEventually("sent") { rig.store.model?.stages.first?.raw["layer"]?.doubleValue == 5 }
+        let sent = rig.wire.commands.count
+        sc.openStageEditor(ModelID(stageA))
+        await settle()
+        XCTAssertEqual(rig.wire.commands.count, sent, "the opening sends nothing")
+    }
+
     /// Starts typing `text` in `field` of the shown Video page (not committed).
     private func startTyping(_ text: String, in field: NSTextField, _ sc: WorkspaceSettingsWindowController) throws {
         sc.tabs.selectTabViewItem(withIdentifier: "video")

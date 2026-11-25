@@ -587,8 +587,6 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
         await assertEventually { !sc.oscCodeFields.isEmpty }
         let window = try XCTUnwrap(sc.window)
-        // With the app in front, AppKit orders a closed window in again for a field of it that changes.
-        NSApp.activate(ignoringOtherApps: true)
         let ways: [(String, () -> Void)] = [
             ("Done", { sc.doneButton.performClick(nil) }), ("Close", { window.performClose(nil) }),
             ("close", { window.close() }),
@@ -633,7 +631,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         let before = sc.panicField.stringValue
         try typeKeeping("sixty", in: sc.panicField)
         sc.doneButton.performClick(nil)
-        let why = String(format: loc("settings.general.outOfRange"), 0.0, 60.0)
+        let why = sc.model.rangeText(0...60)
         await assertEventually("shown again with the reason") {
             window.isVisible && sc.messageLabel.stringValue == why && sc.panicField.stringValue == before
         }
@@ -652,11 +650,156 @@ final class WorkspaceSettingsTests: XCTestCase {
         for sc in [unshown, shown] {
             sc.show(page: .general)
             try typeKeeping("sixty", in: sc.panicField)
-            if sc === shown { sc.close() } else { sc.window?.makeFirstResponder(nil) }
+            sc.window?.makeFirstResponder(nil)
+            if sc === shown { sc.close() }
             await sc.edits.answered()
             XCTAssertNotNil(sc.model.message)
             XCTAssertFalse(sc.window?.isVisible == true)
         }
+    }
+
+    /// AppKit orders a closed window in again when a field last typed in has `enabled` set, the same value
+    /// too (it watches the key). What can be shown without an active app: after the commit and the
+    /// redraws that follow it, nothing is set on the field that did not change.
+    func testACommittedFieldIsNotSetAgainToWhatItIs() async throws {
+        let (_, sc) = try await open()
+        for (field, page) in [
+            (sc.panicField, SettingsPage.general), (sc.maxLimitField, .audio), (sc.patchNameFields[0], .audio),
+            (sc.networkFields[1], .network),
+        ] {
+            await sc.present().value
+            sc.show(page: page)
+            var set: [String] = []
+            let watches = [
+                field.observe(\.isEnabled) { _, _ in MainActor.assumeIsolated { set.append("enabled") } },
+                field.observe(\.isEditable) { _, _ in MainActor.assumeIsolated { set.append("editable") } },
+                field.observe(\.isHidden) { _, _ in MainActor.assumeIsolated { set.append("hidden") } },
+            ]
+            try typeKeeping("7", in: field)
+            sc.doneButton.performClick(nil)
+            await sc.edits.answered()
+            await settle()
+            sc.redraw()
+            XCTAssertEqual(set, [], "\(page) \(field.key)")
+            watches.forEach { $0.invalidate() }
+        }
+    }
+
+    /// Text typed in a field that stops being usable (another client turned it off) stays there, unsent,
+    /// until the operator leaves the field.
+    func testAFieldTurnedOffWhileTypedInCommitsOnlyWhenItIsLeft() async throws {
+        let (rig, sc) = try await open()
+        sc.show(page: .general)
+        try typeKeeping("5", in: sc.autoNumberField)
+        let sent = commands(rig).count
+        guard case .success = await rig.store.send(command: .setSwitch(.autoNumberNewCues, false)) else {
+            return XCTFail()
+        }
+        await assertEventually { sc.autoNumberCheck.state == .off }
+        await settle()
+        XCTAssertEqual(commands(rig).count, sent + 1, "only the switch")
+        XCTAssertEqual(sc.autoNumberField.currentEditor()?.string, "5", "the typing goes on")
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(sc.model.autoNumberStep, 5)
+        await assertEventually("off now that it is left") { !sc.autoNumberField.isEnabled }
+    }
+
+    // MARK: How long a refusal stays up
+
+    /// Esc, leaving the field with the engine's value, and another page take a refusal away.
+    func testARefusalGoesWhenItsFieldIsRevertedOrLeftOrThePageIsChanged() async throws {
+        let (_, sc) = try await open()
+        sc.show(page: .general)
+        func refuse() async throws {
+            try typeKeeping("sixty", in: sc.panicField)
+            sc.window?.makeFirstResponder(nil)
+            await assertEventually { sc.messageLabel.stringValue == sc.model.rangeText(0...60) }
+        }
+        try await refuse()
+        try typeKeeping("61", in: sc.panicField)
+        _ = sc.control(
+            sc.panicField, textView: try XCTUnwrap(sc.panicField.currentEditor() as? NSTextView),
+            doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertEqual(sc.messageLabel.stringValue, "", "Esc")
+        try await refuse()
+        sc.window?.makeFirstResponder(sc.panicField)
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("left untouched") { sc.messageLabel.stringValue.isEmpty }
+        try await refuse()
+        try typeKeeping("0.5", in: sc.panicField)
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("the old value typed") { sc.messageLabel.stringValue.isEmpty }
+        try await refuse()
+        sc.show(page: .audio)
+        XCTAssertEqual(sc.messageLabel.stringValue, "", "another page")
+        // The Video pages' own line.
+        sc.videoPane.messageLabel.stringValue = "a refusal"
+        sc.show(page: .video)
+        sc.show(page: .general)
+        XCTAssertEqual(sc.videoPane.messageLabel.stringValue, "")
+    }
+
+    /// An edit of something else, a check box too, leaves a field's refusal up; a check box clicked goes
+    /// out after the edits before it.
+    func testAnUnrelatedEditLeavesARefusalUpAndACheckBoxWaitsItsTurn() async throws {
+        let (rig, sc) = try await open()
+        sc.show(page: .general)
+        try typeKeeping("sixty", in: sc.panicField)
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        for box in [sc.keyUpCheck, sc.autoLoadCheck] {
+            box.performClick(nil)
+            await sc.edits.answered()
+            XCTAssertEqual(sc.model.message, sc.model.rangeText(0...60))
+        }
+        try typeKeeping("3", in: sc.goIntervalField)
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(sc.model.message, sc.model.rangeText(0...60))
+        // In order behind an unanswered edit, shown as clicked meanwhile.
+        rig.wire.holdResults = true
+        let sent = commands(rig).count
+        try typeKeeping("4", in: sc.goIntervalField)
+        sc.lockPlayheadCheck.performClick(nil)
+        sc.oscEnabledCheck.performClick(nil)
+        await settle()
+        XCTAssertEqual(commands(rig).count, sent + 1, "the boxes wait")
+        sc.redraw()
+        XCTAssertEqual([sc.lockPlayheadCheck.state, sc.oscEnabledCheck.state], [.off, .off], "as clicked")
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(rig.store.isOn(.lockPlayhead), false)
+        XCTAssertEqual(rig.store.isOn(.oscEnabled), false)
+    }
+
+    /// A range is said in plain numbers.
+    func testARangeIsSaidInPlainNumbers() async throws {
+        let (_, sc) = try await open()
+        let ok = await sc.model.setAutoNumberStep("0")
+        XCTAssertFalse(ok)
+        let text = try XCTUnwrap(sc.model.message)
+        XCTAssertTrue(text.contains("0.001") && text.contains("1000000") && !text.contains("e+"), text)
+    }
+
+    // MARK: The editors' windows
+
+    /// Text typed in a patch editor is committed as its window goes, not at its next opening (which may
+    /// be during a show).
+    func testALevelTypedInThePatchEditorIsSentWhenItsWindowGoesAndNotAtTheNextOpening() async throws {
+        let (rig, sc) = try await open()
+        let editor = try await edit(in: sc)
+        let window = try XCTUnwrap(editor.window)
+        window.makeFirstResponder(editor.mainField)
+        editor.mainField.currentEditor()?.string = "-7"
+        editor.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: editor.mainField))
+        window.performClose(nil)
+        await assertEventually("sent") { self.patchLevels(rig).main == -7 }
+        let sent = commands(rig).count
+        sc.patchEditButtons[0].performClick(nil)
+        await editor.editing?.value
+        await settle()
+        XCTAssertEqual(commands(rig).count, sent, "the opening sends nothing")
     }
 
     /// The General page's number fields: only clicked into, they send nothing over a change made
@@ -2562,7 +2705,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(commands(rig).count, count, "nothing out of range is sent")
         XCTAssertEqual(sc.model.panicDuration, 7.5)
         sc.render()
-        XCTAssertEqual(sc.messageLabel.stringValue, String(format: loc("settings.general.outOfRange"), 0.0, 60.0))
+        XCTAssertEqual(sc.messageLabel.stringValue, sc.model.rangeText(0...60))
     }
 
     func testTheGoIntervalSendsItsOwnSetting() async throws {

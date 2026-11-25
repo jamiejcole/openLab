@@ -251,7 +251,7 @@ extension WorkspaceSettingsWindowController {
 
     func renderOscAccess() {
         let on = model.isOn(.oscEnabled)
-        oscEnabledCheck.state = on == true ? .on : .off
+        drawBox(oscEnabledCheck, on)
         oscEnabledCheck.isEnabled = on != nil
         let listening = model.oscListening
         oscPortField.allow(enabled: listening != nil)
@@ -284,10 +284,6 @@ extension WorkspaceSettingsWindowController {
     }
 
     @objc private func oscEnabledClicked() {
-        let on = oscEnabledCheck.state == .on
-        Task { [weak self] in
-            await self?.model.setOscEnabled(on)
-            self?.redraw()
-        }
+        boxClicked(oscEnabledCheck) { [model] in await model.setOscEnabled($0) }
     }
 }

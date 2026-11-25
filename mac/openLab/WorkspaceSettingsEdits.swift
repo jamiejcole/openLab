@@ -12,8 +12,10 @@ final class SettingsEdits {
     private var unanswered = 0
     /// What each control waits to hear about, oldest first (a field's texts; nil for a box or pop-up).
     private var waiting: [String: [String?]] = [:]
-    /// The refusals of this burst of edits: an edit of something else that is taken does not hide them.
-    private var refused: [(key: String, text: String, serial: Int)] = []
+    /// The refusals shown until their control's next edit is taken, its field is reverted or left, or the
+    /// page is: an edit of something else does not hide them. One with no field to revert (`passing`: a
+    /// button's, a row's that is gone) goes at the next edit.
+    private var refused: [(key: String, text: String, serial: Int, passing: Bool)] = []
     private var serial = 0
     /// Called after each answer; true when it was a refusal.
     var onAnswer: @MainActor (Bool) -> Void = { _ in }
@@ -24,10 +26,11 @@ final class SettingsEdits {
     /// `key` names the control it came from, which goes on showing it (`text`) until it is answered.
     func add(_ key: String, showing text: String? = nil, _ step: @escaping @MainActor () async -> Bool) {
         if unanswered == 0 {
-            refused = []
-            model.message = nil
+            refused.removeAll(where: \.passing)
+            model.message = refused.last?.text
         }
         unanswered += 1
+        let isField = text != nil
         waiting[key, default: []].append(text)
         let previous = last
         last = Task { [self] in
@@ -37,7 +40,8 @@ final class SettingsEdits {
             refused.removeAll { $0.key == key }
             if !taken {
                 serial += 1
-                refused.append((key, model.message ?? "", serial))
+                let text = model.message ?? ""
+                refused.append((key, text, serial, !isField || text == loc("settings.rowGone")))
             }
             if let newest = refused.last {
                 model.message = newest.text
@@ -64,6 +68,13 @@ final class SettingsEdits {
     var mark: Int { serial }
     /// Whether an edit answered since `mark` was refused and not made good by a later one.
     func refusedSince(_ mark: Int) -> Bool { refused.contains { $0.serial > mark } }
+
+    /// The field `key` shows the engine's value again by the operator's doing: its refusal is done with.
+    func forgetRefusal(of key: String) {
+        guard refused.contains(where: { $0.key == key }) else { return }
+        refused.removeAll { $0.key == key }
+        model.message = refused.last?.text
+    }
 
     /// The page or the window the refusals were about is left.
     func forgetRefusals() {
@@ -106,13 +117,15 @@ final class SettingsField: NSTextField {
     var isHeld: Bool { currentEditor() != nil }
     private var text: String { currentEditor()?.string ?? stringValue }
     /// Something was typed since it was drawn or committed, also when the text is the old one again.
-    private var isTyped: Bool { marked || text != drawn }
+    var isTyped: Bool { marked || text != drawn }
 
     func markTyped() { marked = true }
 
     /// Whether it can be used (or typed in); set only on a change. AppKit watches a field last typed in, and
-    /// setting one of these, even to the same value, orders its window in again when that is closed.
+    /// setting one of these, even to the same value, orders its window in again when that is closed. Not
+    /// while it holds the caret: AppKit would end the typing, at a moment the operator did not choose.
     func allow(enabled: Bool? = nil, editable: Bool? = nil) {
+        if isHeld { return }
         if let enabled, isEnabled != enabled { isEnabled = enabled }
         if let editable, isEditable != editable { isEditable = editable }
     }

@@ -125,12 +125,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         return pc
     }
     private var settingsController: WorkspaceSettingsWindowController?
+    /// Another workspace's window is in Show Mode (the app says).
+    var showElsewhere: () -> Bool = { false }
     /// The settings window if it was ever made.
     var existingSettingsWindow: WorkspaceSettingsWindowController? { settingsController }
     /// The workspace settings window, made on first use. It closes with this window.
     var settingsWindow: WorkspaceSettingsWindowController {
         if let sc = settingsController { return sc }
         let sc = WorkspaceSettingsWindowController(store: store)
+        sc.onQuietRefusal = { [weak self] in self?.quietNotice($0, error: true) }
+        sc.showElsewhere = { [weak self] in self?.showElsewhere() ?? false }
         settingsController = sc
         return sc
     }
@@ -419,15 +423,19 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private(set) var isShowMode = false
 
     /// The operator asked for a mode (switch, menu). Entering Show Mode first commits what is typed
-    /// in the inspector, like Save and Close; if that is invalid or refused the window stays in
-    /// Edit Mode with the field's message showing, so it never locks over unsaved text.
+    /// in the inspector and in the settings window, so neither takes effect during the show; if that is
+    /// invalid or refused the window stays in Edit Mode with the field's message showing.
     func requestShowMode(_ on: Bool) async {
         enteringShowMode = on
         defer { enteringShowMode = false }
-        if on, !isShowMode, await !commitPendingEdits() {
-            NSSound.beep()
-            footer.setShowMode(false)
-            return
+        if on, !isShowMode {
+            var committed = await commitPendingEdits()
+            if committed { committed = await settingsController?.commitPendingEdits() ?? true }
+            guard committed else {
+                NSSound.beep()
+                footer.setShowMode(false)
+                return
+            }
         }
         setShowMode(on)
     }

@@ -28,6 +28,9 @@ extension AppController {
             }
             wc.onCueAction = { [weak self] action in Task { await self?.run(action, on: store) } }
             wc.onRelink = { [weak self] in Task { await self?.findMissingFiles(on: store) } }
+            wc.showElsewhere = { [weak self, weak wc] in
+                self?.controllers.values.contains { $0 !== wc && $0.isShowMode } ?? false
+            }
             controllers[ObjectIdentifier(store)] = wc
             // The edited dot follows the store's own document state: the engine's workspace list can
             // publish before this window exists (a recovered autosave arrives dirty), and the list

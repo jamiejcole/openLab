@@ -287,9 +287,8 @@ extension WorkspaceSettingsWindowController {
         let choice = sender.selectedItem?.representedObject
         act(Self.patchKey(id, "device")) { [model] in
             guard let row = model.patchRows.first(where: { $0.id == id }) else { return model.rowGone() }
-            model.message = nil
-            await model.choose(choice, for: row)
-            return model.message == nil
+            return choice is SystemOutputChoice
+                ? await model.setSystemOutput(row) : await model.setMapping(row, device: choice as? String)
         }
     }
 
@@ -302,7 +301,7 @@ extension WorkspaceSettingsWindowController {
     /// Opens the patch editor of `patch` (one window per patch; a second Edit brings it forward).
     @discardableResult
     func openPatchEditor(_ patch: ModelID) -> PatchEditorWindowController {
-        let editor = patchEditors[patch] ?? PatchEditorWindowController(model: model, patch: patch)
+        let editor = patchEditors[patch] ?? commitsAsItGoes(PatchEditorWindowController(model: model, patch: patch))
         patchEditors[patch] = editor
         patchEditor = editor
         if presentsEditors { editor.present() } else { editor.reread() }

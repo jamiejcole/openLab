@@ -353,16 +353,18 @@ final class WorkspaceSettingsModel: ObservableObject {
     /// Puts `row` on `device`, output i on device output `channels[i]` (default: cue output n on
     /// device output n for as many as the device has, the rest with none, as QLab routes them);
     /// nil `device` clears it (the engine pauses the cues playing through the patch, as
-    /// QLab does). A cue playing through the patch moves to the new device at once.
-    func setMapping(_ drawn: PatchRow, device: String?, channels: [UInt32]? = nil) async {
-        guard let row = await current(drawn) else { return }
+    /// QLab does). A cue playing through the patch moves to the new device at once. False, with a
+    /// message, when it was refused or the patch is gone.
+    @discardableResult
+    func setMapping(_ drawn: PatchRow, device: String?, channels: [UInt32]? = nil) async -> Bool {
+        guard let row = await current(drawn) else { return false }
         // The popup fires its action when the same device is picked again; that must not reset
         // the routing the show was built with to the first outputs.
         // A routing of another length than the patch (it cannot play) is sent again, though.
         if channels == nil, row.mapping?.system != true, device == row.mapping?.device,
             let count = row.mapping?.channels.count, (1...max(1, row.outputCount)).contains(count)
         {
-            return
+            return true
         }
         var mapping: PatchMapping?
         if let device {
@@ -370,41 +372,45 @@ final class WorkspaceSettingsModel: ObservableObject {
             let chosen = channels ?? Self.firstOutputs(row.outputCount, usable)
             guard (1...max(1, row.outputCount)).contains(chosen.count), chosen.allSatisfy({ Int($0) < usable }) else {
                 message = String(format: loc("settings.audio.tooFewChannels"), device, row.outputCount, usable)
-                return
+                return false
             }
             mapping = PatchMapping(device: device, channels: chosen)
         }
-        _ = await sendMapping(row, mapping)
+        return await sendMapping(row, mapping)
     }
 
     /// Puts `row` on the system output (QLab 5 manual p. 7): it plays on whichever device the Mac's
     /// output is, also when that changes. Its outputs are checked against that device now.
-    func setSystemOutput(_ drawn: PatchRow, channels: [UInt32]? = nil) async {
-        guard let row = await current(drawn) else { return }
+    @discardableResult
+    func setSystemOutput(_ drawn: PatchRow, channels: [UInt32]? = nil) async -> Bool {
+        guard let row = await current(drawn) else { return false }
         if channels == nil, row.mapping?.system == true, let count = row.mapping?.channels.count,
             (1...max(1, row.outputCount)).contains(count)
         {
-            return
+            return true
         }
         guard let device = systemOutputDevice else {
             message = loc("settings.audio.systemOutputMissing")
-            return
+            return false
         }
         let usable = usableChannels(of: device.name)
         let chosen = channels ?? Self.firstOutputs(row.outputCount, usable)
         guard (1...max(1, row.outputCount)).contains(chosen.count), chosen.allSatisfy({ Int($0) < usable }) else {
             message = String(format: loc("settings.audio.tooFewChannels"), device.name, row.outputCount, usable)
-            return
+            return false
         }
-        _ = await sendMapping(row, .systemOutput(channels: chosen))
+        return await sendMapping(row, .systemOutput(channels: chosen))
     }
 
     /// The patch as it is now, read from the engine: a row drawn earlier (a name holds the caret, an
     /// undo came since) may show another cue output count or routing, and a mapping sent for that
-    /// would leave a cue output without a route. Nil, with the list read again, when the patch is gone.
+    /// would leave a cue output without a route. Nil, with the list read again and a message, when the
+    /// patch is gone.
     func current(_ drawn: PatchRow) async -> PatchRow? {
         await refresh()
-        return patches.first { $0.id == drawn.id }
+        if let row = patches.first(where: { $0.id == drawn.id }) { return row }
+        _ = rowGone()
+        return nil
     }
 
     /// Cue output n on device output n, for as many as both have.
@@ -471,10 +477,16 @@ final class WorkspaceSettingsModel: ObservableObject {
         return await setNumber(type, trimmed, range)
     }
 
+    /// Why a number outside `range` is refused, in plain digits.
+    func rangeText(_ range: ClosedRange<Double>) -> String {
+        func plain(_ n: Double) -> String { n == n.rounded() ? String(Int(n)) : String(n) }
+        return String(format: loc("settings.general.outOfRange"), plain(range.lowerBound), plain(range.upperBound))
+    }
+
     func setNumber(_ type: String, _ text: String, _ range: ClosedRange<Double>) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard let value = Double(trimmed), value.isFinite, range.contains(value) else {
-            message = String(format: loc("settings.general.outOfRange"), range.lowerBound, range.upperBound)
+            message = rangeText(range)
             return false
         }
         // The value is the one the engine has (the field was only left, or the old value typed

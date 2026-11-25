@@ -201,5 +201,5 @@ extension WorkspaceSettingsModel {
     }
 
     /// Turns OSC access to this workspace on or off.
-    func setOscEnabled(_ on: Bool) async { await setSwitch(.oscEnabled, on) }
+    func setOscEnabled(_ on: Bool) async -> Bool { await setSwitch(.oscEnabled, on) }
 }
