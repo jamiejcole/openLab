@@ -928,6 +928,33 @@ final class CueHotkeyFiringTests: XCTestCase {
         await assertEventually { await self.hotkeys() == 3 }
     }
 
+    /// With the workspace status window the key window, Esc panics the running cue and leaves the
+    /// window open, and Space fires no GO; with the workspace window key, Space does.
+    func testWithTheStatusWindowKeyEscPanicsTheRunningCueAndSpaceFiresNoGo() async throws {
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        keyDoc = demoDoc
+        XCTAssertNil(app.handleKeyDown(try event(" ", code: 49)), "GO, the workspace window key")
+        await assertEventually { await self.triggers("transport go") == 1 }
+        try await run()
+        await assertEventually { self.playing(self.first, self.intro) }
+
+        await wc.showWorkspaceStatus().value
+        let panel = try XCTUnwrap(wc.existingStatusWindow?.window)
+        app.keyWindow = { panel }
+        let space = try event(" ", code: 49)
+        XCTAssertTrue(app.handleKeyDown(space) === space, "left to the status window")
+
+        let esc = try event("\u{1B}", code: 53)
+        XCTAssertTrue(app.handleKeyDown(esc) === esc)
+        panel.sendEvent(esc)  // as the app does with the key the monitor gave back
+        await assertEventually { await self.triggers("panic") == 1 }
+        try await engine.advance(seconds: 1)  // past the show's 0.5 s panic fade
+        await assertEventually("Esc panicked Intro") { !self.playing(self.first, self.intro) }
+        XCTAssertTrue(panel.isVisible, "Esc left the status window open")
+        let goes = await triggers("transport go")
+        XCTAssertEqual(goes, 1, "Space with the status window key fired no GO")
+    }
+
     func testEscStillPanicsWhateverTheCueHotkeys() async throws {
         _ = await first.send(
             command: .setProperty(intro, .triggers(hotkey: KeyChord(KeyChord.escape).hotkeyJSON, enabled: true)))
