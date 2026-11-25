@@ -681,7 +681,7 @@ final class WorkspaceSettingsTests: XCTestCase {
             await settle()
             sc.redraw()
             XCTAssertEqual(set, [], "\(page) \(field.key)")
-            watches.forEach { $0.invalidate() }
+            for watch in watches { watch.invalidate() }
         }
     }
 
