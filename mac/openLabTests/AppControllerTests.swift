@@ -2239,19 +2239,20 @@ final class AppControllerTests: XCTestCase {
     func testTheWindowTitleFollowsTheFilesNameAfterSaveAsAndOnReopen() async throws {
         let second = try await addWorkspace()
         let store = try XCTUnwrap(app.session.stores[second])
-        XCTAssertTrue(try XCTUnwrap(app.windows[second]).window?.title.hasPrefix("Untitled") == true)
+        XCTAssertEqual(try XCTUnwrap(app.windows[second]).window?.title, "Untitled \u{2014} Main Cue List")
         saveURL = savePath("frozen")
         let ok = await app.saveWorkspace(store, asNew: true)
         XCTAssertTrue(ok)
         await assertEventually("Save As renames the window") {
-            app.windows[second]?.window?.title.hasPrefix("frozen \u{2014} ") == true
+            app.windows[second]?.window?.title == "frozen \u{2014} Main Cue List"
         }
         let closed = await app.closeWorkspace(second)
         XCTAssertTrue(closed)
         await app.openWorkspace(url: savePath("frozen"))
         await assertEventually("the reopened file's window") {
-            app.windows.values.contains { $0.window?.title.hasPrefix("frozen \u{2014} ") == true }
+            app.windows.values.contains { $0.window?.title == "frozen \u{2014} Main Cue List" }
         }
+        XCTAssertEqual(app.windows.values.compactMap { $0.window?.title }.filter { $0.hasPrefix("frozen") }.count, 1)
         let info = try XCTUnwrap(app.session.workspaces.first { $0.path == savePath("frozen").path })
         XCTAssertEqual(info.name, "frozen")
     }
