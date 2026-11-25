@@ -1928,6 +1928,53 @@ extension VideoSettingsTests {
         }
     }
 
+    /// A pop-up that is open while another client removes the route above it is torn down with its
+    /// row, but AppKit still delivers the choice from it: the choice goes to the route the pop-up
+    /// was drawn for, never to the one that now sits at its old place in the list.
+    func testAChoiceFromARemovedRowsPopUpGoesToItsOwnRoute() async throws {
+        let (rig, sc) = try await openTwoStages()
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.shown?.count == 3 && routing.scalingPopups.count == 3 }
+        let route3 = "00000000-0000-0000-0000-00000000b003"
+        // Output 2's pop-ups, held as an open menu would hold them.
+        let display = routing.displayPopups[1]
+        let scaling = routing.scalingPopups[1]
+        XCTAssertEqual(routing.shown?.first { $0.id.raw == route2 }?.display, "V2")
+        // Another client removes Output 1: Output 3 now sits where Output 2 did.
+        guard case .success = await rig.store.send(command: .removeRoute(ModelID(route1))) else {
+            return XCTFail("remove")
+        }
+        await settled(sc) { routing.shown?.map(\.id.raw) == [self.route2, route3] }
+        // The choices are made from the old pop-ups.
+        display.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
+        _ = display.sendAction(display.action, to: display.target)
+        scaling.selectItem(withTitle: loc("settings.video.scaling.fit"))
+        _ = scaling.sendAction(scaling.action, to: scaling.target)
+        await settled(sc) { routing.shown?.first?.display == "V1" && routing.shown?.first?.scaling == "fit" }
+        let after = routing.shown ?? []
+        XCTAssertEqual(after.map(\.id.raw), [route2, route3])
+        XCTAssertNotEqual(after[1].display, "V1", "Output 3 keeps its own display")
+        XCTAssertNotEqual(after[1].scaling, "fit", "Output 3 keeps its own scaling")
+    }
+
+    /// The stage editor's region route pop-up, open while another client removes the region above
+    /// it, delivers its choice to the region it was drawn for, not the one now at its old place.
+    func testAChoiceFromARemovedRegionsRoutePopUpGoesToItsOwnRegion() async throws {
+        let (rig, sc) = try await openTwoStages()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await editorSettled(sc, editor) { editor.regionRoutePopups.count == 3 }
+        let regionC = editor.regions[2].id
+        let popup = editor.regionRoutePopups[1]
+        guard case .success = await rig.store.send(command: .removeRegion(stage: ModelID(stageA), ModelID(regionA)))
+        else { return XCTFail("remove") }
+        await editorSettled(sc, editor) { editor.regions.map(\.id.raw) == [self.regionB, regionC.raw] }
+        // Region B's pop-up, from before: Output 1.
+        popup.selectItem(withTitle: "Output 1")
+        _ = popup.sendAction(popup.action, to: popup.target)
+        await editorSettled(sc, editor) { editor.regions.first?.route == ModelID(self.route1) }
+        XCTAssertNil(editor.regions[1].route, "region C keeps its own route (none)")
+    }
+
     /// The GD11 workspace: Stage 1 (G4) with regions A on Output 1 (V1), B on Output 2 (V2) and C on
     /// none; Stage 2 with one region on Output 3 (no display), used by no other stage.
     private func openTwoStages() async throws -> (Rig, WorkspaceSettingsWindowController) {

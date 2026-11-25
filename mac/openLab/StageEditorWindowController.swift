@@ -410,6 +410,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             popup.menu = menu
             popup.select(chosen ?? none)
             popup.tag = i
+            popup.identifier = NSUserInterfaceItemIdentifier(r.id.raw)
             popup.target = self
             popup.action = #selector(regionRouteChosen(_:))
             popup.setAX(
@@ -559,11 +560,11 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     @objc private func regionRouteChosen(_ sender: NSPopUpButton) {
-        let regions = self.regions
-        guard regions.indices.contains(sender.tag) else { return }
+        // The region the pop-up was drawn for, by the id it carries: a menu open while the regions
+        // change still delivers its choice, and its tag may by then name another region.
+        guard let region = regions.first(where: { $0.id.raw == sender.identifier?.rawValue }) else { return }
         let route = (sender.selectedItem?.representedObject as? String).map { ModelID($0) }
         let typed = endTyping()
-        let region = regions[sender.tag]
         guard route != region.route else { return }
         let stage = stageID
         edit(after: typed) { [store] in
@@ -626,7 +627,9 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             } else {
                 b.height = side
                 let (top, overflow) = bottom.subtractingReportingOverflow(side)
-                guard !overflow else { return refuse(String(format: loc("stageEditor.outside"), stageWidth, stageHeight)) }
+                guard !overflow else {
+                    return refuse(String(format: loc("stageEditor.outside"), stageWidth, stageHeight))
+                }
                 b.y = top
             }
         default:
