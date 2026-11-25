@@ -757,8 +757,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         let fields = [editor.mainField] + editor.outputFields + editor.deviceFields
         XCTAssertTrue(
             (fields + [editor.crosspointField]).allSatisfy { $0.alignment == .center }, "centred levels")
-        // The longest level text still shows whole in a box this wide.
-        for text in ["-120.0", "-inf", "-60.0", "+12.0"] {
+        // The longest level text drawn ("-119.9") still shows whole in a box this wide.
+        for text in ["-119.9", "-inf", "-59.9", "+12.0"] {
             for f in fields {
                 f.stringValue = text
                 let need = try XCTUnwrap(f.cell).cellSize(forBounds: NSRect(x: 0, y: 0, width: 1000, height: 100)).width
@@ -781,6 +781,58 @@ final class WorkspaceSettingsTests: XCTestCase {
                 editor.matrix.boxRect(row: row, column: 0).midY, accuracy: 0.5,
                 "row \(row + 1)'s level box on its crosspoints")
         }
+        editor.close()
+    }
+
+    /// A level box being edited keeps its text where it rests (centred in the box), a long value
+    /// stays on one line inside the box, and the box with the keyboard is marked: over an empty
+    /// crosspoint too, where the box covers the matrix's own selection outline.
+    func testALevelBoxBeingEditedKeepsItsTextCentredOnOneLineAndIsMarked() async throws {
+        let (_, sc) = try await open()
+        let editor = try await edit(in: sc)
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        editor.render()
+        let window = try XCTUnwrap(editor.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        await assertEventually { editor.outputFields.count == 2 }
+        editor.beginTyping(row: 0, column: 1)  // an empty crosspoint
+        let boxes = [editor.crosspointField, editor.outputFields[0], editor.mainField, editor.deviceFields[0]]
+            .compactMap { $0 as? LevelBoxField }
+        XCTAssertEqual(boxes.count, 4, "every level box is a LevelBoxField")
+        for box in boxes {
+            XCTAssertTrue(window.makeFirstResponder(box))
+            let text = try XCTUnwrap(box.currentEditor() as? NSTextView)
+            let layout = try XCTUnwrap(text.layoutManager)
+            XCTAssertTrue(box.hasFocusMark, "the box with the keyboard is marked")
+            XCTAssertEqual(box.layer?.borderWidth, 2)
+            let rest = box.convert(box.bounds, to: nil)
+            text.string = "-0.5"
+            let line = layout.lineFragmentUsedRect(forGlyphAt: 0, effectiveRange: nil)
+            XCTAssertEqual(text.convert(line, to: nil).midY, rest.midY, accuracy: 1.5, "text in the middle of the box")
+            // A long value stays on one line and does not spill out of the box.
+            text.string = "-119.99999999999999999"
+            var lines = 0
+            var glyph = 0
+            while glyph < layout.numberOfGlyphs {
+                var range = NSRange()
+                layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &range)
+                lines += 1
+                glyph = NSMaxRange(range)
+            }
+            XCTAssertEqual(lines, 1, "one line")
+            // It scrolls inside the box (clipped to it) and starts where the box does.
+            let frame = text.convert(text.bounds, to: nil)
+            XCTAssertEqual(box.layer?.masksToBounds, true, "clipped to the box")
+            XCTAssertGreaterThanOrEqual(frame.minX, rest.minX - 1)
+            XCTAssertLessThanOrEqual(frame.height, rest.height + 1)
+        }
+        _ = window.makeFirstResponder(nil)
+        XCTAssertFalse(editor.mainField.hasFocusMark, "the mark goes with the keyboard")
+        // Given the keyboard by a click (which selects its text), it is marked as well.
+        editor.mainField.selectText(nil)
+        XCTAssertTrue(editor.mainField.hasFocusMark, "marked when a click begins the edit")
+        _ = window.makeFirstResponder(nil)
+        XCTAssertFalse(editor.mainField.hasFocusMark)
         editor.close()
     }
 

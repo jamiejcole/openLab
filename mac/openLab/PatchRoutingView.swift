@@ -219,7 +219,8 @@ final class PatchRoutingView: NSView {
             in: NSRect(x: Self.mainMidX - 24, y: Self.stripLabelY, width: 48, height: 14), Self.strip)
         draw(
             loc("patchEditor.cueOutputs"),
-            in: NSRect(x: 4, y: Self.captionY, width: Self.labelW - 8, height: 18), Self.small)
+            in: NSRect(x: 4, y: Self.captionY, width: Self.labelW - 8, height: 18),
+            Self.small.merging([.paragraphStyle: Self.rowLabelStyle]) { $1 })
         centred(
             loc("patchEditor.inputs"),
             in: NSRect(x: Self.labelW + 2, y: Self.captionY, width: Self.levelW - 6, height: 18), Self.small)
@@ -352,9 +353,11 @@ final class LevelBoxField: NSTextField {
         isBezeled = false
         isBordered = false
         drawsBackground = false
-        focusRingType = .none
+        cell?.wraps = false
+        cell?.isScrollable = true
         wantsLayer = true
         layer?.cornerRadius = 3
+        layer?.masksToBounds = true
         layer?.borderWidth = 0.5
         refreshColours()
     }
@@ -362,11 +365,46 @@ final class LevelBoxField: NSTextField {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    /// The box has the keyboard: it shows the keyboard focus colour as a border, as the matrix marks
+    /// the box it has selected (the default focus ring would be cut by the box's rounded layer).
+    private(set) var hasFocusMark = false
+
+    /// Editing begins (by a click or by being given the focus): the mark shows.
+    func editingBegan() {
+        hasFocusMark = true
+        refreshColours()
+    }
+
     private func refreshColours() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
-            layer?.borderColor = NSColor.separatorColor.cgColor
+            layer?.borderColor = (hasFocusMark ? NSColor.keyboardFocusIndicatorColor : NSColor.separatorColor).cgColor
+            layer?.borderWidth = hasFocusMark ? 2 : 0.5
         }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok {
+            hasFocusMark = true
+            refreshColours()
+        }
+        return ok
+    }
+
+    override func textDidEndEditing(_ notification: Notification) {
+        super.textDidEndEditing(notification)
+        hasFocusMark = false
+        refreshColours()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if ok {
+            hasFocusMark = false
+            refreshColours()
+        }
+        return ok
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -376,6 +414,7 @@ final class LevelBoxField: NSTextField {
 }
 
 /// Draws and edits its text in the middle of the box, as the matrix draws its own levels.
+@MainActor
 final class LevelBoxCell: NSTextFieldCell {
     override func drawingRect(forBounds rect: NSRect) -> NSRect {
         var r = super.drawingRect(forBounds: rect)
@@ -385,6 +424,26 @@ final class LevelBoxCell: NSTextFieldCell {
             r.size.height = h
         }
         return r
+    }
+
+    // The text editor sits where the text is drawn, so it does not jump to the box's top edge.
+    override func edit(
+        withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, event: NSEvent?
+    ) {
+        (controlView as? LevelBoxField)?.editingBegan()
+        super.edit(
+            withFrame: drawingRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate,
+            event: event)
+    }
+
+    override func select(
+        withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, start: Int,
+        length: Int
+    ) {
+        (controlView as? LevelBoxField)?.editingBegan()
+        super.select(
+            withFrame: drawingRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate,
+            start: start, length: length)
     }
 }
 

@@ -103,7 +103,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     private var isOpen = false
 
     static let minSize = NSSize(width: 520, height: 460)
-    /// Small enough that the longest level text ("-120.0") shows whole in a box as wide as a crosspoint's.
+    /// Small enough that the longest level text drawn ("-119.9") shows whole in a box as wide as a crosspoint's.
     static let levelFontSize: CGFloat = 9
 
     init(model: WorkspaceSettingsModel, patch: ModelID) {
