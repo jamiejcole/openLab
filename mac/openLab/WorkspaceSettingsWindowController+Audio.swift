@@ -172,6 +172,7 @@ extension WorkspaceSettingsWindowController {
             name.isBezeled = true
             name.delegate = self
             name.tag = i
+            name.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
             name.lineBreakMode = .byTruncatingTail
             name.cell?.usesSingleLineMode = true
             name.widthAnchor.constraint(equalToConstant: Self.patchNameWidth).isActive = true
@@ -180,6 +181,7 @@ extension WorkspaceSettingsWindowController {
             let popup = NSPopUpButton(frame: .zero, pullsDown: false)
             model.fillDevicePopupItems(popup, for: row)
             popup.tag = i
+            popup.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
             popup.target = self
             popup.action = #selector(patchDeviceChosen(_:))
             popup.isEnabled = model.loaded
@@ -196,6 +198,7 @@ extension WorkspaceSettingsWindowController {
             edit.bezelStyle = .rounded
             edit.widthAnchor.constraint(equalToConstant: Self.editWidth).isActive = true
             edit.tag = i
+            edit.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
             edit.setAX("\(AX.settingsPatch)-edit-\(n)", label: "\(loc("settings.audio.edit")) \(shownName)")
 
             let remove = NSButton(title: "", target: self, action: #selector(patchRemoveClicked(_:)))
@@ -205,6 +208,7 @@ extension WorkspaceSettingsWindowController {
             remove.widthAnchor.constraint(equalToConstant: Self.removeWidth).isActive = true
             remove.toolTip = loc("settings.audio.removeHelp")
             remove.tag = i
+            remove.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
             remove.isEnabled = enabled && model.patches.count > 1
             remove.setAX("\(AX.settingsPatch)-remove-\(n)", label: "\(loc("settings.audio.removePatch")) \(shownName)")
             patchGrid.addRow(with: [name, popup, edit, remove])
@@ -249,12 +253,26 @@ extension WorkspaceSettingsWindowController {
     private func redrawPatches() {
         if patchNameFields.contains(where: { $0.currentEditor() != nil }) { window?.makeFirstResponder(nil) }
         lastDrawn = nil
-        shownPatchTable = nil
         render()
     }
 
-    private func row(at index: Int) -> PatchRow? {
-        model.patches.indices.contains(index) ? model.patches[index] : nil
+    /// The row a control was drawn for, by the patch id it carries, from what the table shows: the
+    /// table is not redrawn while a name holds the caret, so the model's list (and a control's
+    /// position in it) may differ from what is on screen.
+    private func row(of control: NSControl) -> PatchRow? {
+        guard let id = control.identifier?.rawValue,
+            let drawn = shownPatchTable?.patches.first(where: { $0.id.raw == id })
+        else { return nil }
+        // A patch another client removed since the table was drawn: nothing is sent for it (the
+        // engine would refuse it with an id), and the table is read and drawn again.
+        guard model.store.model?.patches.contains(where: { $0.id == drawn.id }) == true else {
+            Task {
+                await model.refresh()
+                redrawPatches()
+            }
+            return nil
+        }
+        return drawn
     }
 
     @objc func patchAddClicked() {
@@ -266,7 +284,7 @@ extension WorkspaceSettingsWindowController {
     }
 
     @objc private func patchRemoveClicked(_ sender: NSButton) {
-        guard let row = row(at: sender.tag) else { return }
+        guard let row = row(of: sender) else { return }
         Task {
             await model.removePatch(row.id)
             redrawPatches()
@@ -274,7 +292,7 @@ extension WorkspaceSettingsWindowController {
     }
 
     @objc private func patchDeviceChosen(_ sender: NSPopUpButton) {
-        guard let row = row(at: sender.tag) else { return }
+        guard let row = row(of: sender) else { return }
         let choice = sender.selectedItem?.representedObject
         Task {
             await model.choose(choice, for: row)
@@ -283,7 +301,7 @@ extension WorkspaceSettingsWindowController {
     }
 
     @objc private func editPatchClicked(_ sender: NSButton) {
-        guard let row = row(at: sender.tag) else { return }
+        guard let row = row(of: sender) else { return }
         openPatchEditor(row.id)
     }
 
@@ -299,7 +317,7 @@ extension WorkspaceSettingsWindowController {
 
     /// A patch name was committed (Return or leaving the field): sent; the engine's name comes back.
     func patchNameCommitted(_ field: NSTextField) {
-        guard let row = row(at: field.tag) else { return }
+        guard let row = row(of: field) else { return }
         let text = field.stringValue
         Task {
             await model.renamePatch(row.id, to: text)

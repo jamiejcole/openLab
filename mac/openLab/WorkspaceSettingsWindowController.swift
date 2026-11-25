@@ -150,6 +150,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // The table is drawn from what the model last read from the engine, whoever asked for it.
         subs.append(model.$patches.sink { [weak self] _ in self?.renderSoon() })
         subs.append(model.$devices.sink { [weak self] _ in self?.renderSoon() })
+        // The patches themselves changing (an undo, another client): their cue output counts and
+        // names are read again, so a choice made in a row is never sent for an out-of-date patch.
+        subs.append(
+            store.$model.map { $0?.patches ?? [] }.removeDuplicates().dropFirst().sink { [weak self] _ in
+                self?.rereadSoon()
+            })
         // A device lost, back or opened changes where patches resolve; the engine's patch warnings
         // and device states say so, and the table reads the resolutions again.
         subs.append(store.$warnings.removeDuplicates().sink { [weak self] _ in self?.rereadSoon() })
@@ -158,8 +164,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 self?.rereadSoon()
             })
         // Taller than the pages need by the message row's two lines, which never take the pages' room.
-        // Wide enough that Output Routing's display choice reads whole beside its guides, with a
-        // legacy 17 pt scroller showing, as on a Mac set to always show scroll bars.
+        // Wide enough that Output Routing's scaling choice reads whole beside its guides. Its display
+        // column is then 199 pt with overlay scroll bars and 182 pt with an always-shown (legacy
+        // 17 pt) one; a display name wider than that is cut with an ellipsis, its whole name in the
+        // tooltip (with its size, "Built-in Retina Display (3024 × 1964)" needs 235 pt).
         window.contentMinSize = NSSize(width: 808, height: 552)
         window.delegate = self
         tabs.delegate = self

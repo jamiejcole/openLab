@@ -317,7 +317,8 @@ final class WorkspaceSettingsModel: ObservableObject {
     /// device output n for as many as the device has, the rest with none, as QLab routes them);
     /// nil `device` clears it (the engine pauses the cues playing through the patch, as
     /// QLab does). A cue playing through the patch moves to the new device at once.
-    func setMapping(_ row: PatchRow, device: String?, channels: [UInt32]? = nil) async {
+    func setMapping(_ drawn: PatchRow, device: String?, channels: [UInt32]? = nil) async {
+        guard let row = await current(drawn) else { return }
         // The popup fires its action when the same device is picked again; that must not reset
         // the routing the show was built with to the first outputs.
         // A routing of another length than the patch (it cannot play) is sent again, though.
@@ -341,7 +342,8 @@ final class WorkspaceSettingsModel: ObservableObject {
 
     /// Puts `row` on the system output (QLab 5 manual p. 7): it plays on whichever device the Mac's
     /// output is, also when that changes. Its outputs are checked against that device now.
-    func setSystemOutput(_ row: PatchRow, channels: [UInt32]? = nil) async {
+    func setSystemOutput(_ drawn: PatchRow, channels: [UInt32]? = nil) async {
+        guard let row = await current(drawn) else { return }
         if channels == nil, row.mapping?.system == true, let count = row.mapping?.channels.count,
             (1...max(1, row.outputCount)).contains(count)
         {
@@ -358,6 +360,14 @@ final class WorkspaceSettingsModel: ObservableObject {
             return
         }
         _ = await sendMapping(row, .systemOutput(channels: chosen))
+    }
+
+    /// The patch as it is now, read from the engine: a row drawn earlier (a name holds the caret, an
+    /// undo came since) may show another cue output count or routing, and a mapping sent for that
+    /// would leave a cue output without a route. Nil, with the list read again, when the patch is gone.
+    func current(_ drawn: PatchRow) async -> PatchRow? {
+        await refresh()
+        return patches.first { $0.id == drawn.id }
     }
 
     /// Cue output n on device output n, for as many as both have.
