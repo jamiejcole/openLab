@@ -1975,6 +1975,47 @@ extension VideoSettingsTests {
         XCTAssertNil(editor.regions[1].route, "region C keeps its own route (none)")
     }
 
+    /// Text typed in a region field (the caret still in it) belongs to the region it was drawn for:
+    /// when that region goes (an undo of its adding, or another client removing it) and the
+    /// selection falls back to another region, committing the field changes no region.
+    func testTextTypedForARegionThatGoesIsNotAppliedToTheOneSelectedAfterIt() async throws {
+        for byUndo in [true, false] {
+            let (rig, sc) = try await openG4()
+            let editor = sc.openStageEditor(ModelID(stageA))
+            choose(loc("stageEditor.newRegionNone"), in: editor.newRegionPopup)
+            await editorSettled(sc, editor) { editor.regionChips.count == 3 && editor.selected == editor.regions[2].id }
+            let added = editor.regions[2].id
+            let before = editor.regions.map(\.bounds)
+            XCTAssertTrue(editor.window?.makeFirstResponder(editor.regionWidthField) == true)
+            editor.regionWidthField.currentEditor()?.string = "500"
+            if byUndo {
+                _ = await rig.store.undo()
+            } else {
+                _ = await rig.store.send(command: .removeRegion(stage: ModelID(stageA), added))
+            }
+            await editorSettled(sc, editor) { editor.regionChips.count == 2 }
+            _ = editor.window?.makeFirstResponder(nil)
+            await editor.editing?.value
+            XCTAssertEqual(editor.regions.map(\.bounds), Array(before.prefix(2)), "undo: \(byUndo)")
+            XCTAssertEqual(editor.regionWidthField.stringValue, "1920", "the text typed for the gone region is dropped")
+        }
+    }
+
+    /// A region field typed in and left by clicking another region reaches the region it was typed
+    /// for, not the one clicked.
+    func testTextTypedInARegionFieldReachesThatRegionWhenAnotherIsClicked() async throws {
+        let (_, sc) = try await openG4()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await editorSettled(sc, editor) { editor.regionChips.count == 2 }
+        XCTAssertEqual(editor.selected, editor.regions[0].id)
+        XCTAssertTrue(editor.window?.makeFirstResponder(editor.regionWidthField) == true)
+        editor.regionWidthField.currentEditor()?.string = "500"
+        editor.regionChips[1].mouseDown(with: try press(editor))
+        await editorSettled(sc, editor) { editor.regions[0].bounds.width == 500 }
+        XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 1920, height: 1080))
+        XCTAssertEqual(editor.selected, editor.regions[1].id)
+    }
+
     /// The GD11 workspace: Stage 1 (G4) with regions A on Output 1 (V1), B on Output 2 (V2) and C on
     /// none; Stage 2 with one region on Output 3 (no display), used by no other stage.
     private func openTwoStages() async throws -> (Rig, WorkspaceSettingsWindowController) {

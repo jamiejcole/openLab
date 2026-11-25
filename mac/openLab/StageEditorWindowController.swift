@@ -64,6 +64,9 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     private(set) var selected: ModelID?
     /// A region just added: selected once the model has it.
     private var selectWhenAdded: ModelID?
+    /// The region the four region fields were drawn for: what is typed in them goes to it, or to
+    /// nothing once it is gone, never to whichever region is selected by then.
+    private var fieldsRegion: ModelID?
     private var subs: [AnyCancellable] = []
     /// Edits on their way, one after another (tests wait for them).
     private(set) var editing: Task<Void, Never>?
@@ -347,6 +350,15 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         for f in [regionWidthField, regionHeightField, lowerLeftXField, lowerLeftYField] {
             f.isEnabled = region != nil
         }
+        let regionFields = [regionWidthField, regionHeightField, lowerLeftXField, lowerLeftYField]
+        if fieldsRegion != region?.id {
+            // Another region (or none): what was typed for the old one is dropped, not committed.
+            for f in regionFields {
+                f.abortEditing()
+                drawnText[ObjectIdentifier(f)] = nil
+            }
+            fieldsRegion = region?.id
+        }
         if let region {
             let corners = Self.corners(region.bounds, stageWidth: width, stageHeight: height)
             show(regionWidthField, String(region.bounds.width))
@@ -614,7 +626,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     /// A region's size or lower-left corner typed: the corner stays where it is for a size, the
     /// size for a corner. Refused here when the region would not lie wholly inside the stage.
     private func regionField(_ field: NSTextField, text: String, stageWidth: Int, stageHeight: Int) {
-        guard let region = regions.first(where: { $0.id == selected }) else { return }
+        guard let region = regions.first(where: { $0.id == fieldsRegion }) else { return }
         var b = region.bounds
         let bottom = b.y + b.height
         switch field {
