@@ -322,14 +322,15 @@ final class VideoUITests: XCTestCase {
         XCTAssertTrue(video.waitForExistence(timeout: 10), "the Video category")
         video.click()
         app.radioButtons["Output Routing"].click()
-        let addRoute = app.popUpButtons["settings-video-add"]
+        // The add pop-up is a pull-down, which XCUITest lists as a menu button, not a pop-up button.
+        let addRoute = app.menuButtons["settings-video-add"]
         XCTAssertTrue(addRoute.waitForExistence(timeout: 10), "the Output Routing page")
         addRoute.click()
         app.menuItems.matching(NSPredicate(format: "title CONTAINS '1280'")).firstMatch.click()
         let display = app.popUpButtons["settings-video-display-2"]
         XCTAssertTrue(waitFor("value CONTAINS '1280'", display), "Output 2 is on the second display")
         app.radioButtons["Video Outputs"].click()
-        let add = app.popUpButtons["settings-video-add"]
+        let add = app.menuButtons["settings-video-add"]
         XCTAssertTrue(add.waitForExistence(timeout: 10), "the Video Outputs page")
         add.click()
         app.menuItems["On Output 2"].click()
