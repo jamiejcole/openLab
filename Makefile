@@ -67,7 +67,7 @@ fuzz:
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run stage_link fuzz/corpus/stage_link fuzz/stage-link-seeds \
 		-- -max_total_time=$(FUZZ_TIME) -max_len=600000 -timeout=10
 
-# Nightly CI and local: engine tests under ASan and TSan, then Miri on openlab-core (QA-09).
+# Nightly CI: engine tests under ASan and TSan, then Miri on openlab-core (QA-09).
 # Needs: rustup toolchain install $(SAN_TOOLCHAIN) --profile minimal -c rust-src -c miri
 # Rust has no -Zsanitizer=undefined; Miri is the undefined-behaviour check, and runs on core only (no I/O, no FFI).
 # --lib --tests skips doctests (rustdoc does not support -Zsanitizer reliably). Ignored tests (real-time, perf,
@@ -89,7 +89,9 @@ sanitize-thread:
 # Subset: core unit tests with a short proptest budget (Miri is ~100x slower). Skipped by name:
 #   too_many_workspaces_are_truncated_quickly: serialises thousands of settings entries; hours under Miri.
 MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly
+# CI only: a local run took 30 GB and the machine rebooted.
 miri:
+	@if [ "$$CI" != true ]; then echo "make miri: runs in CI only (it can exhaust this machine's memory)" >&2; exit 1; fi
 	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
 # Two test processes one after the other: $(1) names the target in messages, $(2) the first selection, $(3)

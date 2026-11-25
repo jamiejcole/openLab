@@ -60,6 +60,11 @@ This file is the only copy of every rule below; other files link here instead of
 - Where it is unknown: search skill `qlab-behaviour` (every user answer is there; never ask twice), then implement the likeliest behaviour and add an `assumed` row to its references (assumption, what you searched).
 - Public repo: never copy QLab text, labels, tooltips, icons, artwork or screenshots into the repo, issues or PRs. Describe in our own words; give our controls our own similar names. Never put personal account or machine details in the repo, issues or PRs.
 
+## The owner's Mac
+- Never run Miri on it, by any command (owner rule 2026-11-25: two agent runs took 30 GB of its 16 GB and it rebooted). Miri runs in CI only; `make miri` refuses elsewhere.
+- Its memory is shared with the owner's virtual machines. A run whose memory use is not known is started alone at its smallest size, watched, and stopped if memory grows out of proportion; two such runs never overlap. An agent ends what it started before it reports, and nothing it did not start.
+- After a gap in a session the orchestrator checks `last reboot` and the JetsamEvent and panic reports before resuming any agent, and rules out the run that caused the stop first.
+
 ## Findings policy
 - **High:** a show can stop, sound wrong, fire or stop the wrong cue, lose data, or the process can crash, panic or hang, on any input (fuzzers and property tests included; any input from outside the process is reachable).
 - **Medium:** wrong behaviour; a false or stale claim in a contract doc, a skill or this file; a behaviour change that did not update its skill; wrong drawing or layout (drawn outside its area, clipped, overlapping, sized wrong); a comment in shipped code that admits an approximation, shortcut or TODO without citing an open issue; a missing test on a changed path; debug/release difference; duplication, dead code or a parallel harness the change adds.
