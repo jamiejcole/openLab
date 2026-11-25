@@ -88,7 +88,10 @@ sanitize-thread:
 
 # Subset: core unit tests with a short proptest budget (Miri is ~100x slower). Skipped by name:
 #   too_many_workspaces_are_truncated_quickly: serialises thousands of settings entries; hours under Miri.
-MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly
+#   the_largest_stage_set_fits_one_line: a 1.7 MB line. Native time grows with the line's length; Miri's about
+#   trebles per doubling, past the job's 2 h limit. Core forbids unsafe code, messages_survive_a_round_trip_as_one_line
+#   takes a small set the same way under Miri, and the full size runs natively and under both sanitizers.
+MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly --skip the_largest_stage_set_fits_one_line
 miri:
 	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
