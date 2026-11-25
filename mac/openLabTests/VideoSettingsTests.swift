@@ -350,6 +350,47 @@ final class VideoSettingsTests: XCTestCase {
         await caughtUp(rig, sc, "the name is committed") { pane.shown?.first?.name == "Cyclo" }
     }
 
+    /// A stage or route name typed and left there is sent when the window goes (Done), and the next
+    /// opening sends nothing.
+    func testANameTypedOnAVideoPageIsSentWhenTheWindowGoes() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        await settled(sc) { sc.videoPane.nameFields.count == 1 && sc.videoRoutingPane.nameFields.count == 1 }
+        for (page, pane) in [(SettingsPage.video, sc.videoPane), (.videoRouting, sc.videoRoutingPane)] {
+            sc.show(page: page)
+            let field = try XCTUnwrap(pane.nameFields.first)
+            XCTAssertTrue(try XCTUnwrap(sc.window).makeFirstResponder(field))
+            field.currentEditor()?.string = "Typed"
+            sc.doneButton.performClick(nil)
+            await assertEventually("\(page): sent") {
+                let items = page == .video ? rig.store.model?.stages : rig.store.model?.routes
+                return items?.first?.raw["name"]?.stringValue == "Typed"
+            }
+            await pane.pending?.value
+            await settle()
+            XCTAssertFalse(sc.window?.isVisible == true, "\(page): closed")
+            let sent = rig.wire.commands.count
+            await sc.present().value
+            await pane.pending?.value
+            XCTAssertEqual(rig.wire.commands.count, sent, "\(page): the opening sends nothing")
+        }
+    }
+
+    /// A size typed in a stage editor is committed as its window goes, not at its next opening.
+    func testASizeTypedInTheStageEditorIsSentWhenItsWindowGoes() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        await settled(sc) { sc.videoPane.nameFields.count == 1 }
+        let editor = sc.openStageEditor(ModelID(stageA))
+        let window = try XCTUnwrap(editor.window)
+        window.makeFirstResponder(editor.layerField)
+        editor.layerField.currentEditor()?.string = "5"
+        window.performClose(nil)
+        await assertEventually("sent") { rig.store.model?.stages.first?.raw["layer"]?.doubleValue == 5 }
+        let sent = rig.wire.commands.count
+        sc.openStageEditor(ModelID(stageA))
+        await settle()
+        XCTAssertEqual(rig.wire.commands.count, sent, "the opening sends nothing")
+    }
+
     /// Starts typing `text` in `field` of the shown Video page (not committed).
     private func startTyping(_ text: String, in field: NSTextField, _ sc: WorkspaceSettingsWindowController) throws {
         sc.tabs.selectTabViewItem(withIdentifier: "video")

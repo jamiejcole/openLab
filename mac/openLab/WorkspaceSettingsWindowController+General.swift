@@ -18,6 +18,14 @@ extension WorkspaceSettingsWindowController {
             field.delegate = self
             field.widthAnchor.constraint(equalToConstant: 70).isActive = true
         }
+        panicField.engineText = { [model] in model.panicDuration.map(Self.format) }
+        panicField.send = { [model] in await model.setPanicDuration($0) }
+        goIntervalField.engineText = { [model] in model.minGoInterval.map(Self.format) }
+        goIntervalField.send = { [model] in await model.setMinGoInterval($0) }
+        autosaveField.engineText = { [model] in model.autosaveInterval.map(Self.format) }
+        autosaveField.send = { [model] in await model.setAutosaveInterval($0) }
+        autoNumberField.engineText = { [model] in model.autoNumberStep.map(Self.format) }
+        autoNumberField.send = { [model] in await model.setAutoNumberStep($0) }
         let boxes: [(NSButton, String, Selector)] = [
             (keyUpCheck, "settings-key-up", #selector(switchClicked(_:))),
             (autoNumberCheck, "settings-auto-number", #selector(switchClicked(_:))),
@@ -91,12 +99,12 @@ extension WorkspaceSettingsWindowController {
             (lockPlayheadCheck, .lockPlayhead),
         ] {
             let on = model.isOn(item)
-            box.state = on == true ? .on : .off
+            drawBox(box, on)
             box.isEnabled = on != nil
         }
-        autoNumberField.isEnabled = model.isOn(.autoNumberNewCues) == true
+        autoNumberField.allow(enabled: model.isOn(.autoNumberNewCues) == true)
         let copy = model.isOn(.copyMediaOnAdd)
-        copyMediaCheck.state = copy == true ? .on : .off
+        drawBox(copyMediaCheck, copy)
         // Locked in Show Mode, as the rest of the show's editing is.
         copyMediaCheck.isEnabled = copy != nil && !model.store.showMode
         renderAutoLoad()
@@ -104,27 +112,28 @@ extension WorkspaceSettingsWindowController {
 
     func renderAutoLoad() {
         let on = model.newCuesAutoLoad
-        autoLoadCheck.state = on == true ? .on : .off
+        drawBox(autoLoadCheck, on)
         autoLoadCheck.isEnabled = on != nil
+    }
+
+    /// A box shows the engine's setting; clicked and not answered yet, it stays as clicked.
+    func drawBox(_ box: NSButton, _ on: Bool?) {
+        if !edits.isWaiting(box.accessibilityIdentifier()) { box.state = on == true ? .on : .off }
+    }
+
+    /// Sends a box's setting as clicked, after the edits before it.
+    func boxClicked(_ box: NSButton, _ send: @escaping @MainActor (Bool) async -> Bool) {
+        let on = box.state == .on
+        act(box.accessibilityIdentifier()) { await send(on) }
     }
 
     @objc private func switchClicked(_ sender: NSButton) {
         guard let item = switchOf(sender) else { return }
-        let on = sender.state == .on
-        Task { [weak self] in
-            await self?.model.setSwitch(item, on)
-            self?.lastDrawn = nil
-            self?.render()
-        }
+        boxClicked(sender) { [model] in await model.setSwitch(item, $0) }
     }
 
     @objc private func autoLoadClicked() {
-        let on = autoLoadCheck.state == .on
-        Task { [weak self] in
-            await self?.model.setNewCuesAutoLoad(on)
-            self?.lastDrawn = nil
-            self?.render()
-        }
+        boxClicked(autoLoadCheck) { [model] in await model.setNewCuesAutoLoad($0) }
     }
 }
 
@@ -135,23 +144,21 @@ extension WorkspaceSettingsModel {
         return settings["new_cues_auto_load"] == .bool(true)
     }
 
-    func setNewCuesAutoLoad(_ on: Bool) async {
-        guard newCuesAutoLoad != on else { return }
-        switch await store.send(command: .setNewCuesAutoLoad(on)) {
-        case .success: message = nil
-        case .failure(let e): message = e.detailText
-        }
+    func setNewCuesAutoLoad(_ on: Bool) async -> Bool {
+        newCuesAutoLoad == on ? true : await sendSwitch(.setNewCuesAutoLoad(on))
     }
 
     /// The switch as the show has it; nil until the show is in.
     func isOn(_ item: WorkspaceSwitch) -> Bool? { store.isOn(item) }
 
-    func setSwitch(_ item: WorkspaceSwitch, _ on: Bool) async {
-        guard isOn(item) != on else { return }
-        switch await store.send(command: .setSwitch(item, on)) {
-        case .success: message = nil
-        case .failure(let e): message = e.detailText
-        }
+    func setSwitch(_ item: WorkspaceSwitch, _ on: Bool) async -> Bool {
+        isOn(item) == on ? true : await sendSwitch(.setSwitch(item, on))
+    }
+
+    private func sendSwitch(_ command: Command) async -> Bool {
+        guard case .failure(let e) = await store.send(command: command) else { return true }
+        message = e.detailText
+        return false
     }
 
     static let autosaveRange = 5.0...3600.0

@@ -7,10 +7,23 @@ extension WorkspaceSettingsWindowController {
     /// Opens the editor of `stage` (one window per stage; a second Edit brings it forward).
     @discardableResult
     func openStageEditor(_ stage: ModelID) -> StageEditorWindowController {
-        let editor = stageEditors[stage] ?? StageEditorWindowController(store: model.store, stage: stage)
+        let editor =
+            stageEditors[stage] ?? commitsAsItGoes(StageEditorWindowController(store: model.store, stage: stage))
         stageEditors[stage] = editor
         stageEditor = editor
         if presentsEditors { editor.present() } else { editor.render() }
+        return editor
+    }
+
+    /// What is typed in an editor is committed as its window goes, as the settings window's is, never by
+    /// its next opening (which may be during a show).
+    func commitsAsItGoes<Editor: NSWindowController>(_ editor: Editor) -> Editor {
+        if let window = editor.window {
+            subs.append(
+                NotificationCenter.default.publisher(for: NSWindow.willCloseNotification, object: window).sink { note in
+                    MainActor.assumeIsolated { _ = (note.object as? NSWindow)?.makeFirstResponder(nil) }
+                })
+        }
         return editor
     }
 

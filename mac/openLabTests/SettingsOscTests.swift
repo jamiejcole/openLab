@@ -196,6 +196,18 @@ final class SettingsOscTests: XCTestCase {
         await assertEventually("the old port is closed") { OscTcpClient(port: self.port) == nil }
     }
 
+    /// A port typed and left there is opened when the window goes with Done.
+    func testAPortTypedIsOpenedWhenTheWindowGoes() async throws {
+        let (_, sc) = try await open()
+        let new = freeOscPort()
+        sc.window?.makeFirstResponder(sc.oscPortField)
+        sc.oscPortField.currentEditor()?.string = String(new)
+        sc.doneButton.performClick(nil)
+        XCTAssertFalse(sc.window?.isVisible == true)
+        await assertEventually { sc.model.oscListening?.port == new && sc.model.oscListening?.open == true }
+        XCTAssertFalse(sc.window?.isVisible == true)
+    }
+
     /// Checklist: the listening port is changed to one in use → the page says the port could not be
     /// opened and the old one is not left half open (it still serves, and the failed port has no
     /// socket of ours).

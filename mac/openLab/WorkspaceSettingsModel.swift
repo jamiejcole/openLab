@@ -22,7 +22,7 @@ enum PatchProblem: Equatable {
 /// One output patch as the settings window lists it.
 struct PatchRow: Equatable {
     let id: ModelID
-    let name: String
+    var name: String
     let outputCount: Int
     let mapping: PatchMapping?
     /// Where the engine resolves it now (`list_patch_mappings`); nil from an engine without it.
@@ -55,7 +55,24 @@ final class WorkspaceSettingsModel: ObservableObject {
     /// Where the addresses come from (a test gives its own).
     var localAddresses: () -> [String] = { LocalAddresses.ipv4() }
 
-    init(store: WorkspaceStore) { self.store = store }
+    /// The passcode rows the engine has, each with an identity of its own (`+Osc`).
+    private(set) var oscRows = OscRows()
+    private var changesSub: AnyCancellable?
+
+    init(store: WorkspaceStore) {
+        self.store = store
+        oscRows.take(osc, oneStep: false)
+        changesSub = store.changes.sink { [weak self] change in
+            guard let self else { return }
+            switch change {
+            case .model(let upserts, _):
+                let settings = upserts.contains { if case .settings = $0 { return true } else { return false } }
+                if settings { oscRows.take(osc, oneStep: true) }
+            case .reset: oscRows.take(osc, oneStep: false)
+            default: break
+            }
+        }
+    }
 
     // MARK: Reading
 
@@ -125,11 +142,29 @@ final class WorkspaceSettingsModel: ObservableObject {
         return await sendPatch(command) ? id : nil
     }
 
+    /// The patch table's rows: the patches last read that the engine still has, with the names it has now.
+    var patchRows: [PatchRow] {
+        let now = store.model?.patches ?? []
+        return patches.compactMap { read in
+            guard let patch = now.first(where: { $0.id == read.id }) else { return nil }
+            var row = read
+            row.name = patch.raw["name"]?.stringValue ?? ""
+            return row
+        }
+    }
+
     /// Renames a patch. An unchanged name sends nothing.
     @discardableResult
     func renamePatch(_ id: ModelID, to name: String) async -> Bool {
-        guard let row = patches.first(where: { $0.id == id }), row.name != name else { return true }
-        return await sendPatch(
+        guard let patch = store.model?.patches.first(where: { $0.id == id }),
+            patch.raw["name"]?.stringValue ?? "" != name
+        else { return true }
+        return await setPatchName(id, name)
+    }
+
+    /// Renames a patch, whatever its name is now.
+    func setPatchName(_ id: ModelID, _ name: String) async -> Bool {
+        await sendPatch(
             Command(
                 .object([
                     "type": .string("set_patch_property"), "id": .string(id.raw),
@@ -221,7 +256,8 @@ final class WorkspaceSettingsModel: ObservableObject {
         var panic: Double?
         var goInterval: Double?
         var limits: VolumeLimits
-        var osc: OscAccessTable
+        var oscNone: OscRights
+        var oscRows: [OscRow]
         var network: [NetworkPatchRow]
         var keys: [WorkspaceKey: KeyChord]
         var keyRefusal: KeyRefusal?
@@ -236,8 +272,9 @@ final class WorkspaceSettingsModel: ObservableObject {
 
     var displayState: DisplayState {
         DisplayState(
-            devices: devices, patches: patches, loaded: loaded, message: message, panic: panicDuration,
-            goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches, keys: keyMap.bound,
+            devices: devices, patches: patchRows, loaded: loaded, message: message, panic: panicDuration,
+            goInterval: minGoInterval, limits: limits, oscNone: osc.noPasscode, oscRows: oscRows.rows,
+            network: networkPatches, keys: keyMap.bound,
             keyRefusal: keyRefusal, oscListening: oscListening, addresses: addresses, newCuesAutoLoad: newCuesAutoLoad,
             switches: Dictionary(
                 uniqueKeysWithValues: WorkspaceSwitch.allCases.compactMap { item in isOn(item).map { (item, $0) } }),
@@ -316,16 +353,18 @@ final class WorkspaceSettingsModel: ObservableObject {
     /// Puts `row` on `device`, output i on device output `channels[i]` (default: cue output n on
     /// device output n for as many as the device has, the rest with none, as QLab routes them);
     /// nil `device` clears it (the engine pauses the cues playing through the patch, as
-    /// QLab does). A cue playing through the patch moves to the new device at once.
-    func setMapping(_ drawn: PatchRow, device: String?, channels: [UInt32]? = nil) async {
-        guard let row = await current(drawn) else { return }
+    /// QLab does). A cue playing through the patch moves to the new device at once. False, with a
+    /// message, when it was refused or the patch is gone.
+    @discardableResult
+    func setMapping(_ drawn: PatchRow, device: String?, channels: [UInt32]? = nil) async -> Bool {
+        guard let row = await current(drawn) else { return false }
         // The popup fires its action when the same device is picked again; that must not reset
         // the routing the show was built with to the first outputs.
         // A routing of another length than the patch (it cannot play) is sent again, though.
         if channels == nil, row.mapping?.system != true, device == row.mapping?.device,
             let count = row.mapping?.channels.count, (1...max(1, row.outputCount)).contains(count)
         {
-            return
+            return true
         }
         var mapping: PatchMapping?
         if let device {
@@ -333,41 +372,45 @@ final class WorkspaceSettingsModel: ObservableObject {
             let chosen = channels ?? Self.firstOutputs(row.outputCount, usable)
             guard (1...max(1, row.outputCount)).contains(chosen.count), chosen.allSatisfy({ Int($0) < usable }) else {
                 message = String(format: loc("settings.audio.tooFewChannels"), device, row.outputCount, usable)
-                return
+                return false
             }
             mapping = PatchMapping(device: device, channels: chosen)
         }
-        _ = await sendMapping(row, mapping)
+        return await sendMapping(row, mapping)
     }
 
     /// Puts `row` on the system output (QLab 5 manual p. 7): it plays on whichever device the Mac's
     /// output is, also when that changes. Its outputs are checked against that device now.
-    func setSystemOutput(_ drawn: PatchRow, channels: [UInt32]? = nil) async {
-        guard let row = await current(drawn) else { return }
+    @discardableResult
+    func setSystemOutput(_ drawn: PatchRow, channels: [UInt32]? = nil) async -> Bool {
+        guard let row = await current(drawn) else { return false }
         if channels == nil, row.mapping?.system == true, let count = row.mapping?.channels.count,
             (1...max(1, row.outputCount)).contains(count)
         {
-            return
+            return true
         }
         guard let device = systemOutputDevice else {
             message = loc("settings.audio.systemOutputMissing")
-            return
+            return false
         }
         let usable = usableChannels(of: device.name)
         let chosen = channels ?? Self.firstOutputs(row.outputCount, usable)
         guard (1...max(1, row.outputCount)).contains(chosen.count), chosen.allSatisfy({ Int($0) < usable }) else {
             message = String(format: loc("settings.audio.tooFewChannels"), device.name, row.outputCount, usable)
-            return
+            return false
         }
-        _ = await sendMapping(row, .systemOutput(channels: chosen))
+        return await sendMapping(row, .systemOutput(channels: chosen))
     }
 
     /// The patch as it is now, read from the engine: a row drawn earlier (a name holds the caret, an
     /// undo came since) may show another cue output count or routing, and a mapping sent for that
-    /// would leave a cue output without a route. Nil, with the list read again, when the patch is gone.
+    /// would leave a cue output without a route. Nil, with the list read again and a message, when the
+    /// patch is gone.
     func current(_ drawn: PatchRow) async -> PatchRow? {
         await refresh()
-        return patches.first { $0.id == drawn.id }
+        if let row = patches.first(where: { $0.id == drawn.id }) { return row }
+        _ = rowGone()
+        return nil
     }
 
     /// Cue output n on device output n, for as many as both have.
@@ -434,10 +477,16 @@ final class WorkspaceSettingsModel: ObservableObject {
         return await setNumber(type, trimmed, range)
     }
 
+    /// Why a number outside `range` is refused, in plain digits.
+    func rangeText(_ range: ClosedRange<Double>) -> String {
+        func plain(_ n: Double) -> String { n == n.rounded() ? String(Int(n)) : String(n) }
+        return String(format: loc("settings.general.outOfRange"), plain(range.lowerBound), plain(range.upperBound))
+    }
+
     func setNumber(_ type: String, _ text: String, _ range: ClosedRange<Double>) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard let value = Double(trimmed), value.isFinite, range.contains(value) else {
-            message = String(format: loc("settings.general.outOfRange"), range.lowerBound, range.upperBound)
+            message = rangeText(range)
             return false
         }
         // The value is the one the engine has (the field was only left, or the old value typed

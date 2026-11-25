@@ -20,10 +20,7 @@
       "shot": "network-chosen"
     },
     {
-      "resize": [
-        680,
-        552
-      ]
+      "resize": [808, 552]
     },
     {
       "shot": "network-least"

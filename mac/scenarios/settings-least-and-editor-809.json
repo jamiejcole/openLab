@@ -5,7 +5,7 @@
   "window": {"width": 1200, "height": 800},
   "steps": [
     {"focus": "settings"},
-    {"resize": [680, 552]},
+    {"resize": [808, 552]},
     {"tab": "audio"},
     {"shot": "audio-least"},
     {"tab": "network"},

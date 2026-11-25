@@ -151,12 +151,16 @@ extension AppController {
             return true
         }
         for doc in session.order {
-            if await !commitEdits(doc) { return false }
+            if await windows[doc]?.commitPendingEdits() == false { return false }
         }
         if session.stores.values.contains(where: isPlaying) {
             if !alerts.confirmQuitWhilePlaying() { return false }
         } else if controllers.values.contains(where: \.isShowMode), !alerts.confirmQuitInShowMode() {
             return false
+        }
+        // What is typed in the settings takes effect at once, so only once the quit goes on.
+        for doc in session.order {
+            if await !commitSettings(doc) { return false }
         }
         var discarded: [ModelID] = []
         for info in session.workspaces where session.stores[info.doc]?.document?.dirty == true {
@@ -251,7 +255,7 @@ extension AppController {
     /// The unsaved-changes prompt. nil: cancelled (or the save failed or was cancelled). Otherwise
     /// the `discard_changes` flag to send: true after Don't Save, false when clean or saved.
     private func resolveUnsaved(_ doc: ModelID) async -> Bool? {
-        guard await commitEdits(doc) else { return nil }
+        guard await commitEdits(doc), await commitSettings(doc) else { return nil }
         guard let store = session.stores[doc], store.document?.dirty == true else { return false }
         switch alerts.unsavedChanges(workspace: name(of: doc)) {
         case .cancel: return nil
@@ -265,6 +269,11 @@ extension AppController {
         await windows[doc]?.commitPendingEdits() ?? true
     }
 
+    /// What is typed in the workspace settings, before a close or quit looks at the workspace.
+    private func commitSettings(_ doc: ModelID) async -> Bool {
+        await windows[doc]?.existingSettingsWindow?.commitPendingEdits() ?? true
+    }
+
     /// File > Save / Save As (allowed in Show Mode, as in QLab). `asNew`: always ask for a path.
     /// An untitled workspace asks either way. Typed-in inspector edits are sent first.
     @discardableResult
@@ -274,6 +283,8 @@ extension AppController {
             return false
         }
         guard await commitEdits(doc) else { return false }
+        // Settings already committed go into the file; what is still typed there stays typed.
+        await windows[doc]?.existingSettingsWindow?.edits.answered()
         return await save(store, name: name(of: doc), asNew: asNew)
     }
 

@@ -695,6 +695,7 @@
 "settings.network.delete" = "Remove";
 "settings.network.newName" = "Network %d";
 "settings.network.badPort" = "A port is a number from 1 to 65535.";
+"settings.rowGone" = "That row is no longer in the table, so the change was not made.";
 "settings.osc.add" = "New passcode";
 "settings.osc.note" = "What an OSC client may do depends on the passcode it connects with.";
 "settings.osc.col.passcode" = "Passcode";
@@ -765,7 +766,7 @@
 "settings.osc.portRefused" = "Port %d could not be opened: %@";
 "settings.osc.addresses" = "This Mac's addresses: %@";
 "settings.osc.noAddresses" = "This Mac has no network address.";
-"settings.general.outOfRange" = "Enter a number from %g to %g.";
+"settings.general.outOfRange" = "Enter a number from %1$@ to %2$@.";
 "settings.audio.systemDefault" = "System Default";
 "settings.audio.notAvailable" = "%@ (not available)";
 "settings.audio.chosenMissing" = "%@ is not connected. openLab will use the system default device the next time it starts.";

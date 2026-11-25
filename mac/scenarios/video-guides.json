@@ -42,7 +42,7 @@
     { "click": "settings-video-guides-3" },
     { "advance": 0.2 },
     { "shot": "routing-missing-display-guides" },
-    { "resize": [790, 552] },
+    { "resize": [808, 552] },
     { "shot": "routing-guides-least" },
     { "resize": [1100, 640] },
     { "tab": "video" },

@@ -9,7 +9,7 @@
     {"click": "settings-osc-enabled"},
     {"advance": 0.1},
     {"shot": "osc-switch-off"},
-    {"resize": [680, 552]},
+    {"resize": [808, 552]},
     {"shot": "osc-least"}
   ]
 }

@@ -71,6 +71,10 @@ extension WorkspaceSettingsWindowController {
         field.setAX("\(AX.settingsKeys)-\(key.rawValue)", label: title)
         field.widthAnchor.constraint(equalToConstant: Self.keyFieldWidth).isActive = true
         field.onRecord = { [weak self] event in self?.keyTyped(event, for: key) }
+        subs.append(
+            NotificationCenter.default.publisher(for: HotkeyRecorder.didEndRecording, object: field).sink {
+                [weak self] _ in MainActor.assumeIsolated { self?.recorderLeft(key) }
+            })
         keyFields[key] = field
 
         let clear = NSButton(title: "", target: self, action: #selector(keyClearClicked(_:)))
@@ -125,7 +129,17 @@ extension WorkspaceSettingsWindowController {
         }
     }
 
+    /// A field left with no key pressed in it (Esc, a click elsewhere): its last refusal is done with.
+    private func recorderLeft(_ key: WorkspaceKey) {
+        let pressed = keyPressed == key
+        keyPressed = nil
+        guard !pressed, model.keyRefusal?.key == key else { return }
+        model.keyRefusal = nil
+        DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.redraw() } }
+    }
+
     private func keyTyped(_ event: NSEvent, for key: WorkspaceKey) {
+        keyPressed = key
         guard let chord = KeyChord(event: event) else {
             model.keyRefusal = KeyRefusal(key: key, text: loc("settings.keys.refused.unsupported"))
             render()

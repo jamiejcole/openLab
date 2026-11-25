@@ -27,7 +27,7 @@
     {"click": "settings-video-monitor-1"},
     {"advance": 0.2},
     {"shot": "cyclorama-watched", "monitor": "Cyclorama", "monitor_size": [640, 360]},
-    {"resize": [520, 540]},
+    {"resize": [808, 552]},
     {"shot": "least-size"}
   ]
 }

@@ -14,12 +14,17 @@ final class WorkspaceSettingsTests: XCTestCase {
     private let patch = ModelID("00000000-0000-0000-0000-000000000001")
     private let device = "openLab Virtual Output"
     var engine: TestEngine!
+    /// Windows a test's helper made, kept until it ends.
+    var owners: [AnyObject] = []
 
     override func setUp() async throws {
         engine = try await TestEngine.start()
     }
 
-    override func tearDown() async throws { engine?.stop() }
+    override func tearDown() async throws {
+        owners = []
+        engine?.stop()
+    }
 
     /// The settings window of the demo show (or the show `edit` makes of it), read from the engine.
     private func open(edit: ((URL) throws -> Void)? = nil) async throws -> (Rig, WorkspaceSettingsWindowController) {
@@ -155,7 +160,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         sc.patchRemoveButtons[1].performClick(nil)
         await assertEventually { sc.patchNameFields.count == 2 }
         let third = sc.patchNameFields[1].stringValue
-        await sc.patchActions?.value
+        await sc.edits.answered()
         // The caret in Main's name; the removal is undone from the workspace.
         XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
         _ = await rig.store.undo()
@@ -182,12 +187,12 @@ final class WorkspaceSettingsTests: XCTestCase {
         let field = sc.patchNameFields[0]
         XCTAssertTrue(sc.window?.makeFirstResponder(field) == true)
         field.currentEditor()?.string = "Front"
-        await sc.patchActions?.value
+        await sc.edits.answered()
         XCTAssertNotNil(field.currentEditor(), "the caret is still in the name")
         XCTAssertEqual(field.currentEditor()?.string, "Front", "and what was typed")
         // Leaving the field commits it, and the table then shows the action's result too.
         _ = sc.window?.makeFirstResponder(nil)
-        await sc.patchActions?.value
+        await sc.edits.answered()
         await assertEventually("renamed and on no device") {
             sc.model.patches.first?.name == "Front" && sc.model.patches.first?.mapping == nil
                 && sc.patchDevicePopups.first?.titleOfSelectedItem == loc("settings.audio.noDevice")
@@ -200,7 +205,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         let (rig, sc) = try await open()
         sc.patchAddButton.performClick(nil)
         await assertEventually { sc.patchNameFields.count == 2 }
-        await sc.patchActions?.value
+        await sc.edits.answered()
         let id = try XCTUnwrap(rig.store.model?.patches.last?.id)
         func engineName() -> String? {
             rig.store.model?.patches.first { $0.id == id }?.raw["name"]?.stringValue
@@ -211,7 +216,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         await sc.model.renamePatch(id, to: "Other")
         XCTAssertEqual(engineName(), "Other")
         _ = sc.window?.makeFirstResponder(nil)
-        await sc.patchActions?.value
+        await sc.edits.answered()
         XCTAssertEqual(engineName(), "Other", "the untouched name did not undo the rename")
         // Typed text commits.
         await assertEventually("drawn again") { sc.patchNameFields.map(\.stringValue) == ["Main", "Other"] }
@@ -219,7 +224,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertTrue(sc.window?.makeFirstResponder(again) == true)
         again.currentEditor()?.string = "Typed"
         _ = sc.window?.makeFirstResponder(nil)
-        await sc.patchActions?.value
+        await sc.edits.answered()
         await assertEventually("typed name sent") { engineName() == "Typed" }
     }
 
@@ -241,12 +246,12 @@ final class WorkspaceSettingsTests: XCTestCase {
         let address = try XCTUnwrap(sc.networkFields.first { $0.identifier?.rawValue == "host" })
         XCTAssertTrue(sc.window?.makeFirstResponder(address) == true)
         address.currentEditor()?.string = "10.0."
-        await sc.networkActions?.value
+        await sc.edits.answered()
         XCTAssertNotNil(address.currentEditor(), "the caret is still in the address")
         XCTAssertEqual(address.currentEditor()?.string, "10.0.", "with what was typed")
         XCTAssertEqual(hostsSent(), before, "nothing sent while it is typed")
         _ = sc.window?.makeFirstResponder(nil)
-        await sc.networkCommits?.value
+        await sc.edits.answered()
         await assertEventually("sent, and the table drawn with both rows") {
             sc.networkFields.count == 3 * (rows + 1)
                 && rig.store.model?.networkPatches.first?.raw["host"]?.stringValue == "10.0."
@@ -254,11 +259,569 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(hostsSent(), before + 1)
     }
 
+    /// Types `text` into `field` and leaves the caret there, as keys do (no Return, no Tab yet).
+    func typeKeeping(_ text: String, in field: NSTextField) throws {
+        let window = try XCTUnwrap(field.window)
+        window.makeFirstResponder(field)
+        let editor = try XCTUnwrap(field.currentEditor(), "the field is being edited")
+        editor.string = text
+        (field.delegate as? NSTextFieldDelegate)?.controlTextDidChange?(
+            Notification(name: NSControl.textDidChangeNotification, object: field))
+    }
+
+    private func networkField(_ sc: WorkspaceSettingsWindowController, _ key: String) throws -> NSTextField {
+        try XCTUnwrap(sc.networkFields.first { $0.identifier?.rawValue == key })
+    }
+
+    private func engineNetwork(_ rig: Rig, _ key: String) -> JSONValue? {
+        rig.store.model?.networkPatches.first?.raw[key]
+    }
+
+    private func networkSent(_ rig: Rig) -> Int {
+        rig.wire.commands.filter { $0.json["type"]?.stringValue == "set_network_patch_property" }.count
+    }
+
+    /// The network page with its one destination drawn.
+    private func openNetwork() async throws -> (Rig, WorkspaceSettingsWindowController) {
+        let (rig, sc) = try await open()
+        sc.tabs.selectTabViewItem(withIdentifier: "network")
+        await assertEventually { sc.shownNetwork?.count == 1 }
+        return (rig, sc)
+    }
+
+    /// Typed wrong, Tab to the next field, Shift-Tab back, the right value typed again, Tab on: the
+    /// engine has the right value, whatever the table was drawn with.
+    func testAnAddressTypedWrongThenRightAgainAcrossTabsEndsRightInTheEngine() async throws {
+        let (rig, sc) = try await openNetwork()
+        let original = try XCTUnwrap(engineNetwork(rig, "host")?.stringValue)
+        let host = try networkField(sc, "host")
+        let port = try networkField(sc, "port")
+        try typeKeeping("10.9.9.9", in: host)
+        sc.window?.makeFirstResponder(port)
+        await sc.edits.answered()
+        await assertEventually("the wrong address is stored") { engineNetwork(rig, "host")?.stringValue == "10.9.9.9" }
+        try typeKeeping(original, in: host)
+        sc.window?.makeFirstResponder(port)
+        await sc.edits.answered()
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("the right address is back") { engineNetwork(rig, "host")?.stringValue == original }
+        XCTAssertEqual(host.stringValue, original)
+    }
+
+    func testAPortTypedWrongThenRightAgainAcrossTabsEndsRightInTheEngine() async throws {
+        let (rig, sc) = try await openNetwork()
+        let original = try XCTUnwrap(engineNetwork(rig, "port")?.doubleValue)
+        let host = try networkField(sc, "host")
+        let port = try networkField(sc, "port")
+        try typeKeeping("9999", in: port)
+        sc.window?.makeFirstResponder(host)
+        await sc.edits.answered()
+        await assertEventually("the wrong port is stored") { engineNetwork(rig, "port")?.doubleValue == 9999 }
+        try typeKeeping(String(Int(original)), in: port)
+        sc.window?.makeFirstResponder(host)
+        await sc.edits.answered()
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("the right port is back") { engineNetwork(rig, "port")?.doubleValue == original }
+        XCTAssertEqual(port.stringValue, String(Int(original)))
+    }
+
+    /// A field clicked into and left untouched sends nothing and does not put its text over a change
+    /// made meanwhile; Esc drops what was typed and sends nothing.
+    func testAnUntouchedNetworkFieldSendsNothingAndEscRestoresIt() async throws {
+        let (rig, sc) = try await openNetwork()
+        let host = try networkField(sc, "host")
+        let before = networkSent(rig)
+        sc.window?.makeFirstResponder(host)
+        let other = await rig.store.send(
+            command: .setNetworkPatch(try XCTUnwrap(sc.shownNetwork?.first?.id), "host", .string("10.1.1.1")))
+        guard case .success = other else { return XCTFail("another client") }
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(networkSent(rig), before + 1, "only the other client's command")
+        XCTAssertEqual(engineNetwork(rig, "host")?.stringValue, "10.1.1.1")
+        await assertEventually("drawn with the engine's address") {
+            (try? self.networkField(sc, "host"))?.stringValue == "10.1.1.1"
+        }
+        // Esc: typed, then dropped.
+        let again = try networkField(sc, "host")
+        try typeKeeping("172.16.0.9", in: again)
+        _ = sc.control(
+            again, textView: try XCTUnwrap(again.currentEditor() as? NSTextView),
+            doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(networkSent(rig), before + 1, "Esc sent nothing")
+        XCTAssertEqual(engineNetwork(rig, "host")?.stringValue, "10.1.1.1")
+        await assertEventually("the field shows the engine's address") {
+            (try? self.networkField(sc, "host"))?.stringValue == "10.1.1.1"
+        }
+    }
+
+    /// A typed value equal to what the field was drawn with still leaves the engine equal to the field;
+    /// a refused one shows its message and the engine's value.
+    func testATypedNetworkValueNeverLeavesTheEngineDifferentFromTheField() async throws {
+        let (rig, sc) = try await openNetwork()
+        let same = try XCTUnwrap(engineNetwork(rig, "host")?.stringValue)
+        try typeKeeping(same, in: try networkField(sc, "host"))
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(engineNetwork(rig, "host")?.stringValue, same)
+        XCTAssertEqual(try networkField(sc, "host").stringValue, same)
+        let port = try XCTUnwrap(engineNetwork(rig, "port")?.doubleValue)
+        try typeKeeping("not a port", in: try networkField(sc, "port"))
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(sc.model.message, loc("settings.network.badPort"))
+        XCTAssertEqual(engineNetwork(rig, "port")?.doubleValue, port)
+        await assertEventually("the port field shows the engine's") {
+            (try? self.networkField(sc, "port"))?.stringValue == String(Int(port))
+        }
+    }
+
+    /// The same sequence for a patch name: typed wrong, to the next name, back, typed right again.
+    func testAPatchNameTypedWrongThenRightAgainAcrossTabsEndsRightInTheEngine() async throws {
+        let (rig, sc) = try await open()
+        sc.patchAddButton.performClick(nil)
+        await assertEventually { sc.patchNameFields.count == 2 }
+        await sc.edits.answered()
+        let first = sc.patchNameFields[0]
+        let second = sc.patchNameFields[1]
+        func engineName() -> String? { rig.store.model?.patches.first?.raw["name"]?.stringValue }
+        XCTAssertEqual(engineName(), "Main")
+        try typeKeeping("Wrong", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.edits.answered()
+        await assertEventually("wrong is stored") { engineName() == "Wrong" }
+        try typeKeeping("Main", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.edits.answered()
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("Main is back") { engineName() == "Main" }
+        XCTAssertEqual(first.stringValue, "Main")
+    }
+
+    /// A name typed wrong then right, the answers late, an untouched field left between: in order.
+    func testAPatchNameTypedWrongThenRightEndsRightWhenTheAnswersComeLate() async throws {
+        let (rig, sc) = try await open()
+        let field = sc.patchNameFields[0]
+        func engineName() -> String? { rig.store.model?.patches.first?.raw["name"]?.stringValue }
+        rig.wire.holdResults = true
+        try typeKeeping("Wrong", in: field)
+        sc.window?.makeFirstResponder(nil)
+        sc.window?.makeFirstResponder(field)
+        sc.window?.makeFirstResponder(nil)
+        try typeKeeping("Main", in: field)
+        sc.window?.makeFirstResponder(nil)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(engineName(), "Main")
+        XCTAssertEqual(
+            commands(rig).filter { $0["property"]?["type"]?.stringValue == "name" }.compactMap {
+                $0["property"]?["value"]?.stringValue
+            }, ["Wrong", "Main"])
+        await assertEventually { sc.patchNameFields.map(\.stringValue) == ["Main"] }
+    }
+
+    /// A port that will be refused, then a right one queued behind it: the right one is stored and no
+    /// refusal stays up.
+    func testARightPortTypedAfterAWrongOneIsStoredWhenTheAnswersComeLate() async throws {
+        let (rig, sc) = try await openNetwork()
+        let host = try networkField(sc, "host")
+        let port = try networkField(sc, "port")
+        rig.wire.holdResults = true
+        try typeKeeping("10.9.9.9", in: host)
+        sc.window?.makeFirstResponder(port)  // its answer holds the ones after it
+        try typeKeeping("no port", in: port)
+        sc.window?.makeFirstResponder(host)
+        try typeKeeping("9001", in: port)
+        sc.window?.makeFirstResponder(host)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(engineNetwork(rig, "port")?.doubleValue, 9001)
+        XCTAssertEqual(port.stringValue, "9001")
+        XCTAssertNil(sc.model.message)
+    }
+
+    /// A refusal that comes while newer text is typed in the field leaves that text alone, and says why.
+    func testARefusalWhileNewerTextIsTypedLeavesTheTyping() async throws {
+        let (rig, sc) = try await openNetwork()
+        let host = try networkField(sc, "host")
+        let port = try networkField(sc, "port")
+        rig.wire.holdResults = true
+        try typeKeeping("10.9.9.9", in: host)
+        sc.window?.makeFirstResponder(port)
+        try typeKeeping("no port", in: port)
+        sc.window?.makeFirstResponder(host)
+        try typeKeeping("90", in: port)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        await assertEventually("why") { sc.messageLabel.stringValue == loc("settings.network.badPort") }
+        XCTAssertEqual(port.currentEditor()?.string, "90", "the typing goes on")
+        try typeKeeping("9001", in: port)
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(engineNetwork(rig, "port")?.doubleValue, 9001)
+        XCTAssertEqual(try networkField(sc, "port").stringValue, "9001")
+    }
+
+    /// A refusal is not hidden by the edit of another field that was already on its way.
+    func testARefusalStaysUpWhenALaterEditOfAnotherFieldIsTaken() async throws {
+        let (rig, sc) = try await openNetwork()
+        let host = try networkField(sc, "host")
+        let port = try networkField(sc, "port")
+        let before = engineNetwork(rig, "port")?.doubleValue
+        try typeKeeping("no port", in: port)
+        sc.window?.makeFirstResponder(host)
+        try typeKeeping("10.9.9.9", in: host)
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(engineNetwork(rig, "host")?.stringValue, "10.9.9.9")
+        XCTAssertEqual(engineNetwork(rig, "port")?.doubleValue, before)
+        await assertEventually { sc.messageLabel.stringValue == loc("settings.network.badPort") }
+    }
+
+    /// An address on its way, then the row's remove button: in that order, so the destination goes and
+    /// nothing is refused.
+    func testRemovingADestinationWhoseAddressIsOnItsWayRunsAfterIt() async throws {
+        let (rig, sc) = try await openNetwork()
+        let host = try networkField(sc, "host")
+        rig.wire.holdResults = true
+        try typeKeeping("10.9.9.9", in: host)
+        sc.window?.makeFirstResponder(try networkField(sc, "port"))
+        try typeKeeping("10.9.9.10", in: host)
+        sc.networkDeleteButtons[0].performClick(nil)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        await assertEventually("gone") { rig.store.model?.networkPatches.isEmpty == true }
+        XCTAssertNil(sc.model.message)
+        XCTAssertEqual(
+            commands(rig).suffix(3).compactMap { $0["type"]?.stringValue },
+            ["set_network_patch_property", "set_network_patch_property", "remove_network_patch"])
+    }
+
+    /// Another client removes the destination an address is typed in: nothing is sent, and a line says so.
+    func testAnAddressTypedInADestinationThatIsGoneGoesNowhereAndSaysSo() async throws {
+        let (rig, sc) = try await openNetwork()
+        await sc.model.addNetworkPatch()
+        await assertEventually { sc.networkFields.count == 6 }
+        let first = try XCTUnwrap(rig.store.model?.networkPatches.first?.id)
+        let kept = rig.store.model?.networkPatches.last
+        try typeKeeping("10.9.9.9", in: try networkField(sc, "host"))
+        guard case .success = await rig.store.send(command: .removeNetworkPatch(first)) else { return XCTFail() }
+        await settle()
+        XCTAssertEqual(try networkField(sc, "host").currentEditor()?.string, "10.9.9.9", "the typing goes on")
+        let sent = networkSent(rig)
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(networkSent(rig), sent, "nothing sent")
+        XCTAssertEqual(rig.store.model?.networkPatches, kept.map { [$0] })
+        await assertEventually("said") { sc.messageLabel.stringValue == loc("settings.rowGone") }
+        await assertEventually { sc.networkFields.count == 3 }
+    }
+
+    /// A destination removed and brought back while the caret is in another one: its row goes and
+    /// comes back with it.
+    func testADestinationRemovedAndBroughtBackWhileTypingInAnotherShowsAgain() async throws {
+        let (rig, sc) = try await openNetwork()
+        await sc.model.addNetworkPatch()
+        await assertEventually { sc.networkFields.count == 6 }
+        let second = try XCTUnwrap(rig.store.model?.networkPatches.last?.id)
+        try typeKeeping("10.9.9.9", in: try networkField(sc, "host"))
+        guard case .success = await rig.store.send(command: .removeNetworkPatch(second)) else { return XCTFail() }
+        await assertEventually { sc.networkFields[3].isHiddenOrHasHiddenAncestor }
+        _ = await rig.store.undo()
+        await assertEventually { !sc.networkFields[3].isHiddenOrHasHiddenAncestor }
+        XCTAssertEqual(try networkField(sc, "host").currentEditor()?.string, "10.9.9.9")
+    }
+
+    // MARK: Leaving the window with text typed
+
+    /// One page's field and the engine's value for it.
+    private struct Typed {
+        var page: SettingsPage
+        var field: (WorkspaceSettingsWindowController) -> NSTextField?
+        var engine: (Rig) -> String?
+        var texts: [String]
+    }
+
+    private var typedPages: [Typed] {
+        [
+            Typed(
+                page: .network, field: { sc in sc.networkFields.first { $0.identifier?.rawValue == "host" } },
+                engine: { $0.store.model?.networkPatches.first?.raw["host"]?.stringValue },
+                texts: ["10.1.1.1", "10.1.1.2", "10.1.1.3"]),
+            Typed(
+                page: .osc, field: { $0.oscCodeFields.first },
+                engine: { OscAccessTable(settings: $0.store.model?.settings).rows.first?.passcode },
+                texts: ["0001", "0002", "0003"]),
+            Typed(
+                page: .audio, field: { $0.patchNameFields.first },
+                engine: { $0.store.model?.patches.first?.raw["name"]?.stringValue }, texts: ["One", "Two", "Three"]),
+            Typed(
+                page: .audio, field: { $0.maxLimitField },
+                engine: {
+                    $0.store.model.flatMap { $0.settings["output_max_db"]?.doubleValue }.map { String(Int($0)) }
+                },
+                texts: ["11", "10", "9"]),
+            Typed(
+                page: .general, field: { $0.panicField },
+                engine: { $0.store.model?.settings["panic_duration"]?.doubleValue.map { String(Int($0)) } },
+                texts: ["7", "8", "9"]),
+            Typed(
+                page: .general, field: { $0.goIntervalField },
+                engine: { $0.store.model?.settings["min_go_interval"]?.doubleValue.map { String(Int($0)) } },
+                texts: ["1", "2", "3"]),
+        ]
+    }
+
+    /// Text typed and left in a field of any page is sent when the window goes, by Done, by Close
+    /// (Cmd-W and the close button) and by the window being closed; the next opening sends nothing.
+    func testTextTypedIsSentWhenTheWindowGoesAndNotAtTheNextOpening() async throws {
+        let (rig, sc) = try await open()
+        guard case .success = await rig.store.send(command: .addOscPasscode("1234", rights: .all, at: 0)) else {
+            return XCTFail("osc")
+        }
+        await assertEventually { !sc.oscCodeFields.isEmpty }
+        let window = try XCTUnwrap(sc.window)
+        let ways: [(String, () -> Void)] = [
+            ("Done", { sc.doneButton.performClick(nil) }), ("Close", { window.performClose(nil) }),
+            ("close", { window.close() }),
+        ]
+        for typed in typedPages {
+            for ((way, leave), text) in zip(ways, typed.texts) {
+                let what = "\(typed.page), \(way), \(text)"
+                await sc.present().value
+                sc.show(page: typed.page)
+                try typeKeeping(text, in: try XCTUnwrap(typed.field(sc), what))
+                leave()
+                await assertEventually("\(what): sent") { typed.engine(rig) == text }
+                await sc.edits.answered()
+                await settle()
+                await assertEventually("\(what): closed") { !window.isVisible }
+                let sent = commands(rig).count
+                await sc.present().value
+                await sc.edits.answered()
+                XCTAssertEqual(commands(rig).count, sent, "\(what): the opening sends nothing")
+                XCTAssertEqual(typed.field(sc)?.stringValue, text, what)
+            }
+        }
+    }
+
+    /// Text typed on a page is sent when another page is shown.
+    func testTextTypedIsSentWhenAnotherPageIsShown() async throws {
+        let (rig, sc) = try await open()
+        for typed in typedPages where typed.page != .osc {
+            sc.show(page: typed.page)
+            try typeKeeping(typed.texts[0], in: try XCTUnwrap(typed.field(sc)))
+            sc.show(page: .keys)
+            await assertEventually("\(typed.page)") { typed.engine(rig) == typed.texts[0] }
+        }
+    }
+
+    /// Text that is refused as the window goes: the window is there again with the reason and the
+    /// engine's value, and goes at the next Done.
+    func testTextRefusedAsTheWindowGoesBringsItBackWithTheReason() async throws {
+        let (rig, sc) = try await open()
+        let window = try XCTUnwrap(sc.window)
+        sc.show(page: .general)
+        let before = sc.panicField.stringValue
+        try typeKeeping("sixty", in: sc.panicField)
+        sc.doneButton.performClick(nil)
+        let why = sc.model.rangeText(0...60)
+        await assertEventually("shown again with the reason") {
+            window.isVisible && sc.messageLabel.stringValue == why && sc.panicField.stringValue == before
+        }
+        XCTAssertEqual(rig.store.model?.settings["panic_duration"]?.doubleValue, Double(before))
+        sc.doneButton.performClick(nil)
+        XCTAssertFalse(window.isVisible)
+        await settle()
+        XCTAssertFalse(window.isVisible, "it stays closed")
+    }
+
+    /// A refusal puts no window on screen that was never there (a scenario draws it off screen), nor one
+    /// that went with its workspace.
+    func testARefusalPutsUpNoWindowThatWasNeverShownOrWentWithItsWorkspace() async throws {
+        let (_, shown) = try await open()
+        let unshown = WorkspaceSettingsWindowController(store: shown.model.store)
+        for sc in [unshown, shown] {
+            sc.show(page: .general)
+            try typeKeeping("sixty", in: sc.panicField)
+            sc.window?.makeFirstResponder(nil)
+            if sc === shown { sc.close() }
+            await sc.edits.answered()
+            XCTAssertNotNil(sc.model.message)
+            XCTAssertFalse(sc.window?.isVisible == true)
+        }
+    }
+
+    /// AppKit orders a closed window in again when a field last typed in has `enabled` set, the same value
+    /// too (it watches the key). What can be shown without an active app: after the commit and the
+    /// redraws that follow it, nothing is set on the field that did not change.
+    func testACommittedFieldIsNotSetAgainToWhatItIs() async throws {
+        let (_, sc) = try await open()
+        for (field, page) in [
+            (sc.panicField, SettingsPage.general), (sc.maxLimitField, .audio), (sc.patchNameFields[0], .audio),
+            (sc.networkFields[1], .network),
+        ] {
+            await sc.present().value
+            sc.show(page: page)
+            var set: [String] = []
+            let watches = [
+                field.observe(\.isEnabled) { _, _ in MainActor.assumeIsolated { set.append("enabled") } },
+                field.observe(\.isEditable) { _, _ in MainActor.assumeIsolated { set.append("editable") } },
+                field.observe(\.isHidden) { _, _ in MainActor.assumeIsolated { set.append("hidden") } },
+            ]
+            try typeKeeping("7", in: field)
+            sc.doneButton.performClick(nil)
+            await sc.edits.answered()
+            await settle()
+            sc.redraw()
+            XCTAssertEqual(set, [], "\(page) \(field.key)")
+            for watch in watches { watch.invalidate() }
+        }
+    }
+
+    /// Text typed in a field that stops being usable (another client turned it off) stays there, unsent,
+    /// until the operator leaves the field.
+    func testAFieldTurnedOffWhileTypedInCommitsOnlyWhenItIsLeft() async throws {
+        let (rig, sc) = try await open()
+        sc.show(page: .general)
+        try typeKeeping("5", in: sc.autoNumberField)
+        let sent = commands(rig).count
+        guard case .success = await rig.store.send(command: .setSwitch(.autoNumberNewCues, false)) else {
+            return XCTFail()
+        }
+        await assertEventually { sc.autoNumberCheck.state == .off }
+        await settle()
+        XCTAssertEqual(commands(rig).count, sent + 1, "only the switch")
+        XCTAssertEqual(sc.autoNumberField.currentEditor()?.string, "5", "the typing goes on")
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(sc.model.autoNumberStep, 5)
+        await assertEventually("off now that it is left") { !sc.autoNumberField.isEnabled }
+    }
+
+    // MARK: How long a refusal stays up
+
+    /// Esc, leaving the field with the engine's value, and another page take a refusal away.
+    func testARefusalGoesWhenItsFieldIsRevertedOrLeftOrThePageIsChanged() async throws {
+        let (_, sc) = try await open()
+        sc.show(page: .general)
+        func refuse() async throws {
+            try typeKeeping("sixty", in: sc.panicField)
+            sc.window?.makeFirstResponder(nil)
+            await assertEventually { sc.messageLabel.stringValue == sc.model.rangeText(0...60) }
+        }
+        try await refuse()
+        try typeKeeping("61", in: sc.panicField)
+        _ = sc.control(
+            sc.panicField, textView: try XCTUnwrap(sc.panicField.currentEditor() as? NSTextView),
+            doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertEqual(sc.messageLabel.stringValue, "", "Esc")
+        try await refuse()
+        sc.window?.makeFirstResponder(sc.panicField)
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("left untouched") { sc.messageLabel.stringValue.isEmpty }
+        try await refuse()
+        try typeKeeping("0.5", in: sc.panicField)
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("the old value typed") { sc.messageLabel.stringValue.isEmpty }
+        try await refuse()
+        sc.show(page: .audio)
+        XCTAssertEqual(sc.messageLabel.stringValue, "", "another page")
+        // The Video pages' own line.
+        sc.videoPane.messageLabel.stringValue = "a refusal"
+        sc.show(page: .video)
+        sc.show(page: .general)
+        XCTAssertEqual(sc.videoPane.messageLabel.stringValue, "")
+    }
+
+    /// An edit of something else, a check box too, leaves a field's refusal up; a check box clicked goes
+    /// out after the edits before it.
+    func testAnUnrelatedEditLeavesARefusalUpAndACheckBoxWaitsItsTurn() async throws {
+        let (rig, sc) = try await open()
+        sc.show(page: .general)
+        try typeKeeping("sixty", in: sc.panicField)
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        for box in [sc.keyUpCheck, sc.autoLoadCheck] {
+            box.performClick(nil)
+            await sc.edits.answered()
+            XCTAssertEqual(sc.model.message, sc.model.rangeText(0...60))
+        }
+        try typeKeeping("3", in: sc.goIntervalField)
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(sc.model.message, sc.model.rangeText(0...60))
+        // In order behind an unanswered edit, shown as clicked meanwhile.
+        rig.wire.holdResults = true
+        let sent = commands(rig).count
+        try typeKeeping("4", in: sc.goIntervalField)
+        sc.lockPlayheadCheck.performClick(nil)
+        sc.oscEnabledCheck.performClick(nil)
+        await settle()
+        XCTAssertEqual(commands(rig).count, sent + 1, "the boxes wait")
+        sc.redraw()
+        XCTAssertEqual([sc.lockPlayheadCheck.state, sc.oscEnabledCheck.state], [.off, .off], "as clicked")
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(rig.store.isOn(.lockPlayhead), false)
+        XCTAssertEqual(rig.store.isOn(.oscEnabled), false)
+    }
+
+    /// A range is said in plain numbers.
+    func testARangeIsSaidInPlainNumbers() async throws {
+        let (_, sc) = try await open()
+        let ok = await sc.model.setAutoNumberStep("0")
+        XCTAssertFalse(ok)
+        let text = try XCTUnwrap(sc.model.message)
+        XCTAssertTrue(text.contains("0.001") && text.contains("1000000") && !text.contains("e+"), text)
+    }
+
+    // MARK: The editors' windows
+
+    /// Text typed in a patch editor is committed as its window goes, not at its next opening (which may
+    /// be during a show).
+    func testALevelTypedInThePatchEditorIsSentWhenItsWindowGoesAndNotAtTheNextOpening() async throws {
+        let (rig, sc) = try await open()
+        let editor = try await edit(in: sc)
+        let window = try XCTUnwrap(editor.window)
+        window.makeFirstResponder(editor.mainField)
+        editor.mainField.currentEditor()?.string = "-7"
+        editor.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: editor.mainField))
+        window.performClose(nil)
+        await assertEventually("sent") { self.patchLevels(rig).main == -7 }
+        let sent = commands(rig).count
+        sc.patchEditButtons[0].performClick(nil)
+        await editor.editing?.value
+        await settle()
+        XCTAssertEqual(commands(rig).count, sent, "the opening sends nothing")
+    }
+
+    /// The General page's number fields: only clicked into, they send nothing over a change made
+    /// meanwhile, and they show it.
+    func testAnUntouchedNumberFieldSendsNothingOverAChangeMadeMeanwhile() async throws {
+        let (rig, sc) = try await open()
+        sc.show(page: .general)
+        sc.window?.makeFirstResponder(sc.panicField)
+        guard case .success = await rig.store.send(command: .setWorkspaceNumber("panic_duration", 4)) else {
+            return XCTFail()
+        }
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        await assertEventually { sc.panicField.stringValue == "4" }
+        XCTAssertEqual(rig.store.model?.settings["panic_duration"]?.doubleValue, 4)
+    }
+
     /// The patch on no device with `count` cue outputs, and the table drawn so.
     private func unmappedPatch(_ sc: WorkspaceSettingsWindowController, count: Int) async {
         await sc.model.setOutputCount(patch, count)
         sc.patchDevicePopups.first.map { try? pick(loc("settings.audio.noDevice"), in: $0) }
-        await sc.patchActions?.value
+        await sc.edits.answered()
         await assertEventually("on no device, \(count) outputs, drawn so") {
             let drawn = sc.shownPatchTable?.patches.first
             return drawn?.mapping == nil && drawn?.outputCount == count
@@ -274,13 +837,12 @@ final class WorkspaceSettingsTests: XCTestCase {
 
     /// A device put on a patch is sent for the patch's cue outputs as they are now, so no cue output
     /// is left without a route: the count was raised in the patch editor while a name in the table
-    /// held the caret, and the table still shows the old count.
+    /// held the caret.
     func testADeviceChosenInTheTableIsSentForTheCueOutputsThePatchHasNow() async throws {
         let (rig, sc) = try await open()
         await unmappedPatch(sc, count: 1)
         XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
         await sc.model.setOutputCount(patch, 2)
-        XCTAssertEqual(sc.shownPatchTable?.patches.first?.outputCount, 1, "the table is as drawn")
         try pick(device, in: sc.patchDevicePopups[0])
         await assertRouted(rig, "both cue outputs have a route")
     }
@@ -324,7 +886,7 @@ final class WorkspaceSettingsTests: XCTestCase {
     }
 
     /// The device set to none in the patch editor while a name in the table holds the caret: the
-    /// table still shows the device, and choosing it again puts the patch back on it.
+    /// row follows with the caret kept, and choosing the device again puts the patch back on it.
     func testChoosingTheDrawnDeviceAgainAfterTheEditorClearedItSendsIt() async throws {
         let (rig, sc) = try await open()
         XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
@@ -332,7 +894,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         await sc.model.setMapping(row, device: nil)
         let none = try await mapping(rig)
         XCTAssertNil(none)
-        XCTAssertEqual(sc.patchDevicePopups[0].titleOfSelectedItem, device, "the table is as drawn")
+        await assertEventually("the row says so, the caret in its name") {
+            sc.patchDevicePopups[0].titleOfSelectedItem == loc("settings.audio.noDevice")
+        }
+        XCTAssertNotNil(sc.patchNameFields[0].currentEditor())
         try pick(device, in: sc.patchDevicePopups[0])
         await assertRouted(rig, "back on the device")
     }
@@ -352,7 +917,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         sc.patchEditButtons[1].performClick(nil)
         XCTAssertNil(sc.patchEditors[other], "Edit opens no editor for a patch that is gone")
         sc.patchRemoveButtons[1].performClick(nil)
-        await assertEventually("the row goes") { sc.patchNameFields.count == 1 }
+        await assertEventually("the row goes") { sc.patchNameFields.last?.isHiddenOrHasHiddenAncestor == true }
+        XCTAssertNotNil(sc.patchNameFields[0].currentEditor(), "the caret stays")
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually { sc.patchNameFields.count == 1 }
         XCTAssertNil(sc.model.message, "no refusal naming an id: \(sc.model.message ?? "")")
     }
 
@@ -2189,6 +2757,8 @@ final class WorkspaceSettingsTests: XCTestCase {
                 f.maxX, clip.bounds.width + 0.5, "\(v.accessibilityIdentifier()) is cut at the right")
         }
         XCTAssertEqual(window.contentLayoutRect.width, window.contentMinSize.width, accuracy: 0.5)
+        // Every field is one line: a five-digit port is drawn whole, not wrapped.
+        XCTAssertTrue(sc.networkFields.allSatisfy { $0.cell?.wraps == false && $0.cell?.isScrollable == true })
         // A long choice is cut in its middle, so the interface's name always shows.
         let popup = try XCTUnwrap(sc.networkInterfacePopups.first)
         XCTAssertEqual((popup.cell as? NSPopUpButtonCell)?.lineBreakMode, .byTruncatingMiddle)
@@ -2285,7 +2855,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(commands(rig).count, count, "nothing out of range is sent")
         XCTAssertEqual(sc.model.panicDuration, 7.5)
         sc.render()
-        XCTAssertEqual(sc.messageLabel.stringValue, String(format: loc("settings.general.outOfRange"), 0.0, 60.0))
+        XCTAssertEqual(sc.messageLabel.stringValue, sc.model.rangeText(0...60))
     }
 
     func testTheGoIntervalSendsItsOwnSetting() async throws {
