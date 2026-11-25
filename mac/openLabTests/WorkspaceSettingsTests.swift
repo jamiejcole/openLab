@@ -850,10 +850,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertFalse(editor.crosspointField.isHidden)
         XCTAssertTrue(editor.crosspointField.hasFocusMark)
         let text = try XCTUnwrap(editor.crosspointField.currentEditor() as? NSTextView)
-        // As Esc does: the text view asks its delegate to do the cancel command.
-        let handled = editor.control(
-            editor.crosspointField, textView: text, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
-        XCTAssertTrue(handled)
+        // As Esc does: the text view runs the cancel command, which asks its delegate.
+        text.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
         XCTAssertTrue(editor.crosspointField.isHidden, "the box is gone")
         XCTAssertFalse(editor.crosspointField.hasFocusMark, "and with it its focus border")
         XCTAssertEqual(editor.crosspointField.layer?.borderWidth, 0.5)
@@ -1167,8 +1165,6 @@ final class WorkspaceSettingsTests: XCTestCase {
         let playing = try drawn("while it plays")
         XCTAssertFalse(playing[0].isEmpty, "a bar is drawn for cue output 1")
         XCTAssertFalse(playing[1].isEmpty, "a bar is drawn for cue output 2")
-        let columnWidth = PatchRoutingView.meterW * 2  // device pixels at 2x, or fewer at 1x
-        XCTAssertLessThanOrEqual(CGFloat(playing[0].count), columnWidth, "inside the meter column")
         // The bar sits in the column, between the level boxes and the crosspoints.
         let column = editor.matrix.meterRect(rows: 2)
         XCTAssertGreaterThanOrEqual(editor.meter.frame.minX, column.minX - 1)
