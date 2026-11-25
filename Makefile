@@ -92,8 +92,11 @@ sanitize-thread:
 #   trebles per doubling, past the job's 2 h limit. Core forbids unsafe code, messages_survive_a_round_trip_as_one_line
 #   takes a small set the same way under Miri, and the full size runs natively and under both sanitizers.
 MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly --skip the_largest_stage_set_fits_one_line
+# Outside GitHub's runners it runs under scripts/mem-capped.py, which holds the cap (Miri's memory has no bound of
+# its own): a run that passes it, meets memory pressure or finds another capped run going is killed or not
+# started. make then fails with its own error; the `mem-capped:` line above that says which, and is the result.
 miri:
-	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
+	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" $(if $(GITHUB_ACTIONS),,../scripts/mem-capped.py --) cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
 # Two test processes one after the other: $(1) names the target in messages, $(2) the first selection, $(3)
 # the second. The second does not start after a run cut short by a proven stall (exit 75 of
