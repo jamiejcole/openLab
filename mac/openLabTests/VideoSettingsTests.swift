@@ -2038,7 +2038,9 @@ extension VideoSettingsTests {
     }
 
     /// The region list takes the views of a row it drops out of the window, and a remove button held
-    /// across a redraw (a region above it went) removes the region it was drawn for.
+    /// across a redraw (a region above it went) removes the region it was drawn for. (A real held
+    /// press then fires no action, the rebuilt list having taken the button out of the window; the
+    /// click here is the action as AppKit would still deliver it.)
     func testARemoveButtonFromBeforeARedrawRemovesItsOwnRegionAndNoOldViewsStay() async throws {
         let (rig, sc) = try await openTwoStages()
         let editor = sc.openStageEditor(ModelID(stageA))

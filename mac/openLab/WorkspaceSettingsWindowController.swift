@@ -150,13 +150,14 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // The table is drawn from what the model last read from the engine, whoever asked for it.
         subs.append(model.$patches.sink { [weak self] _ in self?.renderSoon() })
         subs.append(model.$devices.sink { [weak self] _ in self?.renderSoon() })
-        // A device lost, back or opened changes where patches resolve; the engine's patch warnings
-        // and device states say so, and the table reads the resolutions again.
         // The patches themselves changing (an undo, another client): their cue output counts and
         // names are read again, so a choice made in a row is never sent for an out-of-date patch.
         subs.append(
-            store.$model.map { $0?.patches.map { "\($0.id.raw)\u{0}\($0.raw)" } ?? [] }.removeDuplicates()
-                .dropFirst().sink { [weak self] _ in self?.rereadSoon() })
+            store.$model.map { $0?.patches ?? [] }.removeDuplicates().dropFirst().sink { [weak self] _ in
+                self?.rereadSoon()
+            })
+        // A device lost, back or opened changes where patches resolve; the engine's patch warnings
+        // and device states say so, and the table reads the resolutions again.
         subs.append(store.$warnings.removeDuplicates().sink { [weak self] _ in self?.rereadSoon() })
         subs.append(
             store.$status.map { $0?.outputs.map(\.state) }.removeDuplicates().sink { [weak self] _ in
