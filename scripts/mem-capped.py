@@ -13,14 +13,17 @@ above, when memory cannot be read, and when this script or its watcher dies. Bot
 seconds, so one that is stopped or killed leaves the other. One capped run at a time on the machine: a
 second is refused.
 
-Exit code: the command's own, 86 killed for memory, 87 not started (and why, in a `mem-capped:` line).
+Exit code: the command's own; 86 killed, for any of those reasons; 87 not started. A `mem-capped:` line says
+why. A script that is killed itself has the exit code of that; its watcher's line says why the command went.
 
 What can still get past it:
   - memory allocated between two looks, before the kill takes effect;
   - a daemon in a session of its own whose parent was started and ended between two looks (on Linux, where a
     process does not keep its first parent's identity, any that lost its parent between two looks);
   - work another process does for the command: apps and test hosts launchd starts (xcodebuild's among
-    them), XPC services, a build server that was already running;
+    them), XPC services;
+  - compiling through a shared sccache server: in such a run rustc is not counted, also when the run started
+    the server, which detaches (and then keeps the lock until it ends, unless the end of the run killed it);
   - a process of another user (setuid): it cannot be read or killed;
   - memory no process footprint includes: the file cache, written pages of mapped files, kernel memory;
   - this script and its watcher both killed with SIGKILL: the command goes on with no cap. It holds the lock,
@@ -31,6 +34,7 @@ which is what the pressure reading is for. Linux has no pressure reading here.
 import ctypes
 import errno
 import fcntl
+import mmap
 import os
 import select
 import signal
@@ -44,6 +48,7 @@ LOCK = "/tmp/openlab-mem-capped.lock"
 POLL = 0.05
 PRESSURE_WARNING = 2  # kern.memorystatus_vm_pressure_level: 1 normal, 2 warning, 4 critical
 START_LIMIT = 10  # seconds for a helper to answer before the command starts
+STOP_LIMIT = 1  # seconds in which processes are stopped before any is killed
 KILL_LIMIT = 5  # seconds to go on killing a process that does not die
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT)
 
@@ -52,7 +57,7 @@ class Refused(Exception):
     pass
 
 
-# --- What the system says about its processes. processes() lists the living ones (not zombies) as
+# --- What the system says about its processes. processes() lists the living ones (no zombies, not 0 and 1) as
 # {pid: (identity, parent's identity, session id)}; an identity is never used again, a pid is. footprint() is
 # a process's bytes; it raises ProcessLookupError for one that has gone, another OSError if it may not be read.
 
@@ -86,6 +91,8 @@ if sys.platform == "darwin":
             size = got * 2
         table, ids = {}, UniqueIds()
         for pid in pids[:got // ctypes.sizeof(ctypes.c_int)]:
+            if pid <= 1:
+                continue
             size = libc.proc_pidinfo(pid, PROC_PIDUNIQIDENTIFIERINFO, ctypes.c_uint64(0), ctypes.byref(ids),
                                      ctypes.sizeof(ids))
             if size != ctypes.sizeof(ids):
@@ -98,12 +105,15 @@ if sys.platform == "darwin":
             raise OSError("the list of processes cannot be read")
         return table
 
-    def footprint(pid):
-        """ri_phys_footprint: counts compressed and swapped pages, which resident size does not."""
+    def rusage(pid):
         info = RusageInfo()
         if libc.proc_pid_rusage(pid, RUSAGE_INFO_V0, ctypes.byref(info)) != 0:
             raise failed(f"proc_pid_rusage of {pid}")
-        return info.phys_footprint
+        return info
+
+    def footprint(pid):
+        """ri_phys_footprint: counts compressed and swapped pages, which resident size does not."""
+        return rusage(pid).phys_footprint
 
     def pressure():
         level, size = ctypes.c_int(), ctypes.c_size_t(ctypes.sizeof(ctypes.c_int))
@@ -116,7 +126,7 @@ else:
     def processes():
         found = {}
         for name in os.listdir("/proc"):
-            if name.isdigit():
+            if name.isdigit() and int(name) > 1:
                 try:
                     with open(f"/proc/{name}/stat", "rb") as f:
                         state, parent, _, session, *rest = f.read().rpartition(b")")[2].split()
@@ -141,7 +151,7 @@ else:
 
 def machine_trouble():
     if pressure() >= PRESSURE_WARNING:
-        return "macOS reports memory pressure"
+        return "macOS reports memory pressure, which may come from anything on this machine"
     return None
 
 
@@ -155,14 +165,25 @@ class Run:
         self.seen = {table[seed][0]}  # the identity of every process of the run so far
         self.sessions = {seed}  # the command leads a session of its own
         self.pids = {seed}
+        # This script and what it was started from are never the run's, whatever the table says later.
+        self.never, rows = set(), {row[0]: row for row in table.values()}
+        row = table.get(os.getpid())
+        while row and row[0] not in self.never:
+            self.never.add(row[0])
+            row = rows.get(row[1])
 
     def scan(self):
         """The pids of the run's living processes."""
         table, pids, added = processes(), set(), True
+
+        def led_by_the_run(session):
+            return session in self.sessions and (session not in table or table[session][0] in self.seen)
         while added:
             added = False
             for pid, (own, parent, session) in table.items():
-                if pid not in pids and (own in self.seen or parent in self.seen or session in self.sessions):
+                if pid in pids or own in self.never:
+                    continue
+                if own in self.seen or parent in self.seen or led_by_the_run(session):
                     pids.add(pid)
                     self.seen.add(own)
                     if session == pid:
@@ -187,32 +208,36 @@ class Run:
         return sizes
 
     def end(self):
-        """Kills every process of the run; the pids of those that would not die."""
-        limit, stopped, live = time.monotonic() + KILL_LIMIT, set(), self.pids
-        listed = True
-        while time.monotonic() < limit:
+        """Kills every process of the run; the pids of those not seen to end within KILL_LIMIT."""
+        begun, stopped, blind = time.monotonic(), set(), False
+        while True:
             try:
-                live = self.scan()
-            except Exception:  # what was last known of the run goes, and it is tried again
-                if listed:
-                    for pid in live:
-                        send(pid, signal.SIGKILL)
-                listed = False
-                time.sleep(0.01)
-                continue
-            if not live:
+                live, listed = self.scan(), True
+            except Exception:  # what was last known of the run goes, once: a pid may be another's by then
+                live, listed = self.pids, False
+            if listed and not live:
                 return []
-            # Stopped first, until none is new, so that none starts another that outlives its parent unseen.
+            took = time.monotonic() - begun
+            # Stopped first, until none is new, so that none starts another that outlives its parent unseen. Not
+            # for long: a stopped process keeps its memory, and looking may be slow when there is little left.
             new = live - stopped
-            for pid in new or live:
-                send(pid, signal.SIGSTOP if new else signal.SIGKILL)
-            stopped |= new
-            if not new:
-                time.sleep(0.01)
-        return sorted(live)
+            if listed and new and took < STOP_LIMIT:
+                for pid in new:
+                    send(pid, signal.SIGSTOP)
+                stopped |= new
+                continue
+            if listed or not blind:
+                for pid in live:
+                    send(pid, signal.SIGKILL)
+            blind = blind or not listed
+            if took >= KILL_LIMIT:
+                return sorted(live)
+            time.sleep(0.01)
 
 
 def send(pid, number):
+    if pid <= 1:  # launchd, or what kill() takes as a group or as everything
+        return
     try:
         os.kill(pid, number)
     except (ProcessLookupError, PermissionError):
@@ -244,7 +269,7 @@ def say(text):
 
 def say_survivors(pids):
     if pids:
-        say(f"these processes may not have died and are no longer capped: {' '.join(map(str, pids))}")
+        say(f"sent SIGKILL, not seen to end and no longer watched: {' '.join(map(str, pids))}")
 
 
 def watch(cap, pid_fd, note_fd, script):
@@ -381,7 +406,7 @@ def run_capped(command, cap, lock_path):
         reason = trouble(run, cap)
         if reason is None:
             time.sleep(POLL)
-    # Nothing the command started stays behind. Nothing is printed before the kill: printing can block.
+    # What the command left running goes too (but see the header for what is not known). Nothing is printed before the kill: printing can block.
     left = run.end()
     if watcher:
         send(watcher, signal.SIGKILL)
@@ -389,7 +414,7 @@ def run_capped(command, cap, lock_path):
     reason = os.read(note_r, 1000).decode(errors="replace") or reason
     say_survivors(left)
     if reason:
-        say(f"killed (exit {KILLED}): {reason}. This is the result of the run; it did not fail by itself.")
+        say(f"killed (exit {KILLED}): {reason}. The command did not fail by itself.")
         return KILLED
     if not stops:
         why = os.read(ready_r, 1000).decode(errors="replace")  # what exec said; the command's own process has gone
@@ -429,6 +454,7 @@ HOG = "say(); os.read(go, 1); x = b'x' * (64 << 20); os.read(go, 1)"
 SETSID_HOG = "if os.fork() == 0:\n os.setsid(); say(); x = b'x' * (64 << 20)\nos.read(go, 1)"
 SETSID_WAIT = "if os.fork() == 0:\n os.setsid()\nsay(); os.read(go, 1)"
 HOG_CAP = 48 * MB
+HANG = 5  # seconds before a self-test is given up as hung; a trial takes a fraction of one
 
 
 def check(ok, what):
@@ -440,7 +466,7 @@ class Trial:
     """run_capped in a process of its own, with the command's pipes and what it printed."""
     runs = []
 
-    def __init__(self, lock, code, cap=400 * MB, patch=None, command=None):
+    def __init__(self, lock, code, cap=400 * MB, patch=None, command=None, gb=None):
         self.up, up = os.pipe()
         go, self.go = os.pipe()
         self.err, err = os.pipe()
@@ -448,7 +474,9 @@ class Trial:
         if self.pid == 0:
             result = 1
             try:
-                signal.alarm(60)  # the hang guard: the watcher then ends the rest
+                signal.signal(signal.SIGALRM, signal.SIG_DFL)
+                signal.alarm(HANG)  # the watcher then ends the rest
+                os.dup2(err, 1)  # nor may one left behind hold the self-test's own output open
                 os.dup2(err, 2)
                 for fd in (self.up, self.go, self.err, err):
                     os.close(fd)
@@ -457,7 +485,11 @@ class Trial:
                 if patch:
                     patch()
                 command = command or [sys.executable, "-I", "-S", "-c", PROLOGUE + code, str(up), str(go)]
-                result = run_capped(command, cap, lock)
+                if gb:
+                    globals()["LOCK"] = lock
+                    result = main(["--gb", gb, "--"] + command)
+                else:
+                    result = run_capped(command, cap, lock)
             finally:
                 os._exit(result)
         for fd in (up, go, err):
@@ -471,6 +503,7 @@ class Trial:
         """The pids the command's processes wrote once they ran."""
         text = b""
         while text.count(b"\n") < count:
+            check(select.select([self.up], [], [], HANG)[0], "the command did not say it runs")
             got = os.read(self.up, 100)
             check(got, f"the command ended early: {text!r}")
             text += got
@@ -490,7 +523,7 @@ class Trial:
         """Waits until no process of the run is left; what they wrote that was not read yet."""
         text = b""
         while True:
-            check(select.select([self.up], [], [], 60)[0], "a process of the run is still there")
+            check(select.select([self.up], [], [], HANG)[0], "a process of the run is still there")
             got = os.read(self.up, 100)
             if not got:
                 return text
@@ -514,9 +547,14 @@ class Trial:
 def self_test():
     tests = [f for name, f in sorted(globals().items()) if name.startswith("test_")]
     globals()["pressure"] = lambda: 1  # the machine's own pressure must not fail these
+
+    def hung(*_):
+        raise AssertionError("it hangs")
+    signal.signal(signal.SIGALRM, hung)
     with tempfile.TemporaryDirectory() as folder:
         for test in tests:
             try:
+                signal.alarm(3 * HANG)
                 test(os.path.join(folder, test.__name__))
             except Exception as e:
                 for run in Trial.runs:
@@ -544,6 +582,9 @@ def test_exit_code_kept(lock):
 
 def test_over_the_cap(lock):
     trial = Trial(lock, HOG, cap=HOG_CAP)
+    trial.let_go()
+    expect(trial, KILLED, "killed", "the cap is 0.05 GB")
+    trial = Trial(lock, HOG, gb="0.047")  # as a user gives it
     trial.let_go()
     expect(trial, KILLED, "killed", "the cap is 0.05 GB")
 
@@ -600,7 +641,9 @@ def test_either_alone_enforces_the_cap(lock):
     os.kill(trial.pid, signal.SIGSTOP)
     trial.let_go()
     # The watcher goes once it has killed the command; the stopped script has not looked.
+    limit = time.monotonic() + HANG
     while watcher in processes():
+        check(time.monotonic() < limit, "the watcher goes once it has killed the command")
         time.sleep(0.001)
     os.kill(trial.pid, signal.SIGCONT)
     expect(trial, KILLED, "the cap is 0.05 GB")
@@ -668,12 +711,12 @@ def test_failures_before_the_start(lock):
 
 
 def test_pressure_and_failed_reads(lock):
-    expect(Trial(lock, WAIT, patch=lambda: globals().update(pressure=lambda: PRESSURE_WARNING)),
+    expect(Trial(lock, WAIT, patch=lambda: globals().update(pressure=lambda: 2)),
            REFUSED, "not started", "memory pressure")
 
     def watcher_only():  # its first look, before or after the gate opens: the reason is not lost
         script = os.getpid()
-        globals()["pressure"] = lambda: 1 if os.getpid() == script else PRESSURE_WARNING
+        globals()["pressure"] = lambda: 1 if os.getpid() == script else 2
     expect(Trial(lock, WAIT, patch=watcher_only), KILLED, "killed", "memory pressure")
 
     def failing(number):
@@ -686,14 +729,14 @@ def test_pressure_and_failed_reads(lock):
             real = globals()[name]
             globals()[name] = lambda *a: then(*a) if os.path.exists(flag) else real(*a)
         return patch
-    for patch, words in ((later("pressure", lambda: PRESSURE_WARNING), "memory pressure"),
+    for patch, words in ((later("pressure", lambda: 2), "anything on this machine"),
                          (later("footprint", failing), "none of its processes")):
         expect(Trial(lock, code, patch=patch), KILLED, "killed", words)
         os.remove(flag)
     # The list cannot be read at the end either: what was known of the run is killed all the same.
     lost = later("processes", lambda: failing(0))
     trial = Trial(lock, code, patch=lambda: (lost(), globals().update(KILL_LIMIT=0.05)))
-    expect(trial, KILLED, "no answer", "may not have died")
+    expect(trial, KILLED, "no answer", "not seen to end")
 
 
 def test_command_line(_):
@@ -706,6 +749,13 @@ def test_command_line(_):
         finally:
             sys.stderr = saved
         check(code == REFUSED and "not started" in "".join(said), f"{argv} is refused: {code} {said}")
+    saved = run_capped
+    globals()["run_capped"] = lambda *given: given
+    try:
+        check(main(["--", "a", "--gb", "9"]) == (["a", "--gb", "9"], CAP_GB * 1024 * MB, LOCK), "the cap when none is given")
+        check(main(["--gb", "0.5", "--", "a"]) == (["a"], 512 * MB, LOCK), "a lower one")
+    finally:
+        globals()["run_capped"] = saved
 
 
 def test_which_processes_are_the_run(_):
@@ -713,9 +763,10 @@ def test_which_processes_are_the_run(_):
     saved, table = processes, {}
     globals()["processes"] = lambda: dict(table)
     try:
-        # pid: (identity, parent's, session). 10 is the script and 5 its shell; 20 is the command.
-        table.update({5: (1, 0, 5), 10: (2, 1, 5), 20: (3, 2, 20), 21: (4, 3, 20), 30: (5, 4, 30), 31: (6, 5, 30),
-                      40: (7, 3, 40)})
+        # pid: (identity, parent's, session). 5 is the script's shell; 20 is the command. Children come first, so
+        # a single pass would miss them.
+        table.update({31: (6, 5, 30), 30: (5, 4, 30), 40: (7, 3, 40), 21: (4, 3, 20), 20: (3, 2, 20),
+                      os.getpid(): (2, 1, 5), 5: (1, 0, 5)})
         run = Run(20)
         check(run.scan() == {20, 21, 30, 31, 40}, "children, theirs, and sessions they lead")
         # 20, 21 and 30 have ended. 32 lost a parent nobody saw but is in 30's session; 41 is a daemon's child.
@@ -726,20 +777,115 @@ def test_which_processes_are_the_run(_):
         # A daemon that lost its parent, never seen itself: its parent's identity says whose it was.
         table[50] = (11, 4, 50)
         check(run.scan() == {31, 32, 40, 41, 50}, "a daemon of a process that has gone")
-        # Pids used again by other processes, one as a session that a process of the run once led.
+        # 30's number is in use again while 31 is still in the session 30 led: those of the new 30 are not the run's.
+        table.update({30: (20, 1, 30), 33: (21, 20, 30)})
+        check(run.scan() == {31, 32, 40, 41, 50}, "a session led by another process")
+        del table[30], table[33]
+        # The script and what it was started from are never the run's, whatever the table says of them.
+        table.update({os.getpid(): (2, 3, 20), 5: (1, 3, 20)})
+        check(run.scan() == {31, 32, 40, 41, 50}, "its own ancestors")
+        table.update({os.getpid(): (2, 1, 5), 5: (1, 0, 5)})
+        # Pids used again by other processes, one as a session (its leader gone) that the run's 30 once led.
         for pid in (31, 32, 50):
             del table[pid]
         run.scan()
-        table.update({30: (12, 1, 30), 33: (13, 12, 30), 50: (14, 1, 5)})
+        table.update({33: (13, 12, 30), 50: (14, 1, 5)})
         check(run.scan() == {40, 41}, "a pid used again is another process")
     finally:
         globals()["processes"] = saved
 
 
+def modelled(table, test):
+    """Runs the test with a made-up table, clock and kill; `kill` in it is called for each signal."""
+    saved, kill, monotonic = processes, send, time.monotonic
+    now = [0.0]
+    time.monotonic = lambda: now[0]
+
+    def listed():
+        now[0] += table.get("takes", 0.01)
+        for pid in table.get("bomb", ()):  # it starts another for every look
+            table[pid + 1 + len(table)] = (1000 + len(table), 3, 20)
+        return {pid: row for pid, row in table.items() if isinstance(pid, int)}
+    globals()["processes"] = listed
+    try:
+        table.update({20: (3, 2, 20), os.getpid(): (2, 1, 5), 5: (1, 0, 5)})
+        test(Run(20))
+    finally:
+        time.monotonic = monotonic
+        globals().update(processes=saved, send=kill)
+
+
+def test_stopped_before_killed(_):
+    """One killed while it runs may be starting a daemon through a process nobody saw; a stopped one is not."""
+    table, stopped = {21: (4, 3, 20)}, set()
+
+    def signal_it(pid, number):
+        if number == signal.SIGSTOP:
+            if pid == 20 and not stopped:
+                table[22] = (7, 3, 20)  # started as the signal was on its way
+            stopped.add(pid)
+        elif pid in table:
+            if pid not in stopped:
+                table[100 + pid] = (50 + pid, 90 + pid, 100 + pid)
+            del table[pid]
+
+    def test(run):
+        globals()["send"] = signal_it
+        check(run.end() == [] and set(table) == {5, os.getpid()}, f"nothing is left: {table}")
+    modelled(table, test)
+
+
+def test_never_left_stopped(_):
+    """Slow lists, and a run that starts another for every look: all of it is killed, not only stopped."""
+    for table in ({"takes": 5.5}, {"takes": 0.4, "bomb": [30]}):
+        last = {}
+
+        def signal_it(pid, number):
+            check(time.monotonic() < 60, "it ends")
+            last[pid] = number
+
+        def test(run):
+            globals()["send"] = signal_it
+            left = run.end()
+            check(20 in left and all(last[pid] == signal.SIGKILL for pid in left), f"every one is killed: {last}")
+        modelled(table, test)
+    told = []
+    globals()["send"], saved = (lambda *a: told.append(a)), send
+    saved_kill = os.kill
+    os.kill = lambda *a: told.append(a)
+    try:
+        for pid in (-1, 0, 1):
+            saved(pid, signal.SIGKILL)
+        check(not told, "no signal to launchd, to a group or to everything")
+    finally:
+        os.kill = saved_kill
+        globals()["send"] = saved
+
+
+def test_slow_list(lock):
+    """Listing the processes takes over the kill's limit: the command is killed and not left stopped."""
+    def patch():
+        real, clock, late = processes, time.monotonic, [0.0]
+
+        def slow():
+            late[0] += 5.5
+            return real()
+        globals()["processes"] = slow
+        time.monotonic = lambda: clock() + late[0]
+    trial = Trial(lock, HOG, cap=HOG_CAP, patch=patch)
+    trial.let_go()
+    expect(trial, KILLED, "the cap is 0.05 GB")
+
+
 def test_what_cannot_be_read(_):
     """One that has gone is left out, one that may not be read is unknown, and neither ends the watch."""
     saved = footprint
-    run = Run(os.getpid())
+    child = os.fork()
+    if child == 0:
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        signal.alarm(HANG)
+        signal.pause()
+    run = Run(child)
 
     def answer(number):
         def fake(_):
@@ -754,11 +900,16 @@ def test_what_cannot_be_read(_):
         check(trouble(run, 10) is None and "cap" in trouble(run, 9), "the ones that can be read count")
     finally:
         globals()["footprint"] = saved
+        os.kill(child, signal.SIGKILL)
+        os.waitpid(child, 0)
 
 
-def test_the_readings(_):
+def test_the_readings(lock):
     me, table = os.getpid(), processes()
-    check(table[me][1:] == (table[os.getppid()][0], os.getsid(0)), "listed with its parent and session")
+    check(not {0, 1} & set(table), "neither the kernel nor launchd is ever a process to look at")
+    check(table[me][2] == os.getsid(0), "listed with its session")
+    if os.getppid() in table:
+        check(table[me][1] == table[os.getppid()][0], "and its parent")
     child = os.fork()
     if child == 0:
         os._exit(0)
@@ -778,6 +929,17 @@ def test_the_readings(_):
     block = b"x" * (32 * MB)
     after = footprint(me)
     check(after - before >= len(block) * 0.9, f"32 MB written add to the footprint: {before} {after}")
+    del block
+    if sys.platform == "darwin":  # resident size and footprint are told apart by pages that are only a file's
+        with open(lock, "w+b") as f:
+            f.truncate(32 * MB)
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as pages:
+                before = rusage(me)
+                check(sum(pages[at] for at in range(0, len(pages), 4096)) == 0, "read")
+                after = rusage(me)
+        grown = [(getattr(after, n) - getattr(before, n)) // MB for n in ("resident_size", "phys_footprint")]
+        check(grown[0] >= 28 and grown[1] <= 4, f"a file's clean pages are resident and not footprint: {grown} MB")
+        check(footprint(me) == rusage(me).phys_footprint, "and the footprint is what counts")
     check(real_pressure() in (1, 2, 4), "the pressure level is one of macOS's")
 
 

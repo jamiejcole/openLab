@@ -872,18 +872,21 @@ notices() {
   fi
 }
 
-# 17. The memory cap works (its self-test runs tiny commands, a second or two) and `make miri` goes through
-# it everywhere but on GitHub's runners.
+# 17. The memory cap works (its self-test runs tiny commands, a second or two) and the fuzz, sanitizer and Miri
+# targets go through it everywhere but on GitHub's runners.
 mem_capped() {
-  local out
+  local out target
   if ! out=$(python3 -I scripts/mem-capped.py self-test 2>&1); then
     fail mem-capped "$out"
   fi
   grep SKIPPED <<<"$out"
-  out=$(env -u GITHUB_ACTIONS -u MAKEFLAGS CI=true make -n miri 2>&1)
-  grep -q 'scripts/mem-capped\.py -- cargo .* miri test' <<<"$out" || fail mem-capped "make miri runs without the memory cap: $out"
-  out=$(env -u MAKEFLAGS GITHUB_ACTIONS=true make -n miri 2>&1)
-  ! grep -q mem-capped <<<"$out" || fail mem-capped "make miri runs under the local cap on GitHub's runners: $out"
+  for target in fuzz sanitize miri; do
+    out=$(env -u GITHUB_ACTIONS -u MAKEFLAGS CI=true make -n $target 2>&1)
+    { grep -q 'cargo +' <<<"$out" && [ -z "$(grep 'cargo +' <<<"$out" | grep -v 'scripts/mem-capped\.py -- cargo +')" ]; } ||
+      fail mem-capped "make $target runs without the memory cap: $out"
+    out=$(env -u MAKEFLAGS GITHUB_ACTIONS=true make -n $target 2>&1)
+    ! grep -q mem-capped <<<"$out" || fail mem-capped "make $target runs under the local cap on GitHub's runners: $out"
+  done
 }
 
 # 18. AppKit asks a view's `isFlipped` from its display cycle (cursor rects, tracking areas). An isolated
