@@ -2016,6 +2016,27 @@ extension VideoSettingsTests {
         XCTAssertEqual(editor.selected, editor.regions[1].id)
     }
 
+    /// A route dragged by its handle is the route the handle was drawn for: when another client
+    /// removes a route above it during the drag, the drop moves that route, not the one that has
+    /// taken its place in the list.
+    func testADroppedHandleMovesItsOwnRouteWhenARowAboveItGoesDuringTheDrag() async throws {
+        let (rig, sc) = try await openTwoStages()
+        let routing = sc.videoRoutingPane
+        sc.tabs.selectTabViewItem(withIdentifier: "videoRouting")
+        await settled(sc) { routing.handles.count == 3 }
+        let route3 = "00000000-0000-0000-0000-00000000b003"
+        let handle = routing.handles[1]  // Output 2
+        guard case .success = await rig.store.send(command: .removeRoute(ModelID(route1))) else {
+            return XCTFail("remove")
+        }
+        await settled(sc) { routing.shown?.map(\.id.raw) == [self.route2, route3] }
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        // Let go below the last row.
+        let below = routing.holder.convert(NSPoint(x: 40, y: routing.holder.bounds.maxY), to: nil)
+        handle.onDrop?(handle, below)
+        await settled(sc) { routing.shown?.map(\.id.raw) == [route3, self.route2] }
+    }
+
     /// The GD11 workspace: Stage 1 (G4) with regions A on Output 1 (V1), B on Output 2 (V2) and C on
     /// none; Stage 2 with one region on Output 3 (no display), used by no other stage.
     private func openTwoStages() async throws -> (Rig, WorkspaceSettingsWindowController) {

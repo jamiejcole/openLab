@@ -564,6 +564,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             if section == .routing {
                 let handle = RowHandle()
                 handle.tag = i
+                handle.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
                 handle.isEnabled = enabled
                 handle.setAX("\(Self.id)-handle-\(n)", label: String(format: loc("settings.video.handle.ax"), row.name))
                 handle.onDrag = { [weak self] handle, point in self?.dragged(handle, to: point) }
@@ -876,7 +877,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     private func dropped(_ handle: RowHandle, at point: NSPoint) {
         dropLine.isHidden = true
-        moveRoute(from: handle.tag, toGap: gap(at: point))
+        // The route the handle was drawn for, found where it is now: the rows may have changed
+        // during the drag, and the handle's tag then names another route (or none).
+        guard let id = handle.identifier?.rawValue, let from = shown?.firstIndex(where: { $0.id.raw == id }) else {
+            return
+        }
+        moveRoute(from: from, toGap: gap(at: point))
     }
 
     /// Moves the route at `from` into `gap` (0 above the first route, the count below the last):
