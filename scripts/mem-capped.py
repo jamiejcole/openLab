@@ -22,8 +22,9 @@ What can still get past it:
     process does not keep its first parent's identity, any that lost its parent between two looks);
   - work another process does for the command: apps and test hosts launchd starts (xcodebuild's among
     them), XPC services;
-  - compiling through a shared sccache server: in such a run rustc is not counted, also when the run started
-    the server, which detaches (and then keeps the lock until it ends, unless the end of the run killed it);
+  - a compile server the command calls itself (`sccache --start-server`, or a wrapper it sets again): cargo's
+    rustc wrapper is off in a capped run, so a plain cargo build has none. Such a server's rustc is not counted;
+    one the run started detaches, and keeps the lock until it ends unless the end of the run killed it;
   - a process of another user (setuid): it cannot be read or killed;
   - memory no process footprint includes: the file cache, written pages of mapped files, kernel memory;
   - this script and its watcher both killed with SIGKILL: the command goes on with no cap. It holds the lock,
@@ -50,6 +51,9 @@ PRESSURE_WARNING = 2  # kern.memorystatus_vm_pressure_level: 1 normal, 2 warning
 START_LIMIT = 10  # seconds for a helper to answer before the command starts
 STOP_LIMIT = 1  # seconds in which processes are stopped before any is killed
 KILL_LIMIT = 5  # seconds to go on killing a process that does not die
+# Cargo starts rustc itself, whatever its config file or the caller names as a wrapper: a shared sccache server's
+# rustc would not be counted, and a server the run started would be killed with it or keep its lock.
+COMMAND_ENV = {"RUSTC_WRAPPER": "", "CARGO_BUILD_RUSTC_WRAPPER": ""}
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT)
 
 
@@ -323,6 +327,7 @@ def exec_command(command, gate, ready):
             signal.signal(s, signal.SIG_DFL)
         os.write(ready, b"+")
         if os.read(gate, 1):  # nothing: the script gave up or died
+            os.environ.update(COMMAND_ENV)
             os.execvp(command[0], command)
     except Exception as e:
         os.write(ready, str(e).encode()[:400])
@@ -578,6 +583,11 @@ def test_exit_code_kept(lock):
     check((code, text) == (0, ""), f"a run under the cap passes and says nothing: {code} {text!r}")
     expect(Trial(lock, "sys.exit(7)"), 7)
     expect(Trial(lock, "os.kill(os.getpid(), 15)"), 143)
+
+
+def test_no_compile_server(lock):
+    code = "sys.exit(7 if [os.environ.get(n) for n in ('RUSTC_WRAPPER', 'CARGO_BUILD_RUSTC_WRAPPER')] == ['', ''] else 8)"
+    expect(Trial(lock, code, patch=lambda: os.environ.update(RUSTC_WRAPPER="sccache")), 7)
 
 
 def test_over_the_cap(lock):
