@@ -61,11 +61,11 @@ This file is the only copy of every rule below; other files link here instead of
 - Public repo: never copy QLab text, labels, tooltips, icons, artwork or screenshots into the repo, issues or PRs. Describe in our own words; give our controls our own similar names. Never put personal account or machine details in the repo, issues or PRs.
 
 ## The owner's Mac
-Owner rule (2026-11-25): never run the Mac hard enough to force a reboot; Miri is allowed, under the cap. The rest of this section is how that is done.
-- Miri runs only through `make miri`, which outside GitHub's runners goes through `scripts/mem-capped.py`; `cargo miri` is not called by hand.
-- A run whose memory use is not known (a scaling, stress or fuzz experiment, a tool not run here before) goes through that script too, at its smallest size first. Known loads (builds, `make prepush`, the test suites) do not.
-- Capped: the memory of the command and what it starts, compressed and swapped pages included, and one such run at a time. Not capped: processor, disk, GPU, other runs beside it, and work other processes do for it: an app test's memory is mostly in a test host launchd starts, so the script does not bound it. The script's header lists what can still get past it.
-- A `mem-capped:` line saying killed or not started (exit 86 or 87; under make, make's own error) is a result to report. Never go round it or raise the cap.
+Owner rule (2026-11-25): Miri is fine to use; running the Mac hard enough for a forced reboot cannot happen again. The rest of this section is how that is done.
+- Miri, `make fuzz` and `make sanitize-address` / `sanitize-thread` run under a memory cap, only through their make targets, which outside GitHub's runners go through `scripts/mem-capped.py`; `cargo miri` and `cargo fuzz` are not called by hand.
+- Any other run whose memory use is not known (a scaling, stress or fuzz experiment, a tool not run here before) goes through that script too, at its smallest size first. Known loads (builds, `make prepush`, the test suites) do not.
+- Capped: the memory of the command and what it starts, compressed and swapped pages included, and one such run at a time. Not capped: processor, disk, GPU, other runs beside it, and work other processes do for it: an app test's memory is mostly in a test host launchd starts, so the script does not bound it, and a compile through a shared sccache server is the server's. The script's header lists what can still get past it.
+- A `mem-capped:` line saying killed or not started (exit 86 or 87; under make, make's own error) is reported as it stands. Never go round it or raise the cap.
 - After a gap in a session the orchestrator checks `last reboot` and the JetsamEvent and panic reports before resuming any agent; if a run caused the stop, that run is ruled out first.
 
 ## Findings policy
