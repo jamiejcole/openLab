@@ -2037,6 +2037,25 @@ extension VideoSettingsTests {
         await settled(sc) { routing.shown?.map(\.id.raw) == [route3, self.route2] }
     }
 
+    /// The region list takes the views of a row it drops out of the window, and a remove button held
+    /// across a redraw (a region above it went) removes the region it was drawn for.
+    func testARemoveButtonFromBeforeARedrawRemovesItsOwnRegionAndNoOldViewsStay() async throws {
+        let (rig, sc) = try await openTwoStages()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await editorSettled(sc, editor) { editor.regionRemoveButtons.count == 3 }
+        let regionC = editor.regions[2].id
+        let held = editor.regionRemoveButtons[1]  // region B
+        let removed = await rig.store.send(command: .removeRegion(stage: ModelID(stageA), ModelID(regionA)))
+        guard case .success = removed else { return XCTFail("remove") }
+        await editorSettled(sc, editor) { editor.regionChips.count == 2 }
+        XCTAssertEqual(
+            editor.regionGrid.subviews.count, editor.regionGrid.numberOfRows * 3, "no views of dropped rows are left")
+        XCTAssertNil(held.superview, "the old button is out of the window")
+        held.performClick(nil)
+        await editorSettled(sc, editor) { editor.regionChips.count == 1 }
+        XCTAssertEqual(editor.regions.map(\.id), [regionC], "region B went, C stayed")
+    }
+
     /// The GD11 workspace: Stage 1 (G4) with regions A on Output 1 (V1), B on Output 2 (V2) and C on
     /// none; Stage 2 with one region on Output 3 (no display), used by no other stage.
     private func openTwoStages() async throws -> (Rig, WorkspaceSettingsWindowController) {

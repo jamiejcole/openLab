@@ -391,7 +391,12 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
 
     /// The region list's rows: letter on colour, route pop-up, remove.
     private func buildRegionList(_ regions: [RegionRow]) {
-        while regionGrid.numberOfRows > 0 { regionGrid.removeRow(at: 0) }
+        // The grid keeps the views of a removed row in the window: each goes out first.
+        while regionGrid.numberOfRows > 0 {
+            let row = regionGrid.row(at: regionGrid.numberOfRows - 1)
+            for c in 0..<row.numberOfCells { row.cell(at: c).contentView?.removeFromSuperview() }
+            regionGrid.removeRow(at: regionGrid.numberOfRows - 1)
+        }
         regionChips = []
         regionRoutePopups = []
         regionRemoveButtons = []
@@ -433,6 +438,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             remove.isBordered = false
             remove.imagePosition = .imageOnly
             remove.tag = i
+            remove.identifier = NSUserInterfaceItemIdentifier(r.id.raw)
             remove.setAX(
                 "\(Self.id)-region-remove-\(n)", label: String(format: loc("stageEditor.removeRegion.ax"), letter))
             regionGrid.addRow(with: [chip, popup, remove])
@@ -585,10 +591,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     @objc private func removeRegionClicked(_ sender: NSButton) {
-        let regions = self.regions
-        guard regions.indices.contains(sender.tag) else { return }
+        guard let region = regions.first(where: { $0.id.raw == sender.identifier?.rawValue }) else { return }
         let typed = endTyping()
-        let region = regions[sender.tag]
         let stage = stageID
         edit(after: typed) { [store] in await store.send(command: .removeRegion(stage: stage, region.id)) }
     }
