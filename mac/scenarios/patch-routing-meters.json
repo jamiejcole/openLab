@@ -1,72 +1,31 @@
 {
-  "about": "Cue 1 routed to cue output 1 on its Levels tab and played: the patch editor's routing draws a meter bar beside cue output 1's row while it sounds and nothing beside the silent row 2; after Panic every row is blank again.",
+  "about": "Cue 1 given its default levels (its inputs to the outputs one to one) and played: the patch editor's routing draws a meter bar in the column between the level boxes and the crosspoints while it sounds; no bar before it plays, and none again after Panic.",
   "show": "Demo",
   "media": {
     "media/a.wav": 30
   },
   "appearance": "dark",
   "steps": [
-    {
-      "select": "1"
-    },
-    {
-      "tab": "levels"
-    },
-    {
-      "double_click": "levels-matrix",
-      "at": [
-        0.534,
-        0.615
-      ]
-    },
-    {
-      "type": "levels-field",
-      "text": "0"
-    },
-    {
-      "key": "space"
-    },
-    {
-      "advance": 1
-    },
-    {
-      "focus": "settings"
-    },
-    {
-      "tab": "audio"
-    },
-    {
-      "click": "settings-patch-edit-1"
-    },
-    {
-      "focus": "patch-editor"
-    },
-    {
-      "tab": "routing"
-    },
-    {
-      "advance": 1
-    },
-    {
-      "shot": "playing"
-    },
-    {
-      "focus": "workspace"
-    },
-    {
-      "key": "escape"
-    },
-    {
-      "advance": 2
-    },
-    {
-      "focus": "patch-editor"
-    },
-    {
-      "advance": 1
-    },
-    {
-      "shot": "silent"
-    }
+    {"select": "1"},
+    {"tab": "levels"},
+    {"click": "levels-default"},
+    {"focus": "settings"},
+    {"tab": "audio"},
+    {"click": "settings-patch-edit-1"},
+    {"focus": "patch-editor"},
+    {"tab": "routing"},
+    {"shot": "before"},
+    {"focus": "workspace"},
+    {"key": "space"},
+    {"advance": 1},
+    {"focus": "patch-editor"},
+    {"advance": 1},
+    {"shot": "playing"},
+    {"focus": "workspace"},
+    {"key": "escape"},
+    {"advance": 2},
+    {"focus": "patch-editor"},
+    {"advance": 1},
+    {"shot": "silent"}
   ]
 }

@@ -836,6 +836,62 @@ final class WorkspaceSettingsTests: XCTestCase {
         editor.close()
     }
 
+    /// Esc from an empty crosspoint's box: the box (and its own focus border) is gone; the outline
+    /// that remains over that crosspoint is the matrix's own selection (drawn since before the level
+    /// boxes were redrawn), which stays until another box is chosen.
+    func testEscFromAnEmptyCrosspointRemovesTheBoxAndItsBorderAndLeavesTheMatrixSelection() async throws {
+        let (_, sc) = try await open()
+        let editor = try await edit(in: sc)
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        editor.render()
+        await assertEventually { editor.outputFields.count == 2 }
+        editor.matrix.selected = (0, 1)  // the double-click that opens the box selects it
+        editor.beginTyping(row: 0, column: 1)
+        XCTAssertFalse(editor.crosspointField.isHidden)
+        XCTAssertTrue(editor.crosspointField.hasFocusMark)
+        let text = try XCTUnwrap(editor.crosspointField.currentEditor() as? NSTextView)
+        // As Esc does: the text view asks its delegate to do the cancel command.
+        let handled = editor.control(
+            editor.crosspointField, textView: text, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertTrue(handled)
+        XCTAssertTrue(editor.crosspointField.isHidden, "the box is gone")
+        XCTAssertFalse(editor.crosspointField.hasFocusMark, "and with it its focus border")
+        XCTAssertEqual(editor.crosspointField.layer?.borderWidth, 0.5)
+        // The matrix still marks the crosspoint it had selected; editing another box does not change it.
+        XCTAssertEqual(editor.matrix.selected?.row, 0)
+        XCTAssertEqual(editor.matrix.selected?.column, 1)
+        XCTAssertTrue(editor.window?.makeFirstResponder(editor.outputFields[0]) ?? false)
+        XCTAssertEqual(editor.matrix.selected?.column, 1, "the selection is the matrix's, not the field's")
+        editor.close()
+    }
+
+    /// Device Outputs with 24 outputs at the least window: the page is a scroll view (its scroller
+    /// shows while scrolling, as the system's do), and every row is reachable: scrolled to the end,
+    /// the last row is wholly in view.
+    func testTwentyFourDeviceOutputsAtTheLeastWindowAllScrollIntoView() async throws {
+        let (_, sc) = try await open(edit: routedFar(to: 24))
+        let editor = try await edit(in: sc)
+        let window = try XCTUnwrap(editor.window)
+        window.setContentSize(PatchEditorWindowController.minSize)
+        editor.tabs.selectTabViewItem(withIdentifier: "deviceOutputs")
+        await assertEventually { editor.deviceTitles.count == 24 }
+        window.contentView?.layoutSubtreeIfNeeded()
+        let scroll = try XCTUnwrap(editor.deviceTitles[0].enclosingScrollView)
+        XCTAssertTrue(scroll.hasVerticalScroller, "it scrolls")
+        let clip = scroll.contentView
+        let document = try XCTUnwrap(scroll.documentView)
+        XCTAssertGreaterThan(document.frame.height, clip.bounds.height, "more rows than fit")
+        let last = try XCTUnwrap(editor.deviceTitles.last)
+        XCTAssertFalse(clip.bounds.contains(last.convert(last.bounds, to: clip)), "the last row starts out of view")
+        clip.scroll(to: NSPoint(x: 0, y: document.frame.height - clip.bounds.height))
+        scroll.reflectScrolledClipView(clip)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let frame = last.convert(last.bounds, to: clip)
+        XCTAssertTrue(
+            clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "scrolled to the end it is wholly in view")
+        editor.close()
+    }
+
     /// Checklist: Edit on a row → a patch editor window with the patch name, the cue-output count and
     /// the device at the top, and tabs for cue-output names, the routing matrix (cue outputs down,
     /// device outputs across, a main level) and device outputs.
@@ -1081,6 +1137,52 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
         XCTAssertGreaterThan(lit(bar), 0, "row 100's bar is lit")
         XCTAssertEqual(lit(editor.meter.rowRect(0)), 0, "row 1's bar is dark")
+    }
+
+    /// The routing page's meter really draws: while a cue sounds through both cue outputs a bar is
+    /// drawn for each row inside the meter column (between the level boxes and the crosspoints), and
+    /// once the cue is stopped the column is blank again. (An always-blank meter would pass the
+    /// test that nothing is drawn while no cue plays.)
+    func testTheRoutingMeterDrawsABarPerSoundingRowInItsColumnAndNothingAfterTheCueStops() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        func drawn(_ what: String) throws -> [[Int]] {
+            editor.meter.updateLive()
+            let rep = try renderView(editor.meter)
+            let scale = CGFloat(rep.pixelsWide) / editor.meter.bounds.width
+            // Per row: the columns (view points) with any drawn pixel.
+            return (0..<2).map { row in
+                let top = Int((CGFloat(row) * PatchRoutingView.rowH) * scale)
+                let bottom = Int((CGFloat(row + 1) * PatchRoutingView.rowH - 4) * scale)
+                var xs: Set<Int> = []
+                for py in top..<min(bottom, rep.pixelsHigh) {
+                    for px in 0..<rep.pixelsWide where (rep.colorAt(x: px, y: py)?.alphaComponent ?? 0) > 0.2 {
+                        xs.insert(px)
+                    }
+                }
+                return xs.sorted()
+            }
+        }
+        // Run the meters for a while, reading each report, then look at what is drawn.
+        _ = try await rowPeak(rig, row: 0)
+        let playing = try drawn("while it plays")
+        XCTAssertFalse(playing[0].isEmpty, "a bar is drawn for cue output 1")
+        XCTAssertFalse(playing[1].isEmpty, "a bar is drawn for cue output 2")
+        let columnWidth = PatchRoutingView.meterW * 2  // device pixels at 2x, or fewer at 1x
+        XCTAssertLessThanOrEqual(CGFloat(playing[0].count), columnWidth, "inside the meter column")
+        // The bar sits in the column, between the level boxes and the crosspoints.
+        let column = editor.matrix.meterRect(rows: 2)
+        XCTAssertGreaterThanOrEqual(editor.meter.frame.minX, column.minX - 1)
+        XCTAssertLessThanOrEqual(editor.meter.frame.maxX, column.maxX + 1)
+        XCTAssertLessThanOrEqual(column.maxX, editor.matrix.cellRect(row: 0, column: 0).minX)
+
+        _ = await rig.store.transport(.hardStop(cue: intro))
+        try await rig.advance(2)
+        rig.store.meters.reset()
+        try await rig.advance(0.5)
+        rig.store.meters.tick(0)
+        let after = try drawn("after it stops")
+        XCTAssertTrue(after.allSatisfy(\.isEmpty), "no bar once the cue has stopped: \(after)")
+        editor.close()
     }
 
     /// A silent patch draws no meter at all: no empty track beside the level boxes.
