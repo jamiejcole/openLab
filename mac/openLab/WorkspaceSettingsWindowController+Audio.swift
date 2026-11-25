@@ -248,10 +248,15 @@ extension WorkspaceSettingsWindowController {
         fitProblemLines()
     }
 
-    /// After a button or pop-up of the table: a name still being typed is committed first (its
+    /// A name being typed in is committed at the click on a button or pop-up of the table (its
     /// commit is queued), since the table is not rebuilt under a caret.
-    private func redrawPatches() {
+    private func endPatchTyping() {
         if patchNameFields.contains(where: { $0.currentEditor() != nil }) { window?.makeFirstResponder(nil) }
+    }
+
+    /// After an action of the table: drawn again from the engine's state. A name clicked into since
+    /// the click keeps its caret: the table is drawn once that typing ends.
+    private func redrawPatches() {
         lastDrawn = nil
         render()
     }
@@ -266,7 +271,8 @@ extension WorkspaceSettingsWindowController {
         // A patch another client removed since the table was drawn: nothing is sent for it (the
         // engine would refuse it with an id), and the table is read and drawn again.
         guard model.store.model?.patches.contains(where: { $0.id == drawn.id }) == true else {
-            Task {
+            if !(control is NSTextField) { endPatchTyping() }
+            patchActions = Task {
                 await model.refresh()
                 redrawPatches()
             }
@@ -276,8 +282,8 @@ extension WorkspaceSettingsWindowController {
     }
 
     @objc func patchAddClicked() {
-        if patchNameFields.contains(where: { $0.currentEditor() != nil }) { window?.makeFirstResponder(nil) }
-        Task {
+        endPatchTyping()
+        patchActions = Task {
             await model.addPatch()
             redrawPatches()
         }
@@ -285,7 +291,8 @@ extension WorkspaceSettingsWindowController {
 
     @objc private func patchRemoveClicked(_ sender: NSButton) {
         guard let row = row(of: sender) else { return }
-        Task {
+        endPatchTyping()
+        patchActions = Task {
             await model.removePatch(row.id)
             redrawPatches()
         }
@@ -294,7 +301,8 @@ extension WorkspaceSettingsWindowController {
     @objc private func patchDeviceChosen(_ sender: NSPopUpButton) {
         guard let row = row(of: sender) else { return }
         let choice = sender.selectedItem?.representedObject
-        Task {
+        endPatchTyping()
+        patchActions = Task {
             await model.choose(choice, for: row)
             redrawPatches()
         }
@@ -319,7 +327,7 @@ extension WorkspaceSettingsWindowController {
     func patchNameCommitted(_ field: NSTextField) {
         guard let row = row(of: field) else { return }
         let text = field.stringValue
-        Task {
+        patchActions = Task {
             await model.renamePatch(row.id, to: text)
             redrawPatches()
         }

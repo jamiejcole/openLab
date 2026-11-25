@@ -155,7 +155,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         sc.patchRemoveButtons[1].performClick(nil)
         await assertEventually { sc.patchNameFields.count == 2 }
         let third = sc.patchNameFields[1].stringValue
-        await settle()
+        await sc.patchActions?.value
         // The caret in Main's name; the removal is undone from the workspace.
         XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
         _ = await rig.store.undo()
@@ -173,12 +173,35 @@ final class WorkspaceSettingsTests: XCTestCase {
             sc.model.patches.first { $0.name == second }?.mapping?.device, device, "\(second) is not touched")
     }
 
+    /// A name clicked into while a table action is still on its way keeps its caret and its typed
+    /// text: the action's redraw waits for the typing to end (it must not take the caret).
+    func testTheCaretOfANameClickedIntoAfterAnActionSurvivesTheActionsRedraw() async throws {
+        let (_, sc) = try await open()
+        try pick(loc("settings.audio.noDevice"), in: sc.patchDevicePopups[0])
+        // The action has not finished (it needs the engine): the operator clicks into the name and types.
+        let field = sc.patchNameFields[0]
+        XCTAssertTrue(sc.window?.makeFirstResponder(field) == true)
+        field.currentEditor()?.string = "Front"
+        await sc.patchActions?.value
+        XCTAssertNotNil(field.currentEditor(), "the caret is still in the name")
+        XCTAssertEqual(field.currentEditor()?.string, "Front", "and what was typed")
+        // Leaving the field commits it, and the table then shows the action's result too.
+        _ = sc.window?.makeFirstResponder(nil)
+        await sc.patchActions?.value
+        await assertEventually("renamed and on no device") {
+            sc.model.patches.first?.name == "Front" && sc.model.patches.first?.mapping == nil
+                && sc.patchDevicePopups.first?.titleOfSelectedItem == loc("settings.audio.noDevice")
+        }
+    }
+
     /// The patch on no device with `count` cue outputs, and the table drawn so.
     private func unmappedPatch(_ sc: WorkspaceSettingsWindowController, count: Int) async {
         await sc.model.setOutputCount(patch, count)
         sc.patchDevicePopups.first.map { try? pick(loc("settings.audio.noDevice"), in: $0) }
-        await assertEventually("on no device, \(count) outputs") {
-            sc.model.patches.first?.mapping == nil && sc.model.patches.first?.outputCount == count
+        await sc.patchActions?.value
+        await assertEventually("on no device, \(count) outputs, drawn so") {
+            let drawn = sc.shownPatchTable?.patches.first
+            return drawn?.mapping == nil && drawn?.outputCount == count
                 && sc.patchProblemLabels.first?.stringValue == loc("settings.audio.problem.unmapped")
         }
     }
