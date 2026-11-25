@@ -198,17 +198,22 @@ extension WorkspaceSettingsWindowController {
         networkGrid.layoutSubtreeIfNeeded()
     }
 
-    /// After a button or pop-up of the table: a field still being typed in is committed first (its
-    /// commit is queued), since the table is not rebuilt under a caret and would never show the change.
-    private func redrawNetwork() {
+    /// A field being typed in is committed at the click on a button or pop-up of the table (its
+    /// commit is queued), since the table is not rebuilt under a caret.
+    private func endNetworkTyping() {
         if networkFields.contains(where: { $0.currentEditor() != nil }) { window?.makeFirstResponder(nil) }
+    }
+
+    /// After an action of the table: drawn again from the engine's state. A field clicked into since
+    /// the click keeps its caret and what is typed in it: the table is drawn once that typing ends.
+    private func redrawNetwork() {
         lastDrawn = nil
-        shownNetwork = nil
         render()
     }
 
     @objc private func networkAddClicked() {
-        Task {
+        endNetworkTyping()
+        networkActions = Task {
             await model.addNetworkPatch()
             redrawNetwork()
         }
@@ -217,7 +222,8 @@ extension WorkspaceSettingsWindowController {
     @objc private func networkDeleteClicked(_ sender: NSButton) {
         guard let rows = shownNetwork, rows.indices.contains(sender.tag) else { return }
         let id = rows[sender.tag].id
-        Task {
+        endNetworkTyping()
+        networkActions = Task {
             await model.removeNetworkPatch(id)
             redrawNetwork()
         }
@@ -229,7 +235,8 @@ extension WorkspaceSettingsWindowController {
         else { return }
         let id = rows[sender.tag].id
         let transport = WorkspaceSettingsModel.networkTransports[sender.indexOfSelectedItem]
-        Task {
+        endNetworkTyping()
+        networkActions = Task {
             await model.setNetworkPatchTransport(id, transport)
             redrawNetwork()
         }
@@ -239,7 +246,8 @@ extension WorkspaceSettingsWindowController {
         guard let rows = shownNetwork, rows.indices.contains(sender.tag) else { return }
         let id = rows[sender.tag].id
         let interface = sender.selectedItem?.representedObject as? String
-        Task {
+        endNetworkTyping()
+        networkActions = Task {
             await model.setNetworkPatchInterface(id, interface)
             redrawNetwork()
         }
@@ -254,7 +262,11 @@ extension WorkspaceSettingsWindowController {
         let row = rows[field.tag]
         let text = field.stringValue
         let old = key == "name" ? row.name : key == "host" ? row.host : String(row.port)
-        guard text != old else { return }
+        guard text != old else {
+            // The table may have waited for the caret: drawn once the field is left.
+            networkActions = Task { redrawNetwork() }
+            return
+        }
         let previous = networkCommits
         networkCommits = Task {
             await previous?.value

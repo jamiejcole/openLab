@@ -194,6 +194,66 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
     }
 
+    /// A name only clicked into and left untouched sends nothing: it does not put the drawn name back
+    /// over a rename made meanwhile (another client, an undo); text actually typed still commits.
+    func testAPatchNameLeftUntouchedSendsNothingAndTypedTextStillCommits() async throws {
+        let (rig, sc) = try await open()
+        sc.patchAddButton.performClick(nil)
+        await assertEventually { sc.patchNameFields.count == 2 }
+        await sc.patchActions?.value
+        let id = try XCTUnwrap(rig.store.model?.patches.last?.id)
+        func engineName() -> String? {
+            rig.store.model?.patches.first { $0.id == id }?.raw["name"]?.stringValue
+        }
+        XCTAssertEqual(engineName(), "Patch 2")
+        let field = sc.patchNameFields[1]
+        XCTAssertTrue(sc.window?.makeFirstResponder(field) == true)
+        await sc.model.renamePatch(id, to: "Other")
+        XCTAssertEqual(engineName(), "Other")
+        _ = sc.window?.makeFirstResponder(nil)
+        await sc.patchActions?.value
+        XCTAssertEqual(engineName(), "Other", "the untouched name did not undo the rename")
+        // Typed text commits.
+        await assertEventually("drawn again") { sc.patchNameFields.map(\.stringValue) == ["Main", "Other"] }
+        let again = sc.patchNameFields[1]
+        XCTAssertTrue(sc.window?.makeFirstResponder(again) == true)
+        again.currentEditor()?.string = "Typed"
+        _ = sc.window?.makeFirstResponder(nil)
+        await sc.patchActions?.value
+        await assertEventually("typed name sent") { engineName() == "Typed" }
+    }
+
+    /// A network address half typed while a table action is on its way keeps its caret and text: the
+    /// action's redraw waits, nothing is sent until the field is left, and the table is then drawn.
+    func testAHalfTypedNetworkAddressSurvivesAnActionsRedrawAndIsSentOnLeavingTheField() async throws {
+        let (rig, sc) = try await open()
+        sc.tabs.selectTabViewItem(withIdentifier: "network")
+        await assertEventually { sc.shownNetwork?.count == 1 }
+        let rows = sc.shownNetwork?.count ?? 0
+        func hostsSent() -> Int {
+            rig.wire.commands.filter {
+                $0.json["type"]?.stringValue == "set_network_patch_property"
+                    && $0.json["property"]?["type"]?.stringValue == "host"
+            }.count
+        }
+        let before = hostsSent()
+        sc.networkAddButton.performClick(nil)  // the action, on its way
+        let address = try XCTUnwrap(sc.networkFields.first { $0.identifier?.rawValue == "host" })
+        XCTAssertTrue(sc.window?.makeFirstResponder(address) == true)
+        address.currentEditor()?.string = "10.0."
+        await sc.networkActions?.value
+        XCTAssertNotNil(address.currentEditor(), "the caret is still in the address")
+        XCTAssertEqual(address.currentEditor()?.string, "10.0.", "with what was typed")
+        XCTAssertEqual(hostsSent(), before, "nothing sent while it is typed")
+        _ = sc.window?.makeFirstResponder(nil)
+        await sc.networkCommits?.value
+        await assertEventually("sent, and the table drawn with both rows") {
+            sc.networkFields.count == 3 * (rows + 1)
+                && rig.store.model?.networkPatches.first?.raw["host"]?.stringValue == "10.0."
+        }
+        XCTAssertEqual(hostsSent(), before + 1)
+    }
+
     /// The patch on no device with `count` cue outputs, and the table drawn so.
     private func unmappedPatch(_ sc: WorkspaceSettingsWindowController, count: Int) async {
         await sc.model.setOutputCount(patch, count)

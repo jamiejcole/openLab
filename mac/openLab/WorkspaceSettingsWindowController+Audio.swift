@@ -327,6 +327,13 @@ extension WorkspaceSettingsWindowController {
     func patchNameCommitted(_ field: NSTextField) {
         guard let row = row(of: field) else { return }
         let text = field.stringValue
+        // Only clicked into: nothing typed, so nothing to send (it would put the drawn name back
+        // over a rename made meanwhile).
+        guard text != row.name else {
+            // The table may have waited for the caret: drawn once the field is left.
+            patchActions = Task { redrawPatches() }
+            return
+        }
         patchActions = Task {
             await model.renamePatch(row.id, to: text)
             redrawPatches()

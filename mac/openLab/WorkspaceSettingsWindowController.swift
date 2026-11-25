@@ -94,6 +94,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var networkScroll: NSScrollView?
     var shownNetwork: [NetworkPatchRow]?
     var networkCommits: Task<Void, Never>?
+    /// The newest action of the network table (add, remove, network, interface) on its way (tests wait for it).
+    var networkActions: Task<Void, Never>?
 
     // Key map (`+Keys`): one recorder, clear button and reason line per action.
     var keyFields: [WorkspaceKey: HotkeyRecorder] = [:]
