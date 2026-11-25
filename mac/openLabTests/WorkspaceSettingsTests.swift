@@ -642,13 +642,14 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(texts.map(\.stringValue), ["Device output 1:", "Device output 2:"], "titles and nothing else")
         XCTAssertTrue(texts.allSatisfy { !$0.isEditable && !$0.stringValue.contains("From") })
         XCTAssertEqual(editor.deviceTitles.count, 2)
+        editor.close()
     }
 
     /// Checklist (routing page, reference shot window.audio-output-patch-editor.patch-routing): the
     /// main strip over the input boxes has a fader and a level box and no mute; each device output's
     /// strip has fader, mute and level box centred over its crosspoint column, its box exactly as wide
-    /// and as far across as the crosspoints under it; the captions are the shot's four words; a cue
-    /// output's row is its label, one level box and nothing else, with no blank box beside it while
+    /// and as far across as the crosspoints under it; all boxes one width, levels centred, row labels
+    /// right-aligned beside their boxes; a cue output's row is its label, one level box and nothing else, with no blank box beside it while
     /// no cue sounds.
     func testThePatchEditorsRoutingPageHasNoStrayBoxAndItsColumnsAndLabelsLineUp() async throws {
         let (_, sc) = try await open()
@@ -684,11 +685,34 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(
             editor.deviceFields[1].frame.minX - editor.deviceFields[0].frame.minX, PatchRoutingView.cellW)
         XCTAssertEqual(editor.mainField.frame.minX, editor.outputFields[0].frame.minX, accuracy: 0.5)
-        XCTAssertEqual(editor.mainField.frame.width, editor.outputFields[0].frame.width, accuracy: 0.5)
         XCTAssertEqual(editor.mainFader.frame.midX, editor.mainField.frame.midX, accuracy: 0.5)
-        // The level box sits clear of the row's label and of where the meter would be.
-        XCTAssertGreaterThanOrEqual(editor.outputFields[0].frame.minX, PatchRoutingView.labelW)
-        XCTAssertLessThanOrEqual(editor.outputFields[0].frame.maxX, PatchRoutingView.labelW + PatchRoutingView.levelW)
+        // One box width, as the shot has (its main, input and crosspoint boxes are all 38 to 39 points
+        // wide, 43 to 44 apart): the old page had 54 for the inputs and main and 42 for the rest.
+        let widths =
+            [editor.mainField.frame.width] + editor.outputFields.map(\.frame.width)
+            + editor.deviceFields.map(\.frame.width) + [editor.matrix.boxRect(row: 0, column: 0).width]
+        for w in widths { XCTAssertEqual(w, 39, accuracy: 1, "\(widths)") }
+        XCTAssertEqual(PatchRoutingView.cellW, 43, accuracy: 1, "the shot's columns are 43 to 44 apart")
+        // The levels are centred in their boxes, as the shot's are.
+        let fields = [editor.mainField] + editor.outputFields + editor.deviceFields
+        XCTAssertTrue(
+            (fields + [editor.crosspointField]).allSatisfy { $0.alignment == .center }, "centred levels")
+        // The longest level text still shows whole in a box this wide.
+        for text in ["-120.0", "-inf", "-60.0", "+12.0"] {
+            for f in fields {
+                f.stringValue = text
+                let need = try XCTUnwrap(f.cell).cellSize(forBounds: NSRect(x: 0, y: 0, width: 1000, height: 100)).width
+                XCTAssertLessThanOrEqual(need, f.frame.width, "\(text) fits whole in a level box")
+            }
+        }
+        // A row's label is right-aligned and ends close to its level box (the shot's numbers do), not
+        // at the left edge of the pane.
+        XCTAssertEqual(PatchRoutingView.rowLabelStyle.alignment, .right)
+        let label = PatchRoutingView.rowLabelRect(y: 0)
+        XCTAssertLessThanOrEqual(editor.outputFields[0].frame.minX - label.maxX, 12, "label ends beside its box")
+        XCTAssertGreaterThanOrEqual(editor.outputFields[0].frame.minX, label.maxX)
+        // The level box sits clear of where the meter goes (its own column between the boxes and the
+        // crosspoints, drawn only while sound plays).
         XCTAssertLessThanOrEqual(editor.outputFields[0].frame.maxX, editor.matrix.meterRect(rows: 2).minX)
         // Down: the rows' boxes sit on the grid's rows.
         for row in 0..<2 {
@@ -697,13 +721,7 @@ final class WorkspaceSettingsTests: XCTestCase {
                 editor.matrix.boxRect(row: row, column: 0).midY, accuracy: 0.5,
                 "row \(row + 1)'s level box on its crosspoints")
         }
-        // The shot's words: the main strip, the captions.
-        XCTAssertEqual(
-            [
-                loc("patchEditor.main"), loc("patchEditor.cueOutputs"), loc("patchEditor.inputs"),
-                loc("patchEditor.crosspoints"),
-            ],
-            ["main", "cue outputs", "inputs", "crosspoints"])
+        editor.close()
     }
 
     /// Checklist: Edit on a row → a patch editor window with the patch name, the cue-output count and

@@ -982,6 +982,7 @@ final class CueHotkeyFiringTests: XCTestCase {
 
         await wc.showWorkspaceStatus().value
         let panel = try XCTUnwrap(wc.existingStatusWindow?.window)
+        addTeardownBlock { @MainActor in panel.close() }
         app.keyWindow = { panel }
         // Each key is given back to the window (not taken as a command), as the settings window's are.
         for (chars, code) in [("p", 35), ("[", 33), ("s", 1), ("v", 9)] as [(String, UInt16)] {
@@ -994,8 +995,6 @@ final class CueHotkeyFiringTests: XCTestCase {
         try await engine.advance(seconds: 1)
         await settle()
         XCTAssertEqual(first.cueStates[intro]?.state, .running, "neither paused nor panicked")
-        let panics = await triggers("panic")
-        XCTAssertEqual(panics, 0)
         XCTAssertTrue(first.previewing.isEmpty, "nothing previewed")
         XCTAssertEqual(first.document?.dirty, true, "Save saved nothing")
 

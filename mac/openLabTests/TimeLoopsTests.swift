@@ -2148,7 +2148,7 @@ extension PlayheadFlowTests {
             wanted.append(t)
             await seekRun(n + 1)
             try await play(0.2)
-            await playsAt(id, t + 0.2, tolerance: 2.5 * pixel)
+            await playsAt(id, t + 0.2, tolerance: 0.9 * pixel)
             XCTAssertEqual(rowMark(id), runningMark, "it plays on: click \(n + 1) did not stop it")
         }
         XCTAssertEqual(seeks.map { ($0 / 10).rounded() * 10 }, wanted.map { ($0 / 10).rounded() * 10 })
@@ -2157,7 +2157,7 @@ extension PlayheadFlowTests {
     /// U4: an Audio cue playing and a Fade fading it. Wherever the still "fading" mark could be
     /// drawn, the turning dots are: the target's row in the cue list (also when its row is selected),
     /// the Fade's own row (which shows its own state's mark, never the old one), and the Active Cues
-    /// rows, which draw no state mark at all (their label says "Fading").
+    /// rows, which draw no state mark at all.
     func testAnAudioCuePlayingAndAFadeFadingItDrawTheTurningDotsAndNeverTheOldMark() async throws {
         let id = try await waveTones(1, seconds: 60)[0]
         wc.cueList.selectAsUser([id])
