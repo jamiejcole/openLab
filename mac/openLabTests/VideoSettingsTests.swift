@@ -1880,7 +1880,7 @@ extension VideoSettingsTests {
         guard case .success = await rig.store.save() else { return XCTFail("save") }
         XCTAssertTrue(try String(contentsOfFile: path, encoding: .utf8).contains("\"guide_colour\": \"#ff8200\""))
         sc.close()
-        guard case .success = await rig.client.send({ .close(id: $0, doc: rig.doc, discardChanges: false) })
+        guard case .success = await rig.testEngine.app.send({ .close(id: $0, doc: rig.doc, discardChanges: false) })
         else { return XCTFail("close") }
         await showsGuides("V1", [black, black, black], "gone with the workspace")
         let doc = try await engine.open(path: path)
@@ -2232,7 +2232,7 @@ extension VideoSettingsTests {
         await showsGuides("V1", [Self.firstGuide, Self.firstGuide, black], "guides up")
         let path = try XCTUnwrap(rig.store.document?.path)
         sc.close()
-        guard case .success = await rig.client.send({ .close(id: $0, doc: rig.doc, discardChanges: true) })
+        guard case .success = await rig.testEngine.app.send({ .close(id: $0, doc: rig.doc, discardChanges: true) })
         else { return XCTFail("close") }
         await showsGuides("V1", [black, black, black], "gone with the workspace")
         _ = try await engine.open(path: path)

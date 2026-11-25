@@ -249,13 +249,14 @@ final class VideoUITests: XCTestCase {
         selectCue("Custom: moved, turned and cropped", in: app)
         tabButton("Geometry", in: app).click()
         XCTAssertTrue(waitFor("isHittable == true", field("x", in: app)), "the custom fields are shown")
-        // The inspector at its least height: the divider above it dragged down as far as it goes.
+        // The inspector at its least height (180 pt): the divider above it dragged down past that, but not so far
+        // that the drag closes the inspector (less than half of it left).
         let window = app.windows.firstMatch
         let divider = app.splitters.allElementsBoundByIndex.first { $0.frame.width > $0.frame.height }
         let bar = try XCTUnwrap(divider, "the divider above the inspector")
         let top = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        // Down to the window's foot, not past it: the window of a small screen ends near the screen's edge.
-        let down = window.frame.maxY - 6 - bar.frame.midY
+        // The footer under the inspector is 36 pt, so the pointer leaves 124 pt for the inspector.
+        let down = window.frame.maxY - 160 - bar.frame.midY
         top.press(forDuration: 0.2, thenDragTo: top.withOffset(CGVector(dx: 0, dy: down)))
         let scroll = app.scrollViews["inspector-geometry-scroll"]
         // A small field's frame as XCUITest reads it is a point or two taller than its bezel.

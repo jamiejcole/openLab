@@ -2328,7 +2328,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(patch["crosspoints"]?.arrayValue?.count, 2, "not lost")
         XCTAssertEqual(patch["device_outputs"]?.arrayValue?.count, 1, "not lost")
         let doc = try XCTUnwrap(rig.doc)
-        guard case .success = await rig.client.send({ .close(id: $0, doc: doc, discardChanges: false) }) else {
+        guard case .success = await rig.testEngine.app.send({ .close(id: $0, doc: doc, discardChanges: false) }) else {
             return XCTFail("close")
         }
         guard case .success(let ok) = await rig.testEngine.request(.open(path: path, recovery: nil)),
@@ -3120,7 +3120,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         guard case .success = await rig.store.save() else { return XCTFail("save") }
         let path = try XCTUnwrap(rig.store.document?.path)
         let doc = try XCTUnwrap(rig.doc)
-        guard case .success = await rig.client.send({ .close(id: $0, doc: doc, discardChanges: false) }) else {
+        guard case .success = await rig.testEngine.app.send({ .close(id: $0, doc: doc, discardChanges: false) }) else {
             return XCTFail("close")
         }
         guard case .success(let ok) = await rig.testEngine.request(.open(path: path, recovery: nil)),
