@@ -50,6 +50,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     private(set) var regionRoutePopups: [NSPopUpButton] = []
     private(set) var regionRemoveButtons: [NSButton] = []
     let newRegionPopup = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var shownNewRegionItems: [String]?
     let regionWidthField = NSTextField()
     let regionHeightField = NSTextField()
     let lowerLeftXField = NSTextField()
@@ -428,8 +429,12 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         }
     }
 
-    /// The new-region pop-up: a region on each route, or on none.
+    /// The new-region pop-up: a region on each route, or on none. Rebuilt only when its items
+    /// change, so a pick is not dropped by a redraw that lands while the menu is open.
     private func fillNewRegionPopup() {
+        let key = routes.map { "\($0.id.raw)\u{0}\($0.raw["name"]?.stringValue ?? "")" }
+        guard key != shownNewRegionItems else { return }
+        shownNewRegionItems = key
         let menu = NSMenu()
         menu.addItem(withTitle: loc("stageEditor.newRegion"), action: nil, keyEquivalent: "")
         for route in routes {

@@ -1472,6 +1472,33 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertFalse(inside(Int.max, 0, 1, 1), "at Int.max")
     }
 
+    /// The new-region pop-up keeps its menu through a redraw that changes none of its items (a
+    /// region selected, an edit answered), so a pick made while it is open is not dropped; a route
+    /// renamed does change it.
+    func testTheNewRegionMenuIsKeptUnlessItsItemsChange() async throws {
+        let (rig, sc) = try await openG4()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        let menu = try XCTUnwrap(editor.newRegionPopup.menu)
+        let titles = editor.newRegionPopup.itemTitles
+        // A redraw for the selection moving, and for an edit.
+        editor.regionChips[1].mouseDown(with: try press(editor))
+        XCTAssertEqual(editor.canvas.selected, 1)
+        type("960", into: editor.regionWidthField, editor)
+        await editorSettled(sc, editor) { editor.regions[1].bounds.width == 960 }
+        XCTAssertTrue(editor.newRegionPopup.menu === menu, "the same menu after the selection and an edit")
+        // A route renamed: the items follow it.
+        let renamed = await rig.store.send(
+            command: .setRoute(ModelID(route1), .object(["type": .string("name"), "value": .string("Front")])))
+        guard case .success = renamed else { return XCTFail("\(renamed)") }
+        await editorSettled(sc, editor) { editor.newRegionPopup.itemTitles != titles }
+        XCTAssertTrue(
+            editor.newRegionPopup.itemTitles.contains(String(format: loc("stageEditor.newRegionOn"), "Front")))
+        // The new menu works: a region on the renamed route.
+        choose(String(format: loc("stageEditor.newRegionOn"), "Front"), in: editor.newRegionPopup)
+        await editorSettled(sc, editor) { editor.regionChips.count == 3 }
+        XCTAssertEqual(editor.regions.last?.route, ModelID(route1))
+    }
+
     /// #813 G5 (the app's part): G4 → region B's route pop-up set to none: the canvas draws B
     /// dashed, V2 shows nothing while V1 keeps its half, and Stage 1's displays column names V1
     /// only. Undo puts B back on V2.
