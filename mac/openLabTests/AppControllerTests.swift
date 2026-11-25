@@ -2799,6 +2799,65 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(try savedMaster(at: path), .double(-6))
     }
 
+    /// The settings window open on the General page, `text` typed in the panic time, the caret there.
+    private func typePanicTime(_ text: String) async throws -> WorkspaceSettingsWindowController {
+        let wc = try XCTUnwrap(app.windows["1"])
+        await wc.showSettings(page: .general).value
+        let sc = wc.settingsWindow
+        sc.window?.makeFirstResponder(sc.panicField)
+        let editor = try XCTUnwrap(sc.panicField.currentEditor())
+        editor.string = text
+        sc.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: sc.panicField))
+        return sc
+    }
+
+    private func savedPanicTime(at path: String) throws -> Double? {
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        return JSONValue.parse(text)?["workspace"]?["settings"]?["panic_duration"]?.doubleValue
+    }
+
+    /// Text being typed in the workspace settings goes into the show when its workspace closes.
+    func testCloseWhileTypingInTheSettingsSavesItWithTheWorkspace() async throws {
+        _ = try await typePanicTime("7")
+        let path = try XCTUnwrap(app.session.stores["1"]?.document?.path)
+        alerts.saveChoices = [.save]
+        let closed = await app.closeWorkspace("1")
+        XCTAssertTrue(closed)
+        XCTAssertEqual(try savedPanicTime(at: path), 7)
+    }
+
+    func testQuitWhileTypingInTheSettingsSavesItWithTheWorkspace() async throws {
+        _ = try await typePanicTime("7")
+        let path = try XCTUnwrap(app.session.stores["1"]?.document?.path)
+        alerts.saveChoices = [.save]
+        let quit = await quitApp()
+        XCTAssertTrue(quit)
+        XCTAssertEqual(try savedPanicTime(at: path), 7)
+    }
+
+    func testSaveWhileTypingInTheSettingsSavesIt() async throws {
+        _ = try await typePanicTime("7")
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let saved = await app.saveWorkspace(store)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try savedPanicTime(at: try XCTUnwrap(store.document?.path)), 7)
+    }
+
+    /// Refused text stops the close once: the settings window says why and shows the engine's value,
+    /// and the next close goes on.
+    func testRefusedTextInTheSettingsStopsTheCloseOnceAndSaysWhy() async throws {
+        let sc = try await typePanicTime("sixty")
+        let before = sc.model.panicDuration
+        alerts.saveChoices = [.dontSave]
+        let stopped = await app.closeWorkspace("1")
+        XCTAssertFalse(stopped)
+        XCTAssertTrue(sc.window?.isVisible == true)
+        XCTAssertEqual(sc.messageLabel.stringValue, String(format: loc("settings.general.outOfRange"), 0.0, 60.0))
+        XCTAssertEqual(Double(sc.panicField.stringValue), before)
+        let closed = await app.closeWorkspace("1")
+        XCTAssertTrue(closed)
+    }
+
     private func index(of match: (ClientMessage) -> Bool) -> Int? { engine.sent.firstIndex(where: match) }
     private func isCommand(_ m: ClientMessage) -> Bool {
         if case .command = m { return true } else { return false }

@@ -18,6 +18,14 @@ extension WorkspaceSettingsWindowController {
             field.delegate = self
             field.widthAnchor.constraint(equalToConstant: 70).isActive = true
         }
+        panicField.engineText = { [model] in model.panicDuration.map(Self.format) }
+        panicField.send = { [model] in await model.setPanicDuration($0) }
+        goIntervalField.engineText = { [model] in model.minGoInterval.map(Self.format) }
+        goIntervalField.send = { [model] in await model.setMinGoInterval($0) }
+        autosaveField.engineText = { [model] in model.autosaveInterval.map(Self.format) }
+        autosaveField.send = { [model] in await model.setAutosaveInterval($0) }
+        autoNumberField.engineText = { [model] in model.autoNumberStep.map(Self.format) }
+        autoNumberField.send = { [model] in await model.setAutoNumberStep($0) }
         let boxes: [(NSButton, String, Selector)] = [
             (keyUpCheck, "settings-key-up", #selector(switchClicked(_:))),
             (autoNumberCheck, "settings-auto-number", #selector(switchClicked(_:))),
@@ -94,7 +102,7 @@ extension WorkspaceSettingsWindowController {
             box.state = on == true ? .on : .off
             box.isEnabled = on != nil
         }
-        autoNumberField.isEnabled = model.isOn(.autoNumberNewCues) == true
+        autoNumberField.allow(enabled: model.isOn(.autoNumberNewCues) == true)
         let copy = model.isOn(.copyMediaOnAdd)
         copyMediaCheck.state = copy == true ? .on : .off
         // Locked in Show Mode, as the rest of the show's editing is.

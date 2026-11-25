@@ -260,9 +260,12 @@ extension AppController {
         }
     }
 
-    /// Typed-in inspector edits go to the engine before a save, close or quit looks at the workspace.
+    /// Edits typed in the inspector and the workspace settings go to the engine before a save, close or
+    /// quit looks at the workspace.
     private func commitEdits(_ doc: ModelID) async -> Bool {
-        await windows[doc]?.commitPendingEdits() ?? true
+        guard let window = windows[doc] else { return true }
+        let settings = await window.existingSettingsWindow?.commitPendingEdits() ?? true
+        return await window.commitPendingEdits() && settings
     }
 
     /// File > Save / Save As (allowed in Show Mode, as in QLab). `asNew`: always ask for a path.

@@ -695,6 +695,7 @@
 "settings.network.delete" = "Remove";
 "settings.network.newName" = "Network %d";
 "settings.network.badPort" = "A port is a number from 1 to 65535.";
+"settings.rowGone" = "That row is no longer in the table, so the change was not made.";
 "settings.osc.add" = "New passcode";
 "settings.osc.note" = "What an OSC client may do depends on the passcode it connects with.";
 "settings.osc.col.passcode" = "Passcode";

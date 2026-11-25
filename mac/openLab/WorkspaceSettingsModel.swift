@@ -22,7 +22,7 @@ enum PatchProblem: Equatable {
 /// One output patch as the settings window lists it.
 struct PatchRow: Equatable {
     let id: ModelID
-    let name: String
+    var name: String
     let outputCount: Int
     let mapping: PatchMapping?
     /// Where the engine resolves it now (`list_patch_mappings`); nil from an engine without it.
@@ -55,7 +55,24 @@ final class WorkspaceSettingsModel: ObservableObject {
     /// Where the addresses come from (a test gives its own).
     var localAddresses: () -> [String] = { LocalAddresses.ipv4() }
 
-    init(store: WorkspaceStore) { self.store = store }
+    /// The passcode rows the engine has, each with an identity of its own (`+Osc`).
+    private(set) var oscRows = OscRows()
+    private var changesSub: AnyCancellable?
+
+    init(store: WorkspaceStore) {
+        self.store = store
+        oscRows.take(osc, oneStep: false)
+        changesSub = store.changes.sink { [weak self] change in
+            guard let self else { return }
+            switch change {
+            case .model(let upserts, _):
+                let settings = upserts.contains { if case .settings = $0 { return true } else { return false } }
+                if settings { oscRows.take(osc, oneStep: true) }
+            case .reset: oscRows.take(osc, oneStep: false)
+            default: break
+            }
+        }
+    }
 
     // MARK: Reading
 
@@ -125,11 +142,29 @@ final class WorkspaceSettingsModel: ObservableObject {
         return await sendPatch(command) ? id : nil
     }
 
+    /// The patch table's rows: the patches last read that the engine still has, with the names it has now.
+    var patchRows: [PatchRow] {
+        let now = store.model?.patches ?? []
+        return patches.compactMap { read in
+            guard let patch = now.first(where: { $0.id == read.id }) else { return nil }
+            var row = read
+            row.name = patch.raw["name"]?.stringValue ?? ""
+            return row
+        }
+    }
+
     /// Renames a patch. An unchanged name sends nothing.
     @discardableResult
     func renamePatch(_ id: ModelID, to name: String) async -> Bool {
-        guard let row = patches.first(where: { $0.id == id }), row.name != name else { return true }
-        return await sendPatch(
+        guard let patch = store.model?.patches.first(where: { $0.id == id }),
+            patch.raw["name"]?.stringValue ?? "" != name
+        else { return true }
+        return await setPatchName(id, name)
+    }
+
+    /// Renames a patch, whatever its name is now.
+    func setPatchName(_ id: ModelID, _ name: String) async -> Bool {
+        await sendPatch(
             Command(
                 .object([
                     "type": .string("set_patch_property"), "id": .string(id.raw),
@@ -221,7 +256,8 @@ final class WorkspaceSettingsModel: ObservableObject {
         var panic: Double?
         var goInterval: Double?
         var limits: VolumeLimits
-        var osc: OscAccessTable
+        var oscNone: OscRights
+        var oscRows: [OscRow]
         var network: [NetworkPatchRow]
         var keys: [WorkspaceKey: KeyChord]
         var keyRefusal: KeyRefusal?
@@ -236,8 +272,9 @@ final class WorkspaceSettingsModel: ObservableObject {
 
     var displayState: DisplayState {
         DisplayState(
-            devices: devices, patches: patches, loaded: loaded, message: message, panic: panicDuration,
-            goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches, keys: keyMap.bound,
+            devices: devices, patches: patchRows, loaded: loaded, message: message, panic: panicDuration,
+            goInterval: minGoInterval, limits: limits, oscNone: osc.noPasscode, oscRows: oscRows.rows,
+            network: networkPatches, keys: keyMap.bound,
             keyRefusal: keyRefusal, oscListening: oscListening, addresses: addresses, newCuesAutoLoad: newCuesAutoLoad,
             switches: Dictionary(
                 uniqueKeysWithValues: WorkspaceSwitch.allCases.compactMap { item in isOn(item).map { (item, $0) } }),

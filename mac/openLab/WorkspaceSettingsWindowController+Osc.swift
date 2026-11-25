@@ -99,19 +99,36 @@ extension WorkspaceSettingsWindowController {
 
     // MARK: Drawing
 
-    /// Draws the table. A table that is as drawn is left alone, and so is one being typed in: a
-    /// rebuild would take the caret away (the next render catches up).
-    func renderOsc(_ table: OscAccessTable, forced: Bool) {
+    /// The rights in column order, with the name each has in a box's identifier.
+    private static let rightColumnNames: [(name: String, right: WritableKeyPath<OscRights, Bool>)] = [
+        ("view", \.view), ("edit", \.edit), ("control", \.control),
+    ]
+
+    /// Draws the table: the rows built again when they changed, else drawn in place (`keepsRows`).
+    func renderOsc(_ state: WorkspaceSettingsModel.DisplayState, forced: Bool) {
         let enabled = model.store.model != nil
         oscAddButton.isEnabled = enabled
-        if !forced, shownOsc == table { return }
-        if oscCodeFields.contains(where: { $0.currentEditor() != nil }) {
-            lastDrawn = nil
-            return
+        drawRights(state.oscNone, of: nil, in: oscNoneRights, enabled: enabled)
+        if !forced, shownOsc == state.oscRows { return }
+        shownOsc = state.oscRows
+        if !keepsRows(oscCodeFields, now: state.oscRows.map(\.id), in: oscGrid) { buildOscRows(state.oscRows) }
+        for (i, field) in oscCodeFields.enumerated() {
+            let row = field.row.flatMap(model.oscRow)
+            let code = row?.passcode ?? ""
+            show(field)
+            field.allow(editable: enabled)
+            let boxes = [oscViewBoxes[i], oscEditBoxes[i], oscControlBoxes[i]]
+            drawRights(row?.rights ?? .none, of: field.row, in: boxes, enabled: enabled && row != nil)
+            for (box, column) in zip(boxes, Self.rightColumnNames) {
+                box.setAccessibilityLabel("\(code), \(loc("settings.osc.col.\(column.name)"))")
+            }
+            oscDeleteButtons[i].isEnabled = enabled && row != nil
+            oscDeleteButtons[i].setAccessibilityLabel("\(loc("settings.osc.delete")) \(code)")
         }
-        shownOsc = table
-        drawRights(table.noPasscode, in: oscNoneRights, enabled: enabled)
+        oscGrid.layoutSubtreeIfNeeded()
+    }
 
+    private func buildOscRows(_ rows: [OscRow]) {
         // Row 0 is the fixed No Passcode row.
         while oscGrid.numberOfRows > 1 {
             // The grid keeps the views of a removed row in the window: take them out.
@@ -119,148 +136,89 @@ extension WorkspaceSettingsWindowController {
             for c in 0..<last.numberOfCells { last.cell(at: c).contentView?.removeFromSuperview() }
             oscGrid.removeRow(at: oscGrid.numberOfRows - 1)
         }
-        forget(oscCodeFields)
         oscCodeFields = []
         oscViewBoxes = []
         oscEditBoxes = []
         oscControlBoxes = []
         oscDeleteButtons = []
-        for (i, row) in table.rows.enumerated() {
+        for (i, row) in rows.enumerated() {
             let n = i + 1
-            let field = NSTextField(string: row.passcode)
-            field.isEditable = enabled
+            let id = row.id
+            let field = SettingsField(key: "osc-\(id)-code", row: id)
+            field.engineText = { [model] in model.oscRow(id)?.passcode }
+            field.send = { [model] in await model.changeOscPasscode(of: id, to: $0) }
             field.isBezeled = true
             field.delegate = self
-            field.tag = i
             field.widthAnchor.constraint(equalToConstant: 100).isActive = true
             field.setAX("\(AX.settingsOsc)-code-\(n)", label: loc("settings.osc.col.passcode"))
-            let boxes = ["view", "edit", "control"].map { key -> NSButton in
+            let boxes = Self.rightColumnNames.enumerated().map { index, column -> NSButton in
                 let box = NSButton(checkboxWithTitle: "", target: self, action: #selector(oscRightToggled(_:)))
-                box.tag = i
-                box.setAX(
-                    "\(AX.settingsOsc)-\(key)-\(n)", label: "\(row.passcode), \(loc("settings.osc.col.\(key)"))")
+                box.tag = index
+                box.identifier = NSUserInterfaceItemIdentifier(id)
+                box.setAX("\(AX.settingsOsc)-\(column.name)-\(n)", label: "")
                 return box
             }
-            drawRights(row.rights, in: boxes, enabled: enabled)
             let delete = NSButton(title: "", target: self, action: #selector(oscDeleteClicked(_:)))
             delete.image = NSImage(
                 systemSymbolName: "xmark.circle.fill", accessibilityDescription: loc("settings.osc.delete"))
             delete.isBordered = false
             delete.imagePosition = .imageOnly
-            delete.tag = i
-            delete.isEnabled = enabled
-            delete.setAX("\(AX.settingsOsc)-delete-\(n)", label: "\(loc("settings.osc.delete")) \(row.passcode)")
+            delete.identifier = NSUserInterfaceItemIdentifier(id)
+            delete.setAX("\(AX.settingsOsc)-delete-\(n)", label: "")
             oscGrid.addRow(with: [field] + boxes + [delete])
-            remember(field)
             oscCodeFields.append(field)
             oscViewBoxes.append(boxes[0])
             oscEditBoxes.append(boxes[1])
             oscControlBoxes.append(boxes[2])
             oscDeleteButtons.append(delete)
         }
-        oscGrid.layoutSubtreeIfNeeded()
     }
 
-    /// Edit and Control are available only with View on.
-    private func drawRights(_ rights: OscRights, in boxes: [NSButton], enabled: Bool) {
-        for (box, on) in zip(boxes, [rights.view, rights.edit, rights.control]) {
-            box.state = on ? .on : .off
+    /// Edit and Control are available only with View on. A box clicked and not answered yet stays as
+    /// clicked.
+    private func drawRights(_ rights: OscRights, of row: String?, in boxes: [NSButton], enabled: Bool) {
+        for (box, column) in zip(boxes, Self.rightColumnNames)
+        where !edits.isWaiting(Self.rightKey(row, column.name)) {
+            box.state = rights[keyPath: column.right] ? .on : .off
         }
         boxes[0].isEnabled = enabled
         boxes[1].isEnabled = enabled && rights.view
         boxes[2].isEnabled = enabled && rights.view
     }
 
-    /// Puts the engine's table back over whatever the controls show now.
-    private func redrawOsc() {
-        lastDrawn = nil
-        render()
-    }
+    private static func rightKey(_ row: String?, _ name: String) -> String { "osc-\(row ?? "none")-\(name)" }
 
     // MARK: Actions
 
     @objc private func oscAddClicked() {
-        // A code still being typed is committed first: the table is not rebuilt under a caret.
-        if oscCodeFields.contains(where: { $0.currentEditor() != nil }) { window?.makeFirstResponder(nil) }
-        Task {
-            await oscCommits?.value
-            let added = await model.addOscPasscode()
-            redrawOsc()
+        act("osc-add") { [weak self, model] in
+            guard await model.addOscPasscode() else { return false }
+            self?.redraw()
             // From about ten rows on the new one is below the visible part of the table.
-            if added, let last = oscCodeFields.last { last.scrollToVisible(last.bounds) }
+            if let last = self?.oscCodeFields.last { last.scrollToVisible(last.bounds) }
+            return true
         }
-    }
-
-    /// The code row `tag` stands for now: what its field was drawn with or last committed with (the
-    /// table is not drawn again while the caret hops between code fields, so the code the table was
-    /// drawn with may be another row's by now).
-    private func oscCode(ofRow tag: Int) -> String? {
-        oscCodeFields[safe: tag].flatMap { fieldBaselines[ObjectIdentifier($0)] }
     }
 
     @objc private func oscDeleteClicked(_ sender: NSButton) {
-        guard let code = oscCode(ofRow: sender.tag) else { return }
-        Task {
-            await model.removeOscPasscode(code)
-            redrawOsc()
-        }
+        guard let row = sender.identifier?.rawValue else { return }
+        act("osc-\(row)-delete") { [model] in await model.removeOscPasscode(of: row) }
     }
 
-    @objc private func oscNoneToggled(_ sender: NSButton) {
-        let rights = Self.rights(of: oscNoneRights)
-        Task {
-            await model.setOscRights(rights, of: nil)
-            redrawOsc()
-        }
-    }
+    @objc private func oscNoneToggled(_ sender: NSButton) { rightClicked(sender, of: nil) }
 
-    /// Sends what the row's boxes show: boxes clicked in quick succession each carry the others'
-    /// new state, not the table's as of the first click.
     @objc private func oscRightToggled(_ sender: NSButton) {
-        guard let code = oscCode(ofRow: sender.tag), oscViewBoxes.indices.contains(sender.tag) else {
-            return
-        }
-        let rights = Self.rights(of: [oscViewBoxes[sender.tag], oscEditBoxes[sender.tag], oscControlBoxes[sender.tag]])
-        Task {
-            await model.setOscRights(rights, of: code)
-            redrawOsc()
-        }
+        guard let row = sender.identifier?.rawValue else { return }
+        rightClicked(sender, of: row)
     }
 
-    private static func rights(of boxes: [NSButton]) -> OscRights {
-        OscRights(view: boxes[0].state == .on, edit: boxes[1].state == .on, control: boxes[2].state == .on)
+    /// Sends the one right clicked: the row's others are what the engine has when it is sent, so boxes
+    /// clicked in quick succession never undo each other.
+    private func rightClicked(_ box: NSButton, of row: String?) {
+        let column = Self.rightColumnNames[box.tag]
+        let on = box.state == .on
+        act(Self.rightKey(row, column.name)) { [model] in await model.setOscRight(column.right, on, of: row) }
     }
-
-    /// A code field was committed (Return or leaving it): the engine takes the new code or the old
-    /// one comes back with a line saying why not. Commits run one after another, each on the row
-    /// its field stands for, so leaving one field for the next never drops either.
-    func oscCodeCommitted(_ field: NSTextField) {
-        let key = ObjectIdentifier(field)
-        // The code this field stands for now (an earlier commit of it counts as taken until refused).
-        guard let old = fieldBaselines[key] else { return }
-        guard takeTyped(field) else {
-            // Only clicked into: nothing to send. The table may have waited for the caret.
-            oscCommits = Task { redrawOsc() }
-            return
-        }
-        let text = field.stringValue
-        fieldBaselines[key] = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let previous = oscCommits
-        oscCommits = Task {
-            await previous?.value
-            let taken = await model.changeOscPasscode(old, to: text)
-            // The redraw waits while another code field is being typed in: this one shows the old code now.
-            if !taken {
-                field.stringValue = old
-                fieldBaselines[key] = old
-            }
-            redrawOsc()
-        }
-    }
-}
-
-extension Array {
-    fileprivate subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
 
 /// The top of the OSC page: whether OSC may reach this workspace at all, where it listens and
@@ -273,6 +231,8 @@ extension WorkspaceSettingsWindowController {
         oscPortField.setAX("settings-osc-port", label: loc("settings.osc.port"))
         oscPortField.alignment = .right
         oscPortField.delegate = self
+        oscPortField.engineText = { [model] in model.oscListening.map { String($0.port) } }
+        oscPortField.send = { [model] in await model.setOscPort($0) }
         oscPortField.widthAnchor.constraint(equalToConstant: 70).isActive = true
         oscPortStatus.setAX("settings-osc-port-status")
         oscPortStatus.font = .systemFont(ofSize: 11)
@@ -294,11 +254,8 @@ extension WorkspaceSettingsWindowController {
         oscEnabledCheck.state = on == true ? .on : .off
         oscEnabledCheck.isEnabled = on != nil
         let listening = model.oscListening
-        oscPortField.isEnabled = listening != nil
-        // A field being typed in keeps its text.
-        if !((window?.firstResponder as? NSTextView)?.delegate === oscPortField) {
-            oscPortField.stringValue = listening.map { String($0.port) } ?? ""
-        }
+        oscPortField.allow(enabled: listening != nil)
+        show(oscPortField)
         switch listening {
         case nil:
             oscPortStatus.stringValue = loc("settings.osc.noOsc")
@@ -330,18 +287,7 @@ extension WorkspaceSettingsWindowController {
         let on = oscEnabledCheck.state == .on
         Task { [weak self] in
             await self?.model.setOscEnabled(on)
-            self?.lastDrawn = nil
-            self?.render()
-        }
-    }
-
-    /// The port field was committed: the engine opens the new port, or says why not and the old one
-    /// stays.
-    func oscPortCommitted(_ text: String) {
-        Task { [weak self] in
-            await self?.model.setOscPort(text)
-            self?.lastDrawn = nil
-            self?.render()
+            self?.redraw()
         }
     }
 }

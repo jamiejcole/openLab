@@ -350,6 +350,31 @@ final class VideoSettingsTests: XCTestCase {
         await caughtUp(rig, sc, "the name is committed") { pane.shown?.first?.name == "Cyclo" }
     }
 
+    /// A stage or route name typed and left there is sent when the window goes (Done), and the next
+    /// opening sends nothing.
+    func testANameTypedOnAVideoPageIsSentWhenTheWindowGoes() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        await settled(sc) { sc.videoPane.nameFields.count == 1 && sc.videoRoutingPane.nameFields.count == 1 }
+        for (page, pane) in [(SettingsPage.video, sc.videoPane), (.videoRouting, sc.videoRoutingPane)] {
+            sc.show(page: page)
+            let field = try XCTUnwrap(pane.nameFields.first)
+            XCTAssertTrue(try XCTUnwrap(sc.window).makeFirstResponder(field))
+            field.currentEditor()?.string = "Typed"
+            sc.doneButton.performClick(nil)
+            await assertEventually("\(page): sent") {
+                let items = page == .video ? rig.store.model?.stages : rig.store.model?.routes
+                return items?.first?.raw["name"]?.stringValue == "Typed"
+            }
+            await pane.pending?.value
+            await settle()
+            XCTAssertFalse(sc.window?.isVisible == true, "\(page): closed")
+            let sent = rig.wire.commands.count
+            await sc.present().value
+            await pane.pending?.value
+            XCTAssertEqual(rig.wire.commands.count, sent, "\(page): the opening sends nothing")
+        }
+    }
+
     /// Starts typing `text` in `field` of the shown Video page (not committed).
     private func startTyping(_ text: String, in field: NSTextField, _ sc: WorkspaceSettingsWindowController) throws {
         sc.tabs.selectTabViewItem(withIdentifier: "video")

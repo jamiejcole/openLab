@@ -47,6 +47,11 @@ extension WorkspaceSettingsWindowController {
             field.delegate = self
             field.widthAnchor.constraint(equalToConstant: 48).isActive = true
         }
+        // The fields are empty until the show is in.
+        maxLimitField.engineText = { [model] in model.store.model == nil ? nil : Self.format(model.limits.max) }
+        maxLimitField.send = { [model] in await model.setOutputMax($0) }
+        minLimitField.engineText = { [model] in model.store.model == nil ? nil : Self.format(model.limits.min) }
+        minLimitField.send = { [model] in await model.setOutputMin($0) }
         // The labels share one width, so the two fields line up.
         func limitRow(_ title: String, _ field: NSTextField) -> NSStackView {
             let label = NSTextField(labelWithString: title)
@@ -114,7 +119,7 @@ extension WorkspaceSettingsWindowController {
     static var fixedColumns: CGFloat { 16 + patchNameWidth + editWidth + removeWidth + 3 * 8 }
 
     /// A new, empty table with its column titles in place of the old one. The table is made again
-    /// for each drawing: a row whose cells are merged (the problem lines) cannot be removed from a
+    /// when its rows change: a row whose cells are merged (the problem lines) cannot be removed from a
     /// grid view.
     private func placeNewPatchGrid() {
         patchGrid.removeFromSuperview()
@@ -145,62 +150,79 @@ extension WorkspaceSettingsWindowController {
         patchGrid = grid
     }
 
-    /// Draws the table. One that is as drawn is left alone, and so is one whose name is being
-    /// typed in: a rebuild would take the caret away (the next render catches up).
+    /// Draws the table: the rows built again when they changed, else drawn in place (`keepsRows`).
     func renderPatches(forced: Bool) {
         let enabled = model.store.model != nil
         patchAddButton.isEnabled = enabled
-        let state = PatchTableState(patches: model.patches, devices: model.devices, loaded: model.loaded)
+        let rows = model.patchRows
+        let state = PatchTableState(patches: rows, devices: model.devices, loaded: model.loaded)
         if !forced, shownPatchTable == state { return }
-        if patchNameFields.contains(where: { $0.currentEditor() != nil }) {
-            // Drawn once the typing ends; nothing to catch up when the table is as drawn.
-            if shownPatchTable != state { lastDrawn = nil }
-            return
-        }
         shownPatchTable = state
+        if !keepsRows(patchNameFields, now: rows.map(\.id.raw), in: patchGrid) { buildPatchRows(rows) }
+        for (i, field) in patchNameFields.enumerated() {
+            let row = rows.first { $0.id.raw == field.row }
+            show(field)
+            field.allow(editable: enabled)
+            let popup = patchDevicePopups[i]
+            if let row, !edits.isWaiting(Self.patchKey(row.id, "device")) {
+                model.fillDevicePopupItems(popup, for: row)
+                // The name is cut in a narrow window: the whole of it is the tip.
+                popup.toolTip = popup.titleOfSelectedItem
+            }
+            popup.isEnabled = model.loaded && row != nil
+            patchEditButtons[i].isEnabled = row != nil
+            patchRemoveButtons[i].isEnabled = enabled && row != nil && rows.count > 1
+            let problem = patchProblemLabels[i]
+            problem.stringValue = row.flatMap(model.problem(of:)).map(model.problemText) ?? ""
+            patchGrid.cell(for: problem)?.row?.isHidden = problem.stringValue.isEmpty
+            let name = row.map { $0.name.isEmpty ? loc("settings.audio.untitledPatch") : $0.name } ?? ""
+            field.setAccessibilityLabel("\(name), \(loc("settings.audio.patchName"))")
+            popup.setAccessibilityLabel("\(name), \(loc("settings.audio.patchDevice"))")
+            patchEditButtons[i].setAccessibilityLabel("\(loc("settings.audio.edit")) \(name)")
+            patchRemoveButtons[i].setAccessibilityLabel("\(loc("settings.audio.removePatch")) \(name)")
+        }
+        patchGrid.layoutSubtreeIfNeeded()
+        fitProblemLines()
+    }
+
+    private static func patchKey(_ id: ModelID, _ column: String) -> String { "patch-\(id.raw)-\(column)" }
+
+    private func buildPatchRows(_ rows: [PatchRow]) {
         placeNewPatchGrid()
-        forget(patchNameFields)
         patchNameFields = []
         patchDevicePopups = []
         patchEditButtons = []
         patchRemoveButtons = []
         patchProblemLabels = []
-        for (i, row) in model.patches.enumerated() {
+        for (i, row) in rows.enumerated() {
             let n = i + 1
-            let shownName = row.name.isEmpty ? loc("settings.audio.untitledPatch") : row.name
-            let name = NSTextField(string: row.name)
-            name.isEditable = enabled
+            let id = row.id
+            let name = SettingsField(key: Self.patchKey(id, "name"), row: id.raw)
+            name.engineText = { [model] in
+                model.store.model?.patches.first { $0.id == id }.map { $0.raw["name"]?.stringValue ?? "" }
+            }
+            name.send = { [model] in await model.setPatchName(id, $0) }
             name.isBezeled = true
             name.delegate = self
-            name.tag = i
-            name.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
             name.lineBreakMode = .byTruncatingTail
             name.cell?.usesSingleLineMode = true
             name.widthAnchor.constraint(equalToConstant: Self.patchNameWidth).isActive = true
-            name.setAX("\(AX.settingsPatch)-name-\(n)", label: "\(shownName), \(loc("settings.audio.patchName"))")
+            name.setAX("\(AX.settingsPatch)-name-\(n)", label: "")
 
             let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-            model.fillDevicePopupItems(popup, for: row)
-            popup.tag = i
-            popup.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
             popup.target = self
             popup.action = #selector(patchDeviceChosen(_:))
-            popup.isEnabled = model.loaded
-            // The name is cut in a narrow window: the whole of it is the tip.
-            popup.toolTip = popup.titleOfSelectedItem
             // A long device name is cut: it never widens the window.
             popup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             popup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
-            popup.setAX("\(AX.settingsPatch)-device-\(n)", label: "\(shownName), \(loc("settings.audio.patchDevice"))")
+            popup.setAX("\(AX.settingsPatch)-device-\(n)", label: "")
 
             let edit = NSButton(
                 title: loc("settings.audio.edit"), target: self, action: #selector(editPatchClicked(_:)))
             edit.bezelStyle = .rounded
             edit.widthAnchor.constraint(equalToConstant: Self.editWidth).isActive = true
-            edit.tag = i
-            edit.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
-            edit.setAX("\(AX.settingsPatch)-edit-\(n)", label: "\(loc("settings.audio.edit")) \(shownName)")
+            edit.setAX("\(AX.settingsPatch)-edit-\(n)", label: "")
 
             let remove = NSButton(title: "", target: self, action: #selector(patchRemoveClicked(_:)))
             remove.image = Icon.fieldClear.image(loc("settings.audio.removePatch"), compact: true)
@@ -208,10 +230,8 @@ extension WorkspaceSettingsWindowController {
             remove.imagePosition = .imageOnly
             remove.widthAnchor.constraint(equalToConstant: Self.removeWidth).isActive = true
             remove.toolTip = loc("settings.audio.removeHelp")
-            remove.tag = i
-            remove.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
-            remove.isEnabled = enabled && model.patches.count > 1
-            remove.setAX("\(AX.settingsPatch)-remove-\(n)", label: "\(loc("settings.audio.removePatch")) \(shownName)")
+            remove.setAX("\(AX.settingsPatch)-remove-\(n)", label: "")
+            for control in [popup, edit, remove] { control.identifier = NSUserInterfaceItemIdentifier(id.raw) }
             patchGrid.addRow(with: [name, popup, edit, remove])
             // The device column takes the width the table has to spare (QLab's table gives it most).
             // Made once the pop-up is in the table: a constraint to a view outside its window's
@@ -223,7 +243,7 @@ extension WorkspaceSettingsWindowController {
             wide.isActive = true
 
             // Why the patch cannot play, under its row across the table; the text wraps in it.
-            let problem = NSTextField(wrappingLabelWithString: model.problem(of: row).map(model.problemText) ?? "")
+            let problem = NSTextField(wrappingLabelWithString: "")
             problem.textColor = .systemRed
             problem.font = .systemFont(ofSize: 11)
             problem.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -236,83 +256,47 @@ extension WorkspaceSettingsWindowController {
             patchGrid.mergeCells(
                 inHorizontalRange: NSRange(location: 0, length: 4),
                 verticalRange: NSRange(location: patchGrid.numberOfRows - 1, length: 1))
-            problemRow.isHidden = problem.stringValue.isEmpty
             problemRow.topPadding = -4
 
-            remember(name)
             patchNameFields.append(name)
             patchDevicePopups.append(popup)
             patchEditButtons.append(edit)
             patchRemoveButtons.append(remove)
             patchProblemLabels.append(problem)
         }
-        patchGrid.layoutSubtreeIfNeeded()
-        fitProblemLines()
     }
 
-    /// A name being typed in is committed at the click on a button or pop-up of the table (its
-    /// commit is queued), since the table is not rebuilt under a caret.
-    private func endPatchTyping() {
-        if patchNameFields.contains(where: { $0.currentEditor() != nil }) { window?.makeFirstResponder(nil) }
-    }
+    // MARK: Actions
 
-    /// After an action of the table: drawn again from the engine's state. A name clicked into since
-    /// the click keeps its caret: the table is drawn once that typing ends.
-    private func redrawPatches() {
-        lastDrawn = nil
-        render()
-    }
+    /// The patch a control stands for.
+    private func patch(of control: NSControl) -> ModelID? { control.identifier.map { ModelID($0.rawValue) } }
 
-    /// The row a control was drawn for, by the patch id it carries, from what the table shows: the
-    /// table is not redrawn while a name holds the caret, so the model's list (and a control's
-    /// position in it) may differ from what is on screen.
-    private func row(of control: NSControl) -> PatchRow? {
-        guard let id = control.identifier?.rawValue,
-            let drawn = shownPatchTable?.patches.first(where: { $0.id.raw == id })
-        else { return nil }
-        // A patch another client removed since the table was drawn: nothing is sent for it (the
-        // engine would refuse it with an id), and the table is read and drawn again.
-        guard model.store.model?.patches.contains(where: { $0.id == drawn.id }) == true else {
-            if !(control is NSTextField) { endPatchTyping() }
-            patchActions = Task {
-                await model.refresh()
-                redrawPatches()
-            }
-            return nil
-        }
-        return drawn
-    }
-
-    @objc func patchAddClicked() {
-        endPatchTyping()
-        patchActions = Task {
-            await model.addPatch()
-            redrawPatches()
-        }
-    }
+    @objc func patchAddClicked() { act("patch-add") { [model] in await model.addPatch() != nil } }
 
     @objc private func patchRemoveClicked(_ sender: NSButton) {
-        guard let row = row(of: sender) else { return }
-        endPatchTyping()
-        patchActions = Task {
-            await model.removePatch(row.id)
-            redrawPatches()
+        guard let id = patch(of: sender) else { return }
+        act(Self.patchKey(id, "remove")) { [model] in
+            // Gone already, as wanted: nothing is sent for it.
+            guard model.store.model?.patches.contains(where: { $0.id == id }) == true else { return true }
+            return await model.removePatch(id)
         }
     }
 
     @objc private func patchDeviceChosen(_ sender: NSPopUpButton) {
-        guard let row = row(of: sender) else { return }
+        guard let id = patch(of: sender) else { return }
         let choice = sender.selectedItem?.representedObject
-        endPatchTyping()
-        patchActions = Task {
+        act(Self.patchKey(id, "device")) { [model] in
+            guard let row = model.patchRows.first(where: { $0.id == id }) else { return model.rowGone() }
+            model.message = nil
             await model.choose(choice, for: row)
-            redrawPatches()
+            return model.message == nil
         }
     }
 
     @objc private func editPatchClicked(_ sender: NSButton) {
-        guard let row = row(of: sender) else { return }
-        openPatchEditor(row.id)
+        guard let id = patch(of: sender), model.store.model?.patches.contains(where: { $0.id == id }) == true
+        else { return }
+        openPatchEditor(id)
     }
 
     /// Opens the patch editor of `patch` (one window per patch; a second Edit brings it forward).
@@ -323,29 +307,6 @@ extension WorkspaceSettingsWindowController {
         patchEditor = editor
         if presentsEditors { editor.present() } else { editor.reread() }
         return editor
-    }
-
-    /// A patch name was committed (Return or leaving the field): sent; the engine's name comes back.
-    func patchNameCommitted(_ field: NSTextField) {
-        guard let row = row(of: field) else { return }
-        guard takeTyped(field) else {
-            // Only clicked into: nothing to send. The table may have waited for the caret.
-            patchActions = Task { redrawPatches() }
-            return
-        }
-        let text = field.stringValue
-        fieldBaselines[ObjectIdentifier(field)] = text
-        let previous = patchActions
-        patchActions = Task {
-            await previous?.value
-            if await model.renamePatch(row.id, to: text) == false {
-                // Refused: the field shows what the engine has.
-                let now = model.store.model?.patches.first { $0.id == row.id }?.raw["name"]?.stringValue ?? row.name
-                field.stringValue = now
-                fieldBaselines[ObjectIdentifier(field)] = now
-            }
-            redrawPatches()
-        }
     }
 }
 
