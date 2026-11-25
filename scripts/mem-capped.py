@@ -19,7 +19,10 @@ why. A script that is killed itself has the exit code of that; its watcher's lin
 What can still get past it:
   - memory allocated between two looks, before the kill takes effect;
   - a daemon in a session of its own whose parent was started and ended between two looks (on Linux, where a
-    process does not keep its first parent's identity, any that lost its parent between two looks);
+    process does not keep its first parent's identity, any that lost its parent between two looks). One of
+    the script and its watcher may have seen it and the other not: the script ends the watcher once its own
+    view of the run is empty, so a daemon only the watcher knew may be left alive, or stopped, with no message,
+    holding the lock;
   - work another process does for the command: apps and test hosts launchd starts (xcodebuild's among
     them), XPC services;
   - a compile server the command calls itself (`sccache --start-server`, or a wrapper it sets again): cargo's
@@ -411,7 +414,8 @@ def run_capped(command, cap, lock_path):
         reason = trouble(run, cap)
         if reason is None:
             time.sleep(POLL)
-    # What the command left running goes too (but see the header for what is not known). Nothing is printed before the kill: printing can block.
+    # What the command left running goes too (but see the header for what is not known). Nothing is printed
+    # before the kill: printing can block.
     left = run.end()
     if watcher:
         send(watcher, signal.SIGKILL)
@@ -885,6 +889,9 @@ def test_slow_list(lock):
     trial = Trial(lock, HOG, cap=HOG_CAP, patch=patch)
     trial.let_go()
     expect(trial, KILLED, "the cap is 0.05 GB")
+    trial = Trial(lock, WAIT, patch=patch)  # with no watcher to say it, the script says what it did not see end
+    os.kill(trial.watcher(trial.ups()[0]), signal.SIGKILL)
+    expect(trial, KILLED, "its watcher died", "not seen to end")
 
 
 def test_what_cannot_be_read(_):
@@ -906,8 +913,8 @@ def test_what_cannot_be_read(_):
         check(run.sizes() == [] and trouble(run, 1) is None, "gone")
         answer(errno.EPERM)
         check(run.sizes() == [None] and "none of its processes" in trouble(run, 1), "another user's")
-        run.sizes = lambda: [10, None]
-        check(trouble(run, 10) is None and "cap" in trouble(run, 9), "the ones that can be read count")
+        run.sizes = lambda: [6, None, 4]
+        check(trouble(run, 10) is None and "cap" in trouble(run, 9), "the ones that can be read add up")
     finally:
         globals()["footprint"] = saved
         os.kill(child, signal.SIGKILL)
