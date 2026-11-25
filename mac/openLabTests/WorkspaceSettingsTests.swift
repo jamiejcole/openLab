@@ -155,6 +155,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         sc.patchRemoveButtons[1].performClick(nil)
         await assertEventually { sc.patchNameFields.count == 2 }
         let third = sc.patchNameFields[1].stringValue
+        await settle()
         // The caret in Main's name; the removal is undone from the workspace.
         XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
         _ = await rig.store.undo()
@@ -170,6 +171,105 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
         XCTAssertEqual(
             sc.model.patches.first { $0.name == second }?.mapping?.device, device, "\(second) is not touched")
+    }
+
+    /// The patch on no device with `count` cue outputs, and the table drawn so.
+    private func unmappedPatch(_ sc: WorkspaceSettingsWindowController, count: Int) async {
+        await sc.model.setOutputCount(patch, count)
+        sc.patchDevicePopups.first.map { try? pick(loc("settings.audio.noDevice"), in: $0) }
+        await assertEventually("on no device, \(count) outputs") {
+            sc.model.patches.first?.mapping == nil && sc.model.patches.first?.outputCount == count
+                && sc.patchProblemLabels.first?.stringValue == loc("settings.audio.problem.unmapped")
+        }
+    }
+
+    private func assertRouted(_ rig: Rig, _ why: String) async {
+        await assertEventually(why) {
+            (try? await self.mapping(rig)) == PatchMapping(device: self.device, channels: [0, 1])
+        }
+    }
+
+    /// A device put on a patch is sent for the patch's cue outputs as they are now, so no cue output
+    /// is left without a route: the count was raised in the patch editor while a name in the table
+    /// held the caret, and the table still shows the old count.
+    func testADeviceChosenInTheTableIsSentForTheCueOutputsThePatchHasNow() async throws {
+        let (rig, sc) = try await open()
+        await unmappedPatch(sc, count: 1)
+        XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
+        await sc.model.setOutputCount(patch, 2)
+        XCTAssertEqual(sc.shownPatchTable?.patches.first?.outputCount, 1, "the table is as drawn")
+        try pick(device, in: sc.patchDevicePopups[0])
+        await assertRouted(rig, "both cue outputs have a route")
+    }
+
+    /// An undo that brings the cue outputs back is not read by the table before the choice (the
+    /// patches are read from the engine, not from the undo): the mapping is still for all of them.
+    func testADeviceChosenRightAfterAnUndoOfTheCueOutputCountIsSentForAllOfThem() async throws {
+        let (rig, sc) = try await open()
+        await unmappedPatch(sc, count: 2)
+        await sc.model.setOutputCount(patch, 1)
+        await assertEventually("one output drawn") { sc.shownPatchTable?.patches.first?.outputCount == 1 }
+        _ = await rig.store.undo()
+        XCTAssertEqual(rig.store.model?.patches.first?.raw["outputs"]?.arrayValue?.count, 2)
+        try pick(device, in: sc.patchDevicePopups[0])
+        await assertRouted(rig, "both cue outputs have a route")
+    }
+
+    /// The same through the patch editor's device pop-up.
+    func testTheEditorsDeviceChoiceRightAfterAnUndoOfTheCueOutputCountIsSentForAllOfThem() async throws {
+        let (rig, sc) = try await open()
+        await unmappedPatch(sc, count: 2)
+        let editor = try await edit(in: sc)
+        await sc.model.setOutputCount(patch, 1)
+        _ = await rig.store.undo()
+        try pick(device, in: editor.devicePopup)
+        await assertRouted(rig, "both cue outputs have a route")
+    }
+
+    /// And the system output item.
+    func testTheSystemOutputChoiceRightAfterAnUndoOfTheCueOutputCountIsSentForAllOfThem() async throws {
+        let (rig, sc) = try await open()
+        await unmappedPatch(sc, count: 2)
+        await sc.model.setOutputCount(patch, 1)
+        await assertEventually("one output drawn") { sc.shownPatchTable?.patches.first?.outputCount == 1 }
+        _ = await rig.store.undo()
+        try pick(String(format: loc("settings.audio.systemOutput"), device), in: sc.patchDevicePopups[0])
+        await assertEventually("both cue outputs have a route on the system output") {
+            let now = try? await self.mapping(rig)
+            return now == PatchMapping.systemOutput(channels: [0, 1])
+        }
+    }
+
+    /// The device set to none in the patch editor while a name in the table holds the caret: the
+    /// table still shows the device, and choosing it again puts the patch back on it.
+    func testChoosingTheDrawnDeviceAgainAfterTheEditorClearedItSendsIt() async throws {
+        let (rig, sc) = try await open()
+        XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
+        let row = try XCTUnwrap(sc.model.patches.first)
+        await sc.model.setMapping(row, device: nil)
+        let none = try await mapping(rig)
+        XCTAssertNil(none)
+        XCTAssertEqual(sc.patchDevicePopups[0].titleOfSelectedItem, device, "the table is as drawn")
+        try pick(device, in: sc.patchDevicePopups[0])
+        await assertRouted(rig, "back on the device")
+    }
+
+    /// A patch another client removed while its row is still drawn (a name holds the caret): Remove
+    /// on it says nothing about an id and the row goes; Edit opens nothing.
+    func testRemoveOnAPatchThatIsAlreadyGoneDrawsItAwayAndNamesNoId() async throws {
+        let (rig, sc) = try await open()
+        sc.patchAddButton.performClick(nil)
+        await assertEventually { sc.patchNameFields.count == 2 }
+        let other = try XCTUnwrap(rig.store.model?.patches.last?.id)
+        XCTAssertTrue(sc.window?.makeFirstResponder(sc.patchNameFields[0]) == true)
+        let removed = await rig.store.send(command: Command(.object(["type": .string("remove_patch"), "id": .string(other.raw)])))
+        guard case .success = removed else { return XCTFail("remove") }
+        XCTAssertEqual(sc.patchNameFields.count, 2, "still drawn")
+        sc.patchEditButtons[1].performClick(nil)
+        XCTAssertNil(sc.patchEditors[other], "Edit opens no editor for a patch that is gone")
+        sc.patchRemoveButtons[1].performClick(nil)
+        await assertEventually("the row goes") { sc.patchNameFields.count == 1 }
+        XCTAssertNil(sc.model.message, "no refusal naming an id: \(sc.model.message ?? "")")
     }
 
     /// Checklist: a different device is picked in a row while no cue plays → the next cue on that
@@ -369,12 +469,15 @@ final class WorkspaceSettingsTests: XCTestCase {
     func testPickingTheDeviceAPatchAlreadyUsesKeepsItsRouting() async throws {
         let (rig, sc) = try await open()
         await sc.model.setMapping(try XCTUnwrap(sc.model.patches.first), device: device, channels: [0, 0])
-        let sentBefore = requests(rig).count
+        func mappingsSent() -> Int {
+            requests(rig).filter { if case .setPatchMapping = $0 { return true } else { return false } }.count
+        }
+        let sentBefore = mappingsSent()
         try pick(device, in: sc.patchDevicePopups[0])
         await settle()
         let kept = try await mapping(rig)
         XCTAssertEqual(kept, PatchMapping(device: device, channels: [0, 0]))
-        XCTAssertEqual(requests(rig).count, sentBefore + 1, "the same device again sends nothing (one read back)")
+        XCTAssertEqual(mappingsSent(), sentBefore, "the same device again sends no mapping")
     }
 
     /// The device was unplugged since the window read the list: the engine refuses the mapping.

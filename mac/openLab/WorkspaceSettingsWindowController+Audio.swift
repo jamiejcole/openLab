@@ -260,8 +260,18 @@ extension WorkspaceSettingsWindowController {
     /// table is not redrawn while a name holds the caret, so the model's list (and a control's
     /// position in it) may differ from what is on screen.
     private func row(of control: NSControl) -> PatchRow? {
-        guard let id = control.identifier?.rawValue else { return nil }
-        return shownPatchTable?.patches.first { $0.id.raw == id }
+        guard let id = control.identifier?.rawValue, let drawn = shownPatchTable?.patches.first(where: { $0.id.raw == id })
+        else { return nil }
+        // A patch another client removed since the table was drawn: nothing is sent for it (the
+        // engine would refuse it with an id), and the table is read and drawn again.
+        guard model.store.model?.patches.contains(where: { $0.id == drawn.id }) == true else {
+            Task {
+                await model.refresh()
+                redrawPatches()
+            }
+            return nil
+        }
+        return drawn
     }
 
     @objc func patchAddClicked() {
