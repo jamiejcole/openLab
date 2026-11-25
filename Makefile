@@ -49,22 +49,27 @@ prepush:
 test-rust:
 	scripts/rust-checks.sh test
 
+# What a fuzz, sanitizer or Miri run needs in memory is not known beforehand, so outside GitHub's runners each goes
+# through scripts/mem-capped.py (run from engine/), which holds the cap: a run that passes it, meets memory
+# pressure or finds another capped run going is killed or not started. make then fails with its own error; the
+# `mem-capped:` line above that says which and why, and is what to report.
+CAPPED := $(if $(GITHUB_ACTIONS),,../scripts/mem-capped.py -- )
 # Short fuzz run per target (nightly + cargo-fuzz). Fixtures and fuzz/seeds seed the corpus;
 # crashes land in engine/fuzz/artifacts/.
 fuzz:
 	mkdir -p engine/fuzz/corpus/show_file engine/fuzz/corpus/decode engine/fuzz/corpus/osc \
 		engine/fuzz/corpus/osc_session engine/fuzz/corpus/protocol engine/fuzz/corpus/stage_link
-	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run show_file fuzz/corpus/show_file fixtures/show fuzz/seeds \
+	cd engine && $(CAPPED)cargo +$(FUZZ_TOOLCHAIN) fuzz run show_file fuzz/corpus/show_file fixtures/show fuzz/seeds \
 		-- -max_total_time=$(FUZZ_TIME) -dict=fuzz/show_file.dict
-	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run decode fuzz/corpus/decode crates/audio/tests/fixtures fuzz/decode-seeds \
+	cd engine && $(CAPPED)cargo +$(FUZZ_TOOLCHAIN) fuzz run decode fuzz/corpus/decode crates/audio/tests/fixtures fuzz/decode-seeds \
 		-- -max_total_time=$(FUZZ_TIME) -max_len=65536
-	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run osc fuzz/corpus/osc fuzz/osc-seeds \
+	cd engine && $(CAPPED)cargo +$(FUZZ_TOOLCHAIN) fuzz run osc fuzz/corpus/osc fuzz/osc-seeds \
 		-- -max_total_time=$(FUZZ_TIME) -max_len=65536
-	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run osc_session fuzz/corpus/osc_session fuzz/osc-session-seeds \
+	cd engine && $(CAPPED)cargo +$(FUZZ_TOOLCHAIN) fuzz run osc_session fuzz/corpus/osc_session fuzz/osc-session-seeds \
 		-- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
-	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run protocol fuzz/corpus/protocol fixtures/protocol/client \
+	cd engine && $(CAPPED)cargo +$(FUZZ_TOOLCHAIN) fuzz run protocol fuzz/corpus/protocol fixtures/protocol/client \
 		fixtures/protocol/server fuzz/protocol-seeds -- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
-	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run stage_link fuzz/corpus/stage_link fuzz/stage-link-seeds \
+	cd engine && $(CAPPED)cargo +$(FUZZ_TOOLCHAIN) fuzz run stage_link fuzz/corpus/stage_link fuzz/stage-link-seeds \
 		-- -max_total_time=$(FUZZ_TIME) -max_len=600000 -timeout=10
 
 # Nightly CI and local: engine tests under ASan and TSan, then Miri on openlab-core (QA-09).
@@ -76,7 +81,7 @@ fuzz:
 #   ThreadSanitizer: long_start_chains_validate_in_linear_time builds a 200k-cue chain, and TSan's ~5-15x
 #   slowdown made it miss its old time bound. That bound is gone, so the skip may be unneeded; it stays until
 #   the sanitizer job has run without it. It passes under ASan, so only the thread leg skips it.
-SAN_TEST := cargo +$(SAN_TOOLCHAIN) test -Zbuild-std --target $(SAN_TARGET) --workspace --locked --lib --tests --no-fail-fast
+SAN_TEST := $(CAPPED)cargo +$(SAN_TOOLCHAIN) test -Zbuild-std --target $(SAN_TARGET) --workspace --locked --lib --tests --no-fail-fast
 sanitize: sanitize-address sanitize-thread miri
 
 sanitize-address:
@@ -88,9 +93,12 @@ sanitize-thread:
 
 # Subset: core unit tests with a short proptest budget (Miri is ~100x slower). Skipped by name:
 #   too_many_workspaces_are_truncated_quickly: serialises thousands of settings entries; hours under Miri.
-MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly
+#   the_largest_stage_set_fits_one_line: a 1.7 MB line. Native time grows with the line's length; Miri's about
+#   trebles per doubling, past the job's 2 h limit. Core forbids unsafe code, messages_survive_a_round_trip_as_one_line
+#   takes a small set the same way under Miri, and the full size runs natively and under both sanitizers.
+MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly --skip the_largest_stage_set_fits_one_line
 miri:
-	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
+	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" $(CAPPED)cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
 # Two test processes one after the other: $(1) names the target in messages, $(2) the first selection, $(3)
 # the second. The second does not start after a run cut short by a proven stall (exit 75 of

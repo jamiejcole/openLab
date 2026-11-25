@@ -3,8 +3,8 @@
 import XCTest
 
 /// Window > Workspace Status opens on its Warnings page, which lists the demo show's broken cue (its
-/// "Radio" cue has a missing file); clicking the entry selects Radio in the cue list while the
-/// workspace window keeps the keys (GO still works).
+/// "Radio" cue has a missing file); clicking the entry selects Radio in the cue list and gives the
+/// workspace window the keys, where GO works. While the status window is key GO does nothing.
 @MainActor
 final class WarningsPageUITests: XCTestCase {
     func testTheMenuOpensTheListAndClickingAnEntrySelectsTheCue() {
@@ -25,9 +25,15 @@ final class WarningsPageUITests: XCTestCase {
         XCTAssertTrue(waitFor("count == 1", selected), "the cue is selected in the list")
         XCTAssertTrue(selected.firstMatch.staticTexts["Radio"].exists)
 
-        // The report never takes the keys, even after a click on the list's empty area (an
-        // NSTableView hit makes an ordinary panel key): GO still reaches the workspace.
+        // A click on the list's empty area makes the status window key: Space fires no GO there.
         report.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)).click()
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        XCTAssertFalse(
+            cueStates("Running", in: app).firstMatch.waitForExistence(timeout: 2), "no GO with the status window key")
+
+        // A click back on the workspace (its title bar, clear of the status window) gives GO back.
+        app.windows.matching(identifier: "main-window").firstMatch
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 10)).click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
         XCTAssertTrue(cueStates("Running", in: app).firstMatch.waitForExistence(timeout: 10), "GO ran")
     }

@@ -116,6 +116,34 @@ final class KeyMapPageTests: XCTestCase {
 
     private func stored(_ key: WorkspaceKey) -> String? { rig.store.model?.hotkey(key)?["key"]?.stringValue }
 
+    /// A refused key's reason goes when its field is left with no key pressed (Esc too), not for a change
+    /// of another action's key; a key refused again says so again.
+    func testARefusedKeysReasonGoesWhenItsFieldIsLeftAndNotForAnotherActionsKey() async throws {
+        func refuse() async throws {
+            try type("\u{F700}", code: 126, into: .editName)  // Up
+            await assertEventually("refused") { self.reason(.editName) != nil }
+        }
+        try await refuse()
+        try type("g", code: 5, into: .editNotes)
+        await assertEventually { self.stored(.editNotes) == "g" }
+        await settle()
+        XCTAssertNotNil(reason(.editName), "another action's key leaves it up")
+        sc.keyClearButtons[.editNotes]?.performClick(nil)
+        await assertEventually { self.stored(.editNotes) == nil }
+        await settle()
+        XCTAssertNotNil(reason(.editName), "another action's clear leaves it up")
+        try type("\u{1b}", code: 53, into: .editName)
+        await assertEventually("Esc") { self.reason(.editName) == nil }
+        try await refuse()
+        let field = try XCTUnwrap(sc.keyFields[.editName])
+        sc.window?.makeFirstResponder(field)
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("left with no key") { self.reason(.editName) == nil }
+        try await refuse()
+        await settle()
+        XCTAssertNotNil(reason(.editName))
+    }
+
     /// The page holds a column of workspace actions and one of cue-editing actions, each with its key;
     /// a key typed into a field becomes that action's key, and the clear button takes it away.
     func testTheKeyMapPageHasAWorkspaceColumnAndACueEditingColumnTypingAssignsAndClearRemoves() async throws {

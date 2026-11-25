@@ -163,7 +163,7 @@ final class SettingsGeneralTests: XCTestCase {
         }
         type("2")
         await assertEventually("the refusal shows") {
-            sc.messageLabel.stringValue == String(format: loc("settings.general.outOfRange"), 5.0, 3600.0)
+            sc.messageLabel.stringValue == sc.model.rangeText(5...3600)
         }
         XCTAssertEqual(sc.autosaveField.stringValue, "90")
         XCTAssertEqual(rig.store.model?.settings["autosave_interval"]?.doubleValue, 90)

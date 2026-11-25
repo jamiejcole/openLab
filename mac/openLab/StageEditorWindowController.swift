@@ -50,6 +50,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     private(set) var regionRoutePopups: [NSPopUpButton] = []
     private(set) var regionRemoveButtons: [NSButton] = []
     let newRegionPopup = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var shownNewRegionItems: [String]?
     let regionWidthField = NSTextField()
     let regionHeightField = NSTextField()
     let lowerLeftXField = NSTextField()
@@ -63,6 +64,9 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     private(set) var selected: ModelID?
     /// A region just added: selected once the model has it.
     private var selectWhenAdded: ModelID?
+    /// The region the four region fields were drawn for: what is typed in them goes to it, or to
+    /// nothing once it is gone, never to whichever region is selected by then.
+    private var fieldsRegion: ModelID?
     private var subs: [AnyCancellable] = []
     /// Edits on their way, one after another (tests wait for them).
     private(set) var editing: Task<Void, Never>?
@@ -346,6 +350,15 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         for f in [regionWidthField, regionHeightField, lowerLeftXField, lowerLeftYField] {
             f.isEnabled = region != nil
         }
+        let regionFields = [regionWidthField, regionHeightField, lowerLeftXField, lowerLeftYField]
+        if fieldsRegion != region?.id {
+            // Another region (or none): what was typed for the old one is dropped, not committed.
+            for f in regionFields {
+                f.abortEditing()
+                drawnText[ObjectIdentifier(f)] = nil
+            }
+            fieldsRegion = region?.id
+        }
         if let region {
             let corners = Self.corners(region.bounds, stageWidth: width, stageHeight: height)
             show(regionWidthField, String(region.bounds.width))
@@ -378,7 +391,12 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
 
     /// The region list's rows: letter on colour, route pop-up, remove.
     private func buildRegionList(_ regions: [RegionRow]) {
-        while regionGrid.numberOfRows > 0 { regionGrid.removeRow(at: 0) }
+        // The grid keeps the views of a removed row in the window: each goes out first.
+        while regionGrid.numberOfRows > 0 {
+            let row = regionGrid.row(at: regionGrid.numberOfRows - 1)
+            for c in 0..<row.numberOfCells { row.cell(at: c).contentView?.removeFromSuperview() }
+            regionGrid.removeRow(at: regionGrid.numberOfRows - 1)
+        }
         regionChips = []
         regionRoutePopups = []
         regionRemoveButtons = []
@@ -409,6 +427,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             popup.menu = menu
             popup.select(chosen ?? none)
             popup.tag = i
+            popup.identifier = NSUserInterfaceItemIdentifier(r.id.raw)
             popup.target = self
             popup.action = #selector(regionRouteChosen(_:))
             popup.setAX(
@@ -419,6 +438,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
             remove.isBordered = false
             remove.imagePosition = .imageOnly
             remove.tag = i
+            remove.identifier = NSUserInterfaceItemIdentifier(r.id.raw)
             remove.setAX(
                 "\(Self.id)-region-remove-\(n)", label: String(format: loc("stageEditor.removeRegion.ax"), letter))
             regionGrid.addRow(with: [chip, popup, remove])
@@ -428,8 +448,12 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         }
     }
 
-    /// The new-region pop-up: a region on each route, or on none.
+    /// The new-region pop-up: a region on each route, or on none. Rebuilt only when its items
+    /// change, so a pick is not dropped by a redraw that lands while the menu is open.
     private func fillNewRegionPopup() {
+        let key = routes.map { "\($0.id.raw)\u{0}\($0.raw["name"]?.stringValue ?? "")" }
+        guard key != shownNewRegionItems else { return }
+        shownNewRegionItems = key
         let menu = NSMenu()
         menu.addItem(withTitle: loc("stageEditor.newRegion"), action: nil, keyEquivalent: "")
         for route in routes {
@@ -554,11 +578,11 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     @objc private func regionRouteChosen(_ sender: NSPopUpButton) {
-        let regions = self.regions
-        guard regions.indices.contains(sender.tag) else { return }
+        // The region the pop-up was drawn for, by the id it carries: a menu open while the regions
+        // change still delivers its choice, and its tag may by then name another region.
+        guard let region = regions.first(where: { $0.id.raw == sender.identifier?.rawValue }) else { return }
         let route = (sender.selectedItem?.representedObject as? String).map { ModelID($0) }
         let typed = endTyping()
-        let region = regions[sender.tag]
         guard route != region.route else { return }
         let stage = stageID
         edit(after: typed) { [store] in
@@ -567,10 +591,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     @objc private func removeRegionClicked(_ sender: NSButton) {
-        let regions = self.regions
-        guard regions.indices.contains(sender.tag) else { return }
+        guard let region = regions.first(where: { $0.id.raw == sender.identifier?.rawValue }) else { return }
         let typed = endTyping()
-        let region = regions[sender.tag]
         let stage = stageID
         edit(after: typed) { [store] in await store.send(command: .removeRegion(stage: stage, region.id)) }
     }
@@ -608,20 +630,23 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     /// A region's size or lower-left corner typed: the corner stays where it is for a size, the
     /// size for a corner. Refused here when the region would not lie wholly inside the stage.
     private func regionField(_ field: NSTextField, text: String, stageWidth: Int, stageHeight: Int) {
-        guard let region = regions.first(where: { $0.id == selected }) else { return }
+        guard let region = regions.first(where: { $0.id == fieldsRegion }) else { return }
         var b = region.bounds
         let bottom = b.y + b.height
         switch field {
         case regionWidthField, regionHeightField:
-            // No wider than a stage can be, so no sum below can overflow.
-            guard let side = Int(text), (1...16384).contains(side) else {
-                return refuse(loc("stageEditor.badNumber"))
-            }
+            // Any whole number of a pixel or more: `inside` says whether the region still fits, and
+            // no sum here can overflow before it does.
+            guard let side = Int(text), side >= 1 else { return refuse(loc("stageEditor.badNumber")) }
             if field === regionWidthField {
                 b.width = side
             } else {
                 b.height = side
-                b.y = bottom - side
+                let (top, overflow) = bottom.subtractingReportingOverflow(side)
+                guard !overflow else {
+                    return refuse(String(format: loc("stageEditor.outside"), stageWidth, stageHeight))
+                }
+                b.y = top
             }
         default:
             guard let v = Double(text), v.isFinite, abs(v) <= 100_000 else {

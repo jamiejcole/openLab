@@ -2127,6 +2127,113 @@ extension PlayheadFlowTests {
         XCTAssertNotNil(waveView.selection, "a real drag still makes a section")
     }
 
+    /// W1, while the cue PLAYS: the same pixel or two of hand movement between press and release, on
+    /// a long file, with the play line running: each click moves the playback position to where it
+    /// was pressed, the cue plays on from there (no stop, no section), and the play line is drawn there.
+    func testQuickClicksWithAPixelOfHandMovementWhileTheCuePlaysEachMoveThePlaybackWhereClicked() async throws {
+        let id = try await waveTones(1, seconds: 600)[0]
+        await showWaveform(id)
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(1)
+        XCTAssertEqual(rowMark(id), runningMark)
+        // Seconds a pixel is worth here, so the check is the click's own pixel and not a loose bound.
+        let pixel = abs(waveView.scale.seconds(waveX(100) + 1) - 100)
+        XCTAssertGreaterThan(pixel, WaveformView.minLength, "a pixel is over minLength: it once made a section")
+        var wanted: [Double] = []
+        for (n, (t, dx)) in [(100.0, 2.0), (300.0, -2.0), (450.0, 1.0), (120.0, 2.0), (310.0, -1.0)].enumerated() {
+            let x = waveX(t)
+            dragWave(fromX: x, through: [x + dx])
+            XCTAssertNil(waveView.selection, "a pixel of movement is no section (click \(n + 1))")
+            wanted.append(t)
+            await seekRun(n + 1)
+            try await play(0.2)
+            await playsAt(id, t + 0.2, tolerance: 0.9 * pixel)
+            XCTAssertEqual(rowMark(id), runningMark, "it plays on: click \(n + 1) did not stop it")
+        }
+        XCTAssertEqual(seeks.map { ($0 / 10).rounded() * 10 }, wanted.map { ($0 / 10).rounded() * 10 })
+    }
+
+    /// U4: an Audio cue playing and a Fade fading it. Wherever the still "fading" mark could be
+    /// drawn, the turning dots are: the target's row in the cue list (also when its row is selected),
+    /// the Fade's own row (which shows its own state's mark, never the old one), and the Active Cues
+    /// rows, which draw no state mark at all.
+    func testAnAudioCuePlayingAndAFadeFadingItDrawTheTurningDotsAndNeverTheOldMark() async throws {
+        let id = try await waveTones(1, seconds: 60)[0]
+        wc.cueList.selectAsUser([id])
+        await assertEventually { self.wc.inspector.selection == [id] }
+        let made = await wc.editor.add(.fade)
+        let fade = try XCTUnwrap(made)
+        await assertEventually("the Fade aims at the Audio cue") {
+            self.store.model?.cue(fade)?.raw["kind"]?["target"]?.stringValue == id.raw
+        }
+        let levels = JSONValue.object(["master_db": .double(-30), "output_db": .array([]), "crosspoints": .array([])])
+        for edit in [CueProperty.duration(20), .kindFields(["stop_target_when_done": .bool(false), "levels": levels])] {
+            guard case .success = await store.send(command: .setProperty(fade, edit)) else {
+                return XCTFail("\(edit)")
+            }
+        }
+        _ = await store.transport(.start(cue: id))
+        try await play(0.3)
+        _ = await store.transport(.start(cue: fade))
+        try await play(1)
+        XCTAssertEqual(store.cueStates[id]?.state, .fading, "the Fade moves its target")
+        XCTAssertEqual(store.cueStates[fade]?.state, .running, "the Fade itself is a running cue, not a fading one")
+
+        func statusCell(_ cue: ModelID) throws -> CueCell {
+            let ov = wc.cueList.outlineView
+            let node = try XCTUnwrap(wc.cueList.node(cue))
+            let column = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
+            return try XCTUnwrap(
+                ov.view(atColumn: column, row: ov.row(forItem: node), makeIfNecessary: true) as? CueCell)
+        }
+        // Every cue that fades or is fading draws the dots in place of the picture; no cell draws the
+        // old mark, whichever state its cue is in.
+        func assertNoOldMark(_ cue: ModelID, _ what: String) throws {
+            let cell = try statusCell(cue)
+            let state = store.cueStates[cue]?.state
+            let fading = state == .fading
+            XCTAssertEqual(cell.showsDots, fading, "\(what): dots exactly while fading (\(String(describing: state)))")
+            XCTAssertEqual(cell.fadingDots.isHidden, !fading, what)
+            if fading {
+                XCTAssertNil(cell.images[1].image, "\(what): the still mark is not under the dots")
+            } else {
+                XCTAssertNotNil(cell.images[1].image, "\(what): its own still mark")
+                XCTAssertNotEqual(cell.drawnMark(1)?.icon, .stateFading, "\(what): no old mark")
+            }
+            let label = CueStateStyle.style(for: state ?? .idle).label
+            XCTAssertEqual(cell.images[1].accessibilityLabel(), label, what)
+        }
+        try assertNoOldMark(id, "the target's row")
+        try assertNoOldMark(fade, "the Fade's row")
+        // The target's row selected, as a click leaves it: still the dots.
+        wc.cueList.selectAsUser([id])
+        await assertEventually { self.wc.inspector.selection == [id] }
+        let selected = try statusCell(id)
+        XCTAssertTrue(selected.showsDots)
+        XCTAssertNil(selected.images[1].image)
+        // A state change on the way (the engine reports a tick) keeps it so.
+        try await play(0.5)
+        try assertNoOldMark(id, "the target's row after more time")
+
+        // Active Cues: both cues are listed and no row draws a state mark.
+        let table = wc.sidebar.activeTable
+        let cells = (0..<table.numberOfRows).compactMap {
+            table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? ActiveCueCell
+        }
+        XCTAssertEqual(cells.count, 2, "the Audio cue and the Fade are listed")
+        for cell in cells {
+            let marks = allViewsIn(cell).compactMap { $0 as? NSImageView }
+            XCTAssertTrue(
+                marks.isEmpty,
+                "an Active Cues row draws no state picture: \(marks.map { $0.accessibilityLabel() ?? "?" })")
+            let stateImages = allViewsIn(cell).compactMap { ($0 as? NSButton)?.image?.accessibilityDescription }
+            XCTAssertFalse(stateImages.contains(loc("cue.state.fading")), "\(stateImages)")
+        }
+    }
+
+    private func allViewsIn(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(allViewsIn) }
+
     /// A quick click within a few points of either end, or of a slice marker, is a click on the
     /// waves like any other: it moves the cue there and leaves the trims and markers alone.
     func testQuickClicksNearTheEndsAndASliceMarkerSeekAndMoveNoHandle() async throws {

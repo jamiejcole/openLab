@@ -1,0 +1,26 @@
+{
+  "about": "The patch editor's routing page on the Demo show (light) against the reference's routing page: one box width for main, inputs, strips and crosspoints, centred levels (typed into the main, a cue output and each device output box, including -59.9), row labels right-aligned beside their boxes; then at the least window size.",
+  "show": "Demo",
+  "appearance": "light",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "audio"},
+    {"click": "settings-patch-edit-1"},
+    {"focus": "patch-editor"},
+    {"tab": "routing"},
+    {"shot": "routing-default"},
+    {"type": "patch-editor-main-field", "text": "-6"},
+    {"type": "patch-editor-output-field-1", "text": "-12.5"},
+    {"type": "patch-editor-device-field-1", "text": "-59.9"},
+    {"type": "patch-editor-device-field-2", "text": "0"},
+    {"shot": "routing-levels-typed"},
+    {"double_click": "patch-editor-matrix", "at": [0.38, 0.836]},
+    {"shot": "routing-editing-empty-crosspoint"},
+    {"key": "escape"},
+    {"click": "patch-editor-output-field-1"},
+    {"type": "patch-editor-output-field-1", "text": "-119.9999999999", "enter": false},
+    {"shot": "routing-editing-long-value"},
+    {"resize": [520, 460]},
+    {"shot": "routing-least-size"}
+  ]
+}

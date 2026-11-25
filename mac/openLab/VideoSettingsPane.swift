@@ -564,6 +564,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             if section == .routing {
                 let handle = RowHandle()
                 handle.tag = i
+                handle.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
                 handle.isEnabled = enabled
                 handle.setAX("\(Self.id)-handle-\(n)", label: String(format: loc("settings.video.handle.ax"), row.name))
                 handle.onDrag = { [weak self] handle, point in self?.dragged(handle, to: point) }
@@ -753,6 +754,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         popup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         Self.fillDisplays(popup, displays: displays, chosen: row.display, chosenName: row.displayName)
         popup.tag = tag
+        popup.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
         popup.target = self
         popup.action = #selector(displayChosen(_:))
         popup.isEnabled = enabled
@@ -795,6 +797,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         popup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         Self.fillScalings(popup, chosen: row.scaling)
         popup.tag = tag
+        popup.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
         popup.target = self
         popup.action = #selector(scalingChosen(_:))
         popup.isEnabled = enabled
@@ -874,7 +877,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     private func dropped(_ handle: RowHandle, at point: NSPoint) {
         dropLine.isHidden = true
-        moveRoute(from: handle.tag, toGap: gap(at: point))
+        // The route the handle was drawn for, found where it is now: the rows may have changed
+        // during the drag, and the handle's tag then names another route (or none).
+        guard let id = handle.identifier?.rawValue, let from = shown?.firstIndex(where: { $0.id.raw == id }) else {
+            return
+        }
+        moveRoute(from: from, toGap: gap(at: point))
     }
 
     /// Moves the route at `from` into `gap` (0 above the first route, the count below the last):
@@ -888,6 +896,13 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     }
 
     // MARK: Editing
+
+    /// The row a pop-up was drawn for, by the id it carries: a menu open while the rows change
+    /// still delivers its choice from the pop-up it came from, whose tag may by then name another row.
+    private func row(of popup: NSPopUpButton) -> StageRow? {
+        guard let id = popup.identifier?.rawValue else { return nil }
+        return shown?.first { $0.id.raw == id }
+    }
 
     private func row(_ tag: Int) -> StageRow? {
         guard let shown, shown.indices.contains(tag) else { return nil }
@@ -1052,7 +1067,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     @objc private func displayChosen(_ sender: NSPopUpButton) {
         let display = sender.selectedItem?.representedObject as? String
         let typed = endTyping()
-        guard let row = row(sender.tag) else { return }
+        guard let row = row(of: sender) else { return }
         guard display != row.display else { return }
         commit(row.id, after: typed) { [store] in await store.setRouteDisplay(row.id, display: display) }
     }
@@ -1107,7 +1122,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     @objc private func scalingChosen(_ sender: NSPopUpButton) {
         let scaling = sender.selectedItem?.representedObject as? String
         let typed = endTyping()
-        guard let row = row(sender.tag), let scaling, scaling != row.scaling else { return }
+        guard let row = row(of: sender), let scaling, scaling != row.scaling else { return }
         commit(row.id, after: typed) { [store] in
             await store.send(
                 command: .setRoute(row.id, .object(["type": .string("scaling"), "value": .string(scaling)])))

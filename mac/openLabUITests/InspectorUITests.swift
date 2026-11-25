@@ -301,6 +301,9 @@ final class VideoUITests: XCTestCase {
     /// with the file chooser (T) and the second stage in its I/O tab, plays there on GO and is gone
     /// from it once stopped (QLab 5 manual, Video cues).
     func testVideoCueCreatedGivenAFileAndAStagePlaysOnGoAndStops() async throws {
+        // About 53 s on a hosted runner, most of it typing the movie's path into the file chooser;
+        // on a slow one that typing alone took 8 s more and passed the default minute.
+        executionTimeAllowance = 180
         var movie = URL(fileURLWithPath: "/")
         let app = launchApp(opening: [], displays: "V1:1920x1080,V2:1280x720") { copies in
             movie = copies.appendingPathComponent("movies/clip.mov")
@@ -322,14 +325,15 @@ final class VideoUITests: XCTestCase {
         XCTAssertTrue(video.waitForExistence(timeout: 10), "the Video category")
         video.click()
         app.radioButtons["Output Routing"].click()
-        let addRoute = app.popUpButtons["settings-video-add"]
+        // The add pop-up is a pull-down, which XCUITest lists as a menu button, not a pop-up button.
+        let addRoute = app.menuButtons["settings-video-add"]
         XCTAssertTrue(addRoute.waitForExistence(timeout: 10), "the Output Routing page")
         addRoute.click()
         app.menuItems.matching(NSPredicate(format: "title CONTAINS '1280'")).firstMatch.click()
         let display = app.popUpButtons["settings-video-display-2"]
         XCTAssertTrue(waitFor("value CONTAINS '1280'", display), "Output 2 is on the second display")
         app.radioButtons["Video Outputs"].click()
-        let add = app.popUpButtons["settings-video-add"]
+        let add = app.menuButtons["settings-video-add"]
         XCTAssertTrue(add.waitForExistence(timeout: 10), "the Video Outputs page")
         add.click()
         app.menuItems["On Output 2"].click()
@@ -345,6 +349,10 @@ final class VideoUITests: XCTestCase {
         XCTAssertTrue(panel.waitForExistence(timeout: 10), "the file chooser opens")
         app.typeKey("g", modifierFlags: [.command, .shift])
         app.typeText(movie.path + "\r")
+        // Return chooses only once the chooser has gone to the file: its button is off until then. A
+        // slow runner takes several seconds to read the chooser once, so 10 s allows only two looks.
+        XCTAssertTrue(
+            waitFor("isEnabled == true", panel.buttons["OKButton"], timeout: 30), "the chooser has the movie selected")
         app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
         XCTAssertTrue(waitFor("exists == false", panel), "the chooser closes")
         tabButton("I/O", in: app).click()

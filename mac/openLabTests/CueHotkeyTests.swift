@@ -928,6 +928,98 @@ final class CueHotkeyFiringTests: XCTestCase {
         await assertEventually { await self.hotkeys() == 3 }
     }
 
+    /// With the workspace status window the key window, Esc panics the running cue and leaves the
+    /// window open, and Space fires no GO; with the workspace window key, Space does.
+    func testWithTheStatusWindowKeyEscPanicsTheRunningCueAndSpaceFiresNoGo() async throws {
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        keyDoc = demoDoc
+        XCTAssertNil(app.handleKeyDown(try event(" ", code: 49)), "GO, the workspace window key")
+        await assertEventually { await self.triggers("transport go") == 1 }
+        try await run()
+        await assertEventually { self.playing(self.first, self.intro) }
+
+        await wc.showWorkspaceStatus().value
+        let panel = try XCTUnwrap(wc.existingStatusWindow?.window)
+        app.keyWindow = { panel }
+        let space = try event(" ", code: 49)
+        XCTAssertTrue(app.handleKeyDown(space) === space, "left to the status window")
+
+        let esc = try event("\u{1B}", code: 53)
+        XCTAssertTrue(app.handleKeyDown(esc) === esc)
+        panel.sendEvent(esc)  // as the app does with the key the monitor gave back
+        await assertEventually { await self.triggers("panic") == 1 }
+        try await engine.advance(seconds: 1)  // past the show's 0.5 s panic fade
+        await assertEventually("Esc panicked Intro") { !self.playing(self.first, self.intro) }
+        XCTAssertTrue(panel.isVisible, "Esc left the status window open")
+        let goes = await triggers("transport go")
+        XCTAssertEqual(goes, 1, "Space with the status window key fired no GO")
+    }
+
+    /// With the workspace status window the key window, the workspace's transport keys (pause, pause
+    /// all, preview, panic the selected cue) and Save act on nothing: the keys go on to the window, the
+    /// running cue plays on, nothing is previewed, and the Save menu item is off and saves nothing.
+    /// With the workspace window key again, each of them acts. (GO and Esc: the test above.)
+    func testWithTheStatusWindowKeyTransportKeysAndSaveDoNothingAndAllWorkAgainWithTheWorkspaceKey() async throws {
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let save = try XCTUnwrap(
+            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items).first {
+                $0.action == #selector(AppDelegate.saveWorkspace(_:))
+            })
+        keyDoc = demoDoc
+        let cues = try XCTUnwrap(first.model?.cueLists.first?.cues.map(\.id))
+        let other = try XCTUnwrap(cues.first { $0 != intro })
+        // Something to save, and Intro playing and selected.
+        guard case .success = await first.send(command: .setProperty(other, .name("Renamed"))) else {
+            return XCTFail("rename")
+        }
+        await assertEventually("the workspace is unsaved") { self.first.document?.dirty == true }
+        wc.cueList.selectAsUser([intro])
+        _ = await first.transport(.start(cue: intro))
+        try await run()
+        await assertEventually { self.playing(self.first, self.intro) }
+
+        await wc.showWorkspaceStatus().value
+        let panel = try XCTUnwrap(wc.existingStatusWindow?.window)
+        addTeardownBlock { @MainActor in panel.close() }
+        app.keyWindow = { panel }
+        // Each key is given back to the window (not taken as a command), as the settings window's are.
+        for (chars, code) in [("p", 35), ("[", 33), ("s", 1), ("v", 9)] as [(String, UInt16)] {
+            let e = try event(chars, code: code)
+            XCTAssertTrue(app.handleKeyDown(e) === e, "\(chars) is left to the status window")
+        }
+        XCTAssertFalse(app.canSaveFront, "no front workspace")
+        XCTAssertFalse(delegate.validateMenuItem(save), "Save is off with the status window key")
+        delegate.saveWorkspace(nil)
+        try await engine.advance(seconds: 1)
+        await settle()
+        XCTAssertEqual(first.cueStates[intro]?.state, .running, "neither paused nor panicked")
+        XCTAssertTrue(first.previewing.isEmpty, "nothing previewed")
+        XCTAssertEqual(first.document?.dirty, true, "Save saved nothing")
+
+        // The workspace window key again: all of them work.
+        let workspaceWindow = try XCTUnwrap(wc.window)
+        app.keyWindow = { workspaceWindow }
+        XCTAssertTrue(app.canSaveFront)
+        XCTAssertTrue(delegate.validateMenuItem(save))
+        XCTAssertNil(app.handleKeyDown(try event("p", code: 35)), "Pause/Resume Selected")
+        await assertEventually("paused") { self.first.cueStates[self.intro]?.state == .paused }
+        XCTAssertNil(app.handleKeyDown(try event("p", code: 35)))
+        await assertEventually("resumed") { self.playing(self.first, self.intro) }
+        XCTAssertNil(app.handleKeyDown(try event("[", code: 33)), "Pause All")
+        await assertEventually("all paused") { self.first.cueStates[self.intro]?.state == .paused }
+        XCTAssertNil(app.handleKeyDown(try event("]", code: 30)), "Resume All")
+        await assertEventually("all resumed") { self.playing(self.first, self.intro) }
+        XCTAssertNil(app.handleKeyDown(try event("s", code: 1)), "Panic Selected")
+        try await engine.advance(seconds: 1)
+        await assertEventually("Intro panicked") { !self.playing(self.first, self.intro) }
+        XCTAssertNil(app.handleKeyDown(try event("v", code: 9)), "Preview Selected")
+        await assertEventually("previewing") { self.first.previewing.contains(self.intro) }
+        delegate.saveWorkspace(nil)
+        await assertEventually("Save saved") { self.first.document?.dirty == false }
+    }
+
     func testEscStillPanicsWhateverTheCueHotkeys() async throws {
         _ = await first.send(
             command: .setProperty(intro, .triggers(hotkey: KeyChord(KeyChord.escape).hotkeyJSON, enabled: true)))

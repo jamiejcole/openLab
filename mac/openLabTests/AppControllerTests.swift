@@ -2239,19 +2239,20 @@ final class AppControllerTests: XCTestCase {
     func testTheWindowTitleFollowsTheFilesNameAfterSaveAsAndOnReopen() async throws {
         let second = try await addWorkspace()
         let store = try XCTUnwrap(app.session.stores[second])
-        XCTAssertTrue(try XCTUnwrap(app.windows[second]).window?.title.hasPrefix("Untitled") == true)
+        XCTAssertEqual(try XCTUnwrap(app.windows[second]).window?.title, "Untitled \u{2014} Main Cue List")
         saveURL = savePath("frozen")
         let ok = await app.saveWorkspace(store, asNew: true)
         XCTAssertTrue(ok)
         await assertEventually("Save As renames the window") {
-            app.windows[second]?.window?.title.hasPrefix("frozen \u{2014} ") == true
+            app.windows[second]?.window?.title == "frozen \u{2014} Main Cue List"
         }
         let closed = await app.closeWorkspace(second)
         XCTAssertTrue(closed)
         await app.openWorkspace(url: savePath("frozen"))
         await assertEventually("the reopened file's window") {
-            app.windows.values.contains { $0.window?.title.hasPrefix("frozen \u{2014} ") == true }
+            app.windows.values.contains { $0.window?.title == "frozen \u{2014} Main Cue List" }
         }
+        XCTAssertEqual(app.windows.values.compactMap { $0.window?.title }.filter { $0.hasPrefix("frozen") }.count, 1)
         let info = try XCTUnwrap(app.session.workspaces.first { $0.path == savePath("frozen").path })
         XCTAssertEqual(info.name, "frozen")
     }
@@ -2796,6 +2797,236 @@ final class AppControllerTests: XCTestCase {
         let closed = await app.closeWorkspace("1")
         XCTAssertTrue(closed)
         XCTAssertEqual(try savedMaster(at: path), .double(-6))
+    }
+
+    /// The settings window open on the General page, `text` typed in the panic time, the caret there.
+    private func typePanicTime(_ text: String) async throws -> WorkspaceSettingsWindowController {
+        let wc = try XCTUnwrap(app.windows["1"])
+        await wc.showSettings(page: .general).value
+        let sc = wc.settingsWindow
+        sc.window?.makeFirstResponder(sc.panicField)
+        let editor = try XCTUnwrap(sc.panicField.currentEditor())
+        editor.string = text
+        sc.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: sc.panicField))
+        return sc
+    }
+
+    private func savedPanicTime(at path: String) throws -> Double? {
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        return JSONValue.parse(text)?["workspace"]?["settings"]?["panic_duration"]?.doubleValue
+    }
+
+    /// Text being typed in the workspace settings goes into the show when its workspace closes.
+    func testCloseWhileTypingInTheSettingsSavesItWithTheWorkspace() async throws {
+        _ = try await typePanicTime("7")
+        let path = try XCTUnwrap(app.session.stores["1"]?.document?.path)
+        alerts.saveChoices = [.save]
+        let closed = await app.closeWorkspace("1")
+        XCTAssertTrue(closed)
+        XCTAssertEqual(try savedPanicTime(at: path), 7)
+    }
+
+    func testQuitWhileTypingInTheSettingsSavesItWithTheWorkspace() async throws {
+        _ = try await typePanicTime("7")
+        let path = try XCTUnwrap(app.session.stores["1"]?.document?.path)
+        alerts.saveChoices = [.save]
+        let quit = await quitApp()
+        XCTAssertTrue(quit)
+        XCTAssertEqual(try savedPanicTime(at: path), 7)
+    }
+
+    /// Save never commits what is being typed in the settings: it takes effect when the operator leaves
+    /// the field, not at a Cmd-S (a cue may be running, whatever the mode).
+    func testSaveDoesNotCommitWhatIsTypedInTheSettings() async throws {
+        let sc = try await typePanicTime("7")
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let saved = await app.saveWorkspace(store)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try savedPanicTime(at: try XCTUnwrap(store.document?.path)), 0.5)
+        XCTAssertEqual(sc.panicField.currentEditor()?.string, "7", "the typing goes on")
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("left: sent") { sc.model.panicDuration == 7 }
+    }
+
+    /// Refused text stops the close once: the settings window says why and shows the engine's value,
+    /// and the next close goes on.
+    func testRefusedTextInTheSettingsStopsTheCloseOnceAndSaysWhy() async throws {
+        let sc = try await typePanicTime("sixty")
+        let before = sc.model.panicDuration
+        alerts.saveChoices = [.dontSave]
+        let stopped = await app.closeWorkspace("1")
+        XCTAssertFalse(stopped)
+        XCTAssertTrue(sc.window?.isVisible == true)
+        XCTAssertEqual(sc.messageLabel.stringValue, sc.model.rangeText(0...60))
+        XCTAssertEqual(Double(sc.panicField.stringValue), before)
+        let closed = await app.closeWorkspace("1")
+        XCTAssertTrue(closed)
+    }
+
+    // MARK: The settings window and a running show
+
+    private func settingsSent() -> Int {
+        engine.commands.filter { $0.json["type"]?.stringValue == "set_workspace_setting" }.count
+    }
+
+    /// How many of the app's windows are in front of `window`.
+    private func inFront(of window: NSWindow?) -> Int? {
+        window.flatMap { w in NSApp.orderedWindows.firstIndex { $0 === w } }
+    }
+
+    /// Entering Show Mode commits what is typed in the settings, as it does in the inspector; a refusal
+    /// keeps Edit Mode, with the reason in the settings window.
+    func testEnteringShowModeCommitsWhatIsTypedInTheSettingsAndARefusalKeepsEditMode() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let sc = try await typePanicTime("sixty")
+        await wc.requestShowMode(true)
+        XCTAssertFalse(wc.isShowMode)
+        XCTAssertEqual(sc.messageLabel.stringValue, sc.model.rangeText(0...60))
+        XCTAssertTrue(sc.window?.isVisible == true)
+        _ = try await typePanicTime("7")
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        XCTAssertEqual(sc.model.panicDuration, 7)
+    }
+
+    /// A settings edit refused once the show runs (its answer was slow, the window is closed): the
+    /// settings window stays away, the footer and the show log say why, and it says so at its next
+    /// opening, whichever page that is.
+    func testASettingsRefusalInShowModeKeepsTheWindowAwayAndIsKeptForTheNextOpening() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let sc = try await typePanicTime("8")
+        engine.holdResults = true
+        sc.window?.makeFirstResponder(sc.goIntervalField)  // its answer holds the next one
+        sc.goIntervalField.currentEditor()?.string = "eleventy"
+        sc.doneButton.performClick(nil)
+        XCTAssertFalse(sc.window?.isVisible == true)
+        wc.setShowMode(true)
+        await settle()
+        engine.holdResults = false
+        engine.releaseResults()
+        await sc.edits.answered()
+        let why = sc.model.rangeText(0...10)
+        await assertEventually("the footer says why") { wc.footer.noticeLabel.stringValue == why }
+        XCTAssertTrue(wc.store.logEntries.contains { $0.message == why }, "and the show log")
+        XCTAssertFalse(sc.window?.isVisible == true, "the window stays away")
+        await wc.showSettings(page: .audio).value
+        XCTAssertEqual(sc.messageLabel.stringValue, why, "said at the next opening")
+    }
+
+    /// Text left in a settings field while the show runs is committed by leaving the field only: never by
+    /// Save, a cancelled Close or a cancelled Quit, none of which it stops or brings a window up for.
+    func testTextLeftInTheSettingsDuringAShowIsCommittedOnlyByLeavingTheField() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        await assertEventually { wc.isShowMode && wc.store.document?.showMode == true }
+        for text in ["7", "sixty"] {
+            let sc = try await typePanicTime(text)
+            wc.window?.orderFront(nil)
+            let before = inFront(of: sc.window)
+            let sent = settingsSent()
+            let saved = await app.saveWorkspace(wc.store)
+            XCTAssertTrue(saved, text)
+            guard case .success = await wc.store.send(command: .setProperty(fade, .notes("unsaved \(text)"))) else {
+                return XCTFail("edit")
+            }
+            await assertEventually { wc.store.document?.dirty == true }
+            alerts.saveChoices = [.cancel, .cancel]
+            let closed = await app.closeWorkspace("1")
+            XCTAssertFalse(closed, text)
+            let quit = await quitApp()
+            XCTAssertFalse(quit, text)
+            await settle()
+            XCTAssertEqual(settingsSent(), sent, "\(text): nothing sent")
+            XCTAssertEqual(sc.panicField.currentEditor()?.string, text, "the typing goes on")
+            XCTAssertEqual(inFront(of: sc.window), before, "\(text): not brought forward")
+            alerts.saveChoices = []
+            sc.window?.makeFirstResponder(nil)
+            await sc.edits.answered()
+        }
+        XCTAssertEqual(wc.existingSettingsWindow?.model.panicDuration, 7, "sent on leaving")
+    }
+
+    /// A workspace closed in Show Mode with text left in its settings drops it: the close goes on and the
+    /// file does not have it.
+    func testClosingInShowModeDropsTextLeftInTheSettings() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let path = try XCTUnwrap(wc.store.document?.path)
+        wc.setShowMode(true)
+        await assertEventually { wc.store.document?.showMode == true }
+        _ = try await typePanicTime("7")
+        let sent = settingsSent()
+        alerts.saveChoices = [.save]
+        let closed = await app.closeWorkspace("1")
+        XCTAssertTrue(closed)
+        XCTAssertEqual(try savedPanicTime(at: path), 0.5)
+        await settle()
+        XCTAssertEqual(settingsSent(), sent)
+    }
+
+    /// Quit cancelled at its first question (a cue plays) commits nothing typed in the settings.
+    func testQuitCancelledAtThePlayingQuestionCommitsNothingTypedInTheSettings() async throws {
+        let sc = try await typePanicTime("7")
+        alerts.quitPlaying = false
+        let quit = await quitApp()
+        XCTAssertFalse(quit)
+        await settle()
+        XCTAssertEqual(sc.model.panicDuration, 0.5)
+        XCTAssertEqual(sc.panicField.currentEditor()?.string, "7")
+    }
+
+    /// A saved workspace's typed settings text makes it unsaved: Close and Quit ask.
+    func testTypedSettingsTextOfASavedWorkspaceIsAskedAboutAtCloseAndQuit() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let saved = await app.saveWorkspace(wc.store)
+        XCTAssertTrue(saved)
+        await assertEventually { wc.store.document?.dirty == false }
+        _ = try await typePanicTime("7")
+        alerts.saveChoices = [.cancel]
+        let closed = await app.closeWorkspace("1")
+        XCTAssertFalse(closed)
+        XCTAssertTrue(alerts.log.contains("unsaved:Demo"), "\(alerts.log)")
+        let again = await app.saveWorkspace(wc.store)
+        XCTAssertTrue(again)
+        await assertEventually { wc.store.document?.dirty == false }
+        let asked = alerts.log.filter { $0 == "unsaved:Demo" }.count
+        _ = try await typePanicTime("8")
+        alerts.saveChoices = [.cancel]
+        let quit = await quitApp()
+        XCTAssertFalse(quit)
+        XCTAssertEqual(alerts.log.filter { $0 == "unsaved:Demo" }.count, asked + 1, "\(alerts.log)")
+    }
+
+    /// Another workspace runs a show: closing this one brings no settings window up, and its OSC port, the
+    /// machine's, is not changed by text left in the field.
+    func testClosingAWorkspaceWhileAnotherRunsAShowTouchesNothingOfTheMachine() async throws {
+        let showing = try XCTUnwrap(app.windows["1"])
+        let doc = try await addWorkspace()
+        let wc = try XCTUnwrap(app.windows[doc])
+        showing.setShowMode(true)
+        await assertEventually { showing.store.document?.showMode == true }
+        await wc.showSettings(page: .osc).value
+        let sc = wc.settingsWindow
+        sc.model.oscListening = OscListening(port: 53000, open: true, error: nil)
+        sc.redraw()
+        await assertEventually { sc.oscPortField.isEnabled }
+        sc.window?.makeFirstResponder(sc.oscPortField)
+        sc.oscPortField.currentEditor()?.string = "53007"
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed)
+        await settle()
+        XCTAssertEqual(engine.requestCount { if case .setOscPort = $0 { return true } else { return false } }, 0)
+
+        // A refusal of a workspace that runs no show does not come in front of the one that does.
+        let second = try await addWorkspace()
+        let other = try XCTUnwrap(app.windows[second])
+        await other.showSettings(page: .general).value
+        let settings = other.settingsWindow
+        settings.window?.makeFirstResponder(settings.panicField)
+        settings.panicField.currentEditor()?.string = "sixty"
+        settings.doneButton.performClick(nil)
+        await settings.edits.answered()
+        XCTAssertFalse(settings.window?.isVisible == true)
+        XCTAssertEqual(other.footer.noticeLabel.stringValue, settings.model.rangeText(0...60))
     }
 
     private func index(of match: (ClientMessage) -> Bool) -> Int? { engine.sent.firstIndex(where: match) }

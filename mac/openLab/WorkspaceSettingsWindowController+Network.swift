@@ -87,10 +87,12 @@ extension WorkspaceSettingsWindowController {
     static let networkInterfaceWidth: CGFloat = 136
     /// The widest the Interface column takes, so a usual choice ("en0 (192.168.1.20)") reads whole.
     static let networkInterfaceMost: CGFloat = 164
+    /// Just under required: a grid column takes a new width later than a field does, and a required field
+    /// width wider than its column meanwhile would be dropped by the layout engine.
+    private static let fieldWidthPriority = NSLayoutConstraint.Priority(999)
     /// The columns' widths for the table's width: Interface first takes what is left over the least
     /// widths (up to `networkInterfaceMost`), then Name and Address share the rest, so every column is
-    /// whole at the least window. The fields' widths change before the grid's columns, so no required
-    /// width ever contradicts a column's.
+    /// whole at the least window.
     func fitNetworkColumns() {
         guard let scroll = networkScroll else { return }
         let room = scroll.contentView.bounds.width - 16 - (52 + 64 + 24) - 5 * networkGrid.columnSpacing
@@ -108,17 +110,51 @@ extension WorkspaceSettingsWindowController {
         networkGrid.column(at: 2).width = interface
     }
 
-    /// Draws the table. One that is as drawn is left alone, and so is one being typed in: a rebuild
-    /// would take the caret away (the next render catches up).
+    /// Draws the table: the rows built again when they changed, else drawn in place (`keepsRows`).
     func renderNetwork(_ rows: [NetworkPatchRow], forced: Bool) {
         let enabled = model.store.model != nil
         networkAddButton.isEnabled = enabled
         if !forced, shownNetwork == rows { return }
-        if networkFields.contains(where: { $0.currentEditor() != nil }) {
-            lastDrawn = nil
-            return
-        }
         shownNetwork = rows
+        if !keepsRows(networkFields, now: rows.map(\.id.raw), in: networkGrid) { buildNetworkRows(rows) }
+        for field in networkFields {
+            show(field)
+            field.allow(editable: enabled)
+            let name = rows.first { $0.id.raw == field.row }?.name ?? ""
+            field.setAccessibilityLabel("\(name), \(loc("settings.network.col.\(field.identifier?.rawValue ?? "")"))")
+        }
+        let available = networkInterfaces()
+        for (i, transport) in networkTransportPopups.enumerated() {
+            let row = rows.first { $0.id.raw == transport.identifier?.rawValue }
+            let interface = networkInterfacePopups[i]
+            if let row, !edits.isWaiting(Self.networkKey(row.id, "protocol")) {
+                transport.selectItem(
+                    at: WorkspaceSettingsModel.networkTransports.firstIndex(of: row.transport) ?? 0)
+            }
+            if let row, !edits.isWaiting(Self.networkKey(row.id, "interface")) {
+                let choices = NetworkInterfaces.choices(stored: row.interface, available: available)
+                interface.removeAllItems()
+                for choice in choices {
+                    interface.addItem(withTitle: choice.title)
+                    interface.lastItem?.representedObject = choice.value
+                }
+                interface.selectItem(at: choices.firstIndex { $0.value == row.interface } ?? 0)
+            }
+            for control in [transport, interface, networkDeleteButtons[i]] {
+                control.isEnabled = enabled && row != nil
+            }
+            let name = row?.name ?? ""
+            transport.setAccessibilityLabel("\(name), \(loc("settings.network.col.protocol"))")
+            interface.setAccessibilityLabel("\(name), \(loc("settings.network.col.interface"))")
+            networkDeleteButtons[i].setAccessibilityLabel("\(loc("settings.network.delete")) \(name)")
+        }
+        fitNetworkColumns()
+        networkGrid.layoutSubtreeIfNeeded()
+    }
+
+    private static func networkKey(_ id: ModelID, _ column: String) -> String { "network-\(id.raw)-\(column)" }
+
+    private func buildNetworkRows(_ rows: [NetworkPatchRow]) {
         // Row 0 holds the column titles.
         while networkGrid.numberOfRows > 1 {
             let last = networkGrid.row(at: networkGrid.numberOfRows - 1)
@@ -132,140 +168,101 @@ extension WorkspaceSettingsWindowController {
         networkNameWidths = []
         networkInterfaceWidths = []
         networkHostWidths = []
-        let available = networkInterfaces()
         for (i, row) in rows.enumerated() {
             let n = i + 1
-            func field(_ key: String, _ text: String, width: CGFloat) -> NSTextField {
-                let f = NSTextField(string: text)
-                f.isEditable = enabled
+            let id = row.id
+            func field(
+                _ column: String, width: CGFloat, text: @escaping @MainActor (NetworkPatchRow) -> String,
+                send: @escaping @MainActor (String) async -> Bool
+            ) -> NSTextField {
+                let f = SettingsField(key: Self.networkKey(id, column), row: id.raw)
+                f.engineText = { [model] in model.networkPatches.first { $0.id == id }.map(text) }
+                f.send = send
                 f.isBezeled = true
                 f.delegate = self
-                f.tag = i
-                f.identifier = NSUserInterfaceItemIdentifier(key)
+                f.identifier = NSUserInterfaceItemIdentifier(column)
                 let w = f.widthAnchor.constraint(equalToConstant: width)
+                w.priority = Self.fieldWidthPriority
                 w.isActive = true
-                if key == "name" { networkNameWidths.append(w) } else if key == "host" { networkHostWidths.append(w) }
-                f.setAccessibilityIdentifier("\(AX.settingsNetwork)-\(key)-\(n)")
-                f.setAccessibilityLabel("\(row.name), \(loc("settings.network.col.\(key)"))")
+                if column == "name" {
+                    networkNameWidths.append(w)
+                } else if column == "host" {
+                    networkHostWidths.append(w)
+                }
+                f.setAccessibilityIdentifier("\(AX.settingsNetwork)-\(column)-\(n)")
                 networkFields.append(f)
                 return f
             }
             let popup = NSPopUpButton(frame: .zero, pullsDown: false)
             for t in WorkspaceSettingsModel.networkTransports { popup.addItem(withTitle: t.uppercased()) }
-            popup.selectItem(at: WorkspaceSettingsModel.networkTransports.firstIndex(of: row.transport) ?? 0)
-            popup.tag = i
             popup.target = self
             popup.action = #selector(networkTransportChosen(_:))
-            popup.isEnabled = enabled
-            popup.setAX(
-                "\(AX.settingsNetwork)-protocol-\(n)", label: "\(row.name), \(loc("settings.network.col.protocol"))")
+            popup.setAX("\(AX.settingsNetwork)-protocol-\(n)", label: "")
             let interface = NSPopUpButton(frame: .zero, pullsDown: false)
-            let choices = NetworkInterfaces.choices(stored: row.interface, available: available)
-            for choice in choices {
-                interface.addItem(withTitle: choice.title)
-                interface.lastItem?.representedObject = choice.value
-            }
-            interface.selectItem(at: choices.firstIndex { $0.value == row.interface } ?? 0)
-            interface.tag = i
             interface.target = self
             interface.action = #selector(networkInterfaceChosen(_:))
-            interface.isEnabled = enabled
             interface.toolTip = loc("settings.network.interfaceTip")
             // Cut in the middle: "en0 (192…20)" keeps the interface's name in a narrow column.
             (interface.cell as? NSPopUpButtonCell)?.lineBreakMode = .byTruncatingMiddle
             let interfaceWidth = interface.widthAnchor.constraint(equalToConstant: Self.networkInterfaceWidth)
+            interfaceWidth.priority = Self.fieldWidthPriority
             interfaceWidth.isActive = true
             networkInterfaceWidths.append(interfaceWidth)
-            interface.setAX(
-                "\(AX.settingsNetwork)-interface-\(n)", label: "\(row.name), \(loc("settings.network.col.interface"))")
+            interface.setAX("\(AX.settingsNetwork)-interface-\(n)", label: "")
             let delete = NSButton(title: "", target: self, action: #selector(networkDeleteClicked(_:)))
             delete.image = Icon.fieldClear.image(loc("settings.network.delete"), compact: true)
             delete.isBordered = false
             delete.imagePosition = .imageOnly
-            delete.tag = i
-            delete.isEnabled = enabled
-            delete.setAX("\(AX.settingsNetwork)-delete-\(n)", label: "\(loc("settings.network.delete")) \(row.name)")
+            delete.setAX("\(AX.settingsNetwork)-delete-\(n)", label: "")
+            for control in [popup, interface, delete] { control.identifier = NSUserInterfaceItemIdentifier(id.raw) }
             networkGrid.addRow(with: [
-                field("name", row.name, width: Self.networkNameMin), popup, interface,
-                field("host", row.host, width: Self.networkHostMin),
-                field("port", String(row.port), width: 52), delete,
+                field("name", width: Self.networkNameMin, text: \.name) { [model] in
+                    await model.setNetworkPatchName(id, $0)
+                },
+                popup, interface,
+                field("host", width: Self.networkHostMin, text: \.host) { [model] in
+                    await model.setNetworkPatchHost(id, $0)
+                },
+                field("port", width: 52, text: { String($0.port) }) { [model] in
+                    await model.setNetworkPatchPort(id, $0)
+                },
+                delete,
             ])
             networkTransportPopups.append(popup)
             networkInterfacePopups.append(interface)
             networkDeleteButtons.append(delete)
         }
-        fitNetworkColumns()
-        networkGrid.layoutSubtreeIfNeeded()
     }
 
-    /// After a button or pop-up of the table: a field still being typed in is committed first (its
-    /// commit is queued), since the table is not rebuilt under a caret and would never show the change.
-    private func redrawNetwork() {
-        if networkFields.contains(where: { $0.currentEditor() != nil }) { window?.makeFirstResponder(nil) }
-        lastDrawn = nil
-        shownNetwork = nil
-        render()
-    }
+    // MARK: Actions
 
-    @objc private func networkAddClicked() {
-        Task {
-            await model.addNetworkPatch()
-            redrawNetwork()
+    /// Runs `step` on the destination a control stands for, in its turn; one gone by then takes nothing
+    /// (`gone`: already as wanted when it was to be removed).
+    private func networkAct(
+        _ sender: NSControl, _ column: String, gone: Bool = false,
+        _ step: @escaping @MainActor (WorkspaceSettingsModel, ModelID) async -> Bool
+    ) {
+        guard let id = sender.identifier.map({ ModelID($0.rawValue) }) else { return }
+        act(Self.networkKey(id, column)) { [model] in
+            guard model.networkPatches.contains(where: { $0.id == id }) else { return gone || model.rowGone() }
+            return await step(model, id)
         }
     }
+
+    @objc private func networkAddClicked() { act("network-add") { [model] in await model.addNetworkPatch() } }
 
     @objc private func networkDeleteClicked(_ sender: NSButton) {
-        guard let rows = shownNetwork, rows.indices.contains(sender.tag) else { return }
-        let id = rows[sender.tag].id
-        Task {
-            await model.removeNetworkPatch(id)
-            redrawNetwork()
-        }
+        networkAct(sender, "delete", gone: true) { await $0.removeNetworkPatch($1) }
     }
 
     @objc private func networkTransportChosen(_ sender: NSPopUpButton) {
-        guard let rows = shownNetwork, rows.indices.contains(sender.tag),
-            WorkspaceSettingsModel.networkTransports.indices.contains(sender.indexOfSelectedItem)
-        else { return }
-        let id = rows[sender.tag].id
+        guard WorkspaceSettingsModel.networkTransports.indices.contains(sender.indexOfSelectedItem) else { return }
         let transport = WorkspaceSettingsModel.networkTransports[sender.indexOfSelectedItem]
-        Task {
-            await model.setNetworkPatchTransport(id, transport)
-            redrawNetwork()
-        }
+        networkAct(sender, "protocol") { await $0.setNetworkPatchTransport($1, transport) }
     }
 
     @objc private func networkInterfaceChosen(_ sender: NSPopUpButton) {
-        guard let rows = shownNetwork, rows.indices.contains(sender.tag) else { return }
-        let id = rows[sender.tag].id
         let interface = sender.selectedItem?.representedObject as? String
-        Task {
-            await model.setNetworkPatchInterface(id, interface)
-            redrawNetwork()
-        }
-    }
-
-    /// A field of the table was committed (Return or leaving it): the engine takes it, or the old
-    /// text comes back with a line saying why not. Commits run one after another.
-    func networkFieldCommitted(_ field: NSTextField) {
-        guard let rows = shownNetwork, rows.indices.contains(field.tag), let key = field.identifier?.rawValue else {
-            return
-        }
-        let row = rows[field.tag]
-        let text = field.stringValue
-        let old = key == "name" ? row.name : key == "host" ? row.host : String(row.port)
-        guard text != old else { return }
-        let previous = networkCommits
-        networkCommits = Task {
-            await previous?.value
-            let taken: Bool
-            switch key {
-            case "name": taken = await model.setNetworkPatchName(row.id, text)
-            case "host": taken = await model.setNetworkPatchHost(row.id, text)
-            default: taken = await model.setNetworkPatchPort(row.id, text)
-            }
-            if !taken { field.stringValue = old }
-            redrawNetwork()
-        }
+        networkAct(sender, "interface") { await $0.setNetworkPatchInterface($1, interface) }
     }
 }

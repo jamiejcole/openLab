@@ -60,6 +60,14 @@ This file is the only copy of every rule below; other files link here instead of
 - Where it is unknown: search skill `qlab-behaviour` (every user answer is there; never ask twice), then implement the likeliest behaviour and add an `assumed` row to its references (assumption, what you searched).
 - Public repo: never copy QLab text, labels, tooltips, icons, artwork or screenshots into the repo, issues or PRs. Describe in our own words; give our controls our own similar names. Never put personal account or machine details in the repo, issues or PRs.
 
+## The owner's Mac
+Owner rule (2026-11-25): Miri is fine to use; running the Mac hard enough for a forced reboot cannot happen again. The rest of this section is how that is done.
+- Miri, `make fuzz` and `make sanitize-address` / `sanitize-thread` run under a memory cap, only through their make targets, which outside GitHub's runners go through `scripts/mem-capped.py`; `cargo miri` and `cargo fuzz` are not called by hand.
+- Any other run whose memory use is not known (a scaling, stress or fuzz experiment, a tool not run here before) goes through that script too, at its smallest size first. Known loads (builds, `make prepush`, the test suites) do not.
+- Capped: the memory of the command and what it starts, compressed and swapped pages included, and one such run at a time. Not capped: processor, disk, GPU, other runs beside it, and work other processes do for it: an app test's memory is mostly in a test host launchd starts, so the script does not bound it. In a capped run cargo compiles without sccache, so rustc is counted and a run may be killed while compiling. The script's header lists what can still get past it.
+- A `mem-capped:` line saying killed or not started (exit 86 or 87; under make, make's own error) is reported as it stands. Never go round it or raise the cap.
+- After a gap in a session the orchestrator checks `last reboot` and the JetsamEvent and panic reports before resuming any agent; if a run caused the stop, that run is ruled out first.
+
 ## Findings policy
 - **High:** a show can stop, sound wrong, fire or stop the wrong cue, lose data, or the process can crash, panic or hang, on any input (fuzzers and property tests included; any input from outside the process is reachable).
 - **Medium:** wrong behaviour; a false or stale claim in a contract doc, a skill or this file; a behaviour change that did not update its skill; wrong drawing or layout (drawn outside its area, clipped, overlapping, sized wrong); a comment in shipped code that admits an approximation, shortcut or TODO without citing an open issue; a missing test on a changed path; debug/release difference; duplication, dead code or a parallel harness the change adds.

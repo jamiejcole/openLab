@@ -177,6 +177,336 @@ extension WorkspaceSettingsTests {
         XCTAssertEqual(again.oscCodeFields.map(\.stringValue), ["4821", "2222"])
     }
 
+    /// A code committed is the code of the row its field was drawn in, even when another client
+    /// removes a row above it before the commit is carried out (commits wait for the ones before).
+    func testACommittedCodeChangesTheRowItWasTypedIn() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all), ("3333", .all)])
+        await assertEventually { self.shown(sc).count == 4 }
+        // An earlier edit still on its way holds the queue.
+        final class Gate { var open = false }
+        let gate = Gate()
+        sc.edits.add("gate") {
+            while !gate.open { await Task.yield() }
+            return true
+        }
+        try type("5555", into: sc.oscCodeFields[1])
+        // Meanwhile another client removes the first row; the table is drawn again.
+        guard case .success = await rig.store.send(command: .removeOscPasscode("1111")) else {
+            return XCTFail("remove")
+        }
+        await assertEventually("the table follows") { self.shown(sc).map(\.code) == ["none", "5555", "3333"] }
+        gate.open = true
+        await sc.edits.answered()
+        await assertEventually("2222 became 5555, 3333 stayed") { self.codes(rig) == ["5555", "3333"] }
+    }
+
+    /// A new code typed, Tab away, back, the old code typed again: the engine has the old code again
+    /// (it is an access code, so the field and the engine must agree), and a third code goes through.
+    func testACodeTypedThenTheOldOneAgainAcrossTabsEndsRightInTheEngine() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all)])
+        await assertEventually { self.shown(sc).count == 3 }
+        let first = sc.oscCodeFields[0]
+        let second = sc.oscCodeFields[1]
+        try typeKeeping("3333", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.edits.answered()
+        await assertEventually("3333 is stored") { self.codes(rig) == ["3333", "2222"] }
+        try typeKeeping("1111", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.edits.answered()
+        await assertEventually("1111 is back") { self.codes(rig) == ["1111", "2222"] }
+        XCTAssertEqual(first.stringValue, "1111")
+        // A third code goes through too.
+        try typeKeeping("4444", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.edits.answered()
+        await assertEventually("4444 is stored") { self.codes(rig) == ["4444", "2222"] }
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(sc.model.message, nil)
+    }
+
+    /// A code field clicked into and left untouched sends nothing, and Esc drops what was typed.
+    func testAnUntouchedCodeFieldSendsNothingAndEscRestoresIt() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all)])
+        await assertEventually { self.shown(sc).count == 2 }
+        let before = oscCommands(rig).count
+        sc.window?.makeFirstResponder(sc.oscCodeFields[0])
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(oscCommands(rig).count, before, "untouched: nothing sent")
+        let field = sc.oscCodeFields[0]
+        try typeKeeping("9999", in: field)
+        _ = sc.control(
+            field, textView: try XCTUnwrap(field.currentEditor() as? NSTextView),
+            doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(oscCommands(rig).count, before, "Esc sent nothing")
+        XCTAssertEqual(codes(rig), ["1111"])
+        await assertEventually("the field shows the engine's code") { sc.oscCodeFields.first?.stringValue == "1111" }
+    }
+
+    /// Codes swapped through the fields (the rows are not built again while the caret hops): a box
+    /// clicked in a row changes the rights of the code that row shows now, not of the one it was
+    /// drawn with, which another row holds by then.
+    func testARightsBoxActsOnTheCodeItsRowShowsAfterCodesWereRenamedInPlace() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all)])
+        await assertEventually { self.shown(sc).count == 3 }
+        let first = sc.oscCodeFields[0]
+        let second = sc.oscCodeFields[1]
+        try typeKeeping("3333", in: first)
+        sc.window?.makeFirstResponder(second)
+        await sc.edits.answered()
+        try typeKeeping("1111", in: second)
+        sc.window?.makeFirstResponder(first)
+        await sc.edits.answered()
+        await assertEventually("renamed in place") { self.codes(rig) == ["3333", "1111"] }
+        // The first row's Control box (the row shows 3333 now) is clicked off.
+        sc.oscControlBoxes[0].performClick(nil)
+        await sc.edits.answered()
+        await assertEventually("the rights of 3333 changed, 1111's did not") {
+            let rows = self.table(rig).rows
+            return rows.map(\.passcode) == ["3333", "1111"] && rows[0].rights.control == false
+                && rows[1].rights.control == true
+        }
+    }
+
+    /// Rows 1111 and 2222 drawn, the caret in neither.
+    private func twoCodes() async throws -> (Rig, WorkspaceSettingsWindowController) {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        owners.append(wc)
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all)])
+        await assertEventually { self.shown(sc).map(\.code) == ["none", "1111", "2222"] }
+        return (rig, sc)
+    }
+
+    /// Types `text` in code field `i` and Tabs to the other one: the commit is queued.
+    private func typeAndTab(_ text: String, _ i: Int, _ sc: WorkspaceSettingsWindowController) throws {
+        try typeKeeping(text, in: sc.oscCodeFields[i])
+        sc.window?.makeFirstResponder(sc.oscCodeFields[1 - i])
+    }
+
+    /// A code changed, then Undo, with the caret in the other row: the row shows the old code again,
+    /// and what is done in the row is done to it.
+    func testARowWhoseCodeChangeWasUndoneIsActedOnByTheCodeTheEngineHas() async throws {
+        let (rig, sc) = try await twoCodes()
+        try typeAndTab("5555", 0, sc)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["5555", "2222"])
+        _ = await rig.store.undo()
+        await assertEventually("undone") { self.codes(rig) == ["1111", "2222"] }
+        await assertEventually("the row shows it") { sc.oscCodeFields[0].stringValue == "1111" }
+        XCTAssertNotNil(sc.oscCodeFields[1].currentEditor(), "the caret stays in the other row")
+        sc.oscControlBoxes[0].performClick(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(table(rig).rows.map(\.rights.control), [false, true], "1111's Control is off")
+        try typeAndTab("8888", 0, sc)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["8888", "2222"])
+    }
+
+    /// Another client renames the row whose code is being typed: what is typed goes to that row.
+    func testACodeTypedInARowAnotherClientRenamedGoesToThatRow() async throws {
+        let (rig, sc) = try await twoCodes()
+        let other = try await another(rig)
+        try typeKeeping("4444", in: sc.oscCodeFields[0])
+        await rename("1111", to: "3333", at: 0, by: other)
+        await assertEventually { self.codes(rig) == ["3333", "2222"] }
+        await settle()
+        XCTAssertEqual(sc.oscCodeFields[0].currentEditor()?.string, "4444", "the typing goes on")
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        await assertEventually("the row it was typed in") { self.codes(rig) == ["4444", "2222"] }
+        await assertEventually { self.shown(sc).map(\.code) == ["none", "4444", "2222"] }
+    }
+
+    /// Another client removes the row a code is being typed in, then adds one in its place: the text
+    /// goes nowhere, a line says so, and the new row is left alone.
+    func testACodeTypedInARowAnotherClientRemovedGoesNowhereAndSaysSo() async throws {
+        let (rig, sc) = try await twoCodes()
+        let other = try await another(rig)
+        try typeKeeping("4444", in: sc.oscCodeFields[0])
+        guard case .success = await other.store.send(command: .removeOscPasscode("1111")),
+            case .success = await other.store.send(command: .addOscPasscode("3333", rights: .all, at: 0))
+        else { return XCTFail("the other client") }
+        await assertEventually { self.codes(rig) == ["3333", "2222"] }
+        await settle()
+        XCTAssertFalse(sc.oscControlBoxes[0].isEnabled, "the row is gone: its boxes are off")
+        XCTAssertEqual(sc.oscControlBoxes[0].state, .off)
+        let sent = oscCommands(rig).count
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["3333", "2222"])
+        XCTAssertEqual(oscCommands(rig).count, sent, "nothing sent")
+        await assertEventually("said") { sc.messageLabel.stringValue == loc("settings.rowGone") }
+        await assertEventually { self.shown(sc).map(\.code) == ["none", "3333", "2222"] }
+    }
+
+    /// A code held but not typed in, and one the caret is not in: neither shows a code the engine no
+    /// longer has, nor its rights.
+    func testACodeTheEngineNoLongerHasIsNotShownWhileTheCaretIsInTheTable() async throws {
+        let (rig, sc) = try await twoCodes()
+        let other = try await another(rig)
+        sc.window?.makeFirstResponder(sc.oscCodeFields[1])
+        await rename("2222", to: "3333", at: 1, by: other)
+        await assertEventually("the held row follows") { sc.oscCodeFields[1].currentEditor()?.string == "3333" }
+        guard case .success = await other.store.send(command: .removeOscPasscode("1111")) else { return XCTFail() }
+        await assertEventually("the other row is gone") { sc.oscCodeFields[0].isHiddenOrHasHiddenAncestor }
+        XCTAssertNotNil(sc.oscCodeFields[1].currentEditor(), "the caret stays")
+        guard case .success = await other.store.send(command: .removeOscPasscode("3333")) else { return XCTFail() }
+        await assertEventually("the held row's code is gone") { sc.oscCodeFields[1].currentEditor()?.string == "" }
+        XCTAssertEqual(sc.oscViewBoxes[1].state, .off)
+        sc.window?.makeFirstResponder(nil)
+        await assertEventually("only the fixed row") { self.shown(sc).map(\.code) == ["none"] }
+        XCTAssertEqual(codes(rig), [])
+    }
+
+    /// Delete on a row while another row's code is half typed: the click commits the half code (it is
+    /// refused, with its line), and the deleted row goes.
+    func testDeleteWithAnotherCodeHalfTypedDeletesItsRowAndRefusesTheHalfCode() async throws {
+        let (rig, sc) = try await twoCodes()
+        try typeKeeping("88", in: sc.oscCodeFields[1])
+        sc.oscDeleteButtons[0].performClick(nil)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["2222"])
+        await assertEventually { self.shown(sc).map(\.code) == ["none", "2222"] }
+        XCTAssertEqual(sc.messageLabel.stringValue, loc("settings.osc.invalid"), "the delete does not hide it")
+    }
+
+    /// With the engine's answers held: a refused code, then another typed in the same row.
+    func testACodeTypedAfterOneThatWillBeRefusedIsTaken() async throws {
+        let (rig, sc) = try await twoCodes()
+        rig.wire.holdResults = true
+        try typeAndTab("5555", 0, sc)  // its answer holds the ones after it
+        try typeAndTab("2222", 0, sc)  // the other row's: refused
+        try typeAndTab("7777", 0, sc)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["7777", "2222"])
+        XCTAssertEqual(sc.oscCodeFields[0].stringValue, "7777")
+        XCTAssertNil(sc.model.message)
+    }
+
+    /// Delete and Control on a row whose new code is still queued act on that row's code at that
+    /// moment, whether the new code was taken (row 1 had moved off it) or refused.
+    func testDeleteAndRightsOfARowWhoseCodeIsQueuedActOnThatRow() async throws {
+        let (rig, sc) = try await twoCodes()
+        rig.wire.holdResults = true
+        try typeAndTab("3333", 0, sc)
+        try typeAndTab("1111", 1, sc)
+        sc.oscControlBoxes[1].performClick(nil)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["3333", "1111"])
+        XCTAssertEqual(table(rig).rows.map(\.rights.control), [true, false], "row 2's Control is off")
+        // Refused this time: row 1 holds 3333.
+        sc.window?.makeFirstResponder(nil)
+        rig.wire.holdResults = true
+        try typeAndTab("4444", 1, sc)
+        try typeAndTab("3333", 1, sc)
+        sc.oscEditBoxes[1].performClick(nil)
+        sc.oscDeleteButtons[1].performClick(nil)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["3333"], "row 2 is deleted, not row 1")
+        XCTAssertEqual(table(rig).rows.first?.rights, .all, "row 1's rights are untouched")
+        await assertEventually { self.shown(sc).map(\.code) == ["none", "3333"] }
+    }
+
+    /// Row 2's new code 1111 is refused (row 1 has it); Control off and Delete clicked while it was
+    /// queued act on row 2 (2222).
+    func testActionsOnARowWhoseQueuedCodeIsRefusedActOnTheCodeItKeeps() async throws {
+        let (rig, sc) = try await twoCodes()
+        rig.wire.holdResults = true
+        sc.oscNoneRights[0].performClick(nil)  // an edit on its way holds the ones after it
+        try typeAndTab("1111", 1, sc)
+        sc.oscControlBoxes[1].performClick(nil)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["1111", "2222"])
+        XCTAssertEqual(table(rig).rows.map(\.rights.control), [true, false])
+        rig.wire.holdResults = true
+        sc.oscNoneRights[0].performClick(nil)
+        try typeAndTab("1111", 1, sc)
+        sc.oscDeleteButtons[1].performClick(nil)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["1111"], "row 2 went")
+    }
+
+    /// A rights box clicked in a row whose new code is on its way acts on the new code.
+    func testARightsBoxOnACodeJustCommittedActsOnTheNewCode() async throws {
+        let (rig, sc) = try await twoCodes()
+        rig.wire.holdResults = true
+        try typeAndTab("5555", 0, sc)
+        sc.oscControlBoxes[0].performClick(nil)
+        sc.oscEditBoxes[0].performClick(nil)
+        await settle()
+        XCTAssertEqual([sc.oscEditBoxes[0].state, sc.oscControlBoxes[0].state], [.off, .off], "as clicked")
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["5555", "2222"])
+        XCTAssertEqual(table(rig).rows[0].rights, OscRights(view: true))
+        XCTAssertEqual(table(rig).rows[1].rights, .all)
+    }
+
+    /// Two codes queued in a row with the caret in and out of the untouched field between them: they
+    /// run in order.
+    func testACodeThenTheOldOneAgainEndsAtTheOldOneWhenTheAnswersComeLate() async throws {
+        let (rig, sc) = try await twoCodes()
+        rig.wire.holdResults = true
+        try typeAndTab("5555", 0, sc)
+        sc.window?.makeFirstResponder(nil)  // the untouched field is left
+        try typeAndTab("1111", 0, sc)
+        sc.window?.makeFirstResponder(nil)
+        await settle()
+        release(rig)
+        await sc.edits.answered()
+        XCTAssertEqual(codes(rig), ["1111", "2222"])
+        await assertEventually { self.shown(sc).map(\.code) == ["none", "1111", "2222"] }
+        XCTAssertNil(sc.model.message)
+    }
+
+    /// A second client of the same workspace.
+    private func another(_ rig: Rig) async throws -> Rig {
+        let other = Rig(engine: engine, workspace: rig.doc)
+        guard await other.connect() else { throw TestEngineError.notConnected }
+        await assertEventually { other.store.model != nil }
+        return other
+    }
+
+    private func rename(_ old: String, to new: String, at index: Int, by rig: Rig) async {
+        guard let edit = Command.transaction([.removeOscPasscode(old), .addOscPasscode(new, rights: .all, at: index)]),
+            case .success = await rig.store.send(command: edit)
+        else { return XCTFail("rename") }
+    }
+
+    /// The held answers reach the app, and later ones at once.
+    func release(_ rig: Rig) {
+        rig.wire.holdResults = false
+        rig.wire.releaseResults()
+    }
+
     func testDuplicateCodeRefused() async throws {
         let (rig, wc) = try await newWorkspace()
         let sc = wc.settingsWindow
@@ -398,7 +728,7 @@ extension WorkspaceSettingsTests {
         await assertEventually("only Edit on") { self.shown(sc)[1].on == [true, true, false] }
         // The model refuses it too, without a command.
         let sent = commands(rig).count
-        let refused = await sc.model.setOscRights(.all, of: "9999")
+        let refused = await sc.model.setOscRight(\.control, true, of: "no such row")
         XCTAssertFalse(refused)
         XCTAssertEqual(commands(rig).count, sent)
     }
@@ -560,6 +890,40 @@ extension WorkspaceSettingsTests {
     }
 
     // MARK: Logic
+
+    /// A passcode row keeps its identity through a change of its code made in one step in its place;
+    /// anything else with an unknown code is a new row.
+    func testAPasscodeRowKeepsItsIdentityThroughARenameOnly() {
+        func table(_ codes: [String], _ rights: OscRights = .all) -> OscAccessTable {
+            var t = OscAccessTable()
+            t.rows = codes.map { OscAccessTable.Row(passcode: $0, rights: rights) }
+            return t
+        }
+        var rows = OscRows()
+        rows.take(table(["1111", "2222"]), oneStep: false)
+        let ids = rows.rows.map(\.id)
+        func taking(_ codes: [String], oneStep: Bool, _ rights: OscRights = .all) -> [String] {
+            var copy = rows
+            copy.take(table(codes, rights), oneStep: oneStep)
+            return copy.rows.map(\.id)
+        }
+        XCTAssertEqual(taking(["3333", "2222"], oneStep: true), ids, "renamed")
+        XCTAssertEqual(taking(["2222", "1111"], oneStep: true), ids.reversed(), "moved")
+        XCTAssertEqual(taking(["2222"], oneStep: true), [ids[1]], "removed")
+        XCTAssertEqual(taking(["2222"], oneStep: false), [ids[1]], "removed, a snapshot")
+        // A snapshot may hold several changes; another place, other rights or two codes are no rename.
+        for (codes, oneStep, rights) in [
+            (["3333", "2222"], false, OscRights.all), (["2222", "3333"], true, .all),
+            (["3333", "2222"], true, OscRights(view: true)), (["3333", "4444"], true, .all),
+        ] {
+            let now = taking(codes, oneStep: oneStep, rights)
+            XCTAssertFalse(now.contains(ids[0]), "\(codes): the row that went is not another one now")
+        }
+        // A code that comes back after its row went is a new row.
+        rows.take(table(["2222"]), oneStep: true)
+        rows.take(table(["1111", "2222"]), oneStep: true)
+        XCTAssertNotEqual(rows.rows[0].id, ids[0])
+    }
 
     func testAPasscodeIsExactlyFourAsciiDigits() {
         for ok in ["1000", "9999", "0123"] { XCTAssertTrue(OscAccessTable.isValidPasscode(ok), ok) }

@@ -3,13 +3,20 @@
 import AppKit
 import Combine
 
+/// Esc leaves the window open (a plain panel closes on it): it is the panic key, which the key
+/// monitor has already sent, and QLab 5 keeps its status window open too.
+private final class StatusPanel: NSPanel {
+    override func cancelOperation(_ sender: Any?) {}
+}
+
 /// The workspace status window (QLab 5's Workspace Status, manual pp. 164-165; UI map `status.*`):
 /// one window with a Warnings page (what is wrong now, live, a row selecting its cue), a Logs page
 /// (the show log) and an Info page (this workspace's name, id and file). Window > Workspace Status
 /// (Shift-Command-W), View > Warnings and a click on the footer's warnings button or device alarm
 /// open it, the last two on the Warnings page. Opening it makes it the key window, so Command-W
 /// then closes it; while it is key the workspace's keys (GO, the transport and cue hotkeys) do not
-/// act, as with the settings window, and a click on the workspace gives them back.
+/// act, as with the settings window, and a click on the workspace gives them back. Esc panics and
+/// leaves it open.
 @MainActor
 final class StatusWindowController: NSWindowController {
     enum Page: String, CaseIterable {
@@ -39,7 +46,7 @@ final class StatusWindowController: NSWindowController {
         self.logs = logs
         // An ordinary floating panel: a click makes it key and activates openLab, so Command-W
         // closes it (not the workspace) and the Warnings list takes clicks like any list.
-        let panel = NSPanel(
+        let panel = StatusPanel(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 480),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow],
             backing: .buffered, defer: false)

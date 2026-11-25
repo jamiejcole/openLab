@@ -40,7 +40,7 @@
     { "shot": "outputs" },
     { "open_menu": "settings-video-add" },
     { "shot": "outputs-add-menu" },
-    { "resize": [680, 552] },
+    { "resize": [808, 552] },
     { "shot": "outputs-least" },
     { "tab": "videoRouting" },
     { "shot": "routing-least" }

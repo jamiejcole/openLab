@@ -872,7 +872,24 @@ notices() {
   fi
 }
 
-# 17. AppKit asks a view's `isFlipped` from its display cycle (cursor rects, tracking areas). An isolated
+# 17. The memory cap works (its self-test runs tiny commands, a second or two) and the fuzz, sanitizer and Miri
+# targets go through it everywhere but on GitHub's runners.
+mem_capped() {
+  local out target
+  if ! out=$(python3 -I scripts/mem-capped.py self-test 2>&1); then
+    fail mem-capped "$out"
+  fi
+  grep SKIPPED <<<"$out"
+  for target in fuzz sanitize miri; do
+    out=$(env -u GITHUB_ACTIONS -u MAKEFLAGS CI=true make -n $target 2>&1)
+    { grep -q 'cargo +' <<<"$out" && [ -z "$(grep 'cargo +' <<<"$out" | grep -v 'scripts/mem-capped\.py -- cargo +')" ]; } ||
+      fail mem-capped "make $target runs without the memory cap: $out"
+    out=$(env -u MAKEFLAGS GITHUB_ACTIONS=true make -n $target 2>&1)
+    ! grep -q mem-capped <<<"$out" || fail mem-capped "make $target runs under the local cap on GitHub's runners: $out"
+  done
+}
+
+# 18. AppKit asks a view's `isFlipped` from its display cycle (cursor rects, tracking areas). An isolated
 # override gets a Swift 6 executor check in its @objc thunk, and that check crashed the app in the field
 # (a stage's windows changing at the end of a movie): every override is `nonisolated` (it returns a constant).
 flipped_overrides() {
@@ -884,6 +901,7 @@ flipped_overrides() {
 known_entries
 spdx
 notices
+mem_capped
 flipped_overrides
 strings_keys
 debug_assertions

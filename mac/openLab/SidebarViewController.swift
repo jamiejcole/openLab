@@ -6,6 +6,17 @@ import Combine
 /// A button that remembers which cue its row shows (rows are reused and move, so no row index).
 final class ActiveCueButton: NSButton {
     var cue: ModelID?
+    /// The cue the button showed when it was pressed: the row's cell may be reused for another cue
+    /// while the button is held, and letting go acts on the cue that was pressed.
+    private var pressedCue: ModelID?
+    /// The cue an action of this button is for.
+    var actionCue: ModelID? { pressedCue ?? cue }
+
+    override func mouseDown(with event: NSEvent) {
+        pressedCue = cue
+        defer { pressedCue = nil }
+        super.mouseDown(with: event)
+    }
 }
 
 /// The bar across the foot of an Active Cues row: filled from the left to `doubleValue` (0 to 1). It draws
@@ -720,12 +731,12 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     @objc private func pauseResumeClicked(_ sender: ActiveCueButton) {
-        guard let cue = sender.cue else { return }
+        guard let cue = sender.actionCue else { return }
         onCueAction?(store.cueStates[cue]?.state == .paused ? .resume(cue: cue) : .pause(cue: cue))
     }
 
     @objc private func panicClicked(_ sender: ActiveCueButton) {
-        guard let cue = sender.cue else { return }
+        guard let cue = sender.actionCue else { return }
         onCueAction?(.panicCue(cue: cue))
     }
 }

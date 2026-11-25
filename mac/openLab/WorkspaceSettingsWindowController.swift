@@ -21,26 +21,26 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var syncingCategories = false
 
     // General
-    let panicField = NSTextField()
-    let goIntervalField = NSTextField()
+    let panicField = SettingsField(key: "panic")
+    let goIntervalField = SettingsField(key: "goInterval")
     let autoLoadCheck = NSButton(checkboxWithTitle: loc("settings.general.autoLoad"), target: nil, action: nil)
     let keyUpCheck = NSButton(checkboxWithTitle: loc("settings.general.keyUp"), target: nil, action: nil)
     let autoNumberCheck = NSButton(
         checkboxWithTitle: loc("settings.general.autoNumber"), target: nil, action: nil)
-    let autoNumberField = NSTextField()
-    let autosaveField = NSTextField()
+    let autoNumberField = SettingsField(key: "autoNumber")
+    let autosaveField = SettingsField(key: "autosave")
     let lockPlayheadCheck = NSButton(
         checkboxWithTitle: loc("settings.general.lockPlayhead"), target: nil, action: nil)
     let copyMediaCheck = NSButton(checkboxWithTitle: loc("settings.general.copyMedia"), target: nil, action: nil)
     // Audio: the patch table (`+Audio`) and the volume limits beside it.
-    let maxLimitField = NSTextField()
-    let minLimitField = NSTextField()
+    let maxLimitField = SettingsField(key: "limitMax")
+    let minLimitField = SettingsField(key: "limitMin")
     let patchAddButton = NSButton(title: loc("settings.audio.newPatch"), target: nil, action: nil)
-    /// The table (made again for each drawing) and the view it sits in, in a scroll view.
+    /// The table (made again when its rows change) and the view it sits in, in a scroll view.
     var patchGrid = NSGridView()
     let patchGridHolder = WidthWatchingView()
-    /// One per patch row, in table order; rebuilt whenever the table is drawn.
-    var patchNameFields: [NSTextField] = []
+    /// One per patch row, in table order; rebuilt when the rows change.
+    var patchNameFields: [SettingsField] = []
     var patchDevicePopups: [NSPopUpButton] = []
     var patchEditButtons: [NSButton] = []
     var patchRemoveButtons: [NSButton] = []
@@ -54,7 +54,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
     // OSC page (`+Osc`): the access switch, the listening port, its state and this Mac's addresses.
     let oscEnabledCheck = NSButton(checkboxWithTitle: loc("settings.osc.enabled"), target: nil, action: nil)
-    let oscPortField = NSTextField()
+    let oscPortField = SettingsField(key: "oscPort")
     let oscPortStatus = NSTextField(wrappingLabelWithString: "")
     let oscAddressesLabel = NSTextField(wrappingLabelWithString: "")
 
@@ -64,21 +64,19 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let oscNoneLabel = NSTextField(labelWithString: loc("settings.osc.noPasscode"))
     /// The No Passcode row's View, Edit and Control boxes.
     var oscNoneRights: [NSButton] = []
-    /// One per passcode row, in table order; rebuilt whenever the table is drawn.
-    var oscCodeFields: [NSTextField] = []
+    /// One per passcode row, in table order; rebuilt when the rows change.
+    var oscCodeFields: [SettingsField] = []
     var oscViewBoxes: [NSButton] = []
     var oscEditBoxes: [NSButton] = []
     var oscControlBoxes: [NSButton] = []
     var oscDeleteButtons: [NSButton] = []
-    /// The table as last drawn: the rows' controls find their passcode here by position.
-    var shownOsc: OscAccessTable?
-    /// The last passcode edit on its way to the engine; the next waits for it.
-    var oscCommits: Task<Void, Never>?
+    /// The rows as last drawn.
+    var shownOsc: [OscRow]?
 
     let networkAddButton = NSButton(title: loc("settings.network.add"), target: nil, action: nil)
     let networkGrid = NSGridView()
     /// The name, host and port fields of every row, in row order.
-    var networkFields: [NSTextField] = []
+    var networkFields: [SettingsField] = []
     var networkTransportPopups: [NSPopUpButton] = []
     var networkInterfacePopups: [NSPopUpButton] = []
     /// The interfaces this Mac has, read each time the table is drawn.
@@ -91,12 +89,13 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var networkInterfaceWidths: [NSLayoutConstraint] = []
     var networkScroll: NSScrollView?
     var shownNetwork: [NetworkPatchRow]?
-    var networkCommits: Task<Void, Never>?
 
     // Key map (`+Keys`): one recorder, clear button and reason line per action.
     var keyFields: [WorkspaceKey: HotkeyRecorder] = [:]
     var keyClearButtons: [WorkspaceKey: NSButton] = [:]
     var keyReasons: [WorkspaceKey: NSTextField] = [:]
+    /// The action a key was just pressed for: its field is about to be left with it.
+    var keyPressed: WorkspaceKey?
 
     /// The Video pages (stages, their routing to displays, the displays), in their own file.
     let videoPane: VideoSettingsPane
@@ -107,6 +106,17 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var stageEditors: [ModelID: StageEditorWindowController] = [:]
     var stageEditor: StageEditorWindowController?
     var routeEditor: RouteEditorController?
+
+    /// Everything typed or clicked in the fields and tables, on its way to the engine one after another.
+    let edits: SettingsEdits
+    /// The operator closed the window: a refusal that comes later brings it back. Not when it went with
+    /// its workspace, nor while it was never on screen.
+    private var returnsOnRefusal = false
+    /// Another workspace's show is running (its window is in Show Mode); the app says.
+    var showElsewhere: () -> Bool = { false }
+    /// Carries a refusal's reason to the workspace's footer and show log while a show runs, when this
+    /// window must not come in front of it.
+    var onQuietRefusal: (String) -> Void = { _ in }
 
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
@@ -120,12 +130,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var lastDrawn: WorkspaceSettingsModel.DisplayState?
     /// A popup's menu is open: rebuilding its items would close it under the operator's hand.
     private var menuOpen = false
-    /// A read of the engine's patch resolutions under way (a device came or went).
 
     /// `networkInterfaces` is where the Network page reads this Mac's interfaces (tests give their own).
     init(store: WorkspaceStore, networkInterfaces: @escaping () -> [NetworkInterface] = NetworkInterfaces.current) {
         self.networkInterfaces = networkInterfaces
         model = WorkspaceSettingsModel(store: store)
+        edits = SettingsEdits(model: model)
         videoPane = VideoSettingsPane(store: store, section: .outputs)
         videoRoutingPane = VideoSettingsPane(store: store, section: .routing)
         videoDevicesPane = VideoSettingsPane(store: store, section: .devices)
@@ -140,6 +150,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         super.init(window: window)
         window.contentView = buildContent()
         window.center()
+        edits.onAnswer = { [weak self] refused in self?.answered(refused: refused) }
         videoPane.onEditStage = { [weak self] stage in self?.openStageEditor(stage) }
         videoRoutingPane.onEditRoute = { [weak self] route in self?.openRouteEditor(route) }
         // Published before they change: the sinks use the delivered value and render after it.
@@ -150,6 +161,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // The table is drawn from what the model last read from the engine, whoever asked for it.
         subs.append(model.$patches.sink { [weak self] _ in self?.renderSoon() })
         subs.append(model.$devices.sink { [weak self] _ in self?.renderSoon() })
+        // The patches themselves changing (an undo, another client): their cue output counts and
+        // names are read again, so a choice made in a row is never sent for an out-of-date patch.
+        subs.append(
+            store.$model.map { $0?.patches ?? [] }.removeDuplicates().dropFirst().sink { [weak self] _ in
+                self?.rereadSoon()
+            })
         // A device lost, back or opened changes where patches resolve; the engine's patch warnings
         // and device states say so, and the table reads the resolutions again.
         subs.append(store.$warnings.removeDuplicates().sink { [weak self] _ in self?.rereadSoon() })
@@ -158,8 +175,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 self?.rereadSoon()
             })
         // Taller than the pages need by the message row's two lines, which never take the pages' room.
-        // Wide enough that Output Routing's display choice reads whole beside its guides, with a
-        // legacy 17 pt scroller showing, as on a Mac set to always show scroll bars.
+        // Wide enough that Output Routing's scaling choice reads whole beside its guides. Its display
+        // column is then 199 pt with overlay scroll bars and 182 pt with an always-shown (legacy
+        // 17 pt) one; a display name wider than that is cut with an ellipsis, its whole name in the
+        // tooltip (with its size, "Built-in Retina Display (3024 × 1964)" needs 235 pt).
         window.contentMinSize = NSSize(width: 808, height: 552)
         window.delegate = self
         tabs.delegate = self
@@ -203,6 +222,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
     /// The observers live from showing to closing.
     override func showWindow(_ sender: Any?) {
+        returnsOnRefusal = false
         trackMenus()
         super.showWindow(sender)
     }
@@ -210,7 +230,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// A refusal line is about the tab it came from.
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         syncCategories()
-        model.message = nil
+        // A refusal that came while the window was closed is read at its next opening, on any page.
+        if !returnsOnRefusal { edits.forgetRefusals() }
+        for pane in [videoPane, videoRoutingPane] { pane.messageLabel.stringValue = "" }
         model.keyRefusal = nil
         render()
     }
@@ -239,9 +261,13 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         if changed { window?.contentView?.layoutSubtreeIfNeeded() }
     }
 
+    /// However the operator closes the window (Done, Cmd-W, its close button), what is typed in it is
+    /// committed now, never by the next opening. A refusal brings the window back (`answered`).
     func windowWillClose(_ notification: Notification) {
+        window?.makeFirstResponder(nil)
         endRouteEditor()
-        model.message = nil
+        edits.forgetRefusals()
+        returnsOnRefusal = true
         model.keyRefusal = nil
         messageLabel.stringValue = ""
         observers.forEach(NotificationCenter.default.removeObserver)
@@ -255,8 +281,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     @discardableResult
     func present() -> Task<Void, Never> {
         showWindow(nil)
-        // No caret in a field: the next Space (GO, in an operator's hands) would replace its text.
-        window?.makeFirstResponder(nil)
+        // No caret in a field: the next Space (GO, in an operator's hands) would replace its text. One
+        // typed in already keeps it: opening the window again is not leaving the field.
+        if !fieldWithCaretIsTyped { window?.makeFirstResponder(nil) }
         return Task {
             await model.refresh()
             await videoPane.refresh()
@@ -393,7 +420,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         let forced = lastDrawn == nil
         lastDrawn = state
         renderCount += 1
-        renderOsc(state.osc, forced: forced)
+        renderOsc(state, forced: forced)
         renderOscAccess()
         renderNetwork(state.network, forced: forced)
         renderKeys(state.keys, refusal: state.keyRefusal)
@@ -403,26 +430,30 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     }
 
     private func renderGeneral() {
-        let editing = window?.firstResponder
-        let limits = model.limits
-        for (field, value) in [
-            (panicField, model.panicDuration), (goIntervalField, model.minGoInterval),
-            (maxLimitField, model.store.model == nil ? nil : limits.max),
-            (minLimitField, model.store.model == nil ? nil : limits.min),
-        ] {
-            // A field being typed in keeps its text.
-            if let editor = editing as? NSTextView, editor.delegate === field { continue }
-            field.stringValue = value.map(Self.format) ?? ""
-            field.isEnabled = value != nil
+        for field in [panicField, goIntervalField, maxLimitField, minLimitField, autosaveField] {
+            show(field)
+            field.allow(enabled: field.engineText() != nil)
         }
+        show(autoNumberField)
         renderSwitches()
-        // A field being typed in keeps its text.
-        if !((editing as? NSTextView)?.delegate === autosaveField) {
-            autosaveField.stringValue = model.autosaveInterval.map(Self.format) ?? ""
+    }
+
+    /// Draws a field with what was sent from it and not answered yet, else with the engine's value.
+    func show(_ field: SettingsField) { field.show(edits.shown(field.key) ?? field.engineText() ?? "") }
+
+    /// Whether a table's rows stay as they are built, to be drawn in place: they are the engine's rows, or
+    /// the caret is in one of their fields and a rebuild would take it. A row the engine no longer has is
+    /// then hidden at once, the one with the caret apart; new rows wait until the caret has left.
+    func keepsRows(_ fields: [SettingsField], now: [String], in grid: NSGridView) -> Bool {
+        var built: [String] = []
+        for field in fields.compactMap(\.row) where built.last != field { built.append(field) }
+        let held = fields.first(where: \.isHeld)?.row
+        guard built == now || held != nil else { return false }
+        for field in fields {
+            guard let row = field.row else { continue }
+            grid.cell(for: field)?.row?.isHidden = row != held && !now.contains(row)
         }
-        if !((editing as? NSTextView)?.delegate === autoNumberField) {
-            autoNumberField.stringValue = model.autoNumberStep.map(Self.format) ?? ""
-        }
+        return true
     }
 
     static func format(_ seconds: Double) -> String {
@@ -434,12 +465,86 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     @objc private func doneClicked() { window?.close() }
 
     /// Goes with the workspace (and takes its patch editors along, which otherwise outlive them both).
+    /// The workspace is gone: text still typed is dropped (`commitPendingEdits` came before, in Edit Mode).
     override func close() {
+        if let field = fieldWithCaret {
+            if let field = field as? SettingsField { field.dropTyped() } else { field.abortEditing() }
+        }
         for editor in patchEditors.values { editor.close() }
         for editor in stageEditors.values { editor.close() }
         endRouteEditor()
         super.close()
+        returnsOnRefusal = false
     }
+
+    /// Commits what is being typed and waits for the engine's answers (entering Show Mode, Close, Quit;
+    /// never Save). False: an edit was refused; the window is in front (not key: GO stays with the
+    /// workspace) with the reason. In Show Mode nothing typed is committed and nothing is refused: only
+    /// the operator leaving a field puts it into a running show.
+    func commitPendingEdits() async -> Bool {
+        guard !model.store.showMode else {
+            await edits.answered()
+            return true
+        }
+        let mark = edits.mark
+        let panes = [videoPane, videoRoutingPane]
+        let pane = panes.first { pane in pane.nameFields.contains { $0 === fieldWithCaret } }
+        pane?.messageLabel.stringValue = ""
+        // The OSC port is the machine's: another workspace's show may be run over it.
+        if oscPortField.isHeld, showElsewhere() { oscPortField.dropTyped() }
+        endTyping()
+        await edits.answered()
+        for pane in panes { await pane.pending?.value }
+        let paneRefusal = pane?.messageLabel.stringValue ?? ""
+        guard edits.refusedSince(mark) || !paneRefusal.isEmpty else { return true }
+        if window?.isVisible == true || returnsOnRefusal { bringBack(model.message ?? paneRefusal) }
+        return false
+    }
+
+    /// The text field that holds the caret.
+    private var fieldWithCaret: NSTextField? {
+        (window?.firstResponder as? NSTextView)?.delegate as? NSTextField
+    }
+
+    private var fieldWithCaretIsTyped: Bool {
+        window?.isVisible == true && (fieldWithCaret as? SettingsField)?.isTyped == true
+    }
+
+    /// Ends the typing in whichever field holds the caret, which commits it.
+    func endTyping() {
+        if window?.firstResponder is NSText { window?.makeFirstResponder(nil) }
+    }
+
+    /// Runs `step` for a button, box or pop-up of a table after the edits before it. What is being
+    /// typed is committed first, as the click ends the typing.
+    func act(_ key: String, _ step: @escaping @MainActor () async -> Bool) {
+        endTyping()
+        edits.add(key, step)
+    }
+
+    private func answered(refused: Bool) {
+        redraw()
+        // Refused after the window was closed: the operator still sees what the engine has and why.
+        if refused, returnsOnRefusal { bringBack(model.message ?? "") }
+    }
+
+    /// In front without taking the keys. Never while a show runs: a click landing on it would take GO
+    /// away; the reason goes to the footer and the show log, and stays here for the next opening.
+    private func bringBack(_ reason: String) {
+        guard !model.store.showMode, !showElsewhere() else { return onQuietRefusal(reason) }
+        returnsOnRefusal = false
+        trackMenus()
+        window?.orderFront(nil)
+        redraw()
+    }
+
+    /// Draws everything from the engine's state.
+    func redraw() {
+        lastDrawn = nil
+        render()
+    }
+
+    func controlTextDidChange(_ obj: Notification) { (obj.object as? SettingsField)?.markTyped() }
 
     /// Return in a field commits it and leaves the window open (the Done button's Return key
     /// would otherwise close the window with the typed text never sent).
@@ -447,10 +552,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // Esc drops what was typed (the app has already panicked, which Esc does from any window):
         // the field shows the engine's value again and nothing is sent.
         if selector == #selector(NSResponder.cancelOperation(_:)) {
-            control.abortEditing()
-            shownPatchTable = nil
-            lastDrawn = nil
-            render()
+            if let field = control as? SettingsField {
+                field.dropTyped()
+                edits.forgetRefusal(of: field.key)
+            }
+            redraw()
             return true
         }
         guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
@@ -458,45 +564,21 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         return true
     }
 
-    /// A number field was committed (Return or leaving the field): sent when valid, else the
-    /// engine's value comes back.
+    /// A field was left (Return, Tab, a click elsewhere): what was typed in it is sent, to the row it
+    /// was typed in or, when that is gone by then, nowhere, with a line. An untouched one sends nothing.
     func controlTextDidEndEditing(_ notification: Notification) {
-        guard let field = notification.object as? NSTextField else { return }
-        if networkFields.contains(field) {
-            networkFieldCommitted(field)
-            return
-        }
-        if field === oscPortField {
-            oscPortCommitted(field.stringValue)
-            return
-        }
-        if oscCodeFields.contains(field) {
-            oscCodeCommitted(field)
-            return
-        }
-        if patchNameFields.contains(field) {
-            patchNameCommitted(field)
-            return
-        }
-        let text = field.stringValue
-        Task {
-            if field === panicField {
-                await model.setPanicDuration(text)
-            } else if field === goIntervalField {
-                await model.setMinGoInterval(text)
-            } else if field === autosaveField {
-                await model.setAutosaveInterval(text)
-            } else if field === autoNumberField {
-                await model.setAutoNumberStep(text)
-            } else if field === maxLimitField {
-                await model.setOutputMax(text)
-            } else if field === minLimitField {
-                await model.setOutputMin(text)
+        guard let field = notification.object as? SettingsField else { return }
+        if let text = field.takeTyped() {
+            edits.add(field.key, showing: text) {
+                [model, row = field.row, engineText = field.engineText, send = field.send] in
+                if row != nil, engineText() == nil { return model.rowGone() }
+                return await send(text)
             }
-            // A refused or unchanged value must not leave the typed text in the field.
-            lastDrawn = nil
-            render()
+        } else if !edits.isWaiting(field.key) {
+            edits.forgetRefusal(of: field.key)
         }
+        // The caret has left: rows that waited for it are drawn, once the editing has ended.
+        DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.redraw() } }
     }
 }
 

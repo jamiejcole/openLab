@@ -62,25 +62,40 @@ final class OscTcpClient {
     }
 }
 
-/// A port nothing listens on, for TCP and UDP both.
+/// A socket of `kind` bound to `port` of `address` (by default all of this Mac's); nil when another
+/// socket has it.
+private func boundSocket(_ kind: Int32, _ port: UInt16, address: String = "0.0.0.0") -> Int32? {
+    let fd = socket(AF_INET, kind, 0)
+    var addr = sockaddr_in()
+    addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = port.bigEndian
+    addr.sin_addr.s_addr = inet_addr(address)
+    let bound = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    if bound == 0 { return fd }
+    close(fd)
+    return nil
+}
+
+/// The last port `freeOscPort` gave out.
+@MainActor private var lastOscPort = UInt16(20_000 + Int(getpid()) % 10_000)
+
+/// A port nothing has, for TCP and UDP both, and never one given out before. It is below the range the
+/// system gives ports out of on its own (49152 and up; UDP ones at random): a port of that range, free a
+/// moment ago, can be another program's by the time the engine opens it.
+@MainActor
 func freeOscPort() -> UInt16 {
     while true {
-        let tcp = socket(AF_INET, SOCK_STREAM, 0)
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        let bound = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.bind(tcp, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        _ = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(tcp, $0, &len) }
-        }
+        lastOscPort = lastOscPort < 45_000 ? lastOscPort + 1 : 20_000
+        guard let udp = boundSocket(SOCK_DGRAM, lastOscPort) else { continue }
+        defer { close(udp) }
+        guard let tcp = boundSocket(SOCK_STREAM, lastOscPort) else { continue }
         close(tcp)
-        if bound == 0, addr.sin_port != 0 { return UInt16(bigEndian: addr.sin_port) }
+        return lastOscPort
     }
 }
 
@@ -94,8 +109,12 @@ final class SettingsOscTests: XCTestCase {
     var engine: TestEngine!
     var port: UInt16 = 0
 
-    private func commit(_ sc: WorkspaceSettingsWindowController, _ field: NSTextField) {
-        sc.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+    /// Types `text` in the port field, leaves it and waits for the engine's answer.
+    private func commitPort(_ text: String, _ sc: WorkspaceSettingsWindowController) async throws {
+        sc.window?.makeFirstResponder(sc.oscPortField)
+        try XCTUnwrap(sc.oscPortField.currentEditor()).string = text
+        sc.window?.makeFirstResponder(nil)
+        await sc.edits.answered()
     }
 
     override func setUp() async throws {
@@ -128,6 +147,16 @@ final class SettingsOscTests: XCTestCase {
             try await rig.advance(0.01)
         }
         XCTFail("no \(status) answer")
+    }
+
+    /// The port the tests give the engine is one it can open: a port another program's UDP socket holds
+    /// (TCP free) is not given out.
+    func testAFreePortIsFreeForUdpToo() throws {
+        let first = freeOscPort()
+        let held = ((first + 1)...(first + 8)).compactMap { boundSocket(SOCK_DGRAM, $0, address: "127.0.0.1") }
+        defer { for fd in held { close(fd) } }
+        let given = freeOscPort()
+        XCTAssertFalse(((first + 1)...(first + 8)).contains(given), "\(given) is held for UDP")
     }
 
     /// Checklist: OSC page → the listening port and whether it is open, this Mac's addresses and a
@@ -186,14 +215,26 @@ final class SettingsOscTests: XCTestCase {
     func testChangingThePortOpensTheNewOneAndClosesTheOldOne() async throws {
         let (_, sc) = try await open()
         let new = freeOscPort()
-        sc.oscPortField.stringValue = String(new)
-        commit(sc, sc.oscPortField)
-        await assertEventually("the page says the new port is open") {
-            sc.oscPortStatus.stringValue == String(format: loc("settings.osc.open"), Int(new))
-        }
+        try await commitPort(String(new), sc)
+        XCTAssertEqual(sc.messageLabel.stringValue, "", "not refused")
+        XCTAssertEqual(sc.oscPortStatus.stringValue, String(format: loc("settings.osc.open"), Int(new)))
         XCTAssertEqual(sc.oscPortField.stringValue, String(new))
         XCTAssertNotNil(OscTcpClient(port: new))
         await assertEventually("the old port is closed") { OscTcpClient(port: self.port) == nil }
+    }
+
+    /// A port typed and left there is opened when the window goes with Done.
+    func testAPortTypedIsOpenedWhenTheWindowGoes() async throws {
+        let (_, sc) = try await open()
+        let new = freeOscPort()
+        sc.window?.makeFirstResponder(sc.oscPortField)
+        sc.oscPortField.currentEditor()?.string = String(new)
+        sc.doneButton.performClick(nil)
+        XCTAssertFalse(sc.window?.isVisible == true)
+        await sc.edits.answered()
+        XCTAssertNil(sc.model.message, "not refused")
+        XCTAssertEqual(sc.model.oscListening, OscListening(port: new, open: true, error: nil))
+        XCTAssertFalse(sc.window?.isVisible == true)
     }
 
     /// Checklist: the listening port is changed to one in use → the page says the port could not be
@@ -202,28 +243,17 @@ final class SettingsOscTests: XCTestCase {
     func testAPortInUseIsRefusedWithItsReasonAndTheOldPortKeepsServing() async throws {
         let (_, sc) = try await open()
         // Another program holds a port (TCP only: the UDP bind that comes first must be undone).
-        let tcp = socket(AF_INET, SOCK_STREAM, 0)
+        let busy = freeOscPort()
+        let tcp = try XCTUnwrap(boundSocket(SOCK_STREAM, busy, address: "127.0.0.1"))
         defer { close(tcp) }
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        _ = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.bind(tcp, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        _ = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(tcp, $0, &len) }
-        }
         listen(tcp, 1)
-        let busy = UInt16(bigEndian: addr.sin_port)
-        sc.oscPortField.stringValue = String(busy)
-        commit(sc, sc.oscPortField)
-        await assertEventually("the page says it could not be opened") {
-            sc.oscPortStatus.stringValue.contains("could not be opened")
-        }
+        try await commitPort(String(busy), sc)
+        XCTAssertTrue(
+            sc.oscPortStatus.stringValue.contains("could not be opened"),
+            "the page says it could not be opened: \(sc.oscPortStatus.stringValue)")
+        let udp = boundSocket(SOCK_DGRAM, busy, address: "127.0.0.1")
+        XCTAssertNotNil(udp, "no UDP socket of the engine's is left on it")
+        udp.map { _ = close($0) }
         XCTAssertTrue(sc.messageLabel.stringValue.contains(String(busy)), "the refusal names the port")
         XCTAssertEqual(sc.oscPortField.stringValue, String(port), "the field shows the port that listens")
         XCTAssertNotNil(OscTcpClient(port: port), "the old port keeps serving")
@@ -231,9 +261,8 @@ final class SettingsOscTests: XCTestCase {
         client.send("/version")
         XCTAssertNotNil(client.reply(), "and answers")
         // A port that is not a number is refused without asking the engine.
-        sc.oscPortField.stringValue = "http"
-        commit(sc, sc.oscPortField)
-        await assertEventually { sc.messageLabel.stringValue == loc("settings.osc.badPort") }
+        try await commitPort("http", sc)
+        XCTAssertEqual(sc.messageLabel.stringValue, loc("settings.osc.badPort"))
         XCTAssertEqual(sc.oscPortField.stringValue, String(port))
     }
 }

@@ -350,6 +350,47 @@ final class VideoSettingsTests: XCTestCase {
         await caughtUp(rig, sc, "the name is committed") { pane.shown?.first?.name == "Cyclo" }
     }
 
+    /// A stage or route name typed and left there is sent when the window goes (Done), and the next
+    /// opening sends nothing.
+    func testANameTypedOnAVideoPageIsSentWhenTheWindowGoes() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        await settled(sc) { sc.videoPane.nameFields.count == 1 && sc.videoRoutingPane.nameFields.count == 1 }
+        for (page, pane) in [(SettingsPage.video, sc.videoPane), (.videoRouting, sc.videoRoutingPane)] {
+            sc.show(page: page)
+            let field = try XCTUnwrap(pane.nameFields.first)
+            XCTAssertTrue(try XCTUnwrap(sc.window).makeFirstResponder(field))
+            field.currentEditor()?.string = "Typed"
+            sc.doneButton.performClick(nil)
+            await assertEventually("\(page): sent") {
+                let items = page == .video ? rig.store.model?.stages : rig.store.model?.routes
+                return items?.first?.raw["name"]?.stringValue == "Typed"
+            }
+            await pane.pending?.value
+            await settle()
+            XCTAssertFalse(sc.window?.isVisible == true, "\(page): closed")
+            let sent = rig.wire.commands.count
+            await sc.present().value
+            await pane.pending?.value
+            XCTAssertEqual(rig.wire.commands.count, sent, "\(page): the opening sends nothing")
+        }
+    }
+
+    /// A size typed in a stage editor is committed as its window goes, not at its next opening.
+    func testASizeTypedInTheStageEditorIsSentWhenItsWindowGoes() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        await settled(sc) { sc.videoPane.nameFields.count == 1 }
+        let editor = sc.openStageEditor(ModelID(stageA))
+        let window = try XCTUnwrap(editor.window)
+        window.makeFirstResponder(editor.layerField)
+        editor.layerField.currentEditor()?.string = "5"
+        window.performClose(nil)
+        await assertEventually("sent") { rig.store.model?.stages.first?.raw["layer"]?.doubleValue == 5 }
+        let sent = rig.wire.commands.count
+        sc.openStageEditor(ModelID(stageA))
+        await settle()
+        XCTAssertEqual(rig.wire.commands.count, sent, "the opening sends nothing")
+    }
+
     /// Starts typing `text` in `field` of the shown Video page (not committed).
     private func startTyping(_ text: String, in field: NSTextField, _ sc: WorkspaceSettingsWindowController) throws {
         sc.tabs.selectTabViewItem(withIdentifier: "video")
@@ -521,13 +562,22 @@ final class VideoSettingsTests: XCTestCase {
         for c in 0..<routing.cols.count {
             XCTAssertEqual(routing.header.column(at: c).width, routing.grid.column(at: c).width, "column \(c)")
         }
-        // At the window's least size too.
+        // At the window's least size too, with overlay scroll bars and with always-shown (legacy)
+        // ones, whose 17 pt scroller takes room from the page.
+        let styles: [(NSScroller.Style, String)] = [(.overlay, "overlay"), (.legacy, "legacy")]
+        for (style, name) in styles {
+            routing.scroll.scrollerStyle = style
+            window.setContentSize(window.contentMinSize)
+            window.contentView?.layoutSubtreeIfNeeded()
+            for popup in routing.displayPopups + routing.scalingPopups {
+                XCTAssertLessThanOrEqual(
+                    popup.intrinsicContentSize.width, popup.frame.width,
+                    "least size, \(name) scroll bars: \(popup.titleOfSelectedItem ?? "")")
+            }
+        }
+        routing.scroll.scrollerStyle = NSScroller.preferredScrollerStyle
         window.setContentSize(window.contentMinSize)
         window.contentView?.layoutSubtreeIfNeeded()
-        for popup in routing.displayPopups + routing.scalingPopups {
-            XCTAssertLessThanOrEqual(
-                popup.intrinsicContentSize.width, popup.frame.width, "least size: \(popup.titleOfSelectedItem ?? "")")
-        }
         let least = routing.displayWidth
         window.setContentSize(NSSize(width: 1400, height: 1000))
         window.contentView?.layoutSubtreeIfNeeded()
@@ -1391,11 +1441,16 @@ final class VideoSettingsTests: XCTestCase {
         editor.regionChips[1].mouseDown(with: try press(editor))
         XCTAssertEqual(editor.canvas.selected, 1)
         let stage = editor.canvas.stageFrame
-        // A width no stage can hold is refused before any sum (with B at x 1920 it once overflowed
-        // and crashed the app).
-        type("9223372036854775807", into: editor.regionWidthField, editor)
-        XCTAssertEqual(editor.messageLabel.stringValue, loc("stageEditor.badNumber"))
-        XCTAssertEqual(editor.regions[1].bounds.width, 1920)
+        // A size no stage can hold is a number, refused as outside the stage, with no sum overflowing
+        // (with B at x 1920 a width of Int.max once overflowed and crashed the app).
+        let outside = String(format: loc("stageEditor.outside"), 3840, 1080)
+        for field in [editor.regionWidthField, editor.regionHeightField] {
+            for text in ["9223372036854775807", "20000"] {
+                type(text, into: field, editor)
+                XCTAssertEqual(editor.messageLabel.stringValue, outside, "\(text)")
+                XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 1920, height: 1080))
+            }
+        }
         type("960", into: editor.regionWidthField, editor)
         await editorSettled(sc, editor) { editor.regions[1].bounds.width == 960 }
         XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 960, height: 1080))
@@ -1434,6 +1489,55 @@ final class VideoSettingsTests: XCTestCase {
         for _ in 0..<4 { _ = await rig.store.undo() }
         await editorSettled(sc, editor) { editor.regions[1].bounds.x == 1920 }
         XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 1920, height: 1080))
+    }
+
+    /// A region lies inside a stage only when every pixel of it does; the test never overflows, so
+    /// a typed size of any value is judged, not trapped on.
+    func testRegionBoundsInsideAtItsEdges() {
+        let stage = (3840, 1080)
+        func inside(_ x: Int, _ y: Int, _ w: Int, _ h: Int) -> Bool {
+            RegionBounds(x: x, y: y, width: w, height: h).inside(width: stage.0, height: stage.1)
+        }
+        XCTAssertTrue(inside(0, 0, 3840, 1080), "an exact fit")
+        XCTAssertTrue(inside(3839, 1079, 1, 1), "the last pixel")
+        XCTAssertFalse(inside(0, 0, 3841, 1080), "one past the width")
+        XCTAssertFalse(inside(0, 0, 3840, 1081), "one past the height")
+        XCTAssertFalse(inside(1, 0, 3840, 1080), "moved one right")
+        XCTAssertFalse(inside(0, 1, 3840, 1080), "moved one down")
+        XCTAssertFalse(inside(-1, 0, 100, 100), "left of the stage")
+        XCTAssertFalse(inside(0, -1, 100, 100), "above the stage")
+        XCTAssertFalse(inside(0, 0, 0, 10), "no width")
+        XCTAssertFalse(inside(0, 0, 10, 0), "no height")
+        XCTAssertFalse(inside(1920, 0, Int.max, 1080), "Int.max wide, which a sum would overflow")
+        XCTAssertFalse(inside(0, 540, 1920, Int.max), "Int.max high")
+        XCTAssertFalse(inside(Int.max, 0, 1, 1), "at Int.max")
+    }
+
+    /// The new-region pop-up keeps its menu through a redraw that changes none of its items (a
+    /// region selected, an edit answered), so a pick made while it is open is not dropped; a route
+    /// renamed does change it.
+    func testTheNewRegionMenuIsKeptUnlessItsItemsChange() async throws {
+        let (rig, sc) = try await openG4()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        let menu = try XCTUnwrap(editor.newRegionPopup.menu)
+        let titles = editor.newRegionPopup.itemTitles
+        // A redraw for the selection moving, and for an edit.
+        editor.regionChips[1].mouseDown(with: try press(editor))
+        XCTAssertEqual(editor.canvas.selected, 1)
+        type("960", into: editor.regionWidthField, editor)
+        await editorSettled(sc, editor) { editor.regions[1].bounds.width == 960 }
+        XCTAssertTrue(editor.newRegionPopup.menu === menu, "the same menu after the selection and an edit")
+        // A route renamed: the items follow it.
+        let renamed = await rig.store.send(
+            command: .setRoute(ModelID(route1), .object(["type": .string("name"), "value": .string("Front")])))
+        guard case .success = renamed else { return XCTFail("\(renamed)") }
+        await editorSettled(sc, editor) { editor.newRegionPopup.itemTitles != titles }
+        XCTAssertTrue(
+            editor.newRegionPopup.itemTitles.contains(String(format: loc("stageEditor.newRegionOn"), "Front")))
+        // The new menu works: a region on the renamed route.
+        choose(String(format: loc("stageEditor.newRegionOn"), "Front"), in: editor.newRegionPopup)
+        await editorSettled(sc, editor) { editor.regionChips.count == 3 }
+        XCTAssertEqual(editor.regions.last?.route, ModelID(route1))
     }
 
     /// #813 G5 (the app's part): G4 → region B's route pop-up set to none: the canvas draws B
@@ -1863,6 +1967,136 @@ extension VideoSettingsTests {
         await assertEventually("Output 1 back in its own colour") {
             [self.swatch(sc, 0), self.swatch(sc, 1)] == [Self.firstGuide, Self.secondGuide]
         }
+    }
+
+    /// A pop-up that is open while another client removes the route above it is torn down with its
+    /// row, but AppKit still delivers the choice from it: the choice goes to the route the pop-up
+    /// was drawn for, never to the one that now sits at its old place in the list.
+    func testAChoiceFromARemovedRowsPopUpGoesToItsOwnRoute() async throws {
+        let (rig, sc) = try await openTwoStages()
+        let routing = sc.videoRoutingPane
+        await settled(sc) { routing.shown?.count == 3 && routing.scalingPopups.count == 3 }
+        let route3 = "00000000-0000-0000-0000-00000000b003"
+        // Output 2's pop-ups, held as an open menu would hold them.
+        let display = routing.displayPopups[1]
+        let scaling = routing.scalingPopups[1]
+        XCTAssertEqual(routing.shown?.first { $0.id.raw == route2 }?.display, "V2")
+        // Another client removes Output 1: Output 3 now sits where Output 2 did.
+        guard case .success = await rig.store.send(command: .removeRoute(ModelID(route1))) else {
+            return XCTFail("remove")
+        }
+        await settled(sc) { routing.shown?.map(\.id.raw) == [self.route2, route3] }
+        // The choices are made from the old pop-ups.
+        display.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
+        _ = display.sendAction(display.action, to: display.target)
+        scaling.selectItem(withTitle: loc("settings.video.scaling.fit"))
+        _ = scaling.sendAction(scaling.action, to: scaling.target)
+        await settled(sc) { routing.shown?.first?.display == "V1" && routing.shown?.first?.scaling == "fit" }
+        let after = routing.shown ?? []
+        XCTAssertEqual(after.map(\.id.raw), [route2, route3])
+        XCTAssertNotEqual(after[1].display, "V1", "Output 3 keeps its own display")
+        XCTAssertNotEqual(after[1].scaling, "fit", "Output 3 keeps its own scaling")
+    }
+
+    /// The stage editor's region route pop-up, open while another client removes the region above
+    /// it, delivers its choice to the region it was drawn for, not the one now at its old place.
+    func testAChoiceFromARemovedRegionsRoutePopUpGoesToItsOwnRegion() async throws {
+        let (rig, sc) = try await openTwoStages()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await editorSettled(sc, editor) { editor.regionRoutePopups.count == 3 }
+        let regionC = editor.regions[2].id
+        let popup = editor.regionRoutePopups[1]
+        guard case .success = await rig.store.send(command: .removeRegion(stage: ModelID(stageA), ModelID(regionA)))
+        else { return XCTFail("remove") }
+        await editorSettled(sc, editor) { editor.regions.map(\.id.raw) == [self.regionB, regionC.raw] }
+        // Region B's pop-up, from before: Output 1.
+        popup.selectItem(withTitle: "Output 1")
+        _ = popup.sendAction(popup.action, to: popup.target)
+        await editorSettled(sc, editor) { editor.regions.first?.route == ModelID(self.route1) }
+        XCTAssertNil(editor.regions[1].route, "region C keeps its own route (none)")
+    }
+
+    /// Text typed in a region field (the caret still in it) belongs to the region it was drawn for:
+    /// when that region goes (an undo of its adding, or another client removing it) and the
+    /// selection falls back to another region, committing the field changes no region.
+    func testTextTypedForARegionThatGoesIsNotAppliedToTheOneSelectedAfterIt() async throws {
+        for byUndo in [true, false] {
+            let (rig, sc) = try await openG4()
+            let editor = sc.openStageEditor(ModelID(stageA))
+            choose(loc("stageEditor.newRegionNone"), in: editor.newRegionPopup)
+            await editorSettled(sc, editor) { editor.regionChips.count == 3 && editor.selected == editor.regions[2].id }
+            let added = editor.regions[2].id
+            let before = editor.regions.map(\.bounds)
+            XCTAssertTrue(editor.window?.makeFirstResponder(editor.regionWidthField) == true)
+            editor.regionWidthField.currentEditor()?.string = "500"
+            if byUndo {
+                _ = await rig.store.undo()
+            } else {
+                _ = await rig.store.send(command: .removeRegion(stage: ModelID(stageA), added))
+            }
+            await editorSettled(sc, editor) { editor.regionChips.count == 2 }
+            _ = editor.window?.makeFirstResponder(nil)
+            await editor.editing?.value
+            XCTAssertEqual(editor.regions.map(\.bounds), Array(before.prefix(2)), "undo: \(byUndo)")
+            XCTAssertEqual(editor.regionWidthField.stringValue, "1920", "the text typed for the gone region is dropped")
+        }
+    }
+
+    /// A region field typed in and left by clicking another region reaches the region it was typed
+    /// for, not the one clicked.
+    func testTextTypedInARegionFieldReachesThatRegionWhenAnotherIsClicked() async throws {
+        let (_, sc) = try await openG4()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await editorSettled(sc, editor) { editor.regionChips.count == 2 }
+        XCTAssertEqual(editor.selected, editor.regions[0].id)
+        XCTAssertTrue(editor.window?.makeFirstResponder(editor.regionWidthField) == true)
+        editor.regionWidthField.currentEditor()?.string = "500"
+        editor.regionChips[1].mouseDown(with: try press(editor))
+        await editorSettled(sc, editor) { editor.regions[0].bounds.width == 500 }
+        XCTAssertEqual(editor.regions[1].bounds, RegionBounds(x: 1920, y: 0, width: 1920, height: 1080))
+        XCTAssertEqual(editor.selected, editor.regions[1].id)
+    }
+
+    /// A route dragged by its handle is the route the handle was drawn for: when another client
+    /// removes a route above it during the drag, the drop moves that route, not the one that has
+    /// taken its place in the list.
+    func testADroppedHandleMovesItsOwnRouteWhenARowAboveItGoesDuringTheDrag() async throws {
+        let (rig, sc) = try await openTwoStages()
+        let routing = sc.videoRoutingPane
+        sc.tabs.selectTabViewItem(withIdentifier: "videoRouting")
+        await settled(sc) { routing.handles.count == 3 }
+        let route3 = "00000000-0000-0000-0000-00000000b003"
+        let handle = routing.handles[1]  // Output 2
+        guard case .success = await rig.store.send(command: .removeRoute(ModelID(route1))) else {
+            return XCTFail("remove")
+        }
+        await settled(sc) { routing.shown?.map(\.id.raw) == [self.route2, route3] }
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        // Let go below the last row.
+        let below = routing.holder.convert(NSPoint(x: 40, y: routing.holder.bounds.maxY), to: nil)
+        handle.onDrop?(handle, below)
+        await settled(sc) { routing.shown?.map(\.id.raw) == [route3, self.route2] }
+    }
+
+    /// The region list takes the views of a row it drops out of the window, and a remove button held
+    /// across a redraw (a region above it went) removes the region it was drawn for. (A real held
+    /// press then fires no action, the rebuilt list having taken the button out of the window; the
+    /// click here is the action as AppKit would still deliver it.)
+    func testARemoveButtonFromBeforeARedrawRemovesItsOwnRegionAndNoOldViewsStay() async throws {
+        let (rig, sc) = try await openTwoStages()
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await editorSettled(sc, editor) { editor.regionRemoveButtons.count == 3 }
+        let regionC = editor.regions[2].id
+        let held = editor.regionRemoveButtons[1]  // region B
+        let removed = await rig.store.send(command: .removeRegion(stage: ModelID(stageA), ModelID(regionA)))
+        guard case .success = removed else { return XCTFail("remove") }
+        await editorSettled(sc, editor) { editor.regionChips.count == 2 }
+        XCTAssertEqual(
+            editor.regionGrid.subviews.count, editor.regionGrid.numberOfRows * 3, "no views of dropped rows are left")
+        XCTAssertNil(held.superview, "the old button is out of the window")
+        held.performClick(nil)
+        await editorSettled(sc, editor) { editor.regionChips.count == 1 }
+        XCTAssertEqual(editor.regions.map(\.id), [regionC], "region B went, C stayed")
     }
 
     /// The GD11 workspace: Stage 1 (G4) with regions A on Output 1 (V1), B on Output 2 (V2) and C on

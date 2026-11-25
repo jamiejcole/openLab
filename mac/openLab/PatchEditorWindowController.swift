@@ -39,7 +39,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     private let namesStack = NSStackView()
     // Routing
     let mainFader = LevelFader(value: 0, minValue: LevelText.floorDb, maxValue: 0, target: nil, action: nil)
-    let mainField = NSTextField()
+    let mainField = LevelBoxField()
     let matrix = PatchRoutingView()
     /// The matrix's header row and left columns, kept in view while it scrolls.
     let matrixHeader = PatchRoutingPane(.header)
@@ -52,7 +52,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     /// One level box per cue output, laid over the matrix's level column.
     private(set) var outputFields: [NSTextField] = []
     /// The box a crosspoint's level is typed in, laid over the box double-clicked.
-    let crosspointField = NSTextField()
+    let crosspointField = LevelBoxField()
     /// The crosspoint being typed in (cue output, device output).
     private(set) var typingCell: (row: Int, column: Int)?
     // Device outputs
@@ -103,6 +103,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     private var isOpen = false
 
     static let minSize = NSSize(width: 520, height: 460)
+    /// Small enough that the longest level text drawn ("-119.9") shows whole in a box as wide as a crosspoint's.
+    static let levelFontSize: CGFloat = 9
 
     init(model: WorkspaceSettingsModel, patch: ModelID) {
         self.model = model
@@ -326,14 +328,14 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             self?.render()
         }
         mainField.setAX(AX.patchEditorMainField, label: loc("patchEditor.main"))
-        mainField.alignment = .right
-        mainField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        mainField.controlSize = .small
+        mainField.alignment = .center
+        mainField.font = .monospacedDigitSystemFont(ofSize: Self.levelFontSize, weight: .regular)
+        mainField.controlSize = .mini
         mainField.delegate = self
         matrixCorner.addSubview(mainFader)
         matrixCorner.addSubview(mainField)
         mainFader.frame = PatchRoutingView.faderFrame(midX: PatchRoutingView.mainMidX)
-        mainField.frame = PatchRoutingView.stripBoxFrame(midX: PatchRoutingView.mainMidX)
+        mainField.frame = PatchRoutingView.mainBoxFrame
         routingNote.font = .systemFont(ofSize: 11)
         routingNote.textColor = .secondaryLabelColor
         routingNote.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -342,8 +344,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         matrix.setAX(AX.patchEditorMatrix, label: loc("patchEditor.tab.routing"))
         matrix.onType = { [weak self] row, column in self?.beginTyping(row: row, column: column) }
         crosspointField.alignment = .center
-        crosspointField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        crosspointField.controlSize = .small
+        crosspointField.font = .monospacedDigitSystemFont(ofSize: Self.levelFontSize, weight: .regular)
+        crosspointField.controlSize = .mini
         crosspointField.delegate = self
         crosspointField.isHidden = true
         crosspointField.setAX(AX.patchEditorCrosspointField)
@@ -622,10 +624,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             line.widthAnchor.constraint(equalTo: namesStack.widthAnchor).isActive = true
             outputNameFields.append(name)
 
-            let level = NSTextField(frame: matrix.levelRect(row: i).offsetBy(dx: 0, dy: -PatchRoutingView.headerH))
-            level.alignment = .right
-            level.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-            level.controlSize = .small
+            let level = LevelBoxField(frame: matrix.levelRect(row: i).offsetBy(dx: 0, dy: -PatchRoutingView.headerH))
+            level.alignment = .center
+            level.font = .monospacedDigitSystemFont(ofSize: Self.levelFontSize, weight: .regular)
+            level.controlSize = .mini
             level.delegate = self
             level.tag = i + 1
             level.setAX(
@@ -703,10 +705,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             mute.font = .systemFont(ofSize: 9, weight: .semibold)
             mute.tag = d
             mute.setAX("\(AX.patchEditorDeviceMute)-\(d + 1)", label: "\(name) \(loc("patchEditor.mute"))")
-            let field = NSTextField()
-            field.alignment = .right
-            field.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-            field.controlSize = .small
+            let field = LevelBoxField()
+            field.alignment = .center
+            field.font = .monospacedDigitSystemFont(ofSize: Self.levelFontSize, weight: .regular)
+            field.controlSize = .mini
             field.delegate = self
             field.setAX("\(AX.patchEditorDeviceField)-\(d + 1)", label: "\(name) \(loc("patchEditor.level"))")
             for v in [fader, mute, field] as [NSView] { matrixHeader.addSubview(v) }

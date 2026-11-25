@@ -9,6 +9,7 @@ DerivedData/
 
 # Build output
 /build/
+/mac/build/
 
 # macOS
 .DS_Store

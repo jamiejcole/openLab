@@ -23,6 +23,20 @@ final class SpyTableView: NSTableView {
     }
 }
 
+/// A button cell that runs `onTrack` as a press begins to be tracked.
+@MainActor
+private final class ReusingCell: NSButtonCell {
+    var onTrack: (() -> Void)?
+    private(set) var tracked = false
+    override func trackMouse(with event: NSEvent, in cellFrame: NSRect, of controlView: NSView, untilMouseUp: Bool)
+        -> Bool
+    {
+        tracked = true
+        onTrack?()
+        return super.trackMouse(with: event, in: cellFrame, of: controlView, untilMouseUp: untilMouseUp)
+    }
+}
+
 @MainActor
 final class SidebarTests: XCTestCase {
     static let main: ModelID = "00000000-0000-0000-0000-000000000001"
@@ -523,6 +537,46 @@ final class SidebarTests: XCTestCase {
         try cell(1).pauseButton.performClick(nil)  // rain is paused: resume
         try cell(1).panicButton.performClick(nil)
         XCTAssertEqual(actions, [.pause(cue: Self.intro), .resume(cue: Self.rain), .panicCue(cue: Self.rain)])
+    }
+
+    /// A press on a row's pause button belongs to the cue it began on: when that row's cell is
+    /// reused for another cue while the button is held, letting go acts on the first cue.
+    func testAPressedPauseButtonActsOnTheCueItWasPressedOnWhenItsCellIsReused() async throws {
+        let wc = try await make()
+        let window = try XCTUnwrap(wc.window)
+        defer { window.close() }
+        window.setFrame(NSRect(x: 0, y: 0, width: 1100, height: 700), display: true)
+        wc.setVisible(.sidebar, true)
+        wc.sidebar.tabs.selectedSegment = 1
+        wc.sidebar.tabs.performClick(nil)
+        window.makeKeyAndOrderFront(nil)
+        var actions: [TransportAction] = []
+        wc.onCueAction = { actions.append($0) }
+        let table = wc.sidebar.activeTable
+        let cell = try XCTUnwrap(table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? ActiveCueCell)
+        let button = cell.pauseButton
+        XCTAssertEqual(button.cue, Self.intro)
+        let at = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: at, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        // While the button is held, its cell takes another cue's row, as a reused cell does: the cell
+        // tracking the press does that first.
+        let sidebar = wc.sidebar
+        let tracking = ReusingCell()
+        tracking.onTrack = { sidebar.fill(cell, Self.rain) }
+        tracking.target = button.target
+        tracking.action = button.action
+        tracking.isBordered = false
+        button.cell = tracking
+        window.postEvent(try event(.leftMouseUp), atStart: false)
+        button.mouseDown(with: try event(.leftMouseDown))
+        XCTAssertTrue(tracking.tracked, "the button was held while the cell was reused")
+        XCTAssertEqual(button.cue, Self.rain, "the cell was reused while the button was held")
+        XCTAssertEqual(actions, [.pause(cue: Self.intro)], "the press was on Intro")
     }
 
     func testWindowForwardsCueActionsToItsOwner() async throws {
