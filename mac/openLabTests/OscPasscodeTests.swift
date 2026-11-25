@@ -838,7 +838,7 @@ extension WorkspaceSettingsTests {
         let path = engine.folder.appendingPathComponent("osc-\(UUID().uuidString).openlab").path
         guard case .success = await rig.store.saveAs(path: path) else { return XCTFail("save") }
         await assertEventually("saved") { rig.store.document?.dirty == false }
-        let closed = await rig.client.send({ .close(id: $0, doc: rig.doc, discardChanges: false) })
+        let closed = await rig.testEngine.app.send({ .close(id: $0, doc: rig.doc, discardChanges: false) })
         guard case .success = closed else { return XCTFail("close: \(closed)") }
         guard case .success(let ok) = await engine.request(.open(path: path)), case .opened(let doc)? = ok.data else {
             return XCTFail("reopen")

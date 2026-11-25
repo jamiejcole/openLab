@@ -755,6 +755,8 @@ extension Rig {
         return rig
     }
 
+    /// A test closes this rig's workspace on `testEngine.app`, as the app does: the engine ends the workspace's own
+    /// connection as it closes it, and the answer to a close sent there can be lost with it.
     var testEngine: TestEngine { realEngine! }
 
     /// Moves the engine's device time on by `seconds` (0: only waits for background work), then

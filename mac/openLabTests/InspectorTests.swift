@@ -1555,7 +1555,8 @@ final class CueTargetFlowTests: XCTestCase {
         try mouseDown(2)
         await assertEventually { self.inspector.targetField.stringValue == chosen.standardizedFileURL.path }
         guard case .success = await rig.store.save() else { return XCTFail("the save") }
-        guard case .success = await rig.client.send({ .close(id: $0, doc: self.rig.doc, discardChanges: false) })
+        let closing = rig.doc
+        guard case .success = await rig.testEngine.app.send({ .close(id: $0, doc: closing, discardChanges: false) })
         else { return XCTFail("the close") }
         wc.window?.close()
         let engine = rig.testEngine
