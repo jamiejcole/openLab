@@ -158,8 +158,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 self?.rereadSoon()
             })
         // Taller than the pages need by the message row's two lines, which never take the pages' room.
-        // Wide enough that Output Routing's display choice reads whole beside its guides, with a
-        // legacy 17 pt scroller showing, as on a Mac set to always show scroll bars.
+        // Wide enough that Output Routing's scaling choice reads whole and its display column keeps
+        // 182 pt beside its guides, with a legacy 17 pt scroller showing, as on a Mac set to always
+        // show scroll bars. A longer display name (up to about 199 pt) is cut with an ellipsis, its
+        // whole name in the tooltip.
         window.contentMinSize = NSSize(width: 808, height: 552)
         window.delegate = self
         tabs.delegate = self

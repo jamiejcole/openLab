@@ -521,13 +521,22 @@ final class VideoSettingsTests: XCTestCase {
         for c in 0..<routing.cols.count {
             XCTAssertEqual(routing.header.column(at: c).width, routing.grid.column(at: c).width, "column \(c)")
         }
-        // At the window's least size too.
+        // At the window's least size too, with overlay scroll bars and with always-shown (legacy)
+        // ones, whose 17 pt scroller takes room from the page.
+        let styles: [(NSScroller.Style, String)] = [(.overlay, "overlay"), (.legacy, "legacy")]
+        for (style, name) in styles {
+            routing.scroll.scrollerStyle = style
+            window.setContentSize(window.contentMinSize)
+            window.contentView?.layoutSubtreeIfNeeded()
+            for popup in routing.displayPopups + routing.scalingPopups {
+                XCTAssertLessThanOrEqual(
+                    popup.intrinsicContentSize.width, popup.frame.width,
+                    "least size, \(name) scroll bars: \(popup.titleOfSelectedItem ?? "")")
+            }
+        }
+        routing.scroll.scrollerStyle = NSScroller.preferredScrollerStyle
         window.setContentSize(window.contentMinSize)
         window.contentView?.layoutSubtreeIfNeeded()
-        for popup in routing.displayPopups + routing.scalingPopups {
-            XCTAssertLessThanOrEqual(
-                popup.intrinsicContentSize.width, popup.frame.width, "least size: \(popup.titleOfSelectedItem ?? "")")
-        }
         let least = routing.displayWidth
         window.setContentSize(NSSize(width: 1400, height: 1000))
         window.contentView?.layoutSubtreeIfNeeded()
