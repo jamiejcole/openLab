@@ -301,6 +301,9 @@ final class VideoUITests: XCTestCase {
     /// with the file chooser (T) and the second stage in its I/O tab, plays there on GO and is gone
     /// from it once stopped (QLab 5 manual, Video cues).
     func testVideoCueCreatedGivenAFileAndAStagePlaysOnGoAndStops() async throws {
+        // About 53 s on a hosted runner, most of it typing the movie's path into the file chooser;
+        // on a slow one that typing alone took 8 s more and passed the default minute.
+        executionTimeAllowance = 180
         var movie = URL(fileURLWithPath: "/")
         let app = launchApp(opening: [], displays: "V1:1920x1080,V2:1280x720") { copies in
             movie = copies.appendingPathComponent("movies/clip.mov")
