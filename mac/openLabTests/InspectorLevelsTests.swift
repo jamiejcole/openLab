@@ -1708,6 +1708,23 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(right.max()), rep.pixelsHigh / 4, "high at the end")
     }
 
+    /// The point Delete removes stays the one the operator chose when the points are replaced from
+    /// outside the graph (an undo puts a point back before it).
+    func testDeleteRemovesTheChosenPointAfterTheCurveChangesUnderIt() {
+        let view = FadeCurveView(rising: true)
+        view.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
+        let a = FadeCurveSpec.Point(t: 0.2, v: 0.4)
+        let b = FadeCurveSpec.Point(t: 0.5, v: 0.75)
+        view.shape = FadeCurveSpec.Shape(kind: .custom, parameter: 1, points: [a, b])
+        view.isEditable = true
+        view.press(at: view.location(b))
+        view.release()
+        let before = FadeCurveSpec.Point(t: 0.1, v: 0.3)
+        view.shape = FadeCurveSpec.Shape(kind: .custom, parameter: 1, points: [before, a, b])
+        XCTAssertTrue(view.removeChosen())
+        XCTAssertEqual(view.shape.points.map(\.t), [0.1, 0.2], "the chosen point went, not the one now at its index")
+    }
+
     /// The graphs draw the engine's shapes (`fade_curve.rs`): the S-curve, the parametric curve, and
     /// a custom curve through its points never overshooting between them.
     func testTheCurveGraphsDrawTheEnginesShapes() {

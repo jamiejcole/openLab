@@ -74,7 +74,7 @@ s(t) = f(t)            if b >= a   (rising)
 s(t) = 1 - f(1 - t)    if b < a    (falling)
 ```
 - Sample `S` is exactly `a`; sample `S + N` is exactly `b`, so a fade-out to silence is exactly 0.0 there. Values are computed in `f64` and cast to `f32`.
-- A falling ramp is the time-reverse of the matching rising ramp's gain path.
+- For the standard curves, a falling ramp is the time-reverse of the matching rising ramp's gain path. A Fade cue's shaped ramp has its own rising and falling sides, which differ when the operator unlocks and edits one.
 - A new ramp starts from the gain the old one would have had on its first sample, so interrupting a fade is continuous.
 - Each sample is a function of curve id, endpoints and position only. No tables, no allocation.
 

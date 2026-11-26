@@ -15,7 +15,19 @@ final class FadeCurveView: NSView {
     }
 
     let rising: Bool
-    var shape = FadeCurveSpec.Shape() { didSet { if shape != oldValue { needsDisplay = true } } }
+    var shape = FadeCurveSpec.Shape() {
+        didSet {
+            guard shape != oldValue else { return }
+            // The chosen point follows its time when the points are replaced from outside (an
+            // undo, another client's edit), so Delete never removes whichever point now has its
+            // old index. A press or drag here sets the points itself, with `dragging` set.
+            if dragging == nil, let c = chosen, oldValue.points.indices.contains(c) {
+                let t = oldValue.points[c].t
+                chosen = shape.points.firstIndex { abs($0.t - t) < 1e-9 }
+            }
+            needsDisplay = true
+        }
+    }
     var duration = 0.0 { didSet { if duration != oldValue { needsDisplay = true } } }
     /// Points can be added, moved and removed (a custom or straight-line shape, not locked).
     var isEditable = false {
