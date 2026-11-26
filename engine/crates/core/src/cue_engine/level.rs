@@ -10,6 +10,7 @@ use crate::cue::{
     CueKind, CueLevels, FadeCurve, FadeLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS,
     SILENCE_DB,
 };
+use crate::fade_curve::RampCurve;
 use crate::model::{CueId, Workspace};
 use crate::video_geometry::PictureParam;
 
@@ -58,14 +59,14 @@ pub(super) fn dezip_frames(sample_rate: u32) -> SampleTime {
 pub(super) fn heard(
     at: SampleTime,
     frames: SampleTime,
-    curve: FadeCurve,
+    curve: &RampCurve,
     voice_start: SampleTime,
     sample_rate: u32,
-) -> (SampleTime, FadeCurve) {
+) -> (SampleTime, RampCurve) {
     if frames == 0 && at > voice_start {
-        (dezip_frames(sample_rate), FadeCurve::Linear)
+        (dezip_frames(sample_rate), RampCurve::LINEAR)
     } else {
-        (frames, curve)
+        (frames, curve.clone())
     }
 }
 
@@ -238,7 +239,7 @@ pub fn ramp_value(from: f64, to: f64, pos: u64, len: u64, curve: FadeCurve) -> f
 
 /// A gain a Fade cue has set or is moving, as [`CueEngine::fade_ramps`](super::CueEngine::fade_ramps)
 /// reports it on a sample: what a voice restarted there needs.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LevelRamp {
     pub param: LevelParam,
     /// The gain (linear) on that sample.
@@ -247,12 +248,12 @@ pub struct LevelRamp {
     pub to: f32,
     /// The sample the ramp ends on; at or before the sample asked about when it is not moving.
     pub end: SampleTime,
-    pub curve: FadeCurve,
+    pub curve: RampCurve,
 }
 
 /// A gain a Fade cue has set or is moving: a ramp from `from` on sample `start` to `to` on
 /// `start + frames`, then `to`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Level {
     /// The Fade cue and run (`seq`) moving it, while that fade may still move it.
     pub owner: Option<(CueId, u64)>,
@@ -260,7 +261,7 @@ pub(super) struct Level {
     pub to: f32,
     pub start: SampleTime,
     pub frames: SampleTime,
-    pub curve: FadeCurve,
+    pub curve: RampCurve,
 }
 
 impl Level {
@@ -271,7 +272,7 @@ impl Level {
             to: gain,
             start: at,
             frames: 0,
-            curve: FadeCurve::Linear,
+            curve: RampCurve::LINEAR,
         }
     }
 
@@ -282,12 +283,11 @@ impl Level {
         if self.frames == 0 && at >= self.start {
             return self.to;
         }
-        ramp_gain(
+        self.curve.gain(
             self.from,
             self.to,
             at.saturating_sub(self.start),
             self.frames,
-            self.curve,
         )
     }
 

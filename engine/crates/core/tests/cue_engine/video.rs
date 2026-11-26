@@ -394,7 +394,7 @@ fn a_fade_cue_ramps_a_playing_video_cues_levels() {
         CueKind::Fade {
             target: Some(id(1)),
             duration: 1.0,
-            curve: FadeCurve::Linear,
+            curve: FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(-20.0),
                 output_db: vec![],
@@ -439,7 +439,7 @@ fn picture_fade(
         CueKind::Fade {
             target: Some(id(target)),
             duration: seconds,
-            curve,
+            curve: FadeCueCurve::like(curve),
             levels: FadeLevels {
                 master_db: None,
                 output_db: vec![],
@@ -463,10 +463,10 @@ fn opacity_fade(n: u128, seconds: f64, to: f64) -> Cue {
 /// Each picture ramp: (cue, param, at, to, frames, curve).
 fn picture_ramps(
     actions: &[Action],
-) -> Vec<(CueId, PictureParam, SampleTime, f32, SampleTime, FadeCurve)> {
+) -> Vec<(CueId, PictureParam, SampleTime, f32, SampleTime, RampCurve)> {
     actions
         .iter()
-        .filter_map(|a| match *a {
+        .filter_map(|a| match a {
             Action::Ramp {
                 cue,
                 at,
@@ -475,7 +475,7 @@ fn picture_ramps(
                 frames,
                 curve,
                 ..
-            } => Some((cue, p, at, gain, frames, curve)),
+            } => Some((*cue, *p, *at, *gain, *frames, curve.clone())),
             _ => None,
         })
         .collect()
@@ -505,7 +505,7 @@ fn a_fade_moves_only_the_ticked_picture_values_along_its_curve() {
             1000,
             0.0,
             3000,
-            FadeCurve::SCurve
+            RampCurve::from(FadeCurve::SCurve)
         )]
     );
     // No level of its sound moves: none was set.
@@ -622,7 +622,7 @@ fn a_later_picture_fade_takes_the_value_over_from_where_it_is() {
             1000,
             1.0,
             1000,
-            FadeCurve::Linear
+            RampCurve::from(FadeCurve::Linear)
         )]
     );
     // From where the first had it: no jump.
@@ -652,7 +652,7 @@ fn pausing_a_picture_fade_holds_its_value_and_resuming_carries_on() {
             1000,
             0.75,
             0,
-            FadeCurve::Linear
+            RampCurve::from(FadeCurve::Linear)
         )]
     );
     assert_eq!(rig.level(1, OPACITY, 2500), Some(0.75));
@@ -664,7 +664,7 @@ fn pausing_a_picture_fade_holds_its_value_and_resuming_carries_on() {
             3000,
             0.0,
             3000,
-            FadeCurve::Linear
+            RampCurve::from(FadeCurve::Linear)
         )]
     );
     assert_eq!(rig.level(1, OPACITY, 4500), Some(0.375));
@@ -690,7 +690,7 @@ fn a_panic_holds_a_picture_fade_where_it_is_while_the_picture_fades_out() {
             1000,
             0.75,
             0,
-            FadeCurve::Linear
+            RampCurve::from(FadeCurve::Linear)
         )]
     );
     let stops = voice_stops(&panic);
@@ -753,7 +753,7 @@ fn an_edit_of_a_value_a_fade_moves_takes_it_over_and_ends_the_fade_without_stopp
             1000,
             0.5,
             10,
-            FadeCurve::Linear
+            RampCurve::from(FadeCurve::Linear)
         )]
     );
     // The fade is over at once and does not stop its target.
@@ -774,7 +774,7 @@ fn an_edit_of_a_value_a_fade_moves_takes_it_over_and_ends_the_fade_without_stopp
             5000,
             0.9,
             10,
-            FadeCurve::Linear
+            RampCurve::from(FadeCurve::Linear)
         )]
     );
 }
@@ -795,7 +795,7 @@ fn a_zero_length_picture_fade_sets_the_value_at_once() {
             700,
             0.25,
             0,
-            FadeCurve::Linear
+            RampCurve::from(FadeCurve::Linear)
         )]
     );
     assert_eq!(rig.level(1, OPACITY, 700), Some(0.25));

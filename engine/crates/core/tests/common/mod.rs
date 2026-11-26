@@ -111,7 +111,7 @@ pub fn fade(target: u128) -> CueKind {
     CueKind::Fade {
         target: Some(cue_id(target)),
         duration: 5.0,
-        curve: FadeCurve::EqualPower,
+        curve: Default::default(),
         levels: FadeLevels {
             master_db: Some(SILENCE_DB),
             output_db: vec![],

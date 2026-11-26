@@ -1150,7 +1150,7 @@ impl Engine {
 /// other mix (a start, a move) is sent as it is.
 fn stops_apart(commands: Vec<(SampleTime, CommandKind)>) -> Vec<Vec<(SampleTime, CommandKind)>> {
     let stop = |k: &CommandKind| matches!(k, CommandKind::StopVoice { .. });
-    let ramp = |k: &CommandKind| matches!(k, CommandKind::Ramp { .. });
+    let ramp = |k: &CommandKind| matches!(k, CommandKind::Ramp { .. } | CommandKind::ShapedRamp(_));
     if !commands.iter().all(|(_, k)| stop(k) || ramp(k)) {
         return vec![commands];
     }
@@ -1171,6 +1171,25 @@ fn ramps_together(commands: Vec<(SampleTime, CommandKind)>) -> Vec<(SampleTime, 
     let mut run = None;
     let mut gains = Vec::new();
     for (at, kind) in commands {
+        // Ramps on one Fade cue curve go as one shaped ramp the same way.
+        if let CommandKind::ShapedRamp(r) = kind {
+            end_ramp_run(run.take(), &mut gains, &mut out);
+            match out.last_mut() {
+                Some((t, CommandKind::ShapedRamp(last)))
+                    if *t == at
+                        && last.voice == r.voice
+                        && last.frames == r.frames
+                        && last.shape == r.shape
+                        && last.gains.len() + r.gains.len() <= MAX_RAMP_SET =>
+                {
+                    let mut all = std::mem::take(&mut last.gains).into_vec();
+                    all.extend_from_slice(&r.gains);
+                    last.gains = all.into_boxed_slice();
+                }
+                _ => out.push((at, CommandKind::ShapedRamp(r))),
+            }
+            continue;
+        }
         if let CommandKind::Ramp {
             voice,
             target,

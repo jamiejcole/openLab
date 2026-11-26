@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rtrb::{Consumer, RingBuffer};
 
 use crate::controller::MixerController;
+use crate::fade_shape::FadeShape;
 use crate::gain::{Fade, Param, Shapes};
 use crate::meter::{Meters, XrunNotifier};
 use crate::plan::{Slice, StreamLink};
@@ -233,6 +234,12 @@ pub enum CommandKind {
         gains: Box<[(GainTarget, f32)]>,
         fade: Fade,
     },
+    /// [`CommandKind::RampSet`] on a Fade cue's curve: each gain ramps over `frames` (> 0) on
+    /// `shape`, which the voice keeps in one of its own slots while a gain follows it. With every
+    /// slot followed (more different curves moving the voice at once than it keeps), the gains
+    /// ramp linearly and `Shared::shapeless_ramps` counts it. The box goes back on the return
+    /// queue.
+    ShapedRamp(Box<ShapedRamp>),
     SetPatchRouting {
         patch: u16,
         cue_output: u16,
@@ -306,6 +313,16 @@ pub enum CommandKind {
 pub(crate) enum Returned {
     Start(Box<VoiceStart>),
     Gains(Box<[(GainTarget, f32)]>),
+    Shaped(Box<ShapedRamp>),
+}
+
+/// See [`CommandKind::ShapedRamp`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapedRamp {
+    pub voice: VoiceId,
+    pub gains: Box<[(GainTarget, f32)]>,
+    pub frames: u64,
+    pub shape: FadeShape,
 }
 
 /// A command on its way to the mixer: applied at sample `at` (or at the start of the next block
@@ -424,6 +441,7 @@ pub(crate) struct Shared {
     pub(crate) underrun_frames: AtomicU64,
     pub(crate) dropped_events: AtomicU64,
     pub(crate) leaked_returns: AtomicU64,
+    pub(crate) shapeless_ramps: AtomicU64,
     pub(crate) pending_full_blocks: AtomicU64,
     pub(crate) xruns: AtomicU64,
     pub(crate) meters: Meters,

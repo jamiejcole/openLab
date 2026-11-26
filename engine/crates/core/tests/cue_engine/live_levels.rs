@@ -21,7 +21,7 @@ fn fade_master(n: u128, target: u128, seconds: f64, db: f64) -> Cue {
         CueKind::Fade {
             target: Some(id(target)),
             duration: seconds,
-            curve: FadeCurve::Linear,
+            curve: FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(db),
                 output_db: vec![],
@@ -82,7 +82,7 @@ fn ramps(actions: &[Action]) -> Vec<R> {
                 curve,
                 ..
             } => {
-                assert_eq!(*curve, FadeCurve::Linear);
+                assert_eq!(*curve, RampCurve::from(FadeCurve::Linear));
                 Some(R {
                     cue: *cue,
                     at: *at,
@@ -214,7 +214,7 @@ fn two_level_fade(stop: bool) -> Vec<Cue> {
         CueKind::Fade {
             target: Some(id(1)),
             duration: 1.0,
-            curve: FadeCurve::Linear,
+            curve: FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(-20.0),
                 output_db: vec![Some(-12.0)],
@@ -325,7 +325,7 @@ fn an_edit_during_a_group_fade_out_and_stop_stops_no_child() {
         CueKind::Fade {
             target: Some(id(1)),
             duration: 1.0,
-            curve: FadeCurve::Linear,
+            curve: FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(-20.0),
                 output_db: vec![],
@@ -506,7 +506,7 @@ fn fade_output0(n: u128, target: u128, db: f64) -> Cue {
         CueKind::Fade {
             target: Some(id(target)),
             duration: 1.0,
-            curve: FadeCurve::Linear,
+            curve: FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: None,
                 output_db: vec![Some(db)],

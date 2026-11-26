@@ -7,8 +7,9 @@ mod common;
 
 use common::*;
 use openlab_audio::{
-    CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MAX_RAMP_SET, MixerConfig,
-    PENDING_CAPACITY, RejectReason, VoiceId, VoiceStart,
+    CommandKind, Curve, Event, Fade, FadeShape, FinishReason, GainTarget, MAX_RAMP_SET,
+    MixerConfig, PENDING_CAPACITY, RejectReason, ShapeDomain, ShapeKind, ShapeSide, ShapedRamp,
+    VoiceId, VoiceStart,
 };
 
 #[test]
@@ -877,4 +878,87 @@ fn the_duck_cap_bounds_a_boost_while_master_and_duck_cross() {
     assert!(peak <= 1.0 + 1e-6, "{peak}");
     assert!((out[2500] - 1.0).abs() < 1e-6);
     assert_eq!(ctl.faults(), 0);
+}
+
+/// A Fade cue curve with one control point at `(0.5, v)` on both sides (straight lines).
+#[allow(clippy::unwrap_used)]
+fn bent(v: f64, domain: ShapeDomain) -> FadeShape {
+    let up = ShapeSide::new(
+        ShapeKind::Linear,
+        1.0,
+        &[0.0, 0.5, 1.0],
+        &[0.0, v, 1.0],
+        &[0.0; 3],
+    );
+    let down = ShapeSide::new(
+        ShapeKind::Linear,
+        1.0,
+        &[0.0, 0.5, 1.0],
+        &[1.0, v, 0.0],
+        &[0.0; 3],
+    );
+    FadeShape::new(domain, -60.0, up.unwrap(), down.unwrap())
+}
+
+fn shaped(voice: u64, gains: Vec<(GainTarget, f32)>, frames: u64, shape: FadeShape) -> CommandKind {
+    CommandKind::ShapedRamp(Box::new(ShapedRamp {
+        voice: VoiceId(voice),
+        gains: gains.into(),
+        frames,
+        shape,
+    }))
+}
+
+/// A Fade cue's ramp follows its curve sample for sample without allocating, and its command
+/// goes back to be freed. A voice keeps four curves at once: a fifth different one, while
+/// all four are moving its gains, moves evenly and is counted; once they have ended, a new
+/// curve takes a slot again.
+#[test]
+fn shaped_ramps_follow_their_curve_without_allocating_and_a_fifth_curve_is_counted() {
+    let (mut ctl, mut r) = setup(config(2));
+    start(&mut ctl, 0, 1, source(&[1.0; 2 * 4000]), 2);
+    let curve = bent(0.8, ShapeDomain::Decibel);
+    ctl.send(64, shaped(1, vec![(GainTarget::Master, 0.0)], 640, curve));
+    let mut out = vec![0.0; 2 * 800];
+    no_alloc(|| r.render_into(&mut out, &[16]));
+    let left = channel(&out, 2, 0);
+    for k in 0..=640u64 {
+        let want = curve.value(1.0, 0.0, k, 640);
+        assert_eq!(left[64 + k as usize].to_bits(), want.to_bits(), "frame {k}");
+    }
+    assert_eq!(ctl.shapeless_ramps(), 0);
+    let gains = [
+        GainTarget::Master,
+        GainTarget::CueOutput(0),
+        GainTarget::CueOutput(1),
+        GainTarget::Crosspoint {
+            input: 0,
+            output: 1,
+        },
+        GainTarget::Crosspoint {
+            input: 1,
+            output: 0,
+        },
+    ];
+    for (i, g) in gains.iter().enumerate() {
+        let shape = bent(0.1 + 0.15 * i as f64, ShapeDomain::Slider);
+        ctl.send(800, shaped(1, vec![(*g, 0.5)], 1000, shape));
+    }
+    let mut out = vec![0.0; 2 * 2000];
+    no_alloc(|| r.render_into(&mut out, &[16]));
+    assert_eq!(ctl.shapeless_ramps(), 1);
+    ctl.send(
+        2800,
+        shaped(
+            1,
+            vec![(GainTarget::Master, 1.0)],
+            100,
+            bent(0.9, ShapeDomain::Linear),
+        ),
+    );
+    no_alloc(|| r.render_into(&mut out, &[16]));
+    assert_eq!(ctl.shapeless_ramps(), 1);
+    // Every command went back to be freed (the controller frees what it finds as it sends).
+    ctl.collect_returns();
+    assert_eq!(ctl.leaked_returns(), 0);
 }

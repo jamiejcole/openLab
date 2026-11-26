@@ -35,7 +35,7 @@ fn fade_on_idle(n: u128, target: u128, seconds: f64) -> openlab_core::Cue {
         CueKind::Fade {
             target: Some(id(target)),
             duration: seconds,
-            curve: openlab_core::FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(openlab_core::FadeCurve::Linear),
             levels: openlab_core::FadeLevels {
                 master_db: Some(-6.0),
                 output_db: vec![],

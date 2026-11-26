@@ -10,7 +10,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::cue::{CueKind, FadeCurve, LevelLimits};
+use crate::cue::{CueKind, LevelLimits};
+use crate::fade_curve::RampCurve;
 use crate::model::CueId;
 use crate::video_geometry::PictureParam;
 
@@ -98,7 +99,7 @@ impl CueEngine {
                     gain: to.0,
                     // On the voice's own start sample nothing has been heard yet.
                     frames: if at <= first { 0 } else { frames },
-                    curve: FadeCurve::Linear,
+                    curve: RampCurve::LINEAR,
                 });
             }
         }
@@ -152,7 +153,7 @@ impl CueEngine {
                         to,
                         start: at,
                         frames,
-                        curve: FadeCurve::Linear,
+                        curve: RampCurve::LINEAR,
                     };
                 }
                 cx.out.push(Action::Ramp {
@@ -162,7 +163,7 @@ impl CueEngine {
                     param,
                     gain: to,
                     frames,
-                    curve: FadeCurve::Linear,
+                    curve: RampCurve::LINEAR,
                 });
             }
         }
@@ -210,8 +211,8 @@ impl CueEngine {
                 let now = held.value(at);
                 let to = level::limit_gain(limits, held.to);
                 let left = held.end().saturating_sub(at);
-                let curve_left = held.curve;
-                let mut ramp = |at: SampleTime, gain: f32, frames: SampleTime, curve: FadeCurve| {
+                let curve_left = held.curve.clone();
+                let mut ramp = |at: SampleTime, gain: f32, frames: SampleTime, curve: RampCurve| {
                     cx.out.push(Action::Ramp {
                         cue: *id,
                         run: voice,
@@ -225,21 +226,21 @@ impl CueEngine {
                 if now > max {
                     // Loud now: down to the maximum at once.
                     let first_stop = if left > frames { max.max(to) } else { to };
-                    ramp(at, first_stop, frames, FadeCurve::Linear);
+                    ramp(at, first_stop, frames, RampCurve::LINEAR);
                     *held = Level {
                         owner: held.owner,
                         from: now,
                         to: first_stop,
                         start: at,
                         frames,
-                        curve: FadeCurve::Linear,
+                        curve: RampCurve::LINEAR,
                     };
                     if first_stop != to {
                         // Then the rest of the way, on the fade's own time. It may be dated past
                         // the call's horizon; `committed` keeps later commands after it.
                         let on = at.saturating_add(frames);
                         let rest = left.saturating_sub(frames);
-                        ramp(on, to, rest, curve_left);
+                        ramp(on, to, rest, curve_left.clone());
                         *held = Level {
                             owner: held.owner,
                             from: first_stop,
@@ -254,11 +255,11 @@ impl CueEngine {
                     // Still moving: it keeps its time and curve and arrives at the limit. Held:
                     // a short ramp.
                     let (span, curve) = if left > 0 {
-                        (left, held.curve)
+                        (left, held.curve.clone())
                     } else {
-                        (frames, FadeCurve::Linear)
+                        (frames, RampCurve::LINEAR)
                     };
-                    ramp(at, to, span, curve);
+                    ramp(at, to, span, curve.clone());
                     *held = Level {
                         owner: held.owner,
                         from: now,

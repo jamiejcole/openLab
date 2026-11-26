@@ -6,6 +6,7 @@ mod controller;
 mod decode;
 #[cfg(feature = "device")]
 mod device;
+mod fade_shape;
 mod fuzzing;
 mod gain;
 mod meter;
@@ -35,6 +36,7 @@ pub use device::{
     default_output_device_id, open_output, output_devices,
 };
 #[doc(hidden)]
+pub use fade_shape::{FadeShape, MAX_SHAPE_KNOTS, SHAPE_KNOT, ShapeDomain, ShapeKind, ShapeSide};
 pub use fuzzing::fuzz_decode;
 pub use gain::{
     Curve, Fade, MAX_GAIN, MAX_GAIN_DB, RAMP_TOLERANCE, SILENCE_DB, db_to_linear, linear_to_db,
@@ -45,7 +47,7 @@ pub use mixer::{
     COMMAND_CAPACITY, CommandKind, ConfigError, DisabledUnits, Event, FAULT_LIMIT, FAULT_WINDOW,
     FaultStage, FinishReason, GainTarget, MAX_BLOCK_FRAMES, MAX_CUE_OUTPUTS, MAX_OUTPUT_CHANNELS,
     MAX_PATCHES, MAX_RAMP_SET, MAX_SAMPLE_RATE, MAX_VOICE_CHANNELS, Mixer, MixerConfig,
-    PENDING_CAPACITY, RejectReason, SampleTime, VoiceId, VoiceStart,
+    PENDING_CAPACITY, RejectReason, SampleTime, ShapedRamp, VoiceId, VoiceStart,
 };
 pub use negotiate::{
     BufferChoice, BufferRange, ConfigRange, Latency, NegotiateError, Negotiated, Request,

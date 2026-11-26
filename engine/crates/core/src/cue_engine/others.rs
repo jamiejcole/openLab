@@ -9,7 +9,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::cue::{FadeCurve, FadeSpec, LevelLimits, MAX_DB, OthersScope, SILENCE_DB};
+use crate::cue::{FadeSpec, LevelLimits, MAX_DB, OthersScope, SILENCE_DB};
+use crate::fade_curve::RampCurve;
 use crate::model::CueId;
 use crate::tree;
 
@@ -102,7 +103,7 @@ fn send_duck(
     let from = run.duck.value(at);
     // A 0-frame ramp is the de-zipper's length (at once on the start sample); the mixer's duck
     // stage moves evenly in dB whatever its length.
-    let (heard, _) = level::heard(at, frames, FadeCurve::Linear, first, rate);
+    let (heard, _) = level::heard(at, frames, &RampCurve::LINEAR, first, rate);
     run.duck = DuckLevel {
         from,
         to: gain,

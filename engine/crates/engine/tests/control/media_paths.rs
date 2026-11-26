@@ -226,7 +226,7 @@ fn clipboard() -> Vec<openlab_core::Cue> {
         CueKind::Fade {
             target: Some(id(500)),
             duration: 1.0,
-            curve: openlab_core::FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(openlab_core::FadeCurve::Linear),
             levels: openlab_core::FadeLevels {
                 master_db: None,
                 output_db: vec![],

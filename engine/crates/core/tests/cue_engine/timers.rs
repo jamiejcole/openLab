@@ -249,7 +249,7 @@ fn a_cue_with_static_problems_keeps_its_waits_but_shows_no_action() {
         CueKind::Fade {
             target: Some(id(99)),
             duration: 3.0,
-            curve: FadeCurve::Linear,
+            curve: FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(-10.0),
                 output_db: vec![],

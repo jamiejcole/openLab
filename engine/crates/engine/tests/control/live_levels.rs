@@ -182,7 +182,7 @@ fn master_fade(n: u128, target: u128, frames: u64, db: f64) -> openlab_core::Cue
         CueKind::Fade {
             target: Some(id(target)),
             duration: secs(frames),
-            curve: FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(db),
                 output_db: vec![],
@@ -736,7 +736,7 @@ fn a_faded_output_keeps_the_fade_level_when_its_patch_adds_it() {
         CueKind::Fade {
             target: Some(id(1)),
             duration: secs(400),
-            curve: FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: None,
                 output_db: vec![None, Some(-6.0)],
@@ -773,7 +773,7 @@ fn a_fade_brings_up_an_output_of_the_patch_the_cues_levels_do_not_list() {
         CueKind::Fade {
             target: Some(id(1)),
             duration: secs(400),
-            curve: FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: None,
                 output_db: vec![None, Some(-6.0)],
@@ -1057,7 +1057,7 @@ fn a_boost_never_takes_a_rendered_sample_past_the_workspace_maximum_nor_steps() 
         fade.kind = CueKind::Fade {
             target: Some(id(1)),
             duration: 0.2,
-            curve: FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(12.0),
                 output_db: vec![],

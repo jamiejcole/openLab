@@ -56,6 +56,10 @@ Q225 | Devamp while a non-looping slice between two loops (a bridge) plays: leav
 Q213 | Fade on a non-running target runs its duration with no effect and no warning the operator sees (the engine's `target_not_running` is logged at info and the app lists none) | assumed; no warning per the Fade-on-video checklist (2026-11-17)
 Q214 | Trigger on a cue fading out in a panic hard-stops it and starts afresh; the hard StopVoice can click, the binary may send a short stop fade | assumed
 Q205 | Stop-target-when-done stops the target when the fade ends | manual: transport-cues
+Q837 | Fade audio domains (manual pp. 198-199 names them only): slider moves the amplitude as the fourth power of a fader position the curve moves evenly; decibel moves the dB evenly from the workspace minimum (silence at it); linear moves the amplitude evenly. A new Fade is S-curve in the slider domain. Pictures ignore the domain | assumed 2026-11-26 (searched: audio domain, slider domain, decibel domain)
+Q838 | Parametric curve: `sin(πt/2)` to the power of its intensity, so 1 (the default) is the equal-power fade the manual's tip names in the linear domain and 2 the S-curve; intensity 0.01 to 100 | assumed 2026-11-26 (searched: parametric, intensity)
+Q839 | Custom curve passes through its control points (a monotone cubic); linear curve joins them with straight lines; the ends are fixed; with no points both are straight; at most 64 points a shape. The falling shape is its own (not the rising one mirrored) unless the lock mirrors edits | assumed 2026-11-26 (searched: custom curve, control point, linear curve)
+Q840 | A running Fade keeps the curve it started with; a curve edit applies from its next start. openLab has no live fade preview (QLab's Tools menu toggle, manual p. 151), so a curve drag is not heard on a playing target | assumed 2026-11-26 (searched: live fade preview, live preview)
 
 ## Panic, pause, stop, triggers
 C-P1 | Resume All resumes everything paused, including hand-paused cues | user 2026-10-27, manual: workspace

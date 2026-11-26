@@ -51,17 +51,22 @@ impl Voices {
                 param,
                 gain,
                 frames,
-                curve,
+                ref curve,
                 ..
             } => {
                 // A picture's value is the stage host's: a voice has no such gain.
                 let Some(target) = target(param) else {
                     return;
                 };
+                let (curve, shape) = match curve {
+                    RampCurve::Standard(c) => (to_curve(*c), None),
+                    RampCurve::Shaped(s) => (Curve::Linear, Some(s.clone())),
+                };
                 let cmd = Queued::Ramp {
                     target,
                     gain,
-                    fade: Fade::new(frames, to_curve(curve)),
+                    fade: Fade::new(frames, curve),
+                    shape,
                 };
                 self.command(run, at, cmd, fx);
             }
@@ -79,6 +84,7 @@ impl Voices {
                     target: GainTarget::DuckCap,
                     gain: cap,
                     fade: Fade::new(frames, Curve::Linear),
+                    shape: None,
                 };
                 self.command(run, at, cap, fx);
                 // The stage moves evenly in dB; a curve is not read.
@@ -86,6 +92,7 @@ impl Voices {
                     target: GainTarget::Duck,
                     gain,
                     fade: Fade::new(frames, Curve::Linear),
+                    shape: None,
                 };
                 self.command(run, at, cmd, fx);
             }
@@ -1168,10 +1175,10 @@ impl Voices {
             .get(&id)
             .filter(|r| r.relocated && matches!(r.phase, Phase::Waiting { .. }))
             .and_then(|r| r.replaces);
-        if let (Some(old), Queued::Devamp { stop }) = (moving_from, cmd)
+        if let (Some(old), Queued::Devamp { stop }) = (moving_from, &cmd)
             && let Some(o) = self.recs.get_mut(&old)
         {
-            o.devamp_stop = stop;
+            o.devamp_stop = *stop;
             o.devamps_out = o.devamps_out.saturating_add(1);
             fx.commands.push((at, queued(old, cmd)));
             return;
@@ -1185,8 +1192,8 @@ impl Voices {
                 // A seek still waiting: the voice it moves from is what sounds until the swap,
                 // so it follows every level change too (a seek's devamp is the moved voice's
                 // alone: it plays on from another point).
-                if let (Some(old), Queued::Ramp { .. }) = (r.replaces, cmd) {
-                    fx.commands.push((at, queued(old, cmd)));
+                if let (Some(old), Queued::Ramp { .. }) = (r.replaces, &cmd) {
+                    fx.commands.push((at, queued(old, cmd.clone())));
                 }
                 queue.push((at, cmd));
             }

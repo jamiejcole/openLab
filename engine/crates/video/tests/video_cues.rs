@@ -6223,7 +6223,7 @@ fn a_fade_cue_fades_a_video_cues_sound() {
             CueKind::Fade {
                 target: Some(id(1)),
                 duration: 0.5,
-                curve: openlab_core::FadeCurve::Linear,
+                curve: openlab_core::FadeCueCurve::like(openlab_core::FadeCurve::Linear),
                 levels: openlab_core::FadeLevels {
                     master_db: Some(db),
                     output_db: vec![],
@@ -7829,7 +7829,7 @@ fn picture_fade(
         CueKind::Fade {
             target: Some(id(target)),
             duration: seconds,
-            curve,
+            curve: openlab_core::FadeCueCurve::like(curve),
             levels: openlab_core::FadeLevels {
                 master_db: None,
                 output_db: vec![],

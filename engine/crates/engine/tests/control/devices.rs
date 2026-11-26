@@ -840,7 +840,7 @@ fn a_cue_its_lost_device_stopped_gets_no_meter_until_it_sounds_again() {
             CueKind::Fade {
                 target: Some(id(3)),
                 duration: secs(40_000),
-                curve: openlab_core::FadeCurve::Linear,
+                curve: openlab_core::FadeCueCurve::like(openlab_core::FadeCurve::Linear),
                 levels: openlab_core::FadeLevels {
                     master_db: Some(-40.0),
                     output_db: vec![],
@@ -943,7 +943,7 @@ fn each_state_on_a_lost_device_shows_as_qlab_shows_it() {
         CueKind::Fade {
             target: Some(id(2)),
             duration: secs(20_000),
-            curve: openlab_core::FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(openlab_core::FadeCurve::Linear),
             levels: openlab_core::FadeLevels {
                 master_db: Some(-40.0),
                 output_db: vec![],
@@ -4756,7 +4756,7 @@ fn the_same_while_the_cue_is_fading_the_fade_carries_on_on_the_new_device() {
         CueKind::Fade {
             target: Some(id(1)),
             duration: secs(16_000),
-            curve: openlab_core::FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(openlab_core::FadeCurve::Linear),
             levels: openlab_core::FadeLevels {
                 master_db: Some(-40.0),
                 output_db: vec![],

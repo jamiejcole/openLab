@@ -404,13 +404,13 @@ fn fade_field(p: PictureParam) -> &'static str {
 /// `at + frames` along `curve` (a falling move traces the rising curve backwards), then `to`;
 /// 0 frames is `to` from `at` on. The engine, the stage host and the link read it by the one
 /// formula, the cue engine's for gains.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PictureRamp {
     pub from: f64,
     pub to: f64,
     pub at: u64,
     pub frames: u64,
-    pub curve: crate::cue::FadeCurve,
+    pub curve: crate::fade_curve::RampCurve,
 }
 
 impl PictureRamp {
@@ -421,7 +421,7 @@ impl PictureRamp {
             to: v,
             at,
             frames: 0,
-            curve: crate::cue::FadeCurve::Linear,
+            curve: crate::fade_curve::RampCurve::LINEAR,
         }
     }
 
@@ -430,13 +430,8 @@ impl PictureRamp {
         if self.frames == 0 && t >= self.at {
             return self.to;
         }
-        crate::cue_engine::ramp_value(
-            self.from,
-            self.to,
-            t.saturating_sub(self.at),
-            self.frames,
-            self.curve,
-        )
+        self.curve
+            .value(self.from, self.to, t.saturating_sub(self.at), self.frames)
     }
 
     /// Whether both ends are values `param` may hold.
@@ -832,7 +827,7 @@ mod tests {
             to: -100.0,
             at: 1000,
             frames: 400,
-            curve: FadeCurve::SCurve,
+            curve: FadeCurve::SCurve.into(),
         };
         assert_eq!(r.value(0), 100.0);
         assert_eq!(r.value(1000), 100.0);
@@ -840,7 +835,10 @@ mod tests {
         assert_eq!(r.value(1400), -100.0);
         assert_eq!(r.value(u64::MAX), -100.0);
         // At once: the new value from its own sample.
-        let jump = PictureRamp { frames: 0, ..r };
+        let jump = PictureRamp {
+            frames: 0,
+            ..r.clone()
+        };
         assert_eq!((jump.value(999), jump.value(1000)), (100.0, -100.0));
         assert!(r.ok(PictureParam::TranslationX));
         assert!(!r.ok(PictureParam::Opacity));

@@ -942,7 +942,7 @@ mod tests {
                 to,
                 at: 48_000,
                 frames: 144_000,
-                curve: crate::FadeCurve::SCurve,
+                curve: crate::FadeCurve::SCurve.into(),
             },
         };
         let good = ramp(PictureParam::TranslationX, -300.5, 1200.0);
