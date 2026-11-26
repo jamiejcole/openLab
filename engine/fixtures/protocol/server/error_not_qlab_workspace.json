@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "not_qlab_workspace",
+  "message": "message",
+  "protocol_version": 5
+}

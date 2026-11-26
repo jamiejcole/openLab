@@ -59,7 +59,7 @@ impl Control {
 
 /// Why `mapping` cannot be used for a patch with `outputs` outputs on the listed `devices`.
 /// Any listed device will do: one that is not open yet opens for it.
-fn mapping_refusal(
+pub(super) fn mapping_refusal(
     mapping: &PatchMapping,
     outputs: usize,
     devices: &[DeviceEntry],

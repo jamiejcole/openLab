@@ -59,7 +59,7 @@ pub(super) struct Stages {
     pid: Option<u32>,
     /// What its `hello` said; `None` before the first.
     pub(super) video: Option<bool>,
-    displays: Vec<Display>,
+    pub(super) displays: Vec<Display>,
     /// Where each route is, as the stage host last said.
     states: HashMap<RouteId, RouteState>,
     /// The stage set last handed to the supervisor.
@@ -69,7 +69,7 @@ pub(super) struct Stages {
     /// unchanged and does no more.
     synced: Option<(Vec<DocStages>, u64, u64, u64)>,
     /// Counts changes to this machine's route display choices.
-    mappings: u64,
+    pub(super) mappings: u64,
     /// Stages a picture has played on since their workspace opened (or the stage was added)
     /// and its last panic. Only these keep black: a stage covers its display after its first
     /// picture, never before (a new or opened workspace locks no operator out), and a panic

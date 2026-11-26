@@ -794,6 +794,7 @@ dependencies = [
  "openlab-engine",
  "rosc",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

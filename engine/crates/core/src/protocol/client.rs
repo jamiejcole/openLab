@@ -335,6 +335,31 @@ pub enum Request {
     },
     /// List the autosave files, for a show that cannot be opened.
     ScanRecovery,
+    /// Reads the QLab 5 workspace file at `path` (absolute) and answers `qlab_report`: what
+    /// cannot be converted, what changes, and the QLab audio patches and video outputs for
+    /// the device step. Nothing is opened and the file is never written. App-scope.
+    InspectQlab {
+        path: String,
+    },
+    /// Opens a new, unsaved workspace converted from the QLab 5 workspace file at `path`
+    /// (absolute), as `new` does (`opened { doc }`). `cues`: what becomes of each unsupported
+    /// cue `qlab_report` listed; `other_cues` (absent: placeholder) of those `cues` does not
+    /// name. `audio_patches`: where
+    /// each QLab audio patch plays on this machine (one not listed is mapped as any new
+    /// workspace's patch is; listed without a mapping, it is left unmapped). `video_outputs`:
+    /// the display each QLab video output is shown on (one not listed has none). The file is
+    /// never written. App-scope.
+    ImportQlab {
+        path: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cues: Vec<crate::QlabCueChoice>,
+        #[serde(default, skip_serializing_if = "crate::QlabCueAction::is_placeholder")]
+        other_cues: crate::QlabCueAction,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        audio_patches: Vec<crate::QlabPatchChoice>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        video_outputs: Vec<crate::QlabOutputChoice>,
+    },
     /// Delete one autosave file listed by `scan_recovery` (same selector as `open_recovery`):
     /// the operator will not restore it. Nothing else is touched. Refused for the current
     /// autosave of an open workspace.
@@ -630,6 +655,8 @@ impl ClientMessage {
                 request:
                     Request::Open { path, .. }
                     | Request::SaveAs { path }
+                    | Request::InspectQlab { path }
+                    | Request::ImportQlab { path, .. }
                     | Request::Relink { folder: path, .. },
                 ..
             } if path.is_empty() => Err(ProtocolError::OutOfRange {
@@ -645,6 +672,8 @@ impl ClientMessage {
                 request:
                     Request::Open { path, .. }
                     | Request::SaveAs { path }
+                    | Request::InspectQlab { path }
+                    | Request::ImportQlab { path, .. }
                     | Request::Relink { folder: path, .. },
                 ..
             } if !is_absolute(&to_portable(path, PathStyle::host())) => {

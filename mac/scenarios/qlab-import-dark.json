@@ -1,0 +1,24 @@
+{
+  "about": "New Workspace from QLab File, dark: the unsupported cues (all Delete, then mixed), the outputs, the new workspace and its notes. Needs the local QLab fixtures.",
+  "show": "new",
+  "appearance": "dark",
+  "window": {"width": 800, "height": 500},
+  "displays": "V1:1920x1080",
+  "qlab_file": "../../engine/fixtures/qlab/cue-types/cue-types.qlab5",
+  "steps": [
+    {"focus": "qlab-import"},
+    {"shot": "unsupported-all-delete-dark"},
+    {"choose": "qlab-unsupported-action-0", "item": "Placeholder"},
+    {"shot": "unsupported-mixed-dark"},
+    {"click": "qlab-primary"},
+    {"shot": "outputs-dark"},
+    {"click": "qlab-create"},
+    {"focus": "qlab-notes"},
+    {"shot": "notes-dark"},
+    {"focus": "workspace"},
+    {"shot": "new-workspace-dark"},
+    {"resize": [1200, 800]},
+    {"select": "20"},
+    {"shot": "placeholder-dark"}
+  ]
+}

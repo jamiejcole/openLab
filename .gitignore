@@ -18,3 +18,6 @@ DerivedData/
 /.claude/settings.local.json
 /.claude/worktrees/
 /mac/openLab/Info.plist
+
+# QLab-saved workspaces for the QLab import tests: local only, as QLab may store identifiers of the Mac that saved them
+/engine/fixtures/qlab/

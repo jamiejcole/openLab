@@ -90,6 +90,7 @@ Details of the replace:
 
 ## Documents in the control loop (`control/docs.rs`)
 Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open another doc beside the others; nothing is replaced.
+- `import_qlab` opens a workspace converted from a QLab 5 file the same way, untitled and dirty; `inspect_qlab` reads one for its report. Both are document reads on the worker (skill `qlab-import`).
 - **Nothing blocks the control thread.** A save or autosave is a clone of the workspace handed to `SaveWriter`, tagged with the revision. The loop polls answers every tick and answers `save`/`save_as` only after the data is durable (a `document` broadcast with the new path and dirty flag goes first).
 - Saves of one file in flight collapse in the writer (older answer `Superseded`). The loop answers the older request with the outcome of the newest save of that file whose revision is at least its own.
 - A failed write answers `io` and changes nothing (still dirty, same path). A save of a doc closed meanwhile is answered when it finishes and changes nothing.

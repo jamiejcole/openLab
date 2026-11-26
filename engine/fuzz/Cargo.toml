@@ -18,6 +18,8 @@ openlab-engine = { path = "../crates/engine" }
 # versions as the engine crate).
 rosc = { version = "0.11.4", default-features = false }
 serde_json = "1.0.154"
+# The qlab target hands the reader ids, as the engine does.
+uuid = { version = "1.29.0", default-features = false }
 
 # Kept out of the engine workspace: it needs nightly and sanitizer flags.
 [workspace]
@@ -60,6 +62,13 @@ bench = false
 [[bin]]
 name = "stage_link"
 path = "fuzz_targets/stage_link.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qlab"
+path = "fuzz_targets/qlab.rs"
 test = false
 doc = false
 bench = false

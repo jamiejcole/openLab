@@ -44,6 +44,7 @@ mod pictures;
 pub mod plan;
 mod preshow;
 mod prime;
+mod qlab;
 mod reports;
 pub mod runner;
 mod stages;
@@ -1536,6 +1537,8 @@ fn request_name(r: &Request) -> &'static str {
         Request::Open { .. } => "open",
         Request::OpenRecovery { .. } => "open_recovery",
         Request::ScanRecovery => "scan_recovery",
+        Request::InspectQlab { .. } => "inspect_qlab",
+        Request::ImportQlab { .. } => "import_qlab",
         Request::DiscardRecovery { .. } => "discard_recovery",
         Request::Save => "save",
         Request::SaveAs { .. } => "save_as",

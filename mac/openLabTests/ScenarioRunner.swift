@@ -153,6 +153,8 @@ final class ScenarioRunner {
         var displays: String?
         /// This machine's settings (`settings.json`) as the engine finds them at start.
         var settings: Data?
+        /// A `.qlab5` file (relative: to the scenario file) that `{"focus": "qlab-import"}` reads.
+        var qlabFile: String?
         var steps: [Step] = []
     }
 
@@ -187,7 +189,9 @@ final class ScenarioRunner {
             throw Failure("the scenario is not valid JSON: \(detail)")
         }
         guard let top = root as? [String: Any] else { throw Failure("the scenario must be a JSON object") }
-        let known: Set = ["show", "media", "window", "appearance", "displays", "settings", "steps", "about"]
+        let known: Set = [
+            "show", "media", "window", "appearance", "displays", "settings", "steps", "about", "qlab_file",
+        ]
         if let extra = top.keys.first(where: { !known.contains($0) }) {
             throw Failure("unknown scenario key \"\(extra)\"; known: \(known.sorted().joined(separator: ", "))")
         }
@@ -195,6 +199,9 @@ final class ScenarioRunner {
             throw Failure("\"show\" is missing: a test show's name (Demo, Second, Three) or a path to a .openlab file")
         }
         var s = Scenario(show: show)
+        if let q = top["qlab_file"] as? String {
+            s.qlabFile = URL(fileURLWithPath: q, relativeTo: base).standardizedFileURL.path
+        }
         if !isTestShow(show) {
             s.show = URL(fileURLWithPath: show, relativeTo: base).standardizedFileURL.path
         }
@@ -421,11 +428,11 @@ final class ScenarioRunner {
             let which = try string("focus")
             let known = [
                 "workspace", "settings", "sheet", "patch-editor", "stage-editor", "preferences", "status", "about",
-                "launcher",
+                "launcher", "qlab-import", "qlab-notes",
             ]
             guard known.contains(which) else {
                 throw Failure(
-                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"stage-editor\", \"preferences\", \"status\", \"about\", \"launcher\" or \"sheet\""
+                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"stage-editor\", \"preferences\", \"status\", \"about\", \"launcher\", \"qlab-import\", \"qlab-notes\" or \"sheet\""
                 )
             }
             guard which == "launcher" else {
@@ -608,6 +615,9 @@ final class ScenarioRunner {
     private var launcherWindow: LauncherWindowController?
     /// The About window, once a step focused it.
     private var aboutWindow: AboutWindowController?
+    /// The QLab import steps and their report, once a step focused them.
+    private var qlabImport: (QlabImportController, QlabReport)?
+    private var qlabNotes: QlabNotesController?
     /// The application preferences, once a step focused them.
     private var prefs: PreferencesWindowController?
     /// What new meter views asked before the run (restored when it ends).
@@ -1009,6 +1019,63 @@ final class ScenarioRunner {
                 w.appearance = wc.window?.appearance
                 aboutWindow = about
                 focused = w
+            } else if which == "qlab-import" {
+                // New Workspace from QLab File: its steps, drawn off screen over this run's engine.
+                guard let engine, let file = scenario.qlabFile else { throw Failure("\"qlab_file\" is missing") }
+                guard case .success(let ok) = await engine.app.send({ .request(id: $0, .inspectQlab(path: file)) }),
+                    case .qlabReport(let report)? = ok.data
+                else { throw Failure("the engine could not read \(file)") }
+                var devices: [DeviceEntry] = []
+                if case .success(let ok) = await engine.request(.listDevices), case .devices(let list, _)? = ok.data {
+                    devices = list
+                }
+                var displays: [StageDisplay] = []
+                if case .success(let ok) = await engine.request(.listDisplays), case .displays(let list, _)? = ok.data {
+                    displays = list
+                }
+                let c = QlabImportController(report: report, devices: devices, displays: displays)
+                c.window.appearance = wc.window?.appearance
+                qlabImport = (c, report)
+                focused = c.window
+            } else if which == "qlab-notes" {
+                // What Create Workspace asked for, opened as the app opens it; the new workspace
+                // becomes the run's, and its notes sheet is drawn off screen.
+                guard let engine, let (c, report) = qlabImport, let choice = c.result, let file = scenario.qlabFile
+                else {
+                    throw Failure("click qlab-create on the import steps first")
+                }
+                guard
+                    case .success(let ok) = await engine.app.send({
+                        .request(
+                            id: $0,
+                            .importQlab(
+                                path: file, cues: choice.cues, otherCues: choice.otherCues,
+                                audioPatches: choice.audioPatches, videoOutputs: choice.videoOutputs))
+                    }), case .opened(let doc)? = ok.data
+                else { throw Failure("the engine refused the import") }
+                rig = Rig(engine: engine, workspace: doc)
+                guard await rig.connect() else { throw Failure("the new workspace's connection did not come up") }
+                guard await eventually({ self.rig.store.model != nil }) else {
+                    throw Failure("the new workspace never loaded")
+                }
+                let appearance = wc.window?.appearance
+                wc = WorkspaceWindowController(store: rig.store)
+                wc.presentSheet = { _ in }
+                wc.settingsWindow.presentsEditors = false
+                wireApp()
+                wc.window?.appearance = appearance
+                wc.window?.setContentSize(scenario.size)
+                guard await eventually({ self.wc.cueList.listID != nil }) else {
+                    throw Failure("the cue list never showed")
+                }
+                await settle()
+                let notes = QlabNotesController(
+                    info: QlabNotesInfo(
+                        fileName: URL(fileURLWithPath: file).lastPathComponent, report: report,
+                        converted: choice.converted, placeholders: choice.placeholders, deleted: choice.deleted))
+                notes.window.appearance = appearance
+                qlabNotes = notes
+                focused = notes.window
             } else if which == "status" {
                 // The workspace status window, drawn off screen on its Warnings page (live: it already has the rows).
                 let status = wc.statusWindow
