@@ -16,7 +16,7 @@ pub const SHAPE_KNOT: u64 = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShapeKind {
     SCurve,
-    /// A monotone cubic through the knots with the tangents given.
+    /// A quadratic B-spline on the knots, drawn near them.
     Custom,
     /// `sin(πt/2)` raised to the parameter.
     Parametric,
@@ -43,21 +43,14 @@ pub struct ShapeSide {
     n: usize,
     ts: [f64; MAX_SHAPE_KNOTS],
     vs: [f64; MAX_SHAPE_KNOTS],
-    ms: [f64; MAX_SHAPE_KNOTS],
 }
 
 impl ShapeSide {
-    /// A side from its knots (times strictly increasing from 0 to 1, heights 0 to 1) and their
-    /// tangents. `None` unless there are 2 to [`MAX_SHAPE_KNOTS`] of them, as many of each.
-    pub fn new(
-        kind: ShapeKind,
-        parameter: f64,
-        ts: &[f64],
-        vs: &[f64],
-        ms: &[f64],
-    ) -> Option<Self> {
+    /// A side from its knots (times strictly increasing from 0 to 1, heights 0 to 1). `None`
+    /// unless there are 2 to [`MAX_SHAPE_KNOTS`] of them, as many times as heights.
+    pub fn new(kind: ShapeKind, parameter: f64, ts: &[f64], vs: &[f64]) -> Option<Self> {
         let n = ts.len();
-        if !(2..=MAX_SHAPE_KNOTS).contains(&n) || vs.len() != n || ms.len() != n {
+        if !(2..=MAX_SHAPE_KNOTS).contains(&n) || vs.len() != n {
             return None;
         }
         let mut side = Self {
@@ -66,32 +59,29 @@ impl ShapeSide {
             n,
             ts: [0.0; MAX_SHAPE_KNOTS],
             vs: [0.0; MAX_SHAPE_KNOTS],
-            ms: [0.0; MAX_SHAPE_KNOTS],
         };
         side.ts.get_mut(..n)?.copy_from_slice(ts);
         side.vs.get_mut(..n)?.copy_from_slice(vs);
-        side.ms.get_mut(..n)?.copy_from_slice(ms);
         Some(side)
     }
 
-    fn knots(&self) -> (&[f64], &[f64], &[f64]) {
+    fn knots(&self) -> (&[f64], &[f64]) {
         let n = self.n.min(MAX_SHAPE_KNOTS);
         (
             self.ts.get(..n).unwrap_or(&[]),
             self.vs.get(..n).unwrap_or(&[]),
-            self.ms.get(..n).unwrap_or(&[]),
         )
     }
 
     fn drawn(&self, rising: bool, t: f64) -> f64 {
         let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
         let u = if rising { t } else { 1.0 - t };
-        let (ts, vs, ms) = self.knots();
+        let (ts, vs) = self.knots();
         let v = match self.kind {
             ShapeKind::SCurve => (1.0 - (u * std::f64::consts::PI).cos()) * 0.5,
             ShapeKind::Parametric => (u * std::f64::consts::FRAC_PI_2).sin().powf(self.parameter),
             ShapeKind::Linear => lines(ts, vs, t),
-            ShapeKind::Custom => cubic(ts, vs, ms, t),
+            ShapeKind::Custom => spline(ts, vs, t),
         };
         v.clamp(0.0, 1.0)
     }
@@ -123,28 +113,43 @@ fn lines(ts: &[f64], vs: &[f64], t: f64) -> f64 {
     }
 }
 
-fn cubic(ts: &[f64], vs: &[f64], ms: &[f64], t: f64) -> f64 {
-    let i = interval(ts, t);
-    match (
-        ts.get(i),
-        ts.get(i + 1),
-        vs.get(i),
-        vs.get(i + 1),
-        ms.get(i),
-        ms.get(i + 1),
-    ) {
-        (Some(t0), Some(t1), Some(v0), Some(v1), Some(m0), Some(m1)) if t1 > t0 => {
-            let h = t1 - t0;
-            let s = (t - t0) / h;
-            let (s2, s3) = (s * s, s * s * s);
-            let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
-            let h10 = s3 - 2.0 * s2 + s;
-            let h01 = -2.0 * s3 + 3.0 * s2;
-            let h11 = s3 - s2;
-            h00 * v0 + h10 * h * m0 + h01 * v1 + h11 * h * m1
-        }
-        _ => t,
+/// The custom curve at `t`, as QLab 5 draws it: a quadratic B-spline on the knots, ends kept.
+/// Each knot between the ends shapes one quadratic Bezier piece, from the midpoint with the knot
+/// before it (the start, for the first) to the midpoint with the knot after it (the end, for the
+/// last), so the curve passes near its points, not through them, and turns smoothly where two
+/// pieces meet. With knot times strictly increasing a piece's time only grows, so its height at
+/// `t` is found by solving the piece's time for its parameter.
+fn spline(ts: &[f64], vs: &[f64], t: f64) -> f64 {
+    let n = ts.len();
+    if n < 3 {
+        return lines(ts, vs, t);
     }
+    let knot = |k: usize| match (ts.get(k), vs.get(k)) {
+        (Some(&x), Some(&y)) => (x, y),
+        _ => (0.0, 0.0),
+    };
+    let mid = |k: usize| {
+        let ((x0, y0), (x1, y1)) = (knot(k), knot(k + 1));
+        ((x0 + x1) * 0.5, (y0 + y1) * 0.5)
+    };
+    // The piece `t` lies in: shaped by knot `i`, from 1 to n − 2.
+    let j = interval(ts, t);
+    let i = (if t >= mid(j).0 { j + 1 } else { j }).clamp(1, n - 2);
+    let (ax, ay) = if i == 1 { knot(0) } else { mid(i - 1) };
+    let (bx, by) = knot(i);
+    let (cx, cy) = if i == n - 2 { knot(n - 1) } else { mid(i) };
+    // Time on the piece is ax + bb·s + aa·s², rising from ax to cx; s by the root that keeps
+    // its precision as aa nears 0.
+    let dt = (t - ax).min(cx - ax).max(0.0);
+    let (aa, bb) = (ax - 2.0 * bx + cx, 2.0 * (bx - ax));
+    let den = bb + (bb * bb + 4.0 * aa * dt).max(0.0).sqrt();
+    let s = if den > 0.0 {
+        (2.0 * dt / den).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let r = 1.0 - s;
+    r * r * ay + 2.0 * s * r * by + s * s * cy
 }
 
 /// A Fade cue's curve: the side a rising gain follows, the side a falling one follows, the
@@ -270,22 +275,8 @@ mod tests {
     use super::*;
 
     fn straight(domain: ShapeDomain) -> FadeShape {
-        let up = ShapeSide::new(
-            ShapeKind::Linear,
-            1.0,
-            &[0.0, 1.0],
-            &[0.0, 1.0],
-            &[1.0, 1.0],
-        )
-        .unwrap();
-        let down = ShapeSide::new(
-            ShapeKind::Linear,
-            1.0,
-            &[0.0, 1.0],
-            &[1.0, 0.0],
-            &[-1.0, -1.0],
-        )
-        .unwrap();
+        let up = ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0, 1.0], &[0.0, 1.0]).unwrap();
+        let down = ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0, 1.0], &[1.0, 0.0]).unwrap();
         FadeShape::new(domain, -60.0, up, down)
     }
 
@@ -310,9 +301,9 @@ mod tests {
 
     #[test]
     fn a_side_needs_two_to_sixty_six_knots() {
-        assert!(ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0], &[0.0], &[0.0]).is_none());
+        assert!(ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0], &[0.0]).is_none());
         let many = [0.5; MAX_SHAPE_KNOTS + 1];
-        assert!(ShapeSide::new(ShapeKind::Linear, 1.0, &many, &many, &many).is_none());
-        assert!(ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0, 1.0], &[0.0], &[0.0, 0.0]).is_none());
+        assert!(ShapeSide::new(ShapeKind::Linear, 1.0, &many, &many).is_none());
+        assert!(ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0, 1.0], &[0.0]).is_none());
     }
 }

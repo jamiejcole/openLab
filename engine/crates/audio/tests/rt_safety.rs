@@ -883,20 +883,8 @@ fn the_duck_cap_bounds_a_boost_while_master_and_duck_cross() {
 /// A Fade cue curve with one control point at `(0.5, v)` on both sides (straight lines).
 #[allow(clippy::unwrap_used)]
 fn bent(v: f64, domain: ShapeDomain) -> FadeShape {
-    let up = ShapeSide::new(
-        ShapeKind::Linear,
-        1.0,
-        &[0.0, 0.5, 1.0],
-        &[0.0, v, 1.0],
-        &[0.0; 3],
-    );
-    let down = ShapeSide::new(
-        ShapeKind::Linear,
-        1.0,
-        &[0.0, 0.5, 1.0],
-        &[1.0, v, 0.0],
-        &[0.0; 3],
-    );
+    let up = ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0, 0.5, 1.0], &[0.0, v, 1.0]);
+    let down = ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0, 0.5, 1.0], &[1.0, v, 0.0]);
     FadeShape::new(domain, -60.0, up.unwrap(), down.unwrap())
 }
 

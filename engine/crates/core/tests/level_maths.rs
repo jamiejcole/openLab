@@ -135,7 +135,7 @@ fn mixer_shape(r: &RampShape) -> openlab_audio::FadeShape {
             CurveType::Parametric => openlab_audio::ShapeKind::Parametric,
             CurveType::Linear => openlab_audio::ShapeKind::Linear,
         };
-        openlab_audio::ShapeSide::new(kind, e.parameter, &e.ts, &e.vs, &e.ms).unwrap()
+        openlab_audio::ShapeSide::new(kind, e.parameter, &e.ts, &e.vs).unwrap()
     };
     let domain = match r.domain {
         AudioDomain::Slider => openlab_audio::ShapeDomain::Slider,
