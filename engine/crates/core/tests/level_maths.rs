@@ -126,7 +126,7 @@ fn edge_values_match_the_mixer() {
     }
 }
 
-/// A Fade cue's curve as the engine hands it to the mixer: every knot and tangent the same.
+/// A Fade cue's curve as the engine hands it to the mixer: every knot the same.
 fn mixer_shape(r: &RampShape) -> openlab_audio::FadeShape {
     let side = |e: &ShapeEval| {
         let kind = match e.kind {

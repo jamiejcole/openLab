@@ -881,10 +881,15 @@ fn the_duck_cap_bounds_a_boost_while_master_and_duck_cross() {
 }
 
 /// A Fade cue curve with one control point at `(0.5, v)` on both sides (straight lines).
-#[allow(clippy::unwrap_used)]
 fn bent(v: f64, domain: ShapeDomain) -> FadeShape {
-    let up = ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0, 0.5, 1.0], &[0.0, v, 1.0]);
-    let down = ShapeSide::new(ShapeKind::Linear, 1.0, &[0.0, 0.5, 1.0], &[1.0, v, 0.0]);
+    bent_as(ShapeKind::Linear, v, domain)
+}
+
+/// As [`bent`], of `kind` (a custom one is QLab's smooth curve near its point).
+#[allow(clippy::unwrap_used)]
+fn bent_as(kind: ShapeKind, v: f64, domain: ShapeDomain) -> FadeShape {
+    let up = ShapeSide::new(kind, 1.0, &[0.0, 0.5, 1.0], &[0.0, v, 1.0]);
+    let down = ShapeSide::new(kind, 1.0, &[0.0, 0.5, 1.0], &[1.0, v, 0.0]);
     FadeShape::new(domain, -60.0, up.unwrap(), down.unwrap())
 }
 
@@ -905,7 +910,8 @@ fn shaped(voice: u64, gains: Vec<(GainTarget, f32)>, frames: u64, shape: FadeSha
 fn shaped_ramps_follow_their_curve_without_allocating_and_a_fifth_curve_is_counted() {
     let (mut ctl, mut r) = setup(config(2));
     start(&mut ctl, 0, 1, source(&[1.0; 2 * 4000]), 2);
-    let curve = bent(0.8, ShapeDomain::Decibel);
+    // A custom curve, so the audio thread runs its spline under the allocation check.
+    let curve = bent_as(ShapeKind::Custom, 0.8, ShapeDomain::Decibel);
     ctl.send(64, shaped(1, vec![(GainTarget::Master, 0.0)], 640, curve));
     let mut out = vec![0.0; 2 * 800];
     no_alloc(|| r.render_into(&mut out, &[16]));
