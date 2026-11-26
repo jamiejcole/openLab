@@ -379,14 +379,9 @@ impl Converter<'_, '_> {
                 "editPostWait" => &mut keys.edit_post_wait,
                 "cycleContinue" => &mut keys.cycle_continue,
                 "flag" => &mut keys.toggle_flag,
-                other => {
-                    let detail = format!(
-                        "The shortcut for {} has no openLab action.",
-                        key_action(other)
-                    );
-                    self.note_setting(&detail);
-                    continue;
-                }
+                // QLab actions openLab lacks (audition, cycling the target type): nothing to
+                // keep and nothing the operator needs told (owner, 2026-11-26).
+                _ => continue,
             };
             let entry: HashMap<String, Value<'_>> = top.dict(Some(value))?.into_iter().collect();
             let get = |k: &str| entry.get(k).copied();
@@ -1899,9 +1894,6 @@ fn key_action(name: &str) -> String {
         "editPostWait" => "editing the post-wait",
         "cycleContinue" => "cycling the continue mode",
         "flag" => "flagging the cue",
-        "cycleTargetType" => "cycling the target type",
-        "auditionGo" => "GO in audition",
-        "auditionPreview" => "previewing in audition",
         other => {
             let mut out = String::with_capacity(other.len() + 8);
             for c in other.chars() {

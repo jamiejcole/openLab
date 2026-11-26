@@ -1684,8 +1684,9 @@ final class InspectorLevelsTests: XCTestCase {
         }
         let falling = modelKind(Self.fade)?["curve"]?["falling"]?["points"]?.arrayValue?.first
         XCTAssertEqual(falling?["t"]?.doubleValue ?? 0, 0.5, accuracy: 0.01, "mirrored onto the falling curve")
-        XCTAssertEqual(r.value(at: 0.5), 0.75, accuracy: 0.01, "drawn through the point")
-        XCTAssertEqual(s.fallingView.value(at: 0.5), 0.75, accuracy: 0.01)
+        // QLab's smooth curve near its one point: half way between the point and the line's ends.
+        XCTAssertEqual(r.value(at: 0.5), 0.625, accuracy: 0.01, "drawn near the point, as QLab's")
+        XCTAssertEqual(s.fallingView.value(at: 0.5), 0.625, accuracy: 0.01)
 
         // Delete removes the chosen point; Reset Curve clears the rest.
         r.press(at: r.location(FadeCurveSpec.Point(t: 0.2, v: 0.4)))
@@ -1726,20 +1727,29 @@ final class InspectorLevelsTests: XCTestCase {
     }
 
     /// The graphs draw the engine's shapes (`fade_curve.rs`): the S-curve, the parametric curve, and
-    /// a custom curve through its points never overshooting between them.
+    /// a custom curve as QLab 5 draws it, near its points rather than through them.
     func testTheCurveGraphsDrawTheEnginesShapes() {
         typealias S = FadeCurveSpec
         XCTAssertEqual(S.drawn(S.Shape(), rising: true, at: 0.25), (1 - cos(0.25 * .pi)) / 2, accuracy: 1e-12)
         XCTAssertEqual(
             S.drawn(S.Shape(kind: .parametric, parameter: 2), rising: true, at: 0.3),
             S.drawn(S.Shape(), rising: true, at: 0.3), accuracy: 1e-12)
-        let custom = S.Shape(kind: .custom, points: [.init(t: 0.25, v: 0.7), .init(t: 0.6, v: 0.8)])
-        XCTAssertEqual(S.drawn(custom, rising: true, at: 0.25), 0.7, accuracy: 1e-12)
-        XCTAssertEqual(S.drawn(custom, rising: true, at: 0.6), 0.8, accuracy: 1e-12)
-        for i in 0...100 {
-            let v = S.drawn(custom, rising: true, at: 0.25 + 0.35 * Double(i) / 100)
-            XCTAssertTrue((0.7 - 1e-12)...(0.8 + 1e-12) ~= v, "between its points: \(v)")
+        // One point: a quadratic Bezier from end to end with the point its control.
+        let one = S.Shape(kind: .custom, points: [.init(t: 0.5, v: 0.8)])
+        XCTAssertEqual(S.drawn(one, rising: true, at: 0.5), 0.65, accuracy: 1e-12)
+        // Two points: through the midpoint between them, not through either.
+        let two = S.Shape(kind: .custom, points: [.init(t: 0.25, v: 0.3), .init(t: 0.6, v: 0.1)])
+        XCTAssertEqual(S.drawn(two, rising: false, at: 0.425), 0.2, accuracy: 1e-12)
+        XCTAssertGreaterThan(abs(S.drawn(two, rising: false, at: 0.25) - 0.3), 0.01)
+        // The heights QLab 5.6.5 draws for these points, as the engine's test reads them.
+        let custom = S.Shape(
+            kind: .custom, points: [.init(t: 0.2, v: 0.5), .init(t: 0.5, v: 0.3), .init(t: 0.8, v: 0.9)])
+        for (t, v) in [(0.1005, 0.2196), (0.3499, 0.3998), (0.5, 0.3998), (0.6501, 0.6002), (0.8995, 0.935)] {
+            XCTAssertEqual(S.drawn(custom, rising: true, at: t), v, accuracy: 0.002, "at \(t)")
         }
+        let view = FadeCurveView(rising: true)
+        view.shape = custom
+        XCTAssertEqual(view.value(at: 0.1005), S.drawn(custom, rising: true, at: 0.1005), "the graph draws it")
         let straight = S.Shape(kind: .linear, points: [.init(t: 0.5, v: 0.2)])
         XCTAssertEqual(S.drawn(straight, rising: false, at: 0.25), 0.6, accuracy: 1e-12)
         let mirrored = S.mirrored([.init(t: 0.2, v: 0.3), .init(t: 0.7, v: 0.9)])

@@ -96,7 +96,7 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     init(store: WorkspaceStore, stage: ModelID) {
         self.store = store
         stageID = stage
-        let window = NSWindow(
+        let window = PanicKeyWindow(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 600),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.identifier = NSUserInterfaceItemIdentifier(Self.id)

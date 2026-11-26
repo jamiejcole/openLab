@@ -46,7 +46,7 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
     init(preferences: LaunchPreferences, audio: AudioPreferencesModel? = nil) {
         self.preferences = preferences
         self.audio = audio
-        let window = NSWindow(
+        let window = PanicKeyWindow(
             contentRect: NSRect(origin: .zero, size: Layout.leastSize),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = loc("prefs.title")

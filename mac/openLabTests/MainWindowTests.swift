@@ -296,7 +296,7 @@ final class MainWindowTests: XCTestCase {
     func testEachApprovedConceptDrawsItsOwnImageSetAndNoSymbolRemains() throws {
         let approved: [Icon: String] = [
             .stateRunning: "state-running", .statePaused: "state-paused", .stateLoaded: "state-loaded",
-            .stateBroken: "state-broken", .stateFading: "state-fading", .stateStopping: "state-stopping",
+            .stateBroken: "state-broken", .stateStopping: "state-stopping",
             .flagged: "flagged", .flaggedInside: "flagged-inside", .warningMarker: "warning-marker",
             .outputOverridden: "output-overridden", .preview: "preview", .continueAuto: "continue-auto",
             .continueFollow: "continue-follow", .transportReset: "transport-reset", .transportPause: "transport-pause",
@@ -310,7 +310,7 @@ final class MainWindowTests: XCTestCase {
             .fieldReveal: "field-reveal",
             .reservedPopOut: "reserved-pop-out",
         ]
-        XCTAssertEqual(approved.count, 33)
+        XCTAssertEqual(approved.count, 32)
         for (icon, name) in approved {
             XCTAssertEqual(icon.drawing, name, "\(icon)")
             XCTAssertNil(icon.symbol, "\(icon) keeps a symbol")

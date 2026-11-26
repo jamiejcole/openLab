@@ -184,6 +184,20 @@ final class FadeCurveView: NSView {
                 at: NSPoint(x: bounds.width * CGFloat(c) / CGFloat(columns) + 3, y: bounds.height - 14),
                 withAttributes: attrs)
         }
+        // A custom curve passes near its points, not through them: a dashed line joins the ends
+        // and the points in order, so each point's pull on the curve shows.
+        if shape.kind == .custom, !shape.points.isEmpty {
+            let ends = rising ? (0.0, 1.0) : (1.0, 0.0)
+            let knots = [FadeCurveSpec.Point(t: 0, v: ends.0)] + shape.points + [FadeCurveSpec.Point(t: 1, v: ends.1)]
+            let polygon = NSBezierPath()
+            for (i, p) in knots.enumerated() {
+                if i == 0 { polygon.move(to: location(p)) } else { polygon.line(to: location(p)) }
+            }
+            polygon.setLineDash([3, 3], count: 2, phase: 0)
+            polygon.lineWidth = 1
+            NSColor.systemIndigo.withAlphaComponent(0.8).setStroke()
+            polygon.stroke()
+        }
         let line = NSBezierPath()
         let steps = max(2, Int(bounds.width))
         for i in 0...steps {

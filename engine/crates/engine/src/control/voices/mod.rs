@@ -1033,7 +1033,7 @@ pub fn mixer_shape(s: &RampShape) -> Option<FadeShape> {
             CurveType::Parametric => ShapeKind::Parametric,
             CurveType::Linear => ShapeKind::Linear,
         };
-        ShapeSide::new(kind, e.parameter, &e.ts, &e.vs, &e.ms)
+        ShapeSide::new(kind, e.parameter, &e.ts, &e.vs)
     };
     let domain = match s.domain {
         AudioDomain::Slider => ShapeDomain::Slider,

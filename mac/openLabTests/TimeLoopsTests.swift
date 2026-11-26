@@ -2154,11 +2154,41 @@ extension PlayheadFlowTests {
         XCTAssertEqual(seeks.map { ($0 / 10).rounded() * 10 }, wanted.map { ($0 / 10).rounded() * 10 })
     }
 
-    /// U4: an Audio cue playing and a Fade fading it. Wherever the still "fading" mark could be
-    /// drawn, the turning dots are: the target's row in the cue list (also when its row is selected),
-    /// the Fade's own row (which shows its own state's mark, never the old one), and the Active Cues
-    /// rows, which draw no state mark at all.
-    func testAnAudioCuePlayingAndAFadeFadingItDrawTheTurningDotsAndNeverTheOldMark() async throws {
+    /// The status cell of a cue's row, laid out.
+    private func statusCell(_ cue: ModelID) throws -> CueCell {
+        let ov = wc.cueList.outlineView
+        let node = try XCTUnwrap(wc.cueList.node(cue))
+        let column = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
+        return try XCTUnwrap(ov.view(atColumn: column, row: ov.row(forItem: node), makeIfNecessary: true) as? CueCell)
+    }
+
+    /// U4: Esc while an Audio cue plays. The cue fades out, and its row shows the turning dots in the plain
+    /// text colour (white on the dark list) in place of any still mark, also when the row is selected.
+    func testAPanickedAudioCueShowsTheWhiteTurningDotsInItsRow() async throws {
+        let id = try await waveTones(1, seconds: 60)[0]
+        _ = await store.transport(.start(cue: id))
+        try await play(0.3)
+        let before = try statusCell(id)
+        XCTAssertFalse(before.showsDots, "playing: the still mark")
+        XCTAssertEqual(before.drawnMark(1)?.icon, .stateRunning)
+        _ = await store.transport(.panic)
+        try await play(0.2)
+        XCTAssertEqual(store.cueStates[id]?.state, .stopping, "the panic fade is under way")
+        // No row selected: a selected row in the key window draws its marks in the selection's text colour.
+        wc.cueList.outlineView.deselectAll(nil)
+        let cell = try statusCell(id)
+        XCTAssertTrue(cell.showsDots, "the turning dots")
+        XCTAssertFalse(cell.fadingDots.isHidden)
+        XCTAssertNil(cell.images[1].image, "no still mark under them (not the old yellow one)")
+        XCTAssertEqual(cell.fadingDots.colour, NSColor.labelColor, "white, not yellow")
+        wc.cueList.selectAsUser([id])
+        await assertEventually { self.wc.inspector.selection == [id] }
+        XCTAssertTrue(try statusCell(id).showsDots, "still the dots with the row selected")
+    }
+
+    /// U4: an Audio cue playing and a Fade fading it. The target's row keeps its playing mark (no dots),
+    /// the Fade's own row is a playing one too, and the Active Cues rows draw no state mark at all.
+    func testAFadeFadingAPlayingCueLeavesItsRowShowingPlaying() async throws {
         let id = try await waveTones(1, seconds: 60)[0]
         wc.cueList.selectAsUser([id])
         await assertEventually { self.wc.inspector.selection == [id] }
@@ -2178,43 +2208,20 @@ extension PlayheadFlowTests {
         _ = await store.transport(.start(cue: fade))
         try await play(1)
         XCTAssertEqual(store.cueStates[id]?.state, .fading, "the Fade moves its target")
-        XCTAssertEqual(store.cueStates[fade]?.state, .running, "the Fade itself is a running cue, not a fading one")
-
-        func statusCell(_ cue: ModelID) throws -> CueCell {
-            let ov = wc.cueList.outlineView
-            let node = try XCTUnwrap(wc.cueList.node(cue))
-            let column = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
-            return try XCTUnwrap(
-                ov.view(atColumn: column, row: ov.row(forItem: node), makeIfNecessary: true) as? CueCell)
-        }
-        // Every cue that fades or is fading draws the dots in place of the picture; no cell draws the
-        // old mark, whichever state its cue is in.
-        func assertNoOldMark(_ cue: ModelID, _ what: String) throws {
+        XCTAssertEqual(store.cueStates[fade]?.state, .running, "the Fade itself is a running cue")
+        // No row selected: a selected row in the key window draws its marks in the selection's text colour.
+        wc.cueList.outlineView.deselectAll(nil)
+        for (cue, what) in [(id, "the target's row"), (fade, "the Fade's row")] {
             let cell = try statusCell(cue)
-            let state = store.cueStates[cue]?.state
-            let fading = state == .fading
-            XCTAssertEqual(cell.showsDots, fading, "\(what): dots exactly while fading (\(String(describing: state)))")
-            XCTAssertEqual(cell.fadingDots.isHidden, !fading, what)
-            if fading {
-                XCTAssertNil(cell.images[1].image, "\(what): the still mark is not under the dots")
-            } else {
-                XCTAssertNotNil(cell.images[1].image, "\(what): its own still mark")
-                XCTAssertNotEqual(cell.drawnMark(1)?.icon, .stateFading, "\(what): no old mark")
-            }
-            let label = CueStateStyle.style(for: state ?? .idle).label
-            XCTAssertEqual(cell.images[1].accessibilityLabel(), label, what)
+            XCTAssertFalse(cell.showsDots, "\(what): no dots")
+            XCTAssertTrue(cell.fadingDots.isHidden, what)
+            XCTAssertEqual(cell.drawnMark(1)?.icon, .stateRunning, "\(what): the playing mark")
+            XCTAssertEqual(cell.drawnMark(1)?.colour, NSColor.systemGreen, what)
+            XCTAssertEqual(cell.images[1].accessibilityLabel(), loc("cue.state.running"), what)
         }
-        try assertNoOldMark(id, "the target's row")
-        try assertNoOldMark(fade, "the Fade's row")
-        // The target's row selected, as a click leaves it: still the dots.
         wc.cueList.selectAsUser([id])
         await assertEventually { self.wc.inspector.selection == [id] }
-        let selected = try statusCell(id)
-        XCTAssertTrue(selected.showsDots)
-        XCTAssertNil(selected.images[1].image)
-        // A state change on the way (the engine reports a tick) keeps it so.
-        try await play(0.5)
-        try assertNoOldMark(id, "the target's row after more time")
+        XCTAssertFalse(try statusCell(id).showsDots, "selected: still the playing mark")
 
         // Active Cues: both cues are listed and no row draws a state mark.
         let table = wc.sidebar.activeTable
@@ -2228,7 +2235,7 @@ extension PlayheadFlowTests {
                 marks.isEmpty,
                 "an Active Cues row draws no state picture: \(marks.map { $0.accessibilityLabel() ?? "?" })")
             let stateImages = allViewsIn(cell).compactMap { ($0 as? NSButton)?.image?.accessibilityDescription }
-            XCTAssertFalse(stateImages.contains(loc("cue.state.fading")), "\(stateImages)")
+            XCTAssertFalse(stateImages.contains(loc("cue.state.stopping")), "\(stateImages)")
         }
     }
 

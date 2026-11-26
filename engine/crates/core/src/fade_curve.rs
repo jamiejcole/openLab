@@ -39,7 +39,7 @@ pub enum CurveType {
     /// Eases in and out: `(1 − cos πt) / 2`.
     #[default]
     SCurve,
-    /// A smooth curve through the control points (monotone cubic).
+    /// A smooth curve drawn near the control points, as QLab's (a quadratic B-spline).
     Custom,
     /// `sin(πt/2)` raised to the parameter: equal power at 1, the S-curve at 2.
     Parametric,
@@ -164,15 +164,13 @@ impl FadeCueCurve {
 /// straight line between the two around them (the mixer's `KNOT`).
 pub const SHAPE_KNOT: u64 = 64;
 
-/// One shape ready to evaluate: its knots including the fixed ends, as drawn, and the tangents
-/// of the smooth curve through them.
+/// One shape ready to evaluate: its knots including the fixed ends, as drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapeEval {
     pub kind: CurveType,
     pub parameter: f64,
     pub ts: Vec<f64>,
     pub vs: Vec<f64>,
-    pub ms: Vec<f64>,
 }
 
 impl ShapeEval {
@@ -187,13 +185,11 @@ impl ShapeEval {
             .chain(shape.points.iter().map(|p| p.v))
             .chain(std::iter::once(v1))
             .collect();
-        let ms = tangents(&ts, &vs);
         Self {
             kind: shape.kind,
             parameter: shape.parameter,
             ts,
             vs,
-            ms,
         }
     }
 
@@ -221,7 +217,7 @@ impl ShapeEval {
             CurveType::SCurve => (1.0 - (u * std::f64::consts::PI).cos()) * 0.5,
             CurveType::Parametric => (u * std::f64::consts::FRAC_PI_2).sin().powf(self.parameter),
             CurveType::Linear => lines(&self.ts, &self.vs, t),
-            CurveType::Custom => cubic(&self.ts, &self.vs, &self.ms, t),
+            CurveType::Custom => spline(&self.ts, &self.vs, t),
         };
         v.clamp(0.0, 1.0)
     }
@@ -240,40 +236,6 @@ impl ShapeEval {
     }
 }
 
-/// Fritsch-Carlson tangents: the cubic through the knots never overshoots between two of them.
-fn tangents(ts: &[f64], vs: &[f64]) -> Vec<f64> {
-    let n = ts.len();
-    let slope = |i: usize| -> f64 {
-        match (ts.get(i), ts.get(i + 1), vs.get(i), vs.get(i + 1)) {
-            (Some(t0), Some(t1), Some(v0), Some(v1)) if t1 > t0 => (v1 - v0) / (t1 - t0),
-            _ => 0.0,
-        }
-    };
-    let width = |i: usize| -> f64 {
-        match (ts.get(i), ts.get(i + 1)) {
-            (Some(t0), Some(t1)) => t1 - t0,
-            _ => 0.0,
-        }
-    };
-    (0..n)
-        .map(|i| {
-            if i == 0 {
-                return slope(0);
-            }
-            if i + 1 == n {
-                return slope(i - 1);
-            }
-            let (d0, d1) = (slope(i - 1), slope(i));
-            if d0 * d1 <= 0.0 {
-                return 0.0;
-            }
-            let (h0, h1) = (width(i - 1), width(i));
-            let (w1, w2) = (2.0 * h1 + h0, h1 + 2.0 * h0);
-            (w1 + w2) / (w1 / d0 + w2 / d1)
-        })
-        .collect()
-}
-
 /// The knot interval `t` lies in: `i` with `ts[i] <= t < ts[i + 1]` (the last for `t = 1`).
 fn interval(ts: &[f64], t: f64) -> usize {
     let i = ts.partition_point(|&x| x <= t);
@@ -290,28 +252,43 @@ fn lines(ts: &[f64], vs: &[f64], t: f64) -> f64 {
     }
 }
 
-fn cubic(ts: &[f64], vs: &[f64], ms: &[f64], t: f64) -> f64 {
-    let i = interval(ts, t);
-    match (
-        ts.get(i),
-        ts.get(i + 1),
-        vs.get(i),
-        vs.get(i + 1),
-        ms.get(i),
-        ms.get(i + 1),
-    ) {
-        (Some(t0), Some(t1), Some(v0), Some(v1), Some(m0), Some(m1)) if t1 > t0 => {
-            let h = t1 - t0;
-            let s = (t - t0) / h;
-            let (s2, s3) = (s * s, s * s * s);
-            let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
-            let h10 = s3 - 2.0 * s2 + s;
-            let h01 = -2.0 * s3 + 3.0 * s2;
-            let h11 = s3 - s2;
-            h00 * v0 + h10 * h * m0 + h01 * v1 + h11 * h * m1
-        }
-        _ => t,
+/// The custom curve at `t`, as QLab 5 draws it: a quadratic B-spline on the knots, ends kept.
+/// Each knot between the ends shapes one quadratic Bezier piece, from the midpoint with the knot
+/// before it (the start, for the first) to the midpoint with the knot after it (the end, for the
+/// last), so the curve passes near its points, not through them, and turns smoothly where two
+/// pieces meet. With knot times strictly increasing a piece's time only grows, so its height at
+/// `t` is found by solving the piece's time for its parameter.
+fn spline(ts: &[f64], vs: &[f64], t: f64) -> f64 {
+    let n = ts.len();
+    if n < 3 {
+        return lines(ts, vs, t);
     }
+    let knot = |k: usize| match (ts.get(k), vs.get(k)) {
+        (Some(&x), Some(&y)) => (x, y),
+        _ => (0.0, 0.0),
+    };
+    let mid = |k: usize| {
+        let ((x0, y0), (x1, y1)) = (knot(k), knot(k + 1));
+        ((x0 + x1) * 0.5, (y0 + y1) * 0.5)
+    };
+    // The piece `t` lies in: shaped by knot `i`, from 1 to n − 2.
+    let j = interval(ts, t);
+    let i = (if t >= mid(j).0 { j + 1 } else { j }).clamp(1, n - 2);
+    let (ax, ay) = if i == 1 { knot(0) } else { mid(i - 1) };
+    let (bx, by) = knot(i);
+    let (cx, cy) = if i == n - 2 { knot(n - 1) } else { mid(i) };
+    // Time on the piece is ax + bb·s + aa·s², rising from ax to cx; s by the root that keeps
+    // its precision as aa nears 0.
+    let dt = (t - ax).min(cx - ax).max(0.0);
+    let (aa, bb) = (ax - 2.0 * bx + cx, 2.0 * (bx - ax));
+    let den = bb + (bb * bb + 4.0 * aa * dt).max(0.0).sqrt();
+    let s = if den > 0.0 {
+        (2.0 * dt / den).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let r = 1.0 - s;
+    r * r * ay + 2.0 * s * r * by + s * s * cy
 }
 
 /// A Fade cue's curve as its ramps follow it: both shapes ready to evaluate, the domain the value
@@ -528,16 +505,35 @@ mod tests {
     }
 
     #[test]
-    fn shapes_pass_through_their_points_and_keep_their_ends() {
-        for kind in [CurveType::Custom, CurveType::Linear] {
-            let s = ShapeEval::new(&shape(kind, &[(0.25, 0.7), (0.6, 0.8)]), true);
-            assert_eq!(s.progress(true, 0.0), 0.0);
-            assert_eq!(s.progress(true, 1.0), 1.0);
-            assert!((s.drawn(true, 0.25) - 0.7).abs() < 1e-12, "{kind:?}");
-            assert!((s.drawn(true, 0.6) - 0.8).abs() < 1e-12, "{kind:?}");
-            let f = ShapeEval::new(&shape(kind, &[(0.5, 0.2)]), false);
-            assert!((f.drawn(false, 0.5) - 0.2).abs() < 1e-12);
-            assert!((f.progress(false, 0.5) - 0.8).abs() < 1e-12);
+    fn linear_shapes_pass_through_their_points_and_custom_ones_are_qlabs_spline() {
+        let s = ShapeEval::new(&shape(CurveType::Linear, &[(0.25, 0.7), (0.6, 0.8)]), true);
+        assert!((s.drawn(true, 0.25) - 0.7).abs() < 1e-12);
+        assert!((s.drawn(true, 0.6) - 0.8).abs() < 1e-12);
+        let f = ShapeEval::new(&shape(CurveType::Linear, &[(0.5, 0.2)]), false);
+        assert!((f.progress(false, 0.5) - 0.8).abs() < 1e-12);
+        // One point: the quadratic Bezier from the start to the end with the point its control.
+        let one = ShapeEval::new(&shape(CurveType::Custom, &[(0.5, 0.8)]), true);
+        assert!((one.drawn(true, 0.5) - 0.65).abs() < 1e-12);
+        assert_eq!(one.progress(true, 0.0), 0.0);
+        assert_eq!(one.progress(true, 1.0), 1.0);
+        // Two points: through the midpoint between them, not through either.
+        let two = ShapeEval::new(&shape(CurveType::Custom, &[(0.25, 0.3), (0.6, 0.1)]), false);
+        assert!((two.drawn(false, 0.425) - 0.2).abs() < 1e-12);
+        assert!((two.drawn(false, 0.25) - 0.3).abs() > 0.01);
+        // Read off QLab 5.6.5's Curve tab (846 by 583 pixels) for these points: within a pixel.
+        let qlab = ShapeEval::new(
+            &shape(CurveType::Custom, &[(0.2, 0.5), (0.5, 0.3), (0.8, 0.9)]),
+            true,
+        );
+        for (t, v) in [
+            (0.1005, 0.2196),
+            (0.3499, 0.3998),
+            (0.5, 0.3998),
+            (0.6501, 0.6002),
+            (0.8995, 0.935),
+        ] {
+            let got = qlab.drawn(true, t);
+            assert!((got - v).abs() < 0.002, "at {t}: {got}, QLab {v}");
         }
     }
 

@@ -549,7 +549,7 @@ final class CueListTests: XCTestCase {
     // MARK: State icons (UI-04)
 
     /// Each state the list marks has its own drawing; a cue in its pre-wait or post-wait shows the running mark
-    /// (QLab has no mark for a wait), its label still naming the wait.
+    /// (QLab has no mark for a wait), its label still naming the wait, and a cue a Fade cue is fading shows it too.
     func testEveryStateHasALabelAndEachMarkedStateItsOwnDrawing() {
         var drawings = Set<String>()
         for state in WireCueState.allCases {
@@ -563,14 +563,18 @@ final class CueListTests: XCTestCase {
             let icon = try? XCTUnwrap(style.icon, "\(state)")
             XCTAssertEqual(icon?.resolvesToSymbol, true, "\(state)")
             XCTAssertNil(icon?.symbol, "\(state) is drawn, not a symbol")
-            if state == .preWaiting || state == .postWaiting {
+            if state == .preWaiting || state == .postWaiting || state == .fading {
                 XCTAssertEqual(icon, .stateRunning, "\(state) shows the running mark")
                 continue
             }
             XCTAssertTrue(drawings.insert(icon?.drawing ?? "").inserted, "\(state) shares a drawing")
         }
+        // A cue a Fade cue is fading reads as running (QLab 5 leaves its mark alone); every other
+        // state has a label of its own.
+        XCTAssertEqual(CueStateStyle.style(for: .fading).label, CueStateStyle.style(for: .running).label)
         XCTAssertEqual(
-            Set(WireCueState.allCases.map { CueStateStyle.style(for: $0).label }).count, WireCueState.allCases.count)
+            Set(WireCueState.allCases.map { CueStateStyle.style(for: $0).label }).count,
+            WireCueState.allCases.count - 1)
     }
 
     func testEveryBrokenReasonHasAString() {
@@ -1043,22 +1047,27 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
-    /// A fading cue's state mark is the moving dots (the state image keeps its label and tooltip);
-    /// running and idle cues show their still marks and no dots.
-    func testAFadingCueShowsMovingDotsInItsStateSlot() async throws {
+    /// A cue on its way out has the moving dots as its state mark (the state image keeps its label and tooltip);
+    /// running, fading (a Fade cue moving its levels) and idle cues show their still marks and no dots.
+    func testAStoppingCueShowsMovingDotsInItsStateSlot() async throws {
         let h = try await H()
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
         let cell = try XCTUnwrap(h.cell("status", H.intro))
         XCTAssertTrue(cell.fadingDots.isHidden, "running: the still mark")
         XCTAssertNotNil(cell.images[1].image)
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"fading"}"#)
+        let moved = try XCTUnwrap(h.cell("status", H.intro))
+        XCTAssertTrue(moved.fadingDots.isHidden, "a Fade cue moving it: still playing")
+        XCTAssertEqual(moved.images[1].accessibilityLabel(), loc("cue.state.running"))
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"stopping"}"#)
         let fading = try XCTUnwrap(h.cell("status", H.intro))
         XCTAssertFalse(fading.fadingDots.isHidden, "fading: the dots")
         XCTAssertNil(fading.images[1].image, "the still glyph is not under them")
         fading.backgroundStyle = .emphasized
         XCTAssertNil(fading.images[1].image, "a selected row's tint does not bring it back")
         fading.backgroundStyle = .normal
-        XCTAssertEqual(fading.images[1].accessibilityLabel(), loc("cue.state.fading"), "the label stays")
+        XCTAssertEqual(fading.images[1].accessibilityLabel(), loc("cue.state.stopping"), "the label stays")
+        XCTAssertEqual(fading.fadingDots.colour, NSColor.labelColor, "the dots are white (the text colour), not yellow")
         // Hovering the dots shows the state's tooltip: the dots let the pointer through to the image view.
         fading.frame = NSRect(x: 0, y: 0, width: 60, height: 24)
         fading.layoutSubtreeIfNeeded()
@@ -5357,12 +5366,12 @@ final class CueListDrawingTests: XCTestCase {
         }
     }
 
-    /// Flow (#698): the approved state colours (running green; paused, loaded, fading, stopping yellow; broken
+    /// Flow (#698): the approved state colours (running and fading green, stopping white; paused, loaded yellow; broken
     /// red; flagged orange; preview blue), and a selected row's marks in the selection's text colour.
     func testStateColoursAsApprovedAndASelectedRowsMarksTakeTheSelectionsTextColour() async throws {
         let colours: [WireCueState: NSColor] = [
             .loaded: MarkColour.caution, .preWaiting: .systemGreen, .running: .systemGreen, .paused: MarkColour.caution,
-            .postWaiting: .systemGreen, .fading: MarkColour.caution, .stopping: MarkColour.caution, .broken: .systemRed,
+            .postWaiting: .systemGreen, .fading: .systemGreen, .stopping: MarkColour.stopping, .broken: .systemRed,
         ]
         for (state, colour) in colours { XCTAssertEqual(CueStateStyle.style(for: state).tint, colour, "\(state)") }
         let h = try await demo()

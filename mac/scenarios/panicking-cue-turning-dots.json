@@ -1,0 +1,18 @@
+{
+  "about": "An Audio cue playing, then Esc: while its panic fade runs the row shows the turning dots in white (not the yellow fade mark), also with the row selected.",
+  "show": "Demo",
+  "media": {"media/a.wav": 20},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 1},
+    {"shot": "playing"},
+    {"key": "escape"},
+    {"advance": 0.3},
+    {"shot": "panicking"},
+    {"select": "1"},
+    {"advance": 0.1},
+    {"shot": "panicking-selected"}
+  ]
+}

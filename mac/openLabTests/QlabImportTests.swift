@@ -137,6 +137,33 @@ final class QlabImportTests: XCTestCase {
         XCTAssertEqual(choice.placeholders, 1)
     }
 
+    /// Every cell's text and pop-up sits in the middle of its row, not at its top (owner, 2026-11-26).
+    func testTheStepsTablesCentreEachCellInItsRow() throws {
+        let c = QlabImportController(
+            report: try report(unsupported: [unsupported("a"), unsupported("b", "2")]), devices: [], displays: [])
+        c.window.contentView?.layoutSubtreeIfNeeded()
+        let table = try XCTUnwrap(find("qlab-unsupported-table", in: c.window.contentView) as? NSTableView)
+        table.layoutSubtreeIfNeeded()
+        var checked = 0
+        for row in 0..<table.numberOfRows {
+            let rowMid = table.rect(ofRow: row).midY
+            for column in 0..<table.numberOfColumns {
+                let cell = try XCTUnwrap(table.view(atColumn: column, row: row, makeIfNecessary: true))
+                cell.layoutSubtreeIfNeeded()
+                // The label or pop-up itself: its own height (a label stretched to the row's height
+                // draws its text at the top), in the middle of the row.
+                for content in [cell] + cell.subviews where content is NSTextField || content is NSPopUpButton {
+                    let frame = table.convert(content.frame, from: content.superview)
+                    XCTAssertLessThanOrEqual(
+                        frame.height, content.fittingSize.height + 1, "row \(row) column \(column) keeps its height")
+                    XCTAssertEqual(frame.midY, rowMid, accuracy: 1, "row \(row) column \(column) is centred")
+                    checked += 1
+                }
+            }
+        }
+        XCTAssertEqual(checked, table.numberOfRows * table.numberOfColumns)
+    }
+
     func testWithNothingUnsupportedTheOutputsStepComesFirst() throws {
         let c = QlabImportController(report: try report(), devices: [], displays: [])
         XCTAssertEqual(c.step, .outputs)
@@ -320,7 +347,7 @@ final class QlabImportTests: XCTestCase {
             {"qlab_id":"q","number":"12","name":"Storm","kind":"rate","detail":"Its playback rate was not kept."}
             """,
             """
-            {"number":"","name":"","kind":"setting","detail":"The shortcut for cycling the target type has no openLab action."}
+            {"number":"","name":"","kind":"setting","detail":"OSC access passcodes were not kept; the new workspace has a passcode of its own."}
             """,
         ]
         let r = try report(notes: notes)
@@ -331,7 +358,7 @@ final class QlabImportTests: XCTestCase {
             text,
             """
             • 12 Storm: Its playback rate was not kept.
-            • The shortcut for cycling the target type has no openLab action.
+            • OSC access passcodes were not kept; the new workspace has a passcode of its own.
             """)
     }
 

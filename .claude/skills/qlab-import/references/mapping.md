@@ -22,7 +22,7 @@ Values: levels are linear gains (1.0 is 0 dB), converted to dB to a thousandth (
 | Key Map: a dictionary of action to key (`keyCharacter`, `keyCode`, `shift`, `control`, `option`, `command`, `function`, `numericPad`, `capsLock`) | `settings.hotkeys`; a QLab map with no entry for an action gives it no key | groups-triggers (`go` set to shift-G) |
 | Key Map `go`, `stopAll`, `pauseAll`, `resumeAll`, `loadSelected`, `pauseResumeSelected`, `startSelected`, `stopSelected`, `resetSelected`, `preview` | `go`, `stop_all`, `pause_all`, `resume_all`, `load_selected`, `pause_resume_selected`, `start_selected`, `stop_selected`, `reset_selected`, `preview_selected` | default map; `stopAll`, `startSelected`, `stopSelected`, `resetSelected` assumed (not in it) |
 | Key Map `panicSelected`, `editNumber`, `editName`, `editNotes`, `editTarget`, `editPreWait`, `editAction`, `editPostWait`, `cycleContinue`, `flag` | `panic_selected`, `edit_number`, `edit_name`, `edit_notes`, `edit_target`, `edit_pre_wait`, `edit_duration`, `edit_post_wait`, `cycle_continue`, `toggle_flag` | default map |
-| Key Map `auditionGo`, `auditionPreview`, `cycleTargetType` | dropped (no openLab action) | all |
+| Key Map `auditionGo`, `auditionPreview`, `cycleTargetType` | dropped without a note (no openLab action; owner 2026-11-26) | all |
 | OSC Access (passcodes, ports) | not imported; the workspace gets its own passcode; a note says so | all |
 | Audio `audioOutputPatches` | patches, below | cue-types |
 | Network `networkPatches` | network patches, below | cue-types |
@@ -146,7 +146,7 @@ Modifiers: `shift`, `control`, `option` (alt), `command`; `function`, `numericPa
 
 What `v` means was settled in QLab's Curve tab: fades F11 (custom: rising (0.5, 0.8); falling (0.25, 0.3), (0.6, 0.1)) and F9 (linear: rising (0.3, 0.6); falling (0.7, 0.6)) draw each point at that time and height in both graphs, so `v` is the height in the graph, not the progress of the fade.
 
-QLab draws a custom curve as a smooth curve near its points, not through them; openLab's custom curve passes through them (skill qlab-behaviour Q839), so a converted custom curve may differ slightly between its points.
+QLab draws a custom curve as a smooth curve near its points, not through them (a quadratic B-spline); openLab's custom curve is the same curve (skill qlab-behaviour Q839), so a converted custom curve follows QLab's.
 
 ## Video cue
 | QLab | openLab | Fixture |

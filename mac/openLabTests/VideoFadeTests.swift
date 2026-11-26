@@ -130,7 +130,7 @@ extension VideoCueTests {
         try await perform(.startSelected, on: id)
         try await play(0.75)
         try await expectOpacity(full, 0.85, 0.05, "S-curve, a quarter in")
-        XCTAssertEqual(status(Self.movie), loc("cue.state.fading"))
+        XCTAssertEqual(status(Self.movie), loc("cue.state.running"), "a Fade leaves its target playing")
         try await play(0.75)
         try await expectOpacity(full, 0.5, 0.05, "half way")
         try await play(1.6)
@@ -156,7 +156,7 @@ extension VideoCueTests {
         try await play(0.2)
         try await perform(.startSelected, on: id)
         try await play(0.5)
-        XCTAssertEqual(status(Self.still), loc("cue.state.fading"))
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"), "a Fade leaves its target playing")
         try await play(0.7)
         await soon("the Video cue stopped with the Fade") { self.status(Self.still) == nil }
         let gone = await shownFrame()

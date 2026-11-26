@@ -261,6 +261,24 @@ final class QlabImportController: NSObject, NSTableViewDataSource, NSTableViewDe
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        cell(tableView, tableColumn, row).map(Self.centred)
+    }
+
+    /// A cell's view in the middle of its row: a table sets a cell view to the row's full height,
+    /// which leaves a label's text at the top.
+    private static func centred(_ view: NSView) -> NSView {
+        let box = NSTableCellView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 2),
+            view.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -2),
+            view.centerYAnchor.constraint(equalTo: box.centerYAnchor),
+        ])
+        return box
+    }
+
+    private func cell(_ tableView: NSTableView, _ tableColumn: NSTableColumn?, _ row: Int) -> NSView? {
         guard let id = tableColumn?.identifier.rawValue else { return nil }
         if tableView === unsupportedTable {
             guard unsupported.rows.indices.contains(row) else { return nil }
@@ -383,7 +401,7 @@ final class QlabNotesController: NSObject {
 
     init(info: QlabNotesInfo) {
         self.info = info
-        window = NSWindow(
+        window = PanicKeyWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 420), styleMask: [.titled], backing: .buffered,
             defer: false)
         super.init()
