@@ -2174,6 +2174,8 @@ extension PlayheadFlowTests {
         _ = await store.transport(.panic)
         try await play(0.2)
         XCTAssertEqual(store.cueStates[id]?.state, .stopping, "the panic fade is under way")
+        // No row selected: a selected row in the key window draws its marks in the selection's text colour.
+        wc.cueList.outlineView.deselectAll(nil)
         let cell = try statusCell(id)
         XCTAssertTrue(cell.showsDots, "the turning dots")
         XCTAssertFalse(cell.fadingDots.isHidden)
@@ -2207,6 +2209,8 @@ extension PlayheadFlowTests {
         try await play(1)
         XCTAssertEqual(store.cueStates[id]?.state, .fading, "the Fade moves its target")
         XCTAssertEqual(store.cueStates[fade]?.state, .running, "the Fade itself is a running cue")
+        // No row selected: a selected row in the key window draws its marks in the selection's text colour.
+        wc.cueList.outlineView.deselectAll(nil)
         for (cue, what) in [(id, "the target's row"), (fade, "the Fade's row")] {
             let cell = try statusCell(cue)
             XCTAssertFalse(cell.showsDots, "\(what): no dots")
