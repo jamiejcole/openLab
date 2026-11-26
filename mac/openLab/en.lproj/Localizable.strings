@@ -267,7 +267,6 @@
 "cue.state.running" = "Running";
 "cue.state.paused" = "Paused";
 "cue.state.postWaiting" = "Post-waiting";
-"cue.state.fading" = "Fading";
 "cue.state.stopping" = "Stopping";
 "cue.state.broken" = "Broken";
 "cue.broken.group" = "A cue inside this group is broken";

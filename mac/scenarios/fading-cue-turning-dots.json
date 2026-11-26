@@ -1,5 +1,5 @@
 {
-  "about": "An Audio cue playing and a Fade cue fading it: the fading Audio cue's row shows the turning dots (not the old fading mark), the Fade cue's own row shows its running mark, and Active Cues lists both.",
+  "about": "An Audio cue playing and a Fade cue fading it: the Audio cue's row keeps its playing mark (no dots), the Fade cue's own row shows its running mark, and Active Cues lists both.",
   "show": "Demo",
   "media": {"media/a.wav": 20},
   "window": {"width": 1200, "height": 800},

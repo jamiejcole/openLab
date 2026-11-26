@@ -1,0 +1,18 @@
+{
+  "about": "As fading-cue-turning-dots, on the light appearance.",
+  "show": "Demo",
+  "appearance": "light",
+  "media": {"media/a.wav": 20},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 1},
+    {"key": "space"},
+    {"advance": 1.5},
+    {"shot": "rows-fading"},
+    {"select": "1"},
+    {"advance": 0.3},
+    {"shot": "fading-row-selected"}
+  ]
+}
