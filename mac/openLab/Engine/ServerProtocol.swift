@@ -699,7 +699,7 @@ struct QlabUnsupported: Hashable, Sendable, Decodable {
     let qlabId: String
     let number: String
     let name: String
-    /// QLab's class name (`LightCue`, ...).
+    /// QLab's kind of cue in the engine's words (`Light`, `MIDI File`, `Cart`, ...).
     let qlabType: String
     let reason: Reason
     enum CodingKeys: String, CodingKey {
@@ -709,7 +709,7 @@ struct QlabUnsupported: Hashable, Sendable, Decodable {
     }
 }
 
-/// A property dropped or changed; Rust: `QlabNote`. `detail` is the engine's English.
+/// A property dropped or changed; Rust: `QlabNote`. `detail` is the engine's one plain sentence.
 struct QlabNote: Hashable, Sendable, Decodable {
     enum Kind: String, Hashable, Sendable, Decodable {
         case effects, rate, trigger, crossfade, video, hotkey, setting, truncated, structure, target

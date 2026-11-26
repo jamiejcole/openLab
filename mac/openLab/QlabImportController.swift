@@ -241,7 +241,7 @@ final class QlabImportController: NSObject, NSTableViewDataSource, NSTableViewDe
         choice.videoOutputs = outputs.videoRequest
         choice.deleted = counts.deleted
         choice.placeholders = counts.placeholders
-        choice.converted = max(0, Int(report.cueCount) - unsupported.rows.count)
+        choice.converted = unsupported.converted(of: Int(report.cueCount))
         finish(choice)
     }
 

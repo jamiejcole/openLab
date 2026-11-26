@@ -22,6 +22,8 @@ extension AppController {
             return
         }
         let local = await session.localOutputs()
+        // Show Mode may have come on while the engine answered: the steps window is modal.
+        guard !qlabImportBlocked else { return beep() }
         guard let choice = chooseQlabImport(report, local.devices, local.displays) else { return }
         let result = await opened { await self.session.importQlab(path: url.path, choice: choice) }
         guard case .success = result, !qlabImportBlocked else { return }

@@ -75,13 +75,19 @@ struct QlabUnsupportedChoices: Equatable {
         }
     }
 
+    /// The rows that are cues: a cart is a cue list, so it is in none of the notes' counts.
+    private var cueRows: [QlabUnsupported] { rows.filter { $0.reason != .cart } }
+
     /// Cues deleted and kept as placeholders after `button`.
     func counts(pressing button: Button) -> (deleted: Int, placeholders: Int) {
         let r = request(pressing: button)
         let named = Dictionary(r.cues.map { ($0.qlabId, $0.action) }, uniquingKeysWith: { a, _ in a })
-        let deleted = rows.filter { (named[$0.qlabId] ?? r.other) == .delete }.count
-        return (deleted, rows.count - deleted)
+        let deleted = cueRows.filter { (named[$0.qlabId] ?? r.other) == .delete }.count
+        return (deleted, cueRows.count - deleted)
     }
+
+    /// Cues converted, of the file's `cueCount` (which counts no carts).
+    func converted(of cueCount: Int) -> Int { max(0, cueCount - cueRows.count) }
 }
 
 /// A QLab audio patch's choice on this Mac.
@@ -199,14 +205,10 @@ struct QlabNotesInfo: Equatable {
     let placeholders: Int
     let deleted: Int
 
-    /// The line a note's kind gets, in our words; `detail` follows it.
+    /// A note's line: its cue's number and name, then the engine's sentence.
     static func text(of note: QlabNote) -> String {
-        var head = ""
-        if !note.number.isEmpty { head += note.number + " " }
-        if !note.name.isEmpty { head += note.name }
-        let words = loc("qlab.note." + note.kind.rawValue)
-        let line = head.isEmpty ? words : "\(head.trimmingCharacters(in: .whitespaces)): \(words)"
-        return note.detail.isEmpty ? line : "\(line) (\(note.detail))"
+        let head = [note.number, note.name].filter { !$0.isEmpty }.joined(separator: " ")
+        return head.isEmpty ? note.detail : "\(head): \(note.detail)"
     }
 
     /// The plain text Save Notes writes.

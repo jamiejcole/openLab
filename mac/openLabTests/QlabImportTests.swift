@@ -24,7 +24,7 @@ final class QlabImportTests: XCTestCase {
 
     private func unsupported(_ id: String, _ number: String = "1") -> String {
         """
-        {"qlab_id":"\(id)","number":"\(number)","name":"cue \(id)","qlab_type":"LightCue","reason":"cue_type"}
+        {"qlab_id":"\(id)","number":"\(number)","name":"cue \(id)","qlab_type":"Light","reason":"cue_type"}
         """
     }
 
@@ -35,11 +35,12 @@ final class QlabImportTests: XCTestCase {
     }
 
     private func report(
-        unsupported: [String] = [], patches: [String] = [], outputs: [String] = [], cues: Int = 10
+        unsupported: [String] = [], patches: [String] = [], outputs: [String] = [], notes: [String] = [],
+        cues: Int = 10
     ) throws -> QlabReport {
         let json = """
             {"workspace_name":"Show","qlab_version":"5.0","cue_count":\(cues),"unsupported":[\(unsupported.joined(separator: ","))],
-             "notes":[],"audio_patches":[\(patches.joined(separator: ","))],"video_outputs":[\(outputs.joined(separator: ","))],"stages":[]}
+             "notes":[\(notes.joined(separator: ","))],"audio_patches":[\(patches.joined(separator: ","))],"video_outputs":[\(outputs.joined(separator: ","))],"stages":[]}
             """
         return try JSONDecoder().decode(QlabReport.self, from: Data(json.utf8))
     }
@@ -92,6 +93,19 @@ final class QlabImportTests: XCTestCase {
         let counts = choices.counts(pressing: .proceed)
         XCTAssertEqual(counts.deleted, 2)
         XCTAssertEqual(counts.placeholders, 1)
+    }
+
+    /// A cart is a cue list, not a cue: the notes' counts leave it out.
+    func testTheNotesCountsLeaveOutCarts() throws {
+        let cart = """
+            {"qlab_id":"k","number":"","name":"Cart","qlab_type":"Cart","reason":"cart"}
+            """
+        let r = try report(unsupported: [unsupported("a"), cart], cues: 10)
+        let choices = QlabUnsupportedChoices(rows: r.unsupported)
+        let counts = choices.counts(pressing: .deleteAll)
+        XCTAssertEqual(counts.deleted, 1)
+        XCTAssertEqual(counts.placeholders, 0)
+        XCTAssertEqual(choices.converted(of: Int(r.cueCount)), 9)
     }
 
     /// The window's own buttons follow the rows: Delete All (default) with Leave All beside it, then
@@ -212,6 +226,36 @@ final class QlabImportTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(alerts).errors, [])
     }
 
+    /// Show Mode turned on while the engine reads the file: the steps never show (they are modal)
+    /// and nothing is imported; the Mac beeps.
+    func testShowModeOnWhileTheFileIsReadShowsNoStepsAndImportsNothing() async throws {
+        let app = try await startApp()
+        await app.newWorkspace()
+        await assertEventually { app.windows.count == 1 }
+        let wc = try XCTUnwrap(app.windows.values.first)
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let seed = root.appendingPathComponent("engine/fuzz/qlab-seeds/shaped-like-qlab.bin")
+        let file = try XCTUnwrap(engine).folder.appendingPathComponent("seed.qlab5")
+        try FileManager.default.copyItem(at: seed, to: file)
+        app.pickQlabURL = {
+            wc.setShowMode(true)
+            return file
+        }
+        var asked = false
+        app.chooseQlabImport = { _, _, _ in
+            asked = true
+            return QlabImportChoice()
+        }
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        await app.newWorkspaceFromQlab()
+        XCTAssertFalse(asked, "no steps window in Show Mode")
+        XCTAssertEqual(beeps, 1)
+        XCTAssertEqual(app.windows.count, 1, "nothing imported")
+        XCTAssertEqual(try XCTUnwrap(alerts).errors, [])
+    }
+
     /// The QLab-saved fixtures are local only (never committed): without them the test skips.
     private func fixture(_ name: String) throws -> URL {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -268,6 +312,28 @@ final class QlabImportTests: XCTestCase {
     }
 
     // MARK: Notes
+
+    /// Each note reads as its cue and one plain sentence; a workspace note is the sentence alone.
+    func testTheNotesSheetShowsEachNoteAsOneSentence() throws {
+        let notes = [
+            """
+            {"qlab_id":"q","number":"12","name":"Storm","kind":"rate","detail":"Its playback rate was not kept."}
+            """,
+            """
+            {"number":"","name":"","kind":"setting","detail":"The shortcut for cycling the target type has no openLab action."}
+            """,
+        ]
+        let r = try report(notes: notes)
+        let info = QlabNotesInfo(fileName: "Show.qlab5", report: r, converted: 10, placeholders: 0, deleted: 0)
+        let sheet = QlabNotesController(info: info)
+        let text = try XCTUnwrap(find("qlab-notes-text", in: sheet.window.contentView) as? NSTextView).string
+        XCTAssertEqual(
+            text,
+            """
+            • 12 Storm: Its playback rate was not kept.
+            • The shortcut for cycling the target type has no openLab action.
+            """)
+    }
 
     func testSaveNotesWritesPlainText() throws {
         let r = try report(unsupported: [unsupported("a")])
