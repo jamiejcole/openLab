@@ -33,9 +33,8 @@ extension InspectorViewController {
         fadeLevels.onGestureEnd = { [weak self] in self?.render() }
         fadeLevels.onSetFromTarget = { [weak self] in self?.setFadeLevelsFromTarget() }
         fadeSettings.onChange = { [weak self] change in self?.sendFade(change) }
-        fadeSettings.onInvalid = { [weak self] in
-            self?.showRefusal(loc("inspector.invalid.time"))
-        }
+        fadeSettings.onInvalid = { [weak self] message in self?.showRefusal(message) }
+        fadeSettings.onGestureEnd = { [weak self] in self?.render() }
 
         // Under a Fade's level buttons, at the foot of the column: how the levels are read, and Preview.
         fadePreviewButton.setAX("fade-preview")
@@ -229,17 +228,20 @@ extension InspectorViewController {
             send(.setProperty(cue.id, .duration(seconds)), cue: cue.id, key: "duration", revert: [.duration])
             return
         }
+        // Every step of one drag of a curve's point shares a coalesce key: the drag is one undo step.
+        var gesture: Int?
+        if case .curve(_, let g) = change { gesture = g }
         sendKind(
             { kind in
                 var kind = kind
                 switch change {
                 case .duration: break  // sent above
-                case .curve(let curve): kind.set("curve", .string(curve))
+                case .curve(let curve, _): kind.set("curve", curve)
                 case .stopTarget(let stop): kind.set("stop_target_when_done", .bool(stop))
                 case .mode(let mode): kind.set("mode", .string(mode))
                 }
                 return kind
-            }, key: "fade")
+            }, key: "fade", coalesce: gesture.map { g in { "curve:\($0):\(Self.launchToken):\(g)" } })
     }
 
     /// "Set Levels from Target" (QLab, manual p. 200): the Fade moves every level of its Audio target

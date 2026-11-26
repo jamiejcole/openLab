@@ -364,7 +364,7 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
             13 | 25 | 26 => CueKind::Fade {
                 target,
                 duration: f64::from(s.post) * 0.6,
-                curve: FadeCurve::SCurve,
+                curve: FadeCueCurve::like(FadeCurve::SCurve),
                 levels: FadeLevels {
                     master_db: Some(f64::from(s.group_mode) * -10.0),
                     output_db: vec![Some(-3.0), None, Some(-6.0)],
@@ -408,7 +408,7 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                 28 | 39 => CueKind::Fade {
                     target: Some(cue_id(sound)),
                     duration: f64::from(s.post) * 0.3,
-                    curve: FadeCurve::EqualPower,
+                    curve: FadeCueCurve::like(FadeCurve::EqualPower),
                     levels: FadeLevels {
                         master_db: Some(-20.0),
                         output_db: vec![],
@@ -3737,7 +3737,7 @@ proptest! {
             _ => CueKind::Fade {
                 target: Some(cue_id(2)),
                 duration: action,
-                curve: FadeCurve::Linear,
+                curve: FadeCueCurve::like(FadeCurve::Linear),
                 // A level to fade: one with none is broken (`nothing_to_fade`).
                 levels: FadeLevels {
                     master_db: Some(-6.0),

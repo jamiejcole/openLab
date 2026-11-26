@@ -66,7 +66,7 @@ fn fade_to(n: u128, target: u128) -> Cue {
         CueKind::Fade {
             target: Some(id(target)),
             duration: 1.0,
-            curve: FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(-6.0),
                 output_db: vec![],

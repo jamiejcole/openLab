@@ -364,7 +364,19 @@
        "type": "fade",
        "target": "00000781-0000-4000-8000-000000000004",
        "duration": 3.0,
-       "curve": "linear",
+       "curve": {
+         "audio_domain": "linear",
+         "rising": {
+           "type": "linear",
+           "parameter": 1.0,
+           "points": []
+         },
+         "falling": {
+           "type": "linear",
+           "parameter": 1.0,
+           "points": []
+         }
+       },
        "levels": {
         "master_db": -20.0,
         "output_db": [],

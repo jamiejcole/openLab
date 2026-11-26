@@ -1,0 +1,32 @@
+{
+  "type": "command",
+  "id": 3,
+  "command": {
+    "type": "set_cue_property",
+    "id": "00000000-0000-0000-0000-00000000000b",
+    "property": {
+      "type": "kind_fields",
+      "value": {
+        "curve": {
+          "audio_domain": "decibel",
+          "falling": {
+            "parameter": 1.0,
+            "points": [],
+            "type": "s_curve"
+          },
+          "rising": {
+            "parameter": 1.0,
+            "points": [
+              {
+                "t": 0.5,
+                "v": 0.75
+              }
+            ],
+            "type": "custom"
+          }
+        }
+      }
+    }
+  },
+  "coalesce": "curve:11:4"
+}

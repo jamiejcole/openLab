@@ -7,6 +7,7 @@ use std::num::NonZeroU32;
 use std::fmt;
 
 use crate::cue::{FadeCurve, FadeSpec, MediaRef, OscArg};
+use crate::fade_curve::RampCurve;
 use crate::model::{CueId, CueListId, NetworkPatchId, PatchId, StageId};
 use crate::settings::PatchResolution;
 
@@ -684,7 +685,7 @@ pub enum Action {
         param: LevelParam,
         gain: f32,
         frames: SampleTime,
-        curve: FadeCurve,
+        curve: RampCurve,
     },
     /// Set the duck gain of the run's voice (the mixer's separate per-voice `Duck` stage, which
     /// multiplies the rest of its gains) to `gain` (linear) with a ramp of `frames` samples from

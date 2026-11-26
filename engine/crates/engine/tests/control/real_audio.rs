@@ -22,8 +22,9 @@ use openlab_core::protocol::{
     decode_client,
 };
 use openlab_core::{
-    Command, ContinueMode, Crosspoint, Cue, CueKind, CueLevels, CueProperty, CueState, FadeCurve,
-    FadeLevels, FadeSpec, GroupMode, MediaRef, PlayCount, SILENCE_DB, Workspace, db_to_gain,
+    AudioDomain, Command, ContinueMode, Crosspoint, Cue, CueKind, CueLevels, CueProperty, CueState,
+    CurvePoint, CurveShape, CurveType, FadeCueCurve, FadeCurve, FadeLevels, FadeSpec, GroupMode,
+    MediaRef, PlayCount, RampCurve, SILENCE_DB, Workspace, db_to_gain,
 };
 use openlab_engine::control::offline::OfflineShow;
 
@@ -87,7 +88,7 @@ fn fade(n: u128, target: u128, secs: f64, curve: FadeCurve, master_db: f64, stop
         CueKind::Fade {
             target: Some(id(target)),
             duration: secs,
-            curve,
+            curve: openlab_core::FadeCueCurve::like(curve),
             levels: FadeLevels {
                 master_db: Some(master_db),
                 output_db: vec![],
@@ -571,12 +572,70 @@ fn assert_envelope(
     }
 }
 
+/// A Fade of cue `target` over `secs` to `master_db` on `curve`.
+fn fade_on(n: u128, target: u128, secs: f64, curve: FadeCueCurve, master_db: f64) -> Cue {
+    let mut c = fade(n, target, secs, FadeCurve::Linear, master_db, false);
+    if let CueKind::Fade { curve: c, .. } = &mut c.kind {
+        *c = curve;
+    }
+    c
+}
+
+/// One of each Fade cue curve type, in each audio domain.
+fn fade_curves() -> Vec<FadeCueCurve> {
+    let shape = |kind, parameter, points: &[(f64, f64)]| CurveShape {
+        kind,
+        parameter,
+        points: points.iter().map(|&(t, v)| CurvePoint { t, v }).collect(),
+    };
+    let both = |domain, s: CurveShape| FadeCueCurve {
+        audio_domain: domain,
+        rising: s.clone(),
+        falling: s,
+    };
+    vec![
+        FadeCueCurve::default(),
+        both(AudioDomain::Linear, shape(CurveType::Linear, 1.0, &[])),
+        both(AudioDomain::Linear, shape(CurveType::Parametric, 1.0, &[])),
+        both(AudioDomain::Decibel, shape(CurveType::SCurve, 1.0, &[])),
+        both(AudioDomain::Slider, shape(CurveType::Parametric, 2.5, &[])),
+        FadeCueCurve {
+            audio_domain: AudioDomain::Decibel,
+            rising: shape(CurveType::Custom, 1.0, &[(0.3, 0.6), (0.7, 0.8)]),
+            falling: shape(CurveType::Linear, 1.0, &[(0.5, 0.25)]),
+        },
+    ]
+}
+
+/// Checks `out[start + k] = 0.5 · g(k)` on every frame of an `n`-frame fade on `curve` from gain
+/// `a` to `b` (silence at −60 dB, the workspace minimum), then `b` held for `hold` frames; `g`
+/// is the cue engine's curve maths (the mixer's copy is separate code).
+fn assert_fade_envelope(
+    out: &[f32],
+    start: usize,
+    n: usize,
+    (a, b): (f64, f64),
+    curve: &FadeCueCurve,
+    hold: usize,
+) {
+    let ramp = RampCurve::of_fade(curve, curve.audio_domain, -60.0);
+    for k in 0..=n + hold {
+        let want = 0.5 * ramp.value(a, b, k as u64, n as u64);
+        let got = f64::from(out[start + k]);
+        // 24-bit quantisation of 0.5 (6e-8) and the mixer's ramp bound (1e-6 of full scale).
+        assert!(
+            (got - want).abs() <= 1.1e-6,
+            "{curve:?} frame {k} of {n}: {got}, want {want}"
+        );
+    }
+}
+
 #[test]
-fn a_fade_to_minus_20_follows_each_documented_curve_sample_by_sample() {
+fn a_fade_to_minus_20_follows_each_curve_and_audio_domain_sample_by_sample() {
     let to = f64::from(db_to_gain(-20.0));
-    for curve in CURVES {
+    for curve in fade_curves() {
         let path = dc_wav(5 * R48 as usize);
-        let cues = [audio(1, &path, 0), fade(2, 1, 2.0, curve, -20.0, false)];
+        let cues = [audio(1, &path, 0), fade_on(2, 1, 2.0, curve.clone(), -20.0)];
         let mut s = app_show(&cues, R48);
         go_app(&mut s);
         s.run(4800);
@@ -587,34 +646,40 @@ fn a_fade_to_minus_20_follows_each_documented_curve_sample_by_sample() {
             (f64::from(out[tf - 1]) - 0.5).abs() < 1e-7,
             "{curve:?} before"
         );
-        assert_envelope(&out, tf, 2 * R48 as usize, (1.0, to), curve, 4800);
-        // Halfway, in dB: -5.19 linear and S-curve, -2.66 equal power, -17.88 exponential,
-        // -0.24 logarithmic.
-        let mid = db(f64::from(out[tf + R48 as usize]) / 0.5);
-        close(
-            mid,
-            db(ramp(1.0, to, 0.5, curve)),
-            0.001,
-            &format!("{curve:?} halfway"),
-        );
+        assert_fade_envelope(&out, tf, 2 * R48 as usize, (1.0, to), &curve, 4800);
         assert_eq!(state(&s, 1), CueState::Running, "{curve:?}");
         assert_eq!(state(&s, 2), CueState::Idle, "{curve:?}");
     }
+    // The default curve (S-curve, slider domain) half way down to −20 dB: half the slider's
+    // travel between the two, not the −5.19 dB the same shape gives evenly in amplitude.
+    let path = dc_wav(5 * R48 as usize);
+    let cues = [
+        audio(1, &path, 0),
+        fade_on(2, 1, 2.0, FadeCueCurve::default(), -20.0),
+    ];
+    let mut s = app_show(&cues, R48);
+    go_app(&mut s);
+    s.run(4800);
+    let tf = go_app(&mut s);
+    s.run(3 * u64::from(R48));
+    let mid = db(f64::from(s.channel(0)[tf + R48 as usize]) / 0.5);
+    let x = (1.0 + to.sqrt().sqrt()) / 2.0;
+    close(mid, db(x.powi(4)), 0.001, "slider halfway");
 }
 
 #[test]
 fn a_fade_from_silence_rises_on_its_curve_to_the_target() {
-    for curve in CURVES {
+    for curve in fade_curves() {
         let path = dc_wav(4 * R48 as usize);
         let mut c = audio(1, &path, 0);
         levels(&mut c).master_db = SILENCE_DB;
-        let mut s = app_show(&[c, fade(2, 1, 1.0, curve, 0.0, false)], R48);
+        let mut s = app_show(&[c, fade_on(2, 1, 1.0, curve.clone(), 0.0)], R48);
         let at = go_app(&mut s);
         s.run(4800);
         assert!(s.channel(0)[at..].iter().all(|&v| v == 0.0), "{curve:?}");
         let tf = go_app(&mut s);
         s.run(2 * u64::from(R48));
-        assert_envelope(&s.channel(0), tf, R48 as usize, (0.0, 1.0), curve, 4800);
+        assert_fade_envelope(&s.channel(0), tf, R48 as usize, (0.0, 1.0), &curve, 4800);
     }
 }
 

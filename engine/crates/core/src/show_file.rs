@@ -519,7 +519,32 @@ fn v8_to_v9(mut document: Value) -> Result<Value, String> {
         settings.insert("output_min_db".into(), crate::DEFAULT_OUTPUT_MIN_DB.into());
     }
     add_v9_keys(&mut document)?;
-    Ok(document)
+    // A document not shaped like a workspace is left for the model parse to refuse.
+    if !document.get("workspace").is_some_and(Value::is_object) {
+        return Ok(document);
+    }
+    upgrade_cues(document, 9, fade_curve_object)
+}
+
+/// v9 also gave a Fade cue its rising and falling shapes and audio domain in place of one of the
+/// standard curve names: a name becomes the shapes that sound the same where there are any (in
+/// the linear domain, as every fade moved before), anything else the default curve.
+fn fade_curve_object(cue: &mut serde_json::Map<String, Value>) {
+    let Some(kind) = cue.get_mut("kind").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if kind.get("type").and_then(Value::as_str) != Some("fade") {
+        return;
+    }
+    let Some(name) = kind.get("curve").and_then(Value::as_str) else {
+        return;
+    };
+    let Ok(old) = crate::FadeCurve::deserialize(Value::from(name)) else {
+        return;
+    };
+    if let Ok(value) = serde_json::to_value(crate::FadeCueCurve::like(old)) {
+        kind.insert("curve".into(), value);
+    }
 }
 
 /// v9 also added Preview Selected, Panic Selected and the cue-editing keys to `settings.hotkeys`

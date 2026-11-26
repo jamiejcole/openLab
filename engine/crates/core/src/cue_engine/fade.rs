@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 
 use crate::cue::{Cue, CueKind};
+use crate::fade_curve::{AudioDomain, RampCurve};
 use crate::model::CueId;
 use crate::video_geometry::PictureParam;
 
@@ -59,6 +60,10 @@ impl CueEngine {
         let relative = matches!(target_model.kind, CueKind::Group { .. })
             || *mode == crate::cue::FadeMode::Relative;
         let limits = ws.settings.limits();
+        // Audio levels move in the Fade's audio domain, down to the workspace's minimum; a
+        // picture's values follow the same shapes evenly.
+        let level_curve = RampCurve::of_fade(curve, curve.audio_domain, limits.min_db);
+        let picture_curve = RampCurve::of_fade(curve, AudioDomain::Linear, limits.min_db);
         let candidates: Vec<&Cue> = match &target_model.kind {
             // A Video cue's sound fades as an Audio cue's.
             CueKind::Audio { .. } | CueKind::Video { .. } => vec![target_model],
@@ -74,7 +79,8 @@ impl CueEngine {
             ramps: Vec::new(),
             targets: Vec::new(),
             stop_target: stop_target_when_done.then_some(target),
-            curve: *curve,
+            curve: level_curve.clone(),
+            picture_curve: picture_curve.clone(),
             retimed: false,
         };
         let offset = match self.slots.get(&cue) {
@@ -126,7 +132,7 @@ impl CueEngine {
             let (heard_frames, heard_curve) = level::heard(
                 start,
                 frames,
-                *curve,
+                &level_curve,
                 first,
                 self.config.sample_rate().get(),
             );
@@ -156,7 +162,7 @@ impl CueEngine {
                     param,
                     gain,
                     frames,
-                    curve: *curve,
+                    curve: level_curve.clone(),
                 });
                 run.levels.insert(
                     param,
@@ -166,7 +172,7 @@ impl CueEngine {
                         to: gain,
                         start,
                         frames: heard_frames,
-                        curve: heard_curve,
+                        curve: heard_curve.clone(),
                     },
                 );
                 fade.ramps.push(FadeRamp {
@@ -205,7 +211,7 @@ impl CueEngine {
                     param,
                     gain: to,
                     frames,
-                    curve: *curve,
+                    curve: picture_curve.clone(),
                 });
                 // Drawn as sent: a picture has no de-zipper, 0 frames is at once.
                 run.levels.insert(
@@ -216,7 +222,7 @@ impl CueEngine {
                         to,
                         start,
                         frames,
-                        curve: *curve,
+                        curve: picture_curve.clone(),
                     },
                 );
                 if run.geometry.is_none()
@@ -319,7 +325,7 @@ impl CueEngine {
                 param: r.param,
                 gain,
                 frames: 0,
-                curve: level.curve,
+                curve: level.curve.clone(),
             });
         }
         self.unfade(cue, fade, at, cx);
@@ -378,16 +384,21 @@ impl CueEngine {
                 Voice::None | Voice::Loaded => 0,
             };
             let picture = r.param.picture().is_some();
-            let (heard_frames, heard_curve) = if picture {
-                (frames, fade.curve)
+            let curve = if picture {
+                &fade.picture_curve
             } else {
-                level::heard(start, frames, fade.curve, voice_start, rate)
+                &fade.curve
+            };
+            let (heard_frames, heard_curve) = if picture {
+                (frames, curve.clone())
+            } else {
+                level::heard(start, frames, curve, voice_start, rate)
             };
             let gain = match (fade.retimed, picture) {
                 // A picture's value has no volume limit.
-                (true, true) => r.gain_at(length, fade.curve),
+                (true, true) => r.gain_at(length, curve),
                 // The plan ran from where it started, perhaps above a limit lowered since.
-                (true, false) => level::limit_gain(limits, r.gain_at(length, fade.curve)),
+                (true, false) => level::limit_gain(limits, r.gain_at(length, curve)),
                 (false, _) => r.gain,
             };
             *level = Level {
@@ -405,7 +416,7 @@ impl CueEngine {
                 param: r.param,
                 gain,
                 frames,
-                curve: fade.curve,
+                curve: curve.clone(),
             });
             if frames > 0 {
                 moving.insert(r.cue);
@@ -457,7 +468,7 @@ impl CueEngine {
                     value: l.value(at),
                     to: if moving { l.to } else { l.value(at) },
                     end: l.end(),
-                    curve: l.curve,
+                    curve: l.curve.clone(),
                 }
             })
             .collect()

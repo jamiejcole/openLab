@@ -487,6 +487,7 @@ impl Outputs {
                 | CommandKind::MoveVoice { voice, .. }
                 | CommandKind::Devamp { voice, .. }
                 | CommandKind::EndAt { voice, .. } => self.output_of(*voice),
+                CommandKind::ShapedRamp(r) => self.output_of(r.voice),
                 CommandKind::SetPatchRouting { patch, .. } | CommandKind::SnapPatch { patch } => {
                     slot_output(*patch).unwrap_or(0)
                 }
@@ -646,6 +647,11 @@ fn at_rate(kind: &mut CommandKind, from: u32, to: u32) {
         CommandKind::StopVoice { fade: f, .. }
         | CommandKind::Ramp { fade: f, .. }
         | CommandKind::RampSet { fade: f, .. } => fade(f),
+        CommandKind::ShapedRamp(r) => {
+            if r.frames > 0 {
+                r.frames = frames(r.frames).max(1);
+            }
+        }
         CommandKind::SetPatchRouting { .. }
         | CommandKind::SnapPatch { .. }
         | CommandKind::MoveVoice { .. }
@@ -668,6 +674,7 @@ fn command_voice(kind: &CommandKind) -> Option<VoiceId> {
         | CommandKind::Devamp { voice, .. }
         | CommandKind::EndAt { voice, .. }
         | CommandKind::PauseVoice { voice } => Some(*voice),
+        CommandKind::ShapedRamp(r) => Some(r.voice),
         CommandKind::ResumeVoice { new_id, .. } => Some(*new_id),
         CommandKind::SetPatchRouting { .. }
         | CommandKind::SnapPatch { .. }

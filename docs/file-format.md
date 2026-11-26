@@ -47,6 +47,7 @@ The top level of every file is:
 - An autosave (a file in the engine's recovery folder, never a show file) also has a top-level `show_path`, the absolute path of the show file it belongs to, after `format_version`. A reader of the workspace ignores it like any unknown key, so it needs no version of its own.
 - **Newer than supported:** refused with a message naming both the file's version and the newest supported. openLab never guesses at a higher version.
 - **Older than current:** upgraded in memory one version at a time through the existing chain (`vN_to_vN+1` in `show_file.rs`, each a pure function over the JSON document with a fixture of the old version in `engine/fixtures/show/`). The file on disk is rewritten, in the current version, only when the user saves. A new required key also goes into the last step so older test shows still load.
+- The v9 step also turns a Fade cue's `curve` name into a Fade cue curve (§5.2) that moves a level the same way, in the linear domain: `linear` both shapes `linear`, `equal_power` both `parametric` at 1, `s_curve` both `s_curve`; `logarithmic` and `exponential`, which a Fade cue no longer has, the default curve.
 - Migration notices: some steps warn once instead of guessing (see §3, "Migration notices"). Two non-obvious rules: the removed global master is dropped, never folded into patch levels (QLab 5 has no global master), and a Fade aimed at a Group changed meaning (absolute to relative, v3) in a way no upgrade can preserve, so such files warn.
 
 ## 3. Loading, validation and refusal
@@ -87,6 +88,7 @@ cue, and the cue shows as broken where it cannot run.
 | A Network cue's `address` is not a valid OSC address, or its arguments are too many or too large (skill `osc`) | Kept; the cue shows as broken until it is edited |
 | An Audio or Video cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
 | An Audio or Video cue's `end_time` less than 50 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` moved to `start_time` + 50 ms (QLab 5's shortest trim) |
+| A Fade cue's `curve` with a value out of range (§5.2 "Fade cue curve": a parameter outside 0.01 to 100, more than 64 points, a point outside the graph, on an end or out of time order) | Warning (`InvalidValue` naming `curve`); both shapes become the default, the audio domain is kept. An edit, add or paste carrying one is refused |
 | Slice markers out of order | Warning; sorted |
 | A slice marker at or before `start_time`, or at or after `end_time` | Warning; removed |
 | Two slice markers at the same time | Warning; the second is removed |
@@ -277,6 +279,7 @@ Option on macOS).
 
 - **Fade spec** `{"duration": seconds, "curve": curve}`. A duration of `0` means no fade.
 - **Curve**: `"linear"`, `"equal_power"`, `"s_curve"`, `"logarithmic"`, `"exponential"`.
+- **Fade cue curve** `{"audio_domain": domain, "rising": shape, "falling": shape}` (QLab 5 manual pp. 198-199). `audio_domain` is the scale a Fade moves audio levels on: `"slider"` (the amplitude is the fourth power of a position moved by the shape, as a console fader), `"decibel"` (evenly in dB, from the workspace's `output_min_db` up; at or below it is silence) or `"linear"` (evenly in amplitude); it changes nothing else a Fade moves (a picture's values move evenly). A **shape** is `{"type": type, "parameter": number, "points": [{"t", "v"}, …]}`: `type` `"s_curve"` (`(1 − cos πt) / 2`), `"custom"` (a smooth monotone cubic through the points), `"parametric"` (`sin(πt/2)` to the power `parameter`: equal power at 1, the S-curve at 2) or `"linear"` (straight lines through the points); `parameter` from 0.01 to 100 (1 when nothing sets it), read only by `parametric`; `points`, at most 64 (`MAX_CURVE_POINTS`), read only by `custom` and `linear`, each `t` strictly between 0 and 1 and greater than the one before, each `v` 0 to 1. A point is where the curve is drawn in its graph: `t` the time from the fade's start to its end, `v` the height; the rising shape runs from `(0, 0)` to `(1, 1)` and moves a level that goes up, the falling one from `(0, 1)` to `(1, 0)` and moves a level that goes down (the ends are fixed and never listed). Both are kept whatever the type. The level is worked out exactly every 64 samples of the fade and on a straight line between. A value out of range: both shapes become the default (`s_curve`, parameter 1, no points) and the domain is kept, with an `InvalidValue` warning naming `curve`; an edit, add or paste carrying one is refused. A new Fade cue's curve is `{"audio_domain": "slider"}` with both shapes the default.
 - **Crosspoint** `{"input": file channel, "output": cue output, "db": level, "mute": bool}`. In a
   Fade cue's levels a crosspoint has no `mute`.
 - A **target** is a cue id or `null` (not yet chosen; the cue shows as broken until set).
@@ -308,7 +311,7 @@ Option on macOS).
 |---|---|---|
 | `target` | target | An Audio, Video or Group cue (fading a group moves each cue with sound in it, at any depth, relative to its own level; never a picture). |
 | `duration` | seconds | |
-| `curve` | curve | |
+| `curve` | Fade cue curve | §5.2. Read when the Fade's action starts. |
 | `levels.master_db` | level or `null` | `null` = leave the master alone. |
 | `levels.output_db` | array of level or `null` | Indexed by cue output; `null` entries are left alone. |
 | `levels.crosspoints` | array of `{"input", "output", "db"}` | Listed crosspoints fade to their `db` (by it, for a Group target; a silent crosspoint stays silent); others are left alone. Mutes are never changed by a fade. |

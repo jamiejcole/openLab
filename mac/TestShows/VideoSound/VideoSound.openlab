@@ -526,7 +526,19 @@
               "type": "fade",
               "target": "00000000-0000-0000-0000-0000000000b1",
               "duration": 5.0,
-              "curve": "linear",
+              "curve": {
+                "audio_domain": "linear",
+                "rising": {
+                  "type": "linear",
+                  "parameter": 1.0,
+                  "points": []
+                },
+                "falling": {
+                  "type": "linear",
+                  "parameter": 1.0,
+                  "points": []
+                }
+              },
               "levels": {
                 "master_db": -30.0,
                 "output_db": [],
@@ -570,7 +582,19 @@
               "type": "fade",
               "target": "00000000-0000-0000-0000-0000000000b3",
               "duration": 5.0,
-              "curve": "linear",
+              "curve": {
+                "audio_domain": "linear",
+                "rising": {
+                  "type": "linear",
+                  "parameter": 1.0,
+                  "points": []
+                },
+                "falling": {
+                  "type": "linear",
+                  "parameter": 1.0,
+                  "points": []
+                }
+              },
               "levels": {
                 "master_db": null,
                 "output_db": [],

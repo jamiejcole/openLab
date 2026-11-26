@@ -46,7 +46,8 @@ enum NewCueKind: String, CaseIterable, Sendable {
         case .wait: fields["duration"] = .double(5)
         case .fade:
             fields.merge([
-                "target": .null, "duration": .double(3), "curve": .string("linear"),
+                // QLab's new Fade: an S-curve each way, in the slider domain.
+                "target": .null, "duration": .double(3), "curve": FadeCurveSpec().json,
                 "levels": .object(["master_db": .null, "output_db": .array([]), "crosspoints": .array([])]),
                 "stop_target_when_done": .bool(false), "mode": .string("absolute"),
             ]) { a, _ in a }

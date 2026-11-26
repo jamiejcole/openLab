@@ -4,7 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cue::{CueLevels, FadeCurve};
+use crate::cue::CueLevels;
+use crate::fade_curve::RampCurve;
 use crate::model::CueId;
 
 use super::level::{Level, LevelParam, Played};
@@ -280,16 +281,15 @@ pub(super) struct FadeRamp {
 impl FadeRamp {
     /// The gain the planned curve reaches `length` samples into the fade's action: where a
     /// fade that keeps its rate ends when its action is `length` long (QLab 5).
-    pub fn gain_at(&self, length: SampleTime, curve: FadeCurve) -> f32 {
+    pub fn gain_at(&self, length: SampleTime, curve: &RampCurve) -> f32 {
         if self.frames == 0 {
             return self.gain;
         }
-        super::level::ramp_gain(
+        curve.gain(
             self.from,
             self.gain,
             length.saturating_sub(self.lead),
             self.frames,
-            curve,
         )
     }
 }
@@ -302,7 +302,10 @@ pub(super) struct FadeRun {
     pub targets: Vec<(CueId, u64)>,
     /// Stop this cue (the Fade's target) when the fade completes.
     pub stop_target: Option<CueId>,
-    pub curve: FadeCurve,
+    /// The curve its audio levels follow (in its audio domain).
+    pub curve: RampCurve,
+    /// The curve a picture's values follow: the same shapes, evenly in value.
+    pub picture_curve: RampCurve,
     /// Its duration was edited while it ran: it ends on the new end, at the levels its curve
     /// reaches there, and lets go of them then.
     pub retimed: bool,

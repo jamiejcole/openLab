@@ -1,0 +1,26 @@
+{
+  "about": "A Fade's Curve tab in each curve shape: S-curve, parametric (its strength field), straight lines and custom after a drag on the rising graph (the falling one mirrored while locked), then the lock off and a drag on the falling graph alone; the level scale (audio domain) pop-up open.",
+  "show": "Targets",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1400, "height": 900},
+  "steps": [
+    {"select": "3"},
+    {"tab": "curve"},
+    {"choose": "fade-curve", "item": "S-curve"},
+    {"choose": "fade-audio-domain", "item": "Fader"},
+    {"shot": "s-curve"},
+    {"open_menu": "fade-audio-domain"},
+    {"shot": "domain-menu"},
+    {"choose": "fade-curve", "item": "Parametric"},
+    {"shot": "parametric"},
+    {"choose": "fade-curve", "item": "Straight lines"},
+    {"drag": "fade-curve-rising", "from": [0.5, 0.5], "to": [0.5, 0.25]},
+    {"shot": "straight-after-drag"},
+    {"choose": "fade-curve", "item": "Custom"},
+    {"drag": "fade-curve-rising", "from": [0.25, 0.85], "to": [0.25, 0.55]},
+    {"shot": "custom-after-drag"},
+    {"click": "fade-curve-lock"},
+    {"drag": "fade-curve-falling", "from": [0.6, 0.65], "to": [0.6, 0.9]},
+    {"shot": "custom-unlocked-falling-drag"}
+  ]
+}

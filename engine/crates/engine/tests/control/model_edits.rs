@@ -721,7 +721,7 @@ fn fade_of_steady(
         CueKind::Fade {
             target: Some(id(1)),
             duration: seconds,
-            curve: openlab_core::FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(openlab_core::FadeCurve::Linear),
             levels: openlab_core::FadeLevels {
                 master_db: Some(db),
                 output_db: vec![],
@@ -1423,4 +1423,55 @@ fn an_edit_after_two_narrowings_wins_over_the_fade() {
         s.run(u64::from(rate) * 5);
         assert!(near(peak(&s, 0), want), "late, {rate}: {}", peak(&s, 0));
     }
+}
+
+/// A drag on the Curve tab sends the Fade cue's whole curve at each step, every step with the
+/// drag's coalesce key: one undo puts back the curve the drag started from, and a curve with a
+/// point out of range is refused without touching the stored one.
+#[test]
+fn a_dragged_fade_curve_is_one_undo_step_and_a_bad_one_is_refused() {
+    let mut s = steady_show(|ws| {
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, -20.0, 2.0, false))
+    });
+    let mut mirror = Mirror::new(&s);
+    let curve_of = |s: &OfflineShow| match &s.control().workspace().find_cue(id(2)).unwrap().kind {
+        CueKind::Fade { curve, .. } => curve.clone(),
+        other => panic!("{other:?}"),
+    };
+    let before = curve_of(&s);
+    let dragged = |v: f64| {
+        let curve = openlab_core::FadeCueCurve {
+            falling: openlab_core::CurveShape {
+                kind: openlab_core::CurveType::Custom,
+                parameter: 1.0,
+                points: vec![openlab_core::CurvePoint { t: 0.5, v }],
+            },
+            ..Default::default()
+        };
+        let mut value = serde_json::Map::new();
+        value.insert("curve".into(), serde_json::to_value(&curve).unwrap());
+        (
+            curve,
+            Command::SetCueProperty {
+                id: id(2),
+                property: CueProperty::KindFields { value },
+            },
+        )
+    };
+    let mut last = before.clone();
+    for v in [0.6, 0.4, 0.3] {
+        let (curve, edit) = dragged(v);
+        assert!(refusal(&send(&mut s, edit, Some("curve:2:1"))).is_none());
+        last = curve;
+    }
+    assert_eq!(curve_of(&s), last);
+    mirror.catch_up(&mut s);
+    let (_, bad) = dragged(1.5);
+    assert!(refusal(&send(&mut s, bad, Some("curve:2:2"))).is_some());
+    assert_eq!(curve_of(&s), last);
+    assert!(refusal(&undo(&mut s)).is_none());
+    assert_eq!(curve_of(&s), before);
+    mirror.catch_up(&mut s);
 }

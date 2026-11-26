@@ -242,7 +242,19 @@
               "type": "fade",
               "target": "00000653-0000-4000-8000-000000000101",
               "duration": 5.0,
-              "curve": "logarithmic",
+              "curve": {
+                "audio_domain": "slider",
+                "rising": {
+                  "type": "s_curve",
+                  "parameter": 1.0,
+                  "points": []
+                },
+                "falling": {
+                  "type": "s_curve",
+                  "parameter": 1.0,
+                  "points": []
+                }
+              },
               "levels": {
                 "master_db": -120.0,
                 "output_db": [

@@ -2494,7 +2494,7 @@ pub(crate) mod tests {
                 to,
                 at,
                 frames,
-                curve: openlab_core::FadeCurve::Linear,
+                curve: openlab_core::RampCurve::from(openlab_core::FadeCurve::Linear),
             },
         }
     }

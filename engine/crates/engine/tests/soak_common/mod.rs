@@ -286,7 +286,7 @@ pub fn build() -> Built {
             CueKind::Fade {
                 target: Some(id(6)),
                 duration: 1.0,
-                curve: FadeCurve::EqualPower,
+                curve: openlab_core::FadeCueCurve::like(FadeCurve::EqualPower),
                 levels: FadeLevels {
                     master_db: Some(-12.0),
                     output_db: vec![],

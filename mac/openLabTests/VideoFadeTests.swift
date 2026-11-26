@@ -120,8 +120,8 @@ extension VideoCueTests {
         try typeInto(fg.opacityField, "0")
         await soon { self.fadeGeometry(id).fadeOpacity && self.fadeGeometry(id).opacity == 0 }
         try await show(id, tab: "curve")
-        choose(wc.inspector.fadeSettings.curvePopup, FadeSettingsPanel.curves.firstIndex(of: "s_curve") ?? 0)
-        await soon("the S-curve chosen") { self.kind(id)?["curve"]?.stringValue == "s_curve" }
+        choose(wc.inspector.fadeSettings.curvePopup, FadeCurveSpec.Kind.allCases.firstIndex(of: .sCurve) ?? 0)
+        await soon("the S-curve chosen") { self.kind(id)?["curve"]?["rising"]?["type"]?.stringValue == "s_curve" }
 
         try await perform(.startSelected, on: Self.movie)
         try await play(0.3)
@@ -214,12 +214,13 @@ extension VideoCueTests {
         try await perform(.startSelected, on: Self.still)
         try await play(0.2)
         let full = try await red()
+        // A new Fade's S-curve: a quarter of the way through it has made (1 − cos 45°) / 2 of its move.
         try await perform(.startSelected, on: down)
         try await play(1)
-        try await expectOpacity(full, 0.75, 0.04)
+        try await expectOpacity(full, 0.854, 0.04)
         try await perform(.startSelected, on: up)
         try await play(0.5)
-        try await expectOpacity(full, 0.875, 0.04, "on its way up from where it was")
+        try await expectOpacity(full, 0.927, 0.04, "on its way up from where it was")
         try await play(1)
         try await expectOpacity(full, 1, 0.02)
         XCTAssertNotNil(status(down), "the first still runs")
@@ -276,13 +277,15 @@ extension VideoCueTests {
         let full = try await red()
         try await perform(.startSelected, on: id)
         try await play(0.5)
-        try await expectOpacity(full, 0.75, 0.05, "a quarter way down")
+        // A new Fade's S-curve: a quarter of the way through it has made (1 − cos 45°) / 2 of its move.
+        try await expectOpacity(full, 0.854, 0.05, "a quarter way down")
         await app.perform(.pauseAll, on: wc, cues: [])
         try await play(1)
-        try await expectOpacity(full, 0.75, 0.05, "held while paused")
+        try await expectOpacity(full, 0.854, 0.05, "held while paused")
         await app.perform(.resumeAll, on: wc, cues: [])
         try await play(0.5)
-        try await expectOpacity(full, 0.5, 0.05, "carries on from where it held")
+        // The rest of the fade's curve from where it held: a third of 1.5 s, (1 − cos 60°) / 2 of it.
+        try await expectOpacity(full, 0.64, 0.05, "carries on from where it held")
         // Panic: from where they are, over the workspace's panic time (1 s).
         await app.perform(.panic, on: wc, cues: [])
         try await play(0.4)

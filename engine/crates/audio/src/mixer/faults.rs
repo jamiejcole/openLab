@@ -135,6 +135,7 @@ impl Stage {
             | CommandKind::EndAt { voice, .. }
             | CommandKind::MoveVoice { voice, .. }
             | CommandKind::PauseVoice { voice } => on(*voice, *voice, false),
+            CommandKind::ShapedRamp(r) => on(r.voice, r.voice, false),
             CommandKind::ResumeVoice { voice, new_id } => on(*voice, *new_id, false),
             CommandKind::SetPatchRouting { patch, .. } | CommandKind::SnapPatch { patch } => {
                 Stage::Patch(usize::from(*patch))

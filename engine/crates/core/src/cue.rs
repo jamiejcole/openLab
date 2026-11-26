@@ -837,7 +837,8 @@ pub enum CueKind {
     Fade {
         target: Option<CueId>,
         duration: f64,
-        curve: FadeCurve,
+        /// Its rising and falling shapes and audio domain (QLab 5 manual pp. 198-199).
+        curve: crate::fade_curve::FadeCueCurve,
         levels: FadeLevels,
         stop_target_when_done: bool,
         /// Whether the levels are where an Audio target ends or how far it moves. Absent in a

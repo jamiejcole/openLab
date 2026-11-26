@@ -329,7 +329,7 @@ fn a_fade_on_the_cue_carries_on_on_the_moved_voice() {
         CueKind::Fade {
             target: Some(id(1)),
             duration: 1.0,
-            curve: FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(FadeCurve::Linear),
             levels: openlab_core::FadeLevels {
                 master_db: Some(-40.0),
                 output_db: vec![],
@@ -583,7 +583,7 @@ fn fade_and_stop(secs: f64) -> openlab_core::Cue {
         CueKind::Fade {
             target: Some(id(1)),
             duration: secs,
-            curve: FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(FadeCurve::Linear),
             levels: openlab_core::FadeLevels {
                 master_db: Some(-40.0),
                 output_db: vec![],

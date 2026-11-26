@@ -1225,6 +1225,20 @@
 "fade.curve.equal_power" = "Equal power";
 "fade.curve.logarithmic" = "Logarithmic";
 "fade.curve.exponential" = "Exponential";
+"fade.shape" = "Curve shape";
+"fade.shape.s_curve" = "S-curve";
+"fade.shape.custom" = "Custom";
+"fade.shape.parametric" = "Parametric";
+"fade.shape.linear" = "Straight lines";
+"fade.intensity" = "Strength";
+"fade.domain" = "Level scale";
+"fade.domain.slider" = "Fader";
+"fade.domain.decibel" = "Decibels";
+"fade.domain.linear" = "Amplitude";
+"fade.curve.lock" = "Mirror the two curves";
+"fade.curve.reset" = "Reset Curve";
+"fade.curve.readout" = "%@%% at %@";
+"inspector.invalid.intensity" = "The strength is a number from 0.01 to 100.";
 
 /* Audio cue timing and loops tab, waveform (AUD-11, AUD-12, AUD-14) */
 "inspector.tab.timeLoops" = "Timing & Loops";

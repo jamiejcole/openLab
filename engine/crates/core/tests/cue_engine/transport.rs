@@ -19,7 +19,7 @@ fn master_fade(n: u128, target: u128, seconds: f64, db: f64) -> Cue {
         CueKind::Fade {
             target: Some(id(target)),
             duration: seconds,
-            curve: FadeCurve::Linear,
+            curve: FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(db),
                 output_db: vec![],
@@ -182,7 +182,7 @@ fn panic_takes_over_fades_and_stops_in_progress() {
         param: LevelParam::Master,
         gain: level,
         frames: 0,
-        curve: FadeCurve::Linear,
+        curve: RampCurve::from(FadeCurve::Linear),
     }));
     // Cue 3's stop fade would end at 10000: the panic fades it again from where it is, to end
     // with the panic. Cue 4's ends at 1700, before the panic's 2000: it keeps it.

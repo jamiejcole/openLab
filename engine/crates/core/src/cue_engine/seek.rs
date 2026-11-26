@@ -5,7 +5,8 @@
 //! (`position`, a frame at the device rate) and the binary plans the slices from there, so a
 //! point past a slice that loops until devamped is reachable too.
 
-use crate::cue::{CueKind, FadeCurve};
+use crate::cue::CueKind;
+use crate::fade_curve::RampCurve;
 use crate::model::CueId;
 
 use super::level::Level;
@@ -292,7 +293,7 @@ fn regive_levels(cue: CueId, run: &mut Run, at: SampleTime, cx: &mut Ctx) {
             param,
             gain: level.value(at),
             frames: 0,
-            curve: FadeCurve::Linear,
+            curve: RampCurve::LINEAR,
         });
         if let Some(frames) = moving(level, at) {
             cx.out.push(Action::Ramp {
@@ -302,7 +303,7 @@ fn regive_levels(cue: CueId, run: &mut Run, at: SampleTime, cx: &mut Ctx) {
                 param,
                 gain: level.to,
                 frames,
-                curve: level.curve,
+                curve: level.curve.clone(),
             });
         }
     }

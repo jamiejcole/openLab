@@ -76,6 +76,9 @@ pub(super) struct SoundHealth {
     /// Disk reads are falling behind: a voice underran less than ten seconds ago.
     pub(super) disk_behind: bool,
     load: LoadWatch,
+    /// Fade cue ramps that moved linearly for want of a free curve slot on their voice, as last
+    /// logged.
+    shapeless: u64,
 }
 
 impl Observe {
@@ -484,6 +487,23 @@ impl Engine {
                     "disk reads keep up again: no underrun for 10 s".to_owned(),
                 )
             });
+        }
+        let shapeless: u64 = self
+            .outputs
+            .iter()
+            .map(|(_, o)| o.mixer.shapeless_ramps())
+            .sum();
+        if shapeless > sound.shapeless {
+            lines.push((
+                LogKind::Engine,
+                LogLevel::Warn,
+                format!(
+                    "{} Fade cue ramp(s) moved evenly instead of on their curve: too many \
+                     different Fade curves on one cue at once",
+                    shapeless - sound.shapeless
+                ),
+            ));
+            sound.shapeless = shapeless;
         }
         // The callback's worst load since the previous tick; this is the meter's only reader.
         let load = self

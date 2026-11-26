@@ -24,12 +24,14 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use openlab_audio::{
-    CommandKind, Curve, DiskStreamer, Event, Fade, FinishReason, GainTarget, MAX_SLICES, Plays,
-    PreparedStream, Slice, StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
+    CommandKind, Curve, DiskStreamer, Event, Fade, FadeShape, FinishReason, GainTarget, MAX_SLICES,
+    Plays, PreparedStream, ShapeDomain, ShapeKind, ShapeSide, ShapedRamp, Slice, StreamHandle,
+    StreamRequest, VoiceId, VoiceStart, total_frames,
 };
 use openlab_core::{
-    Action, BrokenReason, Cue, CueEngine, CueId, CueKind, CueLevels, FadeCurve, FadeSpec, Input,
-    LevelParam, PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
+    Action, AudioDomain, BrokenReason, Cue, CueEngine, CueId, CueKind, CueLevels, CurveType,
+    FadeCurve, FadeSpec, Input, LevelParam, PatchId, RampCurve, RampShape, RunId, SampleTime,
+    ShapeEval, StopFade, Workspace, db_to_gain, seconds_to_samples,
 };
 
 use super::media::{MediaCatalog, Probe};
@@ -106,12 +108,14 @@ pub struct Env<'a> {
 pub type Held<'a> = &'a dyn Fn(CueId, RunId) -> bool;
 
 /// A mixer command for a voice that is not in the mixer yet, replayed when it starts.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Queued {
+    /// On `fade.curve`, or on a Fade cue's curve (`shape`; `fade.curve` is then linear).
     Ramp {
         target: GainTarget,
         gain: f32,
         fade: Fade,
+        shape: Option<Arc<RampShape>>,
     },
     Devamp {
         stop: bool,
@@ -874,13 +878,14 @@ fn initial_gain(vs: &VoiceStart, target: GainTarget) -> f32 {
 }
 
 /// One gain's ramp as the commands queued for a voice set it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Track {
     target: GainTarget,
     from: f32,
     to: f32,
     start: SampleTime,
     fade: Fade,
+    shape: Option<Arc<RampShape>>,
 }
 
 impl Track {
@@ -897,7 +902,16 @@ impl Track {
             let t = pos as f64 / self.fade.frames as f64;
             return (from * (to / from).powf(t)) as f32;
         }
-        openlab_audio::ramp_value(self.from, self.to, pos, self.fade.frames, self.fade.curve)
+        match &self.shape {
+            Some(s) => s.gain(self.from, self.to, pos, self.fade.frames),
+            None => openlab_audio::ramp_value(
+                self.from,
+                self.to,
+                pos,
+                self.fade.frames,
+                self.fade.curve,
+            ),
+        }
     }
 }
 
@@ -914,7 +928,12 @@ fn caught_up(
     let mut later = Vec::new();
     for (t, q) in queue {
         match q {
-            Queued::Ramp { target, gain, fade } if t < at => {
+            Queued::Ramp {
+                target,
+                gain,
+                fade,
+                shape,
+            } if t < at => {
                 let from = tracks
                     .iter()
                     .find(|k| k.target == target)
@@ -932,6 +951,7 @@ fn caught_up(
                     to: gain,
                     start: t,
                     fade,
+                    shape,
                 };
                 match tracks.iter_mut().find(|k| k.target == target) {
                     Some(k) => *k = track,
@@ -950,6 +970,7 @@ fn caught_up(
                 target: k.target,
                 gain: k.value(at),
                 fade: Fade::NONE,
+                shape: None,
             },
         ));
         let end = k.start.saturating_add(k.fade.frames);
@@ -960,6 +981,7 @@ fn caught_up(
                     target: k.target,
                     gain: k.to,
                     fade: Fade::new(end - at, k.fade.curve),
+                    shape: k.shape.clone(),
                 },
             ));
         }
@@ -970,7 +992,28 @@ fn caught_up(
 
 fn queued(id: VoiceId, q: Queued) -> CommandKind {
     match q {
-        Queued::Ramp { target, gain, fade } => CommandKind::Ramp {
+        Queued::Ramp {
+            target,
+            gain,
+            fade,
+            shape: Some(shape),
+        } if fade.frames > 0 => match mixer_shape(&shape) {
+            Some(shape) => CommandKind::ShapedRamp(Box::new(ShapedRamp {
+                voice: id,
+                gains: Box::new([(target, gain)]),
+                frames: fade.frames,
+                shape,
+            })),
+            None => CommandKind::Ramp {
+                voice: id,
+                target,
+                gain,
+                fade,
+            },
+        },
+        Queued::Ramp {
+            target, gain, fade, ..
+        } => CommandKind::Ramp {
             voice: id,
             target,
             gain,
@@ -978,6 +1021,31 @@ fn queued(id: VoiceId, q: Queued) -> CommandKind {
         },
         Queued::Devamp { stop } => CommandKind::Devamp { voice: id, stop },
     }
+}
+
+/// A Fade cue's curve as the mixer keeps it. `None` only for knots the mixer has no room for,
+/// which a valid curve never has.
+pub fn mixer_shape(s: &RampShape) -> Option<FadeShape> {
+    let side = |e: &ShapeEval| {
+        let kind = match e.kind {
+            CurveType::SCurve => ShapeKind::SCurve,
+            CurveType::Custom => ShapeKind::Custom,
+            CurveType::Parametric => ShapeKind::Parametric,
+            CurveType::Linear => ShapeKind::Linear,
+        };
+        ShapeSide::new(kind, e.parameter, &e.ts, &e.vs, &e.ms)
+    };
+    let domain = match s.domain {
+        AudioDomain::Slider => ShapeDomain::Slider,
+        AudioDomain::Decibel => ShapeDomain::Decibel,
+        AudioDomain::Linear => ShapeDomain::Linear,
+    };
+    Some(FadeShape::new(
+        domain,
+        s.floor_db,
+        side(&s.rising)?,
+        side(&s.falling)?,
+    ))
 }
 
 pub fn to_curve(c: FadeCurve) -> Curve {
@@ -1318,6 +1386,7 @@ mod tests {
             target,
             gain,
             fade: Fade::new(frames, Curve::Linear),
+            shape: None,
         };
         let queue = vec![
             // Master from 1.0 to 0.0 over 100 from 100: half way on 150.
@@ -1341,7 +1410,9 @@ mod tests {
         let got: Vec<Got> = out
             .iter()
             .map(|(t, q)| match q {
-                Queued::Ramp { target, gain, fade } => (*t, Some((*target, *gain, fade.frames))),
+                Queued::Ramp {
+                    target, gain, fade, ..
+                } => (*t, Some((*target, *gain, fade.frames))),
                 Queued::Devamp { .. } => (*t, None),
             })
             .collect();

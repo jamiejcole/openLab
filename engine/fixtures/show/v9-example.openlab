@@ -469,7 +469,28 @@
               "type": "fade",
               "target": "00000000-0000-0000-0000-000000000002",
               "duration": 5.0,
-              "curve": "logarithmic",
+              "curve": {
+                "audio_domain": "decibel",
+                "rising": {
+                  "type": "custom",
+                  "parameter": 1.0,
+                  "points": [
+                    {
+                      "t": 0.25,
+                      "v": 0.6
+                    },
+                    {
+                      "t": 0.5,
+                      "v": 0.75
+                    }
+                  ]
+                },
+                "falling": {
+                  "type": "parametric",
+                  "parameter": 2.5,
+                  "points": []
+                }
+              },
               "levels": {
                 "master_db": -120.0,
                 "output_db": [

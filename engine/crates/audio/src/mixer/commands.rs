@@ -14,7 +14,7 @@ use crate::plan::{MAX_SLICES, Plays};
 
 use super::{
     Command, CommandKind, Event, FinishReason, GainTarget, Mixer, PENDING_CAPACITY, RejectReason,
-    Returned, SampleTime, Shared, Voice, VoiceId, VoiceStart,
+    Returned, SampleTime, ShapedRamp, Shared, Voice, VoiceId, VoiceStart,
 };
 
 /// Audio-thread side of the queues back to the controller.
@@ -49,6 +49,10 @@ impl Outbox {
         self.hand_back(Returned::Gains(gains));
     }
 
+    fn give_back_shaped(&mut self, ramp: Box<ShapedRamp>) {
+        self.hand_back(Returned::Shaped(ramp));
+    }
+
     fn hand_back(&mut self, item: Returned) {
         if let Err(PushError::Full(item)) = self.returns.push(item) {
             // The return queue is sized so this cannot happen while the controller drains it;
@@ -56,6 +60,7 @@ impl Outbox {
             match item {
                 Returned::Start(start) => leak_start(start),
                 Returned::Gains(gains) => leak_gains(gains),
+                Returned::Shaped(ramp) => std::mem::forget(ramp),
             }
             self.shared.leaked_returns.fetch_add(1, Ordering::Relaxed);
         }
@@ -194,6 +199,7 @@ impl Mixer {
                         sanitize_gain(gain),
                         frames,
                         curve,
+                        None,
                         &mut scratch.shapes,
                     );
                     outbox.shared.meters.widen(v.slot, v.width);
@@ -214,12 +220,51 @@ impl Mixer {
                             sanitize_gain(gain),
                             frames,
                             curve,
+                            None,
                             &mut scratch.shapes,
                         );
                     }
                     outbox.shared.meters.widen(v.slot, v.width);
                 }
                 self.outbox.give_back_gains(gains);
+            }
+            CommandKind::ShapedRamp(ramp) => {
+                let Mixer {
+                    voices,
+                    scratch,
+                    outbox,
+                    ..
+                } = self;
+                if let Some(v) = voices
+                    .iter_mut()
+                    .find(|v| v.is_active() && v.id == ramp.voice)
+                {
+                    let (frames, curve) =
+                        ramp_shape(Fade::new(ramp.frames, Curve::Linear), v.fresh, dezip);
+                    let slot = if frames > 0 {
+                        v.own_shape(&ramp.shape)
+                    } else {
+                        None
+                    };
+                    if frames > 0 && slot.is_none() {
+                        outbox
+                            .shared
+                            .shapeless_ramps
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    for &(target, gain) in &*ramp.gains {
+                        v.ramp_gain(
+                            target,
+                            sanitize_gain(gain),
+                            frames,
+                            curve,
+                            slot,
+                            &mut scratch.shapes,
+                        );
+                    }
+                    outbox.shared.meters.widen(v.slot, v.width);
+                }
+                self.outbox.give_back_shaped(ramp);
             }
             CommandKind::SetPatchRouting {
                 patch,

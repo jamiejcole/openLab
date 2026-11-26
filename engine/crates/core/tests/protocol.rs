@@ -839,6 +839,32 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: Some("levels:10:1:1".into()),
         }),
     );
+    // A Fade cue's curve, as a drag of one of its points sends it: every step of one drag
+    // shares a coalesce key, so the drag is one undo step.
+    add(
+        "command_set_fade_curve",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetCueProperty {
+                id: cue_id(11),
+                property: CueProperty::KindFields {
+                    value: serde_json::json!({ "curve": FadeCueCurve {
+                        audio_domain: AudioDomain::Decibel,
+                        rising: CurveShape {
+                            kind: CurveType::Custom,
+                            parameter: 1.0,
+                            points: vec![CurvePoint { t: 0.5, v: 0.75 }],
+                        },
+                        falling: CurveShape::default(),
+                    } })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                },
+            }),
+            coalesce: Some("curve:11:4".into()),
+        }),
+    );
     // An Audio cue's file alone, and a raw clipboard to paste.
     add(
         "command_set_cue_media",

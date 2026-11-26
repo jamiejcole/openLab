@@ -125,7 +125,7 @@ fn scaled_workspace(k: u128) -> openlab_core::Workspace {
             CueKind::Fade {
                 target: Some(id(targets[(i as usize * 7) % targets.len()])),
                 duration: 2.0,
-                curve: FadeCurve::EqualPower,
+                curve: openlab_core::FadeCueCurve::like(FadeCurve::EqualPower),
                 levels: FadeLevels {
                     master_db: Some(-12.0),
                     output_db: vec![],
