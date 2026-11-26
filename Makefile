@@ -167,8 +167,11 @@ ui-shots:
 	@test -n "$(SCENARIO)" || { echo "usage: make ui-shots SCENARIO=mac/scenarios/<name>.json [OUT=<dir>]"; exit 2; }
 	lockf -k /tmp/openlab-xcuitest.lock mac/scenarios/ui-shots.sh "$(SCENARIO)" "$(or $(OUT),build/ui-shots/$(basename $(notdir $(SCENARIO))))"
 
+# Built for Apple silicon and Intel whatever the scheme says: XcodeGen 2.47 and later give the scheme
+# "Match Run Destination", which builds for the destination's architecture only, and a setting on the
+# command line is the one that wins over it.
 mac: project
-	$(XCODEBUILD) -configuration Release build
+	$(XCODEBUILD) -configuration Release build ONLY_ACTIVE_ARCH=NO ARCHS="arm64 x86_64"
 	@echo "Built build/Build/Products/Release/openLab.app"
 
 verify-bundle:
