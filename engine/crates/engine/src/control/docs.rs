@@ -49,6 +49,7 @@ use super::checks::{NoProbes, PlanChecks};
 use super::inbox::reply;
 use super::media::{Indexed, MediaCatalog, index_workspace};
 use super::model::DocModel;
+use super::qlab::{self, ImportedDevices, QlabChoices};
 use super::{
     Control, ControlConfig, ControlError, Doc, DocCx, DocId, Engine, Inbox, MAX_DOCS, ReplyTx,
     Scope, fail, notice, ok,
@@ -157,6 +158,26 @@ pub struct Loaded {
     /// The autosave set aside from its file that this was restored from: the operator has taken
     /// its contents, so the first save of the doc removes it.
     restored_from: Option<PathBuf>,
+    /// A workspace converted from a QLab file: the operator's device choices.
+    devices: Option<ImportedDevices>,
+}
+
+impl Loaded {
+    /// A workspace converted from a QLab file: untitled and unsaved.
+    pub(super) fn imported(
+        workspace: Workspace,
+        notices: Vec<WireWarning>,
+        devices: ImportedDevices,
+    ) -> Self {
+        Self {
+            workspace,
+            path: None,
+            dirty: true,
+            notices,
+            restored_from: None,
+            devices: Some(devices),
+        }
+    }
 }
 
 /// Everything a doc being opened needs, built on the document worker.
@@ -178,6 +199,7 @@ pub struct DocParts {
     /// The file was saved in Show Mode (SM-01).
     show_mode: bool,
     restored_from: Option<PathBuf>,
+    devices: Option<ImportedDevices>,
 }
 
 impl fmt::Debug for DocParts {
@@ -197,6 +219,7 @@ fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
         dirty,
         notices,
         restored_from,
+        devices,
     } = loaded;
     // The live mode is the doc's; the model's workspace never carries it (`Workspace::show_mode`).
     let show_mode = std::mem::take(&mut workspace.show_mode);
@@ -219,6 +242,7 @@ fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
         checks,
         show_mode,
         restored_from,
+        devices,
     }
 }
 
@@ -241,6 +265,11 @@ pub enum DocSource {
     },
     /// A workspace in memory, never saved (tests; a template later).
     Workspace(Box<Workspace>),
+    /// A QLab workspace file, converted (as `import_qlab`): untitled and unsaved.
+    Qlab {
+        path: PathBuf,
+        choices: Box<QlabChoices>,
+    },
 }
 
 #[derive(Debug)]
@@ -268,6 +297,11 @@ pub enum DocAnswer {
     /// An autosave file was deleted.
     Discarded {
         ticket: u64,
+    },
+    /// A request answered with data (`inspect_qlab`).
+    Data {
+        ticket: u64,
+        data: Box<ResultData>,
     },
     /// The folder walk of a `relink`: proposals only, applied on the control thread.
     Relinked {
@@ -301,6 +335,7 @@ impl DocAnswer {
             | Self::Offer { ticket, .. }
             | Self::Entries { ticket, .. }
             | Self::Discarded { ticket }
+            | Self::Data { ticket, .. }
             | Self::Relinked { ticket, .. }
             | Self::Failed { ticket, .. } => *ticket,
         }
@@ -337,6 +372,18 @@ enum DocJob {
     },
     Scan {
         ticket: u64,
+    },
+    /// Read a QLab workspace file for its report.
+    InspectQlab {
+        ticket: u64,
+        path: PathBuf,
+    },
+    /// A doc to add, converted from a QLab workspace file.
+    ImportQlab {
+        ticket: u64,
+        path: PathBuf,
+        choices: Box<QlabChoices>,
+        config: EngineConfig,
     },
     /// Delete one autosave file (`discard_recovery`), unless it is the current autosave of one
     /// of the `open` (workspace, show path) docs.
@@ -813,6 +860,13 @@ fn work(
                 config,
             ),
             DocJob::Scan { ticket } => scan(ticket, dirs),
+            DocJob::InspectQlab { ticket, path } => qlab::inspect(ticket, &path),
+            DocJob::ImportQlab {
+                ticket,
+                path,
+                choices,
+                config,
+            } => built(qlab::import(ticket, &path, &choices), config),
             DocJob::DiscardRecovery {
                 ticket,
                 workspace,
@@ -869,7 +923,7 @@ fn deliver(
     sent
 }
 
-fn failed(ticket: u64, code: ErrorCode, message: String) -> DocAnswer {
+pub(super) fn failed(ticket: u64, code: ErrorCode, message: String) -> DocAnswer {
     DocAnswer::Failed {
         ticket,
         code,
@@ -900,7 +954,7 @@ fn read_show(path: &Path) -> Result<LoadedShow, (ErrorCode, String)> {
     load_show_text(path, &read_show_text(path)?)
 }
 
-fn load_notices(shown: &LoadedShow) -> Vec<WireWarning> {
+pub(super) fn load_notices(shown: &LoadedShow) -> Vec<WireWarning> {
     let mut notices: Vec<WireWarning> = shown
         .warnings
         .iter()
@@ -974,6 +1028,7 @@ fn open(
             dirty,
             notices,
             restored_from: None,
+            devices: None,
         }),
     }
 }
@@ -1042,6 +1097,7 @@ fn open_recovery(
             path,
             dirty: true,
             restored_from: entry.stale.then(|| entry.path.clone()),
+            devices: None,
         }),
     }
 }
@@ -2219,7 +2275,10 @@ impl Control {
     /// Refused (`command_refused`) while another document request is being handled, or when
     /// [`MAX_DOCS`] docs are open; a show file that is open already answers `already_open`.
     pub fn open_doc(&mut self, source: DocSource, id: RequestId, to: &ReplyTx) {
-        let reads = matches!(source, DocSource::Open { .. } | DocSource::Recovery { .. });
+        let reads = matches!(
+            source,
+            DocSource::Open { .. } | DocSource::Recovery { .. } | DocSource::Qlab { .. }
+        );
         if !self.eng.read_gate(id, to, reads) {
             return;
         }
@@ -2294,7 +2353,17 @@ impl Control {
                         dirty: false,
                         notices: Vec::new(),
                         restored_from: None,
+                        devices: None,
                     }),
+                    config,
+                }
+            }
+            DocSource::Qlab { path, choices } => {
+                let ticket = self.eng.next_ticket(Target::New, id, to);
+                DocJob::ImportQlab {
+                    ticket,
+                    path,
+                    choices,
                     config,
                 }
             }
@@ -2470,6 +2539,17 @@ impl Control {
     }
 
     /// `scan_recovery` (app-scope): the recovery files, read on the document worker.
+    /// `inspect_qlab` (app-scope): reads a QLab workspace file for its report, on the
+    /// document worker.
+    pub(super) fn inspect_qlab(&mut self, path: PathBuf, id: RequestId, to: &ReplyTx) {
+        if !self.eng.read_gate(id, to, true) {
+            return;
+        }
+        let ticket = self.eng.next_ticket(Target::Engine, id, to);
+        self.eng
+            .send_job(DocJob::InspectQlab { ticket, path }, id, to);
+    }
+
     pub(super) fn scan_recovery(&mut self, id: RequestId, to: &ReplyTx) {
         if !self.eng.read_gate(id, to, true) {
             return;
@@ -2536,6 +2616,7 @@ impl Control {
                 reply_data(to, id, ResultData::RecoveryEntries { entries });
             }
             (Target::Engine, DocAnswer::Discarded { .. }) => reply(to, ok(id, None)),
+            (Target::Engine, DocAnswer::Data { data, .. }) => reply_data(to, id, *data),
             (Target::New, DocAnswer::Built { parts, .. }) => self.install_new(*parts, id, to),
             (Target::Relink { doc, preview }, DocAnswer::Relinked { found, .. }) => {
                 self.relinked(doc, *found, preview, id, to);
@@ -2619,6 +2700,7 @@ impl Control {
             checks,
             show_mode,
             restored_from,
+            devices,
         } = parts;
         // A copy of an open show (a Finder duplicate) has its workspace id: QLab 5 gives the
         // copy a fresh one and marks it unsaved. Ids must be unique: autosaves, OSC
@@ -2657,6 +2739,10 @@ impl Control {
         doc.revision = 1;
         doc.saved_revision = if dirty { 0 } else { 1 };
         self.docs.push(doc);
+        // Before the doc's patches first resolve, so the default mapping leaves them alone.
+        if let Some(devices) = devices {
+            self.apply_imported_devices(doc_id, devices);
+        }
         self.docs_changed();
         let Some(mut cx) = self.cx_of(doc_id) else {
             return;

@@ -1,0 +1,65 @@
+{
+  "type": "result",
+  "id": 46,
+  "ok": {
+    "data": {
+      "type": "qlab_report",
+      "workspace_name": "Hamlet",
+      "qlab_version": "5.6.5",
+      "cue_count": 120,
+      "unsupported": [
+        {
+          "qlab_id": "2C0A6F55-1D3E-4B8A-9F10-6E7D8C9B0A11",
+          "number": "40",
+          "name": "House to half",
+          "qlab_type": "LightCue",
+          "reason": "cue_type"
+        }
+      ],
+      "notes": [
+        {
+          "qlab_id": "9D2F4A61-3B5C-4D7E-8F90-1A2B3C4D5E6F",
+          "number": "12",
+          "name": "Storm",
+          "kind": "rate",
+          "detail": "playback rate not imported"
+        },
+        {
+          "number": "",
+          "name": "",
+          "kind": "setting",
+          "detail": "OSC access passcodes are not imported"
+        }
+      ],
+      "notes_omitted": 3,
+      "audio_patches": [
+        {
+          "qlab_id": "7E1C0A52-2C3B-4E39-9E57-6A5C1B2D3E4F",
+          "name": "Patch 1",
+          "outputs": 12,
+          "system": true,
+          "device_uid": "AppleUSBAudioEngine:Focusrite:Scarlett 18i20:1",
+          "device_name": "Scarlett 18i20",
+          "device_outputs": 20
+        }
+      ],
+      "video_outputs": [
+        {
+          "qlab_id": "4EEADB84-09F2-4220-943E-EB979E6297DE",
+          "name": "Output 1",
+          "screen": "Projector",
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "stages": [
+        {
+          "qlab_id": "5F6A7B8C-9D0E-4F1A-8B2C-3D4E5F6A7B8C",
+          "name": "Main",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    }
+  }
+}

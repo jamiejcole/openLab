@@ -464,7 +464,8 @@ extension ClientMessage {
             switch r {
             // A first waveform reads the whole file on the engine's waveform reader, which fails it
             // itself after its timeout.
-            case .new, .open, .openRecovery, .scanRecovery, .discardRecovery, .save, .saveAs, .relink, .waveform:
+            case .new, .open, .openRecovery, .scanRecovery, .discardRecovery, .save, .saveAs, .relink, .waveform,
+                .inspectQlab, .importQlab:
                 return false
             case .listDevices, .setOutputDevice, .oscState, .setOscPort, .setStandBack, .backupKeep, .setBackupKeep,
                 .setBufferSize,

@@ -78,7 +78,7 @@ The `result` of a transport action means accepted and handed to the cue engine. 
 
 Fields and reply shapes: `Request` and `ResultData` (`client.rs`, `server.rs`). Behaviour:
 
-- **`new`, `open`, `open_recovery`, `scan_recovery`, `discard_recovery`**: "Opening and closing workspaces".
+- **`new`, `open`, `open_recovery`, `scan_recovery`, `discard_recovery`, `inspect_qlab`, `import_qlab`**: "Opening and closing workspaces".
 - **`save`**: `document` update, then `result`. `no_workspace` if never saved (use `save_as`); `io` if the write failed.
 - **`save_as { path }`** (absolute): saves and makes `path` the doc's path. `io` on write failure. `already_open` (nothing written) if `path` is another open doc's show file or one another save or `open` is touching, including under another spelling (symlink, `/var` for `/private/var`; the writer compares by file).
 - **`relink { folder }`** (absolute, at most `MAX_FOLDER_BYTES`): relinks the bound doc's missing media (WS-03, NFR-04).
@@ -115,7 +115,7 @@ Fields and reply shapes: `Request` and `ResultData` (`client.rs`, `server.rs`). 
   - The file is read whole once by the waveform reader (never a probe worker; one file at a time engine-wide) and cached per workspace under a byte cap, so later answers at any zoom are instant; a re-probe reads again.
   - Refused: `bad_request` (range or count out of bounds; not an Audio cue), `not_found` (no cue or no file), `unsupported` (missing, unplayable, not probed yet, or too long; ask again once `media_duration` is known), `command_refused` (too many waiting), `io` (disk stopped answering past `waveform_timeout`; repeated timeouts stop further reads until restart).
 
-Paths are never empty, and `open` and `save_as` paths must be absolute (`bad_request` on decode): a relative one would resolve against the engine's own working directory.
+Paths are never empty, and `open`, `save_as`, `inspect_qlab` and `import_qlab` paths must be absolute (`bad_request` on decode): a relative one would resolve against the engine's own working directory.
 
 #### Test support (test-only; not in a release engine)
 
@@ -140,7 +140,12 @@ An engine built with `test-support` and started with `--virtual-device stepped|r
 - **`scan_recovery`** lists every recovery file, including a never-saved doc's autosave and files moved aside as stale (`stale: true`; they may hold the newest work), newest first. It serves the launch offer after an unclean exit (NFR-05) and what to show when a show cannot be opened (`bad_show_file`, or `io`).
 - **One show file, one doc.** `open` of an open show, or of a file another doc's `save_as` is writing, answers `already_open`. Paths compare as media paths do (case, Unicode form, `.`/`..`) and, on the document worker before the read, by the file itself. So neither doc's save can overwrite the other's. A copy of an open show (another file, same workspace id) opens with a fresh workspace id and dirty.
 - **`discard_recovery { workspace_id, path_hash?, modified_ms? }`** deletes the one autosave file `open_recovery` would open for that selector (it cannot be undone), and nothing else; the `result` is plain `ok`. `not_found` when no listed autosave matches; `command_refused` for the current autosave of an open workspace; `io` when the file cannot be removed. A save of a doc restored from a set-aside autosave (`open_recovery`) removes that file once the save is done: the operator has taken its contents. Any other save leaves set-aside files.
-- **One document read at a time** engine-wide (`open`, `open_recovery`, `scan_recovery`, `discard_recovery`, `new`); another arriving meanwhile is `command_refused`. A read unfinished after the engine's timeout (a stalled network volume) answers `io`, and later requests are served normally.
+- **A new workspace from a QLab 5 workspace file** (`.qlab5`; there is no import into an open workspace). Both requests read the file on the document worker (regular files only, at most the show-file size limit) and never write it.
+  - **`inspect_qlab { path }`** (absolute) answers `qlab_report`: the QLab workspace's name and version, its cue count, each cue that cannot be converted (`unsupported`: QLab id, number, name, QLab class, reason `cue_type`, `cart`, `network_message`, `patch_target` or `damaged`), the properties dropped or changed (`notes`, at most 2000, `notes_omitted` counting the rest; each with a `kind` the app words and an English `detail`), the QLab audio patches (name, outputs, system output or the device's Core Audio UID, name and outputs) and video outputs (name, display name, raster size) and stages. Nothing opens.
+  - **`import_qlab { path, cues?, audio_patches?, video_outputs? }`** opens the converted workspace as a new doc, as `new` does (`opened { doc }`), **untitled and unsaved** (`document.path` null, `dirty` true), with fresh ids; repairs a load would make are `load_repair` notices. `cues`: `delete` or `placeholder` per unsupported cue's QLab id; one not named is a placeholder (a red Memo cue keeping number, name, notes, waits and continue mode; a cart's is a cue list of its cues). Deleting a group's child leaves the group; a target to a deleted cue becomes none. `audio_patches`: per QLab patch id, a mapping (as `set_patch_mapping` takes it) stored for this machine, or none (stored cleared: unmapped); a patch not named is mapped as any new workspace's. `video_outputs`: per QLab output id, a display (`list_displays` id) or none. A choice this machine cannot use when the doc opens (a device or display gone since) leaves it unmapped, with a `warn` log. OSC passcodes are not imported: the workspace gets its own, as `new` gives.
+  - Media are looked for next to the QLab file (QLab's relative path), then at QLab's last known path; failing both, the path next to the file is kept and the cue shows missing (relink as usual). They are stored absolute.
+  - Errors: `not_qlab_workspace` (not a QLab workspace), `qlab_too_old` (saved by QLab 4 or earlier), `qlab_too_new` (needs a QLab newer than 5), `bad_show_file` (damaged, or over a reading limit), `not_found`, `io`, `command_refused` (another document read under way, or too many workspaces open).
+- **One document read at a time** engine-wide (`open`, `open_recovery`, `scan_recovery`, `discard_recovery`, `inspect_qlab`, `import_qlab`, `new`); another arriving meanwhile is `command_refused`. A read unfinished after the engine's timeout (a stalled network volume) answers `io`, and later requests are served normally.
 - **Saving**: `save` and `save_as` write on a separate thread. `result` comes once the file is durably written; the new `document` (path, `dirty` false when no edit happened meanwhile) is broadcast before it. A failed write is `io`; the doc stays dirty and autosave keeps running. Autosave is not visible on the protocol (skill `persistence`).
 
 ## 4. Engine -> client
@@ -251,6 +256,7 @@ Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_s
 - `bad_request`, `unknown_message`: the frame was rejected; after `welcome` the connection stays open unless the frame was over the limit. A bad `hello` or an over-limit frame ends it.
 - `command_refused`: the engine refused a valid message (validation, limit, busy). Nothing changed.
 - `not_found`, `already_open`, `unsaved_changes`, `io`, `bad_show_file`, `unsupported`, `internal`.
+- `not_qlab_workspace`, `qlab_too_old`, `qlab_too_new`: `inspect_qlab` and `import_qlab` refusals ("Opening and closing workspaces").
 - `no_workspace`: no doc to act on (none open, a closed doc, an app connection, or a save with no path yet).
 
 ## 5. Stage host link (engine <-> `openlab-stage`)

@@ -375,6 +375,46 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 show: true,
             },
         ),
+        (
+            "inspect_qlab",
+            Request::InspectQlab {
+                path: "/Users/sam/Shows/Hamlet.qlab5".into(),
+            },
+        ),
+        (
+            "import_qlab",
+            Request::ImportQlab {
+                path: "/Users/sam/Shows/Hamlet.qlab5".into(),
+                cues: vec![
+                    QlabCueChoice {
+                        qlab_id: "2C0A6F55-1D3E-4B8A-9F10-6E7D8C9B0A11".into(),
+                        action: QlabCueAction::Delete,
+                    },
+                    QlabCueChoice {
+                        qlab_id: "6B1E3C47-8A2D-4F5E-B7C9-0D1E2F3A4B5C".into(),
+                        action: QlabCueAction::Placeholder,
+                    },
+                ],
+                audio_patches: vec![
+                    QlabPatchChoice {
+                        qlab_id: "7E1C0A52-2C3B-4E39-9E57-6A5C1B2D3E4F".into(),
+                        mapping: Some(PatchMapping {
+                            device: "Scarlett 18i20".into(),
+                            channels: vec![0, 1],
+                            system: false,
+                        }),
+                    },
+                    QlabPatchChoice {
+                        qlab_id: "8A96A925-AAD9-4DA8-A91F-12C23C153B1B".into(),
+                        mapping: None,
+                    },
+                ],
+                video_outputs: vec![QlabOutputChoice {
+                    qlab_id: "4EEADB84-09F2-4220-943E-EB979E6297DE".into(),
+                    display: Some("37D8832A-2D66-02CA-B9F7-8F30A301B230".into()),
+                }],
+            },
+        ),
     ]
 }
 
@@ -1899,6 +1939,66 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "result_qlab_report",
+        server(ServerMessage::Result {
+            id: rid(46),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::QlabReport(Box::new(QlabReport {
+                    workspace_name: "Hamlet".into(),
+                    qlab_version: "5.6.5".into(),
+                    cue_count: 120,
+                    unsupported: vec![QlabUnsupported {
+                        qlab_id: "2C0A6F55-1D3E-4B8A-9F10-6E7D8C9B0A11".into(),
+                        number: "40".into(),
+                        name: "House to half".into(),
+                        qlab_type: "LightCue".into(),
+                        reason: QlabUnsupportedReason::CueType,
+                    }],
+                    notes: vec![
+                        QlabNote {
+                            qlab_id: Some("9D2F4A61-3B5C-4D7E-8F90-1A2B3C4D5E6F".into()),
+                            number: "12".into(),
+                            name: "Storm".into(),
+                            kind: QlabNoteKind::Rate,
+                            detail: "playback rate not imported".into(),
+                        },
+                        QlabNote {
+                            qlab_id: None,
+                            number: String::new(),
+                            name: String::new(),
+                            kind: QlabNoteKind::Setting,
+                            detail: "OSC access passcodes are not imported".into(),
+                        },
+                    ],
+                    notes_omitted: 3,
+                    audio_patches: vec![QlabAudioPatch {
+                        qlab_id: "7E1C0A52-2C3B-4E39-9E57-6A5C1B2D3E4F".into(),
+                        name: "Patch 1".into(),
+                        outputs: 12,
+                        system: true,
+                        device_uid: "AppleUSBAudioEngine:Focusrite:Scarlett 18i20:1".into(),
+                        device_name: "Scarlett 18i20".into(),
+                        device_outputs: 20,
+                    }],
+                    video_outputs: vec![QlabVideoOutput {
+                        qlab_id: "4EEADB84-09F2-4220-943E-EB979E6297DE".into(),
+                        name: "Output 1".into(),
+                        screen: "Projector".into(),
+                        width: 1920,
+                        height: 1080,
+                    }],
+                    stages: vec![QlabStage {
+                        qlab_id: "5F6A7B8C-9D0E-4F1A-8B2C-3D4E5F6A7B8C".into(),
+                        name: "Main".into(),
+                        width: 1920,
+                        height: 1080,
+                    }],
+                }))),
+            }),
+        }),
+    );
+    add(
         "result_relink",
         server(ServerMessage::Result {
             id: rid(45),
@@ -2357,7 +2457,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 25);
-    assert_eq!(all_requests().len(), 34);
+    assert_eq!(all_requests().len(), 36);
 }
 
 #[test]
@@ -3428,7 +3528,7 @@ fn engine_preview_idx(r: PreviewIgnoredReason) -> usize {
     }
 }
 
-const ERROR_CODE_COUNT: usize = 13;
+const ERROR_CODE_COUNT: usize = 16;
 fn error_code_idx(c: ErrorCode) -> usize {
     match c {
         ErrorCode::ProtocolVersionMismatch => 0,
@@ -3444,6 +3544,9 @@ fn error_code_idx(c: ErrorCode) -> usize {
         ErrorCode::Unsupported => 10,
         ErrorCode::Internal => 11,
         ErrorCode::AlreadyOpen => 12,
+        ErrorCode::NotQlabWorkspace => 13,
+        ErrorCode::QlabTooOld => 14,
+        ErrorCode::QlabTooNew => 15,
     }
 }
 
@@ -3803,6 +3906,9 @@ fn all_error_codes() -> Vec<ErrorCode> {
         ErrorCode::Unsupported,
         ErrorCode::Internal,
         ErrorCode::AlreadyOpen,
+        ErrorCode::NotQlabWorkspace,
+        ErrorCode::QlabTooOld,
+        ErrorCode::QlabTooNew,
     ]
 }
 

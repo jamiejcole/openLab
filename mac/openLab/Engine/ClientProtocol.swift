@@ -168,6 +168,41 @@ struct PatchMapping: Hashable, Sendable, Codable {
 
 enum RecoveryChoice: String, Hashable, Sendable, Codable { case restore, ignore }
 
+/// What becomes of one unsupported QLab cue in `importQlab`; Rust: `QlabCueAction`.
+enum QlabCueAction: String, Hashable, Sendable, Codable { case delete, placeholder }
+
+/// Rust: `QlabCueChoice`.
+struct QlabCueChoice: Hashable, Sendable, Codable {
+    var qlabId: String
+    var action: QlabCueAction
+    enum CodingKeys: String, CodingKey {
+        case action
+        case qlabId = "qlab_id"
+    }
+}
+
+/// Where a QLab audio patch plays on this machine; nil `mapping` leaves it unmapped. Rust:
+/// `QlabPatchChoice`.
+struct QlabPatchChoice: Hashable, Sendable, Codable {
+    var qlabId: String
+    var mapping: PatchMapping?
+    enum CodingKeys: String, CodingKey {
+        case mapping
+        case qlabId = "qlab_id"
+    }
+}
+
+/// The display (`listDisplays` id) a QLab video output is shown on; nil: none. Rust:
+/// `QlabOutputChoice`.
+struct QlabOutputChoice: Hashable, Sendable, Codable {
+    var qlabId: String
+    var display: String?
+    enum CodingKeys: String, CodingKey {
+        case display
+        case qlabId = "qlab_id"
+    }
+}
+
 /// `new`, `open` and `open_recovery` open another workspace beside the ones open (protocol 2): the
 /// result carries `opened { doc }` and a connection bound to that doc gets its snapshot.
 enum Request: Hashable, Sendable, Codable {
@@ -175,6 +210,14 @@ enum Request: Hashable, Sendable, Codable {
     case open(path: String, recovery: RecoveryChoice? = nil)
     case openRecovery(workspaceId: ModelID, pathHash: String? = nil, modifiedMs: Int64? = nil)
     case scanRecovery
+    /// Reads a QLab 5 workspace file for its report (`ResultData.qlabReport`); opens nothing.
+    case inspectQlab(path: String)
+    /// Opens a new, unsaved workspace converted from a QLab 5 workspace file (`opened`). An
+    /// unsupported cue not in `cues` becomes a placeholder; a patch not in `audioPatches` is mapped
+    /// as a new workspace's is; an output not in `videoOutputs` has no display.
+    case importQlab(
+        path: String, cues: [QlabCueChoice] = [], audioPatches: [QlabPatchChoice] = [],
+        videoOutputs: [QlabOutputChoice] = [])
     /// Deletes the one autosave file `openRecovery` would open for these fields (not undoable).
     case discardRecovery(workspaceId: ModelID, pathHash: String? = nil, modifiedMs: Int64? = nil)
     case save
@@ -281,6 +324,13 @@ enum Request: Hashable, Sendable, Codable {
             opt(&f, "modified_ms", m)
             return ("open_recovery", f)
         case .scanRecovery: return ("scan_recovery", [])
+        case .inspectQlab(let p): return ("inspect_qlab", [("path", p)])
+        case .importQlab(let p, let cues, let patches, let outputs):
+            f.append(("path", p))
+            if !cues.isEmpty { f.append(("cues", cues)) }
+            if !patches.isEmpty { f.append(("audio_patches", patches)) }
+            if !outputs.isEmpty { f.append(("video_outputs", outputs)) }
+            return ("import_qlab", f)
         case .discardRecovery(let w, let h, let m):
             f.append(("workspace_id", w))
             opt(&f, "path_hash", h)
@@ -367,6 +417,13 @@ enum Request: Hashable, Sendable, Codable {
                 pathHash: try c.decodeIfPresent(String.self, forKey: "path_hash"),
                 modifiedMs: try c.decodeIfPresent(Int64.self, forKey: "modified_ms"))
         case "scan_recovery": self = .scanRecovery
+        case "inspect_qlab": self = .inspectQlab(path: try c.decode(String.self, forKey: "path"))
+        case "import_qlab":
+            self = .importQlab(
+                path: try c.decode(String.self, forKey: "path"),
+                cues: try c.decodeIfPresent([QlabCueChoice].self, forKey: "cues") ?? [],
+                audioPatches: try c.decodeIfPresent([QlabPatchChoice].self, forKey: "audio_patches") ?? [],
+                videoOutputs: try c.decodeIfPresent([QlabOutputChoice].self, forKey: "video_outputs") ?? [])
         case "discard_recovery":
             self = .discardRecovery(
                 workspaceId: try c.decode(ModelID.self, forKey: "workspace_id"),

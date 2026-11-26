@@ -3599,3 +3599,136 @@ fn relative_show_with_id() -> Workspace {
     ws.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(565));
     ws
 }
+
+fn inspect_qlab(path: &Path) -> Request {
+    Request::InspectQlab {
+        path: path.to_string_lossy().into_owned(),
+    }
+}
+
+#[test]
+fn a_file_that_is_not_a_qlab_workspace_is_refused_and_nothing_opens() {
+    let mut r = rig(memo_ws("keep", &[1]));
+    let path = r.env.show_dir().join("Not QLab.qlab5");
+    fs::write(&path, b"just some text").unwrap();
+    assert_eq!(
+        error_code(&request(&mut r.s, inspect_qlab(&path))),
+        ErrorCode::NotQlabWorkspace
+    );
+    let import = Request::ImportQlab {
+        path: path.to_string_lossy().into_owned(),
+        cues: vec![],
+        audio_patches: vec![],
+        video_outputs: vec![],
+    };
+    assert_eq!(
+        error_code(&request(&mut r.s, import)),
+        ErrorCode::NotQlabWorkspace
+    );
+    let missing = r.env.show_dir().join("Gone.qlab5");
+    assert_eq!(
+        error_code(&request(&mut r.s, inspect_qlab(&missing))),
+        ErrorCode::NotFound
+    );
+    assert_eq!(r.s.control().doc_ids().len(), 1);
+    assert_eq!(fs::read(&path).unwrap(), b"just some text");
+}
+
+/// Copies a QLab-saved fixture (kept on this machine only, never committed) into `dir`.
+fn copy_qlab_fixture(name: &str, dir: &Path) -> PathBuf {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/qlab")
+        .join(name);
+    assert!(
+        from.is_dir(),
+        "needs the local QLab-saved fixtures in engine/fixtures/qlab: {} is missing",
+        from.display()
+    );
+    let mut stack = vec![PathBuf::new()];
+    while let Some(rel) = stack.pop() {
+        fs::create_dir_all(dir.join(&rel)).unwrap();
+        for entry in fs::read_dir(from.join(&rel)).unwrap() {
+            let entry = entry.unwrap();
+            let sub = rel.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                stack.push(sub);
+            } else {
+                fs::copy(entry.path(), dir.join(&sub)).unwrap();
+            }
+        }
+    }
+    dir.join(format!("{name}.qlab5"))
+}
+
+#[test]
+#[ignore = "needs the local QLab-saved fixtures in engine/fixtures/qlab"]
+fn importing_a_qlab_workspace_opens_it_unsaved_with_its_media_and_device_choices() {
+    let mut r = rig(memo_ws("keep", &[1]));
+    let folder = r.env.show_dir().join("From QLab");
+    let path = copy_qlab_fixture("cue-types", &folder);
+    let before = fs::read(&path).unwrap();
+    let ResultData::QlabReport(report) = data(&request(&mut r.s, inspect_qlab(&path))) else {
+        panic!("no report")
+    };
+    assert_eq!(report.workspace_name, "cue-types");
+    let light = report
+        .unsupported
+        .iter()
+        .find(|u| u.qlab_type == "LightCue")
+        .unwrap();
+    let (first, second) = (&report.audio_patches[0], &report.audio_patches[1]);
+    let replies = request(
+        &mut r.s,
+        Request::ImportQlab {
+            path: path.to_string_lossy().into_owned(),
+            cues: vec![openlab_core::QlabCueChoice {
+                qlab_id: light.qlab_id.clone(),
+                action: openlab_core::QlabCueAction::Delete,
+            }],
+            audio_patches: vec![
+                openlab_core::QlabPatchChoice {
+                    qlab_id: first.qlab_id.clone(),
+                    mapping: Some(openlab_core::PatchMapping {
+                        device: "Offline".into(),
+                        channels: vec![0, 1],
+                        system: false,
+                    }),
+                },
+                openlab_core::QlabPatchChoice {
+                    qlab_id: second.qlab_id.clone(),
+                    mapping: None,
+                },
+            ],
+            video_outputs: vec![],
+        },
+    );
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    // New, untitled and unsaved; the QLab file untouched.
+    assert_eq!(snap.document.path, None);
+    assert!(snap.document.dirty);
+    assert_eq!(snap.workspace.name, "cue-types");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let cues: Vec<_> = snap.workspace.cues().collect();
+    assert!(cues.iter().all(|c| c.number.as_deref() != Some("20")));
+    assert!(cues.iter().any(|c| c.number.as_deref() == Some("21")));
+    // The media found next to the QLab file, as an absolute path.
+    let tone = cues
+        .iter()
+        .find(|c| c.number.as_deref() == Some("1"))
+        .unwrap();
+    let want = folder.join("audio/tone-mono.wav");
+    assert_eq!(tone.kind.media().unwrap().as_str(), want.to_str().unwrap());
+    // The device choices are this machine's: the first patch on the device, the second left
+    // unmapped (not mapped by default).
+    let ws = &snap.workspace;
+    let machine = r.s.control().machine();
+    assert_eq!(
+        machine
+            .patch_mapping(ws.id, ws.patches[0].id)
+            .map(|m| m.device.as_str()),
+        Some("Offline")
+    );
+    assert_eq!(machine.patch_mapping(ws.id, ws.patches[1].id), None);
+    assert!(machine.patch_entry(ws.id, ws.patches[1].id).is_some());
+}

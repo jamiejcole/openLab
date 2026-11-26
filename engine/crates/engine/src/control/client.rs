@@ -326,6 +326,24 @@ impl Control {
                     to,
                 ),
                 Request::ScanRecovery => self.scan_recovery(id, to),
+                Request::InspectQlab { path } => self.inspect_qlab(PathBuf::from(path), id, to),
+                Request::ImportQlab {
+                    path,
+                    cues,
+                    audio_patches,
+                    video_outputs,
+                } => self.open_doc(
+                    DocSource::Qlab {
+                        path: PathBuf::from(path),
+                        choices: Box::new(super::qlab::QlabChoices {
+                            cues,
+                            audio_patches,
+                            video_outputs,
+                        }),
+                    },
+                    id,
+                    to,
+                ),
                 Request::DiscardRecovery {
                     workspace_id,
                     path_hash,
