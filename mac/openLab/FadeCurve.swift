@@ -92,27 +92,9 @@ struct FadeCurveSpec: Equatable {
         case .linear, .custom:
             let ts = [0] + shape.points.map(\.t) + [1]
             let vs = [rising ? 0.0 : 1.0] + shape.points.map(\.v) + [rising ? 1.0 : 0.0]
-            v = shape.kind == .linear ? lines(ts, vs, t) : cubic(ts, vs, tangents(ts, vs), t)
+            v = shape.kind == .linear ? lines(ts, vs, t) : spline(ts, vs, t)
         }
         return min(max(v, 0), 1)
-    }
-
-    /// Fritsch-Carlson tangents, as the engine's.
-    static func tangents(_ ts: [Double], _ vs: [Double]) -> [Double] {
-        let n = ts.count
-        func slope(_ i: Int) -> Double {
-            guard i >= 0, i + 1 < n, ts[i + 1] > ts[i] else { return 0 }
-            return (vs[i + 1] - vs[i]) / (ts[i + 1] - ts[i])
-        }
-        return (0..<n).map { i in
-            if i == 0 { return slope(0) }
-            if i + 1 == n { return slope(i - 1) }
-            let (d0, d1) = (slope(i - 1), slope(i))
-            if d0 * d1 <= 0 { return 0 }
-            let (h0, h1) = (ts[i] - ts[i - 1], ts[i + 1] - ts[i])
-            let (w1, w2) = (2 * h1 + h0, h1 + 2 * h0)
-            return (w1 + w2) / (w1 / d0 + w2 / d1)
-        }
     }
 
     private static func interval(_ ts: [Double], _ t: Double) -> Int {
@@ -126,16 +108,25 @@ struct FadeCurveSpec: Equatable {
         return vs[i] + (vs[i + 1] - vs[i]) * ((t - ts[i]) / (ts[i + 1] - ts[i]))
     }
 
-    private static func cubic(_ ts: [Double], _ vs: [Double], _ ms: [Double], _ t: Double) -> Double {
-        let i = interval(ts, t)
-        guard i + 1 < ts.count, ts[i + 1] > ts[i] else { return t }
-        let h = ts[i + 1] - ts[i]
-        let s = (t - ts[i]) / h
-        let (s2, s3) = (s * s, s * s * s)
-        let h00 = 2 * s3 - 3 * s2 + 1
-        let h10 = s3 - 2 * s2 + s
-        let h01 = -2 * s3 + 3 * s2
-        let h11 = s3 - s2
-        return h00 * vs[i] + h10 * h * ms[i] + h01 * vs[i + 1] + h11 * h * ms[i + 1]
+    /// The custom curve, as the engine's `spline`: a quadratic B-spline on the knots, ends kept.
+    /// Each knot between the ends shapes one quadratic Bezier piece, from the midpoint with the knot
+    /// before it (the start, for the first) to the midpoint with the knot after it (the end, for the
+    /// last); the piece's time is solved for its parameter.
+    private static func spline(_ ts: [Double], _ vs: [Double], _ t: Double) -> Double {
+        let n = ts.count
+        guard n >= 3, vs.count == n else { return lines(ts, vs, t) }
+        func knot(_ k: Int) -> (Double, Double) { (ts[k], vs[k]) }
+        func mid(_ k: Int) -> (Double, Double) { ((ts[k] + ts[k + 1]) * 0.5, (vs[k] + vs[k + 1]) * 0.5) }
+        let j = interval(ts, t)
+        let i = min(max(t >= mid(j).0 ? j + 1 : j, 1), n - 2)
+        let (ax, ay) = i == 1 ? knot(0) : mid(i - 1)
+        let (bx, by) = knot(i)
+        let (cx, cy) = i == n - 2 ? knot(n - 1) : mid(i)
+        let dt = max(min(t - ax, cx - ax), 0)
+        let (aa, bb) = (ax - 2 * bx + cx, 2 * (bx - ax))
+        let den = bb + max(bb * bb + 4 * aa * dt, 0).squareRoot()
+        let s = den > 0 ? min(max(2 * dt / den, 0), 1) : 0
+        let r = 1 - s
+        return r * r * ay + 2 * s * r * by + s * s * cy
     }
 }

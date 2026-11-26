@@ -1698,7 +1698,7 @@ mod tests {
     #[test]
     fn a_run_of_shaped_ramps_is_one_command_split_at_the_largest_set() {
         use openlab_audio::{FadeShape, ShapeDomain, ShapeKind, ShapeSide};
-        let side = |kind| ShapeSide::new(kind, 1.0, &[0.0, 1.0], &[0.0, 1.0], &[1.0, 1.0]).unwrap();
+        let side = |kind| ShapeSide::new(kind, 1.0, &[0.0, 1.0], &[0.0, 1.0]).unwrap();
         let shape = FadeShape::new(
             ShapeDomain::Slider,
             -60.0,

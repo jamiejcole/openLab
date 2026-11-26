@@ -186,8 +186,10 @@ fn curved_fade(n: u128, db: f64, curve: FadeCueCurve) -> Cue {
 }
 
 #[test]
-fn a_custom_curve_puts_the_level_on_its_point_half_way_through_the_fade() {
-    // Falling (0 dB to silence) through a point drawn at 20 % of the way up, half way along.
+fn a_custom_curve_puts_the_level_on_qlabs_smooth_curve_near_its_point() {
+    // Falling (0 dB to silence) with a point drawn at 20 % of the way up, half way along. As
+    // QLab 5 draws it, the point is the control of a quadratic Bezier from the start to the end:
+    // half way the curve is at 1/4 · 1 + 1/2 · 0.2 + 1/4 · 0 = 0.35, not on the point.
     let curve = FadeCueCurve {
         audio_domain: AudioDomain::Linear,
         rising: CurveShape::default(),
@@ -209,10 +211,12 @@ fn a_custom_curve_puts_the_level_on_its_point_half_way_through_the_fade() {
         }]
     ));
     let half = rig.level(1, M, 1000 + 2560).unwrap();
-    assert!((half - 0.2).abs() < 1e-6, "{half}");
-    // Smooth either side of the point: above it before, below it after.
-    assert!(rig.level(1, M, 1000 + 1280).unwrap() > 0.2);
-    assert!(rig.level(1, M, 1000 + 3840).unwrap() < 0.2);
+    assert!((half - 0.35).abs() < 1e-6, "{half}");
+    // A quarter and three quarters of the way: 0.6375 and 0.1375 on the same Bezier.
+    let quarter = rig.level(1, M, 1000 + 1280).unwrap();
+    assert!((quarter - 0.6375).abs() < 1e-6, "{quarter}");
+    let three = rig.level(1, M, 1000 + 3840).unwrap();
+    assert!((three - 0.1375).abs() < 1e-6, "{three}");
     assert_eq!(rig.level(1, M, 1000 + 5120), Some(0.0));
 }
 
