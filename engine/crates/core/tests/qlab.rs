@@ -145,6 +145,259 @@ fn qlab_errors_say_which_refusal_it_is() {
     assert!(QlabError::TooNew("6.0".into()).to_string().contains("6.0"));
 }
 
+// ---- Hostile files built in code: bounded work and memory ------------------------------------
+
+/// Counts this thread's heap in use and its peak, so a test can bound what one read allocates
+/// (other tests run on other threads).
+struct Counting;
+
+thread_local! {
+    static HEAP: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+fn track(grow: usize, shrink: usize) {
+    let _ = HEAP.try_with(|h| {
+        let (now, peak) = h.get();
+        let now = (now + grow).saturating_sub(shrink);
+        h.set((now, peak.max(now)));
+    });
+}
+
+// SAFETY: every call is passed straight to the system allocator with the caller's own layout
+// and pointer; the counting touches only a thread-local pair of numbers and never allocates.
+unsafe impl std::alloc::GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        track(layout.size(), 0);
+        // SAFETY: the caller's contract for `alloc` is passed on unchanged.
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        track(0, layout.size());
+        // SAFETY: `ptr` came from `alloc` or `realloc` above with this layout.
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new: usize) -> *mut u8 {
+        track(new, layout.size());
+        // SAFETY: the caller's contract for `realloc` is passed on unchanged.
+        unsafe { std::alloc::System.realloc(ptr, layout, new) }
+    }
+}
+
+#[global_allocator]
+static HEAP_COUNT: Counting = Counting;
+
+/// What `f` allocates at most beyond what this thread held before, in MiB, with its result.
+fn peak_mib<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let start = HEAP.with(|h| {
+        let (now, _) = h.get();
+        h.set((now, now));
+        now
+    });
+    let out = f();
+    let peak = HEAP.with(|h| h.get().1);
+    (out, (peak - start) >> 20)
+}
+
+use common::qlab_archive::{Archive, V, cue as qcue, qlab_file};
+
+fn memo(a: &mut Archive, id: &str, fields: &[(&str, V)]) -> V {
+    qcue(a, "MemoCue", id, fields)
+}
+
+/// A workspace whose one cue list holds `cues`, made by `make` in the cue-list archive.
+fn one_list(make: impl FnOnce(&mut Archive) -> Vec<V>) -> Vec<u8> {
+    let mut cues = Archive::new();
+    let list = make(&mut cues);
+    qlab_file("hostile", Archive::new(), None, cues, vec![("Main", list)])
+}
+
+#[test]
+fn a_shared_megabyte_string_is_not_copied_into_every_cue_number_or_dictionary_key() {
+    let mut top = Archive::new();
+    let huge = top.string(&"k".repeat(1 << 20));
+    let entries: Vec<(V, V)> = (0..100).map(|_| (huge, V::Int(1))).collect();
+    let general = top.dict(&entries);
+    let settings = top.dict_str(&[("General", general)]);
+    let mut cues = Archive::new();
+    let number = cues.string(&"9".repeat(1 << 20));
+    let list = (0..40)
+        .map(|i| memo(&mut cues, &format!("m{i}"), &[("number", number)]))
+        .collect();
+    let file = qlab_file("hostile", top, Some(settings), cues, vec![("Main", list)]);
+    assert!(file.len() < 3 << 20);
+    let (import, peak) = peak_mib(|| read(&file));
+    let import = import.unwrap();
+    assert!(peak < 16, "{peak} MiB for a {} KiB file", file.len() >> 10);
+    assert_eq!(import.workspace.cues().count(), 40);
+    for c in import.workspace.cues() {
+        assert!(c.number.as_ref().unwrap().len() <= 1024);
+    }
+    assert!(
+        import
+            .report
+            .notes
+            .iter()
+            .any(|n| n.kind == QlabNoteKind::Truncated)
+    );
+}
+
+#[test]
+fn shared_notes_past_what_a_show_file_holds_are_refused_not_kept() {
+    // 1100 Memos sharing one 64,000-byte notes string: 70 MB kept from a small file.
+    let file = one_list(|a| {
+        let notes = a.string(&"n".repeat(64_000));
+        (0..1100)
+            .map(|i| memo(a, &format!("m{i}"), &[("notes", notes)]))
+            .collect()
+    });
+    assert!(file.len() < 256 << 10);
+    let (result, peak) = peak_mib(|| read(&file));
+    assert_eq!(result.err(), Some(QlabError::TooLarge("workspace")));
+    assert!(peak < 96, "{peak} MiB");
+}
+
+#[test]
+fn a_workspace_whose_show_file_would_pass_the_limit_is_refused() {
+    // Kept small, but each control character is six bytes in the show file: 200 cues of
+    // 64,000 make 77 MB.
+    let file = one_list(|a| {
+        let notes = a.string(&"\u{1}".repeat(64_000));
+        (0..200)
+            .map(|i| memo(a, &format!("m{i}"), &[("notes", notes)]))
+            .collect()
+    });
+    assert_eq!(read(&file).err(), Some(QlabError::TooLarge("workspace")));
+}
+
+#[test]
+fn a_report_past_the_server_frame_limit_is_refused() {
+    // 6000 unsupported cues sharing a name of 1024 control characters: each is listed in the
+    // report at six bytes a character, 37 MB in all.
+    let file = one_list(|a| {
+        let name = a.string(&"\u{1}".repeat(1024));
+        (0..6000)
+            .map(|i| qcue(a, "LightCue", &format!("l{i}"), &[("name", name)]))
+            .collect()
+    });
+    assert_eq!(read(&file).err(), Some(QlabError::TooLarge("report")));
+}
+
+#[test]
+fn patches_outputs_stages_and_lists_past_their_limits_are_refused() {
+    // Each list made of many references to one object, as a hostile file can.
+    let patch = |top: &mut Archive| {
+        let device = top.dict_str(&[("outputChannels", V::Int(64))]);
+        let id = top.string("P");
+        let p = top.object(
+            "AudioOutputPatch",
+            &[
+                ("uniqueID", id),
+                ("cueOutputChannels", V::Int(128)),
+                ("deviceDescription", device),
+            ],
+        );
+        let patches = top.array(&vec![p; 400]);
+        let audio = top.dict_str(&[("audioOutputPatches", patches)]);
+        top.dict_str(&[("Audio", audio)])
+    };
+    let network = |top: &mut Archive| {
+        let p = top.dict_str(&[]);
+        let patches = top.array(&vec![p; 65]);
+        let net = top.dict_str(&[("networkPatches", patches)]);
+        top.dict_str(&[("Network", net)])
+    };
+    let video = |key: &str, n: usize| {
+        let key = key.to_owned();
+        move |top: &mut Archive| {
+            let id = top.string("R");
+            let r = top.object("VideoOutputRoute", &[("uniqueID", id)]);
+            let list = top.array(&vec![r; n]);
+            let video = top.dict_str(&[(&key, list)]);
+            top.dict_str(&[("Video", video)])
+        }
+    };
+    type Make = Box<dyn Fn(&mut Archive) -> V>;
+    let cases: Vec<(Make, &str)> = vec![
+        (Box::new(patch), "audio patches"),
+        (Box::new(network), "network patches"),
+        (Box::new(video("routes", 65)), "video outputs"),
+        (Box::new(video("stages", 65)), "stages"),
+    ];
+    for (make, what) in cases {
+        let mut top = Archive::new();
+        let settings = make(&mut top);
+        let file = qlab_file("hostile", top, Some(settings), Archive::new(), vec![]);
+        assert_eq!(read(&file).err(), Some(QlabError::TooLarge(what)));
+    }
+    let lists = (0..257).map(|_| ("L", Vec::new())).collect();
+    let file = qlab_file("hostile", Archive::new(), None, Archive::new(), lists);
+    assert_eq!(read(&file).err(), Some(QlabError::TooLarge("cue lists")));
+}
+
+#[test]
+fn a_damaged_cue_alone_becomes_a_placeholder_and_its_siblings_and_group_stay() {
+    let file = one_list(|a| {
+        let bad = Archive::dangling();
+        let damaged = memo(a, "bad-top", &[("colorName", bad)]);
+        let good = memo(a, "good-top", &[]);
+        let child_bad = memo(a, "bad-child", &[("colorName", bad)]);
+        let child_good = memo(a, "good-child", &[]);
+        let children = a.array(&[child_good, child_bad]);
+        let group = qcue(
+            a,
+            "GroupCue",
+            "group",
+            &[("groupMode", V::Int(0)), ("cues", children)],
+        );
+        // A group whose own hotkey is damaged, read after its children.
+        let lost = memo(a, "lost-child", &[]);
+        let lost = a.array(&[lost]);
+        let broken = qcue(
+            a,
+            "GroupCue",
+            "broken-group",
+            &[("cues", lost), ("hotKey", bad)],
+        );
+        vec![damaged, good, group, broken]
+    });
+    let import = read(&file).unwrap();
+    let ws = &import.workspace;
+    let by_qlab = |q: &str| {
+        let (_, id) = import.cues.iter().find(|(c, _)| c == q).unwrap();
+        ws.find_cue(*id).unwrap()
+    };
+    let unsupported = |q: &str| import.report.unsupported.iter().find(|u| u.qlab_id == q);
+    for q in ["bad-top", "bad-child"] {
+        assert_eq!(by_qlab(q).color, CueColor::Red, "{q}");
+        assert_eq!(
+            unsupported(q).unwrap().reason,
+            QlabUnsupportedReason::Damaged
+        );
+        assert!(import.placeholders.iter().any(|p| p.qlab_id == q));
+    }
+    assert_eq!(by_qlab("good-top").color, CueColor::None);
+    let group = by_qlab("group");
+    assert!(matches!(group.kind, CueKind::Group { .. }));
+    assert_eq!(group.children().len(), 2);
+    assert!(unsupported("group").is_none());
+    let broken = by_qlab("broken-group");
+    assert_eq!(broken.name, "QLab Group cue (not converted)");
+    assert_eq!(
+        unsupported("broken-group").unwrap().reason,
+        QlabUnsupportedReason::Damaged
+    );
+    // The cue map names exactly the cues in the workspace: the damaged group's child is gone
+    // from both.
+    let mut mapped: Vec<CueId> = import.cues.iter().map(|(_, id)| *id).collect();
+    let mut present: Vec<CueId> = ws.cues().map(|c| c.id).collect();
+    mapped.sort_by_key(|c| c.0);
+    present.sort_by_key(|c| c.0);
+    assert_eq!(mapped, present);
+    assert!(import.cues.iter().all(|(q, _)| q != "lost-child"));
+    let (ws, _) = import.finish(&[], QlabCueAction::Placeholder, list_id(99));
+    load_show(&save_show(&ws).unwrap()).unwrap();
+}
+
 // ---- The operator's choices: on an openLab workspace -----------------------------------------
 
 fn placeholder(qlab: &str, n: u128) -> QlabPlaceholder {

@@ -8,18 +8,18 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::archive::{Archive, Fields};
-use super::plist::{Budget, MAX_READS, Value};
+use super::plist::{Budget, MAX_KEPT, MAX_WORK, Value};
 use super::{
-    MAX_QLAB_CUES, Placeholder, QLAB_MAJOR, QlabAudioPatch, QlabError, QlabFile, QlabImport,
-    QlabNote, QlabNoteKind, QlabPlaceholder, QlabReport, QlabStage, QlabUnsupported,
-    QlabUnsupportedReason, QlabVideoOutput,
+    MAX_QLAB_CUES, MAX_QLAB_LISTS, MAX_QLAB_PATCHES, Placeholder, QLAB_MAJOR, QlabAudioPatch,
+    QlabError, QlabFile, QlabImport, QlabNote, QlabNoteKind, QlabPlaceholder, QlabReport,
+    QlabStage, QlabUnsupported, QlabUnsupportedReason, QlabVideoOutput,
 };
 use crate::cue::{
     ContinueMode, Crosspoint, Cue, CueColor, CueKind, CueLevels, CueOutput, DevampMode, DuckOthers,
     FadeAndStopOthers, FadeCrosspoint, FadeCurve, FadeLevels, FadeMode, FadeSpec, GroupMode,
-    Hotkey, MAX_CHANNELS, MAX_CUE_OUTPUTS, MAX_DB, MAX_DEVICE_OUTPUTS, MAX_TIME, MediaRef,
-    Modifiers, OscArg, OthersScope, PlayCount, SILENCE_DB, SecondTrigger, SliceMarker, Triggers,
-    WallClockTrigger, Weekday, Weekdays,
+    Hotkey, MAX_CHANNELS, MAX_CUE_OUTPUTS, MAX_DB, MAX_DEVICE_OUTPUTS, MAX_SLICE_MARKERS, MAX_TIME,
+    MediaRef, Modifiers, OscArg, OthersScope, PlayCount, SILENCE_DB, SecondTrigger, SliceMarker,
+    Triggers, WallClockTrigger, Weekday, Weekdays,
 };
 use crate::model::{
     CueId, CueList, CueListId, DeviceOutputLevel, NetworkPatch, NetworkPatchId, NetworkProtocol,
@@ -27,8 +27,14 @@ use crate::model::{
     TransportHotkeys, Workspace, WorkspaceId,
 };
 use crate::osc_access::OscAccess;
-use crate::validate::{MAX_CUE_NAME_BYTES, MAX_CUE_NOTES_BYTES, MAX_GROUP_DEPTH, MAX_NAME_SCALARS};
-use crate::video::{OutputRoute, Region, RouteScaling, Stage, next_guide_colour};
+use crate::stage_link::MAX_PATH_BYTES;
+use crate::validate::{
+    MAX_CUE_NAME_BYTES, MAX_CUE_NOTES_BYTES, MAX_GROUP_DEPTH, MAX_NAME_SCALARS, MAX_NETWORK_ARGS,
+    MAX_NETWORK_STRING_BYTES,
+};
+use crate::video::{
+    MAX_ROUTES, MAX_STAGES, OutputRoute, Region, RouteScaling, Stage, fill_guide_colours,
+};
 use crate::video_geometry::{Crop, FadeGeometry, FillStyle, Pair, VideoGeometry};
 use crate::video_sound::VideoSound;
 use crate::video_timing::VideoTiming;
@@ -43,7 +49,7 @@ pub(super) fn convert(
     ids: &mut dyn FnMut() -> Uuid,
     media: &mut dyn FnMut(&QlabFile) -> Option<MediaRef>,
 ) -> Result<QlabImport, QlabError> {
-    let budget = Budget::new(MAX_READS);
+    let budget = Budget::new(MAX_WORK, MAX_KEPT);
     let mut opened = 0;
     let top = Archive::open(bytes, &budget, &mut opened)?;
     let root: HashMap<String, Value<'_>> = top.dict(Some(top.root()?))?.into_iter().collect();
@@ -55,22 +61,24 @@ pub(super) fn convert(
     let name = top
         .string(root.get("workspaceName").copied())?
         .unwrap_or_default();
-    let name = name.strip_suffix(".qlab5").unwrap_or(&name).to_owned();
+    let name = cut_name(name.strip_suffix(".qlab5").unwrap_or(&name));
     let mut c = Converter {
         ar: &lists,
         ids,
         media,
         report: QlabReport {
             workspace_name: name.clone(),
-            qlab_version: top
-                .string(root.get("QLabShortVersionString").copied())?
-                .unwrap_or_default(),
+            qlab_version: cut_name(
+                &top.string(root.get("QLabShortVersionString").copied())?
+                    .unwrap_or_default(),
+            ),
             ..QlabReport::default()
         },
         placeholders: Vec::new(),
         cue_ids: HashMap::new(),
         cue_order: Vec::new(),
         numbers: HashMap::new(),
+        numbers_added: Vec::new(),
         pending: Vec::new(),
         patches: Vec::new(),
         net_patches: Vec::new(),
@@ -84,7 +92,7 @@ pub(super) fn convert(
         PatchId(c.id()),
         NetworkPatchId(c.id()),
     );
-    ws.name = cut_name(&name);
+    ws.name = name;
     let seed = c.id().as_u128() as u32;
     ws.settings.osc_access = OscAccess::new_workspace(seed);
     c.note_setting(
@@ -182,6 +190,8 @@ struct Converter<'a, 'b> {
     cue_ids: HashMap<String, CueId>,
     cue_order: Vec<(String, CueId)>,
     numbers: HashMap<String, CueId>,
+    /// The keys of `numbers` in the order they were added, so a damaged cue's can be removed.
+    numbers_added: Vec<String>,
     pending: Vec<Pending>,
     /// QLab id, new id, cue outputs.
     patches: Vec<(String, PatchId, u32)>,
@@ -202,6 +212,29 @@ struct Common {
     post_wait: f64,
     continue_mode: ContinueMode,
 }
+
+/// What was read of a cue before its data turned out damaged.
+#[derive(Default)]
+struct Head {
+    counted: bool,
+    common: Option<Common>,
+    id: Option<CueId>,
+    class: String,
+}
+
+/// The lengths of the per-cue records at the start of a cue ([`Converter::roll_back`]).
+struct Mark {
+    order: usize,
+    numbers: usize,
+    pending: usize,
+    placeholders: usize,
+    unsupported: usize,
+    notes: usize,
+    omitted: u32,
+}
+
+/// Longest QLab unique id or class name kept, in bytes (QLab's ids are 36-character UUIDs).
+const MAX_ID_BYTES: usize = 256;
 
 /// Why a cue becomes a placeholder.
 enum Kind {
@@ -378,13 +411,17 @@ impl Converter<'_, '_> {
         ws: &mut Workspace,
     ) -> Result<(), QlabError> {
         let audio = top.entry(settings.get("Audio").copied(), "audioOutputPatches")?;
+        let values = top.array(audio)?;
+        if values.len() > MAX_QLAB_PATCHES {
+            return Err(QlabError::TooLarge("audio patches"));
+        }
         let mut patches = Vec::new();
-        for value in top.array(audio)? {
+        for value in values {
             let Some(f) = top.fields(value)? else {
                 continue;
             };
-            let qlab_id = top.string(f.get("uniqueID"))?.unwrap_or_default();
-            let name = top.string(f.get("name"))?.unwrap_or_default();
+            let qlab_id = cut_id(top.string(f.get("uniqueID"))?);
+            let name = cut_name(&top.string(f.get("name"))?.unwrap_or_default());
             let outputs = top
                 .number(f.get("cueOutputChannels"))?
                 .map_or(2, |n| n as u32)
@@ -399,17 +436,20 @@ impl Converter<'_, '_> {
                 name: name.clone(),
                 outputs,
                 system: top.boolean(f.get("useSystemDevice"))?.unwrap_or(false),
-                device_uid: top
-                    .string(device.get("deviceUID").copied())?
-                    .unwrap_or_default(),
-                device_name: top.string(device.get("name").copied())?.unwrap_or_default(),
+                device_uid: cut_name(
+                    &top.string(device.get("deviceUID").copied())?
+                        .unwrap_or_default(),
+                ),
+                device_name: cut_name(
+                    &top.string(device.get("name").copied())?.unwrap_or_default(),
+                ),
                 device_outputs,
             });
             let id = PatchId(self.id());
             let matrix = Matrix::read(top, f.get("levels"), MAX_CUE_OUTPUTS, MAX_DEVICE_OUTPUTS)?;
             let mut patch = OutputPatch {
                 id,
-                name: cut_name(&name),
+                name: name.clone(),
                 master_db: matrix.db(0, 0),
                 outputs: (1..=outputs)
                     .map(|i| PatchOutput {
@@ -443,6 +483,8 @@ impl Converter<'_, '_> {
                 })
             });
             if !default {
+                let cells = (outputs * columns) as usize;
+                top.keep(cells * std::mem::size_of::<PatchCrosspoint>())?;
                 for i in 1..=outputs {
                     for j in 1..=columns {
                         patch.crosspoints.push(PatchCrosspoint {
@@ -485,14 +527,18 @@ impl Converter<'_, '_> {
         ws: &mut Workspace,
     ) -> Result<(), QlabError> {
         let list = top.entry(settings.get("Network").copied(), "networkPatches")?;
+        let values = top.array(list)?;
+        if values.len() > MAX_QLAB_PATCHES {
+            return Err(QlabError::TooLarge("network patches"));
+        }
         let mut patches = Vec::new();
-        for value in top.array(list)? {
+        for value in values {
             let entry: HashMap<String, Value<'_>> = top.dict(Some(value))?.into_iter().collect();
             let data: HashMap<String, Value<'_>> =
                 top.dict(entry.get("data").copied())?.into_iter().collect();
             let get = |k: &str| data.get(k).copied();
-            let qlab_id = top.string(get("uniqueID"))?.unwrap_or_default();
-            let name = top.string(get("name"))?.unwrap_or_default();
+            let qlab_id = cut_id(top.string(get("uniqueID"))?);
+            let name = cut_name(&top.string(get("name"))?.unwrap_or_default());
             let osc = top.string(get("deviceIdentifier"))?.as_deref() == Some(OSC_DEVICE);
             let states = top.array(get("clientStates"))?;
             let state: HashMap<String, Value<'_>> = match states.first() {
@@ -504,7 +550,10 @@ impl Converter<'_, '_> {
             let port = top
                 .number(sget("port"))?
                 .map_or(53000, |p| p.clamp(0.0, 65535.0) as u16);
-            let interface = top.string(sget("interface"))?.filter(|i| !i.is_empty());
+            let interface = top
+                .string(sget("interface"))?
+                .filter(|i| !i.is_empty())
+                .map(|i| cut_name(&i));
             if states.len() > 1 {
                 let detail =
                     format!("network patch \"{name}\": only its first destination is imported");
@@ -513,7 +562,7 @@ impl Converter<'_, '_> {
             let id = NetworkPatchId(self.id());
             patches.push(NetworkPatch {
                 id,
-                name: cut_name(&name),
+                name,
                 host: host.chars().take(253).collect(),
                 port,
                 protocol: if top.boolean(sget("useTcp"))?.unwrap_or(false) {
@@ -543,23 +592,27 @@ impl Converter<'_, '_> {
             .dict(settings.get("Video").copied())?
             .into_iter()
             .collect();
-        for value in top.array(video.get("routes").copied())? {
+        let routes = top.array(video.get("routes").copied())?;
+        if routes.len() > MAX_ROUTES {
+            return Err(QlabError::TooLarge("video outputs"));
+        }
+        for value in routes {
             let Some(f) = top.fields(value)? else {
                 continue;
             };
-            let qlab_id = top.string(f.get("uniqueID"))?.unwrap_or_default();
-            let name = top.string(f.get("name"))?.unwrap_or_default();
+            let qlab_id = cut_id(top.string(f.get("uniqueID"))?);
+            let name = cut_name(&top.string(f.get("name"))?.unwrap_or_default());
             let (width, height) = size(&top.string(f.get("naturalSize"))?).unwrap_or((1920, 1080));
             let dest: HashMap<String, Value<'_>> =
                 top.dict(f.get("destinationInfo"))?.into_iter().collect();
             self.report.video_outputs.push(QlabVideoOutput {
                 qlab_id,
                 name: name.clone(),
-                screen: top.string(dest.get("name").copied())?.unwrap_or_default(),
+                screen: cut_name(&top.string(dest.get("name").copied())?.unwrap_or_default()),
                 width,
                 height,
             });
-            let mut route = OutputRoute::new(RouteId(self.id()), cut_name(&name), width, height);
+            let mut route = OutputRoute::new(RouteId(self.id()), name.clone(), width, height);
             let rotation = top.number(f.get("rotationDegrees"))?.unwrap_or(0.0);
             route.rotation = match rotation as i64 {
                 r @ (0 | 90 | 180 | 270) if rotation.fract() == 0.0 => r as u16,
@@ -579,15 +632,19 @@ impl Converter<'_, '_> {
                 let detail = format!("output \"{name}\": rear projection (mirroring)");
                 self.note(None, QlabNoteKind::Video, detail);
             }
-            route.guide_colour = Some(next_guide_colour(&ws.routes));
             ws.routes.push(route);
         }
-        for value in top.array(video.get("stages").copied())? {
+        fill_guide_colours(&mut ws.routes);
+        let stages = top.array(video.get("stages").copied())?;
+        if stages.len() > MAX_STAGES {
+            return Err(QlabError::TooLarge("stages"));
+        }
+        for value in stages {
             let Some(f) = top.fields(value)? else {
                 continue;
             };
-            let qlab_id = top.string(f.get("uniqueID"))?.unwrap_or_default();
-            let name = top.string(f.get("name"))?.unwrap_or_default();
+            let qlab_id = cut_id(top.string(f.get("uniqueID"))?);
+            let name = cut_name(&top.string(f.get("name"))?.unwrap_or_default());
             let fallback = ws
                 .routes
                 .first()
@@ -601,7 +658,7 @@ impl Converter<'_, '_> {
                 width,
                 height,
             });
-            let stage = Stage::new(StageId(self.id()), cut_name(&name), width, height);
+            let stage = Stage::new(StageId(self.id()), name.clone(), width, height);
             let detail =
                 format!("stage \"{name}\": its regions are not imported; set them in openLab");
             self.note(None, QlabNoteKind::Video, detail);
@@ -631,13 +688,17 @@ impl Converter<'_, '_> {
     fn cue_lists(&mut self, ws: &mut Workspace) -> Result<(), QlabError> {
         let ar = self.ar;
         let root = ar.fields(ar.root()?)?.ok_or(QlabError::NotQlab)?;
+        let values = ar.array(root.get("cues"))?;
+        if values.len() > MAX_QLAB_LISTS {
+            return Err(QlabError::TooLarge("cue lists"));
+        }
         let mut lists = Vec::new();
-        for value in ar.array(root.get("cues"))? {
+        for value in values {
             let Some(f) = ar.fields(value)? else {
                 continue;
             };
-            let qlab_id = ar.string(f.get("uniqueID"))?.unwrap_or_default();
-            let name = ar.string(f.get("name"))?.unwrap_or_default();
+            let qlab_id = cut_id(ar.string(f.get("uniqueID"))?);
+            let name = cut_name(&ar.string(f.get("name"))?.unwrap_or_default());
             let id = CueListId(self.id());
             if num(ar, &f, "groupMode")? == Some(5) {
                 self.report.unsupported.push(QlabUnsupported {
@@ -653,11 +714,7 @@ impl Converter<'_, '_> {
                 });
             }
             let cues = self.cues(ar.array(f.get("cues"))?, 1)?;
-            lists.push(CueList {
-                id,
-                name: cut_name(&name),
-                cues,
-            });
+            lists.push(CueList { id, name, cues });
         }
         if !lists.is_empty() {
             ws.cue_lists = lists;
@@ -675,7 +732,37 @@ impl Converter<'_, '_> {
         Ok(out)
     }
 
+    /// One cue, read whole or not at all. A cue whose data cannot be read (its own fields or
+    /// anything below them) becomes a placeholder, reason damaged, and leaves nothing of what
+    /// was read of it behind; its siblings and its group are unaffected. Limits stop the whole
+    /// read.
     fn cue(&mut self, value: Value<'_>, depth: usize) -> Result<Option<Cue>, QlabError> {
+        let mark = self.mark();
+        let mut head = Head::default();
+        match self.read_cue(value, depth, &mut head) {
+            Err(QlabError::Damaged(_) | QlabError::NotKeyedArchive | QlabError::NotPlist) => {
+                self.roll_back(mark);
+                self.damaged(head).map(Some)
+            }
+            other => other,
+        }
+    }
+
+    fn count_cue(&mut self) -> Result<(), QlabError> {
+        self.count += 1;
+        if self.count > MAX_QLAB_CUES {
+            return Err(QlabError::TooLarge("cues"));
+        }
+        self.report.cue_count = self.count as u32;
+        Ok(())
+    }
+
+    fn read_cue(
+        &mut self,
+        value: Value<'_>,
+        depth: usize,
+        head: &mut Head,
+    ) -> Result<Option<Cue>, QlabError> {
         let ar = self.ar;
         let Some(f) = ar.fields(value)? else {
             self.note(
@@ -685,12 +772,8 @@ impl Converter<'_, '_> {
             );
             return Ok(None);
         };
-        self.count += 1;
-        if self.count > MAX_QLAB_CUES {
-            return Err(QlabError::TooLarge("cues"));
-        }
-        self.report.cue_count = self.count as u32;
-        let class = ar.class(&f)?.unwrap_or_default();
+        self.count_cue()?;
+        head.counted = true;
         let mut common = self.common(&f)?;
         if common.qlab_id.is_empty() {
             // Every cue has one; a damaged file may not. Named so the report and choices can
@@ -713,83 +796,126 @@ impl Converter<'_, '_> {
         let id = CueId(self.id());
         self.cue_ids.insert(common.qlab_id.clone(), id);
         self.cue_order.push((common.qlab_id.clone(), id));
-        let kind = match self.kind(&class, &f, &common, id, depth) {
-            Ok(kind) => kind,
-            // A cue that cannot be read becomes a placeholder; limits stop the whole read.
-            Err(QlabError::Damaged(_) | QlabError::NotKeyedArchive | QlabError::NotPlist) => {
-                Kind::Unsupported(QlabUnsupportedReason::Damaged)
-            }
-            Err(e) => return Err(e),
-        };
-        let mut cue = Cue {
-            id,
-            number: (!common.number.is_empty()).then(|| common.number.clone()),
-            name: common.name.clone(),
-            notes: common.notes.clone(),
-            color: colour(ar.string(f.get("colorName"))?.as_deref()),
-            second_color: if ar.boolean(f.get("useSecondColor"))?.unwrap_or(false) {
-                colour(ar.string(f.get("secondColorName"))?.as_deref())
-            } else {
-                CueColor::None
-            },
-            flagged: ar.boolean(f.get("flagged"))?.unwrap_or(false),
-            armed: ar.boolean(f.get("armed"))?.unwrap_or(true),
-            auto_load: ar.boolean(f.get("autoLoad"))?.unwrap_or(false),
-            skip_if_disarmed: ar.boolean(f.get("skipIfDisarmed"))?.unwrap_or(false),
-            pre_wait: common.pre_wait,
-            post_wait: common.post_wait,
-            continue_mode: common.continue_mode,
-            triggers: Triggers {
-                hotkey: None,
-                hotkey_enabled: true,
-                wall_clock: WallClockTrigger::default(),
-            },
-            second_trigger: SecondTrigger::Nothing,
-            second_trigger_on_release: false,
-            fade_and_stop_others: FadeAndStopOthers::default(),
-            duck_others: DuckOthers::default(),
-            kind: CueKind::Memo,
-        };
-        match kind {
+        head.id = Some(id);
+        let common = &*head.common.insert(common);
+        let class = cut_bytes(&ar.class(&f)?.unwrap_or_default(), MAX_ID_BYTES);
+        head.class.clone_from(&class);
+        let mut cue = base_cue(id, common);
+        cue.color = colour(ar.string(f.get("colorName"))?.as_deref());
+        if ar.boolean(f.get("useSecondColor"))?.unwrap_or(false) {
+            cue.second_color = colour(ar.string(f.get("secondColorName"))?.as_deref());
+        }
+        cue.flagged = ar.boolean(f.get("flagged"))?.unwrap_or(false);
+        cue.armed = ar.boolean(f.get("armed"))?.unwrap_or(true);
+        cue.auto_load = ar.boolean(f.get("autoLoad"))?.unwrap_or(false);
+        cue.skip_if_disarmed = ar.boolean(f.get("skipIfDisarmed"))?.unwrap_or(false);
+        match self.kind(&class, &f, common, id, depth)? {
             Kind::Converted(kind) => {
-                self.triggers(&f, &common, &mut cue)?;
+                self.triggers(&f, common, &mut cue)?;
                 cue.kind = *kind;
-                if !common.number.is_empty() {
-                    self.numbers.entry(common.number.clone()).or_insert(id);
+                if !common.number.is_empty() && !self.numbers.contains_key(&common.number) {
+                    self.numbers.insert(common.number.clone(), id);
+                    self.numbers_added.push(common.number.clone());
                 }
             }
-            Kind::Unsupported(reason) => {
-                self.report.unsupported.push(QlabUnsupported {
-                    qlab_id: common.qlab_id.clone(),
-                    number: common.number.clone(),
-                    name: common.name.clone(),
-                    qlab_type: class.clone(),
-                    reason,
-                });
-                self.placeholders.push(QlabPlaceholder {
-                    qlab_id: common.qlab_id.clone(),
-                    at: Placeholder::Cue(id),
-                });
-                cue.color = CueColor::Red;
-                if cue.name.is_empty() {
-                    cue.name = format!("QLab {} cue (not converted)", type_words(&class));
-                }
-            }
+            Kind::Unsupported(reason) => self.placeholder(&mut cue, common, &class, reason),
         }
         Ok(Some(cue))
     }
 
+    /// Where the per-cue records stand, to roll a damaged cue's back to.
+    fn mark(&self) -> Mark {
+        Mark {
+            order: self.cue_order.len(),
+            numbers: self.numbers_added.len(),
+            pending: self.pending.len(),
+            placeholders: self.placeholders.len(),
+            unsupported: self.report.unsupported.len(),
+            notes: self.report.notes.len(),
+            omitted: self.report.notes_omitted,
+        }
+    }
+
+    /// Forgets every cue registered since `mark` (a damaged cue and what was read inside it),
+    /// with their targets, placeholders and notes.
+    fn roll_back(&mut self, mark: Mark) {
+        for (qlab, _) in self.cue_order.drain(mark.order..) {
+            self.cue_ids.remove(&qlab);
+        }
+        for number in self.numbers_added.drain(mark.numbers..) {
+            self.numbers.remove(&number);
+        }
+        self.pending.truncate(mark.pending);
+        self.placeholders.truncate(mark.placeholders);
+        self.report.unsupported.truncate(mark.unsupported);
+        self.report.notes.truncate(mark.notes);
+        self.report.notes_omitted = mark.omitted;
+    }
+
+    /// The placeholder of a cue that could not be read: what was read of it, red, reason
+    /// damaged.
+    fn damaged(&mut self, head: Head) -> Result<Cue, QlabError> {
+        if !head.counted {
+            self.count_cue()?;
+        }
+        let common = head.common.unwrap_or_else(|| Common {
+            qlab_id: format!("no-id-{}", self.count),
+            number: String::new(),
+            name: String::new(),
+            notes: String::new(),
+            pre_wait: 0.0,
+            post_wait: 0.0,
+            continue_mode: ContinueMode::DoNotContinue,
+        });
+        let id = head.id.unwrap_or_else(|| CueId(self.id()));
+        self.cue_ids.insert(common.qlab_id.clone(), id);
+        self.cue_order.push((common.qlab_id.clone(), id));
+        let mut cue = base_cue(id, &common);
+        self.placeholder(
+            &mut cue,
+            &common,
+            &head.class,
+            QlabUnsupportedReason::Damaged,
+        );
+        Ok(cue)
+    }
+
+    /// Makes `cue` the placeholder of an unsupported cue and lists it in the report.
+    fn placeholder(
+        &mut self,
+        cue: &mut Cue,
+        common: &Common,
+        class: &str,
+        reason: QlabUnsupportedReason,
+    ) {
+        self.report.unsupported.push(QlabUnsupported {
+            qlab_id: common.qlab_id.clone(),
+            number: common.number.clone(),
+            name: common.name.clone(),
+            qlab_type: class.to_owned(),
+            reason,
+        });
+        self.placeholders.push(QlabPlaceholder {
+            qlab_id: common.qlab_id.clone(),
+            at: Placeholder::Cue(cue.id),
+        });
+        cue.color = CueColor::Red;
+        if cue.name.is_empty() {
+            cue.name = format!("QLab {} cue (not converted)", type_words(class, reason));
+        }
+    }
+
     fn common(&mut self, f: &Fields<'_>) -> Result<Common, QlabError> {
         let ar = self.ar;
-        let qlab_id = ar.string(f.get("uniqueID"))?.unwrap_or_default();
+        let qlab_id = cut_id(ar.string(f.get("uniqueID"))?);
         let number = ar.string(f.get("number"))?.unwrap_or_default();
         let name = ar.string(f.get("name"))?.unwrap_or_default();
         let notes = ar.string(f.get("notes"))?.unwrap_or_default();
-        let mut common = Common {
+        let common = Common {
             qlab_id,
-            number,
-            name: String::new(),
-            notes: String::new(),
+            number: cut_bytes(&number, MAX_CUE_NAME_BYTES),
+            name: cut_bytes(&name, MAX_CUE_NAME_BYTES),
+            notes: cut_bytes(&notes, MAX_CUE_NOTES_BYTES),
             pre_wait: time(ar.number(f.get("preWait"))?),
             post_wait: time(ar.number(f.get("postWait"))?),
             continue_mode: match num(ar, f, "continueMode")? {
@@ -798,21 +924,25 @@ impl Converter<'_, '_> {
                 _ => ContinueMode::DoNotContinue,
             },
         };
-        common.name = cut_bytes(&name, MAX_CUE_NAME_BYTES);
-        common.notes = cut_bytes(&notes, MAX_CUE_NOTES_BYTES);
-        if common.name.len() < name.len() {
-            self.note(
-                Some(&common),
-                QlabNoteKind::Truncated,
-                "name cut to openLab's limit",
-            );
-        }
-        if common.notes.len() < notes.len() {
-            self.note(
-                Some(&common),
-                QlabNoteKind::Truncated,
+        ar.keep(
+            common.qlab_id.len() + common.number.len() + common.name.len() + common.notes.len(),
+        )?;
+        for (kept, read, what) in [
+            (
+                common.number.len(),
+                number.len(),
+                "number cut to openLab's limit",
+            ),
+            (common.name.len(), name.len(), "name cut to openLab's limit"),
+            (
+                common.notes.len(),
+                notes.len(),
                 "notes cut to openLab's limit",
-            );
+            ),
+        ] {
+            if kept < read {
+                self.note(Some(&common), QlabNoteKind::Truncated, what);
+            }
         }
         Ok(common)
     }
@@ -1037,17 +1167,17 @@ impl Converter<'_, '_> {
         let Some(alias) = ar.fields(f.get("fileTarget").unwrap_or(Value::Null))? else {
             return Ok(None);
         };
+        // A path longer than any system opens is no path.
+        let path = |p: Option<String>| p.filter(|s| !s.is_empty() && s.len() <= MAX_PATH_BYTES);
         let file = QlabFile {
-            relative: ar
-                .string(alias.get("relativePath"))?
-                .filter(|s| !s.is_empty()),
-            last_known: ar
-                .string(alias.get("lastKnownPath"))?
-                .filter(|s| !s.is_empty()),
+            relative: path(ar.string(alias.get("relativePath"))?),
+            last_known: path(ar.string(alias.get("lastKnownPath"))?),
         };
         if file.relative.is_none() && file.last_known.is_none() {
             return Ok(None);
         }
+        ar.keep(file.relative.as_ref().map_or(0, String::len))?;
+        ar.keep(file.last_known.as_ref().map_or(0, String::len))?;
         Ok((self.media)(&file))
     }
 
@@ -1066,7 +1196,13 @@ impl Converter<'_, '_> {
             .filter(|e| *e > 0.0 && length.is_none_or(|l| *e < round_time(l)))
             .map(|e| e.min(MAX_TIME));
         let mut slices = Vec::new();
-        for s in ar.array(f.get("slices"))? {
+        let markers = ar.array(f.get("slices"))?;
+        if markers.len() > MAX_SLICE_MARKERS {
+            let detail = format!("slice markers beyond openLab's {MAX_SLICE_MARKERS} left out");
+            self.note(Some(common), QlabNoteKind::Structure, detail);
+        }
+        ar.keep(markers.len().min(MAX_SLICE_MARKERS) * std::mem::size_of::<SliceMarker>())?;
+        for s in markers.into_iter().take(MAX_SLICE_MARKERS) {
             let Some(s) = ar.fields(s)? else {
                 continue;
             };
@@ -1231,6 +1367,10 @@ impl Converter<'_, '_> {
                 "input levels folded into the crosspoints",
             );
         }
+        self.ar.keep(
+            levels.outputs.len() * std::mem::size_of::<CueOutput>()
+                + levels.crosspoints.len() * std::mem::size_of::<Crosspoint>(),
+        )?;
         let mut dropped_gang = false;
         for (_, cells) in matrix.gangs {
             let members: Vec<u32> = cells
@@ -1240,6 +1380,8 @@ impl Converter<'_, '_> {
                 .collect();
             dropped_gang |= members.len() != cells.len();
             if members.len() >= 2 {
+                self.ar
+                    .keep(members.len() * 4 + std::mem::size_of::<Vec<u32>>())?;
                 levels.gangs.push(members);
             }
         }
@@ -1309,7 +1451,14 @@ impl Converter<'_, '_> {
             }
             curve = self.curve(fade, f, common)?;
         }
+        // One value a cell: a file listing a cell twice keeps the last.
+        levels.crosspoints.reverse();
         levels.crosspoints.sort_by_key(|c| (c.input, c.output));
+        levels.crosspoints.dedup_by_key(|c| (c.input, c.output));
+        ar.keep(
+            levels.output_db.len() * std::mem::size_of::<Option<f64>>()
+                + levels.crosspoints.len() * std::mem::size_of::<FadeCrosspoint>(),
+        )?;
         let geometry = FadeGeometry {
             fade_opacity: ar.boolean(f.get("doOpacity"))?.unwrap_or(false),
             opacity: ar.number(f.get("opacity"))?.unwrap_or(1.0).clamp(0.0, 1.0),
@@ -1410,11 +1559,21 @@ impl Converter<'_, '_> {
         let Some((_, destination, osc)) = found.cloned() else {
             return Ok(None);
         };
-        let message = ar.string(f.get("oscString"))?.unwrap_or_default();
-        if !osc || message.trim().is_empty() {
+        let read = ar.string(f.get("oscString"))?.unwrap_or_default();
+        if !osc || read.trim().is_empty() {
             return Ok(None);
         }
-        let (address, args) = parse_osc(&message);
+        let message = cut_bytes(&read, MAX_NETWORK_STRING_BYTES);
+        let (address, mut args) = parse_osc(&message);
+        if message.len() < read.len() || args.len() > MAX_NETWORK_ARGS {
+            args.truncate(MAX_NETWORK_ARGS);
+            self.note(
+                Some(common),
+                QlabNoteKind::Truncated,
+                "OSC message cut to openLab's limit",
+            );
+        }
+        ar.keep(message.len() + args.len() * std::mem::size_of::<OscArg>())?;
         let values = ar.dict(f.get("allParameterValues"))?;
         for (key, value) in values {
             if key == OSC_DEVICE
@@ -1829,17 +1988,53 @@ fn parse_osc(text: &str) -> (String, Vec<OscArg>) {
     (address, args)
 }
 
-/// QLab's class, in our words, for a placeholder's name.
-fn type_words(class: &str) -> &str {
+/// QLab's class, in our words, for a placeholder's name (a group is a cart only when that is why
+/// it is one).
+fn type_words(class: &str, reason: QlabUnsupportedReason) -> &str {
     match class {
         "MIDIFileCue" => "MIDI File",
         "TitlesCue" | "TextCue" => "Text",
         "OSCCue" => "Network",
-        "GroupCue" => "Cart",
+        "GroupCue" if reason == QlabUnsupportedReason::Cart => "Cart",
+        "GroupCue" => "Group",
         other => other
             .strip_suffix("Cue")
             .filter(|s| !s.is_empty())
             .unwrap_or("unknown"),
+    }
+}
+
+/// A unique id as read, within [`MAX_ID_BYTES`].
+fn cut_id(id: Option<String>) -> String {
+    cut_bytes(&id.unwrap_or_default(), MAX_ID_BYTES)
+}
+
+/// A new cue with a QLab cue's common fields and openLab's defaults for the rest (a Memo).
+fn base_cue(id: CueId, common: &Common) -> Cue {
+    Cue {
+        id,
+        number: (!common.number.is_empty()).then(|| common.number.clone()),
+        name: common.name.clone(),
+        notes: common.notes.clone(),
+        color: CueColor::None,
+        second_color: CueColor::None,
+        flagged: false,
+        armed: true,
+        auto_load: false,
+        skip_if_disarmed: false,
+        pre_wait: common.pre_wait,
+        post_wait: common.post_wait,
+        continue_mode: common.continue_mode,
+        triggers: Triggers {
+            hotkey: None,
+            hotkey_enabled: true,
+            wall_clock: WallClockTrigger::default(),
+        },
+        second_trigger: SecondTrigger::Nothing,
+        second_trigger_on_release: false,
+        fade_and_stop_others: FadeAndStopOthers::default(),
+        duck_others: DuckOthers::default(),
+        kind: CueKind::Memo,
     }
 }
 
