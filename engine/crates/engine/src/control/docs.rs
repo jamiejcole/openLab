@@ -2538,7 +2538,6 @@ impl Control {
         }
     }
 
-    /// `scan_recovery` (app-scope): the recovery files, read on the document worker.
     /// `inspect_qlab` (app-scope): reads a QLab workspace file for its report, on the
     /// document worker.
     pub(super) fn inspect_qlab(&mut self, path: PathBuf, id: RequestId, to: &ReplyTx) {
@@ -2550,6 +2549,7 @@ impl Control {
             .send_job(DocJob::InspectQlab { ticket, path }, id, to);
     }
 
+    /// `scan_recovery` (app-scope): the recovery files, read on the document worker.
     pub(super) fn scan_recovery(&mut self, id: RequestId, to: &ReplyTx) {
         if !self.eng.read_gate(id, to, true) {
             return;

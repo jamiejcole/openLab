@@ -2,7 +2,10 @@
 
 //! A lazy reader of Apple's binary property lists (`bplist00`). Nothing is parsed up front:
 //! [`Plist::object`] reads one object by its index from the offset table when it is asked for,
-//! so memory stays at the size of the input and a hostile file costs at most the read budget.
+//! and strings, data and collections are borrowed from the input. What a reader does with them
+//! (reads, text, lists) and what the converted workspace keeps are charged to a [`Budget`]
+//! shared by the whole import, so a file that shares one large object many times runs out of
+//! budget instead of time or memory.
 //! Every length, offset and reference is checked against the input; nothing indexes unchecked.
 
 use std::cell::Cell;
@@ -12,24 +15,51 @@ use super::QlabError;
 /// Longest string read, in bytes (a UTF-16 string counts two bytes a unit).
 pub(super) const MAX_STRING_BYTES: usize = 1024 * 1024;
 
-/// How many object reads one import may make, over every archive it opens. A file can make a
-/// reader visit shared objects many times; this bounds the work whatever the file holds.
-pub(super) const MAX_READS: u64 = 64_000_000;
+/// The work one import may do, over every archive it opens: an object read costs 1, a string
+/// read its length in bytes, and each member of a collection listed 1. A file can make a reader
+/// visit shared objects many times; this bounds the time whatever the file holds. QLab-saved
+/// workspaces need about 1,000 to 4,000 a cue (a Fade 15,000).
+pub(super) const MAX_WORK: u64 = 256 * 1024 * 1024;
 
-/// The read budget shared by every [`Plist`] of one import.
-pub(super) struct Budget(Cell<u64>);
+/// What one import's converted workspace may keep, in bytes: its strings and lists. A workspace
+/// holding more could not be saved ([`MAX_SHOW_FILE_BYTES`](crate::show_file::MAX_SHOW_FILE_BYTES),
+/// which its JSON is at least as large as), so this refuses nothing a save would take.
+pub(super) const MAX_KEPT: u64 = crate::show_file::MAX_SHOW_FILE_BYTES as u64;
+
+/// The work and memory budget shared by every [`Plist`] of one import.
+pub(super) struct Budget {
+    work: Cell<u64>,
+    kept: Cell<u64>,
+}
 
 impl Budget {
-    pub(super) fn new(reads: u64) -> Self {
-        Self(Cell::new(reads))
+    pub(super) fn new(work: u64, kept: u64) -> Self {
+        Self {
+            work: Cell::new(work),
+            kept: Cell::new(kept),
+        }
     }
 
-    fn spend(&self) -> Result<(), QlabError> {
-        let left = self.0.get();
-        if left == 0 {
+    /// Spends `units` of work; [`QlabError::TooComplex`] once the budget is used up.
+    fn spend(&self, units: u64) -> Result<(), QlabError> {
+        let left = self.work.get();
+        if units > left {
+            self.work.set(0);
             return Err(QlabError::TooComplex);
         }
-        self.0.set(left - 1);
+        self.work.set(left - units);
+        Ok(())
+    }
+
+    /// Records `bytes` more kept by the converted workspace; [`QlabError::TooLarge`] once it
+    /// holds more than a show file could.
+    fn keep(&self, bytes: u64) -> Result<(), QlabError> {
+        let left = self.kept.get();
+        if bytes > left {
+            self.kept.set(0);
+            return Err(QlabError::TooLarge("workspace"));
+        }
+        self.kept.set(left - bytes);
         Ok(())
     }
 }
@@ -147,9 +177,19 @@ impl<'a> Plist<'a> {
         self.top
     }
 
-    /// Reads object `index`.
+    /// Charges `units` of work to the import's budget.
+    pub(super) fn charge(&self, units: usize) -> Result<(), QlabError> {
+        self.budget.spend(units as u64)
+    }
+
+    /// Charges `bytes` kept by the converted workspace to the import's budget.
+    pub(super) fn keep(&self, bytes: usize) -> Result<(), QlabError> {
+        self.budget.keep(bytes as u64)
+    }
+
+    /// Reads object `index`; a string's bytes are charged with it.
     pub(super) fn object(&self, index: u64) -> Result<Value<'a>, QlabError> {
-        self.budget.spend()?;
+        self.budget.spend(1)?;
         let index = usize::try_from(index).map_err(|_| QlabError::Damaged("reference"))?;
         let offset = self
             .offsets
@@ -199,6 +239,7 @@ impl<'a> Plist<'a> {
                 if len > MAX_STRING_BYTES {
                     return Err(QlabError::TooLarge("string"));
                 }
+                self.charge(len)?;
                 Ok(Value::Ascii(self.slice(start, len)?))
             }
             0x6 => {
@@ -207,6 +248,7 @@ impl<'a> Plist<'a> {
                 if bytes > MAX_STRING_BYTES {
                     return Err(QlabError::TooLarge("string"));
                 }
+                self.charge(bytes)?;
                 Ok(Value::Utf16(self.slice(start, bytes)?))
             }
             0x8 => Ok(Value::Uid(be_uint(

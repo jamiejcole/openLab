@@ -3,9 +3,11 @@
 //! Reading a QLab 5 workspace file (`.qlab5`) into a new openLab workspace. Bytes in, workspace
 //! and report out: the file is an Apple keyed archive whose cue lists are a second keyed
 //! archive held in it as data ([`plist`], [`archive`]). QLab's own class and field names are
-//! used here as the file stores them. Any input is either read or refused with a [`QlabError`]: never a panic,
-//! never unbounded work ([`MAX_QLAB_FILE_BYTES`], [`plist::MAX_READS`], [`MAX_QLAB_CUES`],
-//! [`archive::MAX_ARCHIVES`], [`plist::MAX_STRING_BYTES`]).
+//! used here as the file stores them. Any input is either read or refused with a [`QlabError`]:
+//! never a panic, never unbounded work or memory ([`MAX_QLAB_FILE_BYTES`], [`plist::MAX_WORK`],
+//! [`MAX_QLAB_CUES`], [`MAX_QLAB_PATCHES`], [`MAX_QLAB_LISTS`], [`archive::MAX_ARCHIVES`],
+//! [`archive::MAX_ITEMS`], [`plist::MAX_STRING_BYTES`]), and never a workspace too large to save
+//! or a report too large to send.
 
 mod archive;
 mod convert;
@@ -13,6 +15,7 @@ mod plist;
 mod report;
 
 use std::collections::HashSet;
+use std::io;
 
 use uuid::Uuid;
 
@@ -26,6 +29,10 @@ pub use report::*;
 pub const MAX_QLAB_FILE_BYTES: usize = crate::show_file::MAX_SHOW_FILE_BYTES;
 /// Most cues one QLab file may hold (lists and carts not counted).
 pub const MAX_QLAB_CUES: usize = 20_000;
+/// Most audio patches, and most network patches, one QLab file may hold.
+pub const MAX_QLAB_PATCHES: usize = 64;
+/// Most cue lists and carts one QLab file may hold.
+pub const MAX_QLAB_LISTS: usize = 256;
 /// The QLab major version this reader knows.
 pub const QLAB_MAJOR: u32 = 5;
 
@@ -100,7 +107,62 @@ pub fn read_qlab(
     if bytes.len() > MAX_QLAB_FILE_BYTES {
         return Err(QlabError::TooLarge("file"));
     }
-    convert::convert(bytes, ids, media)
+    let import = convert::convert(bytes, ids, media)?;
+    // Every placeholder is still in the workspace: whatever the operator deletes only makes it
+    // smaller.
+    if !fits(
+        &import.workspace,
+        true,
+        crate::show_file::MAX_SHOW_FILE_BYTES - ENVELOPE,
+    ) {
+        return Err(QlabError::TooLarge("workspace"));
+    }
+    let frame = crate::protocol::MAX_SERVER_FRAME_BYTES - ENVELOPE;
+    if !fits(&import.report, false, frame) {
+        return Err(QlabError::TooLarge("report"));
+    }
+    Ok(import)
+}
+
+/// Room left for what surrounds a workspace in its show file, or a report in its message.
+const ENVELOPE: usize = 4096;
+
+/// Whether `value` as JSON is at most `limit` bytes: pretty, as a show file holds a workspace
+/// (one level in, so two more bytes a line), or compact, as a message does. Stops counting at
+/// the limit, so a value far over it costs no more than one at it.
+fn fits(value: &impl serde::Serialize, pretty: bool, limit: usize) -> bool {
+    struct Count {
+        bytes: usize,
+        limit: usize,
+        indent: usize,
+    }
+    impl io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let lines = buf.iter().filter(|b| **b == b'\n').count();
+            self.bytes = self
+                .bytes
+                .saturating_add(buf.len())
+                .saturating_add(lines.saturating_mul(self.indent));
+            if self.bytes > self.limit {
+                return Err(io::Error::other("over the limit"));
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count {
+        bytes: 0,
+        limit,
+        indent: if pretty { 2 } else { 0 },
+    };
+    let written = if pretty {
+        serde_json::to_writer_pretty(&mut count, value)
+    } else {
+        serde_json::to_writer(&mut count, value)
+    };
+    written.is_ok()
 }
 
 impl QlabImport {
