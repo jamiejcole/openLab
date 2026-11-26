@@ -3747,7 +3747,11 @@ fn importing_a_qlab_workspace_finds_media_at_its_last_known_path_and_keeps_devic
         .cues()
         .find(|c| c.number.as_deref() == Some("1"))
         .unwrap();
-    assert_eq!(tone.kind.media().unwrap().as_str(), moved.to_str().unwrap());
+    // Stored in the portable form (forward slashes on Windows too).
+    assert_eq!(
+        tone.kind.media().unwrap().as_str(),
+        MediaRef::new(moved.to_str().unwrap()).as_str()
+    );
     assert_eq!(ws.routes.len(), 1);
     assert_eq!(ws.routes[0].name, "Projector");
     assert_eq!((ws.routes[0].width, ws.routes[0].height), (1280, 720));
