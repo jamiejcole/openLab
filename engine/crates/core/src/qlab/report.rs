@@ -103,7 +103,7 @@ pub enum QlabNoteKind {
     PlayCount,
     /// A playlist's crossfade.
     Crossfade,
-    /// A fade curve shape or audio domain mapped to the nearest openLab curve.
+    /// A fade curve shape or audio domain openLab cannot hold: the default in its place.
     FadeCurve,
     /// A video geometry or display setting openLab does not have.
     Video,
