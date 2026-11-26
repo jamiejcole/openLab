@@ -146,7 +146,7 @@ Modifiers: `shift`, `control`, `option` (alt), `command`; `function`, `numericPa
 
 What `v` means was settled in QLab's Curve tab: fades F11 (custom: rising (0.5, 0.8); falling (0.25, 0.3), (0.6, 0.1)) and F9 (linear: rising (0.3, 0.6); falling (0.7, 0.6)) draw each point at that time and height in both graphs, so `v` is the height in the graph, not the progress of the fade.
 
-QLab draws a custom curve as a smooth curve near its points, not through them; openLab's custom curve passes through them (skill qlab-behaviour Q839), so a converted custom curve may differ slightly between its points.
+QLab draws a custom curve as a smooth curve near its points, not through them (a quadratic B-spline); openLab's custom curve is the same curve (skill qlab-behaviour Q839), so a converted custom curve follows QLab's.
 
 ## Video cue
 | QLab | openLab | Fixture |
