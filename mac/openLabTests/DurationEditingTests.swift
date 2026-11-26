@@ -405,7 +405,7 @@ final class InspectorDurationTests: XCTestCase {
         await assertEventually { self.log.sent == 2 }
         await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
         await assertEventually { self.kind(CueListHarness.fade)?["duration"] == .double(2.5) }
-        XCTAssertEqual(kind(CueListHarness.fade)?["curve"], .string("linear"))
+        XCTAssertEqual(kind(CueListHarness.fade)?["curve"]?["rising"]?["type"], .string("custom"))
     }
 
     /// #354: a Duration typed in the cue list while an inspector kind edit is unanswered: the next
@@ -442,7 +442,7 @@ final class InspectorDurationTests: XCTestCase {
         await assertEventually("the cue-list edit is kept") {
             self.kind(CueListHarness.fade)?["duration"]?.doubleValue == 7
         }
-        XCTAssertNotEqual(kind(CueListHarness.fade)?["curve"], .string("linear"), "the last curve won")
+        XCTAssertEqual(kind(CueListHarness.fade)?["curve"]?["rising"]?["type"], .string("s_curve"), "the last curve won")
     }
 }
 

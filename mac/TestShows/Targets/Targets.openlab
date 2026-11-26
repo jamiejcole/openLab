@@ -227,7 +227,19 @@
               "type": "fade",
               "target": null,
               "duration": 3.0,
-              "curve": "linear",
+              "curve": {
+                "audio_domain": "linear",
+                "rising": {
+                  "type": "linear",
+                  "parameter": 1.0,
+                  "points": []
+                },
+                "falling": {
+                  "type": "linear",
+                  "parameter": 1.0,
+                  "points": []
+                }
+              },
               "levels": {
                 "master_db": null,
                 "output_db": [],
