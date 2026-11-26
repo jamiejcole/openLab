@@ -21,6 +21,10 @@ use crate::cue::{
     MediaRef, Modifiers, OscArg, OthersScope, PlayCount, SILENCE_DB, SecondTrigger, SliceMarker,
     Triggers, WallClockTrigger, Weekday, Weekdays,
 };
+use crate::fade_curve::{
+    AudioDomain, CurvePoint, CurveShape, CurveType, DEFAULT_CURVE_PARAMETER, FadeCueCurve,
+    MAX_CURVE_POINTS,
+};
 use crate::model::{
     CueId, CueList, CueListId, DeviceOutputLevel, NetworkPatch, NetworkPatchId, NetworkProtocol,
     OutputPatch, PatchCrosspoint, PatchId, PatchOutput, RegionId, RouteId, StageId,
@@ -96,7 +100,7 @@ pub(super) fn convert(
     let seed = c.id().as_u128() as u32;
     ws.settings.osc_access = OscAccess::new_workspace(seed);
     c.note_setting(
-        "OSC access passcodes are not imported; the workspace has a new passcode of its own",
+        "OSC access passcodes were not kept; the new workspace has a passcode of its own.",
     );
     let settings: HashMap<String, Value<'_>> = top
         .dict(root.get("settings").copied())?
@@ -376,7 +380,10 @@ impl Converter<'_, '_> {
                 "cycleContinue" => &mut keys.cycle_continue,
                 "flag" => &mut keys.toggle_flag,
                 other => {
-                    let detail = format!("key map entry \"{other}\" has no openLab action");
+                    let detail = format!(
+                        "The shortcut for {} has no openLab action.",
+                        key_action(other)
+                    );
                     self.note_setting(&detail);
                     continue;
                 }
@@ -393,7 +400,10 @@ impl Converter<'_, '_> {
                 ],
             );
             if key.is_none() {
-                let detail = format!("key map entry \"{name}\" has a key openLab cannot name");
+                let detail = format!(
+                    "The shortcut for {} uses a key openLab cannot name, so it has none.",
+                    key_action(&name)
+                );
                 self.note(None, QlabNoteKind::Hotkey, detail);
             }
             *slot = key;
@@ -506,7 +516,8 @@ impl Converter<'_, '_> {
                 has_effects |= !top.array(bus.get("effects"))?.is_empty();
             }
             if has_effects {
-                let detail = format!("audio patch \"{name}\": its effects are not imported");
+                let detail =
+                    format!("The effects of audio patch \u{201c}{name}\u{201d} were not kept.");
                 self.note(None, QlabNoteKind::Effects, detail);
             }
             self.patches.push((qlab_id, id, outputs));
@@ -555,8 +566,9 @@ impl Converter<'_, '_> {
                 .filter(|i| !i.is_empty())
                 .map(|i| cut_name(&i));
             if states.len() > 1 {
-                let detail =
-                    format!("network patch \"{name}\": only its first destination is imported");
+                let detail = format!(
+                    "Network patch \u{201c}{name}\u{201d} has more than one destination; only the first was kept."
+                );
                 self.note_setting(&detail);
             }
             let id = NetworkPatchId(self.id());
@@ -617,7 +629,9 @@ impl Converter<'_, '_> {
             route.rotation = match rotation as i64 {
                 r @ (0 | 90 | 180 | 270) if rotation.fract() == 0.0 => r as u16,
                 _ => {
-                    let detail = format!("output \"{name}\": a turn of {rotation} degrees");
+                    let detail = format!(
+                        "Video output \u{201c}{name}\u{201d} is turned {rotation}°, which was not kept."
+                    );
                     self.note(None, QlabNoteKind::Video, detail);
                     0
                 }
@@ -629,7 +643,9 @@ impl Converter<'_, '_> {
                 _ => RouteScaling::Fill,
             };
             if top.boolean(f.get("rear"))?.unwrap_or(false) {
-                let detail = format!("output \"{name}\": rear projection (mirroring)");
+                let detail = format!(
+                    "Video output \u{201c}{name}\u{201d} is set for rear projection, which was not kept."
+                );
                 self.note(None, QlabNoteKind::Video, detail);
             }
             ws.routes.push(route);
@@ -659,8 +675,9 @@ impl Converter<'_, '_> {
                 height,
             });
             let stage = Stage::new(StageId(self.id()), name.clone(), width, height);
-            let detail =
-                format!("stage \"{name}\": its regions are not imported; set them in openLab");
+            let detail = format!(
+                "The regions of stage \u{201c}{name}\u{201d} were not kept; set them up in openLab."
+            );
             self.note(None, QlabNoteKind::Video, detail);
             self.stages.push((qlab_id, stage.id));
             ws.stages.push(stage);
@@ -705,7 +722,7 @@ impl Converter<'_, '_> {
                     qlab_id: qlab_id.clone(),
                     number: String::new(),
                     name: name.clone(),
-                    qlab_type: "GroupCue".into(),
+                    qlab_type: type_words("GroupCue", QlabUnsupportedReason::Cart),
                     reason: QlabUnsupportedReason::Cart,
                 });
                 self.placeholders.push(QlabPlaceholder {
@@ -768,7 +785,7 @@ impl Converter<'_, '_> {
             self.note(
                 None,
                 QlabNoteKind::Structure,
-                "an entry of a cue list is not a cue",
+                "An entry in a cue list is not a cue and was left out.",
             );
             return Ok(None);
         };
@@ -784,12 +801,13 @@ impl Converter<'_, '_> {
             self.note(
                 Some(&common),
                 QlabNoteKind::Structure,
-                "the cue appears twice in the file; the second is left out",
+                "It appears twice in the file; the second copy was left out.",
             );
             return Ok(None);
         }
         if depth > MAX_GROUP_DEPTH {
-            let detail = format!("nested deeper than {MAX_GROUP_DEPTH} groups; left out");
+            let detail =
+                format!("It is nested deeper than {MAX_GROUP_DEPTH} groups and was left out.");
             self.note(Some(&common), QlabNoteKind::Structure, detail);
             return Ok(None);
         }
@@ -892,7 +910,7 @@ impl Converter<'_, '_> {
             qlab_id: common.qlab_id.clone(),
             number: common.number.clone(),
             name: common.name.clone(),
-            qlab_type: class.to_owned(),
+            qlab_type: type_words(class, reason),
             reason,
         });
         self.placeholders.push(QlabPlaceholder {
@@ -931,13 +949,17 @@ impl Converter<'_, '_> {
             (
                 common.number.len(),
                 number.len(),
-                "number cut to openLab's limit",
+                "Its number was shortened to openLab's limit.",
             ),
-            (common.name.len(), name.len(), "name cut to openLab's limit"),
+            (
+                common.name.len(),
+                name.len(),
+                "Its name was shortened to openLab's limit.",
+            ),
             (
                 common.notes.len(),
                 notes.len(),
-                "notes cut to openLab's limit",
+                "Its notes were shortened to openLab's limit.",
             ),
         ] {
             if kept < read {
@@ -974,7 +996,7 @@ impl Converter<'_, '_> {
                 self.note(
                     Some(common),
                     QlabNoteKind::Hotkey,
-                    "a hotkey openLab cannot name",
+                    "Its hotkey uses a key openLab cannot name, so it has none.",
                 );
             }
             cue.triggers.hotkey_enabled = key.is_none() || used;
@@ -1032,14 +1054,14 @@ impl Converter<'_, '_> {
             self.note(
                 Some(common),
                 QlabNoteKind::Trigger,
-                "MIDI trigger not imported",
+                "Its MIDI trigger was not kept.",
             );
         }
         if ar.boolean(f.get("useTimecode"))?.unwrap_or(false) {
             self.note(
                 Some(common),
                 QlabNoteKind::Trigger,
-                "timecode trigger not imported",
+                "Its timecode trigger was not kept.",
             );
         }
         Ok(())
@@ -1092,7 +1114,7 @@ impl Converter<'_, '_> {
                     self.note(
                         Some(common),
                         QlabNoteKind::Crossfade,
-                        "crossfade not imported",
+                        "Its playlist crossfade was not kept.",
                     );
                 }
                 let children = self.cues(ar.array(f.get("cues"))?, depth + 1)?;
@@ -1198,7 +1220,7 @@ impl Converter<'_, '_> {
         let mut slices = Vec::new();
         let markers = ar.array(f.get("slices"))?;
         if markers.len() > MAX_SLICE_MARKERS {
-            let detail = format!("slice markers beyond openLab's {MAX_SLICE_MARKERS} left out");
+            let detail = format!("Slice markers past openLab's {MAX_SLICE_MARKERS} were left out.");
             self.note(Some(common), QlabNoteKind::Structure, detail);
         }
         ar.keep(markers.len().min(MAX_SLICE_MARKERS) * std::mem::size_of::<SliceMarker>())?;
@@ -1225,7 +1247,7 @@ impl Converter<'_, '_> {
                     self.note(
                         Some(common),
                         QlabNoteKind::PlayCount,
-                        "the whole cue's play count and its slice's were both set; the cue's is kept",
+                        "Both the whole cue and its last slice have a play count; the whole cue's was kept.",
                     );
                     whole
                 }
@@ -1235,7 +1257,7 @@ impl Converter<'_, '_> {
                 self.note(
                     Some(common),
                     QlabNoteKind::PlayCount,
-                    "the whole cue's play count or loop is not kept on a cue with slices",
+                    "Its whole-cue play count or loop was not kept, because it has slices.",
                 );
             }
             last
@@ -1271,21 +1293,21 @@ impl Converter<'_, '_> {
             self.note(
                 Some(common),
                 QlabNoteKind::Rate,
-                "playback rate not imported",
+                "Its playback rate was not kept.",
             );
         }
         if !ar.array(f.get("effects"))?.is_empty() {
             self.note(
                 Some(common),
                 QlabNoteKind::Effects,
-                "audio effects not imported",
+                "Its audio effects were not kept.",
             );
         }
         if ar.boolean(f.get("doFade"))?.unwrap_or(false) {
             self.note(
                 Some(common),
                 QlabNoteKind::IntegratedFade,
-                "integrated fade not imported",
+                "Its built-in fade was not kept.",
             );
         }
         let map = ar.string(f.get("audioMapID"))?.unwrap_or_default();
@@ -1297,7 +1319,7 @@ impl Converter<'_, '_> {
             self.note(
                 Some(common),
                 QlabNoteKind::AudioObjects,
-                "audio objects and audio map not imported",
+                "Its audio objects and audio map were not kept.",
             );
         }
         if !ar.array(f.get("muteChannels"))?.is_empty()
@@ -1306,7 +1328,7 @@ impl Converter<'_, '_> {
             self.note(
                 Some(common),
                 QlabNoteKind::LevelDropped,
-                "mutes and solos not imported",
+                "Its mutes and solos were not kept.",
             );
         }
         Ok(())
@@ -1326,7 +1348,7 @@ impl Converter<'_, '_> {
             self.note(
                 Some(common),
                 QlabNoteKind::LevelFolded,
-                "trims folded into the levels",
+                "Its trims were folded into its levels.",
             );
         }
         let outputs = outputs.min(MAX_CUE_OUTPUTS);
@@ -1364,7 +1386,7 @@ impl Converter<'_, '_> {
             self.note(
                 Some(common),
                 QlabNoteKind::LevelFolded,
-                "input levels folded into the crosspoints",
+                "Its input levels were folded into its crosspoints.",
             );
         }
         self.ar.keep(
@@ -1389,7 +1411,7 @@ impl Converter<'_, '_> {
             self.note(
                 Some(common),
                 QlabNoteKind::LevelDropped,
-                "gangs of the master or crosspoints not imported (openLab gangs cue outputs)",
+                "Its gangs of the master or crosspoints were not kept; openLab gangs only cue outputs.",
             );
         }
         Ok(levels)
@@ -1404,7 +1426,7 @@ impl Converter<'_, '_> {
             output_db: Vec::new(),
             crosspoints: Vec::new(),
         };
-        let mut curve = FadeCurve::SCurve;
+        let mut curve = FadeCueCurve::default();
         if let Some(fade) = &fade {
             let mut input_levels = false;
             for (_, entry) in ar.dict(fade.get("entries"))? {
@@ -1446,7 +1468,7 @@ impl Converter<'_, '_> {
                 self.note(
                     Some(common),
                     QlabNoteKind::LevelDropped,
-                    "input levels faded by the cue not imported",
+                    "The input levels it fades were not kept.",
                 );
             }
             curve = self.curve(fade, f, common)?;
@@ -1477,7 +1499,11 @@ impl Converter<'_, '_> {
             rotation: ar.number(f.get("rotation"))?.unwrap_or(0.0),
         };
         if ar.boolean(f.get("doRate"))?.unwrap_or(false) {
-            self.note(Some(common), QlabNoteKind::Rate, "rate fade not imported");
+            self.note(
+                Some(common),
+                QlabNoteKind::Rate,
+                "Its rate fade was not kept.",
+            );
         }
         Ok(CueKind::Fade {
             target: None,
@@ -1494,59 +1520,52 @@ impl Converter<'_, '_> {
         })
     }
 
-    /// The nearest openLab curve to QLab's shape type (0 custom, 1 S-curve, 2 parametric,
-    /// 3 linear, 4 path) and audio domain (0 slider, 1 decibel, 2 linear). openLab's curve model
-    /// is replaced by QLab's in #756; until then shapes and domains map to the nearest curve.
+    /// The Fade's curve. QLab stores a shape for rising levels (`upShape`) and one for falling
+    /// levels (`downShape`), each with its type, parameter and points, and the audio domain
+    /// (0 slider, 1 decibel, 2 linear). A value openLab cannot hold is noted and the default
+    /// takes its place.
     fn curve(
         &mut self,
         fade: &Fields<'_>,
         f: &Fields<'_>,
         common: &Common,
-    ) -> Result<FadeCurve, QlabError> {
+    ) -> Result<FadeCueCurve, QlabError> {
         let ar = self.ar;
+        let audio_domain = match num(ar, f, "audioDomain")? {
+            None | Some(0) => AudioDomain::Slider,
+            Some(1) => AudioDomain::Decibel,
+            Some(2) => AudioDomain::Linear,
+            Some(_) => {
+                self.note(
+                    Some(common),
+                    QlabNoteKind::FadeCurve,
+                    "Its audio domain is one openLab does not have, so it uses the slider domain.",
+                );
+                AudioDomain::Slider
+            }
+        };
         let shapes = ar.fields(fade.get("shapes").unwrap_or(Value::Null))?;
-        let shape_type = match &shapes {
-            Some(s) => match ar.fields(s.get("downShape").unwrap_or(Value::Null))? {
-                Some(down) => num(ar, &down, "type")?,
-                None => None,
-            },
-            None => None,
+        let (rising, falling) = match &shapes {
+            Some(s) => (shape(ar, s, "upShape")?, shape(ar, s, "downShape")?),
+            None => (Some(CurveShape::default()), Some(CurveShape::default())),
         };
-        let curve = match shape_type {
-            Some(3) => FadeCurve::Linear,
-            Some(2) => FadeCurve::EqualPower,
-            Some(0) => {
-                self.note(
-                    Some(common),
-                    QlabNoteKind::FadeCurve,
-                    "custom curve imported as an S-curve",
-                );
-                FadeCurve::SCurve
-            }
-            Some(4) => {
-                self.note(
-                    Some(common),
-                    QlabNoteKind::FadeCurve,
-                    "path fade imported as linear",
-                );
-                FadeCurve::Linear
-            }
-            _ => FadeCurve::SCurve,
-        };
-        match num(ar, f, "audioDomain")? {
-            Some(1) => self.note(
+        let (Some(rising), Some(falling)) = (rising, falling) else {
+            self.note(
                 Some(common),
                 QlabNoteKind::FadeCurve,
-                "decibel audio domain not kept",
-            ),
-            Some(2) => self.note(
-                Some(common),
-                QlabNoteKind::FadeCurve,
-                "linear audio domain not kept",
-            ),
-            _ => {}
-        }
-        Ok(curve)
+                "Its curve shape is one openLab cannot hold, so it uses the S-curve.",
+            );
+            return Ok(FadeCueCurve {
+                audio_domain,
+                ..Default::default()
+            });
+        };
+        ar.keep((rising.points.len() + falling.points.len()) * std::mem::size_of::<CurvePoint>())?;
+        Ok(FadeCueCurve {
+            audio_domain,
+            rising,
+            falling,
+        })
     }
 
     fn network(&mut self, f: &Fields<'_>, common: &Common) -> Result<Option<CueKind>, QlabError> {
@@ -1570,7 +1589,7 @@ impl Converter<'_, '_> {
             self.note(
                 Some(common),
                 QlabNoteKind::Truncated,
-                "OSC message cut to openLab's limit",
+                "Its OSC message was shortened to openLab's limit.",
             );
         }
         ar.keep(message.len() + args.len() * std::mem::size_of::<OscArg>())?;
@@ -1584,7 +1603,7 @@ impl Converter<'_, '_> {
                 self.note(
                     Some(common),
                     QlabNoteKind::Rate,
-                    "OSC parameter fade not imported",
+                    "Its OSC parameter fade was not kept.",
                 );
             }
         }
@@ -1647,12 +1666,20 @@ impl Converter<'_, '_> {
             ar.resolve(f.get("quaternion").unwrap_or(Value::Null))?,
             Value::Null
         ) {
-            self.note(Some(common), QlabNoteKind::Video, "rotation not imported");
+            self.note(
+                Some(common),
+                QlabNoteKind::Video,
+                "Its rotation was not kept.",
+            );
         }
         if let Some(blend) = ar.fields(f.get("blendMode").unwrap_or(Value::Null))?
             && num(ar, &blend, "index")?.unwrap_or(0) != 0
         {
-            self.note(Some(common), QlabNoteKind::Video, "blend mode not imported");
+            self.note(
+                Some(common),
+                QlabNoteKind::Video,
+                "Its blend mode was not kept.",
+            );
         }
         if let Some(effects) = ar.fields(f.get("videoEffects").unwrap_or(Value::Null))?
             && !ar.array(effects.get("effectEntries"))?.is_empty()
@@ -1660,14 +1687,14 @@ impl Converter<'_, '_> {
             self.note(
                 Some(common),
                 QlabNoteKind::Effects,
-                "video effects not imported",
+                "Its video effects were not kept.",
             );
         }
         if ar.number(f.get("rate"))?.is_some_and(|r| r != 1.0) {
             self.note(
                 Some(common),
                 QlabNoteKind::Rate,
-                "playback rate not imported",
+                "Its playback rate was not kept.",
             );
         }
         let mut sound = VideoSound::default();
@@ -1719,7 +1746,7 @@ impl Converter<'_, '_> {
                     }
                 }
                 (_, None) => {
-                    let detail = "its target is not in the file";
+                    let detail = "Its target is not in the file, so it has none.";
                     let note = QlabNote {
                         qlab_id: self
                             .cue_order
@@ -1846,6 +1873,95 @@ fn num(ar: &Archive<'_>, f: &Fields<'_>, key: &str) -> Result<Option<i64>, QlabE
         .number(f.get(key))?
         .filter(|n| n.fract() == 0.0 && n.abs() < 1e15)
         .map(|n| n as i64))
+}
+
+/// The action of a QLab key map entry, in words: "The shortcut for {} ...". A name not listed
+/// is split into lower-case words.
+fn key_action(name: &str) -> String {
+    let words = match name {
+        "go" => "GO",
+        "stopAll" => "stopping all cues",
+        "pauseAll" => "pausing all cues",
+        "resumeAll" => "resuming all cues",
+        "loadSelected" => "loading the selected cue",
+        "pauseResumeSelected" => "pausing or resuming the selected cue",
+        "startSelected" => "starting the selected cue",
+        "stopSelected" => "stopping the selected cue",
+        "resetSelected" => "resetting the selected cue",
+        "preview" => "previewing the selected cue",
+        "panicSelected" => "panicking the selected cue",
+        "editNumber" => "editing the cue number",
+        "editName" => "editing the cue name",
+        "editNotes" => "editing the cue notes",
+        "editTarget" => "editing the cue target",
+        "editPreWait" => "editing the pre-wait",
+        "editAction" => "editing the duration",
+        "editPostWait" => "editing the post-wait",
+        "cycleContinue" => "cycling the continue mode",
+        "flag" => "flagging the cue",
+        "cycleTargetType" => "cycling the target type",
+        "auditionGo" => "GO in audition",
+        "auditionPreview" => "previewing in audition",
+        other => {
+            let mut out = String::with_capacity(other.len() + 8);
+            for c in other.chars() {
+                if c.is_uppercase() && !out.is_empty() {
+                    out.push(' ');
+                }
+                out.extend(c.to_lowercase());
+            }
+            return out;
+        }
+    };
+    words.to_owned()
+}
+
+/// One of a Fade's shapes (`upShape` or `downShape` in `shapes`): type 0 custom, 1 S-curve,
+/// 2 parametric, 3 linear; `curveParameter`; and `shapeEntries`, points `t` (the time) and `v`
+/// (the height in the graph), both 0 to 1, whose first and last are the fixed ends openLab does
+/// not store. `None` for a shape openLab cannot hold: another type, a parameter or point out of
+/// range, points out of order or too many.
+fn shape(
+    ar: &Archive<'_>,
+    shapes: &Fields<'_>,
+    key: &str,
+) -> Result<Option<CurveShape>, QlabError> {
+    let Some(s) = ar.fields(shapes.get(key).unwrap_or(Value::Null))? else {
+        return Ok(Some(CurveShape::default()));
+    };
+    let kind = match num(ar, &s, "type")? {
+        None | Some(1) => CurveType::SCurve,
+        Some(0) => CurveType::Custom,
+        Some(2) => CurveType::Parametric,
+        Some(3) => CurveType::Linear,
+        Some(_) => return Ok(None),
+    };
+    let parameter = ar
+        .number(s.get("curveParameter"))?
+        .unwrap_or(DEFAULT_CURVE_PARAMETER);
+    let entries = ar.array(s.get("shapeEntries"))?;
+    if entries.len() > MAX_CURVE_POINTS + 2 {
+        return Ok(None);
+    }
+    let mut points = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Some(e) = ar.fields(entry)? else {
+            return Ok(None);
+        };
+        let (Some(t), Some(v)) = (ar.number(e.get("t"))?, ar.number(e.get("v"))?) else {
+            return Ok(None);
+        };
+        if t == 0.0 || t == 1.0 {
+            continue;
+        }
+        points.push(CurvePoint { t, v });
+    }
+    let shape = CurveShape {
+        kind,
+        parameter,
+        points,
+    };
+    Ok(shape.is_valid().then_some(shape))
 }
 
 /// A slice's plays: `infiniteLoop` loops until devamped, else `playCount` (0 skips it).
@@ -1988,20 +2104,36 @@ fn parse_osc(text: &str) -> (String, Vec<OscArg>) {
     (address, args)
 }
 
-/// QLab's class, in our words, for a placeholder's name (a group is a cart only when that is why
-/// it is one).
-fn type_words(class: &str, reason: QlabUnsupportedReason) -> &str {
-    match class {
+/// QLab's class in our words, for the report and a placeholder's name (a group is a cart only
+/// when that is why it is one). A class not listed loses its `Cue` suffix and is split into
+/// words.
+fn type_words(class: &str, reason: QlabUnsupportedReason) -> String {
+    let words = match class {
         "MIDIFileCue" => "MIDI File",
+        "MIDICue" => "MIDI",
+        "MicCue" => "Microphone",
         "TitlesCue" | "TextCue" => "Text",
-        "OSCCue" => "Network",
+        "OSCCue" | "NetworkCue" => "Network",
         "GroupCue" if reason == QlabUnsupportedReason::Cart => "Cart",
         "GroupCue" => "Group",
-        other => other
-            .strip_suffix("Cue")
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown"),
-    }
+        other => {
+            let stem = other.strip_suffix("Cue").unwrap_or(other);
+            if stem.is_empty() {
+                return "unknown".into();
+            }
+            let mut out = String::with_capacity(stem.len() + 4);
+            let mut prev_lower = false;
+            for c in stem.chars() {
+                if c.is_uppercase() && prev_lower {
+                    out.push(' ');
+                }
+                prev_lower = c.is_lowercase();
+                out.push(c);
+            }
+            return out;
+        }
+    };
+    words.to_owned()
 }
 
 /// A unique id as read, within [`MAX_ID_BYTES`].

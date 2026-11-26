@@ -110,16 +110,19 @@ pub fn read_qlab(
     let import = convert::convert(bytes, ids, media)?;
     // Every placeholder is still in the workspace: whatever the operator deletes only makes it
     // smaller.
+    let frame = crate::protocol::MAX_SERVER_FRAME_BYTES - ENVELOPE;
+    if !fits(&import.report, false, frame) {
+        return Err(QlabError::TooLarge("report"));
+    }
+    // The workspace is saved (pretty) and sent to the app in a snapshot (compact): it must fit
+    // both.
     if !fits(
         &import.workspace,
         true,
         crate::show_file::MAX_SHOW_FILE_BYTES - ENVELOPE,
-    ) {
+    ) || !fits(&import.workspace, false, frame)
+    {
         return Err(QlabError::TooLarge("workspace"));
-    }
-    let frame = crate::protocol::MAX_SERVER_FRAME_BYTES - ENVELOPE;
-    if !fits(&import.report, false, frame) {
-        return Err(QlabError::TooLarge("report"));
     }
     Ok(import)
 }

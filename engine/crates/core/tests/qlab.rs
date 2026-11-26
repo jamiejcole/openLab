@@ -270,6 +270,120 @@ fn a_workspace_whose_show_file_would_pass_the_limit_is_refused() {
 }
 
 #[test]
+fn a_workspace_whose_snapshot_would_pass_the_server_frame_limit_is_refused() {
+    // 600 Memos sharing one 64,000-byte notes string: about 36 MiB of JSON, under the show-file
+    // limit but past what one message to the app holds.
+    let file = one_list(|a| {
+        let notes = a.string(&"n".repeat(64_000));
+        (0..600)
+            .map(|i| memo(a, &format!("m{i}"), &[("notes", notes)]))
+            .collect()
+    });
+    assert!(file.len() < 160 << 10, "{} bytes", file.len());
+    assert_eq!(read(&file).err(), Some(QlabError::TooLarge("workspace")));
+}
+
+#[test]
+fn fade_curve_shapes_and_domains_convert_and_out_of_range_ones_become_the_default() {
+    // A Fade's shapes as QLab stores them: type, parameter and points with the ends included.
+    fn shape(a: &mut Archive, kind: i64, parameter: f64, points: &[(f64, f64)]) -> V {
+        let entries: Vec<V> = points
+            .iter()
+            .map(|(t, v)| a.object("FadeShapeEntry", &[("t", V::Real(*t)), ("v", V::Real(*v))]))
+            .collect();
+        let entries = a.array(&entries);
+        a.object(
+            "FadeShape",
+            &[
+                ("type", V::Int(kind)),
+                ("curveParameter", V::Real(parameter)),
+                ("shapeEntries", entries),
+            ],
+        )
+    }
+    fn fade_cue(a: &mut Archive, n: &str, domain: i64, up: V, down: V) -> V {
+        let shapes = a.object("FadeShapesFunction", &[("upShape", up), ("downShape", down)]);
+        let fade = a.object("FadeFunction", &[("shapes", shapes)]);
+        let number = a.string(n);
+        qcue(
+            a,
+            "FadeCue",
+            n,
+            &[
+                ("number", number),
+                ("audioDomain", V::Int(domain)),
+                ("fade", fade),
+            ],
+        )
+    }
+    let file = one_list(|a| {
+        let up = shape(a, 0, 1.0, &[(0.0, 0.0), (0.2, 0.5), (0.7, 0.9), (1.0, 1.0)]);
+        let down = shape(a, 3, 1.0, &[(0.0, 1.0), (0.4, 0.2), (1.0, 0.0)]);
+        let exact = fade_cue(a, "1", 1, up, down);
+        let up = shape(a, 2, 3.5, &[(0.0, 0.0), (1.0, 1.0)]);
+        let down = shape(a, 0, 1.0, &[(0.0, 1.0), (0.5, 1.5), (1.0, 0.0)]);
+        let high = fade_cue(a, "2", 2, up, down);
+        let many: Vec<(f64, f64)> = (0..70).map(|i| (f64::from(i) / 70.0, 0.5)).collect();
+        let up = shape(a, 0, 1.0, &many);
+        let down = shape(a, 1, 1.0, &[]);
+        let too_many = fade_cue(a, "3", 0, up, down);
+        let up = shape(a, 2, 500.0, &[]);
+        let down = shape(a, 1, 1.0, &[]);
+        let parameter = fade_cue(a, "4", 9, up, down);
+        let up = shape(a, 3, 1.0, &[(0.0, 0.0), (0.6, 0.5), (0.3, 0.7), (1.0, 1.0)]);
+        let down = shape(a, 3, 1.0, &[]);
+        let order = fade_cue(a, "5", 0, up, down);
+        vec![exact, high, too_many, parameter, order]
+    });
+    let import = read(&file).unwrap();
+    let ws = &import.workspace;
+    let curve = |n: &str| match &by_number(ws, n).kind {
+        CueKind::Fade { curve, .. } => curve.clone(),
+        other => panic!("{other:?}"),
+    };
+    let point = |t, v| CurvePoint { t, v };
+    assert_eq!(
+        curve("1"),
+        FadeCueCurve {
+            audio_domain: AudioDomain::Decibel,
+            rising: CurveShape {
+                kind: CurveType::Custom,
+                parameter: 1.0,
+                points: vec![point(0.2, 0.5), point(0.7, 0.9)],
+            },
+            falling: CurveShape {
+                kind: CurveType::Linear,
+                parameter: 1.0,
+                points: vec![point(0.4, 0.2)],
+            },
+        }
+    );
+    // A point above the top, too many points, a parameter out of range and points out of order:
+    // each the default shapes, the domain kept (an unknown one: slider), and a note.
+    let default_in = |audio_domain| FadeCueCurve {
+        audio_domain,
+        ..Default::default()
+    };
+    assert_eq!(curve("2"), default_in(AudioDomain::Linear));
+    assert_eq!(curve("3"), default_in(AudioDomain::Slider));
+    assert_eq!(curve("4"), default_in(AudioDomain::Slider));
+    assert_eq!(curve("5"), default_in(AudioDomain::Slider));
+    let notes: Vec<(&str, usize)> = ["1", "2", "3", "4", "5"]
+        .into_iter()
+        .map(|n| {
+            let count = import
+                .report
+                .notes
+                .iter()
+                .filter(|x| x.number == n && x.kind == QlabNoteKind::FadeCurve)
+                .count();
+            (n, count)
+        })
+        .collect();
+    assert_eq!(notes, [("1", 0), ("2", 1), ("3", 1), ("4", 2), ("5", 1)]);
+}
+
+#[test]
 fn a_report_past_the_server_frame_limit_is_refused() {
     // 6000 unsupported cues sharing a name of 1024 control characters: each is listed in the
     // report at six bytes a character, 37 MB in all.
@@ -631,15 +745,15 @@ fn every_cue_type_converts_and_unsupported_ones_become_placeholders() {
     assert_eq!(
         unsupported,
         [
-            "LightCue",
-            "MIDICue",
-            "MIDIFileCue",
-            "TimecodeCue",
-            "ScriptCue",
-            "CameraCue",
-            "MicCue",
-            "TitlesCue",
-            "MicCue"
+            "Light",
+            "MIDI",
+            "MIDI File",
+            "Timecode",
+            "Script",
+            "Camera",
+            "Microphone",
+            "Text",
+            "Microphone"
         ]
     );
     assert!(
@@ -651,7 +765,7 @@ fn every_cue_type_converts_and_unsupported_ones_become_placeholders() {
     assert!(matches!(light.kind, CueKind::Memo));
     assert_eq!(light.color, CueColor::Red);
     assert_eq!(light.name, "Unsupported light");
-    assert_eq!(by_number(ws, "30").name, "QLab Mic cue (not converted)");
+    assert_eq!(by_number(ws, "30").name, "QLab Microphone cue (not converted)");
 
     // Two audio patches (the second on a device this Mac lacks) and two network patches.
     let p = &r.audio_patches;
@@ -958,7 +1072,7 @@ fn fade_levels_modes_curves_and_domains_convert() {
             );
             (
                 *duration,
-                *curve,
+                curve.clone(),
                 levels.clone(),
                 *stop_target_when_done,
                 *mode,
@@ -971,7 +1085,7 @@ fn fade_levels_modes_curves_and_domains_convert() {
     let (duration, curve, levels, stop, mode, _) = fade("F1");
     assert_eq!(
         (duration, curve, stop, mode),
-        (2.0, FadeCurve::SCurve, false, FadeMode::Absolute)
+        (2.0, FadeCueCurve::default(), false, FadeMode::Absolute)
     );
     assert_eq!(levels.master_db, Some(-20.0));
     let (_, _, levels, _, mode, _) = fade("F2");
@@ -997,13 +1111,41 @@ fn fade_levels_modes_curves_and_domains_convert() {
             },
         ]
     );
-    // Shape types 0 custom, 1 S-curve, 2 parametric, 4 path; audio domains 0 slider,
-    // 2 linear, 1 decibel; a custom curve with a control point.
-    assert_eq!(fade("F5").1, FadeCurve::SCurve);
-    assert_eq!(fade("F6").1, FadeCurve::SCurve);
-    assert_eq!(fade("F7").1, FadeCurve::EqualPower);
-    assert_eq!(fade("F8").1, FadeCurve::Linear);
-    assert_eq!(fade("F11").1, FadeCurve::SCurve);
+    // Shape types 0 custom, 1 S-curve, 2 parametric, 3 linear and 4 (not in QLab's menu); audio
+    // domains 0 slider, 2 linear, 1 decibel; custom and linear shapes with points, which QLab
+    // stores as 32-bit numbers.
+    let p = |t: f32, v: f32| CurvePoint {
+        t: f64::from(t),
+        v: f64::from(v),
+    };
+    let both = |kind: CurveType, domain: AudioDomain| {
+        let shape = CurveShape {
+            kind,
+            ..Default::default()
+        };
+        FadeCueCurve {
+            audio_domain: domain,
+            rising: shape.clone(),
+            falling: shape,
+        }
+    };
+    use AudioDomain::{Decibel, Linear, Slider};
+    assert_eq!(fade("F1").1, FadeCueCurve::default());
+    assert_eq!(fade("F5").1, both(CurveType::Custom, Slider));
+    assert_eq!(fade("F6").1, both(CurveType::SCurve, Slider));
+    assert_eq!(fade("F7").1, both(CurveType::Parametric, Slider));
+    assert_eq!(fade("F8").1, FadeCueCurve::default());
+    let mut linear = both(CurveType::Linear, Slider);
+    linear.rising.points = vec![p(0.3, 0.6)];
+    linear.falling.points = vec![p(0.7, 0.6)];
+    assert_eq!(fade("F9").1, linear);
+    assert_eq!(fade("F10").1, both(CurveType::SCurve, Linear));
+    let mut custom = both(CurveType::Custom, Slider);
+    custom.rising.parameter = 2.0;
+    custom.rising.points = vec![p(0.5, 0.8)];
+    custom.falling.points = vec![p(0.25, 0.3), p(0.6, 0.1)];
+    assert_eq!(fade("F11").1, custom);
+    assert_eq!(fade("F12").1, both(CurveType::SCurve, Decibel));
     let notes = |n: &str| {
         import
             .report
@@ -1012,11 +1154,11 @@ fn fade_levels_modes_curves_and_domains_convert() {
             .filter(|x| x.number == n && x.kind == QlabNoteKind::FadeCurve)
             .count()
     };
-    assert_eq!(
-        (notes("F5"), notes("F6"), notes("F8"), notes("F9")),
-        (1, 0, 1, 0)
-    );
-    assert_eq!((notes("F10"), notes("F12")), (1, 1));
+    let noted: Vec<usize> = ["F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]
+        .iter()
+        .map(|n| notes(n))
+        .collect();
+    assert_eq!(noted, [0, 0, 0, 1, 0, 0, 0, 0]);
     let (_, _, _, _, _, geometry) = fade("F20");
     assert!(geometry.fade_opacity && geometry.fade_translation && !geometry.fade_scale);
     assert_eq!(geometry.opacity, 0.25);

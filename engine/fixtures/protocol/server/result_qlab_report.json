@@ -12,7 +12,7 @@
           "qlab_id": "2C0A6F55-1D3E-4B8A-9F10-6E7D8C9B0A11",
           "number": "40",
           "name": "House to half",
-          "qlab_type": "LightCue",
+          "qlab_type": "Light",
           "reason": "cue_type"
         }
       ],
@@ -22,13 +22,13 @@
           "number": "12",
           "name": "Storm",
           "kind": "rate",
-          "detail": "playback rate not imported"
+          "detail": "Its playback rate was not kept."
         },
         {
           "number": "",
           "name": "",
           "kind": "setting",
-          "detail": "OSC access passcodes are not imported"
+          "detail": "OSC access passcodes were not kept."
         }
       ],
       "notes_omitted": 3,

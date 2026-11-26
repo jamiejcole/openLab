@@ -3808,7 +3808,7 @@ fn importing_a_qlab_workspace_opens_it_unsaved_with_its_media_and_device_choices
     let light = report
         .unsupported
         .iter()
-        .find(|u| u.qlab_type == "LightCue")
+        .find(|u| u.qlab_type == "Light")
         .unwrap();
     let (first, second) = (&report.audio_patches[0], &report.audio_patches[1]);
     let replies = request(

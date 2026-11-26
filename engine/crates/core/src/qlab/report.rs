@@ -47,7 +47,7 @@ pub struct QlabUnsupported {
     pub qlab_id: String,
     pub number: String,
     pub name: String,
-    /// QLab's class of the cue (`"LightCue"`, `"MIDICue"`, `"GroupCue"` for a cart, ...).
+    /// QLab's kind of cue in our words (`"Light"`, `"MIDI File"`, `"Cart"`, ...), not its class.
     pub qlab_type: String,
     pub reason: QlabUnsupportedReason,
 }
@@ -77,7 +77,7 @@ pub struct QlabNote {
     pub number: String,
     pub name: String,
     pub kind: QlabNoteKind,
-    /// English, for the report file and logs; the app words the kind itself.
+    /// One plain English sentence saying what was dropped or changed, shown as it is.
     pub detail: String,
 }
 
