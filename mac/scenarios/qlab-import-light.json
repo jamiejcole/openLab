@@ -1,0 +1,24 @@
+{
+  "about": "New Workspace from QLab File, light: the unsupported cues (all Delete, then mixed), the outputs, the new workspace and its notes. Needs the local QLab fixtures.",
+  "show": "new",
+  "appearance": "light",
+  "window": {"width": 800, "height": 500},
+  "displays": "V1:1920x1080",
+  "qlab_file": "../../engine/fixtures/qlab/cue-types/cue-types.qlab5",
+  "steps": [
+    {"focus": "qlab-import"},
+    {"shot": "unsupported-all-delete-light"},
+    {"choose": "qlab-unsupported-action-0", "item": "Placeholder"},
+    {"shot": "unsupported-mixed-light"},
+    {"click": "qlab-primary"},
+    {"shot": "outputs-light"},
+    {"click": "qlab-create"},
+    {"focus": "qlab-notes"},
+    {"shot": "notes-light"},
+    {"focus": "workspace"},
+    {"shot": "new-workspace-light"},
+    {"resize": [1200, 800]},
+    {"select": "20"},
+    {"shot": "placeholder-light"}
+  ]
+}

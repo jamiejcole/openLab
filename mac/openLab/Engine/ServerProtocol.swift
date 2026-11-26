@@ -232,6 +232,12 @@ struct ErrorCode: Hashable, Sendable, Codable, ExpressibleByStringLiteral, Custo
     static let badShowFile: ErrorCode = "bad_show_file"
     static let unsupported: ErrorCode = "unsupported"
     static let `internal`: ErrorCode = "internal"
+    /// `inspectQlab` / `importQlab` of a file that is not a QLab workspace.
+    static let notQlabWorkspace: ErrorCode = "not_qlab_workspace"
+    /// A QLab workspace saved by QLab 4 or earlier.
+    static let qlabTooOld: ErrorCode = "qlab_too_old"
+    /// A QLab workspace that needs a newer QLab than openLab reads.
+    static let qlabTooNew: ErrorCode = "qlab_too_new"
 }
 
 struct ErrorBody: Hashable, Sendable, Decodable {
@@ -641,6 +647,148 @@ struct RecoveryEntryInfo: Hashable, Sendable, Decodable {
     }
 }
 
+/// What a QLab 5 workspace converts to (`inspectQlab`); Rust: `QlabReport`.
+struct QlabReport: Hashable, Sendable, Decodable {
+    /// The QLab workspace's name without `.qlab5`: the new workspace's name.
+    let workspaceName: String
+    let qlabVersion: String
+    let cueCount: UInt32
+    /// Cues (and carts) that become a placeholder or are deleted, in workspace order.
+    let unsupported: [QlabUnsupported]
+    /// Properties dropped or changed; `notesOmitted` more were left out.
+    let notes: [QlabNote]
+    let notesOmitted: UInt32
+    let audioPatches: [QlabAudioPatch]
+    let videoOutputs: [QlabVideoOutput]
+    let stages: [QlabStage]
+
+    enum CodingKeys: String, CodingKey {
+        case unsupported, notes, stages
+        case workspaceName = "workspace_name"
+        case qlabVersion = "qlab_version"
+        case cueCount = "cue_count"
+        case notesOmitted = "notes_omitted"
+        case audioPatches = "audio_patches"
+        case videoOutputs = "video_outputs"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        workspaceName = try c.decode(String.self, forKey: .workspaceName)
+        qlabVersion = try c.decode(String.self, forKey: .qlabVersion)
+        cueCount = try c.decode(UInt32.self, forKey: .cueCount)
+        unsupported = try c.decode([QlabUnsupported].self, forKey: .unsupported)
+        notes = try c.decode([QlabNote].self, forKey: .notes)
+        notesOmitted = try c.decodeIfPresent(UInt32.self, forKey: .notesOmitted) ?? 0
+        audioPatches = try c.decode([QlabAudioPatch].self, forKey: .audioPatches)
+        videoOutputs = try c.decode([QlabVideoOutput].self, forKey: .videoOutputs)
+        stages = try c.decode([QlabStage].self, forKey: .stages)
+    }
+}
+
+/// Rust: `QlabUnsupported`.
+struct QlabUnsupported: Hashable, Sendable, Decodable {
+    enum Reason: String, Hashable, Sendable, Decodable {
+        case cueType = "cue_type"
+        case cart
+        case networkMessage = "network_message"
+        case patchTarget = "patch_target"
+        case damaged
+    }
+    /// What `QlabCueChoice` names the cue by.
+    let qlabId: String
+    let number: String
+    let name: String
+    /// QLab's kind of cue in the engine's words (`Light`, `MIDI File`, `Cart`, ...).
+    let qlabType: String
+    let reason: Reason
+    enum CodingKeys: String, CodingKey {
+        case number, name, reason
+        case qlabId = "qlab_id"
+        case qlabType = "qlab_type"
+    }
+}
+
+/// A property dropped or changed; Rust: `QlabNote`. `detail` is the engine's one plain sentence.
+struct QlabNote: Hashable, Sendable, Decodable {
+    enum Kind: String, Hashable, Sendable, Decodable {
+        case effects, rate, trigger, crossfade, video, hotkey, setting, truncated, structure, target
+        case audioObjects = "audio_objects"
+        case integratedFade = "integrated_fade"
+        case levelFolded = "level_folded"
+        case levelDropped = "level_dropped"
+        case playCount = "play_count"
+        case fadeCurve = "fade_curve"
+    }
+    /// nil for the workspace's own settings.
+    let qlabId: String?
+    let number: String
+    let name: String
+    let kind: Kind
+    let detail: String
+    enum CodingKeys: String, CodingKey {
+        case number, name, kind, detail
+        case qlabId = "qlab_id"
+    }
+}
+
+/// A QLab audio patch as QLab knew its device; Rust: `QlabAudioPatch`.
+struct QlabAudioPatch: Hashable, Sendable, Decodable {
+    let qlabId: String
+    let name: String
+    /// Cue outputs: the new patch's output count.
+    let outputs: UInt32
+    /// On the system output rather than a named device.
+    let system: Bool
+    /// Core Audio's device UID; empty when QLab saved none.
+    let deviceUid: String
+    let deviceName: String
+    let deviceOutputs: UInt32
+    enum CodingKeys: String, CodingKey {
+        case name, outputs, system
+        case qlabId = "qlab_id"
+        case deviceUid = "device_uid"
+        case deviceName = "device_name"
+        case deviceOutputs = "device_outputs"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        qlabId = try c.decode(String.self, forKey: .qlabId)
+        name = try c.decode(String.self, forKey: .name)
+        outputs = try c.decode(UInt32.self, forKey: .outputs)
+        system = try c.decodeIfPresent(Bool.self, forKey: .system) ?? false
+        deviceUid = try c.decode(String.self, forKey: .deviceUid)
+        deviceName = try c.decode(String.self, forKey: .deviceName)
+        deviceOutputs = try c.decode(UInt32.self, forKey: .deviceOutputs)
+    }
+}
+
+/// A QLab video output route; Rust: `QlabVideoOutput`. `screen`: the display's name (may be empty).
+struct QlabVideoOutput: Hashable, Sendable, Decodable {
+    let qlabId: String
+    let name: String
+    let screen: String
+    let width: UInt32
+    let height: UInt32
+    enum CodingKeys: String, CodingKey {
+        case name, screen, width, height
+        case qlabId = "qlab_id"
+    }
+}
+
+/// A QLab video stage; Rust: `QlabStage`.
+struct QlabStage: Hashable, Sendable, Decodable {
+    let qlabId: String
+    let name: String
+    let width: UInt32
+    let height: UInt32
+    enum CodingKeys: String, CodingKey {
+        case name, width, height
+        case qlabId = "qlab_id"
+    }
+}
+
 /// The pre-show check (SM-06, NFR-07); Rust: `PreshowReport`. Every list is sorted for display.
 struct PreshowSummary: Hashable, Sendable, Decodable {
     let brokenCues: UInt64
@@ -735,6 +883,8 @@ enum ResultData: Sendable, Equatable, Decodable {
     case relink(RelinkResult)
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
     case recoveryEntries([RecoveryEntryInfo])
+    /// `inspectQlab`: what a QLab workspace converts to.
+    case qlabReport(QlabReport)
     /// `seq`: the number of the newest record when it was answered (0: none, or an older engine).
     case logTail(entries: [ShowLogEntry], dropped: UInt64, seq: UInt64)
     case preshowCheck(PreshowReport)
@@ -784,6 +934,7 @@ enum ResultData: Sendable, Equatable, Decodable {
                 workspaceName: try c.decode(String.self, forKey: "workspace_name"),
                 modifiedMs: try c.decode(Int64.self, forKey: "modified_ms"))
         case "recovery_entries": self = .recoveryEntries(try c.decode([RecoveryEntryInfo].self, forKey: "entries"))
+        case "qlab_report": self = .qlabReport(try QlabReport(from: decoder))
         case "log_tail":
             self = .logTail(
                 entries: try c.decode([ShowLogEntry].self, forKey: "entries"),

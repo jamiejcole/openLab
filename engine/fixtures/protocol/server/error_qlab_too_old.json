@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "qlab_too_old",
+  "message": "message",
+  "protocol_version": 5
+}

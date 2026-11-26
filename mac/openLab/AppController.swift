@@ -80,6 +80,13 @@ final class AppController {
     }
 
     var pickOpenURL: @MainActor () -> URL? = AppController.openPanel
+    /// The `.qlab5` file to make a new workspace from (nil: cancelled).
+    var pickQlabURL: @MainActor () -> URL? = AppController.qlabPanel
+    /// The operator's answers to the QLab import steps (nil: cancelled).
+    var chooseQlabImport: @MainActor (QlabReport, [DeviceEntry], [StageDisplay]) -> QlabImportChoice? =
+        AppController.runQlabImport
+    /// The notes sheet after the converted workspace opened.
+    lazy var showQlabNotes: @MainActor (QlabNotesInfo) -> Void = { [unowned self] in self.runQlabNotes($0) }
     /// The folder to search for missing media (nil: cancelled).
     var pickFolderURL: @MainActor () -> URL? = AppController.folderPanel
     /// Where to save a show and whether into a new show folder with its media (nil: cancelled). The

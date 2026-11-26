@@ -9,6 +9,8 @@
 
 //! Builders for small test workspaces.
 
+pub mod qlab_archive;
+
 use openlab_core::*;
 use uuid::Uuid;
 

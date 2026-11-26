@@ -1,0 +1,40 @@
+{
+  "type": "request",
+  "id": 75,
+  "request": {
+    "type": "import_qlab",
+    "path": "/Users/sam/Shows/Hamlet.qlab5",
+    "cues": [
+      {
+        "qlab_id": "2C0A6F55-1D3E-4B8A-9F10-6E7D8C9B0A11",
+        "action": "delete"
+      },
+      {
+        "qlab_id": "6B1E3C47-8A2D-4F5E-B7C9-0D1E2F3A4B5C",
+        "action": "placeholder"
+      }
+    ],
+    "other_cues": "delete",
+    "audio_patches": [
+      {
+        "qlab_id": "7E1C0A52-2C3B-4E39-9E57-6A5C1B2D3E4F",
+        "mapping": {
+          "device": "Scarlett 18i20",
+          "channels": [
+            0,
+            1
+          ]
+        }
+      },
+      {
+        "qlab_id": "8A96A925-AAD9-4DA8-A91F-12C23C153B1B"
+      }
+    ],
+    "video_outputs": [
+      {
+        "qlab_id": "4EEADB84-09F2-4220-943E-EB979E6297DE",
+        "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230"
+      }
+    ]
+  }
+}
