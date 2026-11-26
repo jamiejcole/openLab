@@ -22,7 +22,7 @@ Values: levels are linear gains (1.0 is 0 dB), converted to dB to a thousandth (
 | Key Map: a dictionary of action to key (`keyCharacter`, `keyCode`, `shift`, `control`, `option`, `command`, `function`, `numericPad`, `capsLock`) | `settings.hotkeys`; a QLab map with no entry for an action gives it no key | groups-triggers (`go` set to shift-G) |
 | Key Map `go`, `stopAll`, `pauseAll`, `resumeAll`, `loadSelected`, `pauseResumeSelected`, `startSelected`, `stopSelected`, `resetSelected`, `preview` | `go`, `stop_all`, `pause_all`, `resume_all`, `load_selected`, `pause_resume_selected`, `start_selected`, `stop_selected`, `reset_selected`, `preview_selected` | default map; `stopAll`, `startSelected`, `stopSelected`, `resetSelected` assumed (not in it) |
 | Key Map `panicSelected`, `editNumber`, `editName`, `editNotes`, `editTarget`, `editPreWait`, `editAction`, `editPostWait`, `cycleContinue`, `flag` | `panic_selected`, `edit_number`, `edit_name`, `edit_notes`, `edit_target`, `edit_pre_wait`, `edit_duration`, `edit_post_wait`, `cycle_continue`, `toggle_flag` | default map |
-| Key Map `auditionGo`, `auditionPreview`, `cycleTargetType` | dropped (no openLab action) | all |
+| Key Map `auditionGo`, `auditionPreview`, `cycleTargetType` | dropped without a note (no openLab action; owner 2026-11-26) | all |
 | OSC Access (passcodes, ports) | not imported; the workspace gets its own passcode; a note says so | all |
 | Audio `audioOutputPatches` | patches, below | cue-types |
 | Network `networkPatches` | network patches, below | cue-types |
