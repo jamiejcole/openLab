@@ -1,0 +1,16 @@
+{
+  "about": "A Fade's custom curve with the points of the QLab 5 comparison: unlocked, one point on the rising graph at (0.5, 0.8) and two on the falling graph at (0.25, 0.3) and (0.6, 0.1); the curves pass near the points, not through them, with a dashed line joining the ends and the points.",
+  "show": "Targets",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1400, "height": 900},
+  "steps": [
+    {"select": "3"},
+    {"tab": "curve"},
+    {"choose": "fade-curve", "item": "Custom"},
+    {"click": "fade-curve-lock"},
+    {"click": "fade-curve-rising", "at": [0.5, 0.2]},
+    {"click": "fade-curve-falling", "at": [0.25, 0.7]},
+    {"click": "fade-curve-falling", "at": [0.6, 0.9]},
+    {"shot": "custom-points"}
+  ]
+}
