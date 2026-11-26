@@ -284,10 +284,12 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
         durationField.widthAnchor.constraint(equalToConstant: 90).isActive = true
         intensityField.widthAnchor.constraint(equalToConstant: 90).isActive = true
         for key in FadeCurveSpec.Kind.allCases {
-            curvePopup.menu?.addItem(NSMenuItem(title: loc("fade.shape.\(key.rawValue)"), action: nil, keyEquivalent: ""))
+            curvePopup.menu?.addItem(
+                NSMenuItem(title: loc("fade.shape.\(key.rawValue)"), action: nil, keyEquivalent: ""))
         }
         for key in FadeCurveSpec.Domain.allCases {
-            domainPopup.menu?.addItem(NSMenuItem(title: loc("fade.domain.\(key.rawValue)"), action: nil, keyEquivalent: ""))
+            domainPopup.menu?.addItem(
+                NSMenuItem(title: loc("fade.domain.\(key.rawValue)"), action: nil, keyEquivalent: ""))
         }
         modePopup.setAX("fade-mode", label: loc("fade.mode"))
         for key in Self.modes {
@@ -340,7 +342,9 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
         stopCheck.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
-        let side = NSStackView(views: [curvePopup, intensityRow, domainRow, durationRow, spacer, resetButton, stopCheck])
+        let side = NSStackView(views: [
+            curvePopup, intensityRow, domainRow, durationRow, spacer, resetButton, stopCheck,
+        ])
         side.orientation = .vertical
         side.alignment = .leading
         side.spacing = 10
@@ -407,7 +411,9 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
     }
 
     private func applyLock() {
-        for c in [durationField, curvePopup, domainPopup, intensityField, resetButton, stopCheck, modePopup, lockButton]
+        for c in [
+            durationField, curvePopup, domainPopup, intensityField, resetButton, stopCheck, modePopup, lockButton,
+        ]
             as [NSControl]
         {
             c.isEnabled = !isLocked
@@ -475,7 +481,8 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
         guard text != shown else { return }
         let f = NumberFormatter()
         f.numberStyle = .decimal
-        guard let value = f.number(from: text)?.doubleValue ?? Double(text), FadeCurveSpec.parameterRange.contains(value)
+        guard let value = f.number(from: text)?.doubleValue ?? Double(text),
+            FadeCurveSpec.parameterRange.contains(value)
         else {
             intensityField.stringValue = shown
             onInvalid?(loc("inspector.invalid.intensity"))

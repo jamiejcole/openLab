@@ -1713,8 +1713,9 @@ final class InspectorLevelsTests: XCTestCase {
     func testTheCurveGraphsDrawTheEnginesShapes() {
         typealias S = FadeCurveSpec
         XCTAssertEqual(S.drawn(S.Shape(), rising: true, at: 0.25), (1 - cos(0.25 * .pi)) / 2, accuracy: 1e-12)
-        XCTAssertEqual(S.drawn(S.Shape(kind: .parametric, parameter: 2), rising: true, at: 0.3),
-                       S.drawn(S.Shape(), rising: true, at: 0.3), accuracy: 1e-12)
+        XCTAssertEqual(
+            S.drawn(S.Shape(kind: .parametric, parameter: 2), rising: true, at: 0.3),
+            S.drawn(S.Shape(), rising: true, at: 0.3), accuracy: 1e-12)
         let custom = S.Shape(kind: .custom, points: [.init(t: 0.25, v: 0.7), .init(t: 0.6, v: 0.8)])
         XCTAssertEqual(S.drawn(custom, rising: true, at: 0.25), 0.7, accuracy: 1e-12)
         XCTAssertEqual(S.drawn(custom, rising: true, at: 0.6), 0.8, accuracy: 1e-12)

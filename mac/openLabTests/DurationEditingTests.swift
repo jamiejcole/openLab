@@ -442,7 +442,8 @@ final class InspectorDurationTests: XCTestCase {
         await assertEventually("the cue-list edit is kept") {
             self.kind(CueListHarness.fade)?["duration"]?.doubleValue == 7
         }
-        XCTAssertEqual(kind(CueListHarness.fade)?["curve"]?["rising"]?["type"], .string("s_curve"), "the last curve won")
+        XCTAssertEqual(
+            kind(CueListHarness.fade)?["curve"]?["rising"]?["type"], .string("s_curve"), "the last curve won")
     }
 }
 
