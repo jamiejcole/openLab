@@ -359,6 +359,23 @@ one_gate() {
   done
 }
 
+# 9a. Every CI job sets its own timeout-minutes: GitHub's default is 6 hours, and a job hung on a
+# hosted runner (an apt-get that never returned) held a PR's merge for 3 hours unnoticed.
+job_timeouts() {
+  local missing
+  missing=$(awk '
+    /^jobs:/ { in_jobs = 1; next }
+    in_jobs && /^[^ #]/ { in_jobs = 0 }
+    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      if (job != "" && !timed) print job
+      job = $1; sub(/:$/, "", job); timed = 0; next
+    }
+    in_jobs && /^    timeout-minutes:/ { timed = 1 }
+    END { if (job != "" && !timed) print job }
+  ' .github/workflows/*.yml)
+  [ -z "$missing" ] || fail job-timeouts "CI jobs without a job-level timeout-minutes: $(echo $missing)"
+}
+
 # 9b. #708: every modal alert, sheet and panel of the mac app goes through StandBack.swift, so a stage
 # over the operator's display stands back while the question is up.
 stand_back_gate() {
@@ -912,6 +929,7 @@ path_filters
 wall_clock
 wall_clock_cases
 one_gate
+job_timeouts
 stand_back_gate
 prepush_no_stamp
 soak_classifier
