@@ -138,11 +138,13 @@ Modifiers: `shift`, `control`, `option` (alt), `command`; `function`, `numericPa
 | `fade.shapes.upShape` / `downShape` | `curve.rising` / `curve.falling` | fades F5-F11 |
 | a shape's `type`: 0 custom, 1 S-curve, 2 parametric, 3 linear (none: S-curve) | `custom`, `s_curve`, `parametric`, `linear`; any other type (4 seen, which QLab's menu does not offer and draws as a straight rising line) is noted and the curve takes the default shapes | fades F5, F6, F7, F9, F8 (4): each seen in QLab's Curve tab menu |
 | a shape's `curveParameter` (none: 1) | `parameter` | fades F11 (2 on the rising shape) |
-| a shape's `shapeEntries` (`FadeShapeEntry` `t`, `v`, linked `previous`/`next`; 32-bit numbers): `t` the time and `v` the height in the graph, 0 to 1, the fixed ends stored as the first and last entries | `points`, the entries at `t` 0 and 1 dropped. A shape openLab cannot hold (a point outside 0..1, points out of order, more than 64, a parameter outside 0.01..100, an entry with no `t` or `v`) is noted and the curve takes the default shapes, keeping its domain | fades F11 (custom: rising (0.5, 0.8); falling (0.25, 0.3), (0.6, 0.1)), F9 (linear: rising (0.3, 0.6), falling (0.7, 0.6)); QLab's Curve tab draws each point at that time and height in both graphs, so `v` is the height, not progress |
+| a shape's `shapeEntries` (`FadeShapeEntry` `t`, `v`, linked `previous`/`next`; 32-bit numbers): `t` the time and `v` the height in the graph, 0 to 1, the fixed ends stored as the first and last entries | `points`, the entries at `t` 0 and 1 dropped. A shape openLab cannot hold (a point outside 0..1, out of order, more than 64, a parameter outside 0.01..100, no `t` or `v`) is noted; the curve takes the default shapes, keeping its domain | fades F11, F9 (below) |
 | `audioDomain` 0 slider, 1 decibel, 2 linear (none: slider) | `curve.audio_domain`; another value is noted and becomes slider | fades F9 (0), F12 (1), F10 (2); order from the manual's menu (p. 199) and QLab's derived `shapes.domain.mode` (1, 2, 0) |
 | `shapes.domain`, `mirrorShape`, `resolution` | not read (the domain is `audioDomain`'s) | |
 | `doOpacity`/`opacity`, `doTranslation`/`translationX`/`translationY`, `doScale`/`scaleX`/`scaleY`, `preserveAspectRatio`, `doRotation`/`rotation` | `geometry` | fades F20 |
 | `doRate` | dropped | |
+
+What `v` means was settled in QLab's Curve tab: fades F11 (custom: rising (0.5, 0.8); falling (0.25, 0.3), (0.6, 0.1)) and F9 (linear: rising (0.3, 0.6); falling (0.7, 0.6)) draw each point at that time and height in both graphs, so `v` is the height in the graph, not the progress of the fade.
 
 QLab draws a custom curve as a smooth curve near its points, not through them; openLab's custom curve passes through them (skill qlab-behaviour Q839), so a converted custom curve may differ slightly between its points.
 

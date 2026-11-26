@@ -302,7 +302,10 @@ fn fade_curve_shapes_and_domains_convert_and_out_of_range_ones_become_the_defaul
         )
     }
     fn fade_cue(a: &mut Archive, n: &str, domain: i64, up: V, down: V) -> V {
-        let shapes = a.object("FadeShapesFunction", &[("upShape", up), ("downShape", down)]);
+        let shapes = a.object(
+            "FadeShapesFunction",
+            &[("upShape", up), ("downShape", down)],
+        );
         let fade = a.object("FadeFunction", &[("shapes", shapes)]);
         let number = a.string(n);
         qcue(
@@ -765,7 +768,10 @@ fn every_cue_type_converts_and_unsupported_ones_become_placeholders() {
     assert!(matches!(light.kind, CueKind::Memo));
     assert_eq!(light.color, CueColor::Red);
     assert_eq!(light.name, "Unsupported light");
-    assert_eq!(by_number(ws, "30").name, "QLab Microphone cue (not converted)");
+    assert_eq!(
+        by_number(ws, "30").name,
+        "QLab Microphone cue (not converted)"
+    );
 
     // Two audio patches (the second on a device this Mac lacks) and two network patches.
     let p = &r.audio_patches;
