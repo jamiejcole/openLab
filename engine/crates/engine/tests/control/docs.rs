@@ -3599,3 +3599,275 @@ fn relative_show_with_id() -> Workspace {
     ws.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(565));
     ws
 }
+
+fn inspect_qlab(path: &Path) -> Request {
+    Request::InspectQlab {
+        path: path.to_string_lossy().into_owned(),
+    }
+}
+
+#[test]
+fn a_file_that_is_not_a_qlab_workspace_is_refused_and_nothing_opens() {
+    let mut r = rig(memo_ws("keep", &[1]));
+    let path = r.env.show_dir().join("Not QLab.qlab5");
+    fs::write(&path, b"just some text").unwrap();
+    assert_eq!(
+        error_code(&request(&mut r.s, inspect_qlab(&path))),
+        ErrorCode::NotQlabWorkspace
+    );
+    let import = Request::ImportQlab {
+        path: path.to_string_lossy().into_owned(),
+        cues: vec![],
+        other_cues: openlab_core::QlabCueAction::Placeholder,
+        audio_patches: vec![],
+        video_outputs: vec![],
+    };
+    assert_eq!(
+        error_code(&request(&mut r.s, import)),
+        ErrorCode::NotQlabWorkspace
+    );
+    let missing = r.env.show_dir().join("Gone.qlab5");
+    assert_eq!(
+        error_code(&request(&mut r.s, inspect_qlab(&missing))),
+        ErrorCode::NotFound
+    );
+    assert_eq!(r.s.control().doc_ids().len(), 1);
+    assert_eq!(fs::read(&path).unwrap(), b"just some text");
+}
+
+#[test]
+fn importing_a_qlab_workspace_finds_media_at_its_last_known_path_and_keeps_device_choices() {
+    use crate::qlab_archive::{Archive, V, cue, qlab_file};
+    let mut r = rig(memo_ws("keep", &[1]));
+    let folder = r.env.show_dir().join("From QLab");
+    fs::create_dir_all(&folder).unwrap();
+    // The file is not next to the QLab workspace (as QLab saved it), but where it last was.
+    let elsewhere = r.env.show_dir().join("Elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let moved = elsewhere.join("tone.wav");
+    fs::copy(wav(&dc(2000, 0.5)), &moved).unwrap();
+
+    let mut top = Archive::new();
+    let device = {
+        let (name, uid) = (top.string("Gone Device"), top.string("gone-uid"));
+        top.dict_str(&[
+            ("name", name),
+            ("deviceUID", uid),
+            ("outputChannels", V::Int(2)),
+        ])
+    };
+    let (patch_id, patch_name) = (top.string("P1"), top.string("Main"));
+    let patch = top.object(
+        "AudioOutputPatch",
+        &[
+            ("uniqueID", patch_id),
+            ("name", patch_name),
+            ("cueOutputChannels", V::Int(2)),
+            ("deviceDescription", device),
+        ],
+    );
+    let patches = top.array(&[patch]);
+    let audio = top.dict_str(&[("audioOutputPatches", patches)]);
+    let (route_id, route_name, size) = (
+        top.string("R1"),
+        top.string("Projector"),
+        top.string("{1280, 720}"),
+    );
+    let route = top.object(
+        "VideoOutputRoute",
+        &[
+            ("uniqueID", route_id),
+            ("name", route_name),
+            ("naturalSize", size),
+        ],
+    );
+    let routes = top.array(&[route]);
+    let video = top.dict_str(&[("routes", routes)]);
+    let settings = top.dict_str(&[("Audio", audio), ("Video", video)]);
+    let mut cues = Archive::new();
+    let alias = {
+        let relative = cues.string("audio/tone.wav");
+        let last = cues.string(moved.to_str().unwrap());
+        cues.object(
+            "F53Alias",
+            &[("relativePath", relative), ("lastKnownPath", last)],
+        )
+    };
+    let (number, patch) = (cues.string("1"), cues.string("P1"));
+    let tone = cue(
+        &mut cues,
+        "AudioCue",
+        "A1",
+        &[
+            ("number", number),
+            ("fileTarget", alias),
+            ("audioOutputPatchID", patch),
+        ],
+    );
+    let path = folder.join("Built.qlab5");
+    fs::write(
+        &path,
+        qlab_file(
+            "Built",
+            top,
+            Some(settings),
+            cues,
+            vec![("Main", vec![tone])],
+        ),
+    )
+    .unwrap();
+
+    let replies = request(
+        &mut r.s,
+        Request::ImportQlab {
+            path: path.to_string_lossy().into_owned(),
+            cues: vec![],
+            other_cues: openlab_core::QlabCueAction::Placeholder,
+            audio_patches: vec![openlab_core::QlabPatchChoice {
+                qlab_id: "P1".into(),
+                mapping: Some(openlab_core::PatchMapping {
+                    device: "Gone Device".into(),
+                    channels: vec![0, 1],
+                    system: false,
+                }),
+            }],
+            video_outputs: vec![openlab_core::QlabOutputChoice {
+                qlab_id: "R1".into(),
+                display: Some("no-such-display".into()),
+            }],
+        },
+    );
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    assert_eq!(snap.document.path, None);
+    assert!(snap.document.dirty);
+    let ws = &snap.workspace;
+    assert_eq!(ws.name, "Built");
+    let tone = ws
+        .cues()
+        .find(|c| c.number.as_deref() == Some("1"))
+        .unwrap();
+    // Stored in the portable form (forward slashes on Windows too).
+    assert_eq!(
+        tone.kind.media().unwrap().as_str(),
+        MediaRef::new(moved.to_str().unwrap()).as_str()
+    );
+    assert_eq!(ws.routes.len(), 1);
+    assert_eq!(ws.routes[0].name, "Projector");
+    assert_eq!((ws.routes[0].width, ws.routes[0].height), (1280, 720));
+    // The device this machine lacks is left unmapped (an entry, so the default mapping leaves
+    // it too), the display it lacks none; both are logged.
+    let machine = r.s.control().machine();
+    assert_eq!(machine.patch_mapping(ws.id, ws.patches[0].id), None);
+    assert!(machine.patch_entry(ws.id, ws.patches[0].id).is_some());
+    assert_eq!(machine.route_display(ws.id, ws.routes[0].id), None);
+    let logged = r.s.take_outbound();
+    let warned = |what: &str| {
+        logged.iter().any(|m| {
+            matches!(m, ServerMessage::Log { message, .. }
+                if message.contains("device choice was not kept") && message.contains(what))
+        })
+    };
+    assert!(warned("Gone Device"));
+    assert!(warned("no-such-display"));
+}
+
+/// Copies a QLab-saved fixture (kept on this machine only, never committed) into `dir`.
+fn copy_qlab_fixture(name: &str, dir: &Path) -> PathBuf {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/qlab")
+        .join(name);
+    assert!(
+        from.is_dir(),
+        "needs the local QLab-saved fixtures in engine/fixtures/qlab: {} is missing",
+        from.display()
+    );
+    let mut stack = vec![PathBuf::new()];
+    while let Some(rel) = stack.pop() {
+        fs::create_dir_all(dir.join(&rel)).unwrap();
+        for entry in fs::read_dir(from.join(&rel)).unwrap() {
+            let entry = entry.unwrap();
+            let sub = rel.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                stack.push(sub);
+            } else {
+                fs::copy(entry.path(), dir.join(&sub)).unwrap();
+            }
+        }
+    }
+    dir.join(format!("{name}.qlab5"))
+}
+
+#[test]
+#[ignore = "needs the local QLab-saved fixtures in engine/fixtures/qlab"]
+fn importing_a_qlab_workspace_opens_it_unsaved_with_its_media_and_device_choices() {
+    let mut r = rig(memo_ws("keep", &[1]));
+    let folder = r.env.show_dir().join("From QLab");
+    let path = copy_qlab_fixture("cue-types", &folder);
+    let before = fs::read(&path).unwrap();
+    let ResultData::QlabReport(report) = data(&request(&mut r.s, inspect_qlab(&path))) else {
+        panic!("no report")
+    };
+    assert_eq!(report.workspace_name, "cue-types");
+    let light = report
+        .unsupported
+        .iter()
+        .find(|u| u.qlab_type == "Light")
+        .unwrap();
+    let (first, second) = (&report.audio_patches[0], &report.audio_patches[1]);
+    let replies = request(
+        &mut r.s,
+        Request::ImportQlab {
+            path: path.to_string_lossy().into_owned(),
+            cues: vec![openlab_core::QlabCueChoice {
+                qlab_id: light.qlab_id.clone(),
+                action: openlab_core::QlabCueAction::Delete,
+            }],
+            other_cues: openlab_core::QlabCueAction::Placeholder,
+            audio_patches: vec![
+                openlab_core::QlabPatchChoice {
+                    qlab_id: first.qlab_id.clone(),
+                    mapping: Some(openlab_core::PatchMapping {
+                        device: "Offline".into(),
+                        channels: vec![0, 1],
+                        system: false,
+                    }),
+                },
+                openlab_core::QlabPatchChoice {
+                    qlab_id: second.qlab_id.clone(),
+                    mapping: None,
+                },
+            ],
+            video_outputs: vec![],
+        },
+    );
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    // New, untitled and unsaved; the QLab file untouched.
+    assert_eq!(snap.document.path, None);
+    assert!(snap.document.dirty);
+    assert_eq!(snap.workspace.name, "cue-types");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let cues: Vec<_> = snap.workspace.cues().collect();
+    assert!(cues.iter().all(|c| c.number.as_deref() != Some("20")));
+    assert!(cues.iter().any(|c| c.number.as_deref() == Some("21")));
+    // The media found next to the QLab file, as an absolute path.
+    let tone = cues
+        .iter()
+        .find(|c| c.number.as_deref() == Some("1"))
+        .unwrap();
+    let want = folder.join("audio/tone-mono.wav");
+    assert_eq!(tone.kind.media().unwrap().as_str(), want.to_str().unwrap());
+    // The device choices are this machine's: the first patch on the device, the second left
+    // unmapped (not mapped by default).
+    let ws = &snap.workspace;
+    let machine = r.s.control().machine();
+    assert_eq!(
+        machine
+            .patch_mapping(ws.id, ws.patches[0].id)
+            .map(|m| m.device.as_str()),
+        Some("Offline")
+    );
+    assert_eq!(machine.patch_mapping(ws.id, ws.patches[1].id), None);
+    assert!(machine.patch_entry(ws.id, ws.patches[1].id).is_some());
+}

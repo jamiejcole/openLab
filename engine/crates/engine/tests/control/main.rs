@@ -4,6 +4,8 @@
 
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../../../core/tests/common/qlab_archive.rs"]
+mod qlab_archive;
 #[path = "../show/mod.rs"]
 mod show;
 

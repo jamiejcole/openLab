@@ -114,6 +114,43 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         return result
     }
 
+    /// What a QLab 5 workspace file converts to; opens nothing.
+    func inspectQlab(path: String) async -> Result<QlabReport, EngineError> {
+        switch await docRequest(.inspectQlab(path: path)) {
+        case .success(let ok):
+            if case .qlabReport(let report)? = ok.data { return .success(report) }
+            return .failure(.encoding("inspect_qlab result has no report"))
+        case .failure(let e): return .failure(e)
+        }
+    }
+
+    /// Opens a new, unsaved workspace converted from a QLab 5 workspace file.
+    func importQlab(path: String, choice: QlabImportChoice) async -> Result<ModelID, EngineError> {
+        await opened(
+            docRequest(
+                .importQlab(
+                    path: path, cues: choice.cues, otherCues: choice.otherCues, audioPatches: choice.audioPatches,
+                    videoOutputs: choice.videoOutputs)))
+    }
+
+    /// This Mac's audio devices and displays, for mapping a QLab workspace's outputs; a list the
+    /// engine cannot give is empty (everything then starts unmapped).
+    func localOutputs() async -> (devices: [DeviceEntry], displays: [StageDisplay]) {
+        var devices: [DeviceEntry] = []
+        var displays: [StageDisplay] = []
+        if case .success(let ok) = await appClient.send({ .request(id: $0, .listDevices) }),
+            case .devices(let list, _)? = ok.data
+        {
+            devices = list
+        }
+        if case .success(let ok) = await appClient.send({ .request(id: $0, .listDisplays) }),
+            case .displays(let list, _)? = ok.data
+        {
+            displays = list
+        }
+        return (devices, displays)
+    }
+
     func openRecovery(_ entry: RecoveryEntryInfo) async -> Result<ModelID, EngineError> {
         let result = await opened(sendOpenRecovery(entry))
         if case .success(let doc) = result { cover(doc) { $0.load(entry) } }

@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 74,
+  "request": {
+    "type": "inspect_qlab",
+    "path": "/Users/sam/Shows/Hamlet.qlab5"
+  }
+}

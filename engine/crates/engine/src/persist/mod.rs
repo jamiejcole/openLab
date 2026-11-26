@@ -29,6 +29,7 @@ pub use atomic::{Stage, write_atomic, write_atomic_with};
 pub use backup::backup_existing;
 pub use files::{modified_ms, read_text, unique_sibling};
 pub(crate) use files::{path_key, remove_if_present};
+pub(crate) use files::{read_bytes, regular_file_or_absent};
 pub use media_copy::{
     COPY_CHUNK, COPY_PAUSE, Copied, CopyError, CopyFailure, CopyHooks, CopyPacing, CopyProgress,
     CopyWork, FolderIndexes, MAX_INDEX_ENTRIES, copy_into,

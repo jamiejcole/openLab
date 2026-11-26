@@ -227,6 +227,8 @@ pub enum ResultData {
         /// When the autosave was written: milliseconds since the Unix epoch (wall clock, UTC).
         modified_ms: i64,
     },
+    /// Answer to `inspect_qlab`. Boxed, as the relink report is.
+    QlabReport(Box<crate::QlabReport>),
     /// Answer to `scan_recovery`, newest first.
     RecoveryEntries { entries: Vec<RecoveryEntryInfo> },
     /// Answer to `log_tail`: the newest show-log entries, oldest first.
@@ -806,8 +808,15 @@ pub enum ErrorCode {
     AlreadyOpen,
     /// A file could not be read or written.
     Io,
-    /// A show file the engine could not load (damaged, newer format, ...).
+    /// A show file the engine could not load (damaged, newer format, ...); also a QLab
+    /// workspace file that is damaged or over a limit.
     BadShowFile,
+    /// `inspect_qlab` or `import_qlab` of a file that is not a QLab workspace.
+    NotQlabWorkspace,
+    /// A QLab workspace saved by QLab 4 or earlier.
+    QlabTooOld,
+    /// A QLab workspace that needs a QLab newer than openLab can read.
+    QlabTooNew,
     Unsupported,
     Internal,
 }
