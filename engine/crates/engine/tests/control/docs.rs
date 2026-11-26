@@ -3635,6 +3635,139 @@ fn a_file_that_is_not_a_qlab_workspace_is_refused_and_nothing_opens() {
     assert_eq!(fs::read(&path).unwrap(), b"just some text");
 }
 
+#[test]
+fn importing_a_qlab_workspace_finds_media_at_its_last_known_path_and_keeps_device_choices() {
+    use crate::qlab_archive::{Archive, V, cue, qlab_file};
+    let mut r = rig(memo_ws("keep", &[1]));
+    let folder = r.env.show_dir().join("From QLab");
+    fs::create_dir_all(&folder).unwrap();
+    // The file is not next to the QLab workspace (as QLab saved it), but where it last was.
+    let elsewhere = r.env.show_dir().join("Elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let moved = elsewhere.join("tone.wav");
+    fs::copy(wav(&dc(2000, 0.5)), &moved).unwrap();
+
+    let mut top = Archive::new();
+    let device = {
+        let (name, uid) = (top.string("Gone Device"), top.string("gone-uid"));
+        top.dict_str(&[
+            ("name", name),
+            ("deviceUID", uid),
+            ("outputChannels", V::Int(2)),
+        ])
+    };
+    let (patch_id, patch_name) = (top.string("P1"), top.string("Main"));
+    let patch = top.object(
+        "AudioOutputPatch",
+        &[
+            ("uniqueID", patch_id),
+            ("name", patch_name),
+            ("cueOutputChannels", V::Int(2)),
+            ("deviceDescription", device),
+        ],
+    );
+    let patches = top.array(&[patch]);
+    let audio = top.dict_str(&[("audioOutputPatches", patches)]);
+    let (route_id, route_name, size) = (
+        top.string("R1"),
+        top.string("Projector"),
+        top.string("{1280, 720}"),
+    );
+    let route = top.object(
+        "VideoOutputRoute",
+        &[
+            ("uniqueID", route_id),
+            ("name", route_name),
+            ("naturalSize", size),
+        ],
+    );
+    let routes = top.array(&[route]);
+    let video = top.dict_str(&[("routes", routes)]);
+    let settings = top.dict_str(&[("Audio", audio), ("Video", video)]);
+    let mut cues = Archive::new();
+    let alias = {
+        let relative = cues.string("audio/tone.wav");
+        let last = cues.string(moved.to_str().unwrap());
+        cues.object(
+            "F53Alias",
+            &[("relativePath", relative), ("lastKnownPath", last)],
+        )
+    };
+    let (number, patch) = (cues.string("1"), cues.string("P1"));
+    let tone = cue(
+        &mut cues,
+        "AudioCue",
+        "A1",
+        &[
+            ("number", number),
+            ("fileTarget", alias),
+            ("audioOutputPatchID", patch),
+        ],
+    );
+    let path = folder.join("Built.qlab5");
+    fs::write(
+        &path,
+        qlab_file(
+            "Built",
+            top,
+            Some(settings),
+            cues,
+            vec![("Main", vec![tone])],
+        ),
+    )
+    .unwrap();
+
+    let replies = request(
+        &mut r.s,
+        Request::ImportQlab {
+            path: path.to_string_lossy().into_owned(),
+            cues: vec![],
+            other_cues: openlab_core::QlabCueAction::Placeholder,
+            audio_patches: vec![openlab_core::QlabPatchChoice {
+                qlab_id: "P1".into(),
+                mapping: Some(openlab_core::PatchMapping {
+                    device: "Gone Device".into(),
+                    channels: vec![0, 1],
+                    system: false,
+                }),
+            }],
+            video_outputs: vec![openlab_core::QlabOutputChoice {
+                qlab_id: "R1".into(),
+                display: Some("no-such-display".into()),
+            }],
+        },
+    );
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    assert_eq!(snap.document.path, None);
+    assert!(snap.document.dirty);
+    let ws = &snap.workspace;
+    assert_eq!(ws.name, "Built");
+    let tone = ws
+        .cues()
+        .find(|c| c.number.as_deref() == Some("1"))
+        .unwrap();
+    assert_eq!(tone.kind.media().unwrap().as_str(), moved.to_str().unwrap());
+    assert_eq!(ws.routes.len(), 1);
+    assert_eq!(ws.routes[0].name, "Projector");
+    assert_eq!((ws.routes[0].width, ws.routes[0].height), (1280, 720));
+    // The device this machine lacks is left unmapped (an entry, so the default mapping leaves
+    // it too), the display it lacks none; both are logged.
+    let machine = r.s.control().machine();
+    assert_eq!(machine.patch_mapping(ws.id, ws.patches[0].id), None);
+    assert!(machine.patch_entry(ws.id, ws.patches[0].id).is_some());
+    assert_eq!(machine.route_display(ws.id, ws.routes[0].id), None);
+    let logged = r.s.take_outbound();
+    let warned = |what: &str| {
+        logged.iter().any(|m| {
+            matches!(m, ServerMessage::Log { message, .. }
+                if message.contains("device choice was not kept") && message.contains(what))
+        })
+    };
+    assert!(warned("Gone Device"));
+    assert!(warned("no-such-display"));
+}
+
 /// Copies a QLab-saved fixture (kept on this machine only, never committed) into `dir`.
 fn copy_qlab_fixture(name: &str, dir: &Path) -> PathBuf {
     let from = Path::new(env!("CARGO_MANIFEST_DIR"))
