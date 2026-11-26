@@ -436,9 +436,9 @@ final class CueCell: NSTableCellView {
         view.toolTip = tooltip ?? label
     }
 
-    /// Shows the moving dots in place of state image 1's picture (on) or the picture again (off). The
+    /// Shows the moving dots of a cue on its way out in place of state image 1's picture (on) or the picture again (off). The
     /// image view keeps its label and tooltip either way.
-    func showFading(_ on: Bool) {
+    func showStopping(_ on: Bool) {
         showsDots = on
         fadingDots.isHidden = !on
         // The still picture is taken out of the image view, not faded to nothing: an image view that only
@@ -2103,7 +2103,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                     1, icon: icon, label: style.label, tint: style.tint,
                     tooltip: detail.map { "\(style.label): \($0)" })
             }
-            cell.showFading(state == .fading)
+            cell.showStopping(state == .stopping)
             // A preview is outside the show, so it has its own mark next to the cue's state.
             cell.images[2].setAccessibilityIdentifier("cue-preview")
             if store.previewing.contains(node.id) {

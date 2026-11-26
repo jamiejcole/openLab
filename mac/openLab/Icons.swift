@@ -15,7 +15,7 @@ enum Icon: CaseIterable {
     // A Group cue's icon follows its mode (the timeline mode uses `kindGroup`).
     case kindGroupPlaylist, kindGroupEnter, kindGroupNext, kindGroupRandom
     // Cue states (UI-04: each state the list marks has its own shape; a wait shows the running mark, as QLab).
-    case stateLoaded, stateRunning, statePaused, stateFading, stateStopping, stateBroken
+    case stateLoaded, stateRunning, statePaused, stateStopping, stateBroken
     // The second colour's lock in the Inspector (locked: no second colour; open: one to pick).
     case colourLocked, colourUnlocked
     // Continue modes.
@@ -67,7 +67,6 @@ enum Icon: CaseIterable {
         case .stateLoaded: return "state-loaded"
         case .stateRunning: return "state-running"
         case .statePaused: return "state-paused"
-        case .stateFading: return "state-fading"
         case .stateStopping: return "state-stopping"
         case .stateBroken: return "state-broken"
         case .continueAuto: return "continue-auto"

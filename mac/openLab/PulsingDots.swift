@@ -3,8 +3,8 @@
 import AppKit
 
 /// A ring of eight dots round a ring of four, with a brightness sweeping round them:
-/// the cue list's mark for a cue whose level is changing (fading), so a fade reads as something
-/// happening, not as a still glyph. Drawn from one shared clock (every fading row moves in step); with
+/// the cue list's mark for a cue on its way out (a panic, a stop with a fade), so the fade-out reads as
+/// something happening, not as a still glyph. Drawn from one shared clock (every such row moves in step); with
 /// Reduce Motion on, it stands still and evenly lit.
 final class PulsingDots: NSView {
     /// One turn of the brightness sweep, clockwise.
@@ -17,7 +17,7 @@ final class PulsingDots: NSView {
     /// tooltip.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    var colour: NSColor = MarkColour.caution {
+    var colour: NSColor = MarkColour.stopping {
         didSet { needsDisplay = true }
     }
 

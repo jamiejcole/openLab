@@ -23,9 +23,11 @@ struct CueStateStyle: Equatable {
         case .paused: return CueStateStyle(icon: .statePaused, labelKey: "cue.state.paused", tint: MarkColour.caution)
         case .postWaiting:
             return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.postWaiting", tint: .systemGreen)
-        case .fading: return CueStateStyle(icon: .stateFading, labelKey: "cue.state.fading", tint: MarkColour.caution)
+        // A Fade cue moving a cue's levels leaves that cue looking as it did: playing.
+        case .fading: return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.running", tint: .systemGreen)
+        // A cue on its way out (a panic, a stop with a fade): the turning dots, drawn in the plain text colour.
         case .stopping:
-            return CueStateStyle(icon: .stateStopping, labelKey: "cue.state.stopping", tint: MarkColour.caution)
+            return CueStateStyle(icon: .stateStopping, labelKey: "cue.state.stopping", tint: MarkColour.stopping)
         case .broken: return CueStateStyle(icon: .stateBroken, labelKey: "cue.state.broken", tint: .systemRed)
         }
     }
@@ -66,6 +68,9 @@ enum PlayheadStyle {
 /// The yellow of every caution mark (paused, loaded, fading, stopping, a warning): the system yellow on a dark
 /// list, a deeper golden yellow on a light one, where the system yellow is too pale to read on white.
 enum MarkColour {
+    /// White on the dark list; the text colour on a light one.
+    static let stopping = NSColor.labelColor
+
     static let caution = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? .systemYellow : NSColor(srgbRed: 0.72, green: 0.53, blue: 0, alpha: 1)
