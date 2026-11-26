@@ -104,21 +104,29 @@ pub fn read_qlab(
 }
 
 impl QlabImport {
-    /// Applies the operator's choices (an unsupported cue not named keeps its placeholder),
-    /// then repairs the workspace as a load does. `list` is the id of an empty cue list, used
+    /// Applies the operator's choices (`others` for an unsupported cue not named), then repairs
+    /// the workspace as a load does. `list` is the id of an empty cue list, used
     /// only if every list was deleted. The repairs are the load warnings.
     pub fn finish(
         mut self,
         choices: &[QlabCueChoice],
+        others: QlabCueAction,
         list: CueListId,
     ) -> (Workspace, Vec<ValidationIssue>) {
-        apply_qlab_choices(&mut self.workspace, &self.placeholders, choices, list);
+        apply_qlab_choices(
+            &mut self.workspace,
+            &self.placeholders,
+            choices,
+            others,
+            list,
+        );
         let warnings = repair(&mut self.workspace);
         (self.workspace, warnings)
     }
 }
 
-/// Deletes the placeholders the operator chose to delete: a cue (a group keeps its other
+/// Deletes the placeholders the operator chose to delete (`others`: what becomes of those
+/// `choices` does not name): a cue (a group keeps its other
 /// children), or a cart's cue list with its cues. A target that named a deleted cue becomes
 /// none. The workspace keeps at least one cue list (an empty one with id `list`). Returns the
 /// cues deleted.
@@ -126,18 +134,20 @@ pub fn apply_qlab_choices(
     workspace: &mut Workspace,
     placeholders: &[QlabPlaceholder],
     choices: &[QlabCueChoice],
+    others: QlabCueAction,
     list: CueListId,
 ) -> Vec<CueId> {
-    let delete: HashSet<&str> = choices
-        .iter()
-        .filter(|c| c.action == QlabCueAction::Delete)
-        .map(|c| c.qlab_id.as_str())
-        .collect();
+    let action = |qlab: &str| {
+        choices
+            .iter()
+            .find(|c| c.qlab_id == qlab)
+            .map_or(others, |c| c.action)
+    };
     let mut cues: HashSet<CueId> = HashSet::new();
     let mut lists: HashSet<CueListId> = HashSet::new();
     for p in placeholders
         .iter()
-        .filter(|p| delete.contains(p.qlab_id.as_str()))
+        .filter(|p| action(&p.qlab_id) == QlabCueAction::Delete)
     {
         match p.at {
             Placeholder::Cue(id) => {

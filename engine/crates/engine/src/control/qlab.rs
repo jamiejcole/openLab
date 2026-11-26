@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use openlab_core::protocol::{ErrorBody, ErrorCode, LogLevel, ResultData};
 use openlab_core::{
     CueListId, LoadedShow, MAX_QLAB_FILE_BYTES, MediaRef, PatchId, PatchMapping, PathStyle,
-    QlabCueChoice, QlabError, QlabFile, QlabOutputChoice, QlabPatchChoice, RouteId, portable_ref,
-    read_qlab,
+    QlabCueAction, QlabCueChoice, QlabError, QlabFile, QlabOutputChoice, QlabPatchChoice, RouteId,
+    portable_ref, read_qlab,
 };
 
 use super::docs::{DocAnswer, Loaded, failed, load_notices, random_id};
@@ -23,6 +23,7 @@ use crate::persist::{PersistError, read_bytes, regular_file_or_absent};
 #[derive(Debug, Default)]
 pub struct QlabChoices {
     pub cues: Vec<QlabCueChoice>,
+    pub other_cues: QlabCueAction,
     pub audio_patches: Vec<QlabPatchChoice>,
     pub video_outputs: Vec<QlabOutputChoice>,
 }
@@ -130,7 +131,8 @@ pub(super) fn import(ticket: u64, path: &Path, choices: &QlabChoices) -> DocAnsw
             })
             .collect(),
     };
-    let (workspace, warnings) = import.finish(&choices.cues, CueListId(random_id()));
+    let (workspace, warnings) =
+        import.finish(&choices.cues, choices.other_cues, CueListId(random_id()));
     let shown = LoadedShow {
         workspace,
         warnings,

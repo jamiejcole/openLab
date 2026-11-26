@@ -3618,6 +3618,7 @@ fn a_file_that_is_not_a_qlab_workspace_is_refused_and_nothing_opens() {
     let import = Request::ImportQlab {
         path: path.to_string_lossy().into_owned(),
         cues: vec![],
+        other_cues: openlab_core::QlabCueAction::Placeholder,
         audio_patches: vec![],
         video_outputs: vec![],
     };
@@ -3685,6 +3686,7 @@ fn importing_a_qlab_workspace_opens_it_unsaved_with_its_media_and_device_choices
                 qlab_id: light.qlab_id.clone(),
                 action: openlab_core::QlabCueAction::Delete,
             }],
+            other_cues: openlab_core::QlabCueAction::Placeholder,
             audio_patches: vec![
                 openlab_core::QlabPatchChoice {
                     qlab_id: first.qlab_id.clone(),

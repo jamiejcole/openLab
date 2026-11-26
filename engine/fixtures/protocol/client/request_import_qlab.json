@@ -14,6 +14,7 @@
         "action": "placeholder"
       }
     ],
+    "other_cues": "delete",
     "audio_patches": [
       {
         "qlab_id": "7E1C0A52-2C3B-4E39-9E57-6A5C1B2D3E4F",

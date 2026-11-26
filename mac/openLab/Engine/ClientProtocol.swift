@@ -213,11 +213,11 @@ enum Request: Hashable, Sendable, Codable {
     /// Reads a QLab 5 workspace file for its report (`ResultData.qlabReport`); opens nothing.
     case inspectQlab(path: String)
     /// Opens a new, unsaved workspace converted from a QLab 5 workspace file (`opened`). An
-    /// unsupported cue not in `cues` becomes a placeholder; a patch not in `audioPatches` is mapped
-    /// as a new workspace's is; an output not in `videoOutputs` has no display.
+    /// unsupported cue not in `cues` gets `otherCues`; a patch not in `audioPatches` is mapped as a
+    /// new workspace's is; an output not in `videoOutputs` has no display.
     case importQlab(
-        path: String, cues: [QlabCueChoice] = [], audioPatches: [QlabPatchChoice] = [],
-        videoOutputs: [QlabOutputChoice] = [])
+        path: String, cues: [QlabCueChoice] = [], otherCues: QlabCueAction = .placeholder,
+        audioPatches: [QlabPatchChoice] = [], videoOutputs: [QlabOutputChoice] = [])
     /// Deletes the one autosave file `openRecovery` would open for these fields (not undoable).
     case discardRecovery(workspaceId: ModelID, pathHash: String? = nil, modifiedMs: Int64? = nil)
     case save
@@ -325,9 +325,10 @@ enum Request: Hashable, Sendable, Codable {
             return ("open_recovery", f)
         case .scanRecovery: return ("scan_recovery", [])
         case .inspectQlab(let p): return ("inspect_qlab", [("path", p)])
-        case .importQlab(let p, let cues, let patches, let outputs):
+        case .importQlab(let p, let cues, let others, let patches, let outputs):
             f.append(("path", p))
             if !cues.isEmpty { f.append(("cues", cues)) }
+            if others != .placeholder { f.append(("other_cues", others)) }
             if !patches.isEmpty { f.append(("audio_patches", patches)) }
             if !outputs.isEmpty { f.append(("video_outputs", outputs)) }
             return ("import_qlab", f)
@@ -422,6 +423,7 @@ enum Request: Hashable, Sendable, Codable {
             self = .importQlab(
                 path: try c.decode(String.self, forKey: "path"),
                 cues: try c.decodeIfPresent([QlabCueChoice].self, forKey: "cues") ?? [],
+                otherCues: try c.decodeIfPresent(QlabCueAction.self, forKey: "other_cues") ?? .placeholder,
                 audioPatches: try c.decodeIfPresent([QlabPatchChoice].self, forKey: "audio_patches") ?? [],
                 videoOutputs: try c.decodeIfPresent([QlabOutputChoice].self, forKey: "video_outputs") ?? [])
         case "discard_recovery":

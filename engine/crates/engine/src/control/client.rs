@@ -330,6 +330,7 @@ impl Control {
                 Request::ImportQlab {
                     path,
                     cues,
+                    other_cues,
                     audio_patches,
                     video_outputs,
                 } => self.open_doc(
@@ -337,6 +338,7 @@ impl Control {
                         path: PathBuf::from(path),
                         choices: Box::new(super::qlab::QlabChoices {
                             cues,
+                            other_cues,
                             audio_patches,
                             video_outputs,
                         }),

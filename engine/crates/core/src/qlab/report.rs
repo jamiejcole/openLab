@@ -164,13 +164,20 @@ pub struct QlabCueChoice {
     pub action: QlabCueAction,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QlabCueAction {
     Delete,
     /// A red Memo cue keeping its number, name, notes, waits and continue mode (a cart: a cue
     /// list of its cues).
+    #[default]
     Placeholder,
+}
+
+impl QlabCueAction {
+    pub fn is_placeholder(&self) -> bool {
+        *self == Self::Placeholder
+    }
 }
 
 /// Where a QLab audio patch plays on this machine: `mapping` absent leaves it unmapped.

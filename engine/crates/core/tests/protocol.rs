@@ -395,6 +395,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                         action: QlabCueAction::Placeholder,
                     },
                 ],
+                other_cues: QlabCueAction::Delete,
                 audio_patches: vec![
                     QlabPatchChoice {
                         qlab_id: "7E1C0A52-2C3B-4E39-9E57-6A5C1B2D3E4F".into(),

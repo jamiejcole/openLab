@@ -343,7 +343,8 @@ pub enum Request {
     },
     /// Opens a new, unsaved workspace converted from the QLab 5 workspace file at `path`
     /// (absolute), as `new` does (`opened { doc }`). `cues`: what becomes of each unsupported
-    /// cue `qlab_report` listed (one not listed becomes a placeholder). `audio_patches`: where
+    /// cue `qlab_report` listed; `other_cues` (absent: placeholder) of those `cues` does not
+    /// name. `audio_patches`: where
     /// each QLab audio patch plays on this machine (one not listed is mapped as any new
     /// workspace's patch is; listed without a mapping, it is left unmapped). `video_outputs`:
     /// the display each QLab video output is shown on (one not listed has none). The file is
@@ -352,6 +353,8 @@ pub enum Request {
         path: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         cues: Vec<crate::QlabCueChoice>,
+        #[serde(default, skip_serializing_if = "crate::QlabCueAction::is_placeholder")]
+        other_cues: crate::QlabCueAction,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         audio_patches: Vec<crate::QlabPatchChoice>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

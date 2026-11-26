@@ -26,7 +26,7 @@ The operator picks a `.qlab5` file; openLab makes a **new, unsaved** workspace f
 - The new doc is untitled and dirty. Media resolve next to the `.qlab5` file (QLab's relative path), then at QLab's last known path, else the path next to the file is kept and shows missing (relink as usual). They are stored absolute: an untitled workspace has no folder.
 
 ## The operator's choices (`import_qlab`)
-- Each unsupported cue (`qlab_report.unsupported`) is deleted or kept as a placeholder; one not named is a placeholder. A placeholder is a red Memo keeping number, name, notes, pre-wait, post-wait and continue mode; with no name it is called "QLab <type> cue (not converted)". Deleting a group's child leaves the group.
+- Each unsupported cue (`qlab_report.unsupported`) is deleted or kept as a placeholder; one not named gets `other_cues` (absent: placeholder), so the apply-to-all buttons need no list (which a big show could push past the client frame limit). A placeholder is a red Memo keeping number, name, notes, pre-wait, post-wait and continue mode; with no name it is called "QLab <type> cue (not converted)". Deleting a group's child leaves the group.
 - A cart (a cue list of group mode 5): its placeholder is a cue list of its cues, converted as any list's (grid positions are lost); deleting it removes the list and its cues. The workspace keeps at least one list.
 - Audio patches: a listed patch with a mapping is stored for this machine as `set_patch_mapping` stores one; listed without one it is stored cleared (left unmapped, so the default mapping does not map it); not listed it is mapped as any new workspace's patch.
 - A mapping this machine cannot use when the doc is installed (the device gone since) is stored cleared and logged.

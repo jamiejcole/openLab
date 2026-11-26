@@ -615,12 +615,10 @@ impl Converter<'_, '_> {
             let (width, height) = route.map_or((1920, 1080), |(_, w, h)| (w, h));
             let mut stage = Stage::new(StageId(self.id()), "Stage 1", width, height);
             if let Some((route, _, _)) = route {
-                stage.regions.push(Region::whole(
-                    RegionId(self.id()),
-                    Some(route),
-                    width,
-                    height,
-                ));
+                let (w, h) = (stage.width, stage.height);
+                stage
+                    .regions
+                    .push(Region::whole(RegionId(self.id()), Some(route), w, h));
             }
             self.simple_stage = Some(stage.id);
             ws.stages.push(stage);
@@ -1279,7 +1277,7 @@ impl Converter<'_, '_> {
                 let db = gain_db(ar.number(e.get("endValue"))?.unwrap_or(0.0));
                 match (row, col) {
                     (Some(0), Some(0)) => levels.master_db = Some(db),
-                    (Some(0), Some(c)) if c <= MAX_CUE_OUTPUTS => {
+                    (Some(0), Some(c)) if (1..=MAX_CUE_OUTPUTS).contains(&c) => {
                         let at = (c - 1) as usize;
                         if levels.output_db.len() <= at {
                             levels.output_db.resize(at + 1, None);
@@ -1289,7 +1287,10 @@ impl Converter<'_, '_> {
                         }
                     }
                     (Some(r), Some(0)) if r >= 1 => input_levels = true,
-                    (Some(r), Some(c)) if r <= MAX_CHANNELS && c <= MAX_CUE_OUTPUTS => {
+                    (Some(r), Some(c))
+                        if (1..=MAX_CHANNELS).contains(&r)
+                            && (1..=MAX_CUE_OUTPUTS).contains(&c) =>
+                    {
                         levels.crosspoints.push(FadeCrosspoint {
                             input: r - 1,
                             output: c - 1,

@@ -17,7 +17,7 @@ fuzz_target!(|data: &[u8]| {
     let mut media = |f: &QlabFile| f.relative.clone().map(MediaRef::new);
     if let Ok(import) = read_qlab(data, &mut ids, &mut media) {
         let list = CueListId(uuid::Uuid::from_u128(u128::MAX));
-        let (workspace, _) = import.finish(&[], list);
+        let (workspace, _) = import.finish(&[], openlab_core::QlabCueAction::Placeholder, list);
         let saved = save_show(&workspace).expect("a converted workspace saves");
         load_show(&saved).expect("a converted workspace loads");
     }

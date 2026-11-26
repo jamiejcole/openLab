@@ -119,7 +119,7 @@ fn every_truncation_and_corruption_of_a_workspace_archive_is_read_or_refused() {
             let mut bad = SEED.to_vec();
             bad[i] ^= flip;
             if let Ok(import) = read(&bad) {
-                let (ws, _) = import.finish(&[], list_id(99));
+                let (ws, _) = import.finish(&[], QlabCueAction::Placeholder, list_id(99));
                 load_show(&save_show(&ws).unwrap()).unwrap();
             }
         }
@@ -170,6 +170,7 @@ fn delete_removes_the_placeholder_and_placeholder_keeps_it() {
         &mut ws,
         &places,
         &[choice("L1", QlabCueAction::Delete)],
+        QlabCueAction::Placeholder,
         list_id(99),
     );
     assert_eq!(removed, vec![cue_id(1)]);
@@ -179,10 +180,15 @@ fn delete_removes_the_placeholder_and_placeholder_keeps_it() {
         &mut ws,
         &places,
         &[choice("L2", QlabCueAction::Placeholder)],
+        QlabCueAction::Delete,
         list_id(99),
     );
     assert!(removed.is_empty());
     assert!(ws.find_cue(cue_id(2)).is_some());
+    // Delete all: the cues not named go too.
+    let mut ws = workspace(vec![cue(1, CueKind::Memo), cue(2, CueKind::Memo)]);
+    let removed = apply_qlab_choices(&mut ws, &places, &[], QlabCueAction::Delete, list_id(99));
+    assert_eq!(removed, vec![cue_id(1), cue_id(2)]);
 }
 
 #[test]
@@ -205,6 +211,7 @@ fn deleting_a_groups_child_leaves_the_group_and_targets_to_it_become_none() {
         &mut ws,
         &[placeholder("M", 11)],
         &[choice("M", QlabCueAction::Delete)],
+        QlabCueAction::Placeholder,
         list_id(99),
     );
     assert_eq!(ws.find_cue(cue_id(10)).unwrap().children().len(), 1);
@@ -222,6 +229,7 @@ fn deleting_a_cart_removes_its_list_and_keeps_one_list() {
             at: Placeholder::List(cart),
         }],
         &[choice("C", QlabCueAction::Delete)],
+        QlabCueAction::Placeholder,
         list_id(99),
     );
     assert_eq!(ws.cue_lists.len(), 1);
@@ -425,6 +433,7 @@ fn every_cue_type_converts_and_unsupported_ones_become_placeholders() {
     let light_id = r.unsupported[0].qlab_id.clone();
     let (ws, warnings) = import.finish(
         &[choice(&light_id, QlabCueAction::Delete)],
+        QlabCueAction::Placeholder,
         CueListId(Uuid::from_u128(9999)),
     );
     assert!(ws.cues().all(|c| c.number.as_deref() != Some("20")));
