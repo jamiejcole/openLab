@@ -1756,7 +1756,7 @@ async fn an_osc_client_sets_and_reads_a_duration_by_number() {
     let fade = CueKind::Fade {
         target: Some(id(1)),
         duration: 5.0,
-        curve: openlab_core::FadeCurve::Linear,
+        curve: openlab_core::FadeCueCurve::like(openlab_core::FadeCurve::Linear),
         levels: openlab_core::FadeLevels {
             master_db: Some(-6.0),
             output_db: vec![],

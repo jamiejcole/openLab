@@ -15,7 +15,7 @@ The mixer renders voices into the device buffer on the audio thread. The control
 - A stop of the whole show is not held up behind ramps: a batch of only stops overtakes batches of only ramps.
 - Output is independent of block size and of how commands were batched. Equal-`at` commands apply in send order.
 - A command is never lost: when a queue or the pending set is full it waits or applies late.
-- Gains reach the output only through the de-zipper or an explicit ramp: no gain step may click, and a falling ramp is the time-reverse of the rising one.
+- Gains reach the output only through the de-zipper or an explicit ramp: no gain step may click, and with a standard curve a falling ramp is the time-reverse of the rising one (a Fade cue's shaped ramp may have different rising and falling sides).
 - Meter peaks are never reported under another voice's id.
 - Never free a box on the audio thread: leak it and count `leaked_returns` (expected 0).
 - A resume dated before its pause is ignored; the control side guarantees it never sends one (skill `cue-engine`: commands for one voice never go backwards in time).

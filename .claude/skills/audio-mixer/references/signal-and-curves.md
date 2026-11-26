@@ -74,12 +74,22 @@ s(t) = f(t)            if b >= a   (rising)
 s(t) = 1 - f(1 - t)    if b < a    (falling)
 ```
 - Sample `S` is exactly `a`; sample `S + N` is exactly `b`, so a fade-out to silence is exactly 0.0 there. Values are computed in `f64` and cast to `f32`.
-- A falling ramp is the time-reverse of the matching rising ramp's gain path.
+- For the standard curves, a falling ramp is the time-reverse of the matching rising ramp's gain path. A Fade cue's shaped ramp has its own rising and falling sides, which differ when the operator unlocks and edits one.
 - A new ramp starts from the gain the old one would have had on its first sample, so interrupting a fade is continuous.
 - Each sample is a function of curve id, endpoints and position only. No tables, no allocation.
 
+## Fade cue curves (`fade_shape.rs`)
+A Fade cue's curve (rising and falling shapes, audio domain; skill `cue-engine` `fade-levels.md`) reaches the mixer as `CommandKind::ShapedRamp(Box<ShapedRamp>)`: one voice, its gains with their targets, `frames` (> 0) and a `FadeShape` (fixed-size and `Copy`: up to 66 knots a side with their tangents, the domain and the decibel floor).
+
+The engine sends a Fade cue ramp so (`voices::queued`, `mixer_shape`) unless its curve is a standard one, and merges those of one voice, sample, length and shape into one command (`ramps_together`).
+- The voice keeps the curve in one of its `VOICE_SHAPES` (4) slots (`Voice::own_shape`, preallocated at `Voice::new`, cleared at each start): the slot holding an equal curve, else one no gain's ramp follows (master, cue outputs, crosspoints scanned).
+  - Each gain ramps naming that slot (`Ramp::shape`); `Param::fill_own` and `current_own` evaluate it from the voice's slots, two exact evaluations per 64-frame knot interval (`FadeShape::fill`), the samples between by the same operations as `FadeShape::value`, so a value is a pure function of ramp and position whatever the block split.
+  - With every slot followed, the gains ramp linearly and `Shared::shapeless_ramps` counts it; the engine logs a rise (`observe.rs`). A paused voice keeps its slots, so a resume follows the same curve.
+- `FadeShape::value` is openlab-core's `RampShape::gain` copied operation for operation; `core/tests/level_maths.rs` holds them equal to the bit and `engine/tests/control/real_audio.rs` holds the rendered sound to the core maths for every curve type and domain.
+- The box goes back on the return queue. Cost per moving gain: two shape evaluations (a `cos`, `powf`, cubic or line, and for the decibel domain a `log10` and `powf`) per 64 frames, so thousands of crosspoints on a decibel-domain Fade cost more than on a standard curve, which shares `Shapes`.
+
 ## Curves
-Each shape `f: [0,1] -> [0,1]` has `f(0) = 0` and `f(1) = 1` exactly and is continuous and monotonic. `t` is clamped to [0,1]; NaN counts as 0. Custom curves are out of scope for v0.0.1.
+Each shape `f: [0,1] -> [0,1]` has `f(0) = 0` and `f(1) = 1` exactly and is continuous and monotonic. `t` is clamped to [0,1]; NaN counts as 0. A Fade cue's own curve is above ("Fade cue curves").
 
 | Curve | `f(t)` | `f(0.5)` | Notes |
 |---|---|---|---|

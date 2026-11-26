@@ -3,6 +3,7 @@
 //! One playing voice: its play plan (slices, loops, devamps), fades, pause and resume, patch
 //! moves, and reading its source into the mixer's scratch buffers.
 
+use crate::fade_shape::FadeShape;
 use crate::gain::{Curve, CurveRamp, DbParam, Fade, MAX_GAIN, Param, ramp_value, sanitize_gain};
 use crate::meter::{Meters, next_epoch};
 use crate::plan::{Plays, Slice, StreamLink};
@@ -281,7 +282,13 @@ pub(super) struct Voice {
     pub(super) meter: Vec<f32>,
     /// Recent faults blamed on this voice (see [`FAULT_LIMIT`]).
     pub(super) faults: FaultLog,
+    /// The Fade cue curves its gains' ramps follow ([`CommandKind::ShapedRamp`]), by slot.
+    pub(super) fade_shapes: Box<[Option<FadeShape>]>,
 }
+
+/// Fade cue curves a voice keeps at once: as many different curves as may be moving its gains
+/// together. One more waits for a slot no ramp follows.
+pub(super) const VOICE_SHAPES: usize = 4;
 
 impl Voice {
     pub(super) fn new(
@@ -337,6 +344,7 @@ impl Voice {
             xstride: dezip,
             xdone: 0,
             xlen: 0,
+            fade_shapes: vec![None; VOICE_SHAPES].into_boxed_slice(),
             slot,
             epoch: 0,
             meter: vec![0.0; outputs],
@@ -551,18 +559,43 @@ impl Voice {
         self.next_patch = None;
         self.moves = 0;
         self.devamp_due = false;
+        // Every gain was set above (none still ramps), so no slot is followed.
+        self.fade_shapes.fill(None);
         self.start = Some(s);
         self.enter(0);
     }
 
+    /// The slot of `shape` among the voice's own, putting it in one no gain's ramp follows if it
+    /// is not there. `None` when every slot is followed by a moving gain.
+    pub(super) fn own_shape(&mut self, shape: &FadeShape) -> Option<u8> {
+        if let Some(i) = self
+            .fade_shapes
+            .iter()
+            .position(|s| s.as_ref() == Some(shape))
+        {
+            return u8::try_from(i).ok();
+        }
+        let followed = |i: usize| {
+            std::iter::once(&self.master)
+                .chain(&self.cue_out)
+                .chain(&self.xp)
+                .any(|p| p.shape().is_some_and(|s| usize::from(s) == i))
+        };
+        let free = (0..self.fade_shapes.len()).find(|&i| !followed(i))?;
+        *self.fade_shapes.get_mut(free)? = Some(*shape);
+        u8::try_from(free).ok()
+    }
+
     /// Moves the gain `target` names to `gain` over `frames` with `curve`, as a `Ramp` does: the
-    /// duck evenly in dB (it has no curve), every other gain on its curve.
+    /// duck evenly in dB (it has no curve), every other gain on its curve, or on the voice's own
+    /// Fade cue curve in slot `shape` ([`Self::own_shape`]).
     pub(super) fn ramp_gain(
         &mut self,
         target: GainTarget,
         gain: f32,
         frames: u64,
         curve: Curve,
+        shape: Option<u8>,
         shapes: &mut crate::gain::Shapes,
     ) {
         if target == GainTarget::Duck {
@@ -574,8 +607,34 @@ impl Voice {
             // The first cap a voice gets: no boost can be under way before it (the duck comes
             // with it), so it holds from its first sample.
             self.duck_cap.set(gain);
-        } else if let Some(p) = self.param_mut(target) {
-            p.ramp_to_in(gain, frames, curve, shapes);
+        } else {
+            let Some(from) = self
+                .param(target)
+                .map(|p| p.current_own(shapes, &self.fade_shapes))
+            else {
+                return;
+            };
+            if let Some(p) = self.param_mut(target) {
+                p.ramp_shaped(from, gain, frames, curve, shape);
+            }
+        }
+    }
+
+    /// The gain `target` names, if the voice has it ([`Self::param_mut`] without widening).
+    fn param(&self, target: GainTarget) -> Option<&Param> {
+        let outs = self.cue_out.len();
+        match target {
+            GainTarget::Master => Some(&self.master),
+            GainTarget::DuckCap => Some(&self.duck_cap),
+            GainTarget::Duck => None,
+            GainTarget::CueOutput(o) => self.cue_out.get(usize::from(o)),
+            GainTarget::Crosspoint { input, output } => {
+                let (i, o) = (usize::from(input), usize::from(output));
+                if i >= self.channels || o >= outs {
+                    return None;
+                }
+                self.xp.get(i * outs + o)
+            }
         }
     }
 

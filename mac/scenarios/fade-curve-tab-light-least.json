@@ -1,0 +1,16 @@
+{
+  "about": "A Fade's Curve tab in a light window at the least window size: a custom curve after a drag on the rising graph, then a parametric one with its strength field.",
+  "show": "Targets",
+  "media": {"media/a.wav": 30},
+  "appearance": "light",
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"select": "3"},
+    {"tab": "curve"},
+    {"choose": "fade-curve", "item": "Custom"},
+    {"drag": "fade-curve-rising", "from": [0.5, 0.5], "to": [0.5, 0.2]},
+    {"shot": "custom-after-drag"},
+    {"choose": "fade-curve", "item": "Parametric"},
+    {"shot": "parametric"}
+  ]
+}

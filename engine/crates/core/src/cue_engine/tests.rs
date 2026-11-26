@@ -136,7 +136,7 @@ fn a_fade_cue_whose_target_changed_unsignalled_only_warns() {
     let fade = CueKind::Fade {
         target: Some(id(2)),
         duration: 1.0,
-        curve: FadeCurve::Linear,
+        curve: crate::FadeCueCurve::like(FadeCurve::Linear),
         levels: FadeLevels {
             master_db: Some(0.0),
             output_db: vec![],

@@ -213,7 +213,7 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
             CueKind::Fade {
                 target,
                 duration: time(p.c),
-                curve: FadeCurve::Linear,
+                curve: FadeCueCurve::like(FadeCurve::Linear),
                 levels: FadeLevels {
                     master_db: Some(level(p.d)),
                     output_db: vec![],

@@ -929,7 +929,7 @@ fn routing_beyond_128_outputs_or_64_channels_is_dropped() {
     let f = CueKind::Fade {
         target: Some(cue_id(1)),
         duration: 1.0,
-        curve: FadeCurve::Linear,
+        curve: Default::default(),
         levels: FadeLevels {
             master_db: None,
             output_db: vec![Some(0.0); 130],
@@ -1001,7 +1001,7 @@ fn repeated_crosspoints_and_gang_members_are_removed() {
     let f = CueKind::Fade {
         target: Some(cue_id(1)),
         duration: 1.0,
-        curve: FadeCurve::Linear,
+        curve: Default::default(),
         levels: FadeLevels {
             master_db: None,
             output_db: vec![],
@@ -1926,4 +1926,55 @@ fn a_route_or_region_of_the_wrong_type_refuses_the_file() {
         assert!(text.contains(from), "{from}");
         assert!(load_show(&text.replacen(from, to, 1)).is_err(), "{to}");
     }
+}
+
+#[test]
+fn a_bad_fade_curve_in_a_file_loads_as_a_warning_with_the_default_curve() {
+    let ws = workspace(vec![sound(1), cue(2, fade(1))]);
+    let mut doc: serde_json::Value = serde_json::from_str(&show_text(&ws)).unwrap();
+    let path = "/workspace/cue_lists/0/cues/1/kind/curve";
+    doc.pointer_mut(path).unwrap()["audio_domain"] = "decibel".into();
+    let bad = [
+        // Above the top of the graph.
+        serde_json::json!([{"t": 0.5, "v": 1.5}]),
+        // Not in time order.
+        serde_json::json!([{"t": 0.6, "v": 0.5}, {"t": 0.4, "v": 0.5}]),
+        // On an end, which is fixed.
+        serde_json::json!([{"t": 1.0, "v": 0.5}]),
+        // More than a shape may hold.
+        serde_json::Value::Array(
+            (1..=MAX_CURVE_POINTS + 1)
+                .map(|i| serde_json::json!({"t": i as f64 / 100.0, "v": 0.5}))
+                .collect(),
+        ),
+    ];
+    for points in bad {
+        let curve = doc.pointer_mut(path).unwrap();
+        curve["rising"]["type"] = "custom".into();
+        curve["rising"]["points"] = points.clone();
+        let loaded = load_show(&doc.to_string()).unwrap();
+        assert_eq!(
+            loaded.warnings,
+            vec![warning(2, IssueKind::InvalidValue { field: "curve" })],
+            "{points}"
+        );
+        let CueKind::Fade { curve: got, .. } = &loaded.workspace.find_cue(cue_id(2)).unwrap().kind
+        else {
+            panic!("not a fade");
+        };
+        assert_eq!(
+            *got,
+            FadeCueCurve {
+                audio_domain: AudioDomain::Decibel,
+                ..Default::default()
+            }
+        );
+    }
+    let curve = doc.pointer_mut(path).unwrap();
+    curve["rising"]["parameter"] = serde_json::json!(1e9);
+    curve["rising"]["points"] = serde_json::json!([]);
+    assert_eq!(
+        load_show(&doc.to_string()).unwrap().warnings,
+        vec![warning(2, IssueKind::InvalidValue { field: "curve" })]
+    );
 }

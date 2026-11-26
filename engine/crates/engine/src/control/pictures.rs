@@ -47,8 +47,8 @@ use openlab_core::video_probe::ProbeReport;
 use super::media::Probe;
 use openlab_audio::{MediaInfo, Plays as Passes, Slice, total_frames};
 use openlab_core::{
-    Action, BrokenReason, CueId, CueKind, CueState, FadeCurve, Input, LevelParam, PictureFades,
-    PictureParam, PictureRamp, PlanPass, RunId, SampleTime, StageId, VideoGeometry, VideoTiming,
+    Action, BrokenReason, CueId, CueKind, CueState, Input, LevelParam, PictureFades, PictureParam,
+    PictureRamp, PlanPass, RampCurve, RunId, SampleTime, StageId, VideoGeometry, VideoTiming,
     plan_point, seconds_to_samples,
 };
 
@@ -181,10 +181,10 @@ impl Live {
             ToStage::Load { picture, .. } => *picture,
             _ => 0,
         };
-        let ramps = self.ramps.iter().map(|(&param, &ramp)| ToStage::Ramp {
+        let ramps = self.ramps.iter().map(|(&param, ramp)| ToStage::Ramp {
             picture,
             param,
-            ramp,
+            ramp: ramp.clone(),
         });
         std::iter::once(self.load.clone())
             .chain(ramps)
@@ -1149,9 +1149,9 @@ impl DocCx<'_> {
                 param: LevelParam::Picture(param),
                 gain,
                 frames,
-                curve,
+                ref curve,
                 ..
-            } => self.ramp_picture(run, param, at, f64::from(gain), frames, curve),
+            } => self.ramp_picture(run, param, at, f64::from(gain), frames, curve.clone()),
             // Levels and ducks act on its sound.
             _ => self.sound_action(action, fx),
         }
@@ -1698,7 +1698,7 @@ impl DocCx<'_> {
         at: SampleTime,
         to: f64,
         frames: SampleTime,
-        curve: FadeCurve,
+        curve: RampCurve,
     ) {
         let Some(id) = self.eng.pictures.find(self.doc.id, run) else {
             return;
@@ -1719,7 +1719,7 @@ impl DocCx<'_> {
             frames,
             curve,
         };
-        live.ramps.insert(param, ramp);
+        live.ramps.insert(param, ramp.clone());
         if !live.held_back {
             self.eng.picture(ToStage::Ramp {
                 picture: id,
@@ -1755,7 +1755,7 @@ impl DocCx<'_> {
         let Some(live) = self.eng.pictures.live.get_mut(&id) else {
             return;
         };
-        live.ramps.extend(ramps.iter().copied());
+        live.ramps.extend(ramps.iter().cloned());
         if live.held_back {
             return;
         }

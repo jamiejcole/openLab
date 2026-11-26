@@ -176,7 +176,19 @@
               "type": "fade",
               "target": "00000000-0000-0000-0000-00000000000a",
               "duration": 5.0,
-              "curve": "equal_power",
+              "curve": {
+                "audio_domain": "linear",
+                "rising": {
+                  "type": "parametric",
+                  "parameter": 1.0,
+                  "points": []
+                },
+                "falling": {
+                  "type": "parametric",
+                  "parameter": 1.0,
+                  "points": []
+                }
+              },
               "levels": {
                 "master_db": -120.0,
                 "output_db": [],

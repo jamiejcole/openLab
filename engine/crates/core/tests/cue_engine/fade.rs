@@ -23,7 +23,7 @@ fn fade_to(
         CueKind::Fade {
             target: Some(id(target)),
             duration: seconds,
-            curve,
+            curve: FadeCueCurve::like(curve),
             levels,
             stop_target_when_done: stop,
             mode: Default::default(),
@@ -52,7 +52,7 @@ struct R {
     param: LevelParam,
     gain: f32,
     frames: SampleTime,
-    curve: FadeCurve,
+    curve: RampCurve,
 }
 
 fn ramps(actions: &[Action]) -> Vec<R> {
@@ -73,7 +73,7 @@ fn ramps(actions: &[Action]) -> Vec<R> {
                 param: *param,
                 gain: *gain,
                 frames: *frames,
-                curve: *curve,
+                curve: curve.clone(),
             }),
             _ => None,
         })
@@ -87,7 +87,7 @@ fn ramp(n: u128, at: SampleTime, param: LevelParam, gain: f32, frames: SampleTim
         param,
         gain,
         frames,
-        curve: FadeCurve::Linear,
+        curve: RampCurve::from(FadeCurve::Linear),
     }
 }
 
@@ -126,7 +126,7 @@ fn fade_ramps_the_targets_levels_with_its_curve_and_duration() {
         param,
         gain,
         frames: 5000,
-        curve: FadeCurve::EqualPower,
+        curve: RampCurve::from(FadeCurve::EqualPower),
     };
     assert_eq!(
         ramps(&go),
@@ -166,6 +166,93 @@ fn fade_ramps_the_targets_levels_with_its_curve_and_duration() {
     assert_eq!(changes(&end, 2), vec![(CueState::Idle, 6000)]);
     assert_eq!(changes(&end, 1), vec![(CueState::Running, 6000)]);
     assert_eq!(rig.level(1, M, 6000), Some(0.0));
+}
+
+/// A Fade of cue 1's master to `db` over 5.12 s (half way is a whole number of the curve's
+/// 64-sample knots) on `curve`.
+fn curved_fade(n: u128, db: f64, curve: FadeCueCurve) -> Cue {
+    cue(
+        n,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: 5.12,
+            curve,
+            levels: master(db),
+            stop_target_when_done: false,
+            mode: Default::default(),
+            geometry: Default::default(),
+        },
+    )
+}
+
+#[test]
+fn a_custom_curve_puts_the_level_on_its_point_half_way_through_the_fade() {
+    // Falling (0 dB to silence) through a point drawn at 20 % of the way up, half way along.
+    let curve = FadeCueCurve {
+        audio_domain: AudioDomain::Linear,
+        rising: CurveShape::default(),
+        falling: CurveShape {
+            kind: CurveType::Custom,
+            parameter: 1.0,
+            points: vec![CurvePoint { t: 0.5, v: 0.2 }],
+        },
+    };
+    let mut rig = Rig::new(vec![sound(1), curved_fade(2, SILENCE_DB, curve)]);
+    rig.start(0, 1);
+    let go = rig.start(1000, 2);
+    assert!(matches!(
+        &ramps(&go)[..],
+        [R {
+            curve: RampCurve::Shaped(_),
+            frames: 5120,
+            ..
+        }]
+    ));
+    let half = rig.level(1, M, 1000 + 2560).unwrap();
+    assert!((half - 0.2).abs() < 1e-6, "{half}");
+    // Smooth either side of the point: above it before, below it after.
+    assert!(rig.level(1, M, 1000 + 1280).unwrap() > 0.2);
+    assert!(rig.level(1, M, 1000 + 3840).unwrap() < 0.2);
+    assert_eq!(rig.level(1, M, 1000 + 5120), Some(0.0));
+}
+
+#[test]
+fn a_fade_moves_its_level_in_its_audio_domain() {
+    // Straight up from silence to 0 dB: half way is half the slider's travel (−24 dB), half the
+    // dB from the workspace minimum (−60 dB, so −30 dB), or half the amplitude.
+    let straight = CurveShape {
+        kind: CurveType::Linear,
+        ..Default::default()
+    };
+    for (domain, want) in [
+        (AudioDomain::Slider, 0.0625f32),
+        (AudioDomain::Decibel, db_to_gain(-30.0)),
+        (AudioDomain::Linear, 0.5),
+    ] {
+        let curve = FadeCueCurve {
+            audio_domain: domain,
+            rising: straight.clone(),
+            falling: straight.clone(),
+        };
+        let mut rig = Rig::new(vec![sound(1), curved_fade(2, 0.0, curve)]);
+        rig.ws.settings.output_min_db = -60.0;
+        rig.ws
+            .apply(Command::SetCueProperty {
+                id: id(1),
+                property: CueProperty::Kind {
+                    value: {
+                        let mut k = rig.ws.find_cue(id(1)).unwrap().kind.clone();
+                        k.levels_mut().unwrap().master_db = SILENCE_DB;
+                        k
+                    },
+                },
+            })
+            .unwrap();
+        rig.start(0, 1);
+        rig.start(1000, 2);
+        let half = rig.level(1, M, 1000 + 2560).unwrap();
+        assert!((half - want).abs() < 1e-6, "{domain:?}: {half}");
+    }
 }
 
 #[test]
@@ -549,7 +636,7 @@ fn fade_with_missing_or_wrong_targets_is_broken() {
             CueKind::Fade {
                 target: None,
                 duration: 1.0,
-                curve: FadeCurve::Linear,
+                curve: FadeCueCurve::like(FadeCurve::Linear),
                 levels: master(0.0),
                 stop_target_when_done: false,
                 mode: Default::default(),
@@ -592,7 +679,7 @@ fn a_zero_length_fade_sets_the_levels_at_once() {
             param: M,
             gain: db_to_gain(-6.0),
             frames: 0,
-            curve: FadeCurve::SCurve
+            curve: RampCurve::from(FadeCurve::SCurve)
         }]
     );
     assert_eq!(voice_stops(&go), vec![(id(1), 100, None)]);
@@ -788,7 +875,7 @@ fn in_progress_ramps_can_be_read_back_for_a_restart() {
             value: 0.75,
             to: 0.0,
             end: 4000,
-            curve: FadeCurve::Linear,
+            curve: RampCurve::from(FadeCurve::Linear),
         }]
     );
     rig.pause(1000, 2);
@@ -799,7 +886,7 @@ fn in_progress_ramps_can_be_read_back_for_a_restart() {
             value: 0.75,
             to: 0.75,
             end: 1000,
-            curve: FadeCurve::Linear,
+            curve: RampCurve::from(FadeCurve::Linear),
         }]
     );
     assert!(rig.engine.fade_ramps(id(2), 2000).is_empty());
@@ -825,7 +912,7 @@ fn a_zero_length_fade_is_tracked_as_the_mixer_de_zippers_it() {
     let moving = rig.engine.fade_ramps(id(1), 102);
     assert_eq!(moving.len(), 1);
     assert_eq!((moving[0].end, moving[0].to), (105, target));
-    assert_eq!(moving[0].curve, FadeCurve::Linear);
+    assert_eq!(moving[0].curve, RampCurve::from(FadeCurve::Linear));
     assert!(rig.engine.fade_ramps(id(1), 105)[0].end <= 105);
 }
 
@@ -849,7 +936,7 @@ fn a_zero_length_fade_on_a_resume_sample_is_de_zippered() {
     assert_eq!(rig.level(1, M, 105), Some(db_to_gain(-6.0)));
     let moving = rig.engine.fade_ramps(id(1), 102);
     assert_eq!(moving.len(), 1);
-    assert_eq!((moving[0].end, moving[0].curve), (105, FadeCurve::Linear));
+    assert_eq!((moving[0].end, &moving[0].curve), (105, &RampCurve::LINEAR));
 }
 
 #[test]

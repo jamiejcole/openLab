@@ -512,7 +512,7 @@ fn a_fade_with_nothing_to_fade_is_broken_in_the_snapshot_and_go_skips_it() {
         CueKind::Fade {
             target: Some(id(1)),
             duration: 1.0,
-            curve: FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: None,
                 output_db: vec![None],

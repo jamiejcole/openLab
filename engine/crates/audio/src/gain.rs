@@ -2,6 +2,8 @@
 
 //! Gain helpers: dB conversion, fade curves and per-sample gain ramps.
 
+use crate::fade_shape::FadeShape;
+
 /// Levels at or below this are silence.
 pub const SILENCE_DB: f64 = -120.0;
 
@@ -544,7 +546,8 @@ impl Shapes {
 }
 
 /// A gain ramp: `from + delta · s` for the curve's progress `s`. The evaluator is shared
-/// ([`Shapes`]), so a ramp is small and thousands of them stay cheap to walk.
+/// ([`Shapes`]), so a ramp is small and thousands of them stay cheap to walk. A ramp on a Fade
+/// cue's curve names the voice's own [`FadeShape`] it follows instead (`shape`).
 #[derive(Clone, Copy, Debug)]
 struct Ramp {
     pos: u64,
@@ -553,6 +556,7 @@ struct Ramp {
     delta: f32,
     to: f32,
     curve: Curve,
+    shape: Option<u8>,
 }
 
 impl Ramp {
@@ -576,6 +580,9 @@ impl Param {
 
     /// Value at the next sample to be rendered.
     pub(crate) fn current(&self) -> f32 {
+        if let Some(v) = self.on_shape(&[]) {
+            return v;
+        }
         match &self.ramp {
             // What `fill` writes for this position, to the bit.
             Some(r) => {
@@ -586,10 +593,20 @@ impl Param {
         }
     }
 
+    /// [`Self::current_own`] of a gain that follows no Fade cue curve.
+    #[cfg(test)]
+    pub(crate) fn current_in(&self, shapes: &mut Shapes) -> f32 {
+        self.current_own(shapes, &[])
+    }
+
     /// [`Self::current`] through `shapes`: the curve is worked out once for all the gains asked
     /// about a position, so asking thousands of them (a whole-matrix edit during a Fade, a pause
-    /// tail) costs what they multiply, not one evaluator each.
-    pub(crate) fn current_in(&self, shapes: &mut Shapes) -> f32 {
+    /// tail) costs what they multiply, not one evaluator each. A voice's gain may follow one of
+    /// the voice's own Fade cue curves (`own`).
+    pub(crate) fn current_own(&self, shapes: &mut Shapes, own: &[Option<FadeShape>]) -> f32 {
+        if let Some(v) = self.on_shape(own) {
+            return v;
+        }
         match &self.ramp {
             Some(r) => {
                 let s = shapes.get(ShapeKey {
@@ -603,6 +620,19 @@ impl Param {
             }
             None => self.value,
         }
+    }
+
+    /// The value now of a ramp on one of `own`'s shapes. `None` for any other ramp, and for one
+    /// whose shape `own` does not hold (it then moves linearly).
+    fn on_shape(&self, own: &[Option<FadeShape>]) -> Option<f32> {
+        let r = self.ramp.as_ref()?;
+        let shape = own.get(usize::from(r.shape?))?.as_ref()?;
+        Some(shape.value(r.from, r.to, r.pos, r.len))
+    }
+
+    /// The shape slot of `own` this gain's ramp follows, if any.
+    pub(crate) fn shape(&self) -> Option<u8> {
+        self.ramp.as_ref().and_then(|r| r.shape)
     }
 
     /// Constant zero: contributes nothing and needs no per-sample work.
@@ -639,12 +669,26 @@ impl Param {
         self.ramp_from(self.current(), to, frames, curve);
     }
 
-    /// [`Self::ramp_to`], for one of many gains moving together ([`Self::current_in`]).
+    /// [`Self::ramp_to`], for one of many gains moving together ([`Self::current_own`]).
+    #[cfg(test)]
     pub(crate) fn ramp_to_in(&mut self, to: f32, frames: u64, curve: Curve, shapes: &mut Shapes) {
         self.ramp_from(self.current_in(shapes), to, frames, curve);
     }
 
     fn ramp_from(&mut self, from: f32, to: f32, frames: u64, curve: Curve) {
+        self.ramp_shaped(from, to, frames, curve, None);
+    }
+
+    /// Ramps from `from` to `to` over `frames` on `curve`, or on the voice's own shape `shape`
+    /// (then `curve` is what it falls back to if the shape is missing).
+    pub(crate) fn ramp_shaped(
+        &mut self,
+        from: f32,
+        to: f32,
+        frames: u64,
+        curve: Curve,
+        shape: Option<u8>,
+    ) {
         if frames == 0 {
             self.set(to);
         } else {
@@ -655,6 +699,7 @@ impl Param {
                 delta: to - from,
                 to,
                 curve,
+                shape,
             });
         }
     }
@@ -662,6 +707,17 @@ impl Param {
     /// Writes the next `out.len()` values. The first of a ramp is exactly where it started, and
     /// the ramp ends exactly on its target; between, within [`RAMP_TOLERANCE`] of [`ramp_value`].
     pub(crate) fn fill(&mut self, out: &mut [f32], shapes: &mut Shapes) {
+        self.fill_own(out, shapes, &[]);
+    }
+
+    /// [`Self::fill`] of a voice's gain, which may follow one of the voice's own Fade cue curves
+    /// (`own`): exactly [`FadeShape::value`] at each position.
+    pub(crate) fn fill_own(
+        &mut self,
+        out: &mut [f32],
+        shapes: &mut Shapes,
+        own: &[Option<FadeShape>],
+    ) {
         let mut rest = out;
         if let Some(r) = &mut self.ramp {
             let n = usize::try_from(r.len - r.pos)
@@ -669,6 +725,15 @@ impl Param {
                 .min(rest.len());
             let (head, tail) = rest.split_at_mut(n);
             let rising = r.rising();
+            let shape = r
+                .shape
+                .and_then(|i| own.get(usize::from(i)))
+                .and_then(Option::as_ref);
+            if let Some(shape) = shape {
+                shape.fill(r.from, r.to, r.pos, r.len, head);
+                r.pos += head.len() as u64;
+            }
+            let head = if shape.is_some() { &mut [][..] } else { head };
             for stretch in head.chunks_mut(shapes.frames) {
                 let s = shapes.get(ShapeKey {
                     len: r.len,

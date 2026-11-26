@@ -70,7 +70,7 @@ use std::time::{Duration, SystemTime};
 use crossbeam_channel::Sender;
 use openlab_audio::{
     COMMAND_CAPACITY, CommandKind, DiskStreamer, Event, Fade, GainTarget, MAX_RAMP_SET, MediaError,
-    MixerController, StreamerConfig, VoiceId,
+    MixerController, ShapedRamp, StreamerConfig, VoiceId,
 };
 use openlab_core::protocol::{
     CueProblems, CueStateEntry, DocumentState, ErrorBody, ErrorCode, LogKind, LogLevel, OkBody,
@@ -1150,7 +1150,7 @@ impl Engine {
 /// other mix (a start, a move) is sent as it is.
 fn stops_apart(commands: Vec<(SampleTime, CommandKind)>) -> Vec<Vec<(SampleTime, CommandKind)>> {
     let stop = |k: &CommandKind| matches!(k, CommandKind::StopVoice { .. });
-    let ramp = |k: &CommandKind| matches!(k, CommandKind::Ramp { .. });
+    let ramp = |k: &CommandKind| matches!(k, CommandKind::Ramp { .. } | CommandKind::ShapedRamp(_));
     if !commands.iter().all(|(_, k)| stop(k) || ramp(k)) {
         return vec![commands];
     }
@@ -1170,7 +1170,32 @@ fn ramps_together(commands: Vec<(SampleTime, CommandKind)>) -> Vec<(SampleTime, 
     let mut out = Vec::with_capacity(commands.len());
     let mut run = None;
     let mut gains = Vec::new();
+    // The shaped run being gathered: its gains grow in one Vec and are boxed once when the run
+    // ends, so a Fade over thousands of gains is not copied again for every gain it adds.
+    let mut shaped: Option<ShapedRun> = None;
     for (at, kind) in commands {
+        // Ramps on one Fade cue curve go as one shaped ramp the same way.
+        if let CommandKind::ShapedRamp(mut r) = kind {
+            end_ramp_run(run.take(), &mut gains, &mut out);
+            match &mut shaped {
+                Some((t, last, all))
+                    if *t == at
+                        && last.voice == r.voice
+                        && last.frames == r.frames
+                        && last.shape == r.shape
+                        && all.len() + r.gains.len() <= MAX_RAMP_SET =>
+                {
+                    all.extend_from_slice(&r.gains);
+                }
+                _ => {
+                    end_shaped_run(shaped.take(), &mut out);
+                    let all = std::mem::take(&mut r.gains).into_vec();
+                    shaped = Some((at, r, all));
+                }
+            }
+            continue;
+        }
+        end_shaped_run(shaped.take(), &mut out);
         if let CommandKind::Ramp {
             voice,
             target,
@@ -1189,7 +1214,20 @@ fn ramps_together(commands: Vec<(SampleTime, CommandKind)>) -> Vec<(SampleTime, 
         }
     }
     end_ramp_run(run, &mut gains, &mut out);
+    end_shaped_run(shaped, &mut out);
     out
+}
+
+/// A shaped ramp being gathered: its date, the ramp, and the gains it has so far.
+type ShapedRun = (SampleTime, Box<ShapedRamp>, Vec<(GainTarget, f32)>);
+
+/// Sends a gathered shaped run with all its gains.
+fn end_shaped_run(run: Option<ShapedRun>, out: &mut Vec<(SampleTime, CommandKind)>) {
+    let Some((at, mut ramp, all)) = run else {
+        return;
+    };
+    ramp.gains = all.into_boxed_slice();
+    out.push((at, CommandKind::ShapedRamp(ramp)));
 }
 
 /// Sends a run of ramps as the plain `Ramp` it is if there is only one.
@@ -1650,6 +1688,50 @@ mod tests {
             })
             .collect();
         assert_eq!(sizes, [MAX_RAMP_SET, MAX_RAMP_SET, 3]);
+    }
+
+    /// Shaped ramps of one voice, date, length and curve gather into one command per
+    /// `MAX_RAMP_SET`, in order; another command between them ends the run.
+    #[test]
+    fn a_run_of_shaped_ramps_is_one_command_split_at_the_largest_set() {
+        use openlab_audio::{FadeShape, ShapeDomain, ShapeKind, ShapeSide};
+        let side = |kind| ShapeSide::new(kind, 1.0, &[0.0, 1.0], &[0.0, 1.0], &[1.0, 1.0]).unwrap();
+        let shape = FadeShape::new(
+            ShapeDomain::Slider,
+            -60.0,
+            side(ShapeKind::SCurve),
+            side(ShapeKind::SCurve),
+        );
+        let ramp = |gain| {
+            CommandKind::ShapedRamp(Box::new(ShapedRamp {
+                voice: VoiceId(1),
+                gains: Box::new([(GainTarget::Master, gain)]),
+                frames: 100,
+                shape,
+            }))
+        };
+        let n = MAX_RAMP_SET + 2;
+        let mut commands: Vec<_> = (0..n).map(|k| (7, ramp(k as f32))).collect();
+        commands.push((7, CommandKind::SetMaster { gain: 1.0 }));
+        commands.push((7, ramp(n as f32)));
+        let got = ramps_together(commands);
+        let mut seen = 0.0;
+        let sizes: Vec<usize> = got
+            .iter()
+            .filter_map(|(at, kind)| {
+                assert_eq!(*at, 7);
+                let CommandKind::ShapedRamp(r) = kind else {
+                    return None;
+                };
+                for (_, g) in &*r.gains {
+                    assert_eq!(*g, seen);
+                    seen += 1.0;
+                }
+                Some(r.gains.len())
+            })
+            .collect();
+        assert_eq!(sizes, [MAX_RAMP_SET, 2, 1]);
+        assert!(matches!(got[2].1, CommandKind::SetMaster { .. }));
     }
 
     pub(super) fn memo_show() -> crate::control::offline::OfflineShow {

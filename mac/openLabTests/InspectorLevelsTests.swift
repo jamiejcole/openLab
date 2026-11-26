@@ -1629,7 +1629,10 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(popup.titleOfSelectedItem, loc("fade.mode.relative"))
     }
 
-    func testTheCurveTabDrawsTheChosenCurveRisingAndFalling() async throws {
+    /// Fade, Curve tab: the shape and level scale (audio domain) the cue has are shown, each edit
+    /// reaches the engine's model, and a drag on a custom curve's graph adds a point there that both
+    /// graphs draw through (the falling one mirrored while the lock is on), sent as one drag.
+    func testTheCurveTabShowsTheChosenShapeAndAudioDomainAndAnEditReachesTheEngine() async throws {
         vc.setSelection([Self.fade])
         vc.tabView.selectTabViewItem(withIdentifier: "curve")
         window.layoutIfNeeded()
@@ -1637,20 +1640,62 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertFalse(s.risingView.isHiddenOrHasHiddenAncestor)
         XCTAssertGreaterThan(s.risingView.frame.width, 100)
         XCTAssertEqual(s.risingView.frame.width, s.fallingView.frame.width, accuracy: 1)
-        let i = try XCTUnwrap(FadeSettingsPanel.curves.firstIndex(of: "equal_power"))
-        s.curvePopup.selectItem(at: i)
-        fire(s.curvePopup)
-        await assertEventually { self.modelKind(Self.fade)?["curve"] == .string("equal_power") }
-        await assertEventually { s.risingView.curve == "equal_power" }
-        XCTAssertEqual(s.risingView.duration, modelKind(Self.fade)?["duration"]?.doubleValue)
-        // The engine's shapes: half way an equal-power fade is at sin(45 deg); falling mirrors rising.
+        let gutter = try XCTUnwrap(s.lockButton.superview)
+        XCTAssertLessThan(s.risingView.frame.maxX, gutter.frame.minX + 1, "the lock between the graphs")
+        XCTAssertLessThan(gutter.frame.maxX, s.fallingView.frame.minX + 1)
+        // The demo's Fade was saved as an equal-power fade: parametric at 1, in amplitude.
+        XCTAssertEqual(s.curvePopup.titleOfSelectedItem, loc("fade.shape.parametric"))
+        XCTAssertEqual(s.domainPopup.titleOfSelectedItem, loc("fade.domain.linear"))
+        XCTAssertFalse(s.intensityField.isHiddenOrHasHiddenAncestor, "a parametric curve's strength")
+        XCTAssertEqual(s.intensityField.stringValue, "1")
+        XCTAssertTrue(s.resetButton.isHidden, "no points to reset")
         XCTAssertEqual(s.risingView.value(at: 0.5), sin(Double.pi / 4), accuracy: 1e-9)
         XCTAssertEqual(s.fallingView.value(at: 0.25), s.risingView.value(at: 0.75), accuracy: 1e-9)
-        XCTAssertEqual(FadeCurveView.shape("linear", 0.3), 0.3, accuracy: 1e-12)
-        XCTAssertEqual(FadeCurveView.shape("s_curve", 0.5), 0.5, accuracy: 1e-12)
-        XCTAssertEqual(FadeCurveView.shape("exponential", 0.5), expm1(log(1000) / 2) / 999, accuracy: 1e-9)
-        XCTAssertEqual(
-            FadeCurveView.shape("logarithmic", 0.5), 1 - FadeCurveView.shape("exponential", 0.5), accuracy: 1e-9)
+        XCTAssertEqual(s.risingView.duration, modelKind(Self.fade)?["duration"]?.doubleValue)
+
+        s.domainPopup.selectItem(at: try XCTUnwrap(FadeCurveSpec.Domain.allCases.firstIndex(of: .decibel)))
+        fire(s.domainPopup)
+        await assertEventually { self.modelKind(Self.fade)?["curve"]?["audio_domain"] == .string("decibel") }
+        s.curvePopup.selectItem(at: try XCTUnwrap(FadeCurveSpec.Kind.allCases.firstIndex(of: .custom)))
+        fire(s.curvePopup)
+        await assertEventually {
+            self.modelKind(Self.fade)?["curve"]?["rising"]?["type"] == .string("custom")
+                && self.modelKind(Self.fade)?["curve"]?["falling"]?["type"] == .string("custom")
+        }
+        XCTAssertTrue(s.intensityField.isHiddenOrHasHiddenAncestor)
+        XCTAssertFalse(s.resetButton.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(s.risingView.isEditable)
+
+        // A press half way along, dragged up to three quarters of the height, then released.
+        let r = s.risingView
+        let before = sent.count
+        r.press(at: r.location(FadeCurveSpec.Point(t: 0.5, v: 0.5)))
+        r.drag(to: r.location(FadeCurveSpec.Point(t: 0.5, v: 0.6)))
+        r.drag(to: r.location(FadeCurveSpec.Point(t: 0.5, v: 0.75)))
+        r.release()
+        await assertEventually { self.sent.count == before + 3 }
+        let keys = Set(sent.suffix(3).map(\.coalesce))
+        XCTAssertEqual(keys.count, 1, "one drag, one undo step")
+        XCTAssertNotNil(keys.first ?? nil)
+        await assertEventually("the engine has the point") {
+            let p = self.modelKind(Self.fade)?["curve"]?["rising"]?["points"]?.arrayValue?.first
+            return p?["t"]?.doubleValue.map { abs($0 - 0.5) < 0.01 } == true
+                && p?["v"]?.doubleValue.map { abs($0 - 0.75) < 0.01 } == true
+        }
+        let falling = modelKind(Self.fade)?["curve"]?["falling"]?["points"]?.arrayValue?.first
+        XCTAssertEqual(falling?["t"]?.doubleValue ?? 0, 0.5, accuracy: 0.01, "mirrored onto the falling curve")
+        XCTAssertEqual(r.value(at: 0.5), 0.75, accuracy: 0.01, "drawn through the point")
+        XCTAssertEqual(s.fallingView.value(at: 0.5), 0.75, accuracy: 0.01)
+
+        // Delete removes the chosen point; Reset Curve clears the rest.
+        r.press(at: r.location(FadeCurveSpec.Point(t: 0.2, v: 0.4)))
+        r.release()
+        await assertEventually { self.modelKind(Self.fade)?["curve"]?["rising"]?["points"]?.arrayValue?.count == 2 }
+        XCTAssertTrue(r.removeChosen())
+        await assertEventually { self.modelKind(Self.fade)?["curve"]?["rising"]?["points"]?.arrayValue?.count == 1 }
+        fire(s.resetButton)
+        await assertEventually { self.modelKind(Self.fade)?["curve"]?["rising"]?["points"]?.arrayValue == [] }
+
         // And it is drawn: a yellow line from the bottom left to the top right of the rising graph.
         let rep = try renderView(s.risingView)
         func yellow(_ x: Int, _ y: Int) -> Bool {
@@ -1661,6 +1706,50 @@ final class InspectorLevelsTests: XCTestCase {
         let right = (0..<rep.pixelsHigh).filter { yellow(rep.pixelsWide - 4, $0) }
         XCTAssertGreaterThan(try XCTUnwrap(left.min()), rep.pixelsHigh * 3 / 4, "low at the start")
         XCTAssertLessThan(try XCTUnwrap(right.max()), rep.pixelsHigh / 4, "high at the end")
+    }
+
+    /// The point Delete removes stays the one the operator chose when the points are replaced from
+    /// outside the graph (an undo puts a point back before it).
+    func testDeleteRemovesTheChosenPointAfterTheCurveChangesUnderIt() {
+        let view = FadeCurveView(rising: true)
+        view.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
+        let a = FadeCurveSpec.Point(t: 0.2, v: 0.4)
+        let b = FadeCurveSpec.Point(t: 0.5, v: 0.75)
+        view.shape = FadeCurveSpec.Shape(kind: .custom, parameter: 1, points: [a, b])
+        view.isEditable = true
+        view.press(at: view.location(b))
+        view.release()
+        let before = FadeCurveSpec.Point(t: 0.1, v: 0.3)
+        view.shape = FadeCurveSpec.Shape(kind: .custom, parameter: 1, points: [before, a, b])
+        XCTAssertTrue(view.removeChosen())
+        XCTAssertEqual(view.shape.points.map(\.t), [0.1, 0.2], "the chosen point went, not the one now at its index")
+    }
+
+    /// The graphs draw the engine's shapes (`fade_curve.rs`): the S-curve, the parametric curve, and
+    /// a custom curve through its points never overshooting between them.
+    func testTheCurveGraphsDrawTheEnginesShapes() {
+        typealias S = FadeCurveSpec
+        XCTAssertEqual(S.drawn(S.Shape(), rising: true, at: 0.25), (1 - cos(0.25 * .pi)) / 2, accuracy: 1e-12)
+        XCTAssertEqual(
+            S.drawn(S.Shape(kind: .parametric, parameter: 2), rising: true, at: 0.3),
+            S.drawn(S.Shape(), rising: true, at: 0.3), accuracy: 1e-12)
+        let custom = S.Shape(kind: .custom, points: [.init(t: 0.25, v: 0.7), .init(t: 0.6, v: 0.8)])
+        XCTAssertEqual(S.drawn(custom, rising: true, at: 0.25), 0.7, accuracy: 1e-12)
+        XCTAssertEqual(S.drawn(custom, rising: true, at: 0.6), 0.8, accuracy: 1e-12)
+        for i in 0...100 {
+            let v = S.drawn(custom, rising: true, at: 0.25 + 0.35 * Double(i) / 100)
+            XCTAssertTrue((0.7 - 1e-12)...(0.8 + 1e-12) ~= v, "between its points: \(v)")
+        }
+        let straight = S.Shape(kind: .linear, points: [.init(t: 0.5, v: 0.2)])
+        XCTAssertEqual(S.drawn(straight, rising: false, at: 0.25), 0.6, accuracy: 1e-12)
+        let mirrored = S.mirrored([.init(t: 0.2, v: 0.3), .init(t: 0.7, v: 0.9)])
+        XCTAssertEqual(mirrored.map(\.v), [0.9, 0.3], "time reversed, same heights")
+        XCTAssertEqual(mirrored[0].t, 0.3, accuracy: 1e-12)
+        XCTAssertEqual(mirrored[1].t, 0.8, accuracy: 1e-12)
+        let spec = FadeCurveSpec(json: .object(["audio_domain": .string("decibel"), "rising": custom.json]))
+        XCTAssertEqual(spec.domain, .decibel)
+        XCTAssertEqual(FadeCurveSpec(json: spec.json), spec, "read back as written")
+        XCTAssertEqual(FadeCurveSpec(json: .string("linear")), FadeCurveSpec(), "anything else is the default")
     }
 
     func testMatrixHitTesting() {
@@ -1749,7 +1838,8 @@ final class InspectorLevelsTests: XCTestCase {
         vc.setSelection([Self.fade])
         let f = vc.fadeSettings
         XCTAssertEqual(f.durationField.stringValue, "00:05.000")
-        XCTAssertEqual(f.curvePopup.indexOfSelectedItem, FadeSettingsPanel.curves.firstIndex(of: "equal_power"))
+        XCTAssertEqual(f.curvePopup.indexOfSelectedItem, FadeCurveSpec.Kind.allCases.firstIndex(of: .parametric))
+        XCTAssertEqual(f.domainPopup.indexOfSelectedItem, FadeCurveSpec.Domain.allCases.firstIndex(of: .linear))
         XCTAssertEqual(f.stopCheck.state, .on)
         XCTAssertEqual(vc.fadeLevels.matrix.outputCount, 2, "the target Intro has two cue outputs")
         XCTAssertTrue(vc.fadeLevels.canSetFromTarget)
@@ -1766,10 +1856,10 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(sent.last?.command["property"]?["value"], .double(2.5))
         XCTAssertEqual(f.durationField.stringValue, "00:02.500")
 
-        for (i, curve) in FadeSettingsPanel.curves.enumerated() {
+        for (i, shape) in FadeCurveSpec.Kind.allCases.enumerated() {
             f.curvePopup.selectItem(at: i)
             fire(f.curvePopup)
-            await assertEventually { self.lastKind?["curve"] == .string(curve) }
+            await assertEventually { self.lastKind?["curve"]?["rising"]?["type"] == .string(shape.rawValue) }
         }
         f.stopCheck.state = .off
         fire(f.stopCheck)
@@ -1795,7 +1885,7 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(lastKind?["levels"]?["master_db"], .double(-20))
         await assertEventually("all answered") { self.modelKind(Self.fade)?["levels"]?["master_db"] == .double(-20) }
         XCTAssertEqual(modelKind(Self.fade)?["duration"], .double(2.5))
-        XCTAssertEqual(modelKind(Self.fade)?["curve"], .string("linear"))
+        XCTAssertEqual(modelKind(Self.fade)?["curve"]?["rising"]?["type"], .string("custom"))
         XCTAssertEqual(vc.fadeSettings.curvePopup.indexOfSelectedItem, 1)
         await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
     }
@@ -1822,7 +1912,7 @@ final class InspectorLevelsTests: XCTestCase {
         guard case .success = await edit.value else { return XCTFail("the other client's edit") }
         await assertEventually("both edits are in the model") {
             let kind = self.modelKind(Self.fade)
-            return kind?["curve"] == .string(FadeSettingsPanel.curves[1])
+            return kind?["curve"]?["rising"]?["type"] == .string(FadeCurveSpec.Kind.allCases[1].rawValue)
                 && kind?["stop_target_when_done"] == .bool(false)
         }
         await assertEventually("nothing left pending") { self.vc.pendingKinds.isEmpty }
@@ -1886,7 +1976,12 @@ final class InspectorLevelsTests: XCTestCase {
         vc.setSelection([Self.fade])
         vc.isLocked = true
         let f = vc.fadeSettings
-        for c in [f.durationField, f.curvePopup, f.stopCheck] as [NSControl] { XCTAssertFalse(c.isEnabled) }
+        for c in [f.durationField, f.curvePopup, f.domainPopup, f.intensityField, f.resetButton, f.stopCheck]
+            as [NSControl]
+        {
+            XCTAssertFalse(c.isEnabled)
+        }
+        XCTAssertFalse(f.risingView.isEditable)
         f.curvePopup.selectItem(at: 1)
         fire(f.curvePopup)
         type(vc.fadeLevels, "-3")

@@ -2679,7 +2679,7 @@ fn a_kind_replacement_between_duration_edits_of_one_cue_undoes_to_the_start() {
     let mut history = History::new();
     let mut kind = kind_of(&ws, 2);
     if let CueKind::Fade { curve, .. } = &mut kind {
-        *curve = FadeCurve::Linear;
+        curve.audio_domain = AudioDomain::Linear;
     }
     for property in [
         duration(9.0),
@@ -2844,4 +2844,28 @@ fn a_bad_duck_level_or_time_is_refused_by_a_command_and_a_paste_and_repaired_on_
             == IssueKind::InvalidLevel {
                 field: "duck_others.db"
             }));
+}
+
+#[test]
+fn a_fade_curve_it_may_not_hold_is_refused_by_an_edit_an_add_and_a_paste() {
+    let mut ws = workspace(vec![sound(1), cue(2, fade(1))]);
+    let mut bad = fade(1);
+    if let CueKind::Fade { curve, .. } = &mut bad {
+        curve.falling.points = vec![CurvePoint { t: 0.5, v: -0.1 }];
+    }
+    let CueKind::Fade { curve, .. } = &bad else {
+        panic!("not a fade");
+    };
+    let mut value = serde_json::Map::new();
+    value.insert("curve".into(), serde_json::to_value(curve).unwrap());
+    refused(&mut ws, set(2, CueProperty::KindFields { value }));
+    refused(&mut ws, set(2, CueProperty::Kind { value: bad.clone() }));
+    refused(&mut ws, add(pos(None, 2), cue(3, bad.clone())));
+    refused(
+        &mut ws,
+        Command::Paste {
+            at: pos(None, 2),
+            cues: vec![cue(3, bad)],
+        },
+    );
 }

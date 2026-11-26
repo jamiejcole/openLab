@@ -1114,11 +1114,16 @@ impl Checker {
             }
             CueKind::Fade {
                 duration,
+                curve,
                 levels,
                 geometry,
                 ..
             } => {
                 self.time(id, "duration", duration);
+                // A shape with a value it may not hold: the default shapes.
+                if curve.repair() {
+                    self.warn(id, IssueKind::InvalidValue { field: "curve" });
+                }
                 self.fade_levels(id, levels);
                 // Beyond its range: at its end (not finite: its default), with a warning each.
                 for field in geometry.repair() {

@@ -305,6 +305,12 @@ impl MixerController {
         self.shared.leaked_returns.load(Ordering::Relaxed)
     }
 
+    /// Fade cue ramps that moved linearly because their voice was already following as many
+    /// different Fade cue curves as it keeps (should stay zero).
+    pub fn shapeless_ramps(&self) -> u64 {
+        self.shared.shapeless_ramps.load(Ordering::Relaxed)
+    }
+
     /// Blocks in which commands had to wait because the mixer's pending set was full.
     pub fn pending_full_blocks(&self) -> u64 {
         self.shared.pending_full_blocks.load(Ordering::Relaxed)

@@ -7,7 +7,10 @@
 //! evaluation is within `openlab_audio::RAMP_TOLERANCE` of `ramp_value`, so a held or resumed
 //! fade continues from core's level to within that tolerance.
 
-use openlab_core::{FadeCurve, curve_shape, db_to_gain, ramp_gain};
+use openlab_core::{
+    AudioDomain, CurvePoint, CurveShape, CurveType, FadeCueCurve, FadeCurve, RampShape, ShapeEval,
+    curve_shape, db_to_gain, ramp_gain,
+};
 use proptest::prelude::*;
 
 const CURVES: [(FadeCurve, openlab_audio::Curve); 5] = [
@@ -120,5 +123,60 @@ fn edge_values_match_the_mixer() {
                 }
             }
         }
+    }
+}
+
+/// A Fade cue's curve as the engine hands it to the mixer: every knot and tangent the same.
+fn mixer_shape(r: &RampShape) -> openlab_audio::FadeShape {
+    let side = |e: &ShapeEval| {
+        let kind = match e.kind {
+            CurveType::SCurve => openlab_audio::ShapeKind::SCurve,
+            CurveType::Custom => openlab_audio::ShapeKind::Custom,
+            CurveType::Parametric => openlab_audio::ShapeKind::Parametric,
+            CurveType::Linear => openlab_audio::ShapeKind::Linear,
+        };
+        openlab_audio::ShapeSide::new(kind, e.parameter, &e.ts, &e.vs, &e.ms).unwrap()
+    };
+    let domain = match r.domain {
+        AudioDomain::Slider => openlab_audio::ShapeDomain::Slider,
+        AudioDomain::Decibel => openlab_audio::ShapeDomain::Decibel,
+        AudioDomain::Linear => openlab_audio::ShapeDomain::Linear,
+    };
+    openlab_audio::FadeShape::new(domain, r.floor_db, side(&r.rising), side(&r.falling))
+}
+
+proptest! {
+    #[test]
+    fn fade_cue_curves_match_the_mixer(
+        kind in 0usize..4,
+        domain in 0usize..3,
+        parameter in 0.01f64..100.0,
+        points in proptest::collection::vec((1u32..999, 0u32..=1000), 0..8),
+        from in 0.0f32..4.0,
+        to in 0.0f32..4.0,
+        len in 1u64..1_000_000,
+        pos in 0u64..1_100_000,
+        floor in -180.0f64..-40.0,
+    ) {
+        let kind = [CurveType::SCurve, CurveType::Custom, CurveType::Parametric, CurveType::Linear][kind];
+        let domain = [AudioDomain::Slider, AudioDomain::Decibel, AudioDomain::Linear][domain];
+        let mut points = points;
+        points.sort_by_key(|p| p.0);
+        points.dedup_by_key(|p| p.0);
+        let shape = CurveShape {
+            kind,
+            parameter,
+            points: points
+                .into_iter()
+                .map(|(t, v)| CurvePoint { t: f64::from(t) / 1000.0, v: f64::from(v) / 1000.0 })
+                .collect(),
+        };
+        let curve = FadeCueCurve { audio_domain: domain, rising: shape.clone(), falling: shape };
+        let core = RampShape::new(&curve, domain, floor);
+        let mixer = mixer_shape(&core);
+        prop_assert_eq!(
+            core.gain(from, to, pos, len).to_bits(),
+            mixer.value(from, to, pos, len).to_bits()
+        );
     }
 }

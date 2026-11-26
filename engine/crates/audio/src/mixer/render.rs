@@ -274,7 +274,7 @@ fn render_voice(
     // 1.0 is an identity, so skipping it keeps output independent of block segmentation, and a
     // voice nothing ducks pays nothing for the duck stage.
     let shapes = &mut s.shapes;
-    v.master.fill(vg, shapes);
+    v.master.fill_own(vg, shapes, &v.fade_shapes);
     if v.duck.is_ramping() || v.duck.current() != 1.0 {
         v.duck.fill(tmp);
         // A boost stops at the cap (but never takes the voice below its own master), so a
@@ -348,8 +348,10 @@ fn render_voice(
         channels,
         meter,
         width,
+        fade_shapes,
         ..
     } = v;
+    let own = &**fade_shapes;
     let (outs, ch) = (cue_out.len(), *channels);
     for (o, co) in cue_out.iter_mut().enumerate().take(*width) {
         let audible = (0..ch).any(|i| xp.get(i * outs + o).is_some_and(|p| !p.is_silent()));
@@ -366,7 +368,7 @@ fn render_voice(
         match co.steady() {
             Some(c) => og.iter_mut().zip(vg.iter()).for_each(|(g, v)| *g = c * v),
             None => {
-                co.fill(og, shapes);
+                co.fill_own(og, shapes, own);
                 og.iter_mut().zip(vg.iter()).for_each(|(g, v)| *g *= v);
             }
         }
@@ -381,7 +383,7 @@ fn render_voice(
             match p.steady() {
                 Some(g) => XGain::Steady(g),
                 None => {
-                    p.fill(tmp, shapes);
+                    p.fill_own(tmp, shapes, own);
                     XGain::Frames
                 }
             }
@@ -458,7 +460,10 @@ fn render_tail(
         .unwrap_or(usize::MAX)
         .min(len);
     let got = v.peek(p.done, n, Target::Input(block));
-    let (m, d) = (v.master.current(), v.duck.current());
+    let (m, d) = (
+        v.master.current_own(&mut s.shapes, &v.fade_shapes),
+        v.duck.current(),
+    );
     let ducked = if d > 1.0 {
         (m * d).min(v.duck_cap.current().max(m))
     } else {
@@ -515,8 +520,10 @@ fn mix_frozen(
         channels,
         meter,
         width,
+        fade_shapes,
         ..
     } = v;
+    let own = &**fade_shapes;
     let (src, stride, from) = if kept {
         (&*xbuf, *xstride, *xdone)
     } else {
@@ -524,13 +531,13 @@ fn mix_frozen(
     };
     let (outs, ch) = (cue_out.len(), *channels);
     for (o, co) in cue_out.iter().enumerate().take(*width) {
-        let co = co.current_in(shapes);
+        let co = co.current_own(shapes, own);
         // As in `render_voice`: an output nothing reaches costs nothing (Pause All on many
         // voices × outputs renders every tail in one block).
         if co == 0.0
             || (0..ch).all(|i| {
                 xp.get(i * outs + o)
-                    .is_none_or(|x| x.current_in(shapes) == 0.0)
+                    .is_none_or(|x| x.current_own(shapes, own) == 0.0)
             })
         {
             continue;
@@ -543,7 +550,10 @@ fn mix_frozen(
             .take(ch)
             .map(|c| c.get(from..).unwrap_or_default());
         mix_output(bo, acc, &mut [], inputs, vg, meter.get_mut(o), |i, _| {
-            let g = xp.get(i * outs + o).map_or(0.0, |x| x.current_in(shapes)) * co;
+            let g = xp
+                .get(i * outs + o)
+                .map_or(0.0, |x| x.current_own(shapes, own))
+                * co;
             if g == 0.0 {
                 XGain::Skip
             } else {

@@ -27,7 +27,7 @@ final class PastePropertiesRuleTests: XCTestCase {
         try cue(
             id,
             .object([
-                "type": .string("fade"), "duration": .double(5), "curve": .string("s_curve"),
+                "type": .string("fade"), "duration": .double(5), "curve": FadeCurveSpec().json,
                 "levels": .object(["master_db": .double(-10), "output_db": .array([]), "crosspoints": .array([])]),
             ]))
     }

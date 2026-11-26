@@ -32,9 +32,14 @@ const V0_EXAMPLE: &str = include_str!("../../../fixtures/show/v0-example.openlab
 /// The current example as an older fixture migrates to: the same show without its stages,
 /// Video cues and Target cue, with every cue output unnamed and no patch crosspoints or device-output levels,
 /// which only the current version's example has (optional keys and a new cue kind; no migration
-/// adds them).
+/// adds them), and its Fade on the curve its older curve name (logarithmic) becomes.
 fn example_older() -> Workspace {
     let mut ws = load_show(EXAMPLE).unwrap().workspace;
+    for cue in ws.cue_lists.iter_mut().flat_map(|l| l.cues.iter_mut()) {
+        if let CueKind::Fade { curve, .. } = &mut cue.kind {
+            *curve = FadeCueCurve::like(FadeCurve::Logarithmic);
+        }
+    }
     ws.stages.clear();
     ws.routes.clear();
     for list in &mut ws.cue_lists {
@@ -1038,6 +1043,46 @@ fn curve() -> impl Strategy<Value = FadeCurve> {
     ]
 }
 
+fn curve_shape() -> impl Strategy<Value = CurveShape> {
+    let kind = prop_oneof![
+        Just(CurveType::SCurve),
+        Just(CurveType::Custom),
+        Just(CurveType::Parametric),
+        Just(CurveType::Linear),
+    ];
+    // Distinct times inside (0, 1), sorted: a valid shape's points.
+    let points = vec((1u32..999, 0u32..=1000), 0..6).prop_map(|mut ps| {
+        ps.sort_by_key(|p| p.0);
+        ps.dedup_by_key(|p| p.0);
+        ps.into_iter()
+            .map(|(t, v)| CurvePoint {
+                t: f64::from(t) / 1000.0,
+                v: f64::from(v) / 1000.0,
+            })
+            .collect()
+    });
+    (kind, 1u32..=10_000, points).prop_map(|(kind, p, points)| CurveShape {
+        kind,
+        parameter: f64::from(p) / 100.0,
+        points,
+    })
+}
+
+fn fade_cue_curve() -> impl Strategy<Value = FadeCueCurve> {
+    let domain = prop_oneof![
+        Just(AudioDomain::Slider),
+        Just(AudioDomain::Decibel),
+        Just(AudioDomain::Linear),
+    ];
+    (domain, curve_shape(), curve_shape()).prop_map(|(audio_domain, rising, falling)| {
+        FadeCueCurve {
+            audio_domain,
+            rising,
+            falling,
+        }
+    })
+}
+
 fn fade_spec() -> impl Strategy<Value = FadeSpec> {
     (time(), curve()).prop_map(|(duration, curve)| FadeSpec { duration, curve })
 }
@@ -1142,7 +1187,7 @@ fn fade_kind() -> impl Strategy<Value = CueKind> {
     (
         target(),
         time(),
-        curve(),
+        fade_cue_curve(),
         levels,
         any::<bool>(),
         any::<bool>(),
@@ -2310,4 +2355,35 @@ fn a_bad_wall_clock_value_refuses_the_file_and_repeated_days_count_once() {
         Vec::<Weekday>::from(days),
         vec![Weekday::Monday, Weekday::Friday]
     );
+}
+
+#[test]
+fn a_fade_curve_and_its_audio_domain_survive_save_and_load() {
+    let curve = FadeCueCurve {
+        audio_domain: AudioDomain::Decibel,
+        rising: CurveShape {
+            kind: CurveType::Custom,
+            parameter: 1.0,
+            points: vec![CurvePoint { t: 0.2, v: 0.5 }, CurvePoint { t: 0.7, v: 0.9 }],
+        },
+        falling: CurveShape {
+            kind: CurveType::Parametric,
+            parameter: 3.5,
+            points: vec![CurvePoint { t: 0.4, v: 0.1 }],
+        },
+    };
+    let mut ws = load_show(EXAMPLE).unwrap().workspace;
+    let fade = ws
+        .cue_lists
+        .iter_mut()
+        .flat_map(|l| l.cues.iter_mut())
+        .find_map(|c| match &mut c.kind {
+            CueKind::Fade { curve, .. } => Some(curve),
+            _ => None,
+        })
+        .unwrap();
+    *fade = curve.clone();
+    let loaded = load_show(&save_show(&ws).unwrap()).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert_eq!(loaded.workspace, ws);
 }

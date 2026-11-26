@@ -317,7 +317,7 @@ fn a_fade_cue_ramps_a_running_voice() {
         CueKind::Fade {
             target: Some(id(1)),
             duration: secs(800),
-            curve: FadeCurve::Linear,
+            curve: openlab_core::FadeCueCurve::like(FadeCurve::Linear),
             levels: FadeLevels {
                 master_db: Some(20.0 * 0.5f64.log10()),
                 output_db: vec![],
