@@ -95,6 +95,27 @@ final class WorkspaceSettingsTests: XCTestCase {
         sc.close()
     }
 
+    /// Esc with the settings window or the patch editor key panics (the app's key monitor) and is then
+    /// taken by the window itself: a plain window's own cancelOperation answers Esc with macOS's
+    /// "no such key" beep, which no test can hear, so this checks the window answers it instead.
+    func testEscInTheSettingsWindowAndPatchEditorIsTakenWithNoBeep() async throws {
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        wc.footer.settingsButton.performClick(nil)
+        let sc = wc.settingsWindow
+        addTeardownBlock { @MainActor in sc.close() }
+        let patch = try XCTUnwrap(rig.store.model?.patches.first?.id)
+        let editor = PatchEditorWindowController(model: WorkspaceSettingsModel(store: rig.store), patch: patch)
+        let esc = #selector(NSResponder.cancelOperation(_:))
+        let beeping = class_getMethodImplementation(NSWindow.self, esc)
+        for window in [try XCTUnwrap(sc.window), try XCTUnwrap(editor.window)] {
+            XCTAssertNotEqual(
+                class_getMethodImplementation(Swift.type(of: window), esc), beeping, "\(window.title) takes Esc itself")
+            window.cancelOperation(nil)
+        }
+        XCTAssertTrue(sc.window?.isVisible == true, "Esc leaves the settings window open")
+    }
+
     func testTheFileMenuHasWorkspaceSettingsOnCommandComma() {
         let item = MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") }?.items
             .first { $0.title == loc("menu.file.workspaceSettings") }?.submenu?.items

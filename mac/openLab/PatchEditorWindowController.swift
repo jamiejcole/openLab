@@ -109,7 +109,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     init(model: WorkspaceSettingsModel, patch: ModelID) {
         self.model = model
         patchID = patch
-        let window = NSWindow(
+        let window = PanicKeyWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 540),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.identifier = NSUserInterfaceItemIdentifier(AX.patchEditorWindow)

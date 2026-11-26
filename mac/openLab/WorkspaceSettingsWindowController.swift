@@ -139,7 +139,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         videoPane = VideoSettingsPane(store: store, section: .outputs)
         videoRoutingPane = VideoSettingsPane(store: store, section: .routing)
         videoDevicesPane = VideoSettingsPane(store: store, section: .devices)
-        let window = NSWindow(
+        let window = PanicKeyWindow(
             // Wide enough by default for a device's whole name in the patch table, also as the
             // system output's choice names it.
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 540),
