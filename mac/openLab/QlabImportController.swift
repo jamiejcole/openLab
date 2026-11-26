@@ -401,7 +401,7 @@ final class QlabNotesController: NSObject {
 
     init(info: QlabNotesInfo) {
         self.info = info
-        window = NSWindow(
+        window = PanicKeyWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 420), styleMask: [.titled], backing: .buffered,
             defer: false)
         super.init()

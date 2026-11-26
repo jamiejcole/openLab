@@ -65,7 +65,7 @@ enum PlayheadStyle {
     }
 }
 
-/// The yellow of every caution mark (paused, loaded, fading, stopping, a warning): the system yellow on a dark
+/// The yellow of every caution mark (paused, loaded, a warning): the system yellow on a dark
 /// list, a deeper golden yellow on a light one, where the system yellow is too pale to read on white.
 enum MarkColour {
     /// White on the dark list; the text colour on a light one.

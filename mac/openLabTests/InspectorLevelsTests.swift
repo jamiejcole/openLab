@@ -1684,8 +1684,9 @@ final class InspectorLevelsTests: XCTestCase {
         }
         let falling = modelKind(Self.fade)?["curve"]?["falling"]?["points"]?.arrayValue?.first
         XCTAssertEqual(falling?["t"]?.doubleValue ?? 0, 0.5, accuracy: 0.01, "mirrored onto the falling curve")
-        XCTAssertEqual(r.value(at: 0.5), 0.75, accuracy: 0.01, "drawn through the point")
-        XCTAssertEqual(s.fallingView.value(at: 0.5), 0.75, accuracy: 0.01)
+        // QLab's smooth curve near its one point: half way between the point and the line's ends.
+        XCTAssertEqual(r.value(at: 0.5), 0.625, accuracy: 0.01, "drawn near the point, as QLab's")
+        XCTAssertEqual(s.fallingView.value(at: 0.5), 0.625, accuracy: 0.01)
 
         // Delete removes the chosen point; Reset Curve clears the rest.
         r.press(at: r.location(FadeCurveSpec.Point(t: 0.2, v: 0.4)))

@@ -53,7 +53,7 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
 
     init(store: WorkspaceStore, title: String) {
         self.store = store
-        let window = NSWindow(
+        let window = PanicKeyWindow(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 440),
             styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

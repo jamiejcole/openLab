@@ -204,7 +204,7 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
     static let leastSize = NSSize(width: 560, height: 380)
 
     init() {
-        let window = NSWindow(
+        let window = PanicKeyWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = loc("launcher.title")

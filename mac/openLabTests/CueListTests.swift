@@ -549,7 +549,7 @@ final class CueListTests: XCTestCase {
     // MARK: State icons (UI-04)
 
     /// Each state the list marks has its own drawing; a cue in its pre-wait or post-wait shows the running mark
-    /// (QLab has no mark for a wait), its label still naming the wait.
+    /// (QLab has no mark for a wait), its label still naming the wait, and a cue a Fade cue is fading shows it too.
     func testEveryStateHasALabelAndEachMarkedStateItsOwnDrawing() {
         var drawings = Set<String>()
         for state in WireCueState.allCases {
@@ -563,14 +563,18 @@ final class CueListTests: XCTestCase {
             let icon = try? XCTUnwrap(style.icon, "\(state)")
             XCTAssertEqual(icon?.resolvesToSymbol, true, "\(state)")
             XCTAssertNil(icon?.symbol, "\(state) is drawn, not a symbol")
-            if state == .preWaiting || state == .postWaiting {
+            if state == .preWaiting || state == .postWaiting || state == .fading {
                 XCTAssertEqual(icon, .stateRunning, "\(state) shows the running mark")
                 continue
             }
             XCTAssertTrue(drawings.insert(icon?.drawing ?? "").inserted, "\(state) shares a drawing")
         }
+        // A cue a Fade cue is fading reads as running (QLab 5 leaves its mark alone); every other
+        // state has a label of its own.
+        XCTAssertEqual(CueStateStyle.style(for: .fading).label, CueStateStyle.style(for: .running).label)
         XCTAssertEqual(
-            Set(WireCueState.allCases.map { CueStateStyle.style(for: $0).label }).count, WireCueState.allCases.count)
+            Set(WireCueState.allCases.map { CueStateStyle.style(for: $0).label }).count,
+            WireCueState.allCases.count - 1)
     }
 
     func testEveryBrokenReasonHasAString() {

@@ -1054,6 +1054,17 @@ fn group_modes_continue_modes_and_triggers_convert() {
     assert!(go.modifiers.shift);
     assert_eq!(s.hotkeys.pause_all.as_ref().unwrap().key, "[");
     assert_eq!(s.hotkeys.stop_all, None);
+    // QLab's key map has actions openLab lacks (audition, cycling the target type): dropped
+    // without a note (owner, 2026-11-26).
+    assert!(
+        import
+            .report
+            .notes
+            .iter()
+            .all(|n| !n.detail.contains("shortcut")),
+        "{:?}",
+        import.report.notes
+    );
 }
 
 #[test]
