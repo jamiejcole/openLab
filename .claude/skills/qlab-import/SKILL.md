@@ -49,3 +49,12 @@ QLab 5.6.5 on the Mac, unlicensed. QLab has no OSC to make or save-as a workspac
 4. For fields with no OSC: edit the saved archive's objects directly (Python `plistlib`; fields QLab stores as objects must stay objects), then open it in QLab again and `/save`, so the fixture is what QLab makes of it. Point extra audio patches at a device this Mac lacks: QLab hangs opening a loopback device.
 5. Scrub: blank every `F53Alias` `bookmark` (it names the volume), replace this Mac's audio device names, zero the display vendor, model and serial numbers; check every string in both archives. Open the scrubbed copy in QLab once (without saving) to see it still loads and finds its media.
 6. When QLab shows an alert, `/usr/bin/log show --predicate 'process == "QLab"'` names the exception.
+
+## The app's side
+- File > New Workspace from QLab File… (directly under New Workspace; `AppController+QlabImport`, off while any workspace is in Show Mode: its windows are modal) picks a `.qlab5`, sends `inspect_qlab` on the app connection (`EngineSession.inspectQlab`, through the document gate), then `QlabImportController`.
+  - One modal window, `StandBack.runModal`): the unsupported-cues step only when the report lists any, then the outputs step.
+  - `import_qlab` follows; the doc opens as a new, unsaved workspace and `QlabNotesController` shows the counts and the report's notes (`qlab.note.<kind>` words, the engine's English `detail` after them), with Save Notes… writing plain text.
+  - A refusal is an alert in our words (`qlab.error.*`).
+- Logic is in `QlabImportModel.swift`: rows start as Delete; the default button is Delete All (all Delete), Leave All as Placeholders (all Placeholder), Continue once they differ (the other bulk button goes). Uniform rows send `other_cues` and no list; mixed rows send the cues not of the majority action (a tie goes to placeholder).
+- Outputs: audio by `device_name` against `list_devices` (exact, then ignoring case), a system-output patch to System Output, video by `screen` against `list_displays` names; tags Matched / Device not found (gone once the operator picks something else). A mapping takes channels 0..min(outputs, device channels).
+- Tests: `QlabImportTests` (the real-engine import skips without `engine/fixtures/qlab`); scenarios `qlab-import-dark|light` (`focus` `qlab-import`, `qlab-notes`, scenario key `qlab_file`).

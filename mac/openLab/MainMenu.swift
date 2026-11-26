@@ -94,6 +94,7 @@ enum MainMenu {
             "menu.file",
             [
                 item("menu.file.new", #selector(AppDelegate.newWorkspace(_:)), "n"),
+                item("menu.file.newFromQlab", #selector(AppDelegate.newWorkspaceFromQlab(_:))),
                 item("menu.file.open", #selector(AppDelegate.openWorkspace(_:)), "o"),
                 recentItem,
                 item("menu.file.recover", #selector(AppDelegate.recoverAutosaves(_:))),

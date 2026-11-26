@@ -330,3 +330,5 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
   - OutputOverrides is a palette (`NonKeyPanel`) and the media-copy notice a footer line, not alerts.
 - The inspector remembers one tab for the window: `chosenTab` is set only from `tabView(_:didSelect:)` (not while `syncTabs` rebuilds), and `shownTab(chosen:wanted:)` (InspectorTabs.swift) falls back to Basics for a cue that lacks it without changing `chosenTab`; it is not per cue.
   - Tabs with the same user-facing title are one choice (`tabKind`: a Fade's `fadeLevels` and `fadeGeometry` are `levels` and `geometry`), so Levels chosen on an Audio cue shows on a Fade and back. `LevelMatrixView.captionGap` separates the names row from the inputs/crosspoints captions.
+
+- File > New Workspace from QLab File… (`AppController+QlabImport`, `QlabImportController`, `QlabNotesController`; skill `qlab-import`): its windows are modal through `StandBack.runModal(_ window:)`, so the item is off while any workspace is in Show Mode. Scenario `focus` `qlab-import` / `qlab-notes` (scenario key `qlab_file`) draws them off screen.

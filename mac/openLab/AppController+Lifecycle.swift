@@ -57,7 +57,7 @@ extension AppController {
     /// Runs a new/open call: another workspace opens beside the ones open (protocol 2), so nothing
     /// unsaved is in the way.
     @discardableResult
-    private func opened(
+    func opened(
         onFailure: ((EngineError) -> Void)? = nil, _ call: () async -> Result<ModelID, EngineError>
     ) async -> Result<ModelID, EngineError> {
         let result = await call()

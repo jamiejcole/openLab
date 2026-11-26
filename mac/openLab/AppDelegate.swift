@@ -119,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @MainActor @objc func newWorkspace(_ sender: Any?) { Task { await appController.newWorkspace() } }
+    @MainActor @objc func newWorkspaceFromQlab(_ sender: Any?) { Task { await appController.newWorkspaceFromQlab() } }
     @MainActor @objc func openWorkspace(_ sender: Any?) { Task { await appController.openWorkspace() } }
     @MainActor @objc func saveWorkspace(_ sender: Any?) {
         guard let store = appController.frontController?.store else { return }
@@ -317,6 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item.title = loc(
                 window.styleMask.contains(.fullScreen) ? "menu.view.exitFullScreen" : "menu.view.enterFullScreen")
             return true
+        case #selector(newWorkspaceFromQlab(_:))?: return !appController.qlabImportBlocked
         case #selector(showWorkspaceInFinder(_:))?: return appController.canShowFrontWorkspaceInFinder
         case #selector(copyMediaIntoShowFolder(_:))?: return appController.frontController?.canCopyMedia ?? false
         case #selector(pasteLevels(_:))?:

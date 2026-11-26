@@ -18,6 +18,9 @@ final class MainMenuTests: XCTestCase {
     func testFileAndToolsFollowQLabsOrderAndTheAppMenuHasServices() throws {
         let menus = MainMenu.make()
         let file = try XCTUnwrap(menus.bar.items[1].submenu).items.map { $0.isSeparatorItem ? "-" : $0.title }
+        // New Workspace from QLab File sits directly under New Workspace.
+        let fileNew = try XCTUnwrap(file.firstIndex(of: loc("menu.file.new")))
+        XCTAssertEqual(file[fileNew + 1], loc("menu.file.newFromQlab"))
         XCTAssertEqual(
             Array(file.suffix(4)),
             [loc("menu.file.saveAs"), "-", loc("menu.file.showFiles"), loc("menu.file.workspaceSettings")])

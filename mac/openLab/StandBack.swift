@@ -45,6 +45,14 @@ final class StandBack {
         return panel.runModal()
     }
 
+    /// A window of the app's own run modally (the QLab import steps), the stage standing back
+    /// meanwhile; `NSApp.stopModal(withCode:)` ends it.
+    static func runModal(_ window: NSWindow) -> NSApplication.ModalResponse {
+        shared.begin()
+        defer { shared.end() }
+        return NSApp.runModal(for: window)
+    }
+
     /// `alert` as a sheet on `window`, the stage standing back until it is answered or `window`
     /// closes.
     static func beginSheet(
