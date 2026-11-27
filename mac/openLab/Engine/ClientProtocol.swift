@@ -266,7 +266,7 @@ enum Request: Hashable, Sendable, Codable {
     case listRouteDisplays
     /// VID-01: shows the workspace's output route on a display (`listDisplays` id) on this machine;
     /// nil leaves it on none. Kept in the engine's machine settings, not the show file; no undo step.
-    case setRouteDisplay(route: ModelID, display: String?)
+    case setRouteDisplay(route: ModelID, display: String?, partial: DisplayPart? = nil)
     /// Opens (or brings to the front) or closes the workspace's stage's monitor window: a live
     /// copy of the stage the stage host draws in a window of its own.
     case setStageMonitor(stage: ModelID, open: Bool)
@@ -369,9 +369,10 @@ enum Request: Hashable, Sendable, Codable {
             return ("waveform", [("cue", cue), ("start", start), ("end", end), ("buckets", buckets)])
         case .listDisplays: return ("list_displays", [])
         case .listRouteDisplays: return ("list_route_displays", [])
-        case .setRouteDisplay(let route, let display):
+        case .setRouteDisplay(let route, let display, let partial):
             f.append(("route", route))
             opt(&f, "display", display)
+            opt(&f, "partial", partial)
             return ("set_route_display", f)
         case .setStageMonitor(let stage, let open): return ("set_stage_monitor", [("stage", stage), ("open", open)])
         case .setRouteGuides(let routes, let show): return ("set_route_guides", [("routes", routes), ("show", show)])
@@ -470,7 +471,8 @@ enum Request: Hashable, Sendable, Codable {
         case "set_route_display":
             self = .setRouteDisplay(
                 route: try c.decode(ModelID.self, forKey: "route"),
-                display: try c.decodeIfPresent(String.self, forKey: "display"))
+                display: try c.decodeIfPresent(String.self, forKey: "display"),
+                partial: try c.decodeIfPresent(DisplayPart.self, forKey: "partial"))
         case "set_stage_monitor":
             self = .setStageMonitor(
                 stage: try c.decode(ModelID.self, forKey: "stage"), open: try c.decode(Bool.self, forKey: "open"))

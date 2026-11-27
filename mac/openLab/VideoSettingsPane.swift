@@ -12,11 +12,13 @@ struct StageRow: Equatable {
     var height: Int
     /// A stage's: the displays it reaches through its regions' routes, in route order.
     var devices: [String] = []
-    /// A route's scaling (`centre`, `fit`, `stretch`, `fill`).
+    /// A route's scaling (`centre`, `fit`, `stretch`, `fill`), set in its editor.
     var scaling: String = "fill"
     /// A route's display chosen on this machine (an id `list_displays` gives), and its name then.
     var display: String?
     var displayName: String?
+    /// The part of that display the route is shown on (a splitter's output); nil: the whole display.
+    var partial: DisplayPart?
     /// Why the row's route (or every route of the stage) cannot be seen now, in words; nil when
     /// it is shown or shows nothing between cues.
     var warning: String?
@@ -34,7 +36,8 @@ struct StageRow: Equatable {
 ///   manual p. 157) and remove it; above them a pop-up that adds an empty stage or one on a route.
 /// - Output Routing: the workspace's output routes, one row each with a handle that drags it to
 ///   another place, its name (typed in place), its size, the display it is shown on on this machine
-///   (QLab 5 manual p. 232), its scaling, its alignment guides (a box that shows them on the
+///   (QLab 5 manual p. 232), its layout on that display (the whole of it, or one part of a display a
+///   splitter presents as one: `layoutPopups`, p. 234; its scaling is in its editor), its alignment guides (a box that shows them on the
 ///   route's display and a swatch for their colour, p. 233), a button that opens its editor
 ///   (`RouteEditorController`) and one that removes it; a route that cannot be seen says why under
 ///   its row. Above them a
@@ -52,7 +55,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// A column of a section's table.
     enum Col: Equatable {
-        case handle, name, size, display, scaling, guides, devices, edit, monitor, remove, device, resolution, rate
+        case handle, name, size, display, layout, guides, devices, edit, monitor, remove, device, resolution, rate
 
         /// The key of its title (`settings.video.col.<key>`).
         var key: String {
@@ -61,7 +64,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             case .name: return "name"
             case .size: return "size"
             case .display: return "display"
-            case .scaling: return "scaling"
+            case .layout: return "layout"
             case .guides: return "guides"
             case .devices: return "devices"
             case .edit: return "edit"
@@ -79,7 +82,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             case .name: return 90
             case .size: return 72
             case .display: return VideoSettingsPane.leastDisplayWidth
-            case .scaling: return 80  // "Centre" whole in a small pop-up
+            case .layout: return 84  // "4 high · 4" whole in a small pop-up
             case .guides: return VideoSettingsPane.guidesWidth
             case .devices: return VideoSettingsPane.leastDisplayWidth
             case .edit: return 34
@@ -100,7 +103,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     let view: PageStack
     /// Adds a stage (empty, or on a route) or a route (on a display, or on none).
     let addPopup = NSPopUpButton(frame: .zero, pullsDown: true)
-    /// Output Routing: opens the Mac's Displays settings.
+    /// Output Routing and Output Devices: opens the Mac's Displays settings.
     let displaysButton = NSButton(title: loc("settings.video.displaysButton"), target: nil, action: nil)
     /// The table, built afresh on each draw: an `NSGridView` cannot remove a row holding merged
     /// cells (a warning line), so rows are never removed from it.
@@ -130,7 +133,9 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private(set) var sizeLabels: [NSTextField] = []
     private(set) var deviceCells: [NSTextField] = []
     private(set) var displayPopups: [NSPopUpButton] = []
-    private(set) var scalingPopups: [NSPopUpButton] = []
+    /// Output Routing: each route's layout pop-up, which lays it out on the whole display or on a
+    /// part of it. A pull-down whose title is the layout now; its items are the layouts.
+    private(set) var layoutPopups: [NSPopUpButton] = []
     /// Output Routing: each route's guides box and colour swatch.
     private(set) var guideChecks: [NSButton] = []
     private(set) var guideSwatches: [GuideSwatch] = []
@@ -170,7 +175,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     static func columns(of section: Section) -> [Col] {
         switch section {
         case .outputs: return [.name, .size, .devices, .edit, .monitor, .remove]
-        case .routing: return [.handle, .name, .size, .display, .scaling, .guides, .edit, .remove]
+        case .routing: return [.handle, .name, .size, .display, .layout, .guides, .edit, .remove]
         case .devices: return [.device, .name, .resolution, .rate]
         }
     }
@@ -242,7 +247,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         note.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         note.setAX("\(Self.id)-\(noteKey)-note")
         var topViews: [NSView] = section == .devices ? [note] : [addPopup, note]
-        if section == .routing {
+        if section != .outputs {
             let spring = NSView()
             spring.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             topViews += [spring, displaysButton]
@@ -418,6 +423,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
                     height: Int(r.raw["height"]?.doubleValue ?? 0),
                     scaling: r.raw["scaling"]?.stringValue ?? "fill",
                     display: entry?.mapping?.display, displayName: entry?.mapping?.name,
+                    partial: entry?.mapping?.partial,
                     // With no stage host to report a state (no video output here), a route with no
                     // display still says so.
                     warning: entry?.state.flatMap(Self.warning)
@@ -508,7 +514,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         sizeLabels = []
         deviceCells = []
         displayPopups = []
-        scalingPopups = []
+        layoutPopups = []
         guideChecks = []
         guideSwatches = []
         handles = []
@@ -580,11 +586,11 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
                 let popup = displayPopup(row, tag: i, enabled: enabled)
                 popup.setAX("\(Self.id)-display-\(n)", label: "\(row.name), \(loc("settings.video.col.display"))")
                 displayPopups.append(popup)
-                let scaling = scalingPopup(row, tag: i, enabled: enabled)
-                scaling.setAX("\(Self.id)-scaling-\(n)", label: "\(row.name), \(loc("settings.video.col.scaling"))")
-                scalingPopups.append(scaling)
+                let layout = layoutPopup(row, tag: i, enabled: enabled)
+                layout.setAX("\(Self.id)-layout-\(n)", label: "\(row.name), \(loc("settings.video.col.layout"))")
+                layoutPopups.append(layout)
                 let guides = guidesCell(row, tag: i, enabled: enabled)
-                grid.addRow(with: [handle, cell, size, popup, scaling, guides, edit, remove])
+                grid.addRow(with: [handle, cell, size, popup, layout, guides, edit, remove])
             } else {
                 nameWidths.append((Self.widthConstraint(of: name, nameWidth), 0))
                 let devices = Self.cellLabel(row.devices.joined(separator: ", "), key: "devices", n: n)
@@ -790,20 +796,108 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         popup.select(selected)
     }
 
-    /// The route's scaling, chosen beside its display (QLab 5 manual p. 233).
-    private func scalingPopup(_ row: StageRow, tag: Int, enabled: Bool) -> NSPopUpButton {
-        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// What a layout choice sends: route `route` on its display's part `part`, or on the whole
+    /// display (nil).
+    struct LayoutPick {
+        let route: ModelID
+        let part: DisplayPart?
+    }
+
+    /// The route's layout on its display (QLab 5 manual p. 234: a route can use one part of a
+    /// display that a splitter presents as one large display, and behave as though that part were
+    /// a whole display): a pull-down whose title says the layout now. Its scaling is in its editor.
+    private func layoutPopup(_ row: StageRow, tag: Int, enabled: Bool) -> NSPopUpButton {
+        let popup = NSPopUpButton(frame: .zero, pullsDown: true)
         popup.controlSize = .small
         popup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        Self.fillScalings(popup, chosen: row.scaling)
+        Self.fillLayouts(popup, route: row.id, chosen: row.partial, target: self, action: #selector(layoutPicked(_:)))
         popup.tag = tag
         popup.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
-        popup.target = self
-        popup.action = #selector(scalingChosen(_:))
-        popup.isEnabled = enabled
-        popup.toolTip = loc("settings.video.scaling.tip")
-        _ = Self.widthConstraint(of: popup, Col.scaling.width)
+        // A layout is a part of the display the route is on: with none, or one not connected now,
+        // there is nothing to lay out.
+        popup.isEnabled = enabled && row.display != nil && displays.contains { $0.id == row.display }
+        popup.toolTip = loc("settings.video.layout.tip")
+        _ = Self.widthConstraint(of: popup, Col.layout.width)
         return popup
+    }
+
+    /// The words for a layout: "Full", or "2 wide · 1" (the layout and the part).
+    static func layoutTitle(_ part: DisplayPart?) -> String {
+        guard let part else { return loc("settings.video.layout.full") }
+        return String(
+            format: loc("settings.video.layout.titled"), layoutName(columns: part.columns, rows: part.rows),
+            part.index + 1)
+    }
+
+    /// "2 wide", "3 high" or "2 × 2" (columns by rows).
+    static func layoutName(columns: Int, rows: Int) -> String {
+        if rows == 1 { return String(format: loc("settings.video.layout.wide"), columns) }
+        if columns == 1 { return String(format: loc("settings.video.layout.high"), rows) }
+        return String(format: loc("settings.video.layout.grid"), columns, rows)
+    }
+
+    /// Fills the pull-down `popup` of route `route`: its title (the layout `chosen`), then Full, and
+    /// the layouts: wide, high, and the grids by their rows, each a sub-menu of its parts, the
+    /// chosen one ticked (the menu QLab 5 offers beside a route's device).
+    static func fillLayouts(
+        _ popup: NSPopUpButton, route: ModelID, chosen: DisplayPart?, target: AnyObject, action: Selector
+    ) {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(NSMenuItem(title: layoutTitle(chosen), action: nil, keyEquivalent: ""))
+        func leaf(_ title: String, _ part: DisplayPart?, in menu: NSMenu) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = target
+            item.representedObject = LayoutPick(route: route, part: part)
+            item.state = part == chosen ? .on : .off
+            menu.addItem(item)
+        }
+        func header(_ title: String) {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+        func group(_ layouts: [(columns: Int, rows: Int)]) {
+            for l in layouts {
+                let item = NSMenuItem(
+                    title: layoutName(columns: l.columns, rows: l.rows), action: nil, keyEquivalent: "")
+                let parts = NSMenu()
+                parts.autoenablesItems = false
+                for index in 0..<(l.columns * l.rows) {
+                    leaf(
+                        String(format: loc("settings.video.layout.part"), index + 1),
+                        DisplayPart(columns: l.columns, rows: l.rows, index: index), in: parts)
+                }
+                item.submenu = parts
+                item.state = chosen.map { $0.columns == l.columns && $0.rows == l.rows } == true ? .on : .off
+                menu.addItem(item)
+            }
+        }
+        leaf(loc("settings.video.layout.full"), nil, in: menu)
+        menu.addItem(.separator())
+        header(loc("settings.video.layout.horizontal"))
+        group(DisplayPart.wide)
+        menu.addItem(.separator())
+        header(loc("settings.video.layout.vertical"))
+        group(DisplayPart.high)
+        for rows in 2...4 {
+            menu.addItem(.separator())
+            header(String(format: loc("settings.video.layout.rows"), rows))
+            group(DisplayPart.grids(rows: rows))
+        }
+        popup.menu = menu
+    }
+
+    /// A layout picked: the route's display kept, its part changed (this Mac's choice, no undo step).
+    @objc private func layoutPicked(_ sender: NSMenuItem) {
+        guard let pick = sender.representedObject as? LayoutPick else { return }
+        let typed = endTyping()
+        guard let row = shown?.first(where: { $0.id == pick.route }), let display = row.display,
+            pick.part != row.partial
+        else { return }
+        commit(row.id, after: typed) { [store] in
+            await store.setRouteDisplay(row.id, display: display, partial: pick.part)
+        }
     }
 
     /// A route's guides: a box that shows them on its display, and the swatch of their colour
@@ -1116,16 +1210,6 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             }
             self?.colourSending = false
             return result
-        }
-    }
-
-    @objc private func scalingChosen(_ sender: NSPopUpButton) {
-        let scaling = sender.selectedItem?.representedObject as? String
-        let typed = endTyping()
-        guard let row = row(of: sender), let scaling, scaling != row.scaling else { return }
-        commit(row.id, after: typed) { [store] in
-            await store.send(
-                command: .setRoute(row.id, .object(["type": .string("scaling"), "value": .string(scaling)])))
         }
     }
 
