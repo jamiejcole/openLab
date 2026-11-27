@@ -530,11 +530,13 @@ fn crosspoints_and_device_outputs_multiply_into_the_matrix() {
             device_output: 0,
             level_db: -10.0,
             mute: false,
+            solo: false,
         },
         openlab_core::DeviceOutputLevel {
             device_output: 3,
             level_db: 0.0,
             mute: true,
+            solo: false,
         },
     ];
     let s = settings(&ws, vec![0, 1]);
@@ -559,6 +561,55 @@ fn crosspoints_and_device_outputs_multiply_into_the_matrix() {
     assert_eq!(p.routing_beyond(D0, pid()), Some((10, 4)));
 }
 
+/// A soloed device output silences the patch's other device outputs (their mapped route and their
+/// crosspoints alike) and leaves its own at its level; a muted one stays silent soloed; taking the
+/// solo off brings the others back.
+#[test]
+fn a_soloed_device_output_silences_the_others_of_its_patch() {
+    let mut ws = ws_with(vec![out(0.0, false, false), out(0.0, false, false)]);
+    ws.patches[0].crosspoints = vec![xp(0, 1, -6.0)];
+    let level = |device_output, mute, solo| openlab_core::DeviceOutputLevel {
+        device_output,
+        level_db: 0.0,
+        mute,
+        solo,
+    };
+    let s = settings(&ws, vec![0, 1]);
+    let mut p = Patches::new(1, 2, 2);
+    p.sync(D0, &ws, &s, &device(2), None, &idle());
+    let bits = |v: &[f32]| v.iter().map(|g| g.to_bits()).collect::<Vec<_>>();
+    // Cue output 0 goes to device output 0 (the mapping) and to 1 at -6 dB (a crosspoint); cue
+    // output 1 goes to device output 1 (the mapping).
+    // The test patch's master is -6 dB.
+    let (o, x) = (db_to_gain(-6.0), db_to_gain(-6.0) * db_to_gain(-6.0));
+    let open = bits(&p.sent[&(0, 0)]);
+    assert_eq!(open, bits(&[o, x, 0.0, o]));
+    ws.patches[0].device_outputs = vec![level(0, false, true)];
+    p.sync(D0, &ws, &s, &device(2), None, &idle());
+    assert_eq!(
+        bits(&p.sent[&(0, 0)]),
+        bits(&[o, 0.0, 0.0, 0.0]),
+        "only device output 0 is heard"
+    );
+    ws.patches[0].device_outputs = vec![level(1, false, true)];
+    p.sync(D0, &ws, &s, &device(2), None, &idle());
+    assert_eq!(
+        bits(&p.sent[&(0, 0)]),
+        bits(&[0.0, x, 0.0, o]),
+        "only device output 1 is heard, with what it carried"
+    );
+    ws.patches[0].device_outputs = vec![level(1, true, true)];
+    p.sync(D0, &ws, &s, &device(2), None, &idle());
+    assert_eq!(
+        bits(&p.sent[&(0, 0)]),
+        bits(&[0.0; 4]),
+        "mute wins over solo"
+    );
+    ws.patches[0].device_outputs = vec![];
+    p.sync(D0, &ws, &s, &device(2), None, &idle());
+    assert_eq!(bits(&p.sent[&(0, 0)]), open, "no solo: all are heard");
+}
+
 /// A resize under a playing voice retires its slot; the retired slot still follows the patch's
 /// crosspoints and device-output levels for the outputs both sizes have.
 #[test]
@@ -579,6 +630,7 @@ fn a_retired_slot_follows_crosspoint_and_device_output_edits() {
         device_output: 0,
         level_db: 0.0,
         mute: true,
+        solo: false,
     }];
     p.sync(
         D0,

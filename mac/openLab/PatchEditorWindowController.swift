@@ -62,6 +62,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     /// The strip over each device output's column of the routing grid: fader, mute and level box.
     private(set) var deviceFaders: [LevelFader] = []
     private(set) var deviceMutes: [NSButton] = []
+    /// Beside each mute: the S toggle. While any is on, the patch's other device outputs are silent.
+    private(set) var deviceSolos: [NSButton] = []
     private(set) var deviceFields: [NSTextField] = []
     private let deviceGrid = NSGridView()
 
@@ -548,7 +550,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         let edge = matrix.visibleRect.minX + PatchRoutingView.crossX
         for d in deviceFaders.indices {
             let gone = PatchRoutingView.stripMidX(column: d) + PatchRoutingView.cellW / 2 <= edge
-            for v in [deviceFaders[d], deviceMutes[d], deviceFields[d]] as [NSView] where v.isHidden != gone {
+            for v in [deviceFaders[d], deviceMutes[d], deviceSolos[d], deviceFields[d]] as [NSView]
+            where v.isHidden != gone {
                 v.isHidden = gone
             }
         }
@@ -558,6 +561,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         let midX = PatchRoutingView.stripMidX(column: d)
         fader.frame = PatchRoutingView.faderFrame(midX: midX)
         deviceMutes[d].frame = PatchRoutingView.muteFrame(midX: midX)
+        deviceSolos[d].frame = PatchRoutingView.soloFrame(midX: midX)
         deviceFields[d].frame = PatchRoutingView.stripBoxFrame(midX: midX)
     }
 
@@ -657,6 +661,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             deviceMutes[d].state = setting.mute ? .on : .off
             Self.paintMute(deviceMutes[d], muted: setting.mute)
             deviceMutes[d].isEnabled = editable
+            deviceSolos[d].state = setting.solo ? .on : .off
+            Self.paintSolo(deviceSolos[d], soloed: setting.solo)
+            deviceSolos[d].isEnabled = editable
         }
     }
 
@@ -676,11 +683,26 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             ])
     }
 
+    /// A soloed output's button is filled yellow with a dark S, as the mute's is red.
+    static func paintSolo(_ button: NSButton, soloed: Bool) {
+        button.wantsLayer = true
+        button.isBordered = !soloed
+        button.layer?.backgroundColor = soloed ? NSColor.systemYellow.cgColor : nil
+        button.layer?.cornerRadius = soloed ? 3 : 0
+        button.attributedTitle = NSAttributedString(
+            string: loc("patchEditor.soloShort"),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 9, weight: .semibold),
+                .foregroundColor: soloed ? NSColor.black : NSColor.labelColor,
+            ])
+    }
+
     private func rebuildStrips(_ columns: Int) {
-        for v in deviceFaders as [NSView] + deviceMutes + deviceFields { v.removeFromSuperview() }
+        for v in deviceFaders as [NSView] + deviceMutes + deviceSolos + deviceFields { v.removeFromSuperview() }
         if let typed = typedField, deviceFields.contains(where: { $0 === typed }) { typedField = nil }
         deviceFaders = []
         deviceMutes = []
+        deviceSolos = []
         deviceFields = []
         for d in 0..<columns {
             let name = String(format: loc("patchEditor.deviceOutput"), d + 1)
@@ -705,15 +727,23 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             mute.font = .systemFont(ofSize: 9, weight: .semibold)
             mute.tag = d
             mute.setAX("\(AX.patchEditorDeviceMute)-\(d + 1)", label: "\(name) \(loc("patchEditor.mute"))")
+            let solo = NSButton(title: loc("patchEditor.soloShort"), target: self, action: #selector(soloClicked(_:)))
+            solo.setButtonType(.pushOnPushOff)
+            solo.bezelStyle = .smallSquare
+            solo.controlSize = .mini
+            solo.font = .systemFont(ofSize: 9, weight: .semibold)
+            solo.tag = d
+            solo.setAX("\(AX.patchEditorDeviceSolo)-\(d + 1)", label: "\(name) \(loc("patchEditor.solo"))")
             let field = LevelBoxField()
             field.alignment = .center
             field.font = .monospacedDigitSystemFont(ofSize: Self.levelFontSize, weight: .regular)
             field.controlSize = .mini
             field.delegate = self
             field.setAX("\(AX.patchEditorDeviceField)-\(d + 1)", label: "\(name) \(loc("patchEditor.level"))")
-            for v in [fader, mute, field] as [NSView] { matrixHeader.addSubview(v) }
+            for v in [fader, mute, solo, field] as [NSView] { matrixHeader.addSubview(v) }
             deviceFaders.append(fader)
             deviceMutes.append(mute)
+            deviceSolos.append(solo)
             deviceFields.append(field)
             placeStrip(d, fader)
         }
@@ -824,6 +854,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
 
     @objc private func muteClicked(_ sender: NSButton) {
         send(.setPatchDeviceOutputMute(patchID, deviceOutput: sender.tag, mute: sender.state == .on))
+    }
+
+    @objc private func soloClicked(_ sender: NSButton) {
+        send(.setPatchDeviceOutputSolo(patchID, deviceOutput: sender.tag, solo: sender.state == .on))
     }
 
     @objc private func deviceChosen() {

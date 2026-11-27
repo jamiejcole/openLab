@@ -450,6 +450,81 @@ final class CopyMediaTests: XCTestCase {
         await assertEventually { (try? self.commandEnabled(wc)) == true }
     }
 
+    /// Checklist A2: a never-saved workspace with files (as an import's, opened dirty) is saved, the Save
+    /// panel's new show folder with the media chosen → once the copy has pointed the cues at their
+    /// copies the window is clean: no dot, so no save prompt at close, Command-W or Command-Q.
+    func testSavingANeverSavedWorkspaceWithMediaLeavesItCleanOnceTheCopyEnds() async throws {
+        await app.newWorkspace()
+        await assertEventually { self.app.windows.count == 1 }
+        let (doc, wc) = try XCTUnwrap(app.windows.first)
+        await assertEventually { wc.store.model != nil && wc.cueList.listID != nil }
+        let chosen = try libFile("import.wav", seconds: 0.4)
+        let added = await wc.editor.addFiles([chosen], parent: nil, index: 0)
+        let cue = try XCTUnwrap(added.first)
+        XCTAssertEqual(wc.store.document?.dirty, true)
+        let place = engine.folder.appendingPathComponent("saves-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+        app.pickSaveURL = { _, _ in SaveTarget(url: place.appendingPathComponent("Imported.openlab"), newFolder: true) }
+        let saved = await app.saveWorkspace(wc.store)
+        XCTAssertTrue(saved)
+        await advanceUntil("the cue targets its copy") { self.media(wc, cue) == "audio/import.wav" }
+        await assertEventually("the window is clean after the copy") { wc.store.document?.dirty == false }
+        alerts.saveChoices = []
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed, "closing asks nothing")
+        XCTAssertFalse(alerts.log.contains { $0.hasPrefix("unsaved:") }, "no save prompt: \(alerts.log)")
+    }
+
+    /// The same with a file so small the copy ends as soon as it is asked for: the end is seen even
+    /// when it comes before the request's own reply is handled.
+    func testASmallFileCopyThatEndsAtOnceStillLeavesTheSavedWorkspaceClean() async throws {
+        await app.newWorkspace()
+        await assertEventually { self.app.windows.count == 1 }
+        let (doc, wc) = try XCTUnwrap(app.windows.first)
+        await assertEventually { wc.store.model != nil && wc.cueList.listID != nil }
+        let chosen = try libFile("tiny.wav", seconds: 0.01)
+        let added = await wc.editor.addFiles([chosen], parent: nil, index: 0)
+        let cue = try XCTUnwrap(added.first)
+        let place = engine.folder.appendingPathComponent("saves-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+        app.pickSaveURL = { _, _ in SaveTarget(url: place.appendingPathComponent("Tiny.openlab"), newFolder: true) }
+        let saved = await app.saveWorkspace(wc.store)
+        XCTAssertTrue(saved)
+        await advanceUntil("the cue targets its copy") { self.media(wc, cue) == "audio/tiny.wav" }
+        await assertEventually("the window is clean after the copy") { wc.store.document?.dirty == false }
+        alerts.saveChoices = []
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed)
+        XCTAssertFalse(alerts.log.contains { $0.hasPrefix("unsaved:") }, "no save prompt: \(alerts.log)")
+    }
+
+    /// An edit the operator makes while the copy runs is theirs to save or discard: the copy's end
+    /// does not write it. The window stays unsaved, so a close asks.
+    func testAnEditMadeDuringTheCopyIsLeftUnsavedWhenTheCopyEnds() async throws {
+        await app.newWorkspace()
+        await assertEventually { self.app.windows.count == 1 }
+        let (doc, wc) = try XCTUnwrap(app.windows.first)
+        await assertEventually { wc.store.model != nil && wc.cueList.listID != nil }
+        let chosen = try libFile("during.wav", seconds: 0.4)
+        let added = await wc.editor.addFiles([chosen], parent: nil, index: 0)
+        let cue = try XCTUnwrap(added.first)
+        let place = engine.folder.appendingPathComponent("saves-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+        app.pickSaveURL = { _, _ in SaveTarget(url: place.appendingPathComponent("During.openlab"), newFolder: true) }
+        let saved = await app.saveWorkspace(wc.store)
+        XCTAssertTrue(saved)
+        // The copy runs in the engine's own wakes, which the virtual clock has not yet given it.
+        _ = await wc.store.setProperty(cue, .name("Edited while copying"))
+        await advanceUntil("the cue targets its copy") { self.media(wc, cue) == "audio/during.wav" }
+        await assertEventually("the copy has ended") { (try? self.commandEnabled(wc)) == true }
+        try await engine.advance(seconds: 0)
+        XCTAssertEqual(wc.store.document?.dirty, true, "the operator's edit was not saved behind their back")
+        alerts.saveChoices = [.cancel]
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertFalse(closed, "closing asks, and Cancel keeps the window")
+        XCTAssertTrue(alerts.log.contains { $0.hasPrefix("unsaved:") }, "asked: \(alerts.log)")
+    }
+
     /// The new show folder's name is taken → the next numbered one; the file-only choice copies
     /// nothing.
     func testTheNewShowFolderIsNumberedWhenTakenAndShowFileOnlyCopiesNothing() async throws {

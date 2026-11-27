@@ -142,6 +142,36 @@ final class CueListNameCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }
 
+/// A transport button that can carry a colour behind its picture (Pause yellow while a cue plays,
+/// Resume green while one is held). Coloured, it draws its own plate and no bezel, so the colour is
+/// the button's whole face; uncoloured, it is the plain bezel button.
+final class TransportButton: NSButton {
+    /// The plate's colour; nil: none. Drawn only while the button is enabled.
+    var plate: NSColor? {
+        didSet {
+            guard plate != oldValue else { return }
+            isBordered = plate == nil || !isEnabled
+            needsDisplay = true
+        }
+    }
+
+    override var isEnabled: Bool {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            isBordered = plate == nil || !isEnabled
+            needsDisplay = true
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if let plate, isEnabled {
+            plate.setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6).fill()
+        }
+        super.draw(dirtyRect)
+    }
+}
+
 /// Collapsible right sidebar: transport strip, then QLab's tabs. "Cue Lists" picks the list the
 /// window shows (and GO addresses); "Active Cues" lists every cue that is running, paused, waiting or
 /// fading, in the order they started, with pause/resume and panic per cue. It reads the store and
@@ -196,6 +226,30 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// The first two tabs say how many lists and active cues there are, as QLab's do.
+    /// Pause is on, yellow, while a cue plays (or waits, or fades); Resume is on, green, while one is
+    /// held; with nothing to pause or resume both are greyed, as QLab's are. Pause All and Resume All
+    /// act on the whole workspace, so the strip reads every cue of every list.
+    func updateTransport() {
+        guard isViewLoaded else { return }
+        var playing = false
+        var held = false
+        for state in store.cueStates.values.map(\.state) {
+            switch state {
+            case .running, .fading, .preWaiting, .postWaiting: playing = true
+            case .paused: held = true
+            default: break
+            }
+        }
+        if let pause = transportButtons[AX.transportPause] as? TransportButton {
+            pause.isEnabled = playing
+            pause.plate = playing ? MarkColour.caution : nil
+        }
+        if let resume = transportButtons[AX.transportResume] as? TransportButton {
+            resume.isEnabled = held
+            resume.plate = held ? NSColor.systemGreen : nil
+        }
+    }
+
     func updateTabTitles() {
         func title(_ key: String, _ n: Int) -> String {
             n == 1 ? loc("\(key).one") : String(format: loc("\(key).count"), n)
@@ -258,7 +312,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             let image = entry.icon.image(name)
             // A vector drawing, so it stays sharp at the strip's size.
             image.size = NSSize(width: Self.transportIconSize, height: Self.transportIconSize)
-            let button = NSButton(image: image, target: nil, action: nil)
+            let button = TransportButton(image: image, target: nil, action: nil)
             button.setAX(entry.id, label: name)
             button.toolTip = name
             // A square bezel is drawn at the button's full height (a textured-rounded one stays
@@ -321,6 +375,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             activeEmptyNote.centerYAnchor.constraint(equalTo: activeScroll.centerYAnchor),
         ])
         view = root
+        updateTransport()
         updateActiveEmptyNote()
         listTable.reloadData()
         activeTable.reloadData()
@@ -541,6 +596,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     // MARK: Store changes
 
     private func handle(_ change: StoreChange) {
+        defer { updateTransport() }
         switch change {
         case .reset:
             reloadLists()

@@ -239,8 +239,8 @@ pub struct OutputPatch {
     /// [`MAX_DEVICE_OUTPUTS`]: crate::MAX_DEVICE_OUTPUTS
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crosspoints: Vec<PatchCrosspoint>,
-    /// Level and mute of device outputs, sorted by device output, each at most once. A device
-    /// output not listed is at 0 dB, unmuted. Applies to everything the patch sends there.
+    /// Level, mute and solo of device outputs, sorted by device output, each at most once. A device
+    /// output not listed is at 0 dB, unmuted, not soloed. Applies to everything the patch sends there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub device_outputs: Vec<DeviceOutputLevel>,
 }
@@ -269,7 +269,8 @@ impl OutputPatch {
             .map(|c| c.db)
     }
 
-    /// The level and mute of device output `device_output` (0 dB, unmuted when not listed).
+    /// The level, mute and solo of device output `device_output` (0 dB, unmuted, not soloed when
+    /// not listed).
     pub fn device_output(&self, device_output: u32) -> DeviceOutputLevel {
         self.device_outputs
             .binary_search_by_key(&device_output, |d| d.device_output)
@@ -280,6 +281,7 @@ impl OutputPatch {
                 device_output,
                 level_db: 0.0,
                 mute: false,
+                solo: false,
             })
     }
 }
@@ -300,18 +302,21 @@ impl PatchCrosspoint {
     }
 }
 
-/// The level and mute of one device output of a patch (0-based). Muting keeps `level_db`.
+/// The level, mute and solo of one device output of a patch (0-based). Muting keeps `level_db`.
+/// While any device output of the patch is soloed, the patch's unsoloed device outputs are silent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeviceOutputLevel {
     pub device_output: u32,
     pub level_db: f64,
     pub mute: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub solo: bool,
 }
 
 impl DeviceOutputLevel {
-    /// 0 dB and unmuted: what a device output not listed has.
+    /// 0 dB, unmuted and not soloed: what a device output not listed has.
     pub fn is_default(&self) -> bool {
-        self.level_db == 0.0 && !self.mute
+        self.level_db == 0.0 && !self.mute && !self.solo
     }
 }
 
