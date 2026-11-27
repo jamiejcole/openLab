@@ -254,6 +254,32 @@ fn each_device_output_has_its_own_level_and_mute_and_lowering_one_lowers_all_it_
     s.run(400);
     heard_edit(&s, 0, at, 0.0, lowered, at + 300);
     assert_eq!(patch(&s).device_output(0).level_db, -6.0);
+
+    // Soloing device output 1 silences device output 2 in the same step; taking the solo off brings
+    // it back, and device output 1 is heard throughout.
+    let at = set(
+        &mut s,
+        PatchProperty::DeviceOutputSolo {
+            device_output: 0,
+            value: true,
+        },
+    );
+    s.run(400);
+    heard_edit(&s, 1, at, LEVEL, 0.0, at + 300);
+    held(
+        &s.channel(0)[at + 100..at + 300],
+        lowered,
+        "the soloed output plays on",
+    );
+    let at = set(
+        &mut s,
+        PatchProperty::DeviceOutputSolo {
+            device_output: 0,
+            value: false,
+        },
+    );
+    s.run(400);
+    heard_edit(&s, 1, at, 0.0, LEVEL, at + 300);
 }
 
 /// Checklist (engine part): what the editor's buttons send, one step each. Routing set to the

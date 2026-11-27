@@ -356,10 +356,32 @@ extension AppController {
             bookmarkDataIsStale: &stale)
     }
 
+    /// The copy points the cues at their copies as an edit, which would leave a workspace the
+    /// operator just saved with unsaved changes: once the copy ends, the workspace is saved again when
+    /// it is unsaved and the operator sent no edit since `edits` (the count before the save began), so
+    /// the window shows no unsaved mark and a close asks nothing. A change of the operator's own is
+    /// never written without asking. Registered before the copy is asked for, so a copy that ends
+    /// before the reply is handled is still seen.
+    private func saveAgainWhenCopyEnds(_ store: WorkspaceStore, edits: Int) {
+        let key = ObjectIdentifier(store)
+        mediaCopyFollowers[key] = store.mediaCopied.first().sink { [weak self, weak store] _ in
+            MainActor.assumeIsolated {
+                self?.mediaCopyFollowers[key] = nil
+                guard let self, let store else { return }
+                Task { @MainActor in
+                    // The `document` message with the edit's dirty mark comes before the copy's report.
+                    guard store.document?.dirty == true, store.editsSent == edits else { return }
+                    _ = await self.bounded { await store.save() }
+                }
+            }
+        }
+    }
+
     private func save(_ store: WorkspaceStore, name: String, asNew: Bool = false) async -> Bool {
         var saveAsURL: URL?
         let reply: Result<OkBody, EngineError>?
         var copyMedia = false
+        let editsBefore = store.editsSent
         if asNew || store.document?.path == nil {
             let copies = store.isOn(.copyMediaOnAdd) ?? WorkspaceSwitch.copyMediaOnAdd.fallback
             guard let target = pickSaveURL(name, copies) else { return false }
@@ -387,8 +409,12 @@ extension AppController {
             }
             // The new show folder takes a copy of every file the cues target (WS-04); the copy runs
             // in the engine and its end shows in the window's footer.
-            if copyMedia, case .failure(let e) = await store.copyMediaIntoShowFolder() {
-                raise(describe(e), from: store)
+            if copyMedia {
+                saveAgainWhenCopyEnds(store, edits: editsBefore)
+                if case .failure(let e) = await store.copyMediaIntoShowFolder() {
+                    mediaCopyFollowers[ObjectIdentifier(store)] = nil
+                    raise(describe(e), from: store)
+                }
             }
             return true
         case .failure(let e)?:

@@ -173,7 +173,7 @@
 "prefs.audio.buffer" = "Buffer size of %@";
 "error.restoreAutosave" = "%@ was not reopened at launch: it has a newer autosave. Open the file with File > Open to choose.";
 "error.restoreFailed" = "Could not reopen %@ at launch: %@";
-"menu.app.preferences" = "Preferences…";
+"menu.app.preferences" = "openLab Preferences…";
 "alert.closePlaying.title" = "Close this workspace?";
 "alert.closePlaying.message" = "Cues are currently playing.";
 "alert.quitPlaying.title" = "Quit openLab?";
@@ -820,6 +820,8 @@
 "patchEditor.crosspoints" = "crosspoints";
 "patchEditor.mute" = "Mute";
 "patchEditor.muteShort" = "M";
+"patchEditor.solo" = "Solo";
+"patchEditor.soloShort" = "S";
 "patchEditor.deviceOutputs" = "Device outputs";
 "patchEditor.level" = "Level";
 "patchEditor.noDevice" = "Pick a device to route this patch.";
