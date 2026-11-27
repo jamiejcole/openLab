@@ -261,6 +261,7 @@ impl Converter<'_, '_> {
             number: common.map(|c| c.number.clone()).unwrap_or_default(),
             name: common.map(|c| c.name.clone()).unwrap_or_default(),
             kind,
+            severity: kind.severity(),
             detail: detail.into(),
         });
     }
@@ -633,8 +634,8 @@ impl Converter<'_, '_> {
             };
             route.scaling = match top.number(f.get("scalingMode"))?.map(|m| m as i64) {
                 Some(0) => RouteScaling::Centre,
-                Some(1) => RouteScaling::Fit,
-                Some(2) => RouteScaling::Stretch,
+                Some(1) => RouteScaling::Stretch,
+                Some(3) => RouteScaling::Fit,
                 _ => RouteScaling::Fill,
             };
             if top.boolean(f.get("rear"))?.unwrap_or(false) {
@@ -972,6 +973,8 @@ impl Converter<'_, '_> {
         cue: &mut Cue,
     ) -> Result<(), QlabError> {
         let ar = self.ar;
+        // Ticked only for a cue that has a key and uses it.
+        cue.triggers.hotkey_enabled = false;
         if let Some(hot) = ar.fields(f.get("hotKey").unwrap_or(Value::Null))? {
             let key = hotkey(
                 ar.number(hot.get("QLActionKeyKeyCharacter"))?,
@@ -994,7 +997,7 @@ impl Converter<'_, '_> {
                     "Its hotkey uses a key openLab cannot name, so it has none.",
                 );
             }
-            cue.triggers.hotkey_enabled = key.is_none() || used;
+            cue.triggers.hotkey_enabled = key.is_some() && used;
             cue.triggers.hotkey = key;
         }
         let wall = &mut cue.triggers.wall_clock;
@@ -1751,6 +1754,7 @@ impl Converter<'_, '_> {
                         number: target.number.clone().unwrap_or_default(),
                         name: target.name.clone(),
                         kind: QlabNoteKind::Target,
+                        severity: QlabNoteKind::Target.severity(),
                         detail: detail.to_owned(),
                     };
                     if self.report.notes.len() < super::MAX_QLAB_NOTES {

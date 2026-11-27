@@ -1184,3 +1184,106 @@ fn fade_levels_modes_curves_and_domains_convert() {
         (100.0, 50.0)
     );
 }
+
+// ---- Imported triggers and video outputs (a file built here, no QLab-saved one) ---------------
+
+#[test]
+fn i6_a_cue_has_its_hotkey_ticked_only_when_the_qlab_cue_has_one() {
+    let file = one_list(|a| {
+        let none = a.object("F53HotKey", &[("QLActionKeyKeyCharacter", V::Int(0))]);
+        let some = a.object("F53HotKey", &[("QLActionKeyKeyCharacter", V::Int(97))]);
+        let plain = memo(a, "plain", &[]);
+        let empty = memo(
+            a,
+            "empty",
+            &[("hotKey", none), ("useHotKey", V::Bool(false))],
+        );
+        let keyed = memo(
+            a,
+            "keyed",
+            &[("hotKey", some), ("useHotKey", V::Bool(true))],
+        );
+        let off = memo(
+            a,
+            "off",
+            &[("hotKey", some), ("useHotKey", V::Bool(false))],
+        );
+        vec![plain, empty, keyed, off]
+    });
+    let import = read(&file).unwrap();
+    let triggers = |q: &str| {
+        let (_, id) = import.cues.iter().find(|(c, _)| c == q).unwrap();
+        import.workspace.find_cue(*id).unwrap().triggers.clone()
+    };
+    for q in ["plain", "empty"] {
+        let t = triggers(q);
+        assert!(t.hotkey.is_none() && !t.hotkey_enabled, "{q}");
+    }
+    let keyed = triggers("keyed");
+    assert_eq!(keyed.hotkey.as_ref().map(|k| k.key.as_str()), Some("a"));
+    assert!(keyed.hotkey_enabled);
+    // A key QLab has switched off is kept, unticked.
+    let off = triggers("off");
+    assert_eq!(off.hotkey.as_ref().map(|k| k.key.as_str()), Some("a"));
+    assert!(!off.hotkey_enabled);
+}
+
+#[test]
+fn i7_each_qlab_route_scaling_mode_maps_to_the_same_mode() {
+    let mut top = Archive::new();
+    let routes: Vec<V> = [(0, "c"), (1, "s"), (2, "f"), (3, "t")]
+        .iter()
+        .map(|&(mode, id)| {
+            let (uid, name, size) = (top.string(id), top.string(id), top.string("{1280, 720}"));
+            top.object(
+                "VideoOutputRoute",
+                &[
+                    ("uniqueID", uid),
+                    ("name", name),
+                    ("naturalSize", size),
+                    ("scalingMode", V::Int(mode)),
+                ],
+            )
+        })
+        .collect();
+    let routes = top.array(&routes);
+    let video = top.dict_str(&[("routes", routes)]);
+    let settings = top.dict_str(&[("Video", video)]);
+    let file = qlab_file("video", top, Some(settings), Archive::new(), vec![]);
+    let import = read(&file).unwrap();
+    let scaling: Vec<(&str, RouteScaling)> = import
+        .workspace
+        .routes
+        .iter()
+        .map(|r| (r.name.as_str(), r.scaling))
+        .collect();
+    assert_eq!(
+        scaling,
+        [
+            ("c", RouteScaling::Centre),
+            ("s", RouteScaling::Stretch),
+            ("f", RouteScaling::Fill),
+            ("t", RouteScaling::Fit),
+        ]
+    );
+}
+
+#[test]
+fn i5_an_import_note_says_whether_it_is_an_error_or_a_warning() {
+    // A rate the cue loses changes how it plays; the passcode the workspace replaces does not.
+    assert_eq!(QlabNoteKind::Rate.severity(), QlabNoteSeverity::Error);
+    assert_eq!(QlabNoteKind::Target.severity(), QlabNoteSeverity::Error);
+    assert_eq!(QlabNoteKind::Setting.severity(), QlabNoteSeverity::Warning);
+    let file = one_list(|a| {
+        let m = memo(a, "m", &[("useMIDITrigger", V::Bool(true))]);
+        vec![m]
+    });
+    let import = read(&file).unwrap();
+    let note = import
+        .report
+        .notes
+        .iter()
+        .find(|n| n.kind == QlabNoteKind::Trigger)
+        .unwrap();
+    assert_eq!(note.severity, QlabNoteSeverity::Error);
+}

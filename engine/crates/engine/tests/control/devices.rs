@@ -6356,3 +6356,94 @@ fn a_cue_looping_many_passes_on_a_device_at_another_rate_moves_in_step() {
         assert!(worst <= 2.0, "{rate} Hz: out of step by {worst:.1} frames");
     }
 }
+
+/// A QLab workspace with one audio patch of `outputs` cue outputs on the system output, and
+/// one audio cue on it, written to `path`.
+fn qlab_system_patch_file(path: &std::path::Path, outputs: i64) {
+    use crate::qlab_archive::{Archive, V, cue, qlab_file};
+    let mut top = Archive::new();
+    let device = {
+        let (name, uid) = (top.string("Built-in"), top.string("uid"));
+        top.dict_str(&[
+            ("name", name),
+            ("deviceUID", uid),
+            ("outputChannels", V::Int(2)),
+        ])
+    };
+    let (patch_id, patch_name) = (top.string("P1"), top.string("Main"));
+    let patch = top.object(
+        "AudioOutputPatch",
+        &[
+            ("uniqueID", patch_id),
+            ("name", patch_name),
+            ("cueOutputChannels", V::Int(outputs)),
+            ("deviceDescription", device),
+            ("useSystemDevice", V::Bool(true)),
+        ],
+    );
+    let patches = top.array(&[patch]);
+    let audio = top.dict_str(&[("audioOutputPatches", patches)]);
+    let settings = top.dict_str(&[("Audio", audio)]);
+    let mut cues = Archive::new();
+    let (number, patch) = (cues.string("1"), cues.string("P1"));
+    let tone = cue(
+        &mut cues,
+        "AudioCue",
+        "A1",
+        &[("number", number), ("audioOutputPatchID", patch)],
+    );
+    std::fs::write(
+        path,
+        qlab_file("Sys", top, Some(settings), cues, vec![("Main", vec![tone])]),
+    )
+    .unwrap();
+}
+
+#[test]
+fn i1_an_imported_audio_patch_matched_to_the_system_output_keeps_it_however_many_outputs_qlab_gave_it()
+ {
+    // QLab patches often have more cue outputs than the Mac's speakers have channels: the
+    // mapping keeps the outputs the default device has instead of being refused whole.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Sys.qlab5");
+    qlab_system_patch_file(&path, 8);
+    let mut two = listed(DEV2, DEV2_NAME, 2);
+    two.is_default = true;
+    let mut s = two_patch_show(vec![], DEV2_NAME, vec![listed(DEV, DEV_NAME, 2), two]);
+    s.wait_output(DEV2_NAME);
+    let id = s.request_id();
+    let before = s.control().doc_ids();
+    s.send_until(
+        ClientMessage::Request {
+            id,
+            request: Request::ImportQlab {
+                path: path.to_string_lossy().into_owned(),
+                cues: vec![],
+                other_cues: openlab_core::QlabCueAction::Placeholder,
+                audio_patches: vec![openlab_core::QlabPatchChoice {
+                    qlab_id: "P1".into(),
+                    mapping: Some(PatchMapping::system_output((0..8).collect())),
+                }],
+                video_outputs: vec![],
+            },
+        },
+        |c| c.doc_ids().len() > before.len(),
+    );
+    let doc = *s
+        .control()
+        .doc_ids()
+        .iter()
+        .find(|d| !before.contains(d))
+        .unwrap();
+    let snap = s.control().doc(doc).unwrap().snapshot();
+    let (ws, patch) = (snap.workspace.id, snap.workspace.patches[0].id);
+    let mapping = s.control().machine().patch_mapping(ws, patch).cloned();
+    assert_eq!(mapping, Some(PatchMapping::system_output(vec![0, 1])));
+    let logged = logs(&s.take_outbound(), LogLevel::Warn);
+    assert!(
+        !logged
+            .iter()
+            .any(|l| l.contains("device choice was not kept")),
+        "{logged:?}"
+    );
+}

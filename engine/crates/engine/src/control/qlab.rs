@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use openlab_core::protocol::{ErrorBody, ErrorCode, LogLevel, ResultData};
+use openlab_core::protocol::{DeviceEntry, ErrorBody, ErrorCode, LogLevel, ResultData};
 use openlab_core::{
     CueListId, LoadedShow, MAX_QLAB_FILE_BYTES, MediaRef, PatchId, PatchMapping, PathStyle,
     QlabCueAction, QlabCueChoice, QlabError, QlabFile, QlabOutputChoice, QlabPatchChoice, RouteId,
@@ -144,6 +144,22 @@ pub(super) fn import(ticket: u64, path: &Path, choices: &QlabChoices) -> DocAnsw
     }
 }
 
+/// `mapping` with the channels the device it plays on lacks left out: a QLab patch often has
+/// more cue outputs than this Mac's output has channels, and the patch keeps the outputs the
+/// device has (as the default mapping does) rather than the whole mapping being refused. A
+/// device that is not listed leaves the mapping as it is, for the refusal to report.
+fn fit_to_device(mut mapping: PatchMapping, devices: &[DeviceEntry]) -> PatchMapping {
+    let device = if mapping.system {
+        devices.iter().find(|d| d.is_default)
+    } else {
+        devices.iter().find(|d| d.name == mapping.device)
+    };
+    if let Some(d) = device {
+        mapping.channels.retain(|&c| c < d.output_channels);
+    }
+    mapping
+}
+
 impl Control {
     /// Stores an imported workspace's device choices for doc `doc`, before its patches are
     /// first resolved. A mapping this machine cannot use now (its device unplugged since the
@@ -163,6 +179,7 @@ impl Control {
                 .iter()
                 .find(|p| p.id == patch)
                 .map_or(0, |p| p.outputs.len());
+            let mapping = mapping.map(|m| fit_to_device(m, &devices_listed));
             let refusal = mapping
                 .as_ref()
                 .and_then(|m| super::mapping::mapping_refusal(m, outputs, &devices_listed));

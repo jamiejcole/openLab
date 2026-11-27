@@ -1988,6 +1988,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                             number: "12".into(),
                             name: "Storm".into(),
                             kind: QlabNoteKind::Rate,
+                            severity: QlabNoteSeverity::Error,
                             detail: "Its playback rate was not kept.".into(),
                         },
                         QlabNote {
@@ -1995,6 +1996,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                             number: String::new(),
                             name: String::new(),
                             kind: QlabNoteKind::Setting,
+                            severity: QlabNoteSeverity::Warning,
                             detail: "OSC access passcodes were not kept.".into(),
                         },
                     ],
