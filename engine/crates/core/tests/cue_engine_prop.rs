@@ -2514,11 +2514,11 @@ impl Run {
                 v.is_some_and(|v| v.preview && v.cue == cue),
                 "preview of {cue} has no voice"
             );
-            let audio = matches!(
+            let previewable = matches!(
                 self.ws.find_cue(cue).map(|c| &c.kind),
-                Some(CueKind::Audio { .. })
+                Some(CueKind::Audio { .. } | CueKind::Video { .. })
             );
-            prop_assert!(audio, "preview of {cue} which is not an audio cue");
+            prop_assert!(previewable, "preview of {cue} which is not a playable cue");
         }
         for v in self.sim.voices.values().filter(|v| v.preview) {
             // A stop is carried out on its sample, which may still be ahead, and a stopped

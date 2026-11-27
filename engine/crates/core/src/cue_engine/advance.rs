@@ -21,6 +21,7 @@ impl CueEngine {
         // budget), a run's own progress (pre-wait, action end, post-wait) and devamp answers (at
         // most one per run), so this ends; the guard is a second line of defence against a bug
         // turning into a hung show.
+        self.end_timed_previews(cx);
         let mut steps = 0usize;
         while let Some((cue, at)) = self.earliest_due(cx.horizon) {
             // Read each round: a stale limit can be raised while this runs (`budget_left`).

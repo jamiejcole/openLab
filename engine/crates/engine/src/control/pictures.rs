@@ -47,9 +47,9 @@ use openlab_core::video_probe::ProbeReport;
 use super::media::Probe;
 use openlab_audio::{MediaInfo, Plays as Passes, Slice, total_frames};
 use openlab_core::{
-    Action, BrokenReason, CueId, CueKind, CueState, Input, LevelParam, PictureFades, PictureParam,
-    PictureRamp, PlanPass, RampCurve, RunId, SampleTime, StageId, VideoGeometry, VideoTiming,
-    plan_point, seconds_to_samples,
+    Action, BrokenReason, CueId, CueKind, CueState, Input, LevelParam, PREVIEW_RUN_BASE,
+    PictureFades, PictureParam, PictureRamp, PlanPass, RampCurve, RunId, SampleTime, StageId,
+    VideoGeometry, VideoTiming, plan_point, seconds_to_samples,
 };
 
 use super::plan::{PlanSpec, cue_slices, picture_info};
@@ -861,6 +861,8 @@ impl DocCx<'_> {
             | Action::StartVoice { cue, .. }
             | Action::SeekVoice { cue, .. }
             | Action::StopVoice { cue, .. }
+            | Action::PreviewStart { cue, .. }
+            | Action::PreviewStop { cue, .. }
             | Action::PauseVoice { cue, .. }
             | Action::ResumeVoice { cue, .. }
             | Action::Ramp { cue, .. }
@@ -949,6 +951,22 @@ impl DocCx<'_> {
         let rate = self.eng.rate.get();
         let doc = self.doc.id;
         match *action {
+            // A Video cue's preview plays through the stage as its run does, from its start;
+            // its run id is the preview's own, so it is no show run and ends on its own length
+            // (the cue engine's timed preview).
+            Action::PreviewStart { cue, run, at } => {
+                let start = Action::StartVoice {
+                    cue,
+                    run,
+                    at,
+                    offset: 0,
+                };
+                self.picture_action(&start, fx)
+            }
+            Action::PreviewStop { cue, run, at, fade } => {
+                let stop = Action::StopVoice { cue, run, at, fade };
+                self.picture_action(&stop, fx)
+            }
             Action::LoadVoice { cue, run, offset } => match self.load_picture(cue, run, offset) {
                 Ok(()) => self.sound_action(action, fx),
                 Err(Refused::Pending) => self.eng.pictures.held.push(Held {
@@ -2409,6 +2427,9 @@ impl DocCx<'_> {
                 .filter(|(_, l)| l.doc == doc && l.cue == cue && l.ends.is_none())
                 // Not the picture of a run the cue started since (a GO in its panic fade).
                 .filter(|(_, l)| lost || current != Some(l.run))
+                // A preview's picture is no part of the show run that ended: it ends on its own
+                // length or its Stop Preview.
+                .filter(|(_, l)| l.run.0 < PREVIEW_RUN_BASE)
                 .map(|(id, _)| *id)
                 .collect();
             for id in ids {

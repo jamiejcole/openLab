@@ -1095,12 +1095,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     func updatePreviewButton(connected: Bool? = nil) {
         let active = cue.map { store.previewing.contains($0.id) } ?? false
         previewButton.title = loc(active ? "inspector.stopPreview" : "inspector.preview")
-        let previewable = ["audio", "group", "fade"].contains(cue?.kindType)
+        let previewable = ["audio", "video", "group", "fade"].contains(cue?.kindType)
         let on = connected ?? (store.connectionState == .connected)
         previewButton.isEnabled = previewable && on
         fadePreviewButton.isEnabled = cue?.kindType == "fade" && on
         fadeGeometry.previewButton.isEnabled = cue?.kindType == "fade" && on
-        timeLoops.showPreview(active: active, canPreview: cue?.kindType == "audio" && on)
+        timeLoops.showPreview(active: active, canPreview: ["audio", "video"].contains(cue?.kindType) && on)
     }
 
     /// The Choose button, and a double-click on a file cue's Target field (QLab 5, manual pp. 120, 126).

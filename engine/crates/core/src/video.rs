@@ -373,6 +373,61 @@ impl Stage {
     }
 }
 
+/// Most columns or rows a display is split into (QLab 5 manual p. 234: splitters present two,
+/// three or four outputs a side).
+pub const MAX_PARTIAL_SIDE: u8 = 4;
+
+/// One part of a display that is cut into `columns` x `rows` equal parts, as a display splitter
+/// makes one large display of several outputs (QLab 5 manual p. 234): a route shown on it
+/// behaves as though that part were a whole display. `index` counts from 0 along the first row,
+/// then the next (2 wide: left, right; 2 x 2: top left, top right, bottom left, bottom right).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Partial {
+    pub columns: u8,
+    pub rows: u8,
+    pub index: u8,
+}
+
+impl Partial {
+    /// Why this is not a part of a display, if it is not: a split into at least two parts, each
+    /// side at most [`MAX_PARTIAL_SIDE`], `index` one of them.
+    pub fn problem(&self) -> Option<&'static str> {
+        let side = |n: u8| (1..=MAX_PARTIAL_SIDE).contains(&n);
+        if !side(self.columns) || !side(self.rows) {
+            return Some("a display splits into 1 to 4 columns and rows");
+        }
+        let parts = u16::from(self.columns) * u16::from(self.rows);
+        if parts < 2 {
+            return Some("a part of a display needs a split into at least two");
+        }
+        if u16::from(self.index) >= parts {
+            return Some("no such part of the display");
+        }
+        None
+    }
+
+    /// The part's left, top, right and bottom edges in pixels of a display of `width` x
+    /// `height`, neighbouring parts sharing an edge (each at its share of the side, rounded
+    /// down), so the parts tile the display with nothing left over. A `Partial` that is not
+    /// valid gives the whole display.
+    pub fn rect(&self, width: u32, height: u32) -> [u32; 4] {
+        if self.problem().is_some() {
+            return [0, 0, width, height];
+        }
+        let (cols, rows) = (u32::from(self.columns), u32::from(self.rows));
+        let (col, row) = (u32::from(self.index) % cols, u32::from(self.index) / cols);
+        let edge = |n: u32, of: u32, side: u32| {
+            u32::try_from(u64::from(n) * u64::from(side) / u64::from(of)).unwrap_or(side)
+        };
+        [
+            edge(col, cols, width),
+            edge(row, rows, height),
+            edge(col + 1, cols, width),
+            edge(row + 1, rows, height),
+        ]
+    }
+}
+
 /// Whether `side` is a stage side length in pixels.
 pub fn side_ok(side: u32) -> bool {
     (1..=MAX_STAGE_PIXELS).contains(&side)
@@ -624,6 +679,43 @@ pub fn stack_order<'a>(stages: impl IntoIterator<Item = &'a Stage>) -> Vec<Stage
 
 #[cfg(test)]
 mod tests {
+    /// #842 V3: a display cut into parts: each part's edges, the parts tiling the display, and a
+    /// split or a part that is not one.
+    #[test]
+    fn the_parts_of_a_display_tile_it_and_a_bad_part_is_none() {
+        let part = |columns, rows, index| Partial {
+            columns,
+            rows,
+            index,
+        };
+        assert_eq!(part(2, 1, 0).rect(3840, 1080), [0, 0, 1920, 1080]);
+        assert_eq!(part(2, 1, 1).rect(3840, 1080), [1920, 0, 3840, 1080]);
+        assert_eq!(part(1, 3, 1).rect(1920, 1080), [0, 360, 1920, 720]);
+        // Two across, two down, in rows: top left, top right, bottom left, bottom right.
+        assert_eq!(part(2, 2, 2).rect(1000, 800), [0, 400, 500, 800]);
+        assert_eq!(part(2, 2, 1).rect(1000, 800), [500, 0, 1000, 400]);
+        // A side that does not divide: edges shared, nothing left over.
+        let widths: Vec<u32> = (0..3)
+            .map(|i| {
+                let [l, _, r, _] = part(3, 1, i).rect(1000, 10);
+                r - l
+            })
+            .collect();
+        assert_eq!(widths.iter().sum::<u32>(), 1000, "{widths:?}");
+        for bad in [
+            part(1, 1, 0),
+            part(0, 2, 0),
+            part(5, 1, 0),
+            part(2, 5, 0),
+            part(2, 2, 4),
+            part(3, 1, 255),
+        ] {
+            assert!(bad.problem().is_some(), "{bad:?}");
+            assert_eq!(bad.rect(640, 480), [0, 0, 640, 480], "the whole display");
+        }
+        assert!(part(4, 4, 15).problem().is_none());
+    }
+
     use super::*;
     use uuid::Uuid;
 

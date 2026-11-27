@@ -4,6 +4,11 @@
   "request": {
     "type": "set_route_display",
     "route": "00000000-0000-0000-0000-000000000090",
-    "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230"
+    "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230",
+    "partial": {
+      "columns": 2,
+      "rows": 1,
+      "index": 1
+    }
   }
 }

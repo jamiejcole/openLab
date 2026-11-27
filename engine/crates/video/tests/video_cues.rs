@@ -924,6 +924,130 @@ fn a_still_shows_from_go_until_the_cue_is_stopped() {
     assert_eq!(shown(&mut s), None, "gone once stopped");
 }
 
+/// #842 V5: Preview of a Video cue (QLab 5 manual pp. 146, 160: starts the cue's action through
+/// its normal output, skips its pre-wait, ignores continues, leaves the playhead): a still shows
+/// on its stage with the cue itself idle, and Stop Preview takes it away.
+#[test]
+fn previewing_a_still_shows_it_on_its_stage_without_starting_the_cue() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut still = still_cue(1, &png, None);
+    still.pre_wait = 30.0;
+    let mut s = video_show(vec![still, video_cue(2, None)]);
+    assert_eq!(shown(&mut s), None, "nothing before the preview");
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(samples(0.5));
+    assert_eq!(shown(&mut s), Some(0), "the picture, with no pre-wait");
+    expect_state(&s, 1, CueState::Idle, "a preview is no cue state");
+    assert!(s.control().engine().is_previewing(id(1)));
+    s.run(samples(5.0));
+    assert_eq!(shown(&mut s), Some(0), "a still has no end of its own");
+    s.transport(TransportAction::StopPreview { cue: Some(id(1)) });
+    s.run(samples(0.5));
+    assert_eq!(shown(&mut s), None, "gone once stopped");
+    assert!(!s.control().engine().is_previewing(id(1)));
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
+/// A movie previews from its first frame in step with the clock and ends on its last frame, the
+/// cue itself never leaving idle.
+#[test]
+fn previewing_a_movie_plays_it_in_step_and_ends_on_its_last_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    s.transport(TransportAction::Preview { cue: id(1) });
+    let at = s.now();
+    for want in [1u16, 12, 25, 40] {
+        run_to(&mut s, at + samples(f64::from(want) / 25.0) + samples(0.01));
+        let position = (s.now() - at) as f64 / f64::from(RATE);
+        let shown_frame = shown(&mut s).expect("a frame");
+        assert!(
+            shown_frame.abs_diff((position * 25.0).floor() as u16) <= 1 && shown_frame >= want - 1,
+            "{shown_frame} at {position} s"
+        );
+        expect_state(&s, 1, CueState::Idle, "");
+    }
+    run_to(&mut s, at + samples(2.0) + samples(0.5));
+    assert_eq!(shown(&mut s), None, "ended on its length");
+    assert!(!s.control().engine().is_previewing(id(1)));
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
+/// Pause All / Resume All on a movie preview: it ends the time it had left, not its whole length
+/// after the resume.
+#[test]
+fn a_movie_preview_paused_and_resumed_ends_when_its_rest_has_played() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    s.transport(TransportAction::Preview { cue: id(1) });
+    let at = s.now();
+    run_to(&mut s, at + samples(1.5));
+    s.transport(TransportAction::PauseAll);
+    s.run(samples(0.3));
+    s.transport(TransportAction::ResumeAll);
+    let r = s.now();
+    run_to(&mut s, r + samples(0.4));
+    assert!(s.control().engine().is_previewing(id(1)), "0.1 s left");
+    run_to(&mut s, r + samples(0.6));
+    assert!(
+        !s.control().engine().is_previewing(id(1)),
+        "ended 0.5 s after the resume"
+    );
+    assert_eq!(shown(&mut s), None, "no frozen frame");
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
+/// The show run of a cue ending does not take the picture of the same cue's preview.
+#[test]
+fn a_cues_show_run_ending_leaves_its_preview_on_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![still_cue(1, &png, Some(2.0))]);
+    go(&mut s);
+    let at = s.now();
+    run_to(&mut s, at + samples(1.5));
+    s.transport(TransportAction::Preview { cue: id(1) });
+    run_to(&mut s, at + samples(2.5));
+    expect_state(&s, 1, CueState::Idle, "the run ended");
+    assert!(s.control().engine().is_previewing(id(1)));
+    assert_eq!(shown(&mut s), Some(0), "the preview's picture is still up");
+    assert_eq!(s.control().pictures_live(), 1);
+}
+
+/// Panic takes a Video cue's preview away (a movie and a still), a second Panic cutting it at
+/// once.
+#[test]
+fn panic_takes_a_video_preview_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let png = make(dir.path(), "card.png", "png", None);
+    for (name, cue, twice) in [
+        ("movie", video_cue(1, Some(&movie)), false),
+        ("still", still_cue(1, &png, None), false),
+        ("still, twice", still_cue(1, &png, None), true),
+    ] {
+        let mut ws: Workspace = workspace(vec![cue]);
+        ws.settings.panic_duration = 1.0;
+        let mut s = video_show_of(ws);
+        s.transport(TransportAction::Preview { cue: id(1) });
+        s.run(samples(0.5));
+        assert!(shown(&mut s).is_some(), "{name}: previewing");
+        s.transport(TransportAction::Panic);
+        if twice {
+            s.run(samples(0.1));
+            s.transport(TransportAction::Panic);
+            s.run(samples(0.2));
+        } else {
+            s.run(samples(1.2));
+        }
+        assert!(!s.control().engine().is_previewing(id(1)), "{name}");
+        assert_eq!(shown(&mut s), None, "{name}: picture gone");
+        assert_eq!(s.control().pictures_live(), 0, "{name}");
+    }
+}
+
 /// A still with a duration typed: GO shows it, and it ends after that time.
 #[test]
 fn a_still_with_a_duration_ends_after_it() {
@@ -1153,6 +1277,7 @@ fn two_stage_show(mut ws: Workspace, keep_black: [bool; 2]) -> OfflineShow {
             name: format!("Virtual {display}"),
             width: w,
             height: h,
+            partial: None,
         };
         c.machine
             .set_route_display(ws.id, route_of(stage), Some(mapping))
@@ -1427,6 +1552,7 @@ fn a_stage_display_changed_while_a_cue_plays_moves_the_picture_there_at_once() {
         Request::SetRouteDisplay {
             route: route_of(stage_id()),
             display: Some("V2".into()),
+            partial: None,
         },
     );
     assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
@@ -1671,6 +1797,7 @@ fn opened_show(mut ws: Workspace) -> OfflineShow {
             name: format!("Virtual {display}"),
             width: w,
             height: h,
+            partial: None,
         };
         c.machine
             .set_route_display(ws.id, route_of(stage), Some(mapping))
@@ -3902,6 +4029,57 @@ fn trims_past_the_movies_end_break_the_cue_with_why_until_fixed() {
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(0.02));
     assert_eq!(shown(&mut s), Some(25));
+}
+
+/// #842 V6: a start trim typed after the cue standing by was opened ahead (opened, or still
+/// opening on a slow disk) → GO starts on the trim's frame, never the movie's first: the picture
+/// opened ahead at the old point is not the one played.
+fn trim_typed_after_the_cue_was_opened_ahead(finish_opening_first: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let good = movie!(dir.path(), "good.mov", (50, 25));
+    let slow = slow_to_open(dir.path(), &good);
+    let mut s = video_show_config(
+        workspace(vec![video_cue(1, Some(&slow))]),
+        &HAND_LIMITS,
+        |_| {},
+        |c| c.prime_cues = 1,
+    );
+    s.wait_for_pictures(false);
+    assert!(s.wait_for(|c| c.pictures_primed().0 == 1), "{}", seen(&s));
+    if finish_opening_first {
+        s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+        assert!(
+            s.wait_for(|c| c.pictures_primed() == (1, 1)),
+            "opened ahead\n{}",
+            seen(&s)
+        );
+    }
+    set_geometry(&mut s, 1, serde_json::json!({"start_time": 1.0}));
+    let at = go(&mut s);
+    // Whatever was opened ahead and whatever opens now finishes on the hand-moved clock.
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    assert!(
+        s.wait_for(|c| c.pictures_waiting() == 0),
+        "the start played\n{}",
+        seen(&s)
+    );
+    run_to(&mut s, at + samples(0.5));
+    let frame = on_stage(&mut s, "half a second after GO");
+    assert!(
+        (25..=40).contains(&frame),
+        "half a second after GO on the 1 s start trim is frame 25 + 12, not {frame}\n{}",
+        seen(&s)
+    );
+}
+
+#[test]
+fn a_start_trim_typed_after_the_cue_was_opened_ahead_starts_on_the_trims_frame() {
+    trim_typed_after_the_cue_was_opened_ahead(true);
+}
+
+#[test]
+fn a_start_trim_typed_while_the_cue_is_still_opening_ahead_starts_on_the_trims_frame() {
+    trim_typed_after_the_cue_was_opened_ahead(false);
 }
 
 /// A stage host that starts again while a devamped loop plays is sent the plan as the devamp
@@ -8808,6 +8986,7 @@ fn routed_show_with(
             name: format!("Virtual {display}"),
             width: 1920,
             height: 1080,
+            partial: None,
         };
         c.machine
             .set_route_display(ws.id, route_n(n), Some(choice))
@@ -9134,6 +9313,144 @@ fn each_route_scaling_shows_the_picture_on_its_display_as_it_says() {
     }
 }
 
+/// Shows route 1 on `display` of the running show `s` as the app's route layout pop-up does: the
+/// part `(columns, rows, index)` of it, or the whole display.
+fn show_route_on_part(s: &mut OfflineShow, display: &str, part: Option<(u8, u8, u8)>) -> Outcome {
+    let outcome = ask(
+        s,
+        Request::SetRouteDisplay {
+            route: route_n(1),
+            display: Some(display.into()),
+            partial: part.map(|(columns, rows, index)| openlab_core::Partial {
+                columns,
+                rows,
+                index,
+            }),
+        },
+    );
+    s.settle_stages();
+    outcome
+}
+
+/// #842 V3: Output 1 at 1920 x 1080 on a 3840 x 1080 display cut two wide → shown on the right
+/// part, the whole card fills that part and the left part stays black; the left part, the same
+/// the other way round; the whole display, the card spread over all of it. The choice is this
+/// Mac's (a stage host that is told it never sees the show file), the cue running on throughout.
+#[test]
+fn a_route_shown_on_a_part_of_a_display_fills_only_that_part() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "W:3840x1080", &[(1, "W")]);
+    go(&mut s);
+    s.run(samples(0.2));
+    // The card's quadrants: red top left, green top right, blue bottom left, yellow bottom right.
+    let in_part = |part: f32, x: f32, y: f32| [part * 0.5 + x * 0.5, y];
+    let outcome = show_route_on_part(&mut s, "W", Some((2, 1, 1)));
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    let right = [
+        in_part(1.0, 0.02, 0.5),
+        in_part(1.0, 0.98, 0.5),
+        in_part(1.0, 0.75, 0.95),
+        in_part(1.0, 0.25, 0.99),
+        [0.1, 0.5],
+        [0.49, 0.5],
+    ];
+    let (_, colours) = display_shows(&mut s, "W", &right);
+    assert_eq!(
+        colours,
+        [RED, GREEN, YELLOW, BLUE, BLACK, BLACK],
+        "the card on the right part, black on the left"
+    );
+    assert_eq!(route_state(&mut s, 1), shown_on("W"));
+    let outcome = show_route_on_part(&mut s, "W", Some((2, 1, 0)));
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    let left = [
+        in_part(0.0, 0.02, 0.5),
+        in_part(0.0, 0.98, 0.5),
+        in_part(0.0, 0.75, 0.95),
+        in_part(0.0, 0.25, 0.99),
+        [0.51, 0.5],
+        [0.9, 0.5],
+    ];
+    let (_, colours) = display_shows(&mut s, "W", &left);
+    assert_eq!(
+        colours,
+        [RED, GREEN, YELLOW, BLUE, BLACK, BLACK],
+        "the card on the left part, black on the right"
+    );
+    // Back to the whole display: the card is spread over all of it.
+    let outcome = show_route_on_part(&mut s, "W", None);
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    let (_, spread) = display_shows(&mut s, "W", &[[0.02, 0.5], [0.98, 0.5]]);
+    assert_eq!(spread, [RED, GREEN], "the whole display");
+    expect_state(&s, 1, CueState::Running, "the cue runs on throughout");
+}
+
+/// A route that overhangs its part of the display (centred, bigger than the part) is cut at the
+/// part's edges: it never draws on the part beside it.
+#[test]
+fn a_route_bigger_than_its_part_of_the_display_is_cut_at_the_parts_edges() {
+    use openlab_core::RouteScaling::Centre;
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "W:1920x1080", &[(1, "W")]);
+    go(&mut s);
+    s.run(samples(0.2));
+    edited(
+        &mut s,
+        openlab_core::Command::SetRouteProperty {
+            id: route_n(1),
+            property: openlab_core::RouteProperty::Scaling { value: Centre },
+        },
+    );
+    let outcome = show_route_on_part(&mut s, "W", Some((2, 1, 1)));
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    // The part is 960 wide, so the 1920 wide route is centred on it and cut off at both of its
+    // edges: the card's middle, red above green, shows in the part; the left part, where the
+    // route's left side would reach, is black.
+    let (_, colours) = display_shows(
+        &mut s,
+        "W",
+        &[[0.4, 0.5], [0.76, 0.3], [0.99, 0.3], [0.6, 0.3]],
+    );
+    assert_eq!(colours[0], BLACK, "nothing on the left part");
+    assert_ne!(colours[1], BLACK, "the route in its part");
+}
+
+/// A part of a display that is not one is refused, changing nothing.
+#[test]
+fn a_part_of_a_display_that_is_not_one_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "W:3840x1080", &[(1, "W")]);
+    for bad in [(1, 1, 0), (5, 1, 0), (2, 0, 0), (2, 2, 4), (3, 1, 3)] {
+        let outcome = show_route_on_part(&mut s, "W", Some(bad));
+        assert!(
+            matches!(outcome, Outcome::Error(ref e) if e.code == openlab_core::protocol::ErrorCode::BadRequest),
+            "{bad:?}: {outcome:?}"
+        );
+    }
+    let routes = match ask(&mut s, Request::ListRouteDisplays) {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::RouteDisplays { routes, .. }) => routes,
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("{e:?}"),
+    };
+    let chosen = routes.first().and_then(|e| e.mapping.as_ref());
+    assert_eq!(chosen.map(|m| m.display.as_str()), Some("W"));
+    assert_eq!(chosen.and_then(|m| m.partial), None, "nothing changed");
+}
+
 /// #813 R6: Output 1 at 1920 x 1080 on a portrait 1080 x 1920 display → rotation 90: the card
 /// fills the display turned a quarter clockwise (its top edge down the display's right side);
 /// 180: upside down; 0: unturned.
@@ -9215,6 +9532,7 @@ fn choosing_another_display_for_a_route_moves_the_playing_picture_there_at_its_p
         Request::SetRouteDisplay {
             route: route_n(1),
             display: Some("V2".into()),
+            partial: None,
         },
     );
     assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
@@ -9640,6 +9958,7 @@ fn a_route_whose_display_this_mac_lacks_plays_unseen_until_one_is_chosen_here() 
         Request::SetRouteDisplay {
             route: route_n(1),
             display: Some("V1".into()),
+            partial: None,
         },
     );
     assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");

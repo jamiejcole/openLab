@@ -11,7 +11,12 @@
             "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230",
             "name": "Projector",
             "width": 3840,
-            "height": 2160
+            "height": 2160,
+            "partial": {
+              "columns": 2,
+              "rows": 1,
+              "index": 1
+            }
           },
           "state": {
             "state": "shown",

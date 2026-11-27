@@ -165,6 +165,7 @@ impl Engine {
                 name: display.name.clone(),
                 width: display.width,
                 height: display.height,
+                partial: None,
             };
             // A refusal cannot happen for a display the link accepted; the route then has no
             // display, which is shown as such.
@@ -392,6 +393,12 @@ impl Control {
                         .machine
                         .route_display(ws.id, route.id)
                         .map(|m| m.display.clone()),
+                    partial: self
+                        .eng
+                        .config
+                        .machine
+                        .route_display(ws.id, route.id)
+                        .and_then(|m| m.partial),
                     guide: doc.guides.contains(&route.id).then(|| RouteGuide {
                         name: openlab_core::stage_link::link_text(&route.name, "Output"),
                         colour: route.shown_guide_colour(),
@@ -977,9 +984,10 @@ impl Control {
         id: RequestId,
         route: RouteId,
         display: Option<String>,
+        partial: Option<openlab_core::Partial>,
         to: &ReplyTx,
     ) {
-        let outcome = self.apply_route_display(doc, route, display);
+        let outcome = self.apply_route_display(doc, route, display, partial);
         reply(
             to,
             match outcome {
@@ -994,7 +1002,11 @@ impl Control {
         doc: DocId,
         route: RouteId,
         display: Option<String>,
+        partial: Option<openlab_core::Partial>,
     ) -> Result<(), ErrorBody> {
+        if let Some(why) = partial.as_ref().and_then(openlab_core::Partial::problem) {
+            return Err(ErrorBody::new(ErrorCode::BadRequest, why));
+        }
         let d = self
             .docs
             .iter()
@@ -1025,11 +1037,16 @@ impl Control {
                     name: found.name.clone(),
                     width: found.width,
                     height: found.height,
+                    partial,
                 })
             }
         };
         self.eng.require_saveable()?;
         let message = match &choice {
+            Some(m) if m.partial.is_some() => format!(
+                "output route '{name}' shown on a part of {} on this machine",
+                m.name
+            ),
             Some(m) => format!("output route '{name}' shown on {} on this machine", m.name),
             None => format!("output route '{name}' has no display on this machine"),
         };

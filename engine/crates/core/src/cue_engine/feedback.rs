@@ -109,8 +109,12 @@ impl CueEngine {
 
     /// The binary knows how long the run's action is: its end becomes a deadline. Ignored for a
     /// run that is not playing its voice in its action (stale, stopping, broken, paused before
-    /// its start), and for previews (their end changes nothing in the show).
+    /// its start). A Video cue's preview takes it as its end (`preview_length`); an Audio cue's ends
+    /// with its voice.
     pub(super) fn action_length(&mut self, cue: CueId, run_id: RunId, frames: SampleTime) {
+        if self.preview_length(cue, run_id, frames) {
+            return;
+        }
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
