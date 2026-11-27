@@ -7091,54 +7091,74 @@ fn a_movie_with_several_audio_tracks_plays_the_one_chosen() {
 /// are less than one frame period apart at every look (the start, every minute, or every sixth
 /// of a shorter movie, and the last second); the cue ends once, the last frame and the sound's
 /// last sample together, and its length told is the movie's.
+///
+/// The cases run side by side, each in its own show and in a thread named after the test: each
+/// renders minutes of movie, and one after another they kept the shared Intel runner busy over
+/// five minutes after every other test was done, running its whole test step out of time.
 fn in_step_throughout(cases: &[(u16, u32, u32, u64, u16)]) {
     let dir = tempfile::tempdir().unwrap();
-    for &(fps, track, rate, block, length) in cases {
-        let what = format!("{fps} fps, {track} Hz on {rate} Hz, {length} s");
-        let sound = format!("pcm:2:{track}");
-        let movie = sound_movie!(dir.path(), "long.mov", (fps * length, fps), &sound);
-        let ws = workspace(vec![sounding_cue(1, &movie)]);
-        let mut s = video_show_rate(ws, rate, block, &[], |_| {}, |_| {});
-        let seconds = f64::from(length);
-        assert_eq!(
-            told_lengths(&s, 1),
-            (Some(seconds), Some(seconds)),
-            "{what}"
-        );
-        let at = go(&mut s);
-        let sample = |seconds: f64| at + (seconds * f64::from(rate)).round() as u64;
-        let every = usize::from((length / 6).clamp(1, 60));
-        let mut looks = vec![0.5];
-        looks.extend(
-            (u16::try_from(every).unwrap()..length)
-                .step_by(every)
-                .map(|t| f64::from(t) + 0.5),
-        );
-        looks.push(seconds - 0.5);
-        for t in looks {
-            s.run_until(sample(t));
-            let heard = in_step(&mut s, rate, f64::from(fps), &format!("{what}, {t} s"));
-            let played = (s.now() - at) as f64 / f64::from(rate);
-            assert!(
-                (heard - played).abs() < 0.002,
-                "{what}: {heard} s after {played} s"
-            );
+    let test = std::thread::current()
+        .name()
+        .unwrap_or("in_step_throughout")
+        .to_owned();
+    std::thread::scope(|scope| {
+        for (n, &case) in cases.iter().enumerate() {
+            let dir = dir.path();
+            std::thread::Builder::new()
+                .name(test.clone())
+                .spawn_scoped(scope, move || in_step_case(dir, n, case))
+                .unwrap();
         }
-        expect_state(&s, 1, CueState::Running, &what);
-        s.run_until(sample(seconds) + 2 * block);
-        expect_state(&s, 1, CueState::Idle, &what);
-        assert_eq!(shown(&mut s), None, "{what}");
-        s.run(block * 8);
-        let end = usize::try_from(sample(seconds)).unwrap();
-        let last = last_nonzero(&s.channel(1)).unwrap();
-        let frame = usize::try_from(u64::from(rate) / u64::from(fps)).unwrap();
+    });
+}
+
+/// One case of [`in_step_throughout`], its movie the `n`th in `dir`.
+fn in_step_case(dir: &Path, n: usize, case: (u16, u32, u32, u64, u16)) {
+    let (fps, track, rate, block, length) = case;
+    let what = format!("{fps} fps, {track} Hz on {rate} Hz, {length} s");
+    let sound = format!("pcm:2:{track}");
+    let movie = sound_movie!(dir, &format!("long{n}.mov"), (fps * length, fps), &sound);
+    let ws = workspace(vec![sounding_cue(1, &movie)]);
+    let mut s = video_show_rate(ws, rate, block, &[], |_| {}, |_| {});
+    let seconds = f64::from(length);
+    assert_eq!(
+        told_lengths(&s, 1),
+        (Some(seconds), Some(seconds)),
+        "{what}"
+    );
+    let at = go(&mut s);
+    let sample = |seconds: f64| at + (seconds * f64::from(rate)).round() as u64;
+    let every = usize::from((length / 6).clamp(1, 60));
+    let mut looks = vec![0.5];
+    looks.extend(
+        (u16::try_from(every).unwrap()..length)
+            .step_by(every)
+            .map(|t| f64::from(t) + 0.5),
+    );
+    looks.push(seconds - 0.5);
+    for t in looks {
+        s.run_until(sample(t));
+        let heard = in_step(&mut s, rate, f64::from(fps), &format!("{what}, {t} s"));
+        let played = (s.now() - at) as f64 / f64::from(rate);
         assert!(
-            last < end + 8 && last + frame > end,
-            "{what}: the last sample heard is {last}, the movie's end {end}"
+            (heard - played).abs() < 0.002,
+            "{what}: {heard} s after {played} s"
         );
-        assert_eq!(s.stalls(), 0, "{what}");
-        std::fs::remove_file(&movie).unwrap();
     }
+    expect_state(&s, 1, CueState::Running, &what);
+    s.run_until(sample(seconds) + 2 * block);
+    expect_state(&s, 1, CueState::Idle, &what);
+    assert_eq!(shown(&mut s), None, "{what}");
+    s.run(block * 8);
+    let end = usize::try_from(sample(seconds)).unwrap();
+    let last = last_nonzero(&s.channel(1)).unwrap();
+    let frame = usize::try_from(u64::from(rate) / u64::from(fps)).unwrap();
+    assert!(
+        last < end + 8 && last + frame > end,
+        "{what}: the last sample heard is {last}, the movie's end {end}"
+    );
+    assert_eq!(s.stalls(), 0, "{what}");
+    std::fs::remove_file(&movie).unwrap();
 }
 
 /// Flow 7 as written: ten minutes of movie at 24, 25, 30 and 60 frames a second, looked at
