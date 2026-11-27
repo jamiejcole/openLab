@@ -19,39 +19,62 @@ const NUMBERING_LIMIT: f64 = 1e12;
 // ---------------------------------------------------------------------------------------------
 // Numbers
 
-/// The number a cue created at `at` gets (ED-08; QLab 5, manual p. 100): one step above the
-/// numeric cue before the insertion point, or half way to the numeric cue after it when that
-/// step is taken or reaches it (2, 3 and a cue between them: 2.5). With no numeric cue before
-/// it, one step above the highest numeric cue number in the workspace, but not below
-/// `auto_number_start`.
-pub fn next_auto_number(ws: &Workspace, at: &Position) -> Result<String, CommandError> {
-    let settings = &ws.settings;
-    let (start, increment) = (settings.auto_number_start, settings.auto_number_increment);
-    check_numbering(start, increment)?;
-    let mut highest: Option<f64> = None;
+/// The number a cue created at `at` gets (ED-08; QLab 5, checked against the app): the numeric
+/// cue before the insertion point (none counts as 0) plus the first step of [`steps`] that stays
+/// below the numeric cue after it, repeated while the result is used anywhere in the workspace.
+/// `None`: no step fits (the next number is not above the one before, or the gap is under
+/// [`SMALLEST_STEP`]), so the cue gets no number. `auto_number_start` does not take part.
+pub fn next_auto_number(ws: &Workspace, at: &Position) -> Result<Option<String>, CommandError> {
+    let increment = ws.settings.auto_number_increment;
+    check_increment(increment)?;
     let mut used = HashSet::new();
     for list in &ws.cue_lists {
         visit(&list.cues, &mut |cue| {
-            let Some(number) = &cue.number else { return };
-            used.insert(number.as_str());
-            if let Some(value) = numeric(number) {
-                highest = Some(highest.map_or(value, |h| h.max(value)));
+            if let Some(number) = &cue.number {
+                used.insert(number.as_str());
             }
         });
     }
     let (before, after) = neighbours(ws, at);
-    let above_highest = highest.map_or(start, |h| start.max(h + increment));
-    let next = match before {
-        Some(prev) => step_from(prev, after, increment, &used).unwrap_or(above_highest),
-        None => above_highest,
+    let before = before.unwrap_or(0.0);
+    let fits = |step: f64| after.is_none_or(|a| round(before + step) < round(a));
+    let Some(step) = steps(increment).into_iter().find(|&step| fits(step)) else {
+        return Ok(None);
     };
-    let text = format_number(next);
-    if used.contains(text.as_str()) {
-        return Err(CommandError::InvalidNumbering(
-            "next number is already used",
-        ));
+    // Each pass steps over one distinct used number, so this many passes always find a free one.
+    let mut next = before;
+    for _ in 0..=used.len() {
+        next = round(next + step);
+        let text = format_number(next);
+        if !used.contains(text.as_str()) {
+            return Ok(Some(text));
+        }
     }
-    Ok(text)
+    Ok(None)
+}
+
+/// The smallest step auto-numbering takes, so the numbers it makes have at most three decimals.
+const SMALLEST_STEP: f64 = 0.001;
+
+/// The steps to try, largest first: the increment, then 5 and 1 times each power of ten below it
+/// (increment 1: 1, 0.5, 0.1, 0.05, 0.01, 0.005, 0.001; increment 5: 5, 1, 0.5, ...).
+fn steps(increment: f64) -> Vec<f64> {
+    let mut steps = vec![increment];
+    let mut power = 1e12;
+    while power >= SMALLEST_STEP {
+        for step in [5.0 * power, power] {
+            if round(step) < round(increment) && round(step) >= SMALLEST_STEP {
+                steps.push(round(step));
+            }
+        }
+        power /= 10.0;
+    }
+    steps
+}
+
+/// A value without float noise, to the nine decimals `format_number` keeps.
+fn round(value: f64) -> f64 {
+    (value * 1e9).round() / 1e9
 }
 
 fn numeric(number: &str) -> Option<f64> {
@@ -60,20 +83,6 @@ fn numeric(number: &str) -> Option<f64> {
         .parse::<f64>()
         .ok()
         .filter(|value| value.is_finite() && (0.0..=NUMBERING_LIMIT).contains(value))
-}
-
-/// One `increment` above `prev`; half way to `after` when that is used or not below it. `None`
-/// when neither is free (the list is not in ascending order here, or the gap is used up): the
-/// caller numbers above the highest instead.
-fn step_from(prev: f64, after: Option<f64>, increment: f64, used: &HashSet<&str>) -> Option<f64> {
-    let free = |value: f64| !used.contains(format_number(value).as_str());
-    let step = prev + increment;
-    if after.is_none_or(|a| step < a) && free(step) {
-        return Some(step);
-    }
-    let a = after?;
-    let middle = (prev + a) / 2.0;
-    (middle > prev && middle < a && free(middle)).then_some(middle)
 }
 
 /// The numeric numbers of the nearest numbered cue before and after where a cue made at `at`
@@ -120,6 +129,10 @@ fn check_numbering(start: f64, increment: f64) -> Result<(), CommandError> {
             "start must be between 0 and the maximum",
         ));
     }
+    check_increment(increment)
+}
+
+fn check_increment(increment: f64) -> Result<(), CommandError> {
     if !(increment.is_finite() && increment > 0.0 && increment <= MAX_AUTO_NUMBER) {
         return Err(CommandError::InvalidNumbering(
             "increment must be above 0 and at most the maximum",
