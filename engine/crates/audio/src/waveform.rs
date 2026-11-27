@@ -347,7 +347,7 @@ pub fn build_waveform(
 ) -> Result<WaveformResult, WaveformError> {
     // A panic inside symphonia (malformed data) is a corrupt file, not a dead worker.
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(media, info, cancel)))
-        .unwrap_or_else(|_| Err(MediaError::Corrupt("decoder failed".into()).into()))
+        .unwrap_or_else(|_| Err(MediaError::Corrupt(crate::decode::DECODER_FAILED.into()).into()))
 }
 
 fn build(
