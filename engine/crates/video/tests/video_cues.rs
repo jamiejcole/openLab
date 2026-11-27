@@ -1203,6 +1203,7 @@ fn two_stage_show(mut ws: Workspace, keep_black: [bool; 2]) -> OfflineShow {
             name: format!("Virtual {display}"),
             width: w,
             height: h,
+            partial: None,
         };
         c.machine
             .set_route_display(ws.id, route_of(stage), Some(mapping))
@@ -1477,6 +1478,7 @@ fn a_stage_display_changed_while_a_cue_plays_moves_the_picture_there_at_once() {
         Request::SetRouteDisplay {
             route: route_of(stage_id()),
             display: Some("V2".into()),
+            partial: None,
         },
     );
     assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
@@ -1721,6 +1723,7 @@ fn opened_show(mut ws: Workspace) -> OfflineShow {
             name: format!("Virtual {display}"),
             width: w,
             height: h,
+            partial: None,
         };
         c.machine
             .set_route_display(ws.id, route_of(stage), Some(mapping))
@@ -8858,6 +8861,7 @@ fn routed_show_with(
             name: format!("Virtual {display}"),
             width: 1920,
             height: 1080,
+            partial: None,
         };
         c.machine
             .set_route_display(ws.id, route_n(n), Some(choice))
@@ -9184,6 +9188,144 @@ fn each_route_scaling_shows_the_picture_on_its_display_as_it_says() {
     }
 }
 
+/// Shows route 1 on `display` of the running show `s` as the app's route layout pop-up does: the
+/// part `(columns, rows, index)` of it, or the whole display.
+fn show_route_on_part(s: &mut OfflineShow, display: &str, part: Option<(u8, u8, u8)>) -> Outcome {
+    let outcome = ask(
+        s,
+        Request::SetRouteDisplay {
+            route: route_n(1),
+            display: Some(display.into()),
+            partial: part.map(|(columns, rows, index)| openlab_core::Partial {
+                columns,
+                rows,
+                index,
+            }),
+        },
+    );
+    s.settle_stages();
+    outcome
+}
+
+/// #842 V3: Output 1 at 1920 x 1080 on a 3840 x 1080 display cut two wide → shown on the right
+/// part, the whole card fills that part and the left part stays black; the left part, the same
+/// the other way round; the whole display, the card spread over all of it. The choice is this
+/// Mac's (a stage host that is told it never sees the show file), the cue running on throughout.
+#[test]
+fn a_route_shown_on_a_part_of_a_display_fills_only_that_part() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "W:3840x1080", &[(1, "W")]);
+    go(&mut s);
+    s.run(samples(0.2));
+    // The card's quadrants: red top left, green top right, blue bottom left, yellow bottom right.
+    let in_part = |part: f32, x: f32, y: f32| [part * 0.5 + x * 0.5, y];
+    let outcome = show_route_on_part(&mut s, "W", Some((2, 1, 1)));
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    let right = [
+        in_part(1.0, 0.02, 0.5),
+        in_part(1.0, 0.98, 0.5),
+        in_part(1.0, 0.75, 0.95),
+        in_part(1.0, 0.25, 0.99),
+        [0.1, 0.5],
+        [0.49, 0.5],
+    ];
+    let (_, colours) = display_shows(&mut s, "W", &right);
+    assert_eq!(
+        colours,
+        [RED, GREEN, YELLOW, BLUE, BLACK, BLACK],
+        "the card on the right part, black on the left"
+    );
+    assert_eq!(route_state(&mut s, 1), shown_on("W"));
+    let outcome = show_route_on_part(&mut s, "W", Some((2, 1, 0)));
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    let left = [
+        in_part(0.0, 0.02, 0.5),
+        in_part(0.0, 0.98, 0.5),
+        in_part(0.0, 0.75, 0.95),
+        in_part(0.0, 0.25, 0.99),
+        [0.51, 0.5],
+        [0.9, 0.5],
+    ];
+    let (_, colours) = display_shows(&mut s, "W", &left);
+    assert_eq!(
+        colours,
+        [RED, GREEN, YELLOW, BLUE, BLACK, BLACK],
+        "the card on the left part, black on the right"
+    );
+    // Back to the whole display: the card is spread over all of it.
+    let outcome = show_route_on_part(&mut s, "W", None);
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    let (_, spread) = display_shows(&mut s, "W", &[[0.02, 0.5], [0.98, 0.5]]);
+    assert_eq!(spread, [RED, GREEN], "the whole display");
+    expect_state(&s, 1, CueState::Running, "the cue runs on throughout");
+}
+
+/// A route that overhangs its part of the display (centred, bigger than the part) is cut at the
+/// part's edges: it never draws on the part beside it.
+#[test]
+fn a_route_bigger_than_its_part_of_the_display_is_cut_at_the_parts_edges() {
+    use openlab_core::RouteScaling::Centre;
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "W:1920x1080", &[(1, "W")]);
+    go(&mut s);
+    s.run(samples(0.2));
+    edited(
+        &mut s,
+        openlab_core::Command::SetRouteProperty {
+            id: route_n(1),
+            property: openlab_core::RouteProperty::Scaling { value: Centre },
+        },
+    );
+    let outcome = show_route_on_part(&mut s, "W", Some((2, 1, 1)));
+    assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
+    // The part is 960 wide, so the 1920 wide route is centred on it and cut off at both of its
+    // edges: the card's middle, red above green, shows in the part; the left part, where the
+    // route's left side would reach, is black.
+    let (_, colours) = display_shows(
+        &mut s,
+        "W",
+        &[[0.4, 0.5], [0.76, 0.3], [0.99, 0.3], [0.6, 0.3]],
+    );
+    assert_eq!(colours[0], BLACK, "nothing on the left part");
+    assert_ne!(colours[1], BLACK, "the route in its part");
+}
+
+/// A part of a display that is not one is refused, changing nothing.
+#[test]
+fn a_part_of_a_display_that_is_not_one_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws = workspace(vec![over_stage(still_cue(1, &png, None))]);
+    ws.routes = vec![output_route(1, 1920, 1080)];
+    ws.stages = vec![regioned_stage(1920, &[(0, 1920, Some(1))])];
+    let mut s = routed_show(ws, "W:3840x1080", &[(1, "W")]);
+    for bad in [(1, 1, 0), (5, 1, 0), (2, 0, 0), (2, 2, 4), (3, 1, 3)] {
+        let outcome = show_route_on_part(&mut s, "W", Some(bad));
+        assert!(
+            matches!(outcome, Outcome::Error(ref e) if e.code == openlab_core::protocol::ErrorCode::BadRequest),
+            "{bad:?}: {outcome:?}"
+        );
+    }
+    let routes = match ask(&mut s, Request::ListRouteDisplays) {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::RouteDisplays { routes, .. }) => routes,
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("{e:?}"),
+    };
+    let chosen = routes.first().and_then(|e| e.mapping.as_ref());
+    assert_eq!(chosen.map(|m| m.display.as_str()), Some("W"));
+    assert_eq!(chosen.and_then(|m| m.partial), None, "nothing changed");
+}
+
 /// #813 R6: Output 1 at 1920 x 1080 on a portrait 1080 x 1920 display → rotation 90: the card
 /// fills the display turned a quarter clockwise (its top edge down the display's right side);
 /// 180: upside down; 0: unturned.
@@ -9265,6 +9407,7 @@ fn choosing_another_display_for_a_route_moves_the_playing_picture_there_at_its_p
         Request::SetRouteDisplay {
             route: route_n(1),
             display: Some("V2".into()),
+            partial: None,
         },
     );
     assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");
@@ -9690,6 +9833,7 @@ fn a_route_whose_display_this_mac_lacks_plays_unseen_until_one_is_chosen_here() 
         Request::SetRouteDisplay {
             route: route_n(1),
             display: Some("V1".into()),
+            partial: None,
         },
     );
     assert!(matches!(outcome, Outcome::Ok(_)), "{outcome:?}");

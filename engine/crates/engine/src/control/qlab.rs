@@ -192,6 +192,7 @@ impl Control {
                     name: d.name.clone(),
                     width: d.width,
                     height: d.height,
+                    partial: None,
                 })
             });
             if let Err(why) = self

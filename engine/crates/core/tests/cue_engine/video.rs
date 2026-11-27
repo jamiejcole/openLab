@@ -1089,7 +1089,9 @@ fn a_video_previews_stop_and_pause_all_act_on_its_run_and_a_still_with_no_length
     assert!(rig.engine.is_previewing(id(1)));
     let paused = rig.at(100_100, Input::PauseAll);
     assert!(
-        paused.iter().any(|a| matches!(a, Action::PauseVoice { cue, run: r, .. } if *cue == id(1) && *r == run)),
+        paused.iter().any(
+            |a| matches!(a, Action::PauseVoice { cue, run: r, .. } if *cue == id(1) && *r == run)
+        ),
         "{paused:?}"
     );
     rig.at(100_200, Input::ResumeAll);

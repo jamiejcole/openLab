@@ -96,6 +96,7 @@ fn mapping(display: &str) -> DisplayChoice {
         name: format!("Virtual {display}"),
         width: 1920,
         height: 1080,
+        partial: None,
     }
 }
 
@@ -301,6 +302,7 @@ fn a_stage_display_is_chosen_from_the_listed_displays() {
             Request::SetRouteDisplay {
                 route,
                 display: display.map(Into::into),
+                partial: None,
             },
         )
     };
@@ -326,6 +328,7 @@ fn a_stage_display_is_chosen_from_the_listed_displays() {
             name: "Virtual V2".into(),
             width: 1280,
             height: 720,
+            partial: None,
         })
     );
     assert_eq!(
@@ -1072,7 +1075,8 @@ fn new_rename_and_remove_a_stage_are_one_undo_step_each() {
             &mut s,
             Request::SetRouteDisplay {
                 route: route_id(2),
-                display: Some("V2".into())
+                display: Some("V2".into()),
+                partial: None,
             }
         ),
         Outcome::Ok(_)
@@ -1511,7 +1515,8 @@ fn display_and_stage_changes_are_pushed_to_the_workspace() {
             &mut s,
             Request::SetRouteDisplay {
                 route: route_id(1),
-                display: Some("V1".into())
+                display: Some("V1".into()),
+                partial: None,
             }
         ),
         Outcome::Ok(_)

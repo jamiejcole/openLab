@@ -105,7 +105,7 @@ pub struct Layer {
 /// top, width, height in stage pixels) fills a route of `route` pixels, which is turned clockwise
 /// by `rotation` degrees and put on the target by `scaling`, centred. What lands outside the
 /// target is cut off; the rest of the target is black.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
     pub region: [u32; 4],
     pub route: (u32, u32),
@@ -115,7 +115,14 @@ pub struct Placement {
     /// against whatever size the target is drawn at (a probe draws a display smaller); `None`:
     /// the target's own (a monitor window, a stage's own probe).
     pub screen: Option<(u32, u32)>,
+    /// Where on the display the route is shown: left, top, right and bottom as fractions of the
+    /// display from its top left. A route shown on a part of a display (a splitter's output) is
+    /// put on that part as though it were a whole display, `screen` being the part's pixel size.
+    pub part: [f64; 4],
 }
+
+/// The whole of a display: [`Placement::part`] of a route that is not on a part of one.
+pub const WHOLE_DISPLAY: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
 
 impl Placement {
     /// A whole stage of `width` x `height` fitted to the target, its shape kept: a monitor
@@ -127,15 +134,41 @@ impl Placement {
             rotation: 0,
             scaling: RouteScaling::Fit,
             screen: None,
+            part: WHOLE_DISPLAY,
         }
     }
 
     /// The region's rectangle on a target of `size` pixels: left, top, right, bottom as
-    /// fractions of the target from its top left (a scaling that overhangs goes past 0 or 1).
-    /// Worked out on the display's own size when it is known, so a target of another size (of
-    /// its shape) shows the same.
+    /// fractions of the target from its top left (a scaling that overhangs goes past 0 or 1,
+    /// or past the part of the display it is shown on). Worked out on the display's own size
+    /// when it is known, so a target of another size (of its shape) shows the same.
     pub fn dest(&self, size: (u32, u32)) -> [f64; 4] {
-        let (tw, th) = self.screen.unwrap_or(size);
+        let [l, t, r, b] = self.dest_in_part(size);
+        let [pl, pt, pr, pb] = self.part;
+        let (pw, ph) = (pr - pl, pb - pt);
+        [pl + l * pw, pt + t * ph, pl + r * pw, pt + b * ph]
+    }
+
+    /// Where the region lands that stays on its part of the display: `dest` cut at the part's
+    /// edges (what a scaling that overhangs would draw outside it is not drawn).
+    pub fn lands(&self, size: (u32, u32)) -> [f64; 4] {
+        let [l, t, r, b] = self.dest(size);
+        let [pl, pt, pr, pb] = self.part;
+        [
+            l.max(pl),
+            t.max(pt),
+            r.min(pr).max(l.max(pl)),
+            b.min(pb).max(t.max(pt)),
+        ]
+    }
+
+    /// The region's rectangle as fractions of the part of the display it is shown on.
+    fn dest_in_part(&self, size: (u32, u32)) -> [f64; 4] {
+        let [pl, pt, pr, pb] = self.part;
+        let (tw, th) = self.screen.unwrap_or((
+            (f64::from(size.0) * (pr - pl)).round().max(1.0) as u32,
+            (f64::from(size.1) * (pb - pt)).round().max(1.0) as u32,
+        ));
         let (tw, th) = (f64::from(tw.max(1)), f64::from(th.max(1)));
         let (rw, rh) = (
             f64::from(self.route.0.max(1)),
@@ -221,7 +254,7 @@ impl Guide {
     /// name are as thick on a probe drawn smaller as on the display.
     fn route_per_pixel(&self, target: (u32, u32)) -> (f64, f64) {
         let (tw, th) = self.place.screen.unwrap_or(target);
-        let [l, t, r, b] = self.place.dest(target);
+        let [l, t, r, b] = self.place.dest_in_part(target);
         let (across, down) = ((r - l) * f64::from(tw), (b - t) * f64::from(th));
         // A quarter turn lays the route's x down the display.
         let (along_x, along_y) = if matches!(self.place.rotation, 90 | 270) {
@@ -1312,7 +1345,22 @@ impl<P: Platform> Host<P> {
         for route in &self.routes {
             let screen = (self.displays.iter())
                 .find(|d| Some(&d.id) == route.display.as_ref())
-                .map(|d| (d.width, d.height));
+                .map(|d| match route.partial {
+                    Some(p) => {
+                        let [l, t, r, b] = p.rect(d.width, d.height);
+                        let (w, h) = (f64::from(d.width.max(1)), f64::from(d.height.max(1)));
+                        (
+                            (r - l, b - t),
+                            [
+                                f64::from(l) / w,
+                                f64::from(t) / h,
+                                f64::from(r) / w,
+                                f64::from(b) / h,
+                            ],
+                        )
+                    }
+                    None => ((d.width, d.height), WHOLE_DISPLAY),
+                });
             let mut layers: Vec<Drawn> = Vec::new();
             for (index, stage, picture, on) in parts.remove(&route.id).unwrap_or_default() {
                 if let Some(region) = stage.regions.get(index) {
@@ -1329,7 +1377,8 @@ impl<P: Platform> Host<P> {
                     route: (route.width, route.height),
                     rotation: route.rotation,
                     scaling: route.scaling,
-                    screen,
+                    screen: screen.map(|(size, _)| size),
+                    part: screen.map_or(WHOLE_DISPLAY, |(_, part)| part),
                 },
             });
             let state = match &route.display {
@@ -1636,11 +1685,15 @@ type StagePart<'a> = (usize, &'a StageOutput, Picture, Vec<CuePicture>);
 /// One layer a display draws: its order (stage stack, region index) and its route.
 type Drawn = ((u32, usize), RouteId, Layer);
 
+/// Where a route is shown: the pixel size of its part of the display and the part's place on
+/// the display (`Placement::part`).
+type Screen = ((u32, u32), [f64; 4]);
+
 /// One region of a stage on its route, on a display of the size given (if known).
 type Part<'a> = (
     &'a openlab_core::stage_link::RegionOutput,
     &'a RouteOutput,
-    Option<(u32, u32)>,
+    Option<Screen>,
 );
 
 /// What every output would show (`Host::plan`).
@@ -1720,7 +1773,8 @@ fn layer_of(
             route: (route.width, route.height),
             rotation: route.rotation,
             scaling: route.scaling,
-            screen,
+            screen: screen.map(|(size, _)| size),
+            part: screen.map_or(WHOLE_DISPLAY, |(_, part)| part),
         },
         None => Placement::whole(stage.width, stage.height),
     };
@@ -3047,6 +3101,7 @@ pub(crate) mod tests {
                 rotation: 0,
                 scaling: RouteScaling::Fill,
                 display,
+                partial: None,
                 guide: None,
             })
             .collect();
@@ -3527,6 +3582,7 @@ pub(crate) mod tests {
             rotation,
             scaling,
             display: display.map(Into::into),
+            partial: None,
             guide: None,
         }
     }
@@ -3580,12 +3636,49 @@ pub(crate) mod tests {
             rotation: 0,
             scaling: RouteScaling::Fill,
             screen: None,
+            part: WHOLE_DISPLAY,
         };
         let size = (1920, 1080);
         assert!(near(place.map(size, [960.0, 0.0]), [0.0, 0.0]));
         assert!(near(place.map(size, [1920.0, 1080.0]), [1.0, 1.0]));
         assert!(near(place.map(size, [1440.0, 540.0]), [0.5, 0.5]));
         assert_eq!(place.dest(size), [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    /// #842 V3: a route on the right half of a 3840 x 1080 display lands in that half as though
+    /// it were a whole display of 1920 x 1080 (its scaling worked out on the part), and what a
+    /// scaling overhangs is cut at the part's edges, never reaching the other half.
+    #[test]
+    fn a_route_on_a_part_of_a_display_is_put_there_as_on_a_whole_display() {
+        let on = |scaling| Placement {
+            region: [0, 0, 1920, 1080],
+            route: (1920, 1080),
+            rotation: 0,
+            scaling,
+            screen: Some((960, 1080)),
+            part: [0.5, 0.0, 1.0, 1.0],
+        };
+        let size = (3840, 1080);
+        // Stretched, it fills the part exactly.
+        assert_eq!(on(RouteScaling::Stretch).dest(size), [0.5, 0.0, 1.0, 1.0]);
+        assert!(near(
+            on(RouteScaling::Stretch).map(size, [960.0, 540.0]),
+            [0.75, 0.5]
+        ));
+        // Fit: as wide as the 960 wide part, bars above and below inside it.
+        let fit = on(RouteScaling::Fit).dest(size);
+        assert_eq!((fit[0], fit[2]), (0.5, 1.0));
+        assert!(fit[1] > 0.0 && fit[3] < 1.0, "{fit:?}");
+        // Centre: 1920 wide on a 960 wide part overhangs on both sides, past the display's
+        // middle; `lands` cuts it at the part.
+        let centre = on(RouteScaling::Centre);
+        assert!(centre.dest(size)[0] < 0.5, "{:?}", centre.dest(size));
+        assert_eq!(centre.lands(size), [0.5, 0.0, 1.0, 1.0]);
+        // A whole-display placement lands where it is.
+        assert_eq!(
+            Placement::whole(1920, 1080).lands((1920, 1080)),
+            [0.0, 0.0, 1.0, 1.0]
+        );
     }
 
     /// R5: a 1920 x 1080 route on a 1280 x 1024 display. Centre: one route pixel per display
@@ -3600,6 +3693,7 @@ pub(crate) mod tests {
                 rotation: 0,
                 scaling,
                 screen: None,
+                part: WHOLE_DISPLAY,
             }
             .dest((1280, 1024))
         };
@@ -3629,6 +3723,7 @@ pub(crate) mod tests {
             rotation: 0,
             scaling: RouteScaling::Centre,
             screen: Some((1280, 1024)),
+            part: WHOLE_DISPLAY,
         };
         assert_eq!(on_display.dest((640, 512)), centre);
     }
@@ -3644,6 +3739,7 @@ pub(crate) mod tests {
             rotation,
             scaling: RouteScaling::Fill,
             screen: None,
+            part: WHOLE_DISPLAY,
         };
         let portrait = (1080, 1920);
         let q = turned(90);
@@ -3985,6 +4081,7 @@ pub(crate) mod tests {
                 rotation: 0,
                 scaling: RouteScaling::Stretch,
                 screen: Some(screen),
+                part: WHOLE_DISPLAY,
             },
         };
         let g = guide((1920, 1080), (1920, 1080));

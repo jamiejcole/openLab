@@ -317,6 +317,11 @@ fn all_requests() -> Vec<(&'static str, Request)> {
             Request::SetRouteDisplay {
                 route: RouteId(uuid::Uuid::from_u128(0x90)),
                 display: Some("37D8832A-2D66-02CA-B9F7-8F30A301B230".into()),
+                partial: Some(openlab_core::Partial {
+                    columns: 2,
+                    rows: 1,
+                    index: 1,
+                }),
             },
         ),
         // Test support only (stage host test card and probe).
@@ -1886,6 +1891,11 @@ fn fixtures() -> Vec<(String, Sample)> {
                                 name: "Projector".into(),
                                 width: 3840,
                                 height: 2160,
+                                partial: Some(openlab_core::Partial {
+                                    columns: 2,
+                                    rows: 1,
+                                    index: 1,
+                                }),
                             }),
                             state: Some(openlab_core::stage_link::RouteState::Shown {
                                 display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
@@ -5195,12 +5205,20 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<u128>().prop_map(|c| Request::SequenceSpan {
             cue: CueId(uuid::Uuid::from_u128(c))
         }),
-        (any::<u128>(), proptest::option::of("[!-~]{1,40}")).prop_map(|(route, display)| {
-            Request::SetRouteDisplay {
+        (
+            any::<u128>(),
+            proptest::option::of("[!-~]{1,40}"),
+            proptest::option::of((any::<u8>(), any::<u8>(), any::<u8>())),
+        )
+            .prop_map(|(route, display, partial)| Request::SetRouteDisplay {
                 route: RouteId(uuid::Uuid::from_u128(route)),
                 display,
-            }
-        }),
+                partial: partial.map(|(columns, rows, index)| openlab_core::Partial {
+                    columns,
+                    rows,
+                    index,
+                }),
+            }),
         proptest::option::of("[ -~]{1,20}").prop_map(|device| Request::SetOutputDevice { device }),
         ("[ -~]{1,20}", any::<u32>())
             .prop_map(|(device, frames)| Request::SetBufferSize { device, frames }),

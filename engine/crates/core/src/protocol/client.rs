@@ -483,6 +483,11 @@ pub enum Request {
         route: RouteId,
         #[serde(default)]
         display: Option<String>,
+        /// The part of `display` to use, as a splitter's output (a display cut into columns and
+        /// rows); absent: the whole display. Refused as `bad_request` when it is not a part of a
+        /// display (a split into fewer than two or more than four a side, or no such part).
+        #[serde(default)]
+        partial: Option<crate::video::Partial>,
     },
     /// Opens (`open`) or closes the monitor window of the connection's workspace's `stage`: a
     /// live copy of the stage, scaled to fit a resizable window, drawn by the stage host whether

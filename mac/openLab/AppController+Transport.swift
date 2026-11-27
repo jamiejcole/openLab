@@ -147,7 +147,7 @@ extension AppController {
                 switch node.cue.kindType {
                 // A Fade's preview runs the Fade on its target now, the playhead left where it is.
                 case "network", "fade": return true
-                case "audio", "group":
+                case "audio", "video", "group":
                     return !store.previewing.contains(node.id)
                         && !coveredByGroupPreview(node, nodes, previewing: store.previewing)
                 default: return false

@@ -185,9 +185,14 @@ impl Control {
                 }
                 ClientMessage::Request {
                     id,
-                    request: Request::SetRouteDisplay { route, display },
+                    request:
+                        Request::SetRouteDisplay {
+                            route,
+                            display,
+                            partial,
+                        },
                 } => {
-                    self.set_route_display(doc, id, route, display, to);
+                    self.set_route_display(doc, id, route, display, partial, to);
                     Flow::Continue
                 }
                 ClientMessage::Request {

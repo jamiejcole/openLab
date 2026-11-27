@@ -107,6 +107,10 @@ pub struct DisplayChoice {
     pub name: String,
     pub width: u32,
     pub height: u32,
+    /// One part of the display (a splitter's output) rather than the whole of it; `None`: the
+    /// whole display. `width` and `height` are the whole display's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial: Option<crate::video::Partial>,
 }
 
 /// Why `mapping` cannot be stored.
@@ -120,7 +124,10 @@ fn display_choice_problem(mapping: &DisplayChoice) -> Option<&'static str> {
     if !crate::video::side_ok(mapping.width) || !crate::video::side_ok(mapping.height) {
         return Some("display size out of range");
     }
-    None
+    mapping
+        .partial
+        .as_ref()
+        .and_then(crate::video::Partial::problem)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1100,7 +1107,36 @@ mod tests {
             name: "Projector".into(),
             width: 1920,
             height: 1080,
+            partial: None,
         }
+    }
+
+    fn part(columns: u8, rows: u8, index: u8) -> DisplayChoice {
+        DisplayChoice {
+            partial: Some(crate::video::Partial {
+                columns,
+                rows,
+                index,
+            }),
+            ..display("D3")
+        }
+    }
+
+    /// #842 V3: the part of a display a route is shown on is kept with its display choice, and a
+    /// choice without one is the whole display (a settings file that never had the key).
+    #[test]
+    fn the_part_of_a_display_is_kept_per_machine() {
+        let mut s = MachineSettings::default();
+        let route = RouteId(Uuid::from_u128(9));
+        s.set_route_display(ws(1), route, Some(part(3, 1, 2)))
+            .unwrap();
+        let text = serde_json::to_string(&s).unwrap();
+        let back: MachineSettings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.route_display(ws(1), route), Some(&part(3, 1, 2)));
+        let whole = serde_json::to_string(&display("D1")).unwrap();
+        assert!(!whole.contains("partial"), "{whole}");
+        let read: DisplayChoice = serde_json::from_str(&whole).unwrap();
+        assert_eq!(read.partial, None);
     }
 
     /// VID-01: which display a route uses is per machine: set, read back, cleared, and an
@@ -1125,6 +1161,12 @@ mod tests {
                 name: String::new(),
                 ..display("D2")
             },
+            // A part of a display needs a split into two or more, sides of 1 to 4, a part in it.
+            part(1, 1, 0),
+            part(5, 1, 0),
+            part(2, 0, 0),
+            part(2, 2, 4),
+            part(3, 1, 3),
         ] {
             assert!(s.set_route_display(ws(1), route, Some(bad)).is_err());
         }
