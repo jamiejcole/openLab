@@ -1184,3 +1184,168 @@ fn fade_levels_modes_curves_and_domains_convert() {
         (100.0, 50.0)
     );
 }
+
+// ---- Imported triggers and video outputs (a file built here, no QLab-saved one) ---------------
+
+#[test]
+fn i6_a_cue_has_its_hotkey_ticked_only_when_the_qlab_cue_has_one() {
+    let file = one_list(|a| {
+        let none = a.object("F53HotKey", &[("QLActionKeyKeyCharacter", V::Int(0))]);
+        let some = a.object("F53HotKey", &[("QLActionKeyKeyCharacter", V::Int(97))]);
+        let plain = memo(a, "plain", &[]);
+        let empty = memo(
+            a,
+            "empty",
+            &[("hotKey", none), ("useHotKey", V::Bool(false))],
+        );
+        let keyed = memo(
+            a,
+            "keyed",
+            &[("hotKey", some), ("useHotKey", V::Bool(true))],
+        );
+        let off = memo(a, "off", &[("hotKey", some), ("useHotKey", V::Bool(false))]);
+        // An unsupported cue becomes a placeholder, which has no key and so none ticked.
+        let light = qcue(a, "LightCue", "light", &[]);
+        vec![plain, empty, keyed, off, light]
+    });
+    let import = read(&file).unwrap();
+    let triggers = |q: &str| {
+        let (_, id) = import.cues.iter().find(|(c, _)| c == q).unwrap();
+        import.workspace.find_cue(*id).unwrap().triggers.clone()
+    };
+    for q in ["plain", "empty", "light"] {
+        let t = triggers(q);
+        assert!(t.hotkey.is_none() && !t.hotkey_enabled, "{q}");
+    }
+    let keyed = triggers("keyed");
+    assert_eq!(keyed.hotkey.as_ref().map(|k| k.key.as_str()), Some("a"));
+    assert!(keyed.hotkey_enabled);
+    // A key QLab has switched off is kept, unticked.
+    let off = triggers("off");
+    assert_eq!(off.hotkey.as_ref().map(|k| k.key.as_str()), Some("a"));
+    assert!(!off.hotkey_enabled);
+}
+
+#[test]
+fn i7_each_qlab_route_scaling_mode_maps_to_the_same_mode() {
+    let mut top = Archive::new();
+    let routes: Vec<V> = [(0, "c"), (1, "s"), (2, "f"), (3, "t")]
+        .iter()
+        .map(|&(mode, id)| {
+            let (uid, name, size) = (top.string(id), top.string(id), top.string("{1280, 720}"));
+            top.object(
+                "VideoOutputRoute",
+                &[
+                    ("uniqueID", uid),
+                    ("name", name),
+                    ("naturalSize", size),
+                    ("scalingMode", V::Int(mode)),
+                ],
+            )
+        })
+        .collect();
+    let routes = top.array(&routes);
+    let video = top.dict_str(&[("routes", routes)]);
+    let settings = top.dict_str(&[("Video", video)]);
+    let file = qlab_file("video", top, Some(settings), Archive::new(), vec![]);
+    let import = read(&file).unwrap();
+    let scaling: Vec<(&str, RouteScaling)> = import
+        .workspace
+        .routes
+        .iter()
+        .map(|r| (r.name.as_str(), r.scaling))
+        .collect();
+    assert_eq!(
+        scaling,
+        [
+            ("c", RouteScaling::Centre),
+            ("s", RouteScaling::Stretch),
+            ("f", RouteScaling::Fill),
+            ("t", RouteScaling::Fit),
+        ]
+    );
+}
+
+#[test]
+fn i5_an_import_note_says_whether_it_is_an_error_or_a_warning() {
+    // A rate the cue loses changes how it plays; the passcode the workspace replaces does not.
+    assert_eq!(QlabNoteKind::Rate.severity(), QlabNoteSeverity::Error);
+    assert_eq!(QlabNoteKind::Target.severity(), QlabNoteSeverity::Error);
+    assert_eq!(QlabNoteKind::Setting.severity(), QlabNoteSeverity::Warning);
+    let file = one_list(|a| {
+        let m = memo(a, "m", &[("useMIDITrigger", V::Bool(true))]);
+        vec![m]
+    });
+    let import = read(&file).unwrap();
+    let note = import
+        .report
+        .notes
+        .iter()
+        .find(|n| n.kind == QlabNoteKind::Trigger)
+        .unwrap();
+    assert_eq!(note.severity, QlabNoteSeverity::Error);
+}
+
+#[test]
+fn i5_every_note_that_changes_how_a_cue_plays_is_an_error() {
+    let file = one_list(|a| {
+        let odd = a.object("F53HotKey", &[("QLActionKeyKeyCharacter", V::Int(0xF750))]);
+        let hot = memo(a, "hot", &[("hotKey", odd), ("useHotKey", V::Bool(true))]);
+        let long = a.string(&"n".repeat(5000));
+        let cut = memo(a, "cut", &[("name", long)]);
+        vec![hot, cut]
+    });
+    let import = read(&file).unwrap();
+    let of = |q: &str, kind| {
+        import
+            .report
+            .notes
+            .iter()
+            .find(|n| n.qlab_id.as_deref() == Some(q) && n.kind == kind)
+            .map(|n| n.severity)
+    };
+    // A cue that loses its key starts differently; a name cut to the limit plays the same.
+    assert_eq!(
+        of("hot", QlabNoteKind::Hotkey),
+        Some(QlabNoteSeverity::Error)
+    );
+    assert_eq!(
+        of("cut", QlabNoteKind::Truncated),
+        Some(QlabNoteSeverity::Warning)
+    );
+    // A cue's curve, video, hotkey, rate and OSC message notes are errors by kind.
+    for kind in [
+        QlabNoteKind::FadeCurve,
+        QlabNoteKind::Video,
+        QlabNoteKind::Hotkey,
+        QlabNoteKind::Rate,
+    ] {
+        assert_eq!(kind.severity(), QlabNoteSeverity::Error, "{kind:?}");
+    }
+    assert_eq!(
+        QlabNoteKind::LevelFolded.severity(),
+        QlabNoteSeverity::Warning
+    );
+}
+
+/// The small workspace the app's import test reads through the engine, written by the test
+/// builder, not by QLab: a patch on a device and a video output on a display neither of which
+/// a test machine has, and two cues whose triggers are not kept (one with a long name).
+#[test]
+fn the_synthetic_outputs_and_notes_workspace_reports_what_the_app_test_needs() {
+    let bytes = include_bytes!("../../../fixtures/qlab-synthetic/outputs-and-notes.qlab5");
+    let r = read(bytes).unwrap().report;
+    assert_eq!(r.audio_patches.len(), 1);
+    assert_eq!(r.audio_patches[0].device_name, "Absent Interface");
+    assert_eq!(r.video_outputs.len(), 1);
+    assert_eq!(r.video_outputs[0].screen, "Gone Display");
+    let severities: Vec<_> = r.notes.iter().map(|n| (n.kind, n.severity)).collect();
+    assert_eq!(
+        severities,
+        [
+            (QlabNoteKind::Setting, QlabNoteSeverity::Warning),
+            (QlabNoteKind::Trigger, QlabNoteSeverity::Error),
+            (QlabNoteKind::Trigger, QlabNoteSeverity::Error),
+        ]
+    );
+}

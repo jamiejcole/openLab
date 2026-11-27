@@ -753,14 +753,17 @@ struct QlabNote: Hashable, Sendable, Decodable {
         case playCount = "play_count"
         case fadeCurve = "fade_curve"
     }
+    /// Rust: `QlabNoteSeverity`.
+    enum Severity: String, Hashable, Sendable, Decodable { case error, warning }
     /// nil for the workspace's own settings.
     let qlabId: String?
     let number: String
     let name: String
     let kind: Kind
+    let severity: Severity
     let detail: String
     enum CodingKeys: String, CodingKey {
-        case number, name, kind, detail
+        case number, name, kind, severity, detail
         case qlabId = "qlab_id"
     }
 }
