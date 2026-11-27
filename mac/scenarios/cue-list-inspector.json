@@ -1,0 +1,19 @@
+{
+  "about": "A cue list chosen in the sidebar's Lists tab (#841): its Basics tab (the name is the one live field, the rest drawn off) and its Triggers tab, then a cue clicked in the list showing its own tabs again, at the least window width in light appearance too.",
+  "show": "Demo",
+  "media": {"media/a.wav": 5},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"shot": "cue-shown-first"},
+    {"click": "toggle-sidebar"},
+    {"list": "Main"},
+    {"shot": "cue-list-basics"},
+    {"type": "inspector-cue-list-name", "text": "Front of House"},
+    {"shot": "cue-list-renamed"},
+    {"click": "inspector-tab-triggers"},
+    {"shot": "cue-list-triggers"},
+    {"select": "1"},
+    {"shot": "cue-shown-again"}
+  ]
+}

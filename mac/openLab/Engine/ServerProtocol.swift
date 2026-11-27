@@ -1014,6 +1014,33 @@ struct WaveformPeaks: Hashable, Sendable, Decodable {
     let channels: [Channel]
 }
 
+/// The start of a `waveform` answer sent while its file is still being read (`waveform_partial`):
+/// `channels` hold the first columns of the answer's `buckets`, from `start`.
+struct WaveformPartial: Hashable, Sendable, Decodable {
+    /// The request it belongs to.
+    let id: UInt64
+    let cue: ModelID
+    let duration: Double
+    let start: Double
+    let end: Double
+    /// The columns per channel the finished answer will have.
+    let buckets: Int
+    let channels: [WaveformPeaks.Channel]
+
+    /// What is drawn from it: the columns it holds, over the stretch they cover. Nil for a message
+    /// that does not hold together (the finished answer is what counts, so a bad one is dropped):
+    /// no columns, more than the answer will have, channels of different lengths, or a stretch
+    /// that is not finite and in order.
+    var peaks: WaveformPeaks? {
+        let counts = channels.flatMap { [$0.min.count, $0.max.count] }
+        guard let n = counts.first, n > 0, counts.allSatisfy({ $0 == n }), buckets >= n, buckets <= 8192,
+            duration.isFinite, start.isFinite, end.isFinite, start >= 0, end > start, end <= duration + 1e-6
+        else { return nil }
+        let covered = start + (end - start) * Double(n) / Double(buckets)
+        return WaveformPeaks(cue: cue, duration: duration, start: start, end: covered, channels: channels)
+    }
+}
+
 /// One open workspace as the app connection lists it.
 struct WorkspaceInfo: Hashable, Sendable, Decodable {
     let doc: ModelID
@@ -1111,6 +1138,8 @@ enum ServerMessage: Sendable, Decodable {
     case mediaCopyProgress(MediaCopyProgress)
     /// WS-04: the copy ended.
     case mediaCopied(MediaCopyReport)
+    /// AUD-14: the start of a `waveform` answer, sent while its file is still being read.
+    case waveformPartial(WaveformPartial)
     /// A `type` this client does not know: logged and dropped by the client.
     case unknown(type: String)
 
@@ -1155,6 +1184,7 @@ enum ServerMessage: Sendable, Decodable {
                     routes: try d("routes"), stages: try d("stages")))
         case "media_copy_progress": self = .mediaCopyProgress(try MediaCopyProgress(from: decoder))
         case "media_copied": self = .mediaCopied(try d("report"))
+        case "waveform_partial": self = .waveformPartial(try WaveformPartial(from: decoder))
         default: self = .unknown(type: type)
         }
     }

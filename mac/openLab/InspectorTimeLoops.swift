@@ -16,9 +16,10 @@ extension InspectorViewController {
             onTransport?(.stopPreview(cue: id))
         }
         timeLoops.onSeek = { [weak self] cue, position in self?.seek(cue, to: position) }
-        timeLoops.loadPeaks = { [weak self] cue, start, end, buckets in
+        timeLoops.loadPeaks = { [weak self] cue, start, end, buckets, partial in
             guard let self else { return .failure(.notConnected) }
-            return await self.store.waveform(cue: cue, start: start, end: end, buckets: buckets)
+            return await self.store.waveform(
+                cue: cue, start: start, end: end, buckets: buckets, onPartial: partial)
         }
         let item = NSTabViewItem(identifier: "timeLoops")
         item.label = loc("inspector.tab.timeLoops")
@@ -70,10 +71,11 @@ extension InspectorViewController {
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         endGestures()
         // Every choice through the tab view is the user's (`syncTabs` detaches this delegate while it
-        // falls back), and is kept across cues of other kinds.
-        if let id = tabViewItem?.identifier as? String { chosenTab = id }
+        // falls back), and is kept for cues of the shown cue's type.
+        if let id = tabViewItem?.identifier as? String { chosenTabs[shownKind] = id }
         tabBar.select(tabViewItem?.identifier as? String)
         updateTimeLoopsActive()
+        if geometryTabShown, let c = cueForKindEdit ?? cue, c.kindType == "video" { loadMediaFrame(for: c) }
     }
 
     /// The kinds with a time and loops tab.

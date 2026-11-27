@@ -88,6 +88,15 @@ impl Control {
                     d.waveforms.answer(ticket, result);
                 }
             }
+            Inbox::WaveformPartial {
+                doc,
+                ticket,
+                partial,
+            } => {
+                if let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) {
+                    d.waveforms.partial(ticket, &partial);
+                }
+            }
             Inbox::Doc(answer) => self.doc_answer(answer),
             Inbox::Copy(answer) => self.copy_answer(answer),
             Inbox::Watch(WatchAnswer::Batch(batch)) => self.eng.watch_batches.push(batch),

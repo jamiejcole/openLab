@@ -2107,6 +2107,22 @@ final class PlayheadFlowTests: XCTestCase {
 
     private func notes(_ id: ModelID) -> String? { store.model?.cue(id)?.raw["notes"]?.stringValue }
 
+    /// With a cue list chosen in the sidebar the inspector shows the list, so the notes key (O) opens
+    /// nothing: what is typed must not land in a cue's notes that nothing on screen shows.
+    func testOKeyWithACueListShownEditsNoHiddenCuesNotes() async throws {
+        try await editWorkspace()
+        // The one list is already the highlighted row: the click chooses it without a selection change.
+        wc.sidebar.chooseList(atRow: 0)
+        XCTAssertFalse(wc.inspector.cueListView.isHidden, "the list is shown")
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        try press("o", code: 31)
+        XCTAssertFalse(wc.window?.firstResponder === wc.inspector.notesView, "no caret in hidden notes")
+        try type("hi")
+        await sync()
+        for id in cues { XCTAssertNotEqual(notes(id), "hi") }
+        XCTAssertFalse(wc.inspector.cueListView.isHidden)
+    }
+
     /// The notes key (O): the inspector comes up on its Basics tab with the caret in the selected cue's
     /// notes, whatever tab it showed and whether it was shown at all; what is typed is the cue's notes.
     func testOKeyOpensTheSelectedCuesNotesForTyping() async throws {

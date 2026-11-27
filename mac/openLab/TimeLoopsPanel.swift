@@ -216,6 +216,12 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     /// A Video cue's hold at end; hidden for an Audio cue.
     let holdCheck = NSButton(checkboxWithTitle: loc("timeLoops.holdAtEnd"), target: nil, action: nil)
     let fadeCurvePopup = NSPopUpButton()
+    /// A still's fade lengths, typed (it has no timeline to drag them on); shown only for a still.
+    let fadeInField = NSTextField()
+    let fadeOutField = NSTextField()
+    private var stillFadeRow = NSStackView()
+    /// What a still has no use for: the trim, play and slice column and the timeline's buttons.
+    private var timelineViews: [NSView] = []
     /// Edits one slice's play count in place, over its number on the waveform.
     let sliceCountField = NSTextField()
     /// The slice whose count `sliceCountField` edits (its index when the edit began) and the
@@ -236,8 +242,13 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     var onHold: ((Bool) -> Void)?
     /// A typed value was refused here (its `Localizable.strings` key); the field shows the model's again.
     var onInvalid: ((String) -> Void)?
-    /// Fetches peaks (the store's `waveform`).
-    var loadPeaks: ((ModelID, Double, Double, Int) async -> Result<WaveformPeaks, EngineError>)?
+    /// Fetches peaks (the store's `waveform`); the last argument is given the start of the drawing
+    /// while the file is still being read.
+    var loadPeaks:
+        (
+            (ModelID, Double, Double, Int, @escaping @MainActor (WaveformPeaks) -> Void) async
+                -> Result<WaveformPeaks, EngineError>
+        )?
     var isLocked = false {
         didSet {
             applyLock()
@@ -290,8 +301,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         holdCheck.setAX(AX.timeLoopsHoldAtEnd)
         holdCheck.isHidden = true
         fadeCurvePopup.setAX(AX.timeLoopsFadeCurve)
+        fadeInField.setAX(AX.timeLoopsFadeIn)
+        fadeOutField.setAX(AX.timeLoopsFadeOut)
         sliceCountField.setAX(AX.timeLoopsSliceCount)
-        for f in [startField, endField, countField, sliceCountField] {
+        for f in [startField, endField, countField, sliceCountField, fadeInField, fadeOutField] {
             f.delegate = self
             f.usesSingleLineMode = true
             f.alignment = .right
@@ -299,6 +312,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         startField.widthAnchor.constraint(equalToConstant: 100).isActive = true
         endField.widthAnchor.constraint(equalToConstant: 100).isActive = true
         countField.widthAnchor.constraint(equalToConstant: 50).isActive = true
+        fadeInField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        fadeOutField.widthAnchor.constraint(equalToConstant: 80).isActive = true
         for r in [playRadio, loopRadio] {
             r.target = self
             r.action = #selector(radioChanged(_:))
@@ -423,7 +438,19 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         waveform.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         waveform.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         waveform.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
-        let right = NSStackView(views: [waveform, strip, fadeStrip])
+        func small(_ key: String) -> NSTextField {
+            let l = NSTextField(labelWithString: loc(key))
+            l.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            l.textColor = .secondaryLabelColor
+            return l
+        }
+        stillFadeRow = NSStackView(views: [
+            small("timeLoops.fadeIn"), fadeInField, small("timeLoops.fadeOut"), fadeOutField,
+        ])
+        stillFadeRow.spacing = 6
+        stillFadeRow.isHidden = true
+        timelineViews = [left, strip]
+        let right = NSStackView(views: [waveform, strip, fadeStrip, stillFadeRow])
         right.orientation = .vertical
         right.alignment = .leading
         right.spacing = 4
@@ -491,6 +518,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         silent = media == .still || media == .movie(track: nil)
         still = media == .still
         holdCheck.isHidden = media == .sound
+        // A still's tab is its fades alone, typed: nothing else on it applies to a picture with no length.
+        for v in timelineViews { v.isHidden = still }
+        fadeCheck.isHidden = still
+        stillFadeRow.isHidden = !still
         holdCheck.state = holdsAtEnd ? .on : .off
         waveform.silent = silent
         // A movie's waveform is its audio track's: another track is another drawing.
@@ -525,10 +556,13 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         slicesNote.isHidden = !hasSlices
         if waveform.dragging == nil { syncWaveform() }
         fadeCheck.state = hasFades ? .on : .off
+        if fadeInField.currentEditor() == nil { fadeInField.stringValue = CueTime.precise(fadeIn) }
+        if fadeOutField.currentEditor() == nil { fadeOutField.stringValue = CueTime.precise(fadeOut) }
         fadeCurvePopup.selectItem(at: FadeSettingsPanel.curves.firstIndex(of: fadeCurve) ?? 0)
         if fileChanged {
             waveform.duration = file?.duration
             waveform.peaks = nil
+            waveform.partialPeaks = nil
             waveform.playhead = nil
             waveform.insertion = nil
             waveform.selection = nil
@@ -542,7 +576,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     }
 
     /// What the waveform says while it draws no peaks: no file, the file missing, the read failed,
-    /// or the file being read.
+    /// (the file being read has none).
     private func showMessage() {
         let key: String
         if (kind["media"]?.stringValue ?? "").isEmpty {
@@ -554,7 +588,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         } else if waveform.readFailed {
             key = "timeLoops.unavailable"
         } else {
-            key = "timeLoops.notRead"
+            // The file being read: the area stands empty, with no words (QLab 5 draws the waves in).
+            waveform.message = nil
+            return
         }
         waveform.message = loc(key)
     }
@@ -605,8 +641,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
 
     private func applyLock() {
         let sliced = hasSlices
-        // A still has no time line: nothing here applies to it.
+        // A still has no time line: only its fades apply to it.
         let off = isLocked || still
+        for f in [fadeInField, fadeOutField] { f.isEnabled = !isLocked }
         for c in [startField, endField] as [NSControl] { c.isEnabled = !off }
         // With slices each slice has its own count (QLab: edited on the slice markers).
         for c in [playRadio, loopRadio] as [NSControl] { c.isEnabled = !off && !sliced }
@@ -616,7 +653,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         // A selected section puts a marker on each edge: the button says so.
         addSliceButton.title = loc(waveform.selection != nil ? "timeLoops.addSlices" : "timeLoops.addSlice")
         fadeCheck.isEnabled = !off
-        fadeCurvePopup.isEnabled = !off && hasFades
+        fadeCurvePopup.isEnabled = !isLocked && hasFades
         holdCheck.isEnabled = !off
         if isLocked { endSliceCountEdit() }
         waveform.isLocked = isLocked
@@ -692,7 +729,13 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         let gen = generation
         inFlight = gen
         loading = Task { [weak self] in
-            let result = await loadPeaks(key.cue, key.start, key.end, key.buckets)
+            let result = await loadPeaks(key.cue, key.start, key.end, key.buckets) { [weak self] partial in
+                // The waves so far, while the file is read: only for what is still asked for, and
+                // only until the first whole drawing (the finished answer replaces them whole).
+                guard let self, gen == self.generation, partial.cue == key.cue, self.waveform.peaks == nil
+                else { return }
+                self.waveform.partialPeaks = partial
+            }
             guard let self else { return }
             self.inFlight = nil
             if self.reloadPending {
@@ -704,6 +747,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             switch result {
             case .success(let peaks):
                 self.remember(key, peaks)
+                self.waveform.partialPeaks = nil
                 self.waveform.peaks = peaks
             case .failure(.engine(.commandRefused, _)) where busyRetries < Self.busyRetryLimit:
                 // The engine's queue was full of reads that nobody waits for now; it drains.
@@ -711,6 +755,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             case .failure:
                 // Clicks still move the cue and place the line without a drawing.
                 self.waveform.peaks = nil
+                self.waveform.partialPeaks = nil
                 self.waveform.readFailed = true
                 self.showMessage()
             }
@@ -891,6 +936,19 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         guard !isLocked, let field = obj.object as? NSTextField else { return }
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
         if field === sliceCountField { return commitSliceCount(text) }
+        if field === fadeInField || field === fadeOutField {
+            guard let t = CueTime.parse(text) else {
+                onInvalid?("inspector.invalid.time")
+                field.stringValue = CueTime.precise(field === fadeInField ? fadeIn : fadeOut)
+                return
+            }
+            let isIn = field === fadeInField
+            if t != (isIn ? fadeIn : fadeOut) {
+                onChange?(.fades(fadeIn: isIn ? t : nil, fadeOut: isIn ? nil : t, curve: nil))
+            }
+            field.stringValue = CueTime.precise(t)
+            return
+        }
         if field === countField {
             guard let n = Int(text), (1...SlicePlay.most).contains(n) else {
                 return refuse(field, "timeLoops.invalid.count")

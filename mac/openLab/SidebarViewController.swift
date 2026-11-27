@@ -204,6 +204,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// The user picked a list.
     var onSelectList: ((ModelID) -> Void)?
+    /// The user chose a list row (or made a new list): the list itself, not a cue in it.
+    var onChooseList: ((ModelID) -> Void)?
     /// A per-cue control was used (pause, resume, panic).
     var onCueAction: ((TransportAction) -> Void)?
     /// A cue of an open list was chosen: show and select that cue.
@@ -380,6 +382,16 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         syncSelection()
     }
 
+    /// A click on a list row (the table's action, after any selection change): that list is chosen.
+    @objc func listClicked() { chooseList(atRow: listTable.clickedRow) }
+
+    func chooseList(atRow row: Int) {
+        guard listRows.indices.contains(row), case .list(let i) = listRows[row], lists.indices.contains(i) else {
+            return
+        }
+        onChooseList?(lists[i].id)
+    }
+
     private func configure(_ table: NSTableView, id: String, label: String, scroll: NSScrollView) {
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sidebar")))
         table.headerView = nil
@@ -389,6 +401,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             let menu = NSMenu()
             menu.delegate = self
             table.menu = menu
+            // A click on the list already highlighted changes no selection: it still chooses the list.
+            table.target = self
+            table.action = #selector(listClicked)
         }
         table.setAX(id, label: label)
         scroll.documentView = table
@@ -409,7 +424,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         Task { [weak self] in
             guard let self else { return }
             let sent = await store.send(command: .addCueList(id: id, name: name, index: index))
-            if case .success = sent { onSelectList?(id) }
+            if case .success = sent {
+                onSelectList?(id)
+                onChooseList?(id)
+            }
         }
     }
 
@@ -695,7 +713,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         guard listRows.indices.contains(row) else { return }
         switch listRows[row] {
         case .list(let i):
-            if lists.indices.contains(i) { onSelectList?(lists[i].id) }
+            if lists.indices.contains(i) {
+                onSelectList?(lists[i].id)
+                onChooseList?(lists[i].id)
+            }
         case .cue(let i, let id, _):
             // A cue of a list: that list is shown and the cue chosen in it, as a click on it there.
             guard lists.indices.contains(i) else { return }

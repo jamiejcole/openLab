@@ -37,6 +37,7 @@ pub const SERVER_TYPES: &[&str] = &[
     "video_outputs",
     "media_copy_progress",
     "media_copied",
+    "waveform_partial",
     "result",
     "error",
 ];
@@ -149,6 +150,22 @@ pub enum ServerMessage {
     /// Boxed: it lists failures.
     MediaCopied {
         report: Box<MediaCopyReport>,
+    },
+    /// To the connection that sent a `waveform` request still waiting for its file to be read
+    /// (AUD-14): the start of the answer, drawn from what is read so far. `id` is the request's;
+    /// at most 32 come before its `result`, each with more columns than the last, and none after
+    /// it. Lossy: a client may miss any. `duration`, `start` and `end` are the answer's own;
+    /// `buckets` is how many columns the answer will have per channel (at most what was asked),
+    /// of which `channels[c].min` and `.max` hold the first ones, from `start`. The `result`
+    /// replaces it whole.
+    WaveformPartial {
+        id: RequestId,
+        cue: CueId,
+        duration: f64,
+        start: f64,
+        end: f64,
+        buckets: u32,
+        channels: Vec<WaveformChannel>,
     },
     /// Answer to a `command`, `transport`, `undo`, `redo`, `request`, `close`, `panic` or
     /// `hotkey`.
@@ -1087,6 +1104,7 @@ impl ServerMessage {
             Self::VideoOutputs { .. } => "video_outputs",
             Self::MediaCopyProgress { .. } => "media_copy_progress",
             Self::MediaCopied { .. } => "media_copied",
+            Self::WaveformPartial { .. } => "waveform_partial",
             Self::Result { .. } => "result",
             Self::Error { .. } => "error",
         }

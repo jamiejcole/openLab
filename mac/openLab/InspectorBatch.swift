@@ -89,7 +89,7 @@ extension InspectorViewController {
         // An empty field that is off draws like one that is on (AppKit dims only its text): it is dimmed whole.
         for f in batchDimmed { f.alphaValue = f.isEnabled ? 1 : Self.offAlpha }
         let allSound = cues.allSatisfy { $0.sounds(store.mediaDurations[$0.id]) }
-        syncTabs(Self.batchTabs(forKinds: kinds, allSound: allSound))
+        syncTabs(Self.batchTabs(forKinds: kinds, allSound: allSound), kind: kind ?? "batch")
         showChoice(colourPopup, Self.colourItems, cues.map { $0.raw["color"]?.stringValue ?? "none" })
         let seconds = cues.map { $0.raw["second_color"]?.stringValue ?? "none" }
         showChoice(secondColourPopup, Self.colourItems, seconds)

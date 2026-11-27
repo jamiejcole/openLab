@@ -27,9 +27,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let targetField = TargetField()
     /// A file cue's Target, drawn as a path (shown in place of `targetField` while the cue has a file).
     let targetPath = TargetPathControl()
-    /// The tab the user last chose, for every cue: a cue without it shows its first tab and the choice
-    /// stays (`syncTabs`).
-    var chosenTab: String?
+    /// The tab the user last chose on a cue of each type, for the session (QLab 5 keeps one per cue
+    /// type): a cue without it shows its first tab and the choice stays (`syncTabs`).
+    var chosenTabs: [String: String] = [:]
+    /// The cue list chosen in the sidebar, shown in place of any cue (`showCueList`): nil while cues are.
+    var shownCueList: ModelID?
+    /// The Geometry thumbnail's read in flight (`loadMediaFrame`).
+    var mediaFrameTask: Task<Void, Never>?
+    let cueListView = CueListInspectorView()
+    /// The type whose remembered tab the tab view is showing (the shown cue's kind).
+    var shownKind = ""
     /// The device each patch plays on on this Mac, as the engine last said (nil until it has); a patch
     /// not in it has no device here. For the I/O tab's output format.
     var patchDevices: [ModelID: String]?
@@ -520,7 +527,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // A zero-wide tab view lays its tab strip out at a negative width as tabs are added (AppKit logs
         // "Invalid view geometry" on macOS 27); Auto Layout sizes it for real below.
         tabView.frame = NSRect(x: 0, y: 0, width: 900, height: 240)
-        syncTabs(InspectorTabs.ids(forKind: ""))
+        syncTabs(InspectorTabs.ids(forKind: ""), kind: "")
         tabView.tabViewType = .noTabsNoBorder
         tabView.setAX(AX.inspectorTabs)
         tabView.delegate = self
@@ -528,11 +535,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         tabBar.onChoose = { [weak self] id in self?.tabView.selectTabViewItem(withIdentifier: id) }
         syncTabBar()
 
-        for v in [tabBar, tabView, emptyLabel, messageLabel] {
+        for v in [tabBar, tabView, cueListView, emptyLabel, messageLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
+        cueListView.isHidden = true
+        wireCueListView()
         NSLayoutConstraint.activate([
+            cueListView.topAnchor.constraint(equalTo: root.topAnchor, constant: 4),
+            cueListView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 4),
+            cueListView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -4),
+            cueListView.bottomAnchor.constraint(equalTo: messageLabel.topAnchor, constant: -2),
             emptyLabel.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: root.centerYAnchor),
             tabBar.topAnchor.constraint(equalTo: root.topAnchor, constant: 4),
@@ -949,7 +962,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     /// The inspector shows exactly these cues, and they exist.
     private func shows(_ ids: [ModelID]) -> Bool {
-        !ids.isEmpty && Set(selection) == Set(ids) && (isBatch ? !batchCues.isEmpty : cue != nil)
+        shownCueList == nil && !ids.isEmpty && Set(selection) == Set(ids) && (isBatch ? !batchCues.isEmpty : cue != nil)
     }
 
     /// `f`'s field of the shown cues can be typed in: not locked, and the field is on for these cues
@@ -985,6 +998,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         {
             window.makeFirstResponder(nil)
         }
+        // Another cue shown (not an announcement of the one already there) leaves the cue list.
+        shownCueList = nil
         selection = ids
         secondColourUnlocked = false
         if !(byFollow && refusalOutlivesFollow) { messageLabel.stringValue = "" }
@@ -1010,6 +1025,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// Puts the model's values in the controls. A field being edited keeps its text unless `force`.
     func render(force: Set<InspectorField> = []) {
         _ = view
+        if renderCueList() { return }
         if isBatch, let model = store.model, case let cues = batchCues, !cues.isEmpty {
             return renderBatch(cues, model: model, force: force)
         }
@@ -1047,7 +1063,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // Only Wait and Fade cues, and stills, have a duration to type; others take theirs from content
         // or have none.
         durationField.isEnabled = InspectorEdit.editsDuration(cue, media: store.mediaDurations[cue.id])
-        syncTabs(InspectorTabs.ids(for: cue, model: model, media: store.mediaDurations))
+        syncTabs(InspectorTabs.ids(for: cue, model: model, media: store.mediaDurations), kind: kind)
         showChoice(colourPopup, Self.colourItems, [cue.raw["color"]?.stringValue ?? "none"])
         let second = cue.raw["second_color"]?.stringValue ?? "none"
         showChoice(secondColourPopup, Self.colourItems, [second])
@@ -1147,6 +1163,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         fadeGeometry.isLocked = isLocked
         timeLoops.isLocked = isLocked
         geometry.isLocked = isLocked
+        if shownCueList != nil { _ = renderCueList() }
         if isLocked, !stale.isEmpty { render(force: stale) }
     }
 

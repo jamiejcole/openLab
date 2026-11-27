@@ -96,11 +96,14 @@ extension Comparable {
 }
 
 /// The thumbnail: the stage's outline and the picture placed on it, as the stage draws it. A drag
-/// moves the picture (custom mode); the picture is drawn as its shape, never decoded here.
+/// moves the picture (custom mode); the picture is drawn as its media (`image`, read by `MediaFrame`), or as its shape alone until that is in.
 final class GeometryThumbnail: NSView {
     var geometry = VideoGeometry() { didSet { needsDisplay = true } }
     var stage = CGSize(width: 1920, height: 1080) { didSet { needsDisplay = true } }
     var picture: CGSize? { didSet { needsDisplay = true } }
+    /// The cue's media drawn in the picture's place (a still, or a movie's first frame); nil: the
+    /// picture's shape alone, tinted.
+    var image: NSImage? { didSet { needsDisplay = true } }
     /// The cue is on a stage (false: on none, and the thumbnail says so instead of drawing one).
     var hasStage = true { didSet { needsDisplay = true } }
     var isLocked = false
@@ -174,14 +177,39 @@ final class GeometryThumbnail: NSView {
             shape.line(to: pts[2])
             shape.close()
             let tint = NSColor.systemYellow
-            // Faint where it falls off the stage, stronger on it, both by its opacity.
-            tint.withAlphaComponent(0.25 * max(geometry.opacity, 0.15)).setFill()
-            shape.fill()
-            NSGraphicsContext.saveGraphicsState()
-            NSBezierPath.clip(stageBox)
-            tint.withAlphaComponent(0.55 * max(geometry.opacity, 0.15)).setFill()
-            shape.fill()
-            NSGraphicsContext.restoreGraphicsState()
+            if let image, image.size.width > 0, image.size.height > 0 {
+                // The media itself, carried by the picture's corners (moved, scaled, rotated): faint where
+                // it falls off the stage, as drawn on it, both by its opacity.
+                let (w, h) = (image.size.width, image.size.height)
+                let across = CGPoint(x: pts[1].x - pts[0].x, y: pts[1].y - pts[0].y)
+                let down = CGPoint(x: pts[2].x - pts[0].x, y: pts[2].y - pts[0].y)
+                let paint = { (fraction: CGFloat) in
+                    NSGraphicsContext.saveGraphicsState()
+                    let transform = NSAffineTransform()
+                    transform.transformStruct = NSAffineTransformStruct(
+                        m11: across.x / w, m12: across.y / w, m21: down.x / h, m22: down.y / h,
+                        tX: pts[0].x, tY: pts[0].y)
+                    transform.concat()
+                    image.draw(
+                        in: NSRect(x: 0, y: 0, width: w, height: h), from: .zero, operation: .sourceOver,
+                        fraction: fraction, respectFlipped: true, hints: nil)
+                    NSGraphicsContext.restoreGraphicsState()
+                }
+                paint(0.3 * max(geometry.opacity, 0.15))
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath.clip(stageBox)
+                paint(max(geometry.opacity, 0.15))
+                NSGraphicsContext.restoreGraphicsState()
+            } else {
+                // Faint where it falls off the stage, stronger on it, both by its opacity.
+                tint.withAlphaComponent(0.25 * max(geometry.opacity, 0.15)).setFill()
+                shape.fill()
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath.clip(stageBox)
+                tint.withAlphaComponent(0.55 * max(geometry.opacity, 0.15)).setFill()
+                shape.fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
             tint.setStroke()
             shape.lineWidth = 1
             shape.stroke()
@@ -291,6 +319,9 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
     let anchorYField = GeometryField()
     let anchorReset = GeometryControls.resetButton("anchor")
     let thumbnail = GeometryThumbnail()
+    /// The file whose frame the thumbnail holds or is being read for, so a render that keeps the
+    /// file reads nothing.
+    var shownMedia: String?
     /// The scroll view the fields sit in (set when the tab is built).
     weak var scroll: NSScrollView?
     /// The least width the thumbnail keeps, whatever the inspector's width.
@@ -734,7 +765,12 @@ extension InspectorViewController {
     /// A Video cue's geometry: the cue as edits see it (an unanswered edit included, so a drag
     /// shows where it is), its stage's size and its picture's, as probed.
     func renderGeometry(_ cue: Cue, model: WorkspaceModel) {
-        guard cue.kindType == "video" else { return }
+        guard cue.kindType == "video" else {
+            mediaFrameTask?.cancel()
+            mediaFrameTask = nil
+            geometry.shownMedia = nil
+            return
+        }
         let stageID = cue.raw["kind"]?["stage"]?.stringValue
         let stage = model.stages.first { $0.id.raw == stageID }.flatMap { s -> CGSize? in
             guard let w = s.raw["width"]?.doubleValue, let h = s.raw["height"]?.doubleValue else { return nil }
@@ -743,6 +779,44 @@ extension InspectorViewController {
         let picture = store.mediaDurations[cue.id]?.picture.map { CGSize(width: $0.width, height: $0.height) }
         geometry.render(VideoGeometry(kind: cue.raw["kind"]), stage: stage, picture: picture)
         geometry.isLocked = isLocked
+        loadMediaFrame(for: cue)
+    }
+
+    /// The Geometry tab is the one shown.
+    var geometryTabShown: Bool {
+        (tabView.selectedTabViewItem?.identifier as? String) == "geometry"
+    }
+
+    /// A volume the engine reports as not answering: its files are not opened for a picture.
+    private var mediaVolumeStalled: Bool {
+        (store.warnings + store.runtimeWarnings).contains {
+            let code = $0.json["code"]?.stringValue
+            return code == "media_volume_not_responding" || code == "media_watch_stopped"
+        }
+    }
+
+    /// The cue's media for the Geometry thumbnail: read only while the Geometry tab is shown, when the
+    /// shown file changes, on a queue of its own and never from a volume known to be stalled; a read
+    /// for a file no longer shown is cancelled and never drawn. Until it is in (or when it cannot be
+    /// read) the thumbnail draws the picture's shape alone.
+    func loadMediaFrame(for cue: Cue) {
+        guard geometryTabShown else { return }
+        let media = cue.raw["kind"]?["media"]?.stringValue
+        let url = CueRowMenu.mediaURL(media, showPath: store.document?.path)
+        let probe = store.mediaDurations[cue.id]?.picture
+        let still = probe?.type == "still"
+        let key = probe != nil ? url.map { "\($0.path)|\(still)" } : nil
+        guard key != geometry.shownMedia else { return }
+        mediaFrameTask?.cancel()
+        mediaFrameTask = nil
+        geometry.shownMedia = key
+        geometry.thumbnail.image = nil
+        guard let key, let url, !mediaVolumeStalled else { return }
+        mediaFrameTask = Task { @MainActor [weak self] in
+            let image = await MediaFrame.load(url: url, still: still)
+            guard !Task.isCancelled, let self, self.geometry.shownMedia == key else { return }
+            self.geometry.thumbnail.image = image
+        }
     }
 
     /// Sends geometry fields for the shown Video cue, or during a thumbnail drag the cue the drag

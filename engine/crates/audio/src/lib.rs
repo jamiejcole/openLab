@@ -73,8 +73,9 @@ pub use stream::{
 };
 
 pub use waveform::{
-    BASE_FRAMES, Level, MAX_RANGE_BUCKETS, PEAK_SCALE, Peak, Waveform, WaveformBuilder,
-    WaveformError, WaveformResult, build_waveform,
+    BASE_FRAMES, Level, MAX_PARTIAL_BUCKETS, MAX_PARTIALS, MAX_RANGE_BUCKETS, MIN_PARTIAL_FRAMES,
+    PEAK_SCALE, Peak, Waveform, WaveformBuilder, WaveformError, WaveformPartial, WaveformResult,
+    build_waveform, build_waveform_with,
 };
 
 /// Crate version, as set in the workspace manifest.
