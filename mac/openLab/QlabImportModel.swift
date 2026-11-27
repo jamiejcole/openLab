@@ -153,16 +153,11 @@ struct QlabOutputChoices: Equatable {
             ?? displays.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }))?.id
     }
 
-    /// What the tag beside an audio row says: nothing once the operator chose another device.
-    func tag(audio row: AudioRow) -> Tag? {
-        if row.match != .none { return row.choice == row.match ? .matched : nil }
-        return row.choice == .none ? .notFound : nil
-    }
+    /// What the tag beside a row says: Matched whenever it has a device or display (found by name or
+    /// chosen by the operator), Device not found when it has none.
+    func tag(audio row: AudioRow) -> Tag { row.choice == .none ? .notFound : .matched }
 
-    func tag(video row: VideoRow) -> Tag? {
-        if row.match != nil { return row.choice == row.match ? .matched : nil }
-        return row.choice == nil ? .notFound : nil
-    }
+    func tag(video row: VideoRow) -> Tag { row.choice == nil ? .notFound : .matched }
 
     func mapping(for row: AudioRow) -> PatchMapping? {
         let count = Int(row.patch.outputs)
@@ -204,6 +199,22 @@ struct QlabNotesInfo: Equatable {
     let converted: Int
     let placeholders: Int
     let deleted: Int
+
+    /// One row of the notes table: the note's severity (nil for the lines that are no note) and its text.
+    struct Row: Equatable {
+        let severity: QlabNote.Severity?
+        let text: String
+    }
+
+    /// The rows the notes table shows, one per note.
+    var rows: [Row] {
+        var r = report.notes.map { Row(severity: $0.severity, text: Self.text(of: $0)) }
+        if r.isEmpty { r = [Row(severity: nil, text: loc("qlab.notes.none"))] }
+        if report.notesOmitted > 0 {
+            r.append(Row(severity: nil, text: String(format: loc("qlab.notes.omitted"), report.notesOmitted)))
+        }
+        return r
+    }
 
     /// A note's line: its cue's number and name, then the engine's sentence.
     static func text(of note: QlabNote) -> String {
