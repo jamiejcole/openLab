@@ -169,10 +169,18 @@ final class BlankDeselectingClipView: NSClipView {
 /// The list's outline view: it tells the list when a drag leaves it.
 final class CueOutlineView: NSOutlineView {
     var onDragExit: (() -> Void)?
+    /// A plain press in the first (playhead) column on a row: the row's index. The press then goes on
+    /// as a click on the row; the list uses this to move the playhead when it is not locked to the selection.
+    var onStatusPress: ((Int) -> Void)?
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
+        if event.clickCount == 1, row >= 0, column(at: point) == 0,
+            event.modifierFlags.intersection([.command, .shift, .control, .option]).isEmpty
+        {
+            onStatusPress?(row)
+        }
         // A press on a row's empty space below the cues ends the selection (QLab), with no cue selected.
         if row < 0, event.modifierFlags.intersection([.command, .shift, .control]).isEmpty {
             window?.makeFirstResponder(self)
@@ -550,6 +558,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         sub = store.changes.sink { [weak self] change in
             MainActor.assumeIsolated { self?.handle(change) }
         }
+        (outlineView as? CueOutlineView)?.onStatusPress = { [weak self] row in self?.statusPressed(row) }
         // Published before it changes: use the delivered value.
         overrideSub = store.$status.map { $0?.networkOutputDisabled ?? false }.removeDuplicates().sink {
             [weak self] disabled in
@@ -1023,6 +1032,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         onSetContinue?(ModelID(pair[0]), pair[1])
     }
 
+    /// A press in a row's playhead column (QLab 5): the playhead goes to that cue. Locked to the
+    /// selection, the row click that follows moves it; unlocked, nothing else would.
+    func statusPressed(_ row: Int) {
+        guard !locksPlayhead, let node = outlineView.item(atRow: row) as? CueNode else { return }
+        sendPlayhead(node.id)
+    }
+
     func rowClicked(_ row: Int) {
         guard row >= 0, locksPlayhead, let node = outlineView.item(atRow: row) as? CueNode,
             selectedIDs() == [node.id]
@@ -1095,10 +1111,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func playheadSendAnswered(list: ModelID) {
+        // The store counts per list: a move still shown ahead of the engine's, with none left open,
+        // was refused and goes back (the selection with it).
+        store.playheadAnswered(list: list)
         playheadSends = max(0, playheadSends - 1)
         guard playheadSends == 0 else { return }
-        // A playhead still shown ahead of the engine's was refused: it goes back (the selection with it).
-        store.playheadAnswered(list: list)
         // Any echo is in by now. A send that failed, or that the engine only warned about (a cue
         // deleted meanwhile), has none: the next click on that row must send again.
         sentPlayhead = nil

@@ -723,6 +723,8 @@ final class CueListTests: XCTestCase {
     }
 
     private func playhead(_ h: H) -> ModelID? { h.store.playheads[ModelID(H.list)] }
+    /// The playhead as the engine last reported it (the list shows a click's head ahead of it while the click is unanswered).
+    private func engineHead(_ h: H) -> ModelID? { h.store.engineHeads[ModelID(H.list)] }
 
     /// #496: GO on a group that was the last cue moved the playhead past the end of the list while
     /// the group's row stayed highlighted and in the inspector, so a mode change there and Space
@@ -875,7 +877,7 @@ final class CueListTests: XCTestCase {
         h.vc.selectAsUser([H.fade])
         await assertEventually { self.playhead(h) == H.fade }
         try await moveElsewhere(h, to: H.group)
-        await assertEventually { self.playhead(h) == H.group }
+        await assertEventually { self.engineHead(h) == H.group }
         XCTAssertEqual(h.vc.selectedIDs(), [H.fade], "the click is not answered yet")
         h.rig.wire.holdResults = false
         h.rig.wire.releaseResults()
@@ -896,7 +898,7 @@ final class CueListTests: XCTestCase {
         let go = Task { await h.store.go(list: ModelID(H.list)) }
         try await h.rig.testEngine.advance(seconds: 0.05)
         await assertEventually("Intro ran and the group stands by") {
-            h.store.cueStates[H.intro]?.state == .running && self.playhead(h) == H.group
+            h.store.cueStates[H.intro]?.state == .running && self.engineHead(h) == H.group
         }
         XCTAssertEqual(h.vc.selectedIDs(), [H.intro], "the click is not answered yet")
         h.rig.wire.holdResults = false
@@ -3766,6 +3768,72 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(status(first, 0), loc("cue.playhead"))
         XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(first))
         try await assertAllOn(first)
+    }
+
+    /// The engine refuses a move to a cue no longer in the list (a delete came first): its refusal is
+    /// the real answer, and the arrow goes back to the engine's head. A move open on another list does
+    /// not hold this one back.
+    func testARefusedMoveSnapsBackWhileAnotherListHasAMoveOpen() async throws {
+        try await threeCues()
+        let gone = cues[2]
+        wc.cueList.selectAsUser([gone])
+        await wc.editor.deleteSelection()
+        await assertEventually("the cue is gone") { self.wc.cueList.node(gone) == nil }
+        await sync()
+        let other = ModelID("another-list")
+        store.showPlayheadAhead(list: other, cue: cues[0])
+        store.showPlayheadAhead(list: list, cue: gone)
+        _ = await store.transport(.setPlayhead(list: list, cue: gone))
+        await sync()
+        XCTAssertNotEqual(store.engineHeads[list], gone, "the engine did not move the playhead to a deleted cue")
+        store.playheadAnswered(list: list)
+        XCTAssertEqual(store.playheads[list], store.engineHeads[list], "back on the engine's head")
+        XCTAssertNotEqual(store.playheads[list], gone)
+        XCTAssertEqual(store.playheads[other], cues[0], "the other list's move is still open")
+        store.playheadAnswered(list: other)
+    }
+
+    /// Two moves in a row (Down, Down) within one round trip: the echo of the first does not pull the
+    /// arrow or the masthead back off the second.
+    func testTheEchoOfAnEarlierMoveDoesNotPullTheArrowBackOffALaterOne() async throws {
+        try await threeCues()
+        store.showPlayheadAhead(list: list, cue: cues[1])
+        store.showPlayheadAhead(list: list, cue: cues[2])
+        guard case .success = await store.transport(.setPlayhead(list: list, cue: cues[1])) else {
+            return XCTFail("set_playhead")
+        }
+        await assertEventually("the first move's echo is in") { self.store.engineHeads[self.list] == self.cues[1] }
+        XCTAssertEqual(store.playheads[list], cues[2], "still shown on the second")
+        XCTAssertEqual(status(cues[2], 0), loc("cue.playhead"))
+        XCTAssertNil(status(cues[1], 0), "the first row's arrow is gone")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[2]))
+        store.playheadAnswered(list: list)
+        XCTAssertEqual(store.playheads[list], cues[2], "one move is still open")
+        guard case .success = await store.transport(.setPlayhead(list: list, cue: cues[2])) else {
+            return XCTFail("set_playhead")
+        }
+        store.playheadAnswered(list: list)
+        await assertEventually("the engine is on the second") { self.store.engineHeads[self.list] == self.cues[2] }
+        XCTAssertEqual(store.playheads[list], cues[2])
+    }
+
+    /// Lock playhead to selection off: a press in a row's playhead column puts the highlight, the arrow
+    /// and the masthead on that row, and the next GO fires it (QLab 5 manual p. 91).
+    func testWithTheLockOffAPressInThePlayheadColumnMovesThePlayheadAndGoFiresThere() async throws {
+        try await threeCues()
+        guard case .success = await store.send(command: .setSwitch(.lockPlayhead, false)) else {
+            return XCTFail("setting")
+        }
+        await assertEventually("the lock is off") { self.store.isOn(.lockPlayhead) == false }
+        let ov = wc.cueList.outlineView
+        let row = ov.row(forItem: try XCTUnwrap(wc.cueList.node(cues[2])))
+        // What a press does: the column's hook first, then the row click.
+        try XCTUnwrap(ov as? CueOutlineView).onStatusPress?(row)
+        click(cues[2])
+        try await assertAllOn(cues[2])
+        try await space()
+        await assertEventually { running(cues[2]) }
+        XCTAssertFalse(running(cues[0]), "and not the cue the arrow left")
     }
 
     /// S5: Q1 selected, Delete: Q2 is selected in the turn that draws the removal, and no frame between
