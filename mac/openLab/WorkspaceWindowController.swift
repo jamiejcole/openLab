@@ -316,8 +316,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         wireFind()
         wireLoadTime()
         masthead.onEditingEnded = { [weak self] in self?.syncMasthead() }
-        masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
+        masthead.onCommitNotes = { [weak self] id, text in
+            Task {
+                _ = await self?.editor.setNotes(of: id, text: text)
+                self?.masthead.notesCommitDone(id)
+                self?.syncMasthead()
+            }
+        }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
+        sidebar.selectedProvider = { [weak self] in self?.cueList.selectedIDs() ?? [] }
+        cueList.onSelectionDrawn = { [weak self] in self?.sidebar.syncSelection() }
         sidebar.onSelectList = { [weak self] id in
             self?.cueList.showList(id)
         }

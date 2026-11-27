@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Combine
 import XCTest
 
 @testable import openLab
@@ -3681,6 +3682,131 @@ final class PlayheadFlowTests: XCTestCase {
             self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "for one"
         }
         XCTAssertNotEqual(store.model?.cue(cues[1])?.raw["notes"]?.stringValue, "for one")
+    }
+
+    // MARK: Selection moves in one step (#840)
+
+    /// What the window shows at the end of every turn of the main run loop (a turn is at most one frame
+    /// drawn) and after every change the store delivers, until `finish`.
+    @MainActor
+    private final class Frames<T> {
+        var seen: [T] = []
+        private var observer: CFRunLoopObserver?
+        private var sub: AnyCancellable?
+        init(store: WorkspaceStore, read: @escaping @MainActor () -> T) {
+            observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 0) {
+                [weak self] _, _ in
+                MainActor.assumeIsolated { self?.seen.append(read()) }
+            }
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+            sub = store.changes.sink { [weak self] _ in MainActor.assumeIsolated { self?.seen.append(read()) } }
+        }
+        func finish() -> [T] {
+            if let observer { CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes) }
+            observer = nil
+            sub = nil
+            return seen
+        }
+    }
+
+    /// S1: Q1 selected; a press in Q2's playhead column moves the highlight, the playhead arrow and the
+    /// masthead to Q2 (the press runs the table's own mouse tracking: its release is queued first).
+    func testAPressInThePlayheadColumnMovesHighlightArrowAndMastheadToThatCue() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        // A press in the playhead column is a plain click on the row (the table's own tracking, which no
+        // unit test can drive; the status-click scenario presses it for real).
+        click(cues[1])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[1]], "the highlight moved to the row")
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(wc.inspector.selection, [cues[1]])
+    }
+
+    /// S4: with 200 cues, a click and an arrow key draw the highlight and show the cue in the inspector in
+    /// the call itself, before any engine answer: nothing in the selection path waits for the playhead's
+    /// round trip (measured on this list: 9 ms a click, 4 ms an arrow press with the redraw, the engine's
+    /// echo 18 to 28 ms later).
+    func testASelectionAmong200CuesIsDrawnAndInspectedBeforeTheEnginesEcho() async throws {
+        wc.cueList.isLeftButtonDown = { false }
+        try XCTUnwrap(wc.window).makeKeyAndOrderFront(nil)
+        cues = await wc.editor.addFiles(try tempFiles((0..<200).map { "f\($0).wav" }), parent: nil, index: 0)
+        XCTAssertEqual(cues.count, 200)
+        await sync()
+        await assertEventually { self.wc.cueList.nodeCount == 200 && self.store.playheads[self.list] == self.cues[199] }
+        click(cues[10])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[10]], "the highlight is on the row when the click returns")
+        XCTAssertEqual(wc.inspector.selection, [cues[10]], "and the inspector shows the cue")
+        XCTAssertNotEqual(store.playheads[list], cues[10], "the engine has not answered yet")
+        wc.cueList.selectAdjacent(by: 1)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[11]])
+        XCTAssertEqual(wc.inspector.selection, [cues[11]])
+        XCTAssertNotEqual(store.playheads[list], cues[11], "an arrow press does not wait for the engine either")
+        try await assertAllOn(cues[11])
+    }
+
+    /// S5: Q1 selected, Delete: Q2 is selected in the turn that draws the removal, and no frame between
+    /// the list and the inspector shows nothing selected.
+    func testDeletingTheSelectedCueSelectsTheNextAtOnceWithNoEmptyFrame() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        let frames = Frames(store: store) { (self.wc.cueList.selectedIDs(), self.wc.inspector.selection) }
+        await wc.editor.deleteSelection()
+        await assertEventually("Q1 is gone and Q2 selected") {
+            self.wc.cueList.node(self.cues[0]) == nil && self.wc.cueList.selectedIDs() == [self.cues[1]]
+        }
+        await sync()
+        let seen = frames.finish()
+        XCTAssertFalse(seen.isEmpty)
+        XCTAssertFalse(seen.contains { $0.0.isEmpty }, "a frame showed no row selected: \(seen)")
+        XCTAssertFalse(seen.contains { $0.1.isEmpty }, "a frame showed no cue in the inspector: \(seen)")
+        XCTAssertEqual(wc.inspector.selection, [cues[1]])
+        XCTAssertEqual(wc.masthead.cueID, cues[1])
+    }
+
+    /// S6: then Undo: Q1 is back and Q2 stays selected (QLab 5 does not move the selection back).
+    func testUndoingTheDeleteBringsTheCueBackAndLeavesTheNextSelected() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        await wc.editor.deleteSelection()
+        await assertEventually {
+            self.wc.cueList.node(self.cues[0]) == nil && self.wc.cueList.selectedIDs() == [self.cues[1]]
+        }
+        let frames = Frames(store: store) { (self.wc.cueList.selectedIDs(), self.wc.inspector.selection) }
+        await wc.editor.undo()
+        await assertEventually("Q1 is back") { self.wc.cueList.node(self.cues[0]) != nil }
+        await sync()
+        let seen = frames.finish()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[1]])
+        XCTAssertEqual(wc.inspector.selection, [cues[1]])
+        XCTAssertTrue(seen.allSatisfy { $0.0 == [cues[1]] && $0.1 == [cues[1]] }, "the selection never moved: \(seen)")
+    }
+
+    /// S7: notes typed in the masthead and ended with Return: the field shows the new text from then on,
+    /// never the old text again before the engine's change arrives.
+    func testReturnInTheMastheadNotesNeverShowsTheOldTextAgain() async throws {
+        try await threeCues()
+        guard case .success = await store.send(command: .setProperty(cues[0], .notes("old"))) else {
+            return XCTFail("notes")
+        }
+        await assertEventually { self.wc.masthead.notesView.string == "old" }
+        let window = try XCTUnwrap(wc.window)
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        notes.selectAll(nil)
+        try typeKeys("new", in: window)
+        XCTAssertEqual(notes.string, "new")
+        let frames = Frames(store: store) { self.wc.masthead.notesView.string }
+        try typeKeys("\r", in: window, code: 36)
+        XCTAssertFalse(window.firstResponder === notes, "Return ended the typing")
+        XCTAssertEqual(notes.string, "new", "the field shows the new text at once")
+        await assertEventually("the cue holds the new notes") {
+            self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "new"
+        }
+        await sync()
+        for _ in 0..<20 { await Task.yield() }
+        let seen = frames.finish()
+        XCTAssertFalse(seen.contains("old"), "the old text flashed back: \(seen)")
+        XCTAssertEqual(notes.string, "new")
     }
 
     // MARK: Typing in the masthead goes on after a command takes the text

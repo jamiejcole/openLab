@@ -2237,36 +2237,6 @@ extension MainWindowTests {
         }
     }
 
-    /// Flow: a press in a row's status column moves the playhead there and the selection does not change.
-    func testAPressInTheStatusColumnMovesThePlayheadAndLeavesTheSelection() async throws {
-        let (wc, rig) = try await demoController()
-        laidOut(wc)
-        let intro: ModelID = "00000000-0000-0000-0000-00000000000a"
-        let rain: ModelID = "00000000-0000-0000-0000-000000000022"
-        let list = wc.cueList
-        await assertEventually { rig.store.playheads[TestSnapshots.mainList] == intro }
-        list.selectAsUser([intro])
-        let outline = list.outlineView
-        let node = try XCTUnwrap(list.node(rain))
-        let row = outline.row(forItem: node)
-        XCTAssertGreaterThanOrEqual(row, 0, "Rain is listed")
-        let cell = outline.frameOfCell(atColumn: 0, row: row)
-        let point = outline.convert(NSPoint(x: cell.midX, y: cell.midY), to: nil)
-        let down = try XCTUnwrap(
-            NSEvent.mouseEvent(
-                with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
-                windowNumber: wc.window?.windowNumber ?? 0, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
-        outline.mouseDown(with: down)
-        await assertEventually("the playhead moved to Rain") { rig.store.playheads[TestSnapshots.mainList] == rain }
-        try await rig.advance()
-        XCTAssertEqual(list.selectedIDs(), [intro], "the selection did not change")
-        XCTAssertTrue(list.isPlayheadRow(rain))
-        XCTAssertTrue(wc.masthead.standbyField.stringValue.contains("Rain"), "the GO area stands by on Rain")
-        // The user's own click on a row selects it, as ever.
-        list.selectAsUser([rain])
-        XCTAssertEqual(list.selectedIDs(), [rain])
-    }
-
     /// Flow: the window title names the shown cue list.
     func testTheWindowTitleNamesTheShownCueList() async throws {
         let (wc, rig) = try await demoController()

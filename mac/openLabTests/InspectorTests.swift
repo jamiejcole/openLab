@@ -2290,6 +2290,45 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertNotEqual(panic.image?.tiffRepresentation, reset.image?.tiffRepresentation)
     }
 
+    /// The sidebar's Cue Lists tab with its list open, and the row the tree draws for `id`.
+    private func openSidebarList() throws -> (SidebarViewController, (ModelID) -> Int?) {
+        wc.setVisible(.sidebar, true)
+        wc.window?.layoutIfNeeded()
+        let side = wc.sidebar
+        let disclosure = try XCTUnwrap(
+            (side.listTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? CueListNameCell)?.disclosure)
+        disclosure.performClick(nil)
+        let rowOf: (ModelID) -> Int? = { id in
+            side.listRows.firstIndex { if case .cue(_, let c, _) = $0 { return c == id } else { return false } }
+        }
+        return (side, rowOf)
+    }
+
+    /// S2: the sidebar's Lists tab is open with the main list expanded; a cue selected in the main list is
+    /// the selected row of the tree too, and follows a later selection.
+    func testACueSelectedInTheMainListIsSelectedInTheSidebarTreeToo() async throws {
+        let (side, rowOf) = try openSidebarList()
+        wc.cueList.selectAsUser([Self.memo])
+        XCTAssertEqual(side.listTable.selectedRow, rowOf(Self.memo))
+        XCTAssertEqual(side.listTable.selectedRowIndexes.count, 1)
+        wc.cueList.selectAsUser([Self.intro])
+        XCTAssertEqual(side.listTable.selectedRow, rowOf(Self.intro))
+        // Several selected: the tree falls back to the list's own row, a cue in it is not singled out.
+        wc.cueList.selectAsUser([Self.intro, Self.memo])
+        XCTAssertEqual(side.listTable.selectedRow, 0)
+    }
+
+    /// S3: a cue chosen in the sidebar's tree is selected in the main list and the inspector shows it.
+    func testACueChosenInTheSidebarTreeIsSelectedInTheMainListAndShownInTheInspector() async throws {
+        let (side, rowOf) = try openSidebarList()
+        wc.cueList.selectAsUser([Self.intro])
+        XCTAssertEqual(wc.inspector.selection, [Self.intro])
+        side.listTable.selectRowIndexes(IndexSet(integer: try XCTUnwrap(rowOf(Self.memo))), byExtendingSelection: false)
+        await assertEventually { self.wc.cueList.selectedIDs() == [Self.memo] }
+        XCTAssertEqual(wc.inspector.selection, [Self.memo], "the inspector shows the chosen cue, not the old one")
+        XCTAssertEqual(side.listTable.selectedRow, rowOf(Self.memo), "and the tree keeps it")
+    }
+
     func testASidebarListOpensToShowItsCuesAndChoosingOneSelectsIt() async throws {
         wc.setVisible(.sidebar, true)
         wc.window?.layoutIfNeeded()

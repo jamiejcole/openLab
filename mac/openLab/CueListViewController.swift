@@ -169,19 +169,10 @@ final class BlankDeselectingClipView: NSClipView {
 /// The list's outline view: it tells the list when a drag leaves it.
 final class CueOutlineView: NSOutlineView {
     var onDragExit: (() -> Void)?
-    /// A plain press in the first (status) column on a row: the row's index. True: handled, so the
-    /// press selects nothing (QLab moves only the playhead there).
-    var onStatusPress: ((Int) -> Bool)?
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
-        if event.clickCount == 1, row >= 0, column(at: point) == 0,
-            event.modifierFlags.intersection([.command, .shift, .control, .option]).isEmpty,
-            onStatusPress?(row) == true
-        {
-            return
-        }
         // A press on a row's empty space below the cues ends the selection (QLab), with no cue selected.
         if row < 0, event.modifierFlags.intersection([.command, .shift, .control]).isEmpty {
             window?.makeFirstResponder(self)
@@ -559,7 +550,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         sub = store.changes.sink { [weak self] change in
             MainActor.assumeIsolated { self?.handle(change) }
         }
-        (outlineView as? CueOutlineView)?.onStatusPress = { [weak self] row in self?.statusPressed(row) ?? false }
         // Published before it changes: use the delivered value.
         overrideSub = store.$status.map { $0?.networkOutputDisabled ?? false }.removeDuplicates().sink {
             [weak self] disabled in
@@ -878,6 +868,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             let row = outlineView.row(forItem: node)
             if row >= 0 { outlineView.scrollRowToVisible(row) }
         }
+        // The inspector shows the cue now selected, as for a click on it.
+        onSelectionChange?(selectedIDs())
     }
 
     /// The list to show: the chosen one while it exists, else the first.
@@ -947,35 +939,37 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// Told of every selection change (the inspector follows it).
     var onSelectionChange: (([ModelID]) -> Void)?
+    /// Told after every selection change the list draws (a click, a key, a restore), once any batch
+    /// of model changes is done, so the sidebar's tree can show the same cue.
+    var onSelectionDrawn: (() -> Void)?
     /// Called once the tree matches a reset or a model change, so a listener (Find) reads `roots`
     /// after the update and not before it, whatever order the store's subscribers run in.
     var onModelApplied: (() -> Void)?
 
-    /// The playhead was put on a cue by a press in its status column, and the selection was left where it
-    /// is: the playhead's echo and later moves to this cue are not followed, until the selection is
-    /// changed by the user or the playhead moves on.
-    private var unlinkedHead: ModelID?
+    /// The cue that takes the selection when the delete now under way removes the selected cues (set by
+    /// the editor before it sends the command). The list applies it in the same turn as the removal, so
+    /// no frame is drawn with nothing selected.
+    var successorOnDelete: ModelID?
+
+    /// A removal took the selected cues out: the successor is selected now, in the turn that drew the removal.
+    private func takeSuccessor(after deletes: [Delete]) {
+        guard let successor = successorOnDelete, !deletes.isEmpty, selectedIDs().isEmpty,
+            nodes[successor] != nil
+        else { return }
+        successorOnDelete = nil
+        selectAsUser([successor])
+    }
 
     /// The playhead's cue was removed while selected: the playhead's move on is not followed.
     private var headRemovedWhileSelected = false
 
-    /// A press in a row's status column (QLab 5): the playhead goes there, the selection stays.
-    private func statusPressed(_ row: Int) -> Bool {
-        guard let node = outlineView.item(atRow: row) as? CueNode else { return false }
-        // Typing in the inspector or a cell ends here, as a click on a row would end it.
-        _ = view.window?.makeFirstResponder(outlineView)
-        unlinkedHead = node.id
-        sendPlayhead(node.id)
-        return true
-    }
-
     func outlineViewSelectionDidChange(_ notification: Notification) {
-        if !restoringSelection, !batching, !followingPlayhead { unlinkedHead = nil }
         // Programmatic restores (select, rebuild, batches) are not the user's choice.
         if !restoringSelection && !batching { onSelectionChange?(selectedIDs()) }
         let selected = selectedIDs()
         let previous = lastSelection
         lastSelection = Set(selected)
+        if !rebuilding, !batching { onSelectionDrawn?() }
         let lastRow = outlineView.selectedRow >= 0 ? outlineView.selectedRow : nil
         let latest = lastRow.flatMap { (outlineView.item(atRow: $0) as? CueNode)?.id }
         guard !restoringSelection, !batching, !followingPlayhead, locksPlayhead,
@@ -1118,7 +1112,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// the selection goes to the list's playhead, as for any other move, and the inspector is told
     /// even if that moves nothing, as a rebuild's own restore of the selection does not tell it.
     private func followAfterLoad() {
-        unlinkedHead = nil
         if playheadSends > 0 { headMovedWhileSending = true } else { followPlayhead(force: true) }
         onSelectionChange?(selectedIDs())
     }
@@ -1132,7 +1125,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let head = store.playheads[list]
         guard head != seenHead else { return }
         seenHead = head
-        if head != unlinkedHead { unlinkedHead = nil }
         if headRemovedWhileSelected {
             headRemovedWhileSelected = false
             return
@@ -1191,7 +1183,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         followHeld = false
         let selected = selectedIDs()
         let head = store.playheads[list]
-        if let head, head == unlinkedHead { return }
         if let head {
             guard !selected.contains(head), let node = nodes[head] else { return }
             followingPlayhead = true
@@ -1220,6 +1211,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             onModelApplied?()
         case .model(let upserts, let deletes):
             applyModel(upserts: upserts, deletes: deletes)
+            takeSuccessor(after: deletes)
             onModelApplied?()
         case .runtime(let cues, let heads):
             refresh(cues.union(heads))
