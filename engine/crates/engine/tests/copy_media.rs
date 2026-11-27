@@ -1124,7 +1124,13 @@ fn a_save_as_landing_while_a_copy_retargets_leaves_every_cue_on_its_own_copy() {
     let copy_gate = Gate::default();
     let save_gate = Gate::default();
     let armed = Arc::new(AtomicBool::new(false));
+    // The save is held until the copy has started retargeting, which on a slow runner takes
+    // longer than the save watchdog's timeout: on the machine's clock the watchdog would answer
+    // the held Save As `io` and the doc would stay where it was. A clock that never moves keeps
+    // the watchdog out of a test about the landing.
+    let time = ProbeTime::new();
     let mut r = many_from(60, true, |c| {
+        c.stall_clock = time.clock();
         c.copy.apply_per_wake = 1;
         let held = copy_gate.clone();
         c.copy.hooks.before_file = Some(Arc::new(move |_| held.wait()));
