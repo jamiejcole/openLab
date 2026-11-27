@@ -343,7 +343,7 @@ final class InspectorTests: XCTestCase {
     }
 
     /// A fallback is not a choice: after a cue without the tab, nothing the user did changes it, and a
-    /// tab clicked on that cue (a Fade's Curve) becomes the choice for the cues that have it.
+    /// tab clicked on that cue (a Fade's Curve) is remembered for Fades.
     func testAFallbackDoesNotChangeTheChosenTab() throws {
         vc.setSelection([Self.intro])
         try clickTab("io")
@@ -355,7 +355,7 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.fade])
         try clickTab("curve")
         vc.setSelection([Self.intro])
-        XCTAssertEqual(shownTab, "basics", "an Audio cue has no Curve tab")
+        XCTAssertEqual(shownTab, "io", "a Fade's Curve choice is the Fade's own: the Audio cue keeps its I/O")
         vc.setSelection([Self.fade])
         XCTAssertEqual(shownTab, "curve")
     }

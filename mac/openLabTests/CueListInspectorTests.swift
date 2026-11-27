@@ -132,7 +132,8 @@ final class CueListInspectorTests: XCTestCase {
         pick(wc, row: 1)
         let view = wc.inspector.cueListView
         view.nameField.stringValue = "Typed"
-        view.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: view.nameField))
+        view.controlTextDidEndEditing(
+            Notification(name: NSControl.textDidEndEditingNotification, object: view.nameField))
         await assertEventually { wc.inspector.messageLabel.stringValue != "" }
         XCTAssertEqual(view.nameField.stringValue, "Second", "the model's name is put back")
         wc.setShowMode(true)
@@ -154,7 +155,8 @@ final class CueListInspectorEngineTests: XCTestCase {
         let view = wc.inspector.cueListView
         XCTAssertEqual(view.nameField.stringValue, before)
         view.nameField.stringValue = "Front of House"
-        view.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: view.nameField))
+        view.controlTextDidEndEditing(
+            Notification(name: NSControl.textDidEndEditingNotification, object: view.nameField))
         await assertEventually { wired.store.model?.cueLists.first?.name == "Front of House" }
         XCTAssertEqual(view.nameField.stringValue, "Front of House")
         XCTAssertEqual(wired.wire.commands.filter { $0.json["type"]?.stringValue == "rename_cue_list" }.count, 1)

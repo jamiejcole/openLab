@@ -147,6 +147,7 @@ final class CueListInspectorView: NSView, NSTextFieldDelegate {
             s.orientation = .vertical
             s.alignment = .leading
             s.spacing = 2
+            control.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
             return s
         }
         func column(_ views: [NSView], width: CGFloat? = nil) -> NSStackView {
@@ -179,7 +180,14 @@ final class CueListInspectorView: NSView, NSTextFieldDelegate {
         let basicsRow = NSStackView(views: [left, centre, right])
         basicsRow.orientation = .horizontal
         basicsRow.alignment = .top
+        basicsRow.distribution = .fill
         basicsRow.spacing = 12
+        // The middle column takes the width the other two leave, as the cue's Basics does.
+        centre.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        nameField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        scroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        left.setContentHuggingPriority(.required, for: .horizontal)
+        right.setContentHuggingPriority(.required, for: .horizontal)
         basicsRow.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         pin(basicsRow, in: basicsPane)
 
