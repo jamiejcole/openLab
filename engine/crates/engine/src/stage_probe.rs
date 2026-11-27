@@ -68,6 +68,7 @@ pub fn probe_file(program: &Path, file: &Path, limit: Duration) -> Result<ProbeR
         let _ = child.wait();
         return Err(MediaError::Worker);
     };
+    let started = std::time::Instant::now();
     let (tx, rx) = crossbeam_channel::bounded(1);
     // Reads the answer's one line and at most a line's limit, so a flood costs nothing. It
     // never waits for the output to end: another process holding the pipe open (a child of the
@@ -87,7 +88,14 @@ pub fn probe_file(program: &Path, file: &Path, limit: Duration) -> Result<ProbeR
         let _ = child.wait();
         return Err(MediaError::Worker);
     }
-    let answer = rx.recv_timeout(limit);
+    // An answer that is only picked up once the limit is spent is too late, whichever thread got
+    // there first: the limit is a bound on the answer, not on the wait for it (a zero limit
+    // refuses every answer).
+    let answer = rx
+        .recv_timeout(limit)
+        .ok()
+        .filter(|_| started.elapsed() < limit)
+        .ok_or(());
     // Ended or not, the process goes now: its line is read (or it has had its time).
     let _ = child.kill();
     let _ = child.wait();
@@ -174,6 +182,18 @@ echo '{"type":"video","codec":"h264","width":1920,"height":1080,"fps":25.0,"dura
             matches!(report, Ok(ProbeReport::Video { width: 1920, .. })),
             "{report:?}"
         );
+    }
+
+    /// The limit bounds the answer: with none left, even a line already waiting is too late.
+    #[test]
+    fn a_zero_limit_refuses_even_an_instant_answer() {
+        let (_dir, program, file) = stand_in(
+            r#"echo '{"type":"video","codec":"h264","width":1920,"height":1080,"fps":25.0,"duration":2.0}'"#,
+        );
+        for _ in 0..5 {
+            let why = reason(probe_file(&program, &file, Duration::ZERO));
+            assert!(why.contains("could not be read in time"), "{why}");
+        }
     }
 
     #[test]
