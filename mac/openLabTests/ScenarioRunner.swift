@@ -744,7 +744,11 @@ final class ScenarioRunner {
 
     private func panic() async {
         guard let engine else { return }
+        // As the app's Esc does: ticked Guides go off with the panic.
+        let hide = AppController.hideGuides(on: rig.store)
+        if hide != nil { note("  Esc took the guides off") }
         if case .failure(let e) = await engine.app.send({ .panic(id: $0) }) { note("  panic failed: \(e)") }
+        await hide?.value
     }
 
     /// Lets what a step started reach the engine and come back, then lays the window out.
@@ -2437,6 +2441,19 @@ final class ScenarioShotTests: XCTestCase {
         let header = try await failure(
             of: #"{"show": "Demo", "steps": [{"drag": "cue-list", "header": "Nope"}]}"#)
         XCTAssertTrue(header.contains("no column header \"Nope\" in \"cue-list\"; headers: "), header)
+    }
+
+    func testEscInAScenarioTakesTickedGuidesOffAsTheAppDoes() async throws {
+        let log = try await runLog(
+            of: """
+                {"show": "Video", "displays": "V1:1920x1080",
+                 "settings": {"settings_version": 1, "workspaces": {"00000000-0000-0000-0000-0000000000f0": {
+                   "patches": {}, "routes": {"00000000-0000-0000-0000-0000000000f1":
+                     {"display": "V1", "name": "Stage 1", "width": 1920, "height": 1080}}}}},
+                 "steps": [{"focus": "settings"}, {"tab": "videoRouting"}, {"click": "settings-video-guides-1"},
+                   {"advance": 0.3}, {"key": "escape"}, {"advance": 0.3}]}
+                """)
+        XCTAssertTrue(log.contains("Esc took the guides off"), log)
     }
 
     func testAShotWithADisplayWritesItsCompositeBesideTheWindowShotAndShowsTheCardWhilePlaying() async throws {

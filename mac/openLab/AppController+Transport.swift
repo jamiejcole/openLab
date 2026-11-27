@@ -226,17 +226,20 @@ extension AppController {
         for e in failures { log(e, on: store) }
     }
 
+    /// Takes the guides off every route of `store` that shows them; nil when none does.
+    static func hideGuides(on store: WorkspaceStore) -> Task<Void, Never>? {
+        let routes = store.videoOutputs.routes.filter(\.guides).map(\.route)
+        guard !routes.isEmpty else { return nil }
+        return Task { _ = await store.setRouteGuides(routes, show: false) }
+    }
+
     /// Esc: every workspace, by the engine's app-scope panic. The app's own black over the stages'
     /// displays goes at once, whether or not an engine answers: the operator is never locked out.
     func panicAll() async -> Result<OkBody, EngineError> {
         backstop.dismiss()
         // Alignment guides cover their display like a stage does: Esc takes them off too (each
         // workspace's ticked routes, sent while the panic is), so they never lock the operator out.
-        let hides = session.orderedStores.compactMap { entry -> Task<Void, Never>? in
-            let routes = entry.store.videoOutputs.routes.filter(\.guides).map(\.route)
-            guard !routes.isEmpty else { return nil }
-            return Task { _ = await entry.store.setRouteGuides(routes, show: false) }
-        }
+        let hides = session.orderedStores.compactMap { Self.hideGuides(on: $0.store) }
         let result = await session.panicAll()
         for hide in hides { await hide.value }
         if case .failure(let e) = result {
