@@ -749,6 +749,8 @@ final class ScenarioRunner {
         if case .failure(let e) = await engine.app.send({ .panic(id: $0) }) { note("  panic failed: \(e)") }
         guard let hide else { return }
         await hide.value
+        // The reply can overtake the video-outputs push that drops the ticks: wait for it, bounded.
+        _ = await eventually { self.rig.store.videoOutputs.routes.allSatisfy { !$0.guides } }
         let left = rig.store.videoOutputs.routes.filter(\.guides).count
         note("  Esc took the guides off (\(left) still showing)")
     }
