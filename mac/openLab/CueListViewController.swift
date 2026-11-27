@@ -1062,8 +1062,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         playheadSends += 1
         store.showPlayheadAhead(list: list, cue: id)
         Task { [weak self] in
-            _ = await self?.store.transport(.setPlayhead(list: list, cue: id))
-            self?.playheadSendAnswered(list: list)
+            let result = await self?.store.transport(.setPlayhead(list: list, cue: id))
+            self?.playheadSendAnswered(list: list, accepted: (try? result?.get()) != nil)
         }
     }
 
@@ -1110,10 +1110,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
-    private func playheadSendAnswered(list: ModelID) {
+    private func playheadSendAnswered(list: ModelID, accepted: Bool) {
         // The store counts per list: a move still shown ahead of the engine's, with none left open,
         // was refused and goes back (the selection with it).
-        store.playheadAnswered(list: list)
+        store.playheadAnswered(list: list, accepted: accepted)
         playheadSends = max(0, playheadSends - 1)
         guard playheadSends == 0 else { return }
         // Any echo is in by now. A send that failed, or that the engine only warned about (a cue

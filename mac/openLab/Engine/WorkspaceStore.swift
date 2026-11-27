@@ -49,6 +49,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// Per list, the moves sent with `showPlayheadAhead` that the engine has not answered. While any is
     /// open the list's `playheads` entry keeps the head shown ahead; the engine's echoes only update `engineHeads`.
     private var movesInFlight: [ModelID: Int] = [:]
+    /// Lists whose last move was accepted but whose echo may still be on its way: the result of a
+    /// transport action only says the engine took it, and what happened comes in `runtime`.
+    private var echoPending = Set<ModelID>()
+    /// The engine's playhead when a list's first open move was sent.
+    private var headBeforeMoves: [ModelID: ModelID?] = [:]
+    /// How long a head shown ahead waits for the engine's echo after an accepted move, when no runtime
+    /// message comes to settle it (a move the engine only warned about leaves no echo).
+    static let echoWaitNanoseconds: UInt64 = 1_000_000_000
     @Published private(set) var previewing: Set<ModelID> = []
     /// Cues started since they were last reset: their rows show the second colour, if they have one.
     @Published private(set) var played: Set<ModelID> = []
@@ -210,7 +218,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// back while a move for the list is unanswered; `playheadAnswered` for the last one reconciles
     /// with the engine's head (a refused move snaps back).
     func showPlayheadAhead(list: ModelID, cue: ModelID) {
+        if movesInFlight[list] == nil { headBeforeMoves[list] = engineHeads[list] }
         movesInFlight[list, default: 0] += 1
+        echoPending.remove(list)
         guard playheads[list] != cue else { return }
         var heads: Set<ModelID> = [cue]
         if let old = playheads[list] { heads.insert(old) }
@@ -218,21 +228,46 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         changes.send(.runtime(cues: [], playheads: heads))
     }
 
-    /// The engine answered one move sent for `list`. With none left open, the playhead shown is the
-    /// engine's again (the engine refuses an unknown list or a cue not in it, and a send can fail).
-    func playheadAnswered(list: ModelID) {
+    /// The engine answered one move sent for `list`. With none left open, the head shown is the
+    /// engine's again (the engine refuses an unknown list or a cue not in it, and a send can fail; or
+    /// the playhead moved on by itself meanwhile, a GO). One case waits: an accepted move with the
+    /// engine's head still where it was before the moves, since the result of a transport action says
+    /// only that the engine took the move and its echo comes in `runtime`. The next `runtime` message
+    /// settles the head, or `echoWaitNanoseconds` does when none comes (a move the engine only warned about).
+    func playheadAnswered(list: ModelID, accepted: Bool) {
         guard let open = movesInFlight[list] else { return }
         if open > 1 {
             movesInFlight[list] = open - 1
             return
         }
         movesInFlight[list] = nil
-        guard playheads[list] != engineHeads[list] else { return }
+        let before = headBeforeMoves.removeValue(forKey: list) ?? nil
+        if accepted, engineHeads[list] == before, playheads[list] != engineHeads[list] {
+            echoPending.insert(list)
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: Self.echoWaitNanoseconds)
+                self?.echoWaitEnded(list: list)
+            }
+        } else if let heads = reconcilePlayhead(list: list) {
+            changes.send(.runtime(cues: [], playheads: heads))
+        }
+    }
+
+    private func echoWaitEnded(list: ModelID) {
+        guard echoPending.remove(list) != nil, movesInFlight[list] == nil,
+            let heads = reconcilePlayhead(list: list)
+        else { return }
+        changes.send(.runtime(cues: [], playheads: heads))
+    }
+
+    /// The head shown goes back to the engine's; the rows that change, or nil if it already is.
+    private func reconcilePlayhead(list: ModelID) -> Set<ModelID>? {
+        guard playheads[list] != engineHeads[list] else { return nil }
         var heads = Set<ModelID>()
         if let shown = playheads[list] { heads.insert(shown) }
         if let engine = engineHeads[list] { heads.insert(engine) }
         playheads[list] = engineHeads[list]
-        changes.send(.runtime(cues: [], playheads: heads))
+        return heads
     }
 
     @discardableResult
@@ -536,6 +571,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         playheads = Dictionary(s.playheads.compactMap { e in e.cue.map { (e.list, $0) } }, uniquingKeysWith: { $1 })
         engineHeads = playheads
         movesInFlight = [:]
+        echoPending = []
+        headBeforeMoves = [:]
         previewing = Set(s.previewing)
         played = Set(s.played ?? [])
         playlistNext = Dictionary((s.playlistNext ?? []).map { ($0.group, $0.cue) }, uniquingKeysWith: { $1 })
@@ -745,6 +782,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .unknown(let type):
                 engineLog.notice("ignoring unknown runtime change \(type, privacy: .public)")
             }
+        }
+        for list in echoPending where movesInFlight[list] == nil {
+            echoPending.remove(list)
+            if let moved = reconcilePlayhead(list: list) { heads.formUnion(moved) }
         }
         // A refusal to start a broken cue is past once the cue can play again: a later break
         // counts its own refusals afresh. The show log keeps every one.

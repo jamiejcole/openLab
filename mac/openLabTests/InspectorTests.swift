@@ -907,7 +907,7 @@ final class NetworkInspectorTests: XCTestCase {
         memo = try XCTUnwrap(addedMemo)
         await assertEventually { self.store.model?.cue(self.memo) != nil && self.store.model?.cue(self.net) != nil }
         click(net)
-        await assertEventually { self.inspector.cue?.id == self.net && self.store.playheads[self.list] == self.net }
+        await assertEventually { self.inspector.cue?.id == self.net && self.store.engineHeads[self.list] == self.net }
         inspector.tabView.selectTabViewItem(withIdentifier: "network")
     }
 
@@ -1092,7 +1092,7 @@ final class NetworkInspectorTests: XCTestCase {
         XCTAssertTrue(tip.contains(loc("problem.network_patch_missing.none")), tip)
         // GO sends nothing and the playhead moves on.
         try go()
-        await assertEventually { self.store.playheads[self.list] == self.memo }
+        await assertEventually { self.store.engineHeads[self.list] == self.memo }
         let silent = try await quiet()
         XCTAssertTrue(silent, "the broken cue sent nothing")
     }
@@ -1266,7 +1266,7 @@ final class NetworkInspectorTests: XCTestCase {
         try typeMessage("/held")
         let moved = await store.transport(.setPlayhead(list: list, cue: memo))
         guard case .success = moved else { return XCTFail("\(moved)") }
-        await assertEventually { self.store.playheads[self.list] == self.memo }
+        await assertEventually { self.store.engineHeads[self.list] == self.memo }
         XCTAssertEqual(inspector.cue?.id, net, "the selection stays while typing")
         XCTAssertEqual(inspector.networkMessageField.stringValue, "/held")
         try type(" 7")  // Space types a space; it does not fire GO
@@ -1458,7 +1458,7 @@ final class CueTargetFlowTests: XCTestCase {
         XCTAssertTrue(wc.cueList.outlineView.rows(in: wc.cueList.outlineView.visibleRect).contains(row))
         await assertEventually { self.inspector.cue?.id == Self.intro }
         XCTAssertEqual(inspector.nameField.stringValue, "intro")
-        await assertEventually { self.rig.store.playheads[self.list] == Self.intro }
+        await assertEventually { self.rig.store.engineHeads[self.list] == Self.intro }
         await assertEventually { self.wc.masthead.standbyField.stringValue.contains("intro") }
         let marker = try XCTUnwrap(cell("status", Self.intro)?.images[0])
         await assertEventually { !marker.isHidden }
@@ -1861,7 +1861,7 @@ final class CueTargetFlowTests: XCTestCase {
         await select(fade)
         try click(inspector.jumpTargetButton)
         XCTAssertEqual(wc.cueList.selectedIDs(), [rain])
-        await assertEventually { self.rig.store.playheads[self.list] == rain }
+        await assertEventually { self.rig.store.engineHeads[self.list] == rain }
     }
 
     func testJumpFollowsATargetIntoAnotherList() async throws {
@@ -2038,7 +2038,7 @@ final class UserTestFlowTests: XCTestCase {
 
     func testMovePlayheadToCueByNumberMovesThePlayhead() async throws {
         XCTAssertNil(wc.applyCueNumber("3", movePlayhead: true), "cue 3 exists")
-        await assertEventually { self.rig.store.playheads[self.list] == Self.fade }
+        await assertEventually { self.rig.store.engineHeads[self.list] == Self.fade }
         XCTAssertNotNil(wc.applyCueNumber("99", movePlayhead: true), "no such cue: the operator is told")
     }
 
@@ -2060,7 +2060,7 @@ final class UserTestFlowTests: XCTestCase {
         await aimFadeAtIntro()
         try await start(Self.intro)
         await select(Self.fade)
-        await assertEventually { self.rig.store.playheads[self.list] == Self.fade }
+        await assertEventually { self.rig.store.engineHeads[self.list] == Self.fade }
         inspector.tabView.selectTabViewItem(withIdentifier: "fadeLevels")
         wc.window?.layoutIfNeeded()
         XCTAssertFalse(inspector.fadePreviewButton.isHiddenOrHasHiddenAncestor)

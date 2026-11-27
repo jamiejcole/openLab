@@ -3774,7 +3774,7 @@ final class PlayheadFlowTests: XCTestCase {
         store.showPlayheadAhead(list: list, cue: cues[2])
         XCTAssertEqual(status(cues[2], 0), loc("cue.playhead"), "drawn ahead of the engine")
         XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[2]))
-        store.playheadAnswered(list: list)
+        store.playheadAnswered(list: list, accepted: false)
         XCTAssertEqual(store.playheads[list], first, "the engine's own playhead is back")
         XCTAssertNotEqual(status(cues[2], 0), loc("cue.playhead"))
         XCTAssertEqual(status(first, 0), loc("cue.playhead"))
@@ -3798,11 +3798,11 @@ final class PlayheadFlowTests: XCTestCase {
         _ = await store.transport(.setPlayhead(list: list, cue: gone))
         await sync()
         XCTAssertNotEqual(store.engineHeads[list], gone, "the engine did not move the playhead to a deleted cue")
-        store.playheadAnswered(list: list)
-        XCTAssertEqual(store.playheads[list], store.engineHeads[list], "back on the engine's head")
+        store.playheadAnswered(list: list, accepted: true)
+        await assertEventually("back on the engine's head") { self.store.playheads[self.list] == self.store.engineHeads[self.list] }
         XCTAssertNotEqual(store.playheads[list], gone)
         XCTAssertEqual(store.playheads[other], cues[0], "the other list's move is still open")
-        store.playheadAnswered(list: other)
+        store.playheadAnswered(list: other, accepted: true)
     }
 
     /// Two moves in a row (Down, Down) within one round trip: the echo of the first does not pull the
@@ -3819,13 +3819,29 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(status(cues[2], 0), loc("cue.playhead"))
         XCTAssertNil(status(cues[1], 0), "the first row's arrow is gone")
         XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[2]))
-        store.playheadAnswered(list: list)
+        store.playheadAnswered(list: list, accepted: true)
         XCTAssertEqual(store.playheads[list], cues[2], "one move is still open")
         guard case .success = await store.transport(.setPlayhead(list: list, cue: cues[2])) else {
             return XCTFail("set_playhead")
         }
-        store.playheadAnswered(list: list)
+        store.playheadAnswered(list: list, accepted: true)
         await assertEventually("the engine is on the second") { self.store.engineHeads[self.list] == self.cues[2] }
+        XCTAssertEqual(store.playheads[list], cues[2])
+    }
+
+    /// A move answered before the engine's echo of it is in (the answer says only that the engine took
+    /// the move): the arrow stays on it, and the selection with it.
+    func testALateEchoOfTheLastMoveDoesNotSnapTheArrowBackToTheEnginesOldHead() async throws {
+        try await threeCues()
+        let before = store.engineHeads[list]
+        store.showPlayheadAhead(list: list, cue: cues[2])
+        store.playheadAnswered(list: list, accepted: true)
+        XCTAssertEqual(store.engineHeads[list], before, "the engine's echo is not in")
+        XCTAssertEqual(store.playheads[list], cues[2], "the arrow stays on the move the engine accepted")
+        guard case .success = await store.transport(.setPlayhead(list: list, cue: cues[2])) else {
+            return XCTFail("set_playhead")
+        }
+        await assertEventually("the echo is in") { self.store.engineHeads[self.list] == self.cues[2] }
         XCTAssertEqual(store.playheads[list], cues[2])
     }
 

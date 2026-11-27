@@ -432,7 +432,7 @@ final class MainWindowTests: XCTestCase {
             return XCTFail("set_playhead")
         }
         try await rig.advance()
-        await assertEventually { rig.store.playheads[TestSnapshots.mainList] == cue }
+        await assertEventually { rig.store.engineHeads[TestSnapshots.mainList] == cue }
     }
 
     private func setNotesCommands(_ rig: Rig) -> [JSONValue] {

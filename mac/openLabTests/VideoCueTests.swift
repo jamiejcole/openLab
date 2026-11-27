@@ -1224,7 +1224,7 @@ final class VideoCueTests: XCTestCase {
         clickTimeline(at: 2, panel)
         XCTAssertEqual(panel.waveform.insertion ?? -1, 2, accuracy: 0.05, "the line is where the click was")
         await soon("loaded") { self.status(Self.movie) == loc("cue.state.loaded") }
-        await soon("it is the playhead") { self.store.playheads[self.wc.cueList.listID!] == Self.movie }
+        await soon("it is the playhead") { self.store.engineHeads[self.wc.cueList.listID!] == Self.movie }
         try await go()
         try await play(0.5)
         await soon { self.status(Self.movie) == loc("cue.state.running") }
