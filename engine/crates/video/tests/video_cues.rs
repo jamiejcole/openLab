@@ -1092,7 +1092,10 @@ fn a_stills_integrated_fades_rise_from_its_start_and_fall_to_the_end_of_its_dura
     assert!(full >= 200, "between the fades: {full}");
     assert!(start < full / 10, "starts transparent: {start} of {full}");
     let half = |got: u8| (f64::from(got) / f64::from(full) - 0.5).abs() <= 0.06;
-    assert!(half(half_in), "halfway into the fade in: {half_in} of {full}");
+    assert!(
+        half(half_in),
+        "halfway into the fade in: {half_in} of {full}"
+    );
     run_to(&mut s, at + samples(3.5));
     let half_out = red_at(&mut s);
     assert!(half(half_out), "halfway out: {half_out} of {full}");
