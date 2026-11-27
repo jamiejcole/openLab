@@ -3957,6 +3957,57 @@ fn trims_past_the_movies_end_break_the_cue_with_why_until_fixed() {
     assert_eq!(shown(&mut s), Some(25));
 }
 
+/// #842 V6: a start trim typed after the cue standing by was opened ahead (opened, or still
+/// opening on a slow disk) → GO starts on the trim's frame, never the movie's first: the picture
+/// opened ahead at the old point is not the one played.
+fn trim_typed_after_the_cue_was_opened_ahead(finish_opening_first: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let good = movie!(dir.path(), "good.mov", (50, 25));
+    let slow = slow_to_open(dir.path(), &good);
+    let mut s = video_show_config(
+        workspace(vec![video_cue(1, Some(&slow))]),
+        &HAND_LIMITS,
+        |_| {},
+        |c| c.prime_cues = 1,
+    );
+    s.wait_for_pictures(false);
+    assert!(s.wait_for(|c| c.pictures_primed().0 == 1), "{}", seen(&s));
+    if finish_opening_first {
+        s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+        assert!(
+            s.wait_for(|c| c.pictures_primed() == (1, 1)),
+            "opened ahead\n{}",
+            seen(&s)
+        );
+    }
+    set_geometry(&mut s, 1, serde_json::json!({"start_time": 1.0}));
+    let at = go(&mut s);
+    // Whatever was opened ahead and whatever opens now finishes on the hand-moved clock.
+    s.control().advance_stage_media_clock(SLOW_OPEN_MS);
+    assert!(
+        s.wait_for(|c| c.pictures_waiting() == 0),
+        "the start played\n{}",
+        seen(&s)
+    );
+    run_to(&mut s, at + samples(0.5));
+    let frame = on_stage(&mut s, "half a second after GO");
+    assert!(
+        (25..=40).contains(&frame),
+        "half a second after GO on the 1 s start trim is frame 25 + 12, not {frame}\n{}",
+        seen(&s)
+    );
+}
+
+#[test]
+fn a_start_trim_typed_after_the_cue_was_opened_ahead_starts_on_the_trims_frame() {
+    trim_typed_after_the_cue_was_opened_ahead(true);
+}
+
+#[test]
+fn a_start_trim_typed_while_the_cue_is_still_opening_ahead_starts_on_the_trims_frame() {
+    trim_typed_after_the_cue_was_opened_ahead(false);
+}
+
 /// A stage host that starts again while a devamped loop plays is sent the plan as the devamp
 /// left it: the picture goes on into the slice after the loop, not round the loop again.
 #[test]

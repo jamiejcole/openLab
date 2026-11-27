@@ -294,6 +294,39 @@ struct DisplayChoice: Hashable, Sendable, Decodable {
     let name: String
     let width: UInt32
     let height: UInt32
+    /// The part of the display the route is shown on (a splitter's output); nil: the whole display.
+    var partial: DisplayPart?
+
+    /// The pixel size the route is shown on: the part's, or the whole display's.
+    var shownSize: (width: UInt32, height: UInt32) {
+        partial?.size(ofWidth: width, height: height) ?? (width, height)
+    }
+}
+
+/// One part of a display cut into `columns` x `rows` equal parts, as a display splitter makes one
+/// large display of several outputs; `index` counts from 0 along the first row, then the next.
+struct DisplayPart: Hashable, Sendable, Codable {
+    let columns: Int
+    let rows: Int
+    let index: Int
+
+    /// The layouts the route layout pop-up offers, QLab 5's: 2 to 4 wide, 2 to 4 high, and the
+    /// grids of 2 to 4 columns by 2 to 4 rows.
+    static let wide = (2...4).map { (columns: $0, rows: 1) }
+    static let high = (2...4).map { (columns: 1, rows: $0) }
+    static func grids(rows: Int) -> [(columns: Int, rows: Int)] { (2...4).map { (columns: $0, rows: rows) } }
+
+    /// The part's size in pixels on a display of `width` x `height`: edges shared with its
+    /// neighbours at their share of the side, rounded down, as the engine places it.
+    func size(ofWidth width: UInt32, height: UInt32) -> (width: UInt32, height: UInt32) {
+        guard columns >= 1, rows >= 1, index >= 0, index < columns * rows else { return (width, height) }
+        let (col, row) = (index % columns, index / columns)
+        func edge(_ n: Int, _ of: Int, _ side: UInt32) -> UInt32 { UInt32(UInt64(n) * UInt64(side) / UInt64(of)) }
+        return (
+            edge(col + 1, columns, width) - edge(col, columns, width),
+            edge(row + 1, rows, height) - edge(row, rows, height)
+        )
+    }
 }
 
 /// Where an output route is: `shown` (on `display`), `hidden`, `no_display`, `display_missing`

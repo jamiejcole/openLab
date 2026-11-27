@@ -516,7 +516,10 @@ final class BlackBackstopTests: XCTestCase {
         addTeardownBlock { @MainActor in settings.close() }
         await settings.present().value
         let routing = settings.videoRoutingPane
-        await pushed("the routes are listed") { await routing.refresh(); return routing.guideChecks.count == 2 }
+        await pushed("the routes are listed") {
+            await routing.refresh()
+            return routing.guideChecks.count == 2
+        }
         let probe = [[0.5, 0.001]]
         func colour(_ display: String) async -> [UInt8]? {
             guard case .success(let ok) = await engine.request(.displayProbe(display: display, points: probe)),
