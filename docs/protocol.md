@@ -246,7 +246,7 @@ Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_s
 - Match a `result` to its request by `id`: results may leave in a different order than the requests were sent.
 - The server may hold a `result` with `ok.revision = N` until `model_changed` N has been written (at most `revision_wait`, 2 s). If a `result` is ahead of the client's model, request a `snapshot`.
 - Never pipeline `snapshot` requests: while one is outstanding, broadcasts are withheld until its `result`.
-- On one connection, broadcasts are ordered before replies, and a `snapshot` is never followed by older broadcasts (those at or below its revision or `seq` are filtered). `document` and `warnings` may arrive after the `snapshot`; they are still current.
+- On one connection, a `result` carrying a revision is ordered after the broadcasts up to that revision (above); a `result` without a revision goes straight out and may overtake broadcasts still in the hub (a transport `result` carries the runtime `seq` to reconcile against). A `snapshot` is never followed by older broadcasts (those at or below its revision or `seq` are filtered). `document` and `warnings` may arrive after the `snapshot`; they are still current.
 - Revision and `seq` gaps are forwarded unchanged; the client recovers with `request: snapshot`. A lagged client gets a fresh unsolicited `snapshot` and is not closed; a `result` without a revision may overtake it.
 - `closed { doc }` arrives after the requester's `result`. A resync for a closed doc answers `no_workspace`, then `closed`.
 - `u64::MAX` is a reserved request id (`bad_request`). A second `hello` and binary frames are `bad_request`; 32 consecutive bad frames close the connection (`MAX_BAD_FRAMES`).
