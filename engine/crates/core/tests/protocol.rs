@@ -4534,11 +4534,16 @@ fn property_commands() -> Vec<(String, Command)> {
             device_output: 3,
             value: true,
         },
+        PatchProperty::DeviceOutputSolo {
+            device_output: 3,
+            value: true,
+        },
         PatchProperty::DeviceOutputs {
             value: vec![DeviceOutputLevel {
                 device_output: 1,
                 level_db: -3.0,
                 mute: true,
+                solo: true,
             }],
         },
     ];

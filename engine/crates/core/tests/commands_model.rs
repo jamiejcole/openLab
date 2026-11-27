@@ -1440,9 +1440,30 @@ fn crosspoints_and_device_outputs_can_be_edited_and_undone() {
         DeviceOutputLevel {
             device_output: 5,
             level_db: -10.0,
-            mute: true
+            mute: true,
+            solo: false,
         }
     );
+    // A solo is its own flag: the entry stays while only it differs from the default, clearing it
+    // takes the entry out, and an undo puts it back.
+    let mut soloed = ws.clone();
+    let mut history = History::new();
+    for value in [true, false] {
+        let property = PatchProperty::DeviceOutputSolo {
+            device_output: 7,
+            value,
+        };
+        assert!(
+            history
+                .execute(&mut soloed, patch_prop(1, property))
+                .unwrap()
+        );
+        assert_eq!(soloed.patches[0].device_output(7).solo, value);
+    }
+    assert!(soloed.patches[0].device_outputs.is_empty());
+    assert_clean(&soloed);
+    history.undo(&mut soloed).unwrap();
+    assert!(soloed.patches[0].device_output(7).solo);
     // Back at 0 dB and unmuted, the entry goes: a patch nobody touched lists none.
     let mut work = muted.clone();
     let mut history = History::new();
@@ -1472,6 +1493,7 @@ fn crosspoints_and_device_outputs_can_be_edited_and_undone() {
                     device_output: 2,
                     level_db: -6.0,
                     mute: true,
+                    solo: false,
                 }],
             },
         ),
@@ -1534,6 +1556,7 @@ fn bad_crosspoint_and_device_output_edits_are_refused() {
                         device_output: 1,
                         level_db: 0.0,
                         mute: true,
+                        solo: false,
                     };
                     2
                 ],
@@ -1547,6 +1570,7 @@ fn bad_crosspoint_and_device_output_edits_are_refused() {
                         device_output: 0,
                         level_db: 0.0,
                         mute: true,
+                        solo: false,
                     };
                     65
                 ],
@@ -1638,6 +1662,7 @@ fn narrowing_the_maximum_limits_crosspoints_and_device_outputs() {
         device_output: 1,
         level_db: 9.0,
         mute: true,
+        solo: false,
     }];
     let clamps = ws.limit_clamps(LevelLimits {
         max_db: 0.0,
@@ -1679,6 +1704,7 @@ fn raising_the_minimum_over_a_dense_matrix_is_one_command_per_list() {
             device_output: d,
             level_db: -50.0,
             mute: false,
+            solo: false,
         })
         .collect();
     let before = ws.clone();
@@ -1717,11 +1743,13 @@ fn a_device_output_clamped_to_its_default_leaves_the_list() {
             device_output: 0,
             level_db: 6.0,
             mute: false,
+            solo: false,
         },
         DeviceOutputLevel {
             device_output: 1,
             level_db: -6.0,
             mute: false,
+            solo: false,
         },
     ];
     let clamps = ws.limit_clamps(LevelLimits {

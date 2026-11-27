@@ -686,7 +686,12 @@ pub enum PatchProperty {
         device_output: u32,
         value: bool,
     },
-    /// Replaces every device output's level and mute: sorted, each device output once.
+    /// A device output's solo: while any is on, the patch's other device outputs are silent.
+    DeviceOutputSolo {
+        device_output: u32,
+        value: bool,
+    },
+    /// Replaces every device output's level, mute and solo: sorted, each device output once.
     DeviceOutputs {
         value: Vec<DeviceOutputLevel>,
     },
@@ -746,6 +751,7 @@ impl PatchProperty {
             // Both are undone by the whole list: setting the default takes the entry out.
             Self::DeviceOutputLevel { .. }
             | Self::DeviceOutputMute { .. }
+            | Self::DeviceOutputSolo { .. }
             | Self::DeviceOutputs { .. } => Self::DeviceOutputs {
                 value: patch.device_outputs.clone(),
             },
@@ -822,6 +828,10 @@ impl PatchProperty {
                 device_output,
                 value,
             } => device_output_mut(patch, *device_output, |d| d.mute = *value)?,
+            Self::DeviceOutputSolo {
+                device_output,
+                value,
+            } => device_output_mut(patch, *device_output, |d| d.solo = *value)?,
             Self::DeviceOutputs { value } => {
                 if value.len() > MAX_DEVICE_OUTPUTS as usize {
                     return Err(CommandError::InvalidValue("too many device outputs"));
@@ -844,7 +854,8 @@ impl PatchProperty {
                 ..
             } => Some((*output as usize, *device_output)),
             Self::DeviceOutputLevel { device_output, .. }
-            | Self::DeviceOutputMute { device_output, .. } => Some((0, *device_output)),
+            | Self::DeviceOutputMute { device_output, .. }
+            | Self::DeviceOutputSolo { device_output, .. } => Some((0, *device_output)),
             _ => None,
         };
         std::mem::discriminant(self) == std::mem::discriminant(other)
@@ -866,8 +877,8 @@ fn check_routing_indices(output: u32, device_output: u32) -> Result<(), CommandE
     Ok(())
 }
 
-/// Changes device output `device_output`'s level or mute with `change`; one back at 0 dB and
-/// unmuted leaves the list, so a patch nobody touched lists none.
+/// Changes device output `device_output`'s level, mute or solo with `change`; one back at 0 dB,
+/// unmuted and not soloed leaves the list, so a patch nobody touched lists none.
 fn device_output_mut(
     patch: &mut OutputPatch,
     device_output: u32,
@@ -884,6 +895,7 @@ fn device_output_mut(
                     device_output,
                     level_db: 0.0,
                     mute: false,
+                    solo: false,
                 },
             );
             i

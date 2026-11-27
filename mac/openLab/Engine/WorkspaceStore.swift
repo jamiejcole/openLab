@@ -126,6 +126,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     let changes = PassthroughSubject<StoreChange, Never>()
 
     private(set) var revision: UInt64 = 0
+    /// Edits (commands, undo, redo) this app has sent: the engine's own changes, such as a media
+    /// copy's retargets, are not among them.
+    private(set) var editsSent = 0
     private(set) var runtimeSeq: UInt64 = 0
     let client: EngineClient
     private var stateSub: AnyCancellable?
@@ -229,7 +232,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
 
     /// `coalesce`: edits sent with the same key join one undo step (a fader drag).
     func send(command: Command, coalesce: String? = nil) async -> Result<OkBody, EngineError> {
-        await client.send { .command(id: $0, command, coalesce: coalesce) }
+        editsSent += 1
+        return await client.send { .command(id: $0, command, coalesce: coalesce) }
     }
 
     func setProperty(_ cue: ModelID, _ property: CueProperty) async -> Result<OkBody, EngineError> {
@@ -241,8 +245,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         await send(command: .setNumber(cue, number))
     }
 
-    func undo() async -> Result<OkBody, EngineError> { await client.send { .undo(id: $0) } }
-    func redo() async -> Result<OkBody, EngineError> { await client.send { .redo(id: $0) } }
+    func undo() async -> Result<OkBody, EngineError> {
+        editsSent += 1
+        return await client.send { .undo(id: $0) }
+    }
+    func redo() async -> Result<OkBody, EngineError> {
+        editsSent += 1
+        return await client.send { .redo(id: $0) }
+    }
     func save() async -> Result<OkBody, EngineError> { await client.send { .request(id: $0, .save) } }
     func saveAs(path: String) async -> Result<OkBody, EngineError> {
         await client.send { .request(id: $0, .saveAs(path: path)) }

@@ -759,6 +759,7 @@ fn patch_crosspoints_and_device_outputs_are_repaired_on_load() {
         device_output,
         level_db,
         mute: false,
+        solo: false,
     };
     let p = &mut ws.patches[0];
     p.crosspoints = vec![

@@ -25,7 +25,9 @@ final class PatchRoutingView: NSView {
 
     // The strip's parts, top to bottom, in the header's coordinates.
     static let faderRect = (y: CGFloat(4), h: CGFloat(86), w: CGFloat(20))
-    static let muteRect = (y: CGFloat(94), h: CGFloat(16), w: CGFloat(24))
+    /// M and S sit side by side under the fader, centred together on the column.
+    static let muteRect = (y: CGFloat(94), h: CGFloat(16), w: CGFloat(20))
+    static let toggleGap: CGFloat = 2
     static let stripBoxY: CGFloat = 114
     static let stripLabelY: CGFloat = 138
     static let captionY: CGFloat = 156
@@ -113,9 +115,14 @@ final class PatchRoutingView: NSView {
         NSRect(x: midX - faderRect.w / 2, y: faderRect.y, width: faderRect.w, height: faderRect.h)
     }
 
-    /// Where a device output's mute toggle goes.
+    /// Where a device output's mute toggle goes: left of the column's middle.
     static func muteFrame(midX: CGFloat) -> NSRect {
-        NSRect(x: midX - muteRect.w / 2, y: muteRect.y, width: muteRect.w, height: muteRect.h)
+        NSRect(x: midX - toggleGap / 2 - muteRect.w, y: muteRect.y, width: muteRect.w, height: muteRect.h)
+    }
+
+    /// Where its solo toggle goes: right of the column's middle.
+    static func soloFrame(midX: CGFloat) -> NSRect {
+        NSRect(x: midX + toggleGap / 2, y: muteRect.y, width: muteRect.w, height: muteRect.h)
     }
 
     /// Where a strip's level box goes: as wide as a crosspoint box, so the two line up.

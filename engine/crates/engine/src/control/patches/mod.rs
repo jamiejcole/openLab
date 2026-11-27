@@ -746,9 +746,11 @@ fn fill_routing(
 ) {
     let master = db_to_gain(patch.master_db);
     let width = width.min(n);
+    // A soloed device output silences the patch's others; a muted one stays silent soloed or not.
+    let any_solo = patch.device_outputs.iter().any(|d| d.solo);
     let device_gain = |d: u32| {
         let setting = patch.device_output(d);
-        if setting.mute {
+        if setting.mute || (any_solo && !setting.solo) {
             0.0
         } else {
             db_to_gain(setting.level_db)
