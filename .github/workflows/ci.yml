@@ -366,8 +366,9 @@ jobs:
       # that stalls; 25 cut off green runs with no test hung, owner decision 2026-11-24, #808); the
       # engine-free run is shorter. A hung run is cancelled here and the step below still uploads its
       # results. A hung test does not get that far: the wrapper ends the run (exit 76) and no second
-      # process starts (scripts/run-mac-tests.sh). Exit 75 is a proven runner stall: it is noted on the PR
-      # and the job re-run once; a second stall on the same PR is investigated. CI never re-runs it by itself.
+      # process starts (scripts/run-mac-tests.sh). Exit 75 is a proven runner stall: when it is a run's only
+      # failure, rerun-stall.yml re-runs the failed jobs once (first attempt only, scripts/ci-rerun-stall.sh);
+      # a stall on the re-run stays red and is investigated. On main the `alert` job has already reported it.
       - timeout-minutes: ${{ matrix.shard == 'full' && 55 || (matrix.shard == 'unit' && 30 || 35) }}
         if: ${{ !cancelled() && matrix.target != '' }}
         run: make ${{ matrix.target }}
