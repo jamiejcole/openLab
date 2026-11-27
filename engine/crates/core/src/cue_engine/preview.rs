@@ -35,6 +35,11 @@ pub(super) struct Preview {
     pub offset: SampleTime,
     /// Paused by Pause All on this sample (QLab check V4).
     pub paused_at: Option<SampleTime>,
+    /// A Video cue's preview: its picture is not a mixer voice, so nothing reports its end; the
+    /// length the binary tells (`ActionLength`) is the deadline it ends on.
+    pub timed: bool,
+    /// The sample a timed preview ends on, once its length is known.
+    pub ends: Option<SampleTime>,
 }
 
 /// The voice of a preview fading out in a Panic: no longer a preview (it is reported ended), but
@@ -102,7 +107,7 @@ impl CueEngine {
                 };
                 return cx.out.push(action);
             }
-            CueKind::Audio { .. } => false,
+            CueKind::Audio { .. } | CueKind::Video { .. } => false,
             CueKind::Group { .. } => true,
             _ => return cx.warn(ignored(PreviewIgnoredReason::NotAudio)),
         };
@@ -172,7 +177,7 @@ impl CueEngine {
                 continue;
             }
             match child.kind {
-                CueKind::Audio { .. } if named(child) => out.push(child.id),
+                CueKind::Audio { .. } | CueKind::Video { .. } if named(child) => out.push(child.id),
                 CueKind::Group { .. } => stack.push(child.children().iter()),
                 _ => {}
             }
@@ -183,6 +188,10 @@ impl CueEngine {
     fn start_preview(&mut self, cue: CueId, cx: &mut Ctx) {
         let run = self.new_preview_run();
         let at = cx.now;
+        let timed = cx
+            .ws
+            .find_cue(cue)
+            .is_some_and(|c| matches!(c.kind, CueKind::Video { .. }));
         self.previews.insert(
             cue,
             Preview {
@@ -190,6 +199,8 @@ impl CueEngine {
                 started: at,
                 offset: 0,
                 paused_at: None,
+                timed,
+                ends: None,
             },
         );
         cx.out.push(Action::PreviewStart { cue, run, at });
@@ -234,6 +245,55 @@ impl CueEngine {
     fn end_preview(&mut self, cue: CueId, preview: Preview, fade: Option<StopFade>, cx: &mut Ctx) {
         // Never before the voice's own start sample, so a stop cannot overtake its start.
         let at = cx.now.max(preview.started);
+        self.end_preview_at(cue, preview, fade, at, cx);
+    }
+
+    /// The deadline of every timed (Video) preview that has come (`ends`, from its picture's
+    /// length): the picture stops on that sample and the preview is over, as a show cue's
+    /// action ends on its length.
+    pub(super) fn end_timed_previews(&mut self, cx: &mut Ctx) {
+        let due: Vec<(CueId, SampleTime)> = (self.previews.iter())
+            .filter(|(_, p)| p.paused_at.is_none())
+            .filter_map(|(cue, p)| Some((*cue, p.ends.filter(|e| *e <= cx.horizon)?)))
+            .collect();
+        for (cue, ends) in due {
+            if let Some(preview) = self.previews.remove(&cue) {
+                let at = ends.max(preview.started);
+                self.end_preview_at(cue, preview, None, at, cx);
+            }
+        }
+    }
+
+    /// The earliest sample a timed preview ends on.
+    pub(super) fn next_preview_end(&self) -> Option<SampleTime> {
+        (self.previews.values())
+            .filter(|p| p.paused_at.is_none())
+            .filter_map(|p| p.ends)
+            .min()
+    }
+
+    /// The binary tells a preview's length: a timed one ends that long after its (re)start.
+    /// Returns whether `run` is a preview's.
+    pub(super) fn preview_length(&mut self, cue: CueId, run: RunId, frames: SampleTime) -> bool {
+        match self.previews.get_mut(&cue) {
+            Some(p) if p.run == run => {
+                if p.timed && p.paused_at.is_none() {
+                    p.ends = Some(p.started.saturating_add(frames));
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn end_preview_at(
+        &mut self,
+        cue: CueId,
+        preview: Preview,
+        fade: Option<StopFade>,
+        at: SampleTime,
+        cx: &mut Ctx,
+    ) {
         cx.out.push(Action::PreviewStop {
             cue,
             run: preview.run,
@@ -312,6 +372,8 @@ impl CueEngine {
                 started: at,
                 offset,
                 paused_at: None,
+                timed: preview.timed,
+                ends: None,
             };
             cx.out.push(Action::ResumeVoice {
                 cue,

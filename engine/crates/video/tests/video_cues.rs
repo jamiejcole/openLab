@@ -924,6 +924,56 @@ fn a_still_shows_from_go_until_the_cue_is_stopped() {
     assert_eq!(shown(&mut s), None, "gone once stopped");
 }
 
+/// #842 V5: Preview of a Video cue (QLab 5 manual pp. 146, 160: starts the cue's action through
+/// its normal output, skips its pre-wait, ignores continues, leaves the playhead): a still shows
+/// on its stage with the cue itself idle, and Stop Preview takes it away.
+#[test]
+fn previewing_a_still_shows_it_on_its_stage_without_starting_the_cue() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut still = still_cue(1, &png, None);
+    still.pre_wait = 30.0;
+    let mut s = video_show(vec![still, video_cue(2, None)]);
+    assert_eq!(shown(&mut s), None, "nothing before the preview");
+    s.transport(TransportAction::Preview { cue: id(1) });
+    s.run(samples(0.5));
+    assert_eq!(shown(&mut s), Some(0), "the picture, with no pre-wait");
+    expect_state(&s, 1, CueState::Idle, "a preview is no cue state");
+    assert!(s.control().engine().is_previewing(id(1)));
+    s.run(samples(5.0));
+    assert_eq!(shown(&mut s), Some(0), "a still has no end of its own");
+    s.transport(TransportAction::StopPreview { cue: Some(id(1)) });
+    s.run(samples(0.5));
+    assert_eq!(shown(&mut s), None, "gone once stopped");
+    assert!(!s.control().engine().is_previewing(id(1)));
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
+/// A movie previews from its first frame in step with the clock and ends on its last frame, the
+/// cue itself never leaving idle.
+#[test]
+fn previewing_a_movie_plays_it_in_step_and_ends_on_its_last_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    s.transport(TransportAction::Preview { cue: id(1) });
+    let at = s.now();
+    for want in [1u16, 12, 25, 40] {
+        run_to(&mut s, at + samples(f64::from(want) / 25.0) + samples(0.01));
+        let position = (s.now() - at) as f64 / f64::from(RATE);
+        let shown_frame = shown(&mut s).expect("a frame");
+        assert!(
+            shown_frame.abs_diff((position * 25.0).floor() as u16) <= 1 && shown_frame >= want - 1,
+            "{shown_frame} at {position} s"
+        );
+        expect_state(&s, 1, CueState::Idle, "");
+    }
+    run_to(&mut s, at + samples(2.0) + samples(0.5));
+    assert_eq!(shown(&mut s), None, "ended on its length");
+    assert!(!s.control().engine().is_previewing(id(1)));
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
 /// A still with a duration typed: GO shows it, and it ends after that time.
 #[test]
 fn a_still_with_a_duration_ends_after_it() {

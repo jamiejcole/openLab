@@ -1028,3 +1028,95 @@ fn a_negative_load_time_on_a_looping_video_cue_counts_back_from_one_pass() {
         "{go:?}"
     );
 }
+
+/// #842 V5: a Video cue previews from its start through its stage, with no pre-wait, no state, no
+/// continue and the playhead where it was; its picture's length is when it ends, and a stop
+/// ends it at once.
+#[test]
+fn a_video_cue_previews_from_its_start_and_ends_on_the_length_its_picture_reports() {
+    let mut v = video_on(1, Some(stage_id(1)));
+    v.pre_wait = 5.0;
+    v.continue_mode = ContinueMode::AutoFollow;
+    let mut rig = rig(vec![v, memo(2)]);
+    let started = rig.preview(100, 1);
+    let run = rig.engine.preview_run(id(1)).expect("previewing");
+    assert!(
+        started.contains(&Action::PreviewStart {
+            cue: id(1),
+            run,
+            at: 100
+        }),
+        "{started:?}"
+    );
+    assert!(rig.engine.is_previewing(id(1)));
+    assert_eq!(rig.state(1), CueState::Idle, "no show state");
+    assert_eq!(rig.state(2), CueState::Idle, "no auto-follow");
+    // The picture tells its length: the preview ends on that sample, stopping the picture there.
+    rig.at(
+        110,
+        Input::ActionLength {
+            cue: id(1),
+            run,
+            frames: 2000,
+        },
+    );
+    assert!(rig.tick(2000).is_empty(), "still playing before its end");
+    let ended = rig.tick(2200);
+    assert!(
+        ended.contains(&Action::PreviewStop {
+            cue: id(1),
+            run,
+            at: 2100,
+            fade: None
+        }),
+        "{ended:?}"
+    );
+    assert!(ended.contains(&Action::PreviewChanged {
+        cue: id(1),
+        active: false,
+        at: 2100
+    }));
+    assert!(!rig.engine.is_previewing(id(1)));
+}
+
+#[test]
+fn a_video_previews_stop_and_pause_all_act_on_its_run_and_a_still_with_no_length_plays_on() {
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1)))]);
+    rig.preview(0, 1);
+    let run = rig.engine.preview_run(id(1)).expect("previewing");
+    // No length told (a still without a duration): it plays until stopped.
+    assert!(rig.tick(100_000).is_empty());
+    assert!(rig.engine.is_previewing(id(1)));
+    let paused = rig.at(100_100, Input::PauseAll);
+    assert!(
+        paused.iter().any(|a| matches!(a, Action::PauseVoice { cue, run: r, .. } if *cue == id(1) && *r == run)),
+        "{paused:?}"
+    );
+    rig.at(100_200, Input::ResumeAll);
+    let new_run = rig.engine.preview_run(id(1)).expect("still previewing");
+    assert_ne!(new_run, run, "a resume is a fresh run");
+    let stopped = rig.stop_preview(100_300, 1);
+    assert!(
+        stopped.iter().any(|a| matches!(a, Action::PreviewStop { cue, run: r, .. } if *cue == id(1) && *r == new_run)),
+        "{stopped:?}"
+    );
+    assert!(!rig.engine.is_previewing(id(1)));
+}
+
+#[test]
+fn a_video_previews_end_is_not_taken_from_a_stale_length() {
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1)))]);
+    rig.preview(0, 1);
+    let run = rig.engine.preview_run(id(1)).expect("previewing");
+    // A length for another run (a show run's) never ends the preview.
+    rig.at(
+        10,
+        Input::ActionLength {
+            cue: id(1),
+            run: RunId(run.0 + 1),
+            frames: 50,
+        },
+    );
+    assert!(rig.tick(1000).is_empty());
+    assert!(rig.engine.is_previewing(id(1)));
+}

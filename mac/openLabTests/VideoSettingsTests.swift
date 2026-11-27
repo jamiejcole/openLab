@@ -1621,6 +1621,25 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(urls, [VideoSettingsPane.displaysSettings].compactMap { $0 })
         XCTAssertEqual(urls.first?.scheme, "x-apple.systempreferences")
     }
+
+    /// #842 V4: the Displays Settings button is on the Output Devices page too, in the top row
+    /// beside the caption (as on Output Routing), and opens the same settings; the Video Outputs
+    /// page has none.
+    func testV4TheDisplaysSettingsButtonIsOnBothOutputRoutingAndOutputDevices() async throws {
+        let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let devices = sc.videoDevicesPane
+        let routing = sc.videoRoutingPane
+        for pane in [routing, devices] {
+            XCTAssertEqual(pane.displaysButton.title, loc("settings.video.displaysButton"))
+            XCTAssertNotNil(pane.displaysButton.superview, "the button is in the page")
+            XCTAssertTrue(pane.displaysButton.isDescendant(of: pane.view))
+        }
+        XCTAssertFalse(sc.videoPane.displaysButton.isDescendant(of: sc.videoPane.view))
+        var urls: [URL] = []
+        devices.openURL = { urls.append($0) }
+        devices.displaysButton.performClick(nil)
+        XCTAssertEqual(urls, [VideoSettingsPane.displaysSettings].compactMap { $0 })
+    }
 }
 
 // MARK: Output route guides (#821; QLab 5 manual pp. 230, 232-233)

@@ -100,7 +100,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     let view: PageStack
     /// Adds a stage (empty, or on a route) or a route (on a display, or on none).
     let addPopup = NSPopUpButton(frame: .zero, pullsDown: true)
-    /// Output Routing: opens the Mac's Displays settings.
+    /// Output Routing and Output Devices: opens the Mac's Displays settings.
     let displaysButton = NSButton(title: loc("settings.video.displaysButton"), target: nil, action: nil)
     /// The table, built afresh on each draw: an `NSGridView` cannot remove a row holding merged
     /// cells (a warning line), so rows are never removed from it.
@@ -242,7 +242,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         note.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         note.setAX("\(Self.id)-\(noteKey)-note")
         var topViews: [NSView] = section == .devices ? [note] : [addPopup, note]
-        if section == .routing {
+        if section != .outputs {
             let spring = NSView()
             spring.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             topViews += [spring, displaysButton]

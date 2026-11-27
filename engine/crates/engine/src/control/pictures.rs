@@ -861,6 +861,8 @@ impl DocCx<'_> {
             | Action::StartVoice { cue, .. }
             | Action::SeekVoice { cue, .. }
             | Action::StopVoice { cue, .. }
+            | Action::PreviewStart { cue, .. }
+            | Action::PreviewStop { cue, .. }
             | Action::PauseVoice { cue, .. }
             | Action::ResumeVoice { cue, .. }
             | Action::Ramp { cue, .. }
@@ -949,6 +951,22 @@ impl DocCx<'_> {
         let rate = self.eng.rate.get();
         let doc = self.doc.id;
         match *action {
+            // A Video cue's preview plays through the stage as its run does, from its start;
+            // its run id is the preview's own, so it is no show run and ends on its own length
+            // (the cue engine's timed preview).
+            Action::PreviewStart { cue, run, at } => {
+                let start = Action::StartVoice {
+                    cue,
+                    run,
+                    at,
+                    offset: 0,
+                };
+                return self.picture_action(&start, fx);
+            }
+            Action::PreviewStop { cue, run, at, fade } => {
+                let stop = Action::StopVoice { cue, run, at, fade };
+                return self.picture_action(&stop, fx);
+            }
             Action::LoadVoice { cue, run, offset } => match self.load_picture(cue, run, offset) {
                 Ok(()) => self.sound_action(action, fx),
                 Err(Refused::Pending) => self.eng.pictures.held.push(Held {
