@@ -116,11 +116,12 @@ final class ProtocolFixtureTests: XCTestCase {
     /// their fixtures.
     func testStageDisplayMessagesDecodeFromTheirFixtures() throws {
         guard
-            case .request(_, .setRouteDisplay(let route, let display)) = try JSONDecoder().decode(
+            case .request(_, .setRouteDisplay(let route, let display, let partial)) = try JSONDecoder().decode(
                 ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_route_display").utf8))
         else { return XCTFail("set_route_display") }
         XCTAssertEqual(route, "00000000-0000-0000-0000-000000000090")
         XCTAssertEqual(display, "37D8832A-2D66-02CA-B9F7-8F30A301B230")
+        XCTAssertEqual(partial, DisplayPart(columns: 2, rows: 1, index: 1))
         guard
             case .result(_, .ok(let shown)) = try ServerMessage.decode(try Fixtures.text("server", "result_displays")),
             case .displays(let displays, let video)? = shown.data
@@ -142,6 +143,7 @@ final class ProtocolFixtureTests: XCTestCase {
         else { return XCTFail("route_displays") }
         XCTAssertEqual(routes.map { $0.state?.state }, ["shown", "no_display", "failed", nil])
         XCTAssertEqual(routes[0].mapping?.name, "Projector")
+        XCTAssertEqual(routes[0].mapping?.partial, DisplayPart(columns: 2, rows: 1, index: 1))
         XCTAssertNil(routes[1].mapping)
         XCTAssertEqual(stages.map(\.stage), ["00000000-0000-0000-0000-000000000080"])
         guard case .videoOutputs(let outputs) = try ServerMessage.decode(try Fixtures.text("server", "video_outputs"))

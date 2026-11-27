@@ -1039,14 +1039,77 @@ final class VideoCueTests: XCTestCase {
         try typeInto(panel.endField, "3")
         await soon("the Duration cell shows the range's length") { self.duration(Self.movie) == 2 }
         try await go()
-        let first = await shownFrame()
-        XCTAssertEqual(Double(first ?? 0), 25, accuracy: 1, "from the start trim's frame")
+        // A GO on a cue whose file is not open yet waits for it and draws nothing meanwhile (a
+        // slow runner takes seconds); nothing on the stage is no frame, not frame 0.
+        await soon("the picture is on the stage") { await self.shownFrame() != nil }
+        let shownFirst = await shownFrame()
+        let first = try XCTUnwrap(shownFirst, "a frame on the stage")
+        XCTAssertEqual(Double(first), 25, accuracy: 1, "from the start trim's frame")
         try await play(1.9)
         XCTAssertEqual(status(Self.movie), loc("cue.state.running"))
-        let late = await shownFrame()
-        XCTAssertEqual(Double(late ?? 0), 72, accuracy: 2, "before the end trim")
+        let shownLate = await shownFrame()
+        let late = try XCTUnwrap(shownLate, "a frame before the end trim")
+        XCTAssertEqual(Double(late), 72, accuracy: 2, "before the end trim")
         try await play(0.2)
         await soon("ended at the end trim") { self.status(Self.movie) == nil }
+        let after = await shownFrame()
+        XCTAssertNil(after, "the stage is black again")
+    }
+
+    // MARK: Preview (#842 V5)
+
+    /// The Preview item of `id`'s row menu, as the operator right-clicks the row.
+    private func previewMenuItem(_ id: ModelID) throws -> NSMenuItem {
+        let menu = NSMenu()
+        wc.cueList.prepareRowMenu(menu, row: wc.cueList.outlineView.row(forItem: wc.cueList.node(id)))
+        return try XCTUnwrap(menu.items.first { $0.title == loc("cuelist.menu.preview") })
+    }
+
+    /// V5: an Image (still) cue selected → its Preview menu item, the inspector's Preview button
+    /// and the shortcut are enabled; Preview shows the picture on its stage with the cue itself
+    /// idle (no pre-wait, the playhead left), the button reads Stop Preview, and stopping it takes
+    /// the picture away.
+    func testV5PreviewIsEnabledForAnImageCueAndShowsItOnItsStageUntilStopped() async throws {
+        try await openVideoShow()
+        click(Self.still)
+        await soon("the inspector's Preview button is enabled") { self.wc.inspector.previewButton.isEnabled }
+        // The click moves the playhead too; take it only once the engine has done so.
+        await soon("the click moved the playhead") { self.store.playheads.values.contains(Self.still) }
+        let playheads = store.playheads
+        XCTAssertEqual(wc.inspector.previewButton.title, loc("inspector.preview"))
+        XCTAssertTrue(try previewMenuItem(Self.still).isEnabled, "the row menu's Preview")
+        let before = await shownFrame()
+        XCTAssertNil(before, "nothing on the stage yet")
+        await app.perform(.previewSelected)
+        await soon("the stage shows the still") { await self.shownFrame() == 0 }
+        XCTAssertTrue(store.previewing.contains(Self.still))
+        XCTAssertNotEqual(status(Self.still), loc("cue.state.running"), "a preview is no run")
+        XCTAssertEqual(store.playheads, playheads, "the playhead stays")
+        await soon("the button reads Stop Preview") {
+            self.wc.inspector.previewButton.title == loc("inspector.stopPreview")
+        }
+        wc.inspector.previewButton.performClick(nil)
+        try await play(0.3)
+        await soon("the stage is black again") {
+            await self.shownFrame() == nil && !self.store.previewing.contains(Self.still)
+        }
+    }
+
+    /// V5: a Video cue previews in step from its first frame, GO untouched; the preview ends on
+    /// its own at the movie's end and the stage is black again.
+    func testV5PreviewingAVideoCuePlaysItInStepAndEndsOnItsLength() async throws {
+        try await openVideoShow()
+        click(Self.movie)
+        await soon("Preview is enabled") { self.wc.inspector.previewButton.isEnabled }
+        XCTAssertTrue(try previewMenuItem(Self.movie).isEnabled)
+        await app.perform(.previewSelected)
+        await soon("previewing") { self.store.previewing.contains(Self.movie) }
+        try await play(1.0)
+        let frame = await shownFrame()
+        XCTAssertEqual(Double(frame ?? 0), 25, accuracy: 3, "a second in")
+        XCTAssertNotEqual(status(Self.movie), loc("cue.state.running"), "the cue itself is not running")
+        try await play(4.0)
+        await soon("the preview ended on the movie's length") { !self.store.previewing.contains(Self.movie) }
         let after = await shownFrame()
         XCTAssertNil(after, "the stage is black again")
     }
@@ -1647,8 +1710,7 @@ extension VideoCueTests {
         await expectStep("resize_route")
         try await editRoute { $0.rotationPopup.selectItem(withTitle: "90°") }
         await expectStep("rotate_route")
-        await settledVideo(sc) { routing.scalingPopups.count == 3 }
-        choose(loc("settings.video.scaling.stretch"), in: routing.scalingPopups[2])
+        try await editRoute { $0.scalingPopup.selectItem(withTitle: loc("settings.video.scaling.stretch")) }
         await expectStep("route_scaling")
         routing.moveRoute(from: 2, toGap: 0)
         await expectStep("move_route")

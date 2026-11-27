@@ -1349,3 +1349,27 @@ fn the_synthetic_outputs_and_notes_workspace_reports_what_the_app_test_needs() {
         ]
     );
 }
+
+#[test]
+fn groups_nested_past_the_depth_limit_import_and_save() {
+    // Groups to the limit, so the damaged cue inside the last one is one level too deep.
+    let depth = MAX_GROUP_DEPTH;
+    let file = one_list(|a| {
+        // Damaged before the depth is checked: it must be left out, not kept as a placeholder.
+        let mut inner = memo(a, "leaf", &[("notes", Archive::dangling())]);
+        for level in (1..=depth).rev() {
+            let children = a.array(&[inner]);
+            inner = qcue(
+                a,
+                "GroupCue",
+                &format!("g{level}"),
+                &[("groupMode", V::Int(0)), ("cues", children)],
+            );
+        }
+        vec![inner]
+    });
+    let import = read(&file).unwrap();
+    let (ws, _) = import.finish(&[], QlabCueAction::Placeholder, list_id(99));
+    let saved = save_show(&ws).expect("a converted workspace saves");
+    load_show(&saved).unwrap();
+}

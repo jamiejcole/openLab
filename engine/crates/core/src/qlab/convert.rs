@@ -771,6 +771,18 @@ impl Converter<'_, '_> {
         match self.read_cue(value, depth, &mut head) {
             Err(QlabError::Damaged(_) | QlabError::NotKeyedArchive | QlabError::NotPlist) => {
                 self.roll_back(mark);
+                if depth > MAX_GROUP_DEPTH {
+                    // Too deep to keep even as a placeholder (the check in `read_cue` may not
+                    // have been reached before the damage).
+                    let detail = format!(
+                        "It is nested deeper than {MAX_GROUP_DEPTH} groups and was left out."
+                    );
+                    self.note(head.common.as_ref(), QlabNoteKind::Structure, detail);
+                    if !head.counted {
+                        self.count_cue()?;
+                    }
+                    return Ok(None);
+                }
                 self.damaged(head).map(Some)
             }
             other => other,

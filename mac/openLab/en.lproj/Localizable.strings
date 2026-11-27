@@ -561,7 +561,7 @@
 "settings.video.col.display" = "Display";
 "settings.video.col.layer" = "Layer";
 "settings.video.col.handle" = "";
-"settings.video.col.scaling" = "Scaling";
+"settings.video.col.layout" = "Layout";
 "settings.video.col.guides" = "Guides";
 "settings.video.guides.show" = "Visible";
 "settings.video.guides.tip" = "Draw this route’s outline, centre lines and name over its display, to line up a projector";
@@ -602,7 +602,16 @@
 "settings.video.edit.ax" = "Edit “%@”";
 "settings.video.handle.ax" = "Drag to move “%@”";
 "settings.video.routeIcon" = "Output route";
-"settings.video.scaling.tip" = "How the route is put on its display when their sizes differ";
+"settings.video.layout.tip" = "The whole display, or the part of it this route is shown on (a display splitter’s output)";
+"settings.video.layout.full" = "Full";
+"settings.video.layout.horizontal" = "Horizontal";
+"settings.video.layout.vertical" = "Vertical";
+"settings.video.layout.rows" = "%d rows";
+"settings.video.layout.wide" = "%d wide";
+"settings.video.layout.high" = "%d high";
+"settings.video.layout.grid" = "%d × %d";
+"settings.video.layout.part" = "Part %d";
+"settings.video.layout.titled" = "%@ · %d";
 "settings.video.scaling.centre" = "Centre";
 "settings.video.scaling.fit" = "Fit";
 "settings.video.scaling.stretch" = "Stretch";

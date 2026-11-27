@@ -445,6 +445,7 @@ impl CueEngine {
                 Slot::Active(run) => run.next_deadline(),
                 Slot::Loaded(_) | Slot::Broken(_) | Slot::Lost(_) => None,
             })
+            .chain(self.next_preview_end())
             .min()
     }
 

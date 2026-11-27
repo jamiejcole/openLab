@@ -154,8 +154,10 @@ extension WorkspaceStore {
     }
 
     /// Shows output `route` on `display` (nil: on none) on this machine: not an undo step.
-    func setRouteDisplay(_ route: ModelID, display: String?) async -> Result<OkBody, EngineError> {
-        await client.send { .request(id: $0, .setRouteDisplay(route: route, display: display)) }
+    func setRouteDisplay(_ route: ModelID, display: String?, partial: DisplayPart? = nil) async
+        -> Result<OkBody, EngineError>
+    {
+        await client.send { .request(id: $0, .setRouteDisplay(route: route, display: display, partial: partial)) }
     }
 
     /// Opens `stage`'s monitor window (or brings it to the front), or closes it: a live copy of the

@@ -31,6 +31,9 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
     /// The route as it was when the sheet opened, and its display here.
     private let original: (name: String, width: Int, height: Int, rotation: Int, scaling: String)
     private let originalDisplay: String?
+    /// The part of that display it is on (a splitter's output): kept while the display is, and its
+    /// size is the device's size for Set from Device.
+    private let originalPartial: DisplayPart?
     /// Called when the sheet is done (OK accepted or Cancel), to take it down.
     var onDone: (() -> Void)?
     /// The edit on its way (tests wait for it).
@@ -49,6 +52,7 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         displays = store.videoOutputs.displays
         let entry = store.videoOutputs.route(route)
         originalDisplay = entry?.mapping?.display
+        originalPartial = entry?.mapping?.partial
         original = (
             raw["name"]?.stringValue ?? "", Int(raw["width"]?.doubleValue ?? 0), Int(raw["height"]?.doubleValue ?? 0),
             Int(raw["rotation"]?.doubleValue ?? 0), raw["scaling"]?.stringValue ?? "fill"
@@ -198,19 +202,27 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         scalingNote.stringValue = loc("routeEditor.scaling.note.\(scaling)")
     }
 
-    @objc private func displayChosen() {
-        let d = chosenDisplay
-        displaySizeLabel.stringValue =
-            d.map { String(format: loc("settings.video.resolution"), String($0.width), String($0.height)) }
-            ?? loc("routeEditor.noDisplaySize")
-        fromDisplayButton.isEnabled = d != nil
+    /// The size of what the route is shown on: the chosen display's, or its part's when the display is
+    /// the one the route is on, as laid out on the page (QLab 5 manual p. 234).
+    private var chosenSize: (width: UInt32, height: UInt32)? {
+        guard let d = chosenDisplay else { return nil }
+        if d.id == originalDisplay, let part = originalPartial { return part.size(ofWidth: d.width, height: d.height) }
+        return (d.width, d.height)
     }
 
-    /// Takes the route's size from the chosen display (QLab 5 manual p. 233).
+    @objc private func displayChosen() {
+        let size = chosenSize
+        displaySizeLabel.stringValue =
+            size.map { String(format: loc("settings.video.resolution"), String($0.width), String($0.height)) }
+            ?? loc("routeEditor.noDisplaySize")
+        fromDisplayButton.isEnabled = size != nil
+    }
+
+    /// Takes the route's size from the chosen display (or its part), QLab 5 manual pp. 233-234.
     @objc private func fromDisplayClicked() {
-        guard let d = chosenDisplay else { return }
-        widthField.stringValue = String(d.width)
-        heightField.stringValue = String(d.height)
+        guard let size = chosenSize else { return }
+        widthField.stringValue = String(size.width)
+        heightField.stringValue = String(size.height)
     }
 
     @objc private func cancelClicked() { onDone?() }
