@@ -10,7 +10,8 @@
         {
           "device_output": 1,
           "level_db": -3.0,
-          "mute": true
+          "mute": true,
+          "solo": true
         }
       ]
     }
