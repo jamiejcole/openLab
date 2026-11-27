@@ -503,8 +503,9 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
 
     /// The recent workspace's file is not where it was: say so and offer to forget it.
     func showMissing(_ url: URL, unreachable: Bool = false) {
+        let name = url.deletingPathExtension().lastPathComponent
         showNotice(
-            String(format: loc(unreachable ? "launcher.unreachable" : "launcher.missing"), url.deletingPathExtension().lastPathComponent), removing: url)
+            String(format: loc(unreachable ? "launcher.unreachable" : "launcher.missing"), name), removing: url)
     }
 
     func reload(recents urls: [URL], missing: Set<URL> = [], unreachable: Set<URL> = []) {
