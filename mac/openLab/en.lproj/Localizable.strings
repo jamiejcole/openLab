@@ -139,6 +139,8 @@
 "launcher.recent.none" = "No recent workspaces";
 "launcher.recent.none.detail" = "Workspaces you open or save will be listed here.";
 "launcher.recent.missing" = "Not found in %@";
+"launcher.recent.unreachable" = "Not reachable: %@";
+"launcher.unreachable" = "“%@” is on a disk that is not answering. It may open when the disk comes back.";
 "launcher.remove" = "Remove from List";
 "launcher.missing" = "“%@” could not be found. It may have been moved or deleted.";
 "launcher.starting" = "Starting the engine…";
