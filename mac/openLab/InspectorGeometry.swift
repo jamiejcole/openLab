@@ -765,7 +765,12 @@ extension InspectorViewController {
     /// A Video cue's geometry: the cue as edits see it (an unanswered edit included, so a drag
     /// shows where it is), its stage's size and its picture's, as probed.
     func renderGeometry(_ cue: Cue, model: WorkspaceModel) {
-        guard cue.kindType == "video" else { return }
+        guard cue.kindType == "video" else {
+            mediaFrameTask?.cancel()
+            mediaFrameTask = nil
+            geometry.shownMedia = nil
+            return
+        }
         let stageID = cue.raw["kind"]?["stage"]?.stringValue
         let stage = model.stages.first { $0.id.raw == stageID }.flatMap { s -> CGSize? in
             guard let w = s.raw["width"]?.doubleValue, let h = s.raw["height"]?.doubleValue else { return nil }
@@ -777,21 +782,39 @@ extension InspectorViewController {
         loadMediaFrame(for: cue)
     }
 
-    /// The cue's media for the Geometry thumbnail: read when the shown file changes, off the main thread;
-    /// until it is in (or when it cannot be read) the thumbnail draws the picture's shape alone.
+    /// The Geometry tab is the one shown.
+    var geometryTabShown: Bool {
+        (tabView.selectedTabViewItem?.identifier as? String) == "geometry"
+    }
+
+    /// A volume the engine reports as not answering: its files are not opened for a picture.
+    private var mediaVolumeStalled: Bool {
+        (store.warnings + store.runtimeWarnings).contains {
+            let code = $0.json["code"]?.stringValue
+            return code == "media_volume_not_responding" || code == "media_watch_stopped"
+        }
+    }
+
+    /// The cue's media for the Geometry thumbnail: read only while the Geometry tab is shown, when the
+    /// shown file changes, on a queue of its own and never from a volume known to be stalled; a read
+    /// for a file no longer shown is cancelled and never drawn. Until it is in (or when it cannot be
+    /// read) the thumbnail draws the picture's shape alone.
     func loadMediaFrame(for cue: Cue) {
+        guard geometryTabShown else { return }
         let media = cue.raw["kind"]?["media"]?.stringValue
         let url = CueRowMenu.mediaURL(media, showPath: store.document?.path)
         let probe = store.mediaDurations[cue.id]?.picture
         let still = probe?.type == "still"
         let key = probe != nil ? url.map { "\($0.path)|\(still)" } : nil
         guard key != geometry.shownMedia else { return }
+        mediaFrameTask?.cancel()
+        mediaFrameTask = nil
         geometry.shownMedia = key
         geometry.thumbnail.image = nil
-        guard let key, let url else { return }
-        Task { @MainActor [weak self] in
+        guard let key, let url, !mediaVolumeStalled else { return }
+        mediaFrameTask = Task { @MainActor [weak self] in
             let image = await MediaFrame.load(url: url, still: still)
-            guard let self, self.geometry.shownMedia == key else { return }
+            guard !Task.isCancelled, let self, self.geometry.shownMedia == key else { return }
             self.geometry.thumbnail.image = image
         }
     }

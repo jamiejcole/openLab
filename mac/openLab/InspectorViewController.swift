@@ -32,6 +32,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     var chosenTabs: [String: String] = [:]
     /// The cue list chosen in the sidebar, shown in place of any cue (`showCueList`): nil while cues are.
     var shownCueList: ModelID?
+    /// The Geometry thumbnail's read in flight (`loadMediaFrame`).
+    var mediaFrameTask: Task<Void, Never>?
     let cueListView = CueListInspectorView()
     /// The type whose remembered tab the tab view is showing (the shown cue's kind).
     var shownKind = ""
@@ -960,7 +962,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     /// The inspector shows exactly these cues, and they exist.
     private func shows(_ ids: [ModelID]) -> Bool {
-        !ids.isEmpty && Set(selection) == Set(ids) && (isBatch ? !batchCues.isEmpty : cue != nil)
+        shownCueList == nil && !ids.isEmpty && Set(selection) == Set(ids) && (isBatch ? !batchCues.isEmpty : cue != nil)
     }
 
     /// `f`'s field of the shown cues can be typed in: not locked, and the field is on for these cues

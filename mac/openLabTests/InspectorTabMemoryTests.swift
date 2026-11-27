@@ -17,6 +17,7 @@ final class InspectorTabMemoryTests: XCTestCase {
     private var store: WorkspaceStore!
     private var vc: InspectorViewController!
     private var window: NSWindow!
+    private var rig: Rig?
 
     override func setUp() async throws {
         var snap = try TestSnapshots.show()
@@ -25,7 +26,16 @@ final class InspectorTabMemoryTests: XCTestCase {
         var ws = try XCTUnwrap(snap["workspace"])
         var lists = try XCTUnwrap(ws["cue_lists"]?.arrayValue)
         var first = lists[0]
-        first.set("cues", .array((first["cues"]?.arrayValue ?? []) + extra))
+        // Absolute paths: with no show folder behind the rig, a relative one has no file to name.
+        let placed = extra.map { cue -> JSONValue in
+            var cue = cue
+            if var kind = cue["kind"], let media = kind["media"]?.stringValue {
+                kind.set("media", .string("/nonexistent/" + media))
+                cue.set("kind", kind)
+            }
+            return cue
+        }
+        first.set("cues", .array((first["cues"]?.arrayValue ?? []) + placed))
         lists[0] = first
         ws.set("cue_lists", .array(lists))
         snap.set("workspace", ws)
@@ -48,7 +58,7 @@ final class InspectorTabMemoryTests: XCTestCase {
 
     override func tearDown() async throws {
         window?.close()
-        (window, vc, store) = (nil, nil, nil)
+        (window, vc, store, rig) = (nil, nil, nil, nil)
     }
 
     private var shown: String? { vc.tabView.selectedTabViewItem?.identifier as? String }
@@ -99,7 +109,29 @@ final class InspectorTabMemoryTests: XCTestCase {
         XCTAssertEqual(shown, "curve")
     }
 
-    func testTabMemoryTheOwnersOriginalFailingCase() throws {
+    /// The owner's 7-step case on the real engine: the Demo show with the Video show's stages and cues.
+    func testTabMemoryTheOwnersOriginalFailingCase() async throws {
+        let opened = try await Rig.open(
+            "Demo",
+            edit: { folder in
+                let source = try XCTUnwrap(TestEngine.testShows).appendingPathComponent("Video/Video.openlab")
+                let video = try XCTUnwrap(JSONValue.parse(try String(contentsOf: source, encoding: .utf8)))
+                let vws = try XCTUnwrap(video["workspace"])
+                try editShow(folder.appendingPathComponent("Demo.openlab")) { ws in
+                    for key in ["stages", "routes"] { if let v = vws[key] { ws.set(key, v) } }
+                    guard var list = ws["cue_lists"]?.arrayValue?.first else { return }
+                    list.set(
+                        "cues",
+                        .array(
+                            (list["cues"]?.arrayValue ?? [])
+                                + (vws["cue_lists"]?.arrayValue?.first?["cues"]?.arrayValue ?? [])))
+                    ws.set("cue_lists", .array([list]))
+                }
+            })
+        rig = opened
+        store = opened.store
+        vc = InspectorViewController(store: store)
+        window.contentView = vc.view
         try select(Self.audio1)
         try select(Self.video1)
         XCTAssertEqual(shown, "basics")
@@ -111,6 +143,34 @@ final class InspectorTabMemoryTests: XCTestCase {
         try select(Self.audio1, click: "levels")
         try select(Self.video1)
         XCTAssertEqual(shown, "geometry")
+    }
+
+    // MARK: The Geometry thumbnail's read
+
+    /// With Geometry hidden no file is read; choosing the tab starts the read, and choosing another
+    /// Video cue cancels the one for the cue no longer shown (its result is never drawn).
+    func testTheGeometryPictureIsReadOnlyWhileTheTabIsShownAndAStaleReadIsCancelled() throws {
+        try select(Self.video1)
+        XCTAssertNil(vc.mediaFrameTask, "Geometry is not shown: nothing is read")
+        XCTAssertNil(vc.geometry.shownMedia)
+        try select(Self.video1, click: "geometry")
+        let first = try XCTUnwrap(vc.mediaFrameTask, "the tab brings the read")
+        try select(Self.still)
+        XCTAssertTrue(first.isCancelled, "the read for the cue no longer shown is cancelled")
+        XCTAssertNotNil(vc.mediaFrameTask)
+        try select(Self.audio1)
+        XCTAssertNil(vc.mediaFrameTask, "no Video cue shown: no read stands")
+    }
+
+    /// A volume the engine says is not answering is not opened for a picture.
+    func testTheGeometryPictureIsNotReadFromAStalledVolume() throws {
+        XCTAssertEqual(
+            store.receive(
+                try ServerMessage.decode(
+                    #"{"type":"warnings","warnings":[{"type":"notice","code":"media_volume_not_responding","message":"volume does not answer"}]}"#
+                )), .applied)
+        try select(Self.video1, click: "geometry")
+        XCTAssertNil(vc.mediaFrameTask)
     }
 
     /// An Image cue is a Video cue to the memory (one type): a still's lack of Timing & Loops falls back

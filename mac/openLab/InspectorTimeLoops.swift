@@ -74,6 +74,7 @@ extension InspectorViewController {
         if let id = tabViewItem?.identifier as? String { chosenTabs[shownKind] = id }
         tabBar.select(tabViewItem?.identifier as? String)
         updateTimeLoopsActive()
+        if geometryTabShown, let c = cueForKindEdit ?? cue, c.kindType == "video" { loadMediaFrame(for: c) }
     }
 
     /// The kinds with a time and loops tab.

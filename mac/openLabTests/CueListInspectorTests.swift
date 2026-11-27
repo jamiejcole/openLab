@@ -139,6 +139,36 @@ final class CueListInspectorTests: XCTestCase {
         wc.setShowMode(true)
         XCTAssertFalse(view.nameField.isEnabled)
     }
+
+    /// T3's usual path: a press in the cue list shows cues again, then a click on the list row that is
+    /// still highlighted (no selection change) shows the list's inspector once more.
+    func testAClickOnTheAlreadyHighlightedListRowShowsTheCueListInspector() throws {
+        let wc = try make()
+        pick(wc, row: 0)
+        wc.inspector.leaveCueList()
+        XCTAssertTrue(wc.inspector.cueListView.isHidden)
+        XCTAssertEqual(wc.sidebar.listTable.selectedRow, 0, "the row stays highlighted")
+        // A synthesised mouse press does not run the table's tracking loop, so the click is its action
+        // (what the table sends on a click) on the row, with the wiring checked beside it.
+        let table = wc.sidebar.listTable
+        XCTAssertTrue(table.target === wc.sidebar)
+        XCTAssertEqual(table.action, #selector(SidebarViewController.listClicked))
+        wc.sidebar.chooseList(atRow: 0)
+        XCTAssertFalse(wc.inspector.cueListView.isHidden, "the click chose the list again")
+    }
+
+    /// M2: Basics draws the list armed (as QLab's does) and the fields a list does not model dim.
+    func testTheCueListBasicsDrawsArmedAndDimsTheFieldsItDoesNotHave() throws {
+        let wc = try make()
+        pick(wc, row: 0)
+        let view = wc.inspector.cueListView
+        XCTAssertEqual(view.armedCheck.state, .on)
+        for f in [view.numberField, view.durationField, view.preWaitField, view.postWaitField] as [NSView] {
+            XCTAssertEqual(f.alphaValue, InspectorViewController.offAlpha)
+        }
+        XCTAssertEqual(view.notesView.enclosingScrollView?.alphaValue, InspectorViewController.offAlpha)
+        XCTAssertEqual(view.nameField.alphaValue, 1)
+    }
 }
 
 /// The cue list's name edited in the inspector, on the real engine: sent as one edit, undone, redone.

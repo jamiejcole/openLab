@@ -124,6 +124,11 @@ final class CueListInspectorView: NSView, NSTextFieldDelegate {
         notesView.textColor = .disabledControlTextColor
         notesView.autoresizingMask = [.width]
         for c in [flaggedCheck, autoLoadCheck, armedCheck] { c.isEnabled = false }
+        // A list is armed as QLab draws it; the fields a list does not have here read as off.
+        armedCheck.state = .on
+        for v in [numberField, durationField, preWaitField, postWaitField, continuePopup] as [NSView] {
+            v.alphaValue = InspectorViewController.offAlpha
+        }
         targetNote.textColor = .secondaryLabelColor
         targetNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
 
@@ -168,6 +173,7 @@ final class CueListInspectorView: NSView, NSTextFieldDelegate {
             ], width: 182)
         let scroll = NSScrollView()
         scroll.documentView = notesView
+        scroll.alphaValue = InspectorViewController.offAlpha
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true

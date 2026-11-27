@@ -328,8 +328,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     /// A click on a list row (the table's action, after any selection change): that list is chosen.
-    @objc func listClicked() {
-        let row = listTable.clickedRow
+    @objc func listClicked() { chooseList(atRow: listTable.clickedRow) }
+
+    func chooseList(atRow row: Int) {
         guard listRows.indices.contains(row), case .list(let i) = listRows[row], lists.indices.contains(i) else {
             return
         }
