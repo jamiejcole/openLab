@@ -1554,7 +1554,6 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
         any_access(),
         hotkeys,
         (
-            num(0.0..=100.0),
             num(0.1..=10.0),
             (
                 any::<bool>(),
@@ -1572,7 +1571,6 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                 osc_access,
                 hotkeys,
                 (
-                    start,
                     step,
                     (
                         new_cues_auto_load,
@@ -1593,7 +1591,6 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                     output_max_db: 12.0,
                     output_min_db: -60.0,
                     hotkeys,
-                    auto_number_start: start,
                     auto_number_increment: step,
                     new_cues_auto_load,
                     auto_number_new_cues,

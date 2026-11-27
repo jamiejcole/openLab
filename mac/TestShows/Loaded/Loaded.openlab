@@ -68,7 +68,6 @@
         "stop_selected": null,
         "reset_selected": null
       },
-      "auto_number_start": 1.0,
       "auto_number_increment": 1.0
     },
     "patches": [

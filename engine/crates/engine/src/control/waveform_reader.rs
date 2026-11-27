@@ -17,25 +17,38 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Sender;
-use openlab_audio::{Media, MediaError, MediaInfo, WaveformError, WaveformResult, build_waveform};
+use openlab_audio::{
+    Media, MediaError, MediaInfo, WaveformError, WaveformPartial, WaveformResult,
+    build_waveform_with,
+};
 
 use super::DocId;
 use super::inbox::Inbox;
 use super::media::ProbeClock;
 
-/// How a file's waveform is read: [`read_waveform`] in the engine; tests inject a stand-in that
-/// holds on `path` as a stalled disk would. `media` is the file or its preload.
-pub type WaveformFn =
-    fn(&Path, Media, &MediaInfo, &AtomicBool) -> Result<WaveformResult, WaveformError>;
+/// Where a read hands the overviews of what it has read so far (see [`WaveformFn`]).
+pub type PartialSink<'a> = &'a mut dyn FnMut(WaveformPartial);
 
-/// [`openlab_audio::build_waveform`] of `media` (`path` only names it).
+/// How a file's waveform is read: [`read_waveform`] in the engine; tests inject a stand-in that
+/// holds on `path` as a stalled disk would. `media` is the file or its preload. Partial
+/// overviews go to the sink while the read runs; the sink drops them once the read is cancelled.
+pub type WaveformFn = fn(
+    &Path,
+    Media,
+    &MediaInfo,
+    &AtomicBool,
+    PartialSink<'_>,
+) -> Result<WaveformResult, WaveformError>;
+
+/// [`openlab_audio::build_waveform_with`] of `media` (`path` only names it).
 pub fn read_waveform(
     _path: &Path,
     media: Media,
     info: &MediaInfo,
     cancel: &AtomicBool,
+    partial: PartialSink<'_>,
 ) -> Result<WaveformResult, WaveformError> {
-    build_waveform(media, info, cancel)
+    build_waveform_with(media, info, cancel, partial)
 }
 
 /// A read running longer than this is given up on. Far longer than a probe's limit: a three-hour
@@ -199,8 +212,19 @@ impl WaveformReader {
                 .name("openlab-waveform".to_owned())
                 .spawn(move || {
                     // A panic inside the decoder is a bad file, not a dead reader.
+                    let mut sink = |partial: WaveformPartial| {
+                        // Nobody wants a cancelled read's overviews (the doc closed, or the read
+                        // was given up on): none are sent after the flag is set.
+                        if !flag.load(Ordering::Relaxed) {
+                            let _ = inbox.send(Inbox::WaveformPartial {
+                                doc,
+                                ticket,
+                                partial: Arc::new(partial),
+                            });
+                        }
+                    };
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        read(&path, media, &info, &flag)
+                        read(&path, media, &info, &flag, &mut sink)
                     }))
                     .unwrap_or_else(|_| Err(MediaError::Corrupt("decoder failed".into()).into()))
                     .map(|r| Arc::new(r.waveform));

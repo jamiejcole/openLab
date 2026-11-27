@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use openlab_audio::{MediaError, Preloaded, Probed, Waveform, WaveformError};
+use openlab_audio::{MediaError, Preloaded, Probed, Waveform, WaveformError, WaveformPartial};
 use openlab_core::protocol::{ClientMessage, LogLevel, ServerMessage};
 use tokio::sync::mpsc::{self, error::TrySendError};
 
@@ -51,6 +51,13 @@ pub enum Inbox {
         doc: super::DocId,
         ticket: u64,
         result: Result<Arc<Waveform>, WaveformError>,
+    },
+    /// An overview of the start of the file read `ticket` is still reading (AUD-14), from the
+    /// waveform reader. Dropped when the ticket is no longer waited on.
+    WaveformPartial {
+        doc: super::DocId,
+        ticket: u64,
+        partial: Arc<WaveformPartial>,
     },
     /// The document worker's answer to an open or a recovery scan (internal feedback).
     /// One read runs at a time engine-wide, so its ticket names

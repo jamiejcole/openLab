@@ -807,7 +807,6 @@ mod tests {
                 output_max_db: 12.0,
                 output_min_db: -60.0,
                 hotkeys: TransportHotkeys::default(),
-                auto_number_start: 1.0,
                 auto_number_increment: 1.0,
                 new_cues_auto_load: false,
                 auto_number_new_cues: true,

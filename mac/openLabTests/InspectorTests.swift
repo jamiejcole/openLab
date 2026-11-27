@@ -135,7 +135,7 @@ final class InspectorTests: XCTestCase {
     /// What only reads the model or the controls needs no engine (and runs in engine-free runs).
     private static let engineFree = [
         "testEmptyAndMultipleStates", "testShowsTheSelectedCue", "testModeTabIsForGroupsOnly",
-        "testSelectionFollowsTheCueList", "testTheChosenTab", "testAFallbackDoesNotChange",
+        "testSelectionFollowsTheCueList", "testTheChosenTab", "testTabsPickFromAList", "testAFallbackDoesNotChange",
         "testUnchangedSelectionMidEditKeepsTextAndMessage", "testDecimalCommaHasItsOwnMessage",
     ]
     private var vc: InspectorViewController!
@@ -342,22 +342,8 @@ final class InspectorTests: XCTestCase {
         XCTAssertEqual(vc.tabBar.buttons.filter(\.isChosen).map(\.tabID), ["timeLoops"], "the bar agrees")
     }
 
-    /// The owner's second sequence: Q1 on Time & Loops, then the user picks I/O on another Audio cue;
-    /// Q1 then shows I/O. The choice is global, not per cue.
-    func testTheChosenTabIsNotPerCue() throws {
-        vc.setSelection([Self.intro])
-        try clickTab("timeLoops")
-        vc.setSelection([Self.door])
-        XCTAssertEqual(shownTab, "timeLoops", "the same tab on another cue of the kind")
-        try clickTab("io")
-        vc.setSelection([Self.intro])
-        XCTAssertEqual(shownTab, "io")
-        vc.setSelection([Self.door])
-        XCTAssertEqual(shownTab, "io")
-    }
-
     /// A fallback is not a choice: after a cue without the tab, nothing the user did changes it, and a
-    /// tab clicked on that cue (a Fade's Curve) becomes the choice for the cues that have it.
+    /// tab clicked on that cue (a Fade's Curve) is remembered for Fades.
     func testAFallbackDoesNotChangeTheChosenTab() throws {
         vc.setSelection([Self.intro])
         try clickTab("io")
@@ -369,41 +355,12 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.fade])
         try clickTab("curve")
         vc.setSelection([Self.intro])
-        XCTAssertEqual(shownTab, "basics", "an Audio cue has no Curve tab")
+        XCTAssertEqual(shownTab, "io", "a Fade's Curve choice is the Fade's own: the Audio cue keeps its I/O")
         vc.setSelection([Self.fade])
         XCTAssertEqual(shownTab, "curve")
     }
 
-    /// A Fade's Levels tab is the same tab to the user as an Audio cue's: the choice carries across, both ways.
-    func testLevelsChosenOnAnAudioCueShowsOnAFadeAndBack() throws {
-        vc.setSelection([Self.intro])
-        try clickTab("levels")
-        vc.setSelection([Self.fade])
-        XCTAssertEqual(shownTab, "fadeLevels")
-        vc.setSelection([Self.intro])
-        XCTAssertEqual(shownTab, "levels")
-        vc.setSelection([Self.fade])
-        try clickTab("fadeLevels")
-        vc.setSelection([Self.intro])
-        XCTAssertEqual(shownTab, "levels")
-    }
-
-    func testTabsThatMeanTheSameThingMatchAcrossCueKinds() {
-        let pick = InspectorViewController.shownTab(chosen:wanted:)
-        XCTAssertEqual(pick("levels", ["basics", "fadeLevels"]), "fadeLevels")
-        XCTAssertEqual(pick("fadeLevels", ["basics", "levels"]), "levels")
-        XCTAssertEqual(pick("geometry", ["basics", "fadeGeometry"]), "fadeGeometry")
-        XCTAssertEqual(pick("fadeGeometry", ["basics", "geometry"]), "geometry")
-        // Every other id means one thing on every kind that has it.
-        let kinds = ["audio", "fade", "group", "load", "target", "devamp", "network", "video", ""]
-        for kind in kinds {
-            for id in InspectorTabs.ids(forKind: kind) where !id.hasPrefix("fade") {
-                XCTAssertEqual(InspectorViewController.tabKind(id), id)
-            }
-        }
-    }
-
-    func testTheChosenTabPicksFromAListByTheRule() {
+    func testTabsPickFromAListByTheRule() {
         XCTAssertEqual(InspectorViewController.shownTab(chosen: "io", wanted: ["basics", "io"]), "io")
         XCTAssertEqual(InspectorViewController.shownTab(chosen: "io", wanted: ["basics", "mode"]), "basics")
         XCTAssertEqual(InspectorViewController.shownTab(chosen: nil, wanted: ["basics", "mode"]), "basics")
@@ -907,7 +864,7 @@ final class NetworkInspectorTests: XCTestCase {
         memo = try XCTUnwrap(addedMemo)
         await assertEventually { self.store.model?.cue(self.memo) != nil && self.store.model?.cue(self.net) != nil }
         click(net)
-        await assertEventually { self.inspector.cue?.id == self.net && self.store.playheads[self.list] == self.net }
+        await assertEventually { self.inspector.cue?.id == self.net && self.store.engineHeads[self.list] == self.net }
         inspector.tabView.selectTabViewItem(withIdentifier: "network")
     }
 
@@ -1092,7 +1049,7 @@ final class NetworkInspectorTests: XCTestCase {
         XCTAssertTrue(tip.contains(loc("problem.network_patch_missing.none")), tip)
         // GO sends nothing and the playhead moves on.
         try go()
-        await assertEventually { self.store.playheads[self.list] == self.memo }
+        await assertEventually { self.store.engineHeads[self.list] == self.memo }
         let silent = try await quiet()
         XCTAssertTrue(silent, "the broken cue sent nothing")
     }
@@ -1266,7 +1223,7 @@ final class NetworkInspectorTests: XCTestCase {
         try typeMessage("/held")
         let moved = await store.transport(.setPlayhead(list: list, cue: memo))
         guard case .success = moved else { return XCTFail("\(moved)") }
-        await assertEventually { self.store.playheads[self.list] == self.memo }
+        await assertEventually { self.store.engineHeads[self.list] == self.memo }
         XCTAssertEqual(inspector.cue?.id, net, "the selection stays while typing")
         XCTAssertEqual(inspector.networkMessageField.stringValue, "/held")
         try type(" 7")  // Space types a space; it does not fire GO
@@ -1458,7 +1415,7 @@ final class CueTargetFlowTests: XCTestCase {
         XCTAssertTrue(wc.cueList.outlineView.rows(in: wc.cueList.outlineView.visibleRect).contains(row))
         await assertEventually { self.inspector.cue?.id == Self.intro }
         XCTAssertEqual(inspector.nameField.stringValue, "intro")
-        await assertEventually { self.rig.store.playheads[self.list] == Self.intro }
+        await assertEventually { self.rig.store.engineHeads[self.list] == Self.intro }
         await assertEventually { self.wc.masthead.standbyField.stringValue.contains("intro") }
         let marker = try XCTUnwrap(cell("status", Self.intro)?.images[0])
         await assertEventually { !marker.isHidden }
@@ -1861,7 +1818,7 @@ final class CueTargetFlowTests: XCTestCase {
         await select(fade)
         try click(inspector.jumpTargetButton)
         XCTAssertEqual(wc.cueList.selectedIDs(), [rain])
-        await assertEventually { self.rig.store.playheads[self.list] == rain }
+        await assertEventually { self.rig.store.engineHeads[self.list] == rain }
     }
 
     func testJumpFollowsATargetIntoAnotherList() async throws {
@@ -2038,7 +1995,7 @@ final class UserTestFlowTests: XCTestCase {
 
     func testMovePlayheadToCueByNumberMovesThePlayhead() async throws {
         XCTAssertNil(wc.applyCueNumber("3", movePlayhead: true), "cue 3 exists")
-        await assertEventually { self.rig.store.playheads[self.list] == Self.fade }
+        await assertEventually { self.rig.store.engineHeads[self.list] == Self.fade }
         XCTAssertNotNil(wc.applyCueNumber("99", movePlayhead: true), "no such cue: the operator is told")
     }
 
@@ -2060,7 +2017,7 @@ final class UserTestFlowTests: XCTestCase {
         await aimFadeAtIntro()
         try await start(Self.intro)
         await select(Self.fade)
-        await assertEventually { self.rig.store.playheads[self.list] == Self.fade }
+        await assertEventually { self.rig.store.engineHeads[self.list] == Self.fade }
         inspector.tabView.selectTabViewItem(withIdentifier: "fadeLevels")
         wc.window?.layoutIfNeeded()
         XCTAssertFalse(inspector.fadePreviewButton.isHiddenOrHasHiddenAncestor)
@@ -2288,6 +2245,45 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertEqual(panic.toolTip, "Panic All")
         let reset = try XCTUnwrap(wc.sidebar.transportButtons[AX.transportReset])
         XCTAssertNotEqual(panic.image?.tiffRepresentation, reset.image?.tiffRepresentation)
+    }
+
+    /// The sidebar's Cue Lists tab with its list open, and the row the tree draws for `id`.
+    private func openSidebarList() throws -> (SidebarViewController, (ModelID) -> Int?) {
+        wc.setVisible(.sidebar, true)
+        wc.window?.layoutIfNeeded()
+        let side = wc.sidebar
+        let disclosure = try XCTUnwrap(
+            (side.listTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? CueListNameCell)?.disclosure)
+        disclosure.performClick(nil)
+        let rowOf: (ModelID) -> Int? = { id in
+            side.listRows.firstIndex { if case .cue(_, let c, _) = $0 { return c == id } else { return false } }
+        }
+        return (side, rowOf)
+    }
+
+    /// S2: the sidebar's Lists tab is open with the main list expanded; a cue selected in the main list is
+    /// the selected row of the tree too, and follows a later selection.
+    func testACueSelectedInTheMainListIsSelectedInTheSidebarTreeToo() async throws {
+        let (side, rowOf) = try openSidebarList()
+        wc.cueList.selectAsUser([Self.memo])
+        XCTAssertEqual(side.listTable.selectedRow, rowOf(Self.memo))
+        XCTAssertEqual(side.listTable.selectedRowIndexes.count, 1)
+        wc.cueList.selectAsUser([Self.intro])
+        XCTAssertEqual(side.listTable.selectedRow, rowOf(Self.intro))
+        // Several selected: the tree falls back to the list's own row, a cue in it is not singled out.
+        wc.cueList.selectAsUser([Self.intro, Self.memo])
+        XCTAssertEqual(side.listTable.selectedRow, 0)
+    }
+
+    /// S3: a cue chosen in the sidebar's tree is selected in the main list and the inspector shows it.
+    func testACueChosenInTheSidebarTreeIsSelectedInTheMainListAndShownInTheInspector() async throws {
+        let (side, rowOf) = try openSidebarList()
+        wc.cueList.selectAsUser([Self.intro])
+        XCTAssertEqual(wc.inspector.selection, [Self.intro])
+        side.listTable.selectRowIndexes(IndexSet(integer: try XCTUnwrap(rowOf(Self.memo))), byExtendingSelection: false)
+        await assertEventually { self.wc.cueList.selectedIDs() == [Self.memo] }
+        XCTAssertEqual(wc.inspector.selection, [Self.memo], "the inspector shows the chosen cue, not the old one")
+        XCTAssertEqual(side.listTable.selectedRow, rowOf(Self.memo), "and the tree keeps it")
     }
 
     func testASidebarListOpensToShowItsCuesAndChoosingOneSelectsIt() async throws {

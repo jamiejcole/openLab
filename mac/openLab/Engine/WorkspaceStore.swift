@@ -44,6 +44,16 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var problems: [ModelID: [WireProblem]] = [:]
     @Published private(set) var groupWarnings: Set<ModelID> = []
     @Published private(set) var playheads: [ModelID: ModelID] = [:]
+    /// The playheads as the engine last reported them (`playheads` also holds those shown ahead of its echo).
+    private(set) var engineHeads: [ModelID: ModelID] = [:]
+    /// Per list, the moves sent with `showPlayheadAhead` that the engine has not answered. While any is
+    /// open the list's `playheads` entry keeps the head shown ahead; the engine's echoes only update `engineHeads`.
+    private var movesInFlight: [ModelID: Int] = [:]
+    /// Per list with moves open, the highest runtime `seq` their answers named.
+    private var answeredSeq: [ModelID: UInt64] = [:]
+    /// Per list, the runtime `seq` at which the head shown goes back to the engine's: the answer to
+    /// the last move came before the `runtime` messages up to its `seq` (they travel separately).
+    private var settleAt: [ModelID: UInt64] = [:]
     @Published private(set) var previewing: Set<ModelID> = []
     /// Cues started since they were last reset: their rows show the second colour, if they have one.
     @Published private(set) var played: Set<ModelID> = []
@@ -203,6 +213,51 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
 
     // MARK: Intents (all go through the client)
 
+    /// The playhead drawn on `cue` at once, for a click or key that has just sent it, so the arrow and
+    /// the masthead move in the redraw that moves the highlight. The engine's echoes do not move it
+    /// back while a move for the list is unanswered; `playheadAnswered` for the last one settles it
+    /// on the engine's head (a refused move snaps back).
+    func showPlayheadAhead(list: ModelID, cue: ModelID) {
+        movesInFlight[list, default: 0] += 1
+        settleAt[list] = nil
+        guard playheads[list] != cue else { return }
+        var heads: Set<ModelID> = [cue]
+        if let old = playheads[list] { heads.insert(old) }
+        playheads[list] = cue
+        changes.send(.runtime(cues: [], playheads: heads))
+    }
+
+    /// The engine answered one move sent for `list`: `seq` is the runtime `seq` its answer named, nil
+    /// for a move refused or a send that failed (which changed nothing). With none left open, the head
+    /// shown is the engine's again once this store has applied every `runtime` message up to the
+    /// highest such `seq`, so an accepted move's echo is in first and a refused or unknown cue's move
+    /// (the engine only warns) goes back. A gap or a new engine brings a snapshot, which settles every list.
+    func playheadAnswered(list: ModelID, seq: UInt64?) {
+        guard let open = movesInFlight[list] else { return }
+        if let seq { answeredSeq[list] = max(answeredSeq[list] ?? 0, seq) }
+        if open > 1 {
+            movesInFlight[list] = open - 1
+            return
+        }
+        movesInFlight[list] = nil
+        let target = answeredSeq.removeValue(forKey: list) ?? 0
+        if target > runtimeSeq {
+            settleAt[list] = target
+        } else if let heads = reconcilePlayhead(list: list) {
+            changes.send(.runtime(cues: [], playheads: heads))
+        }
+    }
+
+    /// The head shown goes back to the engine's; the rows that change, or nil if it already is.
+    private func reconcilePlayhead(list: ModelID) -> Set<ModelID>? {
+        guard playheads[list] != engineHeads[list] else { return nil }
+        var heads = Set<ModelID>()
+        if let shown = playheads[list] { heads.insert(shown) }
+        if let engine = engineHeads[list] { heads.insert(engine) }
+        playheads[list] = engineHeads[list]
+        return heads
+    }
+
     @discardableResult
     func transport(_ action: TransportAction) async -> Result<OkBody, EngineError> {
         await client.send { .transport(id: $0, action) }
@@ -286,9 +341,20 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     }
 
     /// An Audio cue's file waveform over file seconds `start..<end` in `buckets` parts (AUD-14).
-    func waveform(cue: ModelID, start: Double, end: Double, buckets: Int) async -> Result<WaveformPeaks, EngineError> {
+    /// `onPartial` is given the start of the drawing while the file is read: the columns so far, over
+    /// the stretch they cover; the result replaces it whole.
+    func waveform(
+        cue: ModelID, start: Double, end: Double, buckets: Int, onPartial: (@MainActor (WaveformPeaks) -> Void)? = nil
+    ) async -> Result<WaveformPeaks, EngineError> {
         let n = UInt32(Swift.max(1, Swift.min(buckets, 8192)))
-        switch await client.send({ .request(id: $0, .waveform(cue: cue, start: start, end: end, buckets: n)) }) {
+        let partial = onPartial.map { handler in
+            { @MainActor (p: WaveformPartial) in
+                if p.cue == cue, let peaks = p.peaks { handler(peaks) }
+            }
+        }
+        switch await client.send(
+            { .request(id: $0, .waveform(cue: cue, start: start, end: end, buckets: n)) }, onPartial: partial)
+        {
         case .success(let ok):
             if case .waveform(let peaks)? = ok.data { return .success(peaks) }
             return .failure(.encoding("waveform result has no waveform data"))
@@ -492,7 +558,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         case .mediaCopied(let report):
             setCopying([], onDemand: false)
             mediaCopied.send(report)
-        case .result, .error, .appWelcome, .workspaces, .unknown:
+        case .result, .error, .appWelcome, .workspaces, .unknown, .waveformPartial:
             // These belong to the client or session.
             break
         }
@@ -509,6 +575,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         problems = Dictionary(s.problems.map { ($0.cue, $0.problems) }, uniquingKeysWith: { $1 })
         groupWarnings = Set(s.groupWarnings)
         playheads = Dictionary(s.playheads.compactMap { e in e.cue.map { (e.list, $0) } }, uniquingKeysWith: { $1 })
+        engineHeads = playheads
+        movesInFlight = [:]
+        answeredSeq = [:]
+        settleAt = [:]
         previewing = Set(s.previewing)
         played = Set(s.played ?? [])
         playlistNext = Dictionary((s.playlistNext ?? []).map { ($0.group, $0.cue) }, uniquingKeysWith: { $1 })
@@ -673,9 +743,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 if on { groupWarnings.insert(group) } else { groupWarnings.remove(group) }
                 cues.insert(group)
             case .playhead(let list, let cue):
-                if let old = playheads[list] { heads.insert(old) }
-                if let cue { heads.insert(cue) }
-                playheads[list] = cue
+                engineHeads[list] = cue
+                // While a move is unanswered, or answered with its echo still to come, the head shown
+                // ahead stays (an earlier move's echo must not pull it back); the settle reconciles.
+                if movesInFlight[list] == nil, settleAt[list] == nil {
+                    if let old = playheads[list] { heads.insert(old) }
+                    if let cue { heads.insert(cue) }
+                    playheads[list] = cue
+                }
             case .preview(let cue, let active):
                 if active { previewing.insert(cue) } else { previewing.remove(cue) }
                 cues.insert(cue)
@@ -714,6 +789,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .unknown(let type):
                 engineLog.notice("ignoring unknown runtime change \(type, privacy: .public)")
             }
+        }
+        for (list, seq) in settleAt where seq <= runtimeSeq {
+            settleAt[list] = nil
+            if let moved = reconcilePlayhead(list: list) { heads.formUnion(moved) }
         }
         // A refusal to start a broken cue is past once the cue can play again: a later break
         // counts its own refusals afresh. The show log keeps every one.

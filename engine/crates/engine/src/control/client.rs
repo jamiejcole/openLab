@@ -88,6 +88,15 @@ impl Control {
                     d.waveforms.answer(ticket, result);
                 }
             }
+            Inbox::WaveformPartial {
+                doc,
+                ticket,
+                partial,
+            } => {
+                if let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) {
+                    d.waveforms.partial(ticket, &partial);
+                }
+            }
             Inbox::Doc(answer) => self.doc_answer(answer),
             Inbox::Copy(answer) => self.copy_answer(answer),
             Inbox::Watch(WatchAnswer::Batch(batch)) => self.eng.watch_batches.push(batch),
@@ -561,7 +570,18 @@ impl DocCx<'_> {
         match message {
             ClientMessage::Transport { id, action } => {
                 self.transport(action, now);
-                reply(to, ok(id, None));
+                reply(
+                    to,
+                    ServerMessage::Result {
+                        id,
+                        outcome: Outcome::Ok(OkBody {
+                            revision: None,
+                            data: Some(ResultData::Transport {
+                                seq: self.doc.runtime_seq,
+                            }),
+                        }),
+                    },
+                );
             }
             ClientMessage::Command {
                 id,

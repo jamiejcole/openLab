@@ -205,6 +205,15 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// Typing ended (or its text was taken): the masthead may now show the standby cue that came
     /// while the operator typed. The window re-reads it, since the cue may have changed or gone.
     var onEditingEnded: (() -> Void)?
+    /// Notes committed with Return or a click away, until the engine has answered: the field keeps
+    /// them meanwhile, so the cue's old text is not drawn between the commit and the model's change.
+    private var committing: (id: ModelID, text: String)?
+
+    /// The commit of `id`'s notes was answered (saved or refused): the field shows what the cue holds.
+    func notesCommitDone(_ id: ModelID) {
+        if committing?.id == id { committing = nil }
+    }
+
     /// The text last handed over by `pendingNotes`.
     private var handedOver: String?
 
@@ -222,7 +231,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
         } else {
             standbyField.stringValue = loc("masthead.standby.none")
         }
-        let notes = cue?.raw["notes"]?.stringValue ?? ""
+        var notes = cue?.raw["notes"]?.stringValue ?? ""
+        if let held = committing, held.id == cue?.id {
+            if notes == held.text { committing = nil } else { notes = held.text }
+        }
         if notesView.string != notes, changed || editingID == nil { notesView.string = notes }
         applyEditable()
     }
@@ -246,7 +258,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
     func textDidEndEditing(_ notification: Notification) {
         guard let id = editingID else { return }
         editingID = nil
-        if !isLocked { onCommitNotes?(id, notesView.string) }
+        if !isLocked {
+            committing = (id, notesView.string)
+            onCommitNotes?(id, notesView.string)
+        }
         onEditingEnded?()
     }
 

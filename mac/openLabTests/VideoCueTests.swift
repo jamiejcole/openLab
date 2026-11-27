@@ -1287,7 +1287,7 @@ final class VideoCueTests: XCTestCase {
         clickTimeline(at: 2, panel)
         XCTAssertEqual(panel.waveform.insertion ?? -1, 2, accuracy: 0.05, "the line is where the click was")
         await soon("loaded") { self.status(Self.movie) == loc("cue.state.loaded") }
-        await soon("it is the playhead") { self.store.playheads[self.wc.cueList.listID!] == Self.movie }
+        await soon("it is the playhead") { self.store.engineHeads[self.wc.cueList.listID!] == Self.movie }
         try await go()
         try await play(0.5)
         await soon { self.status(Self.movie) == loc("cue.state.running") }
@@ -1477,13 +1477,19 @@ final class VideoCueTests: XCTestCase {
         await soon("the playhead is in the second pass") {
             abs((panel.waveform.playhead ?? 0) - 2.5) < 0.1
         }
-        // A still has no timeline: said so, every control off.
+        // A still has no timeline: said so; its trims are off and only its fades are typed.
         click(Self.still)
         await soon("the still shown") { panel.waveform.message == loc("timeLoops.still") }
         XCTAssertFalse(panel.waveform.showsRuler, "no times marked over the still's message")
         XCTAssertFalse(panel.startField.isEnabled)
         XCTAssertFalse(panel.holdCheck.isEnabled)
-        XCTAssertFalse(panel.fadeCheck.isEnabled)
+        XCTAssertTrue(panel.fadeInField.isEnabled)
+        XCTAssertTrue(panel.fadeOutField.isEnabled)
+        try typeInto(panel.fadeInField, "1")
+        await soon("the still's fade in is kept") {
+            self.store.model?.cue(Self.still)?.raw["kind"]?["fade_in"]?["duration"]?.doubleValue == 1
+        }
+        XCTAssertEqual(panel.fadeInField.stringValue, "00:01.000")
     }
 
     /// Load to time inside the range → GO starts on that frame (counted from the start trim).

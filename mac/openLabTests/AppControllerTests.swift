@@ -1380,7 +1380,7 @@ final class AppControllerTests: XCTestCase {
         await assertEventually { store.isOn(.goNeedsKeyUp) == true }
         XCTAssertEqual(store.playheads[list], fade, "standing by on the Fade cue")
         XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
-        await assertEventually("the first press went") { store.playheads[self.list] == self.group }
+        await assertEventually("the first press went") { store.engineHeads[self.list] == self.group }
         XCTAssertEqual(store.cueStates[fade]?.state, .running, "the Fade cue started")
         XCTAssertNil(app.handleKeyDown(try keyEvent(" ", repeats: true)), "the held key is taken")
         XCTAssertNil(app.handleKeyDown(try keyEvent(" ")), "a press with no release between is taken too")
@@ -1390,7 +1390,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertNotEqual(store.cueStates[group]?.state, .running)
         app.handleKeyUp(try spaceUp())
         XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
-        await assertEventually("the press after the release went") { store.playheads[self.list] == nil }
+        await assertEventually("the press after the release went") { store.engineHeads[self.list] == nil }
         try await advance()
         await assertEventually("the group started") { store.cueStates[self.group]?.state.isActive == true }
     }
@@ -1402,9 +1402,9 @@ final class AppControllerTests: XCTestCase {
         let store = try XCTUnwrap(app.session.stores["1"])
         XCTAssertEqual(store.playheads[list], fade)
         XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
-        await assertEventually("first press") { store.playheads[self.list] == self.group }
+        await assertEventually("first press") { store.engineHeads[self.list] == self.group }
         XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
-        await assertEventually("second press, no release between") { store.playheads[self.list] == nil }
+        await assertEventually("second press, no release between") { store.engineHeads[self.list] == nil }
         guard case .success = await store.send(command: .setSwitch(.goNeedsKeyUp, true)) else {
             return XCTFail("set switch")
         }
@@ -1413,13 +1413,13 @@ final class AppControllerTests: XCTestCase {
         guard case .success = await store.transport(.setPlayhead(list: list, cue: fade)) else {
             return XCTFail("set_playhead")
         }
-        await assertEventually { store.playheads[self.list] == self.fade }
+        await assertEventually { store.engineHeads[self.list] == self.fade }
         XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
-        await assertEventually("held press went") { store.playheads[self.list] == self.group }
+        await assertEventually("held press went") { store.engineHeads[self.list] == self.group }
         // The release goes to another app: nothing may hold GO shut.
         NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
         XCTAssertNil(app.handleKeyDown(try keyEvent(" ")))
-        await assertEventually("GO fires after the app was left") { store.playheads[self.list] == nil }
+        await assertEventually("GO fires after the app was left") { store.engineHeads[self.list] == nil }
     }
 
     func testSpaceWhileTypingStaysWithTheTextField() async throws {
@@ -4416,11 +4416,11 @@ final class AppControllerTests: XCTestCase {
             wc.setShowMode(showMode)
             list.selectAsUser([intro])
             list.selectAsUser([fade])
-            await assertEventually { store.playheads[lst] == self.fade }
+            await assertEventually { store.engineHeads[lst] == self.fade }
             XCTAssertTrue(delegate.validateMenuItem(item))
             delegate.jumpToTargets(item)
             XCTAssertEqual(list.selectedIDs(), [intro])
-            await assertEventually { wc.inspector.selection == [self.intro] && store.playheads[lst] == self.intro }
+            await assertEventually { wc.inspector.selection == [self.intro] && store.engineHeads[lst] == self.intro }
         }
         wc.setShowMode(false)
 
@@ -4461,7 +4461,7 @@ final class AppControllerTests: XCTestCase {
         let row = outline.row(forItem: list.node(ModelID(gc)))
         XCTAssertTrue(row >= 0 && outline.rows(in: outline.visibleRect).contains(row), "the first target is in view")
         await assertEventually { Set(wc.inspector.selection) == [ModelID(gc), ModelID(far)] }
-        await assertEventually { store.playheads[lst] == ModelID(far) }  // the last selected row
+        await assertEventually { store.engineHeads[lst] == ModelID(far) }  // the last selected row
 
         // A cell being edited keeps its focus: the item waits.
         list.selectAsUser([ModelID(s1)])

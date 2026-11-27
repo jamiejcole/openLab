@@ -122,6 +122,16 @@ class WaveformView: NSView {
             }
         }
     }
+    /// The start of the waves, drawn while the file is still being read (the columns so far; the
+    /// rest stands empty). Only drawn while there are no whole `peaks`.
+    var partialPeaks: WaveformPeaks? {
+        didSet {
+            if partialPeaks != oldValue, peaks == nil {
+                drawing = nil
+                needsDisplay = true
+            }
+        }
+    }
     /// The file's length; nil while it is not known (nothing to draw or drag).
     var duration: Double? { didSet { needsDisplay = true } }
     /// The trims, file seconds; `end` nil is the end of the file.
@@ -257,7 +267,7 @@ class WaveformView: NSView {
     /// The drawing for the current peaks and size, built once.
     func currentDrawing() -> WaveformDrawing {
         if let drawing { return drawing }
-        let d = peaks.map { WaveformDrawing(peaks: $0, scale: scale, in: waveRect) } ?? .empty
+        let d = (peaks ?? partialPeaks).map { WaveformDrawing(peaks: $0, scale: scale, in: waveRect) } ?? .empty
         drawing = d
         return d
     }

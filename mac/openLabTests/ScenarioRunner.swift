@@ -60,6 +60,9 @@ final class ScenarioRunner {
         case menuCommand(String)
         /// `{"tool": "load_to_time"}`: Tools > Load to Time, which cycles the bar open, to its field, closed.
         case tool(String)
+        /// `{"list": "Main"}`: the sidebar's Lists row of that name chosen, as a click on it (its label takes
+        /// a scripted press without passing it on).
+        case list(String)
         /// `{"type": id, "text": "...", "enter": true}`: the control focused, its text replaced, Return.
         case type(id: String, text: String, enter: Bool)
         /// `{"key": "space", "modifiers": ["command"]}`: a key press as the app's key handling takes it.
@@ -171,7 +174,7 @@ final class ScenarioRunner {
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
         "focus", "paste_properties", "shot", "inside", "device", "set_media", "find_missing_files",
-        "choose", "hover", "open_menu", "menu_command", "tool",
+        "choose", "hover", "open_menu", "menu_command", "tool", "list",
     ]
 
     /// The Edit menu's commands a `menu_command` step sends, by name.
@@ -379,6 +382,7 @@ final class ScenarioRunner {
             let name = try string("tool")
             guard name == "load_to_time" else { throw Failure("unknown tool \"\(name)\"; known: load_to_time") }
             return .tool(name)
+        case "list": return .list(try string("list"))
         case "type":
             guard let text = o["text"] as? String else { throw Failure("\"text\" must be a string") }
             return .type(id: try string("type"), text: text, enter: o["enter"] as? Bool ?? true)
@@ -869,6 +873,19 @@ final class ScenarioRunner {
             await catchUp()
             wc.toggleLoadToTime()
             note("tool load_to_time")
+        case .list(let name):
+            let sidebar = wc.sidebar
+            guard
+                let row = sidebar.listRows.firstIndex(where: {
+                    if case .list(let i) = $0 {
+                        return sidebar.lists.indices.contains(i) && sidebar.lists[i].name == name
+                    }
+                    return false
+                }), case .list(let i) = sidebar.listRows[row]
+            else { throw Failure("no list named \"\(name)\" in the sidebar") }
+            sidebar.listTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            sidebar.onChooseList?(sidebar.lists[i].id)
+            note("list \(name)")
         case .type(let id, let text, let enter):
             try type(text, into: try control(id), enter: enter)
             note("type \"\(text)\" into \(id)\(enter ? " + return" : "")")
@@ -1821,6 +1838,7 @@ final class ScenarioRunner {
         case .openMenu(let id): return "open_menu \(id)"
         case .menuCommand(let name): return "menu_command \(name)"
         case .tool(let name): return "tool \(name)"
+        case .list(let name): return "list \(name)"
         case .type(let id, _, _): return "type \(id)"
         case .key(let k, let m): return "key \(modifierText(m))\(k)"
         case .scroll(let id, _, _, _, _, _): return "scroll \(id)"
@@ -2004,6 +2022,8 @@ final class ScenarioShotTests: XCTestCase {
                 """), out: out)
         do {
             try await runner.run()
+        } catch let skip as XCTSkip {
+            throw skip
         } catch {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             XCTFail("\(error)\n\(log)")
@@ -2018,7 +2038,7 @@ final class ScenarioShotTests: XCTestCase {
                 {"show": "Demo", "window": {"width": 900, "height": 400},
                  "steps": [{"shot": "top"}, {"scroll": "cue-list", "dy": -400, "at": [0.5, 0.05]}, {"shot": "scrolled"}]}
                 """), out: out)
-        do { try await runner.run() } catch {
+        do { try await runner.run() } catch let skip as XCTSkip { throw skip } catch {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             return XCTFail("\(error)\n\(log)")
         }
@@ -2044,7 +2064,7 @@ final class ScenarioShotTests: XCTestCase {
                            {"scroll": "cue-list", "dx": -60, "at": [0.5, 0.05]},
                            {"shot": "sideways"}]}
                 """), out: out)
-        do { try await runner.run() } catch {
+        do { try await runner.run() } catch let skip as XCTSkip { throw skip } catch {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             return XCTFail("\(error)\n\(log)")
         }
@@ -2215,7 +2235,7 @@ final class ScenarioShotTests: XCTestCase {
                   {"choose": "settings-patch-device-1", "item": "\(system)"}, {"advance": 1},
                   {"device": "lose", "output": 2}, {"advance": 2}, {"shot": "unplugged"}]}
                 """), out: out)
-        do { try await runner.run() } catch {
+        do { try await runner.run() } catch let skip as XCTSkip { throw skip } catch {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             return XCTFail("\(error)\n\(log)")
         }

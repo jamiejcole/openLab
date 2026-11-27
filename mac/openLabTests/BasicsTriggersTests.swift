@@ -374,7 +374,7 @@ extension PlayheadFlowTests {
         tick(inspector.autoLoadCheck, true)
         await assertEventually("cue 2 auto-loads") { self.raw(cues[1], "auto_load") == .bool(true) }
         click(cues[0])
-        await assertEventually { self.store.playheads[self.list] == cues[0] }
+        await assertEventually { self.store.engineHeads[self.list] == cues[0] }
         XCTAssertNil(state(cues[1]), "not loaded before")
         try await go()
         await assertEventually("cue 2's row shows the loaded mark") { self.state(cues[1]) == loc("cue.state.loaded") }
@@ -421,7 +421,7 @@ extension PlayheadFlowTests {
         XCTAssertEqual(try rowView(cues[3]).pattern, .disarmed, "a disarmed row is striped, not skipped")
         XCTAssertNil(try rowView(cues[0]).pattern)
         click(cues[0])
-        await assertEventually { self.store.playheads[self.list] == cues[0] }
+        await assertEventually { self.store.engineHeads[self.list] == cues[0] }
         try await go()
         try await play(0.2)
         await assertEventually("A and C run") {
@@ -440,7 +440,7 @@ extension PlayheadFlowTests {
         await assertEventually { self.raw(cues[1], "skip_if_disarmed") == .bool(true) }
         XCTAssertNil(try rowView(cues[1]).pattern, "armed: drawn as any armed cue")
         click(cues[0])
-        await assertEventually { self.store.playheads[self.list] == cues[0] }
+        await assertEventually { self.store.engineHeads[self.list] == cues[0] }
         try await go()
         await assertEventually("A's continue starts B") { self.state(cues[1]) == loc("cue.state.running") }
         XCTAssertNil(state(cues[2]))
@@ -487,7 +487,7 @@ extension PlayheadFlowTests {
 
         func start() async throws {
             click(cue)
-            await assertEventually { self.store.playheads[self.list] == cue }
+            await assertEventually { self.store.engineHeads[self.list] == cue }
             try await go()
             await select([cues[1]])
             await assertEventually("started: the second colour") { (try? self.tint(cue)) == self.colour("green") }
@@ -648,7 +648,7 @@ extension PlayheadFlowTests {
         let loud = try await peak(a)
         XCTAssertGreaterThan(loud, 0.01, "A is heard")
         click(c)
-        await assertEventually { self.store.playheads[self.list] == c }
+        await assertEventually { self.store.engineHeads[self.list] == c }
         try await go()
         try await play(0.9)
         let halfway = try await peak(a)
@@ -780,7 +780,7 @@ extension PlayheadFlowTests {
         tick(inspector.skipCheck, true)
         await assertEventually { self.raw(cues[1], "skip_if_disarmed") == .bool(true) }
         click(cues[1])
-        await assertEventually("the playhead is on the skipped cue") { self.store.playheads[self.list] == cues[1] }
+        await assertEventually("the playhead is on the skipped cue") { self.store.engineHeads[self.list] == cues[1] }
         XCTAssertEqual(mark(cues[1], 0), loc("cue.playhead"), "the mark stays where the engine has it")
         func standby(_ id: ModelID) throws -> String {
             let cue = try XCTUnwrap(store.model?.cue(id))
@@ -788,7 +788,7 @@ extension PlayheadFlowTests {
         }
         XCTAssertEqual(wc.masthead.standbyField.stringValue, try standby(cues[1]), "the cue the playhead is on")
         try await go()
-        await assertEventually("the playhead moved on") { self.store.playheads[self.list] == cues[2] }
+        await assertEventually("the playhead moved on") { self.store.engineHeads[self.list] == cues[2] }
         try await play(0.2)
         XCTAssertNil(state(cues[1]))
         XCTAssertNil(state(cues[2]), "that GO started nothing")

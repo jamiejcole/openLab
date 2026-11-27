@@ -118,7 +118,6 @@ fn every_setting_can_be_set_and_undone() {
         setting(WorkspaceSetting::PanicDuration { value: 60.0 }),
         setting(WorkspaceSetting::AutosaveInterval { value: 300.0 }),
         setting(WorkspaceSetting::OutputMinDb { value: -72.0 }),
-        setting(WorkspaceSetting::AutoNumberStart { value: 100.0 }),
         setting(WorkspaceSetting::AutoNumberIncrement { value: 0.5 }),
         setting(WorkspaceSetting::Hotkey {
             key: TransportKey::Go,
@@ -778,7 +777,6 @@ fn out_of_range_settings_are_refused_whole() {
         WorkspaceSetting::AutosaveInterval { value: 3601.0 },
         WorkspaceSetting::OutputMinDb { value: 30.0 },
         WorkspaceSetting::OutputMinDb { value: f64::NAN },
-        WorkspaceSetting::AutoNumberStart { value: -1.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 0.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 2_000_000.0 },
     ] {

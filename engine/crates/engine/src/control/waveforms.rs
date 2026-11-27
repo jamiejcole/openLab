@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use openlab_audio::{MediaError, Waveform, WaveformError};
+use openlab_audio::{MediaError, Waveform, WaveformError, WaveformPartial};
 use openlab_core::protocol::{
     ErrorCode, OkBody, Outcome, RequestId, ResultData, ServerMessage, WaveformChannel, WaveformData,
 };
@@ -40,6 +40,8 @@ struct Waiter {
     start: f64,
     end: f64,
     buckets: u32,
+    /// Columns the last partial sent it held: the next must hold more.
+    sent: u64,
 }
 
 /// A read under way.
@@ -99,6 +101,26 @@ impl Waveforms {
         }
         self.kept_bytes += bytes;
         self.kept.push(Kept { key, ready, wave });
+    }
+
+    /// An overview of the start of the file read `ticket` is still reading: each request waiting
+    /// for it gets the columns of its answer that the read-so-far covers, as a `waveform_partial`,
+    /// when that is more than it was last sent. One for a read no longer waited on is dropped,
+    /// as is one that does not agree with the probe (the file changed under the read).
+    pub(super) fn partial(&mut self, ticket: u64, p: &WaveformPartial) {
+        let Some(r) = self.reading.iter_mut().find(|r| r.ticket == ticket) else {
+            return;
+        };
+        let info = &r.ready.probed.info;
+        if p.total_frames != info.frames
+            || p.wave.sample_rate != info.sample_rate
+            || p.wave.channels != info.channels
+        {
+            return;
+        }
+        for w in &mut r.waiters {
+            answer_partial(w, p);
+        }
     }
 
     /// The reader gave up on read `ticket` (stuck, or no more reads are started): its requests
@@ -208,6 +230,64 @@ fn answer(w: &Waiter, wave: &Waveform) {
     );
 }
 
+/// Sends `w` the columns of its answer that `p` covers, if that is more than it has had.
+fn answer_partial(w: &mut Waiter, p: &WaveformPartial) {
+    let wave = &p.wave;
+    let rate = f64::from(wave.sample_rate.max(1));
+    let total = p.total_frames;
+    let duration = total as f64 / rate;
+    let start = w.start.min(duration);
+    let end = w.end.min(duration);
+    // Seconds to frames: both are finite and within the file here, so the casts cannot wrap.
+    let a = (start * rate).floor() as u64;
+    let b = ((end * rate).ceil() as u64).min(total);
+    if b <= a || wave.frames <= a {
+        return;
+    }
+    let span = b - a;
+    let channels = usize::from(wave.channels).max(1);
+    let wanted = (w.buckets as usize).min(MAX_ANSWER_PEAKS / channels).max(1);
+    // The columns the final answer will have: no more than the frames in the range.
+    let columns = u64::try_from(wanted).unwrap_or(u64::MAX).min(span);
+    // Whole columns the read-so-far covers.
+    let covered = wave.frames.min(b) - a;
+    let have = u64::try_from(u128::from(columns) * u128::from(covered) / u128::from(span))
+        .unwrap_or(0)
+        .min(columns);
+    if have == 0 || have <= w.sent {
+        return;
+    }
+    let upto =
+        a + u64::try_from(u128::from(span) * u128::from(have) / u128::from(columns)).unwrap_or(0);
+    let cols = usize::try_from(have).unwrap_or(0);
+    let peaks: Vec<WaveformChannel> = (0..usize::from(wave.channels))
+        .map(|c| {
+            let peaks = wave.range(c, a, upto, cols);
+            WaveformChannel {
+                min: peaks.iter().map(|p| p.min).collect(),
+                max: peaks.iter().map(|p| p.max).collect(),
+            }
+        })
+        .collect();
+    // A read that did not give every column asked (a bug, not a file) sends nothing.
+    if peaks.iter().any(|c| c.min.len() != cols) {
+        return;
+    }
+    w.sent = have;
+    reply(
+        &w.to,
+        ServerMessage::WaveformPartial {
+            id: w.id,
+            cue: w.cue,
+            duration,
+            start,
+            end,
+            buckets: u32::try_from(columns).unwrap_or(u32::MAX),
+            channels: peaks,
+        },
+    );
+}
+
 impl DocCx<'_> {
     /// A `waveform` request: answered at once from a kept waveform, else when a worker has
     /// read the file. The cue must be an Audio cue whose file is playable, or a Video cue whose
@@ -254,6 +334,7 @@ impl DocCx<'_> {
             start,
             end,
             buckets,
+            sent: 0,
         };
         let waves = &mut self.doc.waveforms;
         if let Some(wave) = waves.kept(&key, &ready) {
@@ -340,6 +421,10 @@ mod tests {
     }
 
     fn ready() -> Arc<Ready> {
+        ready_of(0)
+    }
+
+    fn ready_of(frames: u64) -> Arc<Ready> {
         Arc::new(Ready {
             path: "/a.wav".into(),
             probed: openlab_audio::Probed {
@@ -347,13 +432,70 @@ mod tests {
                 info: openlab_audio::MediaInfo {
                     channels: 1,
                     sample_rate: 48_000,
-                    frames: 0,
+                    frames,
                     duration: std::time::Duration::ZERO,
                 },
                 warnings: Vec::new(),
                 seeking: openlab_audio::Seeking::Direct,
             },
         })
+    }
+
+    /// A partial reaches a waiting request only when it holds more columns than the last one it
+    /// had and agrees with the probe; one for a read that is gone (reset, answered) is dropped.
+    #[test]
+    fn partials_only_grow_and_never_outlive_their_read() {
+        let total = 100 * openlab_audio::BASE_FRAMES;
+        let r = ready_of(total);
+        let mut w = Waveforms::default();
+        let (to, mut rx) = super::super::inbox::reply_channel();
+        w.reading.push(Reading {
+            key: "k".into(),
+            ticket: 7,
+            ready: Arc::clone(&r),
+            cancel: Arc::new(AtomicBool::new(false)),
+            waiters: vec![Waiter {
+                id: RequestId(1),
+                to,
+                cue: CueId(uuid::Uuid::from_u128(1)),
+                start: 0.0,
+                end: 1e9,
+                buckets: 10,
+                sent: 0,
+            }],
+        });
+        let partial = |buckets: usize| {
+            let mut p = WaveformPartial {
+                wave: (*wave(buckets)).clone(),
+                total_frames: total,
+            };
+            p.wave.frames = buckets as u64 * openlab_audio::BASE_FRAMES;
+            p
+        };
+        let columns = |m: ServerMessage| match m {
+            ServerMessage::WaveformPartial {
+                buckets, channels, ..
+            } => (buckets, channels[0].max.len()),
+            other => panic!("{other:?}"),
+        };
+        // 30 of 100 buckets read: 3 of the 10 columns.
+        w.partial(7, &partial(30));
+        assert_eq!(columns(rx.try_recv().unwrap()), (10, 3));
+        // Not more columns, a read nobody waits for, a file that is not the one probed: nothing.
+        w.partial(7, &partial(30));
+        w.partial(7, &partial(39));
+        w.partial(8, &partial(90));
+        let mut other = partial(90);
+        other.total_frames = total + 1;
+        w.partial(7, &other);
+        assert!(rx.try_recv().is_err());
+        w.partial(7, &partial(90));
+        assert_eq!(columns(rx.try_recv().unwrap()), (10, 9));
+        // The doc's files probed afresh: the read is gone, and so are its overviews.
+        w.reset();
+        let _ = rx.try_recv();
+        w.partial(7, &partial(95));
+        assert!(rx.try_recv().is_err());
     }
 
     /// The kept waveforms stay within [`CACHE_BYTES`], the least recently used going first,

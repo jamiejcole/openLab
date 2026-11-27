@@ -67,7 +67,7 @@ final class TargetCueTests: XCTestCase {
     /// Selects `id` (the playhead follows) and presses GO.
     private func go(_ id: ModelID) async throws {
         await select(id)
-        await assertEventually { self.rig.store.playheads[self.list] == id }
+        await assertEventually { self.rig.store.engineHeads[self.list] == id }
         wc.masthead.goButton.performClick(nil)
         try await rig.advance(0.05)
     }

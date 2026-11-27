@@ -14,6 +14,8 @@ final class WorkspaceWindow: NSWindow {
     /// Told when a press starts and when its `mouseDown` has returned: a standard control tracks the
     /// mouse inside that call, and sends its action there too.
     var onPress: ((Bool) -> Void)?
+    /// Told of every left mouse press before the window dispatches it.
+    var onMouseDown: ((NSEvent) -> Void)?
 
     /// Takes the keys when nothing else is focused (typing ended, a focused control went): the window
     /// itself would leave the arrow keys driving nothing.
@@ -32,6 +34,7 @@ final class WorkspaceWindow: NSWindow {
         guard event.type == .leftMouseDown else { return super.sendEvent(event) }
         onPress?(true)
         defer { onPress?(false) }
+        onMouseDown?(event)
         super.sendEvent(event)
     }
 
@@ -216,6 +219,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             if down { inspector?.endGestures() }
             cueList?.setFollowHold(.press, down)
         }
+        // A press in the cue list shows its cues in the inspector again, also on the row already selected
+        // (which announces no change) after a cue list was chosen in the sidebar.
+        window.onMouseDown = { [weak self] event in
+            guard let self, let content = self.window?.contentView else { return }
+            let point = content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+            if content.hitTest(point)?.isDescendant(of: self.cueList.view) == true { self.inspector.leaveCueList() }
+        }
         inspector.isFollowHeld = { [weak cueList] in cueList?.followHeld == true }
         inspector.onGestureHold = { [weak cueList] in cueList?.setFollowHold(.gesture, $0) }
         window.keyTarget = cueList.outlineView
@@ -316,13 +326,25 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         wireFind()
         wireLoadTime()
         masthead.onEditingEnded = { [weak self] in self?.syncMasthead() }
-        masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
+        masthead.onCommitNotes = { [weak self] id, text in
+            Task {
+                _ = await self?.editor.setNotes(of: id, text: text)
+                self?.masthead.notesCommitDone(id)
+                self?.syncMasthead()
+            }
+        }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
+        sidebar.selectedProvider = { [weak self] in self?.cueList.selectedIDs() ?? [] }
+        cueList.onSelectionDrawn = { [weak self] in self?.sidebar.syncSelection() }
         sidebar.onSelectList = { [weak self] id in
             self?.cueList.showList(id)
         }
         sidebar.onNotice = { [weak self] in self?.showNotice($0) }
-        sidebar.onSelectCue = { [weak self] id in self?.reveal(cue: id) }
+        sidebar.onChooseList = { [weak self] id in self?.inspector.showCueList(id) }
+        sidebar.onSelectCue = { [weak self] id in
+            self?.inspector.leaveCueList()
+            self?.reveal(cue: id)
+        }
         // Both publish before they change: use the delivered values.
         statusSub = store.$status.combineLatest(store.$connectionState).sink { [weak self] status, state in
             MainActor.assumeIsolated { self?.footer.show(status: status, connected: state == .connected) }
@@ -546,7 +568,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let cues = cueList.selectedIDs()
         guard !isShowMode, let window, !cues.isEmpty else { return NSSound.beep() }
         let settings = store.model?.settings
-        let start = NSTextField(string: Self.plain(settings?["auto_number_start"]?.doubleValue ?? 1))
+        let start = NSTextField(string: "1")
         let step = NSTextField(string: Self.plain(settings?["auto_number_increment"]?.doubleValue ?? 1))
         let prefix = NSTextField(string: "")
         let suffix = NSTextField(string: "")

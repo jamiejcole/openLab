@@ -1757,6 +1757,27 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "waveform_partial",
+        server(ServerMessage::WaveformPartial {
+            id: rid(52),
+            cue: cue_id(10),
+            duration: 62.5,
+            start: 1.5,
+            end: 2.0,
+            buckets: 6,
+            channels: vec![
+                WaveformChannel {
+                    min: vec![-32767, -120],
+                    max: vec![32767, 4000],
+                },
+                WaveformChannel {
+                    min: vec![-16384, -1],
+                    max: vec![16384, 1],
+                },
+            ],
+        }),
+    );
+    add(
         "result_waveform",
         server(ServerMessage::Result {
             id: rid(52),
@@ -1861,6 +1882,16 @@ fn fixtures() -> Vec<(String, Sample)> {
             outcome: Outcome::Ok(OkBody {
                 revision: None,
                 data: Some(ResultData::SequenceSpan { span: Some(9.5) }),
+            }),
+        }),
+    );
+    add(
+        "result_transport",
+        server(ServerMessage::Result {
+            id: rid(65),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::Transport { seq: 42 }),
             }),
         }),
     );
@@ -4489,7 +4520,6 @@ fn property_commands() -> Vec<(String, Command)> {
                 ..TransportHotkeys::default()
             }),
         },
-        WorkspaceSetting::AutoNumberStart { value: 10.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 0.5 },
         WorkspaceSetting::NewCuesAutoLoad { value: true },
     ];

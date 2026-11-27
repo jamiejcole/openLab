@@ -2312,11 +2312,22 @@ final class InspectorTabOrderTests: XCTestCase {
         XCTAssertEqual(InspectorTabs.ids(forKind: "devamp"), ["basics", "triggers", "devamp"])
     }
 
+    /// The same cue turned into another kind keeps the tab the operator is on, and that becomes the new
+    /// kind's choice.
     func testChangingKindKeepsTheSelectedCommonTab() {
         vc.setSelection([TestSnapshots.intro])
         vc.tabView.selectTabViewItem(at: 1)
-        vc.setSelection([TestSnapshots.fade])
+        vc.syncTabs(InspectorTabs.ids(forKind: "fade"), kind: "fade", cue: TestSnapshots.intro)
         XCTAssertEqual(vc.tabView.selectedTabViewItem?.identifier as? String, "triggers")
+        XCTAssertEqual(vc.chosenTabs["fade"], "triggers")
+    }
+
+    /// Another cue of another type opens on its own type's choice, not the tab the last cue was on.
+    func testSelectingACueOfAnotherTypeOpensOnItsOwnTab() {
+        vc.setSelection([TestSnapshots.intro])
+        vc.tabView.selectTabViewItem(at: 1)
+        vc.setSelection([TestSnapshots.fade])
+        XCTAssertEqual(vc.tabView.selectedTabViewItem?.identifier as? String, "basics")
     }
 
     func testDevampSettingsEditTheKind() async {

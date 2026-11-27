@@ -1063,6 +1063,56 @@ fn a_still_with_a_duration_ends_after_it() {
     assert_eq!(shown(&mut s), None);
 }
 
+/// A still has built-in fades like a movie: in from its start; out to the end of its typed
+/// duration, and none while it has no duration (it runs until stopped).
+#[test]
+fn a_stills_integrated_fades_rise_from_its_start_and_fall_to_the_end_of_its_duration() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let linear = |duration| openlab_core::FadeSpec {
+        duration,
+        curve: openlab_core::FadeCurve::Linear,
+    };
+    let faded = |duration: Option<f64>| {
+        let mut c = still_cue(1, &png, duration);
+        if let CueKind::Video { timing, .. } = &mut c.kind {
+            timing.fade_in = linear(1.0);
+            timing.fade_out = linear(1.0);
+        }
+        video_show(vec![c])
+    };
+    let mut s = faded(Some(4.0));
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.01));
+    let start = red_at(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    let half_in = red_at(&mut s);
+    run_to(&mut s, at + samples(2.0));
+    let full = red_at(&mut s);
+    assert!(full >= 200, "between the fades: {full}");
+    assert!(start < full / 10, "starts transparent: {start} of {full}");
+    let half = |got: u8| (f64::from(got) / f64::from(full) - 0.5).abs() <= 0.06;
+    assert!(
+        half(half_in),
+        "halfway into the fade in: {half_in} of {full}"
+    );
+    run_to(&mut s, at + samples(3.5));
+    let half_out = red_at(&mut s);
+    assert!(half(half_out), "halfway out: {half_out} of {full}");
+    run_to(&mut s, at + samples(4.0) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended at its duration");
+    assert_eq!(shown(&mut s), None);
+    // No duration: faded in, and no fade out for ever (it runs until stopped).
+    let mut s = faded(None);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    let half_in = red_at(&mut s);
+    assert!(half(half_in), "in: {half_in} of {full}");
+    run_to(&mut s, at + samples(30.0));
+    let later = red_at(&mut s);
+    assert!(later >= full - 10, "no end, no fade out: {later} of {full}");
+}
+
 /// GO: the picture plays on the cue's stage from its first frame in step with the engine's
 /// clock, and the cue ends at its last frame (the file's length).
 #[test]
@@ -7724,10 +7774,12 @@ fn a_video_cues_sound_has_a_waveform_and_a_silent_movie_has_none() {
     };
     let mut rx = ask(&mut s, 1);
     s.settle_media();
+    // The read may send growing `waveform_partial`s before its result.
     let Some(ServerMessage::Result {
         outcome: Outcome::Ok(ok),
         ..
-    }) = rx.try_recv().ok()
+    }) = std::iter::from_fn(|| rx.try_recv().ok())
+        .find(|m| !matches!(m, ServerMessage::WaveformPartial { .. }))
     else {
         panic!("no waveform");
     };

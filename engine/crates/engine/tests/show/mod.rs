@@ -154,7 +154,6 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             output_max_db: 12.0,
             output_min_db: -60.0,
             hotkeys: TransportHotkeys::default(),
-            auto_number_start: 1.0,
             auto_number_increment: 1.0,
             new_cues_auto_load: false,
             auto_number_new_cues: true,
@@ -515,6 +514,7 @@ pub fn gated_waveform(
     media: openlab_audio::Media,
     info: &openlab_audio::MediaInfo,
     cancel: &std::sync::atomic::AtomicBool,
+    partial: &mut dyn FnMut(openlab_audio::WaveformPartial),
 ) -> Result<openlab_audio::WaveformResult, openlab_audio::WaveformError> {
     PROBED
         .lock()
@@ -522,7 +522,7 @@ pub fn gated_waveform(
         .push(path.to_path_buf());
     PROBED_CHANGED.notify_all();
     gated_open(path);
-    openlab_audio::build_waveform(media, info, cancel)
+    openlab_audio::build_waveform_with(media, info, cancel, partial)
 }
 
 /// The probe watchdog's clock, moved only by the test: whether a worker counts as stuck must not

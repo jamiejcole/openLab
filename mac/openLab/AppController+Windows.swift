@@ -77,6 +77,7 @@ extension AppController {
         keySubs[id] = nil
         editedSubs[id] = nil
         statusSubs[id] = nil
+        mediaCopyFollowers[id] = nil
         wc.window?.close()
         syncOverridePanel()
     }

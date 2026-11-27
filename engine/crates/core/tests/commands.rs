@@ -466,52 +466,86 @@ fn undoing_a_transaction_that_removed_a_target_and_its_fade_restores_both() {
 // ---- auto-numbering (ED-08) -----------------------------------------------------------------
 
 fn auto(n: u128) -> Command {
+    auto_at(n, 0)
+}
+
+fn auto_at(n: u128, index: usize) -> Command {
     Command::AddCue {
-        at: pos(None, 0),
+        at: pos(None, index),
         cue: memo(n),
         auto_number: true,
     }
 }
 
-#[test]
-fn auto_numbering_follows_the_workspace_settings() {
-    let mut ws = workspace(vec![]);
-    ws.settings.auto_number_start = 10.0;
-    ws.settings.auto_number_increment = 5.0;
-    for n in 1..=3 {
-        ws.apply(auto(n)).unwrap();
-    }
-    assert_eq!(number(&ws, 1).as_deref(), Some("10"));
-    assert_eq!(number(&ws, 2).as_deref(), Some("15"));
-    assert_eq!(number(&ws, 3).as_deref(), Some("20"));
-    assert_clean(&ws);
+/// A list with these numbers ("-" = none), in order; cue `i` (1-based) has the i-th number.
+fn list_of(numbers: &[&str]) -> Workspace {
+    workspace(
+        numbers
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let id = i as u128 + 1;
+                if *n == "-" {
+                    memo(id)
+                } else {
+                    numbered(id, n, CueKind::Memo)
+                }
+            })
+            .collect(),
+    )
+}
+
+/// The number a new cue added after cue `after` (1-based; 0 = first in the list) gets, given a
+/// list and increment; `None` when it gets none.
+fn auto_number_after(numbers: &[&str], after: usize, increment: f64) -> Option<String> {
+    let mut ws = list_of(numbers);
+    ws.settings.auto_number_increment = increment;
+    ws.apply(auto_at(99, after)).unwrap();
+    number(&ws, 99)
+}
+
+/// Like `auto_number_after`, with the new cue after the cue numbered `selected`.
+fn after_number(numbers: &[&str], selected: &str, increment: f64) -> Option<String> {
+    let index = numbers.iter().position(|n| *n == selected).unwrap() + 1;
+    auto_number_after(numbers, index, increment)
 }
 
 #[test]
-fn auto_numbering_continues_after_the_highest_numeric_number() {
-    let mut ws = workspace(vec![
-        numbered(1, "4", CueKind::Memo),
-        numbered(2, "Intro", CueKind::Memo),
-        numbered(3, "2.5", CueKind::Memo),
-    ]);
-    ws.apply(auto(10)).unwrap();
-    assert_eq!(number(&ws, 10).as_deref(), Some("5"));
-    // The start is a floor.
-    ws.settings.auto_number_start = 100.0;
-    ws.apply(auto(11)).unwrap();
-    assert_eq!(number(&ws, 11).as_deref(), Some("100"));
+fn auto_numbering_steps_by_the_workspace_increment() {
+    let mut ws = workspace(vec![]);
+    ws.settings.auto_number_increment = 5.0;
+    for n in 1..=3 {
+        ws.apply(auto_at(n, n as usize - 1)).unwrap();
+    }
+    assert_eq!(number(&ws, 1).as_deref(), Some("5"));
+    assert_eq!(number(&ws, 2).as_deref(), Some("10"));
+    assert_eq!(number(&ws, 3).as_deref(), Some("15"));
+    assert_clean(&ws);
 }
 
 #[test]
 fn auto_numbering_has_no_float_noise() {
     let mut ws = workspace(vec![]);
-    ws.settings.auto_number_start = 0.1;
     ws.settings.auto_number_increment = 0.1;
     for n in 1..=4 {
-        ws.apply(auto(n)).unwrap();
+        ws.apply(auto_at(n, n as usize - 1)).unwrap();
     }
     let numbers: Vec<_> = (1..=4).map(|n| number(&ws, n).unwrap()).collect();
     assert_eq!(numbers, ["0.1", "0.2", "0.3", "0.4"]);
+}
+
+/// Past about two million a float sum carries noise a nine-decimal rounding keeps.
+#[test]
+fn auto_numbering_has_no_float_noise_for_large_numbers() {
+    assert_eq!(
+        auto_number_after(&["2256915.285", "2256915.287"], 1, 0.001).as_deref(),
+        Some("2256915.286")
+    );
+    for base in [2_000_001.0_f64, 2_256_915.285, 12_345_678.5, 99_999_999.125] {
+        let before = format!("{base}");
+        let got = auto_number_after(&[&before], 1, 0.5).unwrap();
+        assert_eq!(got, format!("{}", base + 0.5), "after {before}");
+    }
 }
 
 #[test]
@@ -537,44 +571,192 @@ fn auto_number_replaces_the_cues_own_number_and_survives_undo_and_redo() {
 /// one between 2 and 4 is 3, and one then added between 2 and 3 is 2.5.
 #[test]
 fn auto_number_new_cue_between_neighbours_takes_the_gap() {
-    let mut ws = workspace(vec![
-        numbered(1, "2", CueKind::Memo),
-        numbered(2, "4", CueKind::Memo),
-        numbered(3, "6", CueKind::Memo),
-    ]);
-    let add = |n: u128, index: usize| Command::AddCue {
-        at: pos(None, index),
-        cue: memo(n),
-        auto_number: true,
-    };
-    ws.apply(add(10, 3)).unwrap();
+    let mut ws = list_of(&["2", "4", "6"]);
+    ws.apply(auto_at(10, 3)).unwrap();
     assert_eq!(number(&ws, 10).as_deref(), Some("7"));
-    ws.apply(add(11, 1)).unwrap();
+    ws.apply(auto_at(11, 1)).unwrap();
     assert_eq!(number(&ws, 11).as_deref(), Some("3"));
-    ws.apply(add(12, 1)).unwrap();
+    ws.apply(auto_at(12, 1)).unwrap();
     assert_eq!(number(&ws, 12).as_deref(), Some("2.5"));
     assert_clean(&ws);
 }
 
-/// A list whose numbers do not ascend (5 then 1) numbers a new cue between them above the highest
-/// number, as before; the cues added at the same place after it take the gap, and no add is refused.
+// The cases below were run in QLab 5 (5.6.5) on 2026-11-27 (issue "Owner's notes 5").
+
+/// N1 / N2a: the owner's list, 0.05 selected, default increment.
 #[test]
-fn auto_number_in_a_list_that_does_not_ascend_numbers_above_the_highest() {
-    let mut ws = workspace(vec![
-        numbered(1, "5", CueKind::Memo),
-        numbered(2, "1", CueKind::Memo),
-    ]);
-    let add = |n: u128| Command::AddCue {
-        at: pos(None, 1),
-        cue: memo(n),
-        auto_number: true,
-    };
-    for n in 10..14 {
-        ws.apply(add(n)).unwrap();
-    }
-    let numbers: Vec<_> = (10..14).map(|n| number(&ws, n).unwrap()).collect();
-    assert_eq!(numbers, ["6", "5.5", "5.25", "5.125"]);
-    assert_clean(&ws);
+fn n1_audio_cue_after_0_05_in_the_owners_list_gets_0_07() {
+    let list = [
+        "0.05", "0.1", "0.06", "0.2", "0.5", "1", "2", "0.6", "3.5", "3", "4", "5", "5.5",
+    ];
+    assert_eq!(after_number(&list, "0.05", 1.0).as_deref(), Some("0.07"));
+}
+
+#[test]
+fn n2b_integer_before_with_room_adds_one() {
+    assert_eq!(
+        after_number(&["1", "2", "4"], "2", 1.0).as_deref(),
+        Some("3")
+    );
+}
+
+#[test]
+fn n2c_integer_before_and_next_integer_after_takes_half() {
+    assert_eq!(
+        after_number(&["2", "3", "4", "5"], "2", 1.0).as_deref(),
+        Some("2.5")
+    );
+}
+
+#[test]
+fn n2d_a_number_used_further_down_is_skipped() {
+    assert_eq!(
+        after_number(&["2", "5", "3"], "2", 1.0).as_deref(),
+        Some("4")
+    );
+}
+
+#[test]
+fn n2e_decimal_before_steps_by_the_largest_step_that_fits() {
+    assert_eq!(
+        after_number(&["2.5", "5"], "2.5", 1.0).as_deref(),
+        Some("3.5")
+    );
+    assert_eq!(
+        after_number(&["2.5", "3"], "2.5", 1.0).as_deref(),
+        Some("2.6")
+    );
+    assert_eq!(
+        after_number(&["2.5", "2.6"], "2.5", 1.0).as_deref(),
+        Some("2.55")
+    );
+}
+
+#[test]
+fn n2f_used_numbers_past_the_next_cue_are_stepped_over() {
+    assert_eq!(
+        after_number(&["2.5", "2.7", "2.6"], "2.5", 1.0).as_deref(),
+        Some("2.8")
+    );
+    assert_eq!(
+        after_number(&["2.5", "2.7", "2.6", "2.8", "3"], "2.5", 1.0).as_deref(),
+        Some("2.9")
+    );
+}
+
+#[test]
+fn n2g_finer_steps_for_decimals_with_little_room() {
+    assert_eq!(
+        after_number(&["2", "2.1", "2.05"], "2", 1.0).as_deref(),
+        Some("2.15")
+    );
+    assert_eq!(
+        after_number(&["2.05", "3"], "2.05", 1.0).as_deref(),
+        Some("2.55")
+    );
+    assert_eq!(
+        after_number(&["1.25", "2"], "1.25", 1.0).as_deref(),
+        Some("1.75")
+    );
+}
+
+#[test]
+fn n2h_a_lower_number_after_gives_no_number() {
+    assert_eq!(after_number(&["5", "1"], "5", 1.0), None);
+    assert_eq!(after_number(&["7", "6", "8"], "7", 1.0), None);
+}
+
+#[test]
+fn n2i_no_numbered_cue_before_counts_from_zero() {
+    assert_eq!(auto_number_after(&["-", "5"], 1, 1.0).as_deref(), Some("1"));
+    assert_eq!(
+        auto_number_after(&["-", "1"], 1, 1.0).as_deref(),
+        Some("0.5")
+    );
+    assert_eq!(auto_number_after(&[], 0, 1.0).as_deref(), Some("1"));
+}
+
+#[test]
+fn n2j_an_unnumbered_cue_before_looks_back_to_the_last_number() {
+    assert_eq!(
+        auto_number_after(&["3", "-", "5"], 2, 1.0).as_deref(),
+        Some("4")
+    );
+    assert_eq!(auto_number_after(&["3", "-", "-", "2"], 2, 1.0), None);
+}
+
+#[test]
+fn n2k_non_numeric_numbers_are_skipped() {
+    assert_eq!(
+        auto_number_after(&["4", "A", "9"], 2, 1.0).as_deref(),
+        Some("5")
+    );
+    assert_eq!(
+        auto_number_after(&["A", "1"], 1, 1.0).as_deref(),
+        Some("0.5")
+    );
+    assert_eq!(
+        auto_number_after(&["1", "A", "2"], 1, 1.0).as_deref(),
+        Some("1.5")
+    );
+}
+
+#[test]
+fn n2l_increment_5() {
+    let run = |list: &[&str], sel: &str| after_number(list, sel, 5.0);
+    assert_eq!(run(&["10", "20"], "10").as_deref(), Some("15"));
+    assert_eq!(run(&["10", "16"], "10").as_deref(), Some("15"));
+    assert_eq!(run(&["10", "15"], "10").as_deref(), Some("11"));
+    assert_eq!(run(&["2", "7.5"], "2").as_deref(), Some("7"));
+    assert_eq!(run(&["2", "7"], "2").as_deref(), Some("3"));
+    assert_eq!(run(&["2", "3"], "2").as_deref(), Some("2.5"));
+    assert_eq!(auto_number_after(&[], 0, 5.0).as_deref(), Some("5"));
+}
+
+#[test]
+fn n2m_increment_10() {
+    let run = |list: &[&str]| after_number(list, "2", 10.0);
+    assert_eq!(run(&["2", "20"]).as_deref(), Some("12"));
+    assert_eq!(run(&["2", "8"]).as_deref(), Some("7"));
+    assert_eq!(run(&["2", "6"]).as_deref(), Some("3"));
+}
+
+#[test]
+fn n2n_increment_0_25() {
+    let run = |next: &str| after_number(&["2", next], "2", 0.25);
+    assert_eq!(run("3").as_deref(), Some("2.25"));
+    assert_eq!(run("2.2").as_deref(), Some("2.1"));
+    assert_eq!(run("2.1").as_deref(), Some("2.05"));
+    assert_eq!(run("2.05").as_deref(), Some("2.01"));
+    assert_eq!(auto_number_after(&[], 0, 0.25).as_deref(), Some("0.25"));
+}
+
+#[test]
+fn n2o_increment_0_1() {
+    assert_eq!(after_number(&["1", "5"], "1", 0.1).as_deref(), Some("1.1"));
+    assert_eq!(
+        after_number(&["1", "1.1"], "1", 0.1).as_deref(),
+        Some("1.05")
+    );
+}
+
+#[test]
+fn n2p_three_decimals_are_the_limit() {
+    assert_eq!(
+        after_number(&["1", "1.0011"], "1", 1.0).as_deref(),
+        Some("1.001")
+    );
+    assert_eq!(after_number(&["1", "1.001"], "1", 1.0), None);
+    assert_eq!(after_number(&["1", "1.0001"], "1", 1.0), None);
+}
+
+/// Numbers beyond the limit auto-numbering reads, and huge lists of used numbers, never hang or
+/// panic: the result is a number or none.
+#[test]
+fn auto_number_with_huge_neighbours_still_answers() {
+    assert!(after_number(&["1", "1e300"], "1", 1.0).is_some());
+    assert!(after_number(&["1e300"], "1e300", 1.0).is_some());
+    assert!(after_number(&["1"], "1", 1e-9).is_some());
 }
 
 /// With auto-numbering off a cue made with `auto_number` keeps the number it has (none for a
@@ -685,15 +867,8 @@ fn a_cue_made_with_new_cues_auto_load_on_auto_loads_and_existing_cues_are_unchan
 
 #[test]
 fn auto_numbering_with_invalid_settings_is_refused() {
-    for (start, increment) in [
-        (1.0, 0.0),
-        (1.0, -1.0),
-        (f64::NAN, 1.0),
-        (1.0, f64::NAN),
-        (-1.0, 1.0),
-    ] {
+    for increment in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         let mut ws = workspace(vec![]);
-        ws.settings.auto_number_start = start;
         ws.settings.auto_number_increment = increment;
         assert!(matches!(
             refused(&mut ws, auto(1)),
@@ -1751,7 +1926,6 @@ fn renumber_handles_groups_and_nested_groups() {
 #[test]
 fn renumber_uses_whatever_start_and_increment_it_is_given() {
     let mut ws = workspace(vec![memo(1), memo(2), memo(3)]);
-    ws.settings.auto_number_start = 50.0;
     round_trip(&mut ws, renumber(&[1, 2, 3], 0.1, 0.1));
     assert_eq!(
         [1, 2, 3].map(|n| number(&ws, n).unwrap()),

@@ -45,6 +45,8 @@ description: "Load when changing or reviewing the engine control thread, engine/
 | device, device list | the cpal layer and its stream | via `Inbox::Device`; control never calls the device layer |
 | disk workers (2), openers (4) | decoders, resamplers, rings; openers only open files | `prepare` does no I/O; a hung open stalls only its stream |
 
+While a waveform read runs the reader sends `Inbox::WaveformPartial`; `Waveforms::partial` turns each into a `waveform_partial` for every request waiting on that ticket, only when it holds more columns than that request last had, and drops it for a ticket no longer waited on (reset, given up, answered).
+
 ## Inbox and replies
 - `Inbox::Client { message, reply }` is already decoded and authenticated. `reply` is an unbounded tokio channel, outbound is bounded with `try_send`: the control thread only ever sends without blocking.
 - Transport actions map to cue-engine inputs and are handled at once; `result` ok means "handed to the cue engine". `hard_stop` = `Stop` with no fade; `stop_all`/`hard_stop_all` = `StopAll`.

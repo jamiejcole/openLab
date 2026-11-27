@@ -625,7 +625,6 @@ fn settings_are_clamped_to_their_ranges() {
     s.panic_duration = f64::NEG_INFINITY;
     s.autosave_interval = 0.0001;
     s.output_max_db = 40.0;
-    s.auto_number_start = -3.0;
     s.auto_number_increment = 0.0;
     let setting = |field| issue(Severity::Warning, None, IssueKind::InvalidTime { field });
     let value = |field| issue(Severity::Warning, None, IssueKind::InvalidValue { field });
@@ -636,7 +635,6 @@ fn settings_are_clamped_to_their_ranges() {
             setting("settings.panic_duration"),
             setting("settings.autosave_interval"),
             value("settings.output_max_db"),
-            value("settings.auto_number_start"),
             value("settings.auto_number_increment"),
         ]
     );
@@ -645,14 +643,7 @@ fn settings_are_clamped_to_their_ranges() {
         (s.min_go_interval, s.panic_duration, s.autosave_interval),
         (10.0, 0.0, 5.0)
     );
-    assert_eq!(
-        (
-            s.output_max_db,
-            s.auto_number_start,
-            s.auto_number_increment
-        ),
-        (MAX_DB, 0.0, 1.0)
-    );
+    assert_eq!((s.output_max_db, s.auto_number_increment), (MAX_DB, 1.0));
 
     ws.settings.autosave_interval = 1e9;
     ws.settings.panic_duration = 61.0;

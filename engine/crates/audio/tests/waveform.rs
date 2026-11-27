@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::media::*;
 use openlab_audio::{
-    BASE_FRAMES, Media, MediaError, Peak, WarningKind, Waveform, WaveformBuilder, WaveformError,
-    build_waveform, probe, probe_media,
+    BASE_FRAMES, MAX_PARTIALS, MIN_PARTIAL_FRAMES, Media, MediaError, Peak, WarningKind, Waveform,
+    WaveformBuilder, WaveformError, build_waveform, build_waveform_with, probe, probe_media,
 };
 
 const RATE: u32 = 44_100;
@@ -515,4 +515,76 @@ fn unplayable_files_are_errors() {
         build_waveform(missing, &info, &never),
         Err(WaveformError::Media(MediaError::NotFound(_)))
     ));
+}
+
+/// While a file is read the build hands out overviews of what is read so far (AUD-14): at least
+/// one before the finished waveform, each covering more than the last, none past the bound, and
+/// every one agreeing with the finished waveform over the frames it covers.
+#[test]
+fn a_build_hands_out_growing_partials_before_the_end() {
+    let frames = 5 * MIN_PARTIAL_FRAMES as usize + 1000;
+    let bytes = wav(&tone(frames, RATE), 2, RATE, Pcm::I16);
+    let info = probe_media(reader(&bytes)).unwrap().info;
+    let mut partials = Vec::new();
+    let done = build_waveform_with(reader(&bytes), &info, &AtomicBool::new(false), &mut |p| {
+        partials.push(p)
+    })
+    .unwrap();
+    assert!(!partials.is_empty(), "a long file has partials");
+    assert!(partials.len() as u64 <= MAX_PARTIALS);
+    let mut covered = 0;
+    for p in &partials {
+        assert_eq!(p.total_frames, info.frames);
+        assert!(p.wave.frames > covered, "each covers more than the last");
+        assert!(
+            p.wave.frames < info.frames,
+            "never the whole: the end follows"
+        );
+        covered = p.wave.frames;
+        // The same peaks as the finished waveform over what it covers.
+        for c in 0..2 {
+            assert_eq!(
+                p.wave.range(c, 0, p.wave.frames, 1),
+                done.waveform.range(c, 0, p.wave.frames, 1)
+            );
+        }
+    }
+    // A short file is read in moments: none.
+    let short = wav(&tone(1000, RATE), 1, RATE, Pcm::I16);
+    let info = probe_media(reader(&short)).unwrap().info;
+    let mut n = 0;
+    build_waveform_with(reader(&short), &info, &AtomicBool::new(false), &mut |_| {
+        n += 1
+    })
+    .unwrap();
+    assert_eq!(n, 0);
+}
+
+/// A cancelled build hands out no more partials, and one read of more than the bucket cap
+/// is merged down to fit it.
+#[test]
+fn a_cancelled_build_stops_its_partials_and_a_partial_is_bounded() {
+    let bytes = wav(
+        &tone(20 * MIN_PARTIAL_FRAMES as usize, RATE),
+        1,
+        RATE,
+        Pcm::I16,
+    );
+    let info = probe_media(reader(&bytes)).unwrap().info;
+    let cancel = AtomicBool::new(false);
+    let mut seen = 0;
+    let r = build_waveform_with(reader(&bytes), &info, &cancel, &mut |_| {
+        seen += 1;
+        cancel.store(true, Ordering::Relaxed);
+    });
+    assert_eq!(r, Err(WaveformError::Cancelled));
+    assert_eq!(seen, 1, "none after the flag is set");
+    let mut b = WaveformBuilder::new(RATE, 1, 100_000 * 256).unwrap();
+    b.push(&noise(100_000 * 256, 1, 9));
+    let p = b.partial().unwrap();
+    assert!(p.levels[0].buckets() <= openlab_audio::MAX_PARTIAL_BUCKETS);
+    assert_eq!(
+        p.range(0, 0, p.frames, 1),
+        b.finish().unwrap().range(0, 0, p.frames, 1)
+    );
 }

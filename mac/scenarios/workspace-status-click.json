@@ -1,5 +1,5 @@
 {
-  "about": "A click in a row's status column (the first column of the Rain row) moves the playhead there; the highlighted row stays where it was.",
+  "about": "A click in a row's status column (the first column of the Rain row) moves the playhead and the highlight there.",
   "show": "Demo",
   "window": {"width": 1000, "height": 600},
   "steps": [
