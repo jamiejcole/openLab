@@ -961,7 +961,8 @@ final class CueListTests: XCTestCase {
         // The engine's order: each echo comes before its answer, so with all three answers held the engine
         // has taken all three moves (the list's own click shows ahead, so a store change is no echo count).
         await assertEventually("the engine took all three") {
-            h.rig.wire.heldResults { if case .transport(_, .setPlayhead) = $0 { return true } else { return false } } == 3
+            h.rig.wire.heldResults { if case .transport(_, .setPlayhead) = $0 { return true } else { return false } }
+                == 3
         }
         await assertEventually { self.engineHead(h) == H.fade }
         h.rig.wire.holdResults = false
@@ -3797,7 +3798,9 @@ final class PlayheadFlowTests: XCTestCase {
         store.showPlayheadAhead(list: list, cue: gone)
         let seq = try answerSeq(await store.transport(.setPlayhead(list: list, cue: gone)))
         store.playheadAnswered(list: list, seq: seq)
-        await assertEventually("back on the engine's head") { self.store.playheads[self.list] == self.store.engineHeads[self.list] }
+        await assertEventually("back on the engine's head") {
+            self.store.playheads[self.list] == self.store.engineHeads[self.list]
+        }
         XCTAssertNotEqual(store.engineHeads[list], gone, "the engine did not move the playhead to a deleted cue")
         XCTAssertNotEqual(store.playheads[list], gone)
         XCTAssertEqual(store.playheads[other], cues[0], "the other list's move is still open")
