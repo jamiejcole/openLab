@@ -545,7 +545,7 @@ final class BlackBackstopTests: XCTestCase {
     /// #842 V2, the user's path: two outputs' Guides ticked, then a real Esc key event through the
     /// app's key handling, first with the settings window key and then with the workspace window
     /// key. The boxes are unticked from what the engine pushes, with no refresh asked for.
-    func testV2EscKeyFromEitherWindowUntickesBothGuidesBoxes() async throws {
+    func testV2EscKeyFromEitherWindowUnticksBothGuidesBoxes() async throws {
         let (store, _, _) = try await start()
         let wc = WorkspaceWindowController(store: store)
         let settings = WorkspaceSettingsWindowController(store: store)

@@ -746,9 +746,11 @@ final class ScenarioRunner {
         guard let engine else { return }
         // As the app's Esc does: ticked Guides go off with the panic.
         let hide = AppController.hideGuides(on: rig.store)
-        if hide != nil { note("  Esc took the guides off") }
         if case .failure(let e) = await engine.app.send({ .panic(id: $0) }) { note("  panic failed: \(e)") }
-        await hide?.value
+        guard let hide else { return }
+        await hide.value
+        let left = rig.store.videoOutputs.routes.filter(\.guides).count
+        note("  Esc took the guides off (\(left) still showing)")
     }
 
     /// Lets what a step started reach the engine and come back, then lays the window out.
@@ -2453,7 +2455,7 @@ final class ScenarioShotTests: XCTestCase {
                  "steps": [{"focus": "settings"}, {"tab": "videoRouting"}, {"click": "settings-video-guides-1"},
                    {"advance": 0.3}, {"key": "escape"}, {"advance": 0.3}]}
                 """)
-        XCTAssertTrue(log.contains("Esc took the guides off"), log)
+        XCTAssertTrue(log.contains("Esc took the guides off (0 still showing)"), log)
     }
 
     func testAShotWithADisplayWritesItsCompositeBesideTheWindowShotAndShowsTheCardWhilePlaying() async throws {
