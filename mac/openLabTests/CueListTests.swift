@@ -736,13 +736,13 @@ final class CueListTests: XCTestCase {
         var shown: [[ModelID]] = []
         h.vc.onSelectionChange = { shown.append($0) }
         h.vc.selectAsUser([H.group])
-        await assertEventually { self.playhead(h) == H.group }
+        await assertEventually { self.engineHead(h) == H.group }
         try await moveElsewhere(h, to: nil)
         await assertEventually { self.playhead(h) == nil }
         XCTAssertEqual(h.vc.selectedIDs(), [])
         XCTAssertEqual(shown.last, [], "the inspector shows no cue")
         h.vc.selectAsUser([H.group])
-        await assertEventually { self.playhead(h) == H.group }
+        await assertEventually { self.engineHead(h) == H.group }
         XCTAssertEqual(sentPlayheads(h), [H.group, H.group])
     }
 
@@ -859,7 +859,7 @@ final class CueListTests: XCTestCase {
         h.rig.wire.holdResults = true
         h.vc.selectAsUser([H.fade])
         h.vc.selectAsUser([H.group])
-        await assertEventually("both echoes are in, neither answer") { self.playhead(h) == H.group }
+        await assertEventually("both echoes are in, neither answer") { self.engineHead(h) == H.group }
         XCTAssertEqual(h.vc.selectedIDs(), [H.group])
         XCTAssertEqual(sentPlayheads(h), [H.fade, H.group])
         h.rig.wire.holdResults = false
@@ -950,21 +950,20 @@ final class CueListTests: XCTestCase {
     func testClickingBackWithinARoundTripEndsOnThatCue() async throws {
         let h = try await live()
         h.vc.sub = nil
-        let echoes = Counter()
-        let counting = h.store.changes.sink { change in
-            if case .runtime(_, let heads) = change, !heads.isEmpty { MainActor.assumeIsolated { echoes.count += 1 } }
-        }
-        defer { counting.cancel() }
         h.rig.wire.holdResults = true
         h.vc.selectAsUser([H.fade])
-        await assertEventually { self.playhead(h) == H.fade }
+        await assertEventually { self.engineHead(h) == H.fade }
         h.vc.selectAsUser([H.group])
-        XCTAssertEqual(playhead(h), H.fade, "the second click's echo is not in yet")
+        XCTAssertEqual(engineHead(h), H.fade, "the second click's echo is not in yet")
         h.vc.handle(.runtime(cues: [], playheads: [ModelID(H.list)]))
         h.vc.selectAsUser([H.fade])
         await assertEventually("all three went out") { self.sentPlayheads(h).count == 3 }
-        // The engine's order: each echo comes before its answer.
-        await assertEventually("all three echoed") { echoes.count == 3 }
+        // The engine's order: each echo comes before its answer, so with all three answers held the engine
+        // has taken all three moves (the list's own click shows ahead, so a store change is no echo count).
+        await assertEventually("the engine took all three") {
+            h.rig.wire.heldResults { if case .transport(_, .setPlayhead) = $0 { return true } else { return false } } == 3
+        }
+        await assertEventually { self.engineHead(h) == H.fade }
         h.rig.wire.holdResults = false
         h.rig.wire.releaseResults()
         await assertEventually { self.playhead(h) == H.fade }
@@ -1379,9 +1378,12 @@ extension CueListTests {
         XCTAssertEqual(e[.panic], false)
         XCTAssertEqual(e[.revealTarget], false)
         XCTAssertEqual(e[.paste], false)
-        for item in [CueRowMenu.Item.load, .movePlayhead, .cut, .copy, .delete] {
+        for item in [CueRowMenu.Item.load, .cut, .copy, .delete] {
             XCTAssertEqual(e[item], true, "\(item)")
         }
+        // With the lock on the right-click itself moves the playhead to the row (drawn at once), so
+        // there is nowhere to move it; the rule is on the playhead standing elsewhere (below).
+        XCTAssertEqual(e[.movePlayhead], false, "the click already put the playhead there")
         // An audio cue with a file on disk: preview and reveal work; a running cue enables Panic.
         let id = "00000000-0000-0000-0000-0000000000c1"
         try h.change(upserts: [
@@ -1407,7 +1409,13 @@ extension CueListTests {
         let e = enabled(try menu(h, H.group, pasteboard: pb))
         for item in [CueRowMenu.Item.cut, .copy, .paste, .delete] { XCTAssertEqual(e[item], false, "\(item)") }
         XCTAssertEqual(e[.load], true)
-        XCTAssertEqual(e[.movePlayhead], true)
+        XCTAssertEqual(e[.movePlayhead], false, "the click already put the playhead there; Show Mode does not lock it")
+        for locked in [false, true] {
+            let c = CueRowMenu.Context(
+                selectedCount: 1, anyPreviewable: false, clickedIsPlayhead: false, clickedHasMedia: false,
+                anyActive: false, canPaste: true, canPasteProperties: false, showMode: locked)
+            XCTAssertTrue(CueRowMenu.isEnabled(.movePlayhead, c), "a row the playhead is not on, Show Mode \(locked)")
+        }
     }
 
     func testMediaURLIsAbsoluteOrRelativeToTheSavedShow() {
@@ -1673,6 +1681,10 @@ final class PlayheadFlowTests: XCTestCase {
         await playheadSettled(on: cues[2])
         click(cues[0])
         try await assertAllOn(cues[0])
+        // The click's own answer is in too (the echo comes before it): a test that opens a move of its own
+        // next must not have this one still counted open.
+        await sync()
+        await sync()
     }
 
     /// The engine's move of the playhead onto a cue just made has arrived: a click before it would be
