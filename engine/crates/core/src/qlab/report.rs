@@ -77,8 +77,20 @@ pub struct QlabNote {
     pub number: String,
     pub name: String,
     pub kind: QlabNoteKind,
+    /// How much the operator should care: set where the note is made.
+    pub severity: QlabNoteSeverity,
     /// One plain English sentence saying what was dropped or changed, shown as it is.
     pub detail: String,
+}
+
+/// How serious a note is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QlabNoteSeverity {
+    /// What the cue does differs from QLab, or a cue or target is gone: check it before a show.
+    Error,
+    /// Something was adjusted or not kept, and the show plays as it did.
+    Warning,
 }
 
 /// What a note is about.
@@ -117,6 +129,19 @@ pub enum QlabNoteKind {
     Structure,
     /// A cue's target that did not convert: the cue has none.
     Target,
+}
+
+impl QlabNoteKind {
+    /// The usual severity of a note of this kind: error when the converted cue plays, shows,
+    /// starts or targets differently, or is left out; warning for adjustments that keep what
+    /// plays (a trim folded in, a name cut) and settings not kept. A few notes of a kind that
+    /// is usually one or the other say otherwise where they are made.
+    pub fn severity(self) -> QlabNoteSeverity {
+        match self {
+            Self::LevelFolded | Self::Setting | Self::Truncated => QlabNoteSeverity::Warning,
+            _ => QlabNoteSeverity::Error,
+        }
+    }
 }
 
 /// One QLab audio patch, as QLab knew its device.

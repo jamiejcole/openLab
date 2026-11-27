@@ -135,6 +135,18 @@ final class WarningsTests: XCTestCase {
         XCTAssertFalse(text.contains("“system output”"), text)
     }
 
+    /// #838 I2: a cue whose patch has no device reads "Patch <name> is not mapped to an audio
+    /// device." and nothing about this Mac.
+    func testI2ACueWhosePatchHasNoDeviceSaysThePatchIsNotMappedToAnAudioDevice() throws {
+        let p = try JSONDecoder().decode(
+            WireProblem.self,
+            from: Data(
+                #"{"type":"device_unavailable","patch":"00000000-0000-0000-0000-000000000001","resolution":{"type":"unmapped"}}"#
+                    .utf8))
+        XCTAssertEqual(
+            ProblemText.problem(p, label: { _ in "Main" }), "Patch Main is not mapped to an audio device.")
+    }
+
     /// An older engine may still send the removed `unsupported` warning: the message
     /// decodes and the row reads as an unrecognised warning.
     func testLegacyUnsupportedWarningDecodesAsUnknown() throws {

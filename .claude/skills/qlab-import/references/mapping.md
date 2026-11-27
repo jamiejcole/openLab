@@ -59,7 +59,7 @@ Modifiers: `shift`, `control`, `option` (alt), `command`; `function`, `numericPa
 | route `uniqueID`, `name`, `naturalSize` "{w, h}" | report `video_outputs`; `OutputRoute` of that size | cue-types (Output 1, 1920 x 1080) |
 | `destinationInfo.name` | report `screen` | cue-types (empty) |
 | `rotationDegrees` 0/90/180/270 | `rotation`; anything else 0, noted | cue-types (0) |
-| `scalingMode` 0 centre, 1 fit, 2 stretch, other fill | `scaling` | assumed: the manual's menu order (p. 233); QLab's default route stores 2 |
+| `scalingMode` 0 centre, 1 stretch, 2 fill, 3 fit (other: fill) | `scaling` | route editor's pop-up tags, read from QLab 5.6.5's code: 1 and 2 and 3 describe scaling independently, keeping the shape and cropping, keeping the shape inside; QLab's default route stores 2 (fill) |
 | `rear` | dropped | |
 | `stages` (empty when saved unlicensed) | a stage per entry, name and `size` or `naturalSize`, regions not imported (noted) | assumed: no licensed fixture |
 | No stages | "Stage 1", the first route's size, one region covering it on that route; Video cues with an empty `viewportID` play on it | cue-types |
@@ -81,7 +81,7 @@ Modifiers: `shift`, `control`, `option` (alt), `command`; `function`, `numericPa
 | `preWait`, `postWait` | same | cue-types 1 |
 | `continueMode` 0 / 1 / 2 | do not continue / auto-continue / auto-follow | groups-triggers C0-C2 |
 | `cueTargetUniqueID` | the kind's target | cue-types 2-12 |
-| `useHotKey`, `hotKey` (`F53HotKey`: `QLActionKeyKeyCharacter`, `...KeyCode`, `...Shift`, `...Control`, `...Option`, `...Command`, `...Function`, `...NumericPad`, `...CapsLock`) | `triggers.hotkey`, `hotkey_enabled` (a key with `useHotKey` off is kept, switched off) | groups-triggers H0-H3 |
+| `useHotKey`, `hotKey` (`F53HotKey`: `QLActionKeyKeyCharacter`, `...KeyCode`, `...Shift`, `...Control`, `...Option`, `...Command`, `...Function`, `...NumericPad`, `...CapsLock`) | `triggers.hotkey`, `hotkey_enabled` (on only for a key with `useHotKey` on; a key with it off is kept, switched off; a cue with no key has it off) | groups-triggers H0-H3 |
 | `useWallClock`, `wallHours`, `wallMinutes`, `wallSeconds`, `wallSunday`..`wallSaturday` (missing: on) | `triggers.wall_clock` | groups-triggers W1 (19:30:15, Mon Wed Fri) |
 | `wallClockMode` 1 | `twelve_hour` | assumed: only 0 seen |
 | `secondTriggerAction` 0-7 | nothing, panic, stop, hard stop, hard stop and restart, devamp, playlist next, playlist previous | groups-triggers T0-T5, G6 (6); 7 from the OSC dictionary |
