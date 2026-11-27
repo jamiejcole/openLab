@@ -1434,6 +1434,10 @@ fn an_end_the_stream_cannot_follow_changes_nothing() {
 /// A FLAC that overflows symphonia's predictor (see `fuzz-findings/flac-lpc-add-overflow.flac`)
 /// fails its stream as a corrupt file, and the worker streams on.
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the overflow is a panic only with overflow checks on; a release build wraps the add"
+)]
 fn flac_lpc_overflow_panic_fails_the_stream_and_the_worker_lives() {
     let mut d = streamer(100);
     let info = MediaInfo {

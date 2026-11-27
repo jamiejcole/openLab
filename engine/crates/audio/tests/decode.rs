@@ -1094,6 +1094,10 @@ fn flac_lpc_overflow_finding_is_the_generated_file() {
 /// The built FLAC really reaches symphonia's overflow (decoded directly, so nothing of ours
 /// contains it), and every entry that decodes turns that panic into a typed error.
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the overflow is a panic only with overflow checks on; a release build wraps the add"
+)]
 fn flac_lpc_overflow_panics_symphonia_and_is_contained_by_every_entry() {
     use std::sync::atomic::AtomicBool;
     use symphonia::core::codecs::audio::AudioDecoderOptions;
