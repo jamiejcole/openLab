@@ -155,7 +155,14 @@ fn fit_to_device(mut mapping: PatchMapping, devices: &[DeviceEntry]) -> PatchMap
         devices.iter().find(|d| d.name == mapping.device)
     };
     if let Some(d) = device {
-        mapping.channels.retain(|&c| c < d.output_channels);
+        // Cut at the first channel the device lacks: dropping one from the middle would shift the
+        // outputs after it onto the wrong cue outputs.
+        let keep = mapping
+            .channels
+            .iter()
+            .take_while(|&&c| c < d.output_channels)
+            .count();
+        mapping.channels.truncate(keep);
     }
     mapping
 }
@@ -228,5 +235,33 @@ impl Control {
                 format!("imported workspace: a device choice was not kept: {why}"),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(channels: u32) -> DeviceEntry {
+        DeviceEntry {
+            name: "Built-in".into(),
+            output_channels: channels,
+            is_default: true,
+            buffer_frames: 512,
+            state: None,
+            primary: true,
+        }
+    }
+
+    fn fitted(channels: Vec<u32>) -> Vec<u32> {
+        fit_to_device(PatchMapping::system_output(channels), &[device(2)]).channels
+    }
+
+    #[test]
+    fn a_mapping_is_cut_at_the_first_channel_the_device_lacks_so_no_output_shifts() {
+        assert_eq!(fitted(vec![0, 1, 2, 3]), vec![0, 1]);
+        // Dropping the missing channel alone would put cue output 1 on channel 1.
+        assert_eq!(fitted(vec![0, 5, 1]), vec![0]);
+        assert_eq!(fitted(vec![2, 3, 0, 1]), Vec::<u32>::new());
     }
 }

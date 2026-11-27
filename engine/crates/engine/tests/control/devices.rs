@@ -6399,11 +6399,16 @@ fn qlab_system_patch_file(path: &std::path::Path, outputs: i64) {
     .unwrap();
 }
 
-#[test]
-fn i1_an_imported_audio_patch_matched_to_the_system_output_keeps_it_however_many_outputs_qlab_gave_it()
- {
-    // QLab patches often have more cue outputs than the Mac's speakers have channels: the
-    // mapping keeps the outputs the default device has instead of being refused whole.
+/// Imports a QLab workspace whose one patch has 8 cue outputs on the system output with
+/// `channels` chosen for it, on a machine whose default device has two outputs. Returns the
+/// mapping stored for the imported patch, its resolution and the imported cue's problems.
+fn import_system_patch(
+    channels: Vec<u32>,
+) -> (
+    Option<PatchMapping>,
+    Option<WireResolution>,
+    Vec<openlab_core::CueProblem>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Sys.qlab5");
     qlab_system_patch_file(&path, 8);
@@ -6422,7 +6427,7 @@ fn i1_an_imported_audio_patch_matched_to_the_system_output_keeps_it_however_many
                 other_cues: openlab_core::QlabCueAction::Placeholder,
                 audio_patches: vec![openlab_core::QlabPatchChoice {
                     qlab_id: "P1".into(),
-                    mapping: Some(PatchMapping::system_output((0..8).collect())),
+                    mapping: Some(PatchMapping::system_output(channels)),
                 }],
                 video_outputs: vec![],
             },
@@ -6435,10 +6440,21 @@ fn i1_an_imported_audio_patch_matched_to_the_system_output_keeps_it_however_many
         .iter()
         .find(|d| !before.contains(d))
         .unwrap();
-    let snap = s.control().doc(doc).unwrap().snapshot();
+    let view = s.control().doc(doc).unwrap();
+    let snap = view.snapshot();
     let (ws, patch) = (snap.workspace.id, snap.workspace.patches[0].id);
+    let cue = snap.workspace.cues().next().map(|c| c.id).unwrap();
+    // The fixture's audio cue has no file, so it is broken for that alone, not for its patch.
+    let problems = view.engine().problems(cue).to_vec();
     let mapping = s.control().machine().patch_mapping(ws, patch).cloned();
-    assert_eq!(mapping, Some(PatchMapping::system_output(vec![0, 1])));
+    // The imported document is the one the client has open on a real run; here the harness's
+    // client is on its first document, so ask the engine for the imported doc's resolution.
+    let resolution = s
+        .control()
+        .patch_resolutions(doc)
+        .into_iter()
+        .find(|(p, _)| *p == patch)
+        .map(|(_, r)| r);
     let logged = logs(&s.take_outbound(), LogLevel::Warn);
     assert!(
         !logged
@@ -6446,4 +6462,22 @@ fn i1_an_imported_audio_patch_matched_to_the_system_output_keeps_it_however_many
             .any(|l| l.contains("device choice was not kept")),
         "{logged:?}"
     );
+    (mapping, resolution, problems)
+}
+
+#[test]
+fn i1_an_imported_audio_patch_matched_to_the_system_output_keeps_it_however_many_outputs_qlab_gave_it()
+ {
+    // QLab patches often have more cue outputs than the Mac's speakers have channels: the
+    // mapping keeps the outputs the default device has instead of being refused whole.
+    let (mapping, resolution, problems) = import_system_patch((0..8).collect());
+    assert_eq!(mapping, Some(PatchMapping::system_output(vec![0, 1])));
+    assert_eq!(
+        resolution,
+        Some(WireResolution::Mapped {
+            device: DEV2_NAME.into(),
+            channels: vec![0, 1],
+        })
+    );
+    assert_eq!(problems, vec![openlab_core::CueProblem::NoMedia]);
 }

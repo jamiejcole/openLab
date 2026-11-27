@@ -11,8 +11,8 @@ use super::archive::{Archive, Fields};
 use super::plist::{Budget, MAX_KEPT, MAX_WORK, Value};
 use super::{
     MAX_QLAB_CUES, MAX_QLAB_LISTS, MAX_QLAB_PATCHES, Placeholder, QLAB_MAJOR, QlabAudioPatch,
-    QlabError, QlabFile, QlabImport, QlabNote, QlabNoteKind, QlabPlaceholder, QlabReport,
-    QlabStage, QlabUnsupported, QlabUnsupportedReason, QlabVideoOutput,
+    QlabError, QlabFile, QlabImport, QlabNote, QlabNoteKind, QlabNoteSeverity, QlabPlaceholder,
+    QlabReport, QlabStage, QlabUnsupported, QlabUnsupportedReason, QlabVideoOutput,
 };
 use crate::cue::{
     ContinueMode, Crosspoint, Cue, CueColor, CueKind, CueLevels, CueOutput, DevampMode, DuckOthers,
@@ -252,6 +252,16 @@ impl Converter<'_, '_> {
     }
 
     fn note(&mut self, common: Option<&Common>, kind: QlabNoteKind, detail: impl Into<String>) {
+        self.note_as(common, kind, kind.severity(), detail);
+    }
+
+    fn note_as(
+        &mut self,
+        common: Option<&Common>,
+        kind: QlabNoteKind,
+        severity: QlabNoteSeverity,
+        detail: impl Into<String>,
+    ) {
         if self.report.notes.len() >= super::MAX_QLAB_NOTES {
             self.report.notes_omitted = self.report.notes_omitted.saturating_add(1);
             return;
@@ -261,7 +271,7 @@ impl Converter<'_, '_> {
             number: common.map(|c| c.number.clone()).unwrap_or_default(),
             name: common.map(|c| c.name.clone()).unwrap_or_default(),
             kind,
-            severity: kind.severity(),
+            severity,
             detail: detail.into(),
         });
     }
@@ -400,7 +410,12 @@ impl Converter<'_, '_> {
                     "The shortcut for {} uses a key openLab cannot name, so it has none.",
                     key_action(&name)
                 );
-                self.note(None, QlabNoteKind::Hotkey, detail);
+                self.note_as(
+                    None,
+                    QlabNoteKind::Hotkey,
+                    QlabNoteSeverity::Warning,
+                    detail,
+                );
             }
             *slot = key;
         }
@@ -1584,9 +1599,10 @@ impl Converter<'_, '_> {
         let (address, mut args) = parse_osc(&message);
         if message.len() < read.len() || args.len() > MAX_NETWORK_ARGS {
             args.truncate(MAX_NETWORK_ARGS);
-            self.note(
+            self.note_as(
                 Some(common),
                 QlabNoteKind::Truncated,
+                QlabNoteSeverity::Error,
                 "Its OSC message was shortened to openLab's limit.",
             );
         }
@@ -2155,7 +2171,7 @@ fn base_cue(id: CueId, common: &Common) -> Cue {
         continue_mode: common.continue_mode,
         triggers: Triggers {
             hotkey: None,
-            hotkey_enabled: true,
+            hotkey_enabled: false,
             wall_clock: WallClockTrigger::default(),
         },
         second_trigger: SecondTrigger::Nothing,

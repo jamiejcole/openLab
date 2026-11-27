@@ -387,6 +387,69 @@ final class QlabImportTests: XCTestCase {
         XCTAssertTrue(info.plainText.contains(String(format: loc("qlab.notes.title"), "cue-types.qlab5")))
     }
 
+    /// A small workspace written by the test builder (committed, unlike the QLab-saved fixtures).
+    private func syntheticFile() -> URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("engine/fixtures/qlab-synthetic/outputs-and-notes.qlab5")
+    }
+
+    /// #838 I3, I4 and I5 through the real engine: the report, devices and displays the engine
+    /// sends fill the outputs step (Type column, "openLab Output" heading, a not-found row turning
+    /// to a green Matched once a device is chosen) and the notes sheet (icons, taller wrapped rows).
+    func testTheOutputsStepAndNotesSheetDrawTheEnginesReport() async throws {
+        let app = try await startApp()
+        app.pickQlabURL = { self.syntheticFile() }
+        var checked = false
+        app.chooseQlabImport = { report, devices, displays in
+            let c = QlabImportController(report: report, devices: devices, displays: displays)
+            c.window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertEqual(c.step, .outputs)
+            let table = try! XCTUnwrap(self.find("qlab-outputs-table", in: c.window.contentView) as? NSTableView)
+            XCTAssertEqual(table.tableColumns.map(\.title), ["QLab output", "Type", "Size", "openLab Output", "Match"])
+            func text(_ column: Int, _ row: Int) -> NSTextField? {
+                table.view(atColumn: column, row: row, makeIfNecessary: true)?.subviews
+                    .compactMap { $0 as? NSTextField }.first
+            }
+            XCTAssertEqual(text(1, 0)?.stringValue, "Audio")
+            XCTAssertEqual(text(1, 1)?.stringValue, "Video")
+            // Neither the audio device nor the display exists here: both rows read not found.
+            XCTAssertEqual(text(4, 0)?.stringValue, loc("qlab.tag.notFound"))
+            XCTAssertEqual(text(4, 0)?.textColor, .systemOrange)
+            let cell = table.view(atColumn: 3, row: 0, makeIfNecessary: true)
+            let pop = cell?.subviews.compactMap { $0 as? NSPopUpButton }.first
+            let titles = pop?.itemTitles.filter { $0 != loc("qlab.outputs.notMapped") } ?? []
+            XCTAssertFalse(titles.isEmpty, "the engine lists an output device to choose")
+            if let title = titles.first {
+                pop?.selectItem(withTitle: title)
+                _ = pop?.target?.perform(pop?.action, with: pop)
+            }
+            XCTAssertEqual(text(4, 0)?.stringValue, loc("qlab.tag.matched"))
+            XCTAssertEqual(text(4, 0)?.textColor, .systemGreen)
+
+            // The notes the engine reported, as the sheet draws them.
+            let info = QlabNotesInfo(
+                fileName: "outputs-and-notes.qlab5", report: report, converted: 2, placeholders: 0, deleted: 0)
+            let sheet = QlabNotesController(info: info)
+            sheet.window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertEqual(sheet.table.numberOfRows, 3)
+            let icons = (0..<3).map { try? self.notesRow(sheet, $0).icon }
+            XCTAssertEqual(
+                icons,
+                [
+                    loc("qlab.notes.severity.warning"), loc("qlab.notes.severity.error"),
+                    loc("qlab.notes.severity.error"),
+                ])
+            let heights = (0..<3).map { sheet.table.rect(ofRow: $0).height }
+            XCTAssertGreaterThan(heights[1], heights[2], "the long cue name wraps to a taller row")
+            checked = true
+            return nil
+        }
+        await app.newWorkspaceFromQlab()
+        XCTAssertTrue(checked)
+        XCTAssertEqual(try XCTUnwrap(alerts).errors, [])
+    }
+
     // MARK: Notes
 
     private func note(_ number: String, _ name: String, _ kind: String, _ severity: String, _ detail: String) -> String

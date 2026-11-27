@@ -77,7 +77,7 @@ pub struct QlabNote {
     pub number: String,
     pub name: String,
     pub kind: QlabNoteKind,
-    /// How much the operator should care: from `kind`, so the two always agree.
+    /// How much the operator should care: set where the note is made.
     pub severity: QlabNoteSeverity,
     /// One plain English sentence saying what was dropped or changed, shown as it is.
     pub detail: String,
@@ -132,26 +132,14 @@ pub enum QlabNoteKind {
 }
 
 impl QlabNoteKind {
-    /// Error when the converted cue sounds, shows, starts or targets differently, or is left out;
-    /// warning for adjustments and settings that do not change what plays.
+    /// The usual severity of a note of this kind: error when the converted cue plays, shows,
+    /// starts or targets differently, or is left out; warning for adjustments that keep what
+    /// plays (a trim folded in, a name cut) and settings not kept. A few notes of a kind that
+    /// is usually one or the other say otherwise where they are made.
     pub fn severity(self) -> QlabNoteSeverity {
         match self {
-            Self::Effects
-            | Self::Rate
-            | Self::AudioObjects
-            | Self::Trigger
-            | Self::IntegratedFade
-            | Self::LevelDropped
-            | Self::PlayCount
-            | Self::Crossfade
-            | Self::Structure
-            | Self::Target => QlabNoteSeverity::Error,
-            Self::LevelFolded
-            | Self::FadeCurve
-            | Self::Video
-            | Self::Hotkey
-            | Self::Setting
-            | Self::Truncated => QlabNoteSeverity::Warning,
+            Self::LevelFolded | Self::Setting | Self::Truncated => QlabNoteSeverity::Warning,
+            _ => QlabNoteSeverity::Error,
         }
     }
 }

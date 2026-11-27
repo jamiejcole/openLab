@@ -1366,7 +1366,7 @@
 "qlab.reason.patch_target" = "Patch can’t be converted";
 "qlab.reason.damaged" = "Data is damaged";
 "qlab.outputs.heading" = "Where should the outputs play?";
-"qlab.outputs.explanation" = "Each audio patch and video output of the QLab workspace is matched to a device or display on this Mac by name. Change a choice or leave an output unmapped; you can set it later in Workspace Settings.";
+"qlab.outputs.explanation" = "Each audio patch and video output of the QLab workspace is matched by name to a device or display connected now. Change a choice or leave an output unmapped; you can set it later in Workspace Settings.";
 "qlab.outputs.notMapped" = "Not mapped";
 "qlab.outputs.systemOutput" = "System Output";
 "qlab.outputs.count" = "%d outputs";
