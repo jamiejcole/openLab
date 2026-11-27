@@ -1156,7 +1156,7 @@ fn a_save_as_landing_while_a_copy_retargets_leaves_every_cue_on_its_own_copy() {
     });
     // The Save As is delivered with the copy still held: its write waits at the save gate.
     let save_id = r.s.request_id();
-    let (tx, _save_rx) = reply_channel();
+    let (tx, mut save_rx) = reply_channel();
     let _ = r.s.control_mut().handle(Inbox::Client {
         message: ClientMessage::Request {
             id: save_id,
@@ -1175,6 +1175,15 @@ fn a_save_as_landing_while_a_copy_retargets_leaves_every_cue_on_its_own_copy() {
     wait_until_retargeting(&mut r);
     save_gate.open();
     assert!(r.s.wait_for(|c| c.docs_busy() == 0));
+    // The Save As itself must have landed: a cue left on a relative form that resolves in the
+    // other folder is what a save that did not move the doc would leave.
+    let answers: Vec<ServerMessage> = std::iter::from_fn(|| save_rx.try_recv().ok()).collect();
+    assert!(ok(&answers), "the Save As was not answered ok: {answers:?}");
+    assert_eq!(
+        r.s.control().show_path(),
+        Some(elsewhere.join("Moved.openlab").as_path()),
+        "the doc did not move to the Save As path"
+    );
     let all = r.reports();
     assert_eq!(all.iter().map(|x| x.copied).sum::<u64>(), 60);
     let dir = portable(&elsewhere);
