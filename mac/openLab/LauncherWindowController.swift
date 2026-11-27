@@ -508,6 +508,11 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
             String(format: loc(unreachable ? "launcher.unreachable" : "launcher.missing"), name), removing: url)
     }
 
+    /// Hides a missing-file notice (one that offers Remove from List); any other notice stays.
+    func clearMissingNotice() {
+        if missingURL != nil { showNotice(nil) }
+    }
+
     func reload(recents urls: [URL], missing: Set<URL> = [], unreachable: Set<URL> = []) {
         let next = urls.prefix(10).map {
             LauncherRecent(url: $0, missing: missing.contains($0), unreachable: unreachable.contains($0))
@@ -516,7 +521,7 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         if listed, next == recents { return }
         listed = true
         // A missing-file notice is about the list as it was.
-        if missingURL != nil { showNotice(nil) }
+        clearMissingNotice()
         recents = next
         table.reloadData()
         let any = !recents.isEmpty

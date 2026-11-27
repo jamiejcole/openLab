@@ -118,8 +118,8 @@ extension AppController {
     }
 
     func showLauncher() {
-        // A missing-file notice is about the list it was raised on.
-        launcher.showNotice(nil)
+        // A missing-file notice is about the list it was raised on; why a launch opened nothing stays.
+        launcher.clearMissingNotice()
         reloadLauncher()
         launcher.window?.makeKeyAndOrderFront(nil)
     }
