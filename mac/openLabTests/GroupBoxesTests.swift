@@ -207,7 +207,7 @@ final class GroupBoxesTests: XCTestCase {
         let (second, third, first) = (try id(h, "3.2"), try id(h, "3.3"), try id(h, "3.1"))
         h.vc.selectAsUser([playlist])
         let list = try XCTUnwrap(h.vc.listID)
-        await assertEventually { rig.store.playheads[list] == playlist }
+        await assertEventually { rig.store.engineHeads[list] == playlist }
         guard case .success = await rig.store.go(list: list) else { return XCTFail("go") }
         try await rig.advance(0.5)
         await assertEventually { rig.store.playlistNext[playlist] == second }

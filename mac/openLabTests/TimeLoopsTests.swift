@@ -1844,7 +1844,7 @@ extension PlayheadFlowTests {
         XCTAssertEqual(seeks.last ?? -1, 12, accuracy: 0.05)
         await assertEventually("the row shows the cue loaded") { self.rowMark(id) == loc("cue.state.loaded") }
         XCTAssertTrue(wc.window?.firstResponder === waveView, "the waveform has the focus; GO still works")
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         try await goFromWaveform(id)
         try await play(0.4)
         await playsAt(id, 12.5)
@@ -1912,7 +1912,7 @@ extension PlayheadFlowTests {
     func testPlayingOrPreviewingCueClickJumpsThereAndPlaysOnWithItsTimesFromThere() async throws {
         let id = try await waveTones(1)[0]
         await showWaveform(id)
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         try await goFromWaveform(id)
         try await play(1.9)
         await playsAt(id, 2)
@@ -1943,7 +1943,7 @@ extension PlayheadFlowTests {
     func testPausedCueClickMovesThePlayLineAndResumePlaysFromThere() async throws {
         let id = try await waveTones(1)[0]
         await showWaveform(id)
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         try await goFromWaveform(id)
         try await play(1.9)
         try waveKey("p", code: 35)
@@ -2041,7 +2041,7 @@ extension PlayheadFlowTests {
         XCTAssertTrue(try lineDrawn(at: waveX(2)))
         await seekRun(1)
         await assertEventually("loaded") { self.rowMark(id) == loc("cue.state.loaded") }
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         try await goFromWaveform(id)
         try await play(0.4)
         await playsAt(id, 5.5)
@@ -2141,7 +2141,7 @@ extension PlayheadFlowTests {
     func testDragAcrossTheWaveformShadesTheSectionAndDoesNotMoveThePlayback() async throws {
         let id = try await waveTones(1)[0]
         await showWaveform(id)
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         try await goFromWaveform(id)
         try await play(1.9)
         dragWave(from: 20, to: 10)
@@ -2214,7 +2214,7 @@ extension PlayheadFlowTests {
     func testQuickClicksWithAPixelOfHandMovementWhileTheCuePlaysEachMoveThePlaybackWhereClicked() async throws {
         let id = try await waveTones(1, seconds: 600)[0]
         await showWaveform(id)
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         try await goFromWaveform(id)
         try await play(1)
         XCTAssertEqual(rowMark(id), runningMark)
@@ -2556,7 +2556,7 @@ extension PlayheadFlowTests {
         await typeWaveTrims(start: nil, end: "20")
         loops.loopRadio.performClick(nil)
         await assertEventually("loops until devamped") { self.loops.playCount == 0 }
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         try await goFromWaveform(id)
         try await play(1.9)
         await playsAt(id, 2)
@@ -2614,7 +2614,7 @@ extension PlayheadFlowTests {
         // Away from the start handle: loaded near the start.
         clickWave(at: 0.5)
         await seekRun(2)
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         try await goFromWaveform(id)
         try await play(0.9)
         clickWave(at: 18)
@@ -2644,7 +2644,7 @@ extension PlayheadFlowTests {
         loops.onChange?(.addSlices([10, 20]))
         await assertEventually("two markers") { self.waveView.sliceMarks == [10, 20] }
         XCTAssertEqual(waveView.sliceCounts, [1, 1, 1])
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         return id
     }
 
@@ -2761,14 +2761,14 @@ extension PlayheadFlowTests {
         await assertEventually("broken in the list") { self.rowMark(id) == loc("cue.state.broken") }
         XCTAssertEqual(warned(id), [loc("problem.nothing_plays")], "the Warnings list says no part of the file plays")
         // GO does not start it, and the playhead moves on as for any broken cue.
-        await assertEventually { self.store.playheads[self.list] == id }
+        await assertEventually { self.store.engineHeads[self.list] == id }
         let before = goes()
         try waveKey(" ", code: 49)
         await assertEventually("GO was sent") { self.goes() == before + 1 }
         try await play(0.5)
         XCTAssertEqual(rowMark(id), loc("cue.state.broken"), "it did not start")
         XCTAssertNil(store.progress[id])
-        await assertEventually("the playhead moved on") { self.store.playheads[self.list] == next }
+        await assertEventually("the playhead moved on") { self.store.engineHeads[self.list] == next }
         // One count above 0 clears it.
         await showWaveform(id)
         await typeSliceCount(1, "1")

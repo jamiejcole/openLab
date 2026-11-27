@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Combine
 import XCTest
 
 @testable import openLab
@@ -722,6 +723,8 @@ final class CueListTests: XCTestCase {
     }
 
     private func playhead(_ h: H) -> ModelID? { h.store.playheads[ModelID(H.list)] }
+    /// The playhead as the engine last reported it (the list shows a click's head ahead of it while the click is unanswered).
+    private func engineHead(_ h: H) -> ModelID? { h.store.engineHeads[ModelID(H.list)] }
 
     /// #496: GO on a group that was the last cue moved the playhead past the end of the list while
     /// the group's row stayed highlighted and in the inspector, so a mode change there and Space
@@ -733,13 +736,13 @@ final class CueListTests: XCTestCase {
         var shown: [[ModelID]] = []
         h.vc.onSelectionChange = { shown.append($0) }
         h.vc.selectAsUser([H.group])
-        await assertEventually { self.playhead(h) == H.group }
+        await assertEventually { self.engineHead(h) == H.group }
         try await moveElsewhere(h, to: nil)
         await assertEventually { self.playhead(h) == nil }
         XCTAssertEqual(h.vc.selectedIDs(), [])
         XCTAssertEqual(shown.last, [], "the inspector shows no cue")
         h.vc.selectAsUser([H.group])
-        await assertEventually { self.playhead(h) == H.group }
+        await assertEventually { self.engineHead(h) == H.group }
         XCTAssertEqual(sentPlayheads(h), [H.group, H.group])
     }
 
@@ -856,7 +859,7 @@ final class CueListTests: XCTestCase {
         h.rig.wire.holdResults = true
         h.vc.selectAsUser([H.fade])
         h.vc.selectAsUser([H.group])
-        await assertEventually("both echoes are in, neither answer") { self.playhead(h) == H.group }
+        await assertEventually("both echoes are in, neither answer") { self.engineHead(h) == H.group }
         XCTAssertEqual(h.vc.selectedIDs(), [H.group])
         XCTAssertEqual(sentPlayheads(h), [H.fade, H.group])
         h.rig.wire.holdResults = false
@@ -874,7 +877,7 @@ final class CueListTests: XCTestCase {
         h.vc.selectAsUser([H.fade])
         await assertEventually { self.playhead(h) == H.fade }
         try await moveElsewhere(h, to: H.group)
-        await assertEventually { self.playhead(h) == H.group }
+        await assertEventually { self.engineHead(h) == H.group }
         XCTAssertEqual(h.vc.selectedIDs(), [H.fade], "the click is not answered yet")
         h.rig.wire.holdResults = false
         h.rig.wire.releaseResults()
@@ -895,7 +898,7 @@ final class CueListTests: XCTestCase {
         let go = Task { await h.store.go(list: ModelID(H.list)) }
         try await h.rig.testEngine.advance(seconds: 0.05)
         await assertEventually("Intro ran and the group stands by") {
-            h.store.cueStates[H.intro]?.state == .running && self.playhead(h) == H.group
+            h.store.cueStates[H.intro]?.state == .running && self.engineHead(h) == H.group
         }
         XCTAssertEqual(h.vc.selectedIDs(), [H.intro], "the click is not answered yet")
         h.rig.wire.holdResults = false
@@ -947,21 +950,21 @@ final class CueListTests: XCTestCase {
     func testClickingBackWithinARoundTripEndsOnThatCue() async throws {
         let h = try await live()
         h.vc.sub = nil
-        let echoes = Counter()
-        let counting = h.store.changes.sink { change in
-            if case .runtime(_, let heads) = change, !heads.isEmpty { MainActor.assumeIsolated { echoes.count += 1 } }
-        }
-        defer { counting.cancel() }
         h.rig.wire.holdResults = true
         h.vc.selectAsUser([H.fade])
-        await assertEventually { self.playhead(h) == H.fade }
+        await assertEventually { self.engineHead(h) == H.fade }
         h.vc.selectAsUser([H.group])
-        XCTAssertEqual(playhead(h), H.fade, "the second click's echo is not in yet")
+        XCTAssertEqual(engineHead(h), H.fade, "the second click's echo is not in yet")
         h.vc.handle(.runtime(cues: [], playheads: [ModelID(H.list)]))
         h.vc.selectAsUser([H.fade])
         await assertEventually("all three went out") { self.sentPlayheads(h).count == 3 }
-        // The engine's order: each echo comes before its answer.
-        await assertEventually("all three echoed") { echoes.count == 3 }
+        // The engine's order: each echo comes before its answer, so with all three answers held the engine
+        // has taken all three moves (the list's own click shows ahead, so a store change is no echo count).
+        await assertEventually("the engine took all three") {
+            h.rig.wire.heldResults { if case .transport(_, .setPlayhead) = $0 { return true } else { return false } }
+                == 3
+        }
+        await assertEventually { self.engineHead(h) == H.fade }
         h.rig.wire.holdResults = false
         h.rig.wire.releaseResults()
         await assertEventually { self.playhead(h) == H.fade }
@@ -1376,9 +1379,12 @@ extension CueListTests {
         XCTAssertEqual(e[.panic], false)
         XCTAssertEqual(e[.revealTarget], false)
         XCTAssertEqual(e[.paste], false)
-        for item in [CueRowMenu.Item.load, .movePlayhead, .cut, .copy, .delete] {
+        for item in [CueRowMenu.Item.load, .cut, .copy, .delete] {
             XCTAssertEqual(e[item], true, "\(item)")
         }
+        // With the lock on the right-click itself moves the playhead to the row (drawn at once), so
+        // there is nowhere to move it; the rule is on the playhead standing elsewhere (below).
+        XCTAssertEqual(e[.movePlayhead], false, "the click already put the playhead there")
         // An audio cue with a file on disk: preview and reveal work; a running cue enables Panic.
         let id = "00000000-0000-0000-0000-0000000000c1"
         try h.change(upserts: [
@@ -1404,7 +1410,13 @@ extension CueListTests {
         let e = enabled(try menu(h, H.group, pasteboard: pb))
         for item in [CueRowMenu.Item.cut, .copy, .paste, .delete] { XCTAssertEqual(e[item], false, "\(item)") }
         XCTAssertEqual(e[.load], true)
-        XCTAssertEqual(e[.movePlayhead], true)
+        XCTAssertEqual(e[.movePlayhead], false, "the click already put the playhead there; Show Mode does not lock it")
+        for locked in [false, true] {
+            let c = CueRowMenu.Context(
+                selectedCount: 1, anyPreviewable: false, clickedIsPlayhead: false, clickedHasMedia: false,
+                anyActive: false, canPaste: true, canPasteProperties: false, showMode: locked)
+            XCTAssertTrue(CueRowMenu.isEnabled(.movePlayhead, c), "a row the playhead is not on, Show Mode \(locked)")
+        }
     }
 
     func testMediaURLIsAbsoluteOrRelativeToTheSavedShow() {
@@ -1646,6 +1658,7 @@ final class PlayheadFlowTests: XCTestCase {
     func assertAllOn(_ id: ModelID?, file: StaticString = #filePath, line: UInt = #line) async throws {
         await assertEventually("the highlight and the playhead", file: file, line: line) {
             self.wc.cueList.selectedIDs() == (id.map { [$0] } ?? []) && self.store.playheads[self.list] == id
+                && self.store.engineHeads[self.list] == id
         }
         let all = wc.cueList.roots.flatMap { [$0] + $0.children }.map(\.id)
         XCTAssertEqual(
@@ -1669,12 +1682,18 @@ final class PlayheadFlowTests: XCTestCase {
         await playheadSettled(on: cues[2])
         click(cues[0])
         try await assertAllOn(cues[0])
+        // The click's own answer is in too (the echo comes before it): a test that opens a move of its own
+        // next must not have this one still counted open.
+        await sync()
+        await sync()
     }
 
     /// The engine's move of the playhead onto a cue just made has arrived: a click before it would be
     /// followed away from.
     private func playheadSettled(on id: ModelID, line: UInt = #line) async {
-        await assertEventually("the playhead arrived", line: line) { self.store.playheads[self.list] == id }
+        await assertEventually("the playhead arrived", line: line) {
+            self.store.playheads[self.list] == id && self.store.engineHeads[self.list] == id
+        }
     }
 
     /// Another client of the workspace (an OSC peer's `/playhead`, another Mac) moves the playhead.
@@ -2003,7 +2022,7 @@ final class PlayheadFlowTests: XCTestCase {
         let added = try XCTUnwrap(addedID, "a cue added after the first")
         XCTAssertEqual(wc.cueList.roots.firstIndex { $0.id == added }, 1, "added right after the selected cue")
         await assertEventually("the new cue is selected and holds the playhead") {
-            self.wc.cueList.selectedIDs() == [added] && self.store.playheads[self.list] == added
+            self.wc.cueList.selectedIDs() == [added] && self.store.engineHeads[self.list] == added
         }
         await wc.editor.undo()
         await assertEventually("the cue is gone and the playhead moved on") {
@@ -3697,6 +3716,264 @@ final class PlayheadFlowTests: XCTestCase {
             self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "for one"
         }
         XCTAssertNotEqual(store.model?.cue(cues[1])?.raw["notes"]?.stringValue, "for one")
+    }
+
+    // MARK: Selection moves in one step (#840)
+
+    /// What the window shows at the end of every turn of the main run loop (a turn is at most one frame
+    /// drawn) and after every change the store delivers, until `finish`.
+    @MainActor
+    private final class Frames<T> {
+        var seen: [T] = []
+        private var observer: CFRunLoopObserver?
+        private var sub: AnyCancellable?
+        init(store: WorkspaceStore, read: @escaping @MainActor () -> T) {
+            observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 0) {
+                [weak self] _, _ in
+                MainActor.assumeIsolated { self?.seen.append(read()) }
+            }
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+            sub = store.changes.sink { [weak self] _ in MainActor.assumeIsolated { self?.seen.append(read()) } }
+        }
+        func finish() -> [T] {
+            if let observer { CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes) }
+            observer = nil
+            sub = nil
+            return seen
+        }
+    }
+
+    /// S1: Q1 selected; a press in Q2's playhead column moves the highlight, the playhead arrow and the
+    /// masthead to Q2 (the press runs the table's own mouse tracking: its release is queued first).
+    func testAPressInThePlayheadColumnMovesHighlightArrowAndMastheadToThatCue() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        // A press in the playhead column is a plain click on the row (the table's own tracking, which no
+        // unit test can drive; the status-click scenario presses it for real).
+        click(cues[1])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[1]], "the highlight moved to the row")
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(wc.inspector.selection, [cues[1]])
+    }
+
+    /// S4: with 200 cues, a click and an arrow key draw the highlight and show the cue in the inspector in
+    /// the call itself, before any engine answer: nothing in the selection path waits for the playhead's
+    /// round trip (measured on this list: 9 ms a click, 4 ms an arrow press with the redraw, the engine's
+    /// echo 18 to 28 ms later).
+    func testASelectionAmong200CuesIsDrawnAndInspectedBeforeTheEnginesEcho() async throws {
+        wc.cueList.isLeftButtonDown = { false }
+        try XCTUnwrap(wc.window).makeKeyAndOrderFront(nil)
+        cues = await wc.editor.addFiles(try tempFiles((0..<200).map { "f\($0).wav" }), parent: nil, index: 0)
+        XCTAssertEqual(cues.count, 200)
+        await sync()
+        await assertEventually { self.wc.cueList.nodeCount == 200 && self.store.playheads[self.list] == self.cues[199] }
+        let drawn = { (id: ModelID) -> [ModelID] in
+            self.wc.cueList.roots.map(\.id).filter { self.status($0, 0) == loc("cue.playhead") && $0 == id }
+        }
+        click(cues[10])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[10]], "the highlight is on the row when the click returns")
+        XCTAssertEqual(wc.inspector.selection, [cues[10]], "and the inspector shows the cue")
+        XCTAssertEqual(drawn(cues[10]), [cues[10]], "and the playhead arrow is drawn on it, before the engine's echo")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[10]), "and the masthead names it")
+        wc.cueList.selectAdjacent(by: 1)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[11]])
+        XCTAssertEqual(wc.inspector.selection, [cues[11]])
+        XCTAssertEqual(drawn(cues[11]), [cues[11]], "an arrow press moves the arrow in the same turn")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[11]))
+        try await assertAllOn(cues[11])
+    }
+
+    /// S4: a move the engine never makes (Show Mode, a failure) is drawn at once and then taken back, with
+    /// the arrow, the masthead and the selection all back on the engine's playhead.
+    func testAPlayheadShownAheadOfTheEngineSnapsBackWhenTheMoveIsRefused() async throws {
+        try await threeCues()
+        let first = cues[0]
+        store.showPlayheadAhead(list: list, cue: cues[2])
+        XCTAssertEqual(status(cues[2], 0), loc("cue.playhead"), "drawn ahead of the engine")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[2]))
+        store.playheadAnswered(list: list, seq: nil)
+        XCTAssertEqual(store.playheads[list], first, "the engine's own playhead is back")
+        XCTAssertNotEqual(status(cues[2], 0), loc("cue.playhead"))
+        XCTAssertEqual(status(first, 0), loc("cue.playhead"))
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(first))
+        try await assertAllOn(first)
+    }
+
+    /// The engine refuses a move to a cue no longer in the list (a delete came first): its refusal is
+    /// the real answer, and the arrow goes back to the engine's head. A move open on another list does
+    /// not hold this one back.
+    func testARefusedMoveSnapsBackWhileAnotherListHasAMoveOpen() async throws {
+        try await threeCues()
+        let gone = cues[2]
+        wc.cueList.selectAsUser([gone])
+        await wc.editor.deleteSelection()
+        await assertEventually("the cue is gone") { self.wc.cueList.node(gone) == nil }
+        await sync()
+        let other = ModelID("another-list")
+        store.showPlayheadAhead(list: other, cue: cues[0])
+        store.showPlayheadAhead(list: list, cue: gone)
+        let seq = try answerSeq(await store.transport(.setPlayhead(list: list, cue: gone)))
+        store.playheadAnswered(list: list, seq: seq)
+        await assertEventually("back on the engine's head") {
+            self.store.playheads[self.list] == self.store.engineHeads[self.list]
+        }
+        XCTAssertNotEqual(store.engineHeads[list], gone, "the engine did not move the playhead to a deleted cue")
+        XCTAssertNotEqual(store.playheads[list], gone)
+        XCTAssertEqual(store.playheads[other], cues[0], "the other list's move is still open")
+        store.playheadAnswered(list: other, seq: nil)
+    }
+
+    /// The runtime `seq` a transport answer names.
+    private func answerSeq(_ result: Result<OkBody, EngineError>) throws -> UInt64 {
+        guard case .success(let ok) = result, case .transport(let seq)? = ok.data else {
+            XCTFail("the transport was not answered with a seq: \(result)")
+            throw CancellationError()
+        }
+        return seq
+    }
+
+    /// Two moves in a row (Down, Down) within one round trip: the echo of the first does not pull the
+    /// arrow or the masthead back off the second.
+    func testTheEchoOfAnEarlierMoveDoesNotPullTheArrowBackOffALaterOne() async throws {
+        try await threeCues()
+        store.showPlayheadAhead(list: list, cue: cues[1])
+        store.showPlayheadAhead(list: list, cue: cues[2])
+        let first = try answerSeq(await store.transport(.setPlayhead(list: list, cue: cues[1])))
+        await assertEventually("the first move's echo is in") { self.store.engineHeads[self.list] == self.cues[1] }
+        XCTAssertEqual(store.playheads[list], cues[2], "still shown on the second")
+        XCTAssertEqual(status(cues[2], 0), loc("cue.playhead"))
+        XCTAssertNil(status(cues[1], 0), "the first row's arrow is gone")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[2]))
+        store.playheadAnswered(list: list, seq: first)
+        XCTAssertEqual(store.playheads[list], cues[2], "one move is still open")
+        let second = try answerSeq(await store.transport(.setPlayhead(list: list, cue: cues[2])))
+        store.playheadAnswered(list: list, seq: second)
+        await assertEventually("the engine is on the second") { self.store.engineHeads[self.list] == self.cues[2] }
+        XCTAssertEqual(store.playheads[list], cues[2])
+    }
+
+    /// The last move answered before the engine's echo of it is in (the answer and the echo travel
+    /// separately): the arrow stays on it until the store has the `runtime` messages up to the answer's
+    /// `seq`, and an earlier echo among them does not pull it back.
+    func testALateEchoOfTheLastMoveDoesNotSnapTheArrowBackToTheEnginesOldHead() async throws {
+        try await threeCues()
+        let before = store.engineHeads[list]
+        XCTAssertNotEqual(before, cues[1])
+        store.showPlayheadAhead(list: list, cue: cues[2])
+        // As if the answer named the `seq` of two echoes still on their way.
+        store.playheadAnswered(list: list, seq: store.runtimeSeq + 2)
+        XCTAssertEqual(store.playheads[list], cues[2], "the arrow stays on the move the engine accepted")
+        guard case .success = await store.transport(.setPlayhead(list: list, cue: cues[1])) else {
+            return XCTFail("set_playhead")
+        }
+        await assertEventually("the first echo is in") { self.store.engineHeads[self.list] == self.cues[1] }
+        XCTAssertEqual(store.playheads[list], cues[2], "an echo before the answer's seq does not pull it back")
+        guard case .success = await store.transport(.setPlayhead(list: list, cue: cues[2])) else {
+            return XCTFail("set_playhead")
+        }
+        await assertEventually("the echo is in") { self.store.engineHeads[self.list] == self.cues[2] }
+        XCTAssertEqual(store.playheads[list], cues[2])
+    }
+
+    /// A move the engine only warns about (its cue was deleted) is answered with a `seq` the store
+    /// already has: the arrow goes back to the engine's head at once, with no wait for an echo.
+    func testAMoveTheEngineOnlyWarnsAboutSnapsBackWhenItsAnswerArrives() async throws {
+        try await threeCues()
+        let gone = cues[2]
+        wc.cueList.selectAsUser([gone])
+        await wc.editor.deleteSelection()
+        await assertEventually("the cue is gone") { self.wc.cueList.node(gone) == nil }
+        await sync()
+        store.showPlayheadAhead(list: list, cue: gone)
+        let seq = try answerSeq(await store.transport(.setPlayhead(list: list, cue: gone)))
+        await assertEventually("the store has the answer's seq") { self.store.runtimeSeq >= seq }
+        store.playheadAnswered(list: list, seq: seq)
+        XCTAssertEqual(store.playheads[list], store.engineHeads[list], "back in the same turn as the answer")
+        XCTAssertNotEqual(store.playheads[list], gone)
+    }
+
+    /// Lock playhead to selection off: a press in a row's playhead column puts the highlight, the arrow
+    /// and the masthead on that row, and the next GO fires it (QLab 5 manual p. 91).
+    func testWithTheLockOffAPressInThePlayheadColumnMovesThePlayheadAndGoFiresThere() async throws {
+        try await threeCues()
+        guard case .success = await store.send(command: .setSwitch(.lockPlayhead, false)) else {
+            return XCTFail("setting")
+        }
+        await assertEventually("the lock is off") { self.store.isOn(.lockPlayhead) == false }
+        let ov = wc.cueList.outlineView
+        let row = ov.row(forItem: try XCTUnwrap(wc.cueList.node(cues[2])))
+        // What a press does: the column's hook first, then the row click.
+        try XCTUnwrap(ov as? CueOutlineView).onStatusPress?(row)
+        click(cues[2])
+        try await assertAllOn(cues[2])
+        try await space()
+        await assertEventually { running(cues[2]) }
+        XCTAssertFalse(running(cues[0]), "and not the cue the arrow left")
+    }
+
+    /// S5: Q1 selected, Delete: Q2 is selected in the turn that draws the removal, and no frame between
+    /// the list and the inspector shows nothing selected.
+    func testDeletingTheSelectedCueSelectsTheNextAtOnceWithNoEmptyFrame() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        let frames = Frames(store: store) { (self.wc.cueList.selectedIDs(), self.wc.inspector.selection) }
+        await wc.editor.deleteSelection()
+        await assertEventually("Q1 is gone and Q2 selected") {
+            self.wc.cueList.node(self.cues[0]) == nil && self.wc.cueList.selectedIDs() == [self.cues[1]]
+        }
+        await sync()
+        let seen = frames.finish()
+        XCTAssertFalse(seen.isEmpty)
+        XCTAssertFalse(seen.contains { $0.0.isEmpty }, "a frame showed no row selected: \(seen)")
+        XCTAssertFalse(seen.contains { $0.1.isEmpty }, "a frame showed no cue in the inspector: \(seen)")
+        XCTAssertEqual(wc.inspector.selection, [cues[1]])
+        XCTAssertEqual(wc.masthead.cueID, cues[1])
+    }
+
+    /// S6: then Undo: Q1 is back and Q2 stays selected (QLab 5 does not move the selection back).
+    func testUndoingTheDeleteBringsTheCueBackAndLeavesTheNextSelected() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        await wc.editor.deleteSelection()
+        await assertEventually {
+            self.wc.cueList.node(self.cues[0]) == nil && self.wc.cueList.selectedIDs() == [self.cues[1]]
+        }
+        let frames = Frames(store: store) { (self.wc.cueList.selectedIDs(), self.wc.inspector.selection) }
+        await wc.editor.undo()
+        await assertEventually("Q1 is back") { self.wc.cueList.node(self.cues[0]) != nil }
+        await sync()
+        let seen = frames.finish()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[1]])
+        XCTAssertEqual(wc.inspector.selection, [cues[1]])
+        XCTAssertTrue(seen.allSatisfy { $0.0 == [cues[1]] && $0.1 == [cues[1]] }, "the selection never moved: \(seen)")
+    }
+
+    /// S7: notes typed in the masthead and ended with Return: the field shows the new text from then on,
+    /// never the old text again before the engine's change arrives.
+    func testReturnInTheMastheadNotesNeverShowsTheOldTextAgain() async throws {
+        try await threeCues()
+        guard case .success = await store.send(command: .setProperty(cues[0], .notes("old"))) else {
+            return XCTFail("notes")
+        }
+        await assertEventually { self.wc.masthead.notesView.string == "old" }
+        let window = try XCTUnwrap(wc.window)
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        notes.selectAll(nil)
+        try typeKeys("new", in: window)
+        XCTAssertEqual(notes.string, "new")
+        let frames = Frames(store: store) { self.wc.masthead.notesView.string }
+        try typeKeys("\r", in: window, code: 36)
+        XCTAssertFalse(window.firstResponder === notes, "Return ended the typing")
+        XCTAssertEqual(notes.string, "new", "the field shows the new text at once")
+        await assertEventually("the cue holds the new notes") {
+            self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "new"
+        }
+        await sync()
+        for _ in 0..<20 { await Task.yield() }
+        let seen = frames.finish()
+        XCTAssertFalse(seen.contains("old"), "the old text flashed back: \(seen)")
+        XCTAssertEqual(notes.string, "new")
     }
 
     // MARK: Typing in the masthead goes on after a command takes the text

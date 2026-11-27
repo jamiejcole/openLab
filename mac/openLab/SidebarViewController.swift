@@ -262,6 +262,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// The list the window shows; asked for whenever the selection is drawn, never cached.
     var shownProvider: () -> ModelID? = { nil }
     var shownList: ModelID? { shownProvider() }
+    /// The cues selected in the shown list: one of them, in an open list, is highlighted in the tree too.
+    var selectedProvider: () -> [ModelID] = { [] }
     /// Active cues in the order they started; a snapshot starts them in list order.
     private(set) var activeCues: [ModelID] = [] {
         didSet {
@@ -578,10 +580,18 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         defer { settingSelection = false }
         // The cue list falls back to the first list when the shown one is gone; so does the highlight.
         let shown = lists.firstIndex(where: { $0.id == shownList }) ?? (lists.isEmpty ? nil : 0)
-        // A cue row of the shown list keeps the highlight the operator put on it.
-        if let shown, listRows.indices.contains(listTable.selectedRow),
-            case .cue(let inList, _, _) = listRows[listTable.selectedRow], inList == shown
+        // One cue selected in the shown list, which is open here: its row is the highlighted one.
+        let chosen = selectedProvider()
+        if let shown, chosen.count == 1,
+            let row = listRows.firstIndex(where: {
+                if case .cue(let inList, let id, _) = $0 { return inList == shown && id == chosen[0] }
+                return false
+            })
         {
+            if listTable.selectedRow != row {
+                listTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                listTable.scrollRowToVisible(row)
+            }
             return
         }
         if let row = shown.flatMap({ listRows.firstIndex(of: .list($0)) }) {

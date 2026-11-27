@@ -239,8 +239,14 @@ final class CueEditor {
         let successor = (after ?? before ?? nodes[0].parent)?.id
         let selectionGoes = !gone.isDisjoint(with: cueList?.selectedIDs() ?? [])
         guard let command = Command.transaction(nodes.map { .removeCue($0.id) }) else { return }
+        // The list selects the successor in the turn that draws the removal; the line below covers a
+        // reply that arrives first.
+        cueList?.successorOnDelete = selectionGoes ? successor : nil
+        defer { cueList?.successorOnDelete = nil }
         guard report(await store.send(command: command)) else { return }
-        if selectionGoes, let successor, cueList?.node(successor) != nil { cueList?.selectAsUser([successor]) }
+        if selectionGoes, let successor, cueList?.node(successor) != nil, cueList?.selectedIDs().isEmpty == true {
+            cueList?.selectAsUser([successor])
+        }
     }
 
     func renumberSelection(
@@ -434,8 +440,8 @@ final class CueEditor {
 
     func undo() async {
         guard await begin() else { return }
-        let before = cueList?.nodeIDs ?? []
-        if report(await store.undo()) { selectBroughtBack(since: before) }
+        // An undone delete leaves the selection where it is (QLab 5).
+        _ = report(await store.undo())
     }
 
     func redo() async {
@@ -444,7 +450,7 @@ final class CueEditor {
         if report(await store.redo()) { selectBroughtBack(since: before) }
     }
 
-    /// Cues an undo or redo brought back are selected, so the list and the inspector agree on what
+    /// Cues a redo brought back (a redone add) are selected, so the list and the inspector agree on what
     /// the operator is looking at.
     private func selectBroughtBack(since before: Set<ModelID>) {
         guard let cueList else { return }

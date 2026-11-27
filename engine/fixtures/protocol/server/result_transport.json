@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "id": 65,
+  "ok": {
+    "data": {
+      "type": "transport",
+      "seq": 42
+    }
+  }
+}

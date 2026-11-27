@@ -59,6 +59,8 @@ Fields: `ClientMessage` in `protocol/client.rs`. Behaviour notes:
 
 Each action becomes one cue-engine input (mapping in `control/transport.rs`; semantics in skill `cue-engine`). Notes the types do not carry:
 
+- The answer is `result { ok: { data: { type: "transport", seq } } }`: the doc's runtime `seq` once the action was handled. Every `runtime` change the action made has a `seq` up to it, but the broadcast can reach the client after this result, so a client that needs the action's effect (the app's playhead shown ahead of the engine's) waits until it has applied `runtime` up to `seq`. An action that changed nothing (an unknown cue, which only warns) names the `seq` the doc already had.
+
 - `go_from { list, cue }`: the playhead moves to `cue`, then GO, in one step; nothing starts if `cue` is not a playhead position of `list` (`not_in_list` warning).
 - `stop_all` and `hard_stop_all` both map to `StopAll`: every cue and preview stops at once, no fade, nothing pending fires, no panic window. They stay distinct so a client can say which it means (OSC `/stop`, `/hardStop`).
 - `stop { cue, fade_out? }` fades out over `fade_out` (`{duration, curve}`) when given; `hard_stop { cue }` never fades.
@@ -246,7 +248,7 @@ Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_s
 - Match a `result` to its request by `id`: results may leave in a different order than the requests were sent.
 - The server may hold a `result` with `ok.revision = N` until `model_changed` N has been written (at most `revision_wait`, 2 s). If a `result` is ahead of the client's model, request a `snapshot`.
 - Never pipeline `snapshot` requests: while one is outstanding, broadcasts are withheld until its `result`.
-- On one connection, broadcasts are ordered before replies, and a `snapshot` is never followed by older broadcasts (those at or below its revision or `seq` are filtered). `document` and `warnings` may arrive after the `snapshot`; they are still current.
+- On one connection, a `result` carrying a revision is ordered after the broadcasts up to that revision (above); a `result` without a revision goes straight out and may overtake broadcasts still in the hub (a transport `result` carries the runtime `seq` to reconcile against). A `snapshot` is never followed by older broadcasts (those at or below its revision or `seq` are filtered). `document` and `warnings` may arrive after the `snapshot`; they are still current.
 - Revision and `seq` gaps are forwarded unchanged; the client recovers with `request: snapshot`. A lagged client gets a fresh unsolicited `snapshot` and is not closed; a `result` without a revision may overtake it.
 - `closed { doc }` arrives after the requester's `result`. A resync for a closed doc answers `no_workspace`, then `closed`.
 - `u64::MAX` is a reserved request id (`bad_request`). A second `hello` and binary frames are `bad_request`; 32 consecutive bad frames close the connection (`MAX_BAD_FRAMES`).

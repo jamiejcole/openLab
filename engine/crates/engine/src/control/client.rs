@@ -570,7 +570,18 @@ impl DocCx<'_> {
         match message {
             ClientMessage::Transport { id, action } => {
                 self.transport(action, now);
-                reply(to, ok(id, None));
+                reply(
+                    to,
+                    ServerMessage::Result {
+                        id,
+                        outcome: Outcome::Ok(OkBody {
+                            revision: None,
+                            data: Some(ResultData::Transport {
+                                seq: self.doc.runtime_seq,
+                            }),
+                        }),
+                    },
+                );
             }
             ClientMessage::Command {
                 id,

@@ -5,7 +5,8 @@
 
 use crate::show::*;
 use openlab_core::protocol::{
-    ClientMessage, ErrorCode, Outcome, Request, RequestId, ServerMessage, TransportAction,
+    ClientMessage, ErrorCode, Outcome, Request, RequestId, ResultData, RuntimeChange,
+    ServerMessage, TransportAction,
 };
 use openlab_core::{Command, CueKind, CueProperty, Position};
 use openlab_engine::control::{
@@ -197,6 +198,57 @@ fn a_disarm_cue_changes_the_model_as_a_runtime_change() {
     s.run(1000);
     assert!(s.channel(0).iter().all(|&v| v == 0.0));
     assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
+}
+
+/// A transport answer names the runtime `seq` once the action was handled: a move's echo has a
+/// `seq` up to it, and a move the engine only warns about (an unknown cue) names the `seq` it
+/// already had, so a client knows when every change the action made is in.
+#[test]
+#[allow(clippy::panic)]
+fn a_transport_answer_names_the_runtime_seq_of_every_change_it_made() {
+    let path = wav(&dc(300, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0), audio(2, &path, 0)]));
+    s.take_outbound();
+    let answer_seq = |replies: &[ServerMessage]| match result(replies) {
+        Outcome::Ok(ok) => match ok.data {
+            Some(ResultData::Transport { seq }) => seq,
+            ref other => panic!("no seq: {other:?}"),
+        },
+        Outcome::Error(e) => panic!("{e:?}"),
+    };
+    let moved = answer_seq(&s.transport(TransportAction::SetPlayhead {
+        list: list_id(),
+        cue: Some(id(2)),
+    }));
+    let echo = s.take_outbound().iter().find_map(|m| match m {
+        ServerMessage::Runtime { seq, changes }
+            if changes.iter().any(
+                |c| matches!(c, RuntimeChange::Playhead { cue: Some(c), .. } if *c == id(2)),
+            ) =>
+        {
+            Some(*seq)
+        }
+        _ => None,
+    });
+    let echo = echo.unwrap_or_else(|| panic!("no echo of the move"));
+    assert!(echo <= moved, "echo {echo} after the answer's seq {moved}");
+    let unknown = answer_seq(&s.transport(TransportAction::SetPlayhead {
+        list: list_id(),
+        cue: Some(id(99)),
+    }));
+    let after: Vec<u64> = s
+        .take_outbound()
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::Runtime { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        after.iter().all(|&seq| seq <= unknown),
+        "{after:?} after {unknown}"
+    );
+    assert!(unknown >= moved);
 }
 
 /// The second colour shows after a cue's first start until Reset All: the engine tells every

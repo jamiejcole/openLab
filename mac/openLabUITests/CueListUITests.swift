@@ -324,17 +324,16 @@ final class PlayheadClickUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["2"].exists, "the number is unchanged")
     }
 
-    /// A press in the status column moves the playhead there and leaves the highlight where it was;
-    /// the next GO fires that cue.
+    /// A press in the status column moves the highlight and the playhead there; the next GO fires that cue.
     func testClickingTheStatusColumn() {
         let app = launchThree()
         // The status column is the row's first 80 points; its images only show state.
         row("Three", in: app).coordinate(withNormalizedOffset: .zero)
             .withOffset(CGVector(dx: 60, dy: 12)).click()
-        assertAllOn("Three", highlighted: ["One"], in: app)
+        assertAllOn("Three", highlighted: ["Three"], in: app)
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
         XCTAssertTrue(cueState("Running", of: "Three", in: app).waitForExistence(timeout: 10), "GO fires Three")
-        XCTAssertFalse(cueState("Running", of: "One", in: app).exists, "and not the highlighted One")
+        XCTAssertFalse(cueState("Running", of: "One", in: app).exists, "and not One")
     }
 
     func testMultiSelection() {

@@ -176,7 +176,8 @@ final class SettingsGeneralTests: XCTestCase {
     func testLockPlayheadOnTheyMoveTogetherOffTheyMoveApart() async throws {
         let (rig, sc) = try await open()
         let h = try await H(collapsed: false, rig: rig)
-        let head: () -> ModelID? = { rig.store.playheads[ModelID(H.list)] }
+        // The engine's head: a click draws the playhead on its row at once, ahead of the engine.
+        let head: () -> ModelID? = { rig.store.engineHeads[ModelID(H.list)] }
         XCTAssertEqual(sc.lockPlayheadCheck.state, .on)
         h.vc.selectAsUser([fade])
         await assertEventually("the playhead went to the selection") { head() == self.fade }
@@ -189,6 +190,7 @@ final class SettingsGeneralTests: XCTestCase {
         h.vc.selectAsUser([fade])
         try await rig.advance(0.05)
         XCTAssertEqual(head(), intro, "selecting moved only the selection")
+        XCTAssertEqual(rig.store.playheads[ModelID(H.list)], intro, "the shown playhead did not move either")
         XCTAssertEqual(h.vc.selectedIDs(), [fade])
         guard case .success = await rig.store.transport(.setPlayhead(list: ModelID(H.list), cue: H.group)) else {
             return XCTFail("set_playhead")
@@ -211,7 +213,8 @@ final class SettingsGeneralTests: XCTestCase {
         let wc = WorkspaceWindowController(store: rig.store)
         addTeardownBlock { @MainActor in wc.window?.close() }
         wc.onGo = { Task { _ = await rig.store.go(list: ModelID(H.list)) } }
-        let head: () -> ModelID? = { rig.store.playheads[ModelID(H.list)] }
+        // The engine's head: a click draws the playhead on its row at once, ahead of the engine.
+        let head: () -> ModelID? = { rig.store.engineHeads[ModelID(H.list)] }
         sc.goIntervalField.stringValue = "1"
         commit(sc, sc.goIntervalField)
         await assertEventually("the interval is stored") { sc.model.minGoInterval == 1 }
