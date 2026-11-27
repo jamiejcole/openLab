@@ -56,7 +56,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     private var headBeforeMoves: [ModelID: ModelID?] = [:]
     /// How long a head shown ahead waits for the engine's echo after an accepted move, when no runtime
     /// message comes to settle it (a move the engine only warned about leaves no echo).
-    static let echoWaitNanoseconds: UInt64 = 1_000_000_000
+    var echoWaitNanoseconds: UInt64 = 1_000_000_000
+    /// Numbers each echo wait, so the timer of an earlier answer cannot end a later move's wait early.
+    private var echoWaitTags: [ModelID: Int] = [:]
     @Published private(set) var previewing: Set<ModelID> = []
     /// Cues started since they were last reset: their rows show the second colour, if they have one.
     @Published private(set) var played: Set<ModelID> = []
@@ -244,17 +246,20 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         let before = headBeforeMoves.removeValue(forKey: list) ?? nil
         if accepted, engineHeads[list] == before, playheads[list] != engineHeads[list] {
             echoPending.insert(list)
+            let tag = (echoWaitTags[list] ?? 0) + 1
+            echoWaitTags[list] = tag
+            let wait = echoWaitNanoseconds
             Task { [weak self] in
-                try? await Task.sleep(nanoseconds: Self.echoWaitNanoseconds)
-                self?.echoWaitEnded(list: list)
+                try? await Task.sleep(nanoseconds: wait)
+                self?.echoWaitEnded(list: list, tag: tag)
             }
         } else if let heads = reconcilePlayhead(list: list) {
             changes.send(.runtime(cues: [], playheads: heads))
         }
     }
 
-    private func echoWaitEnded(list: ModelID) {
-        guard echoPending.remove(list) != nil, movesInFlight[list] == nil,
+    private func echoWaitEnded(list: ModelID, tag: Int) {
+        guard echoWaitTags[list] == tag, echoPending.remove(list) != nil, movesInFlight[list] == nil,
             let heads = reconcilePlayhead(list: list)
         else { return }
         changes.send(.runtime(cues: [], playheads: heads))

@@ -190,6 +190,7 @@ final class SettingsGeneralTests: XCTestCase {
         h.vc.selectAsUser([fade])
         try await rig.advance(0.05)
         XCTAssertEqual(head(), intro, "selecting moved only the selection")
+        XCTAssertEqual(rig.store.playheads[ModelID(H.list)], intro, "the shown playhead did not move either")
         XCTAssertEqual(h.vc.selectedIDs(), [fade])
         guard case .success = await rig.store.transport(.setPlayhead(list: ModelID(H.list), cue: H.group)) else {
             return XCTFail("set_playhead")

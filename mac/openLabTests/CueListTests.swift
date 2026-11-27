@@ -3793,6 +3793,7 @@ final class PlayheadFlowTests: XCTestCase {
         await assertEventually("the cue is gone") { self.wc.cueList.node(gone) == nil }
         await sync()
         let other = ModelID("another-list")
+        store.echoWaitNanoseconds = 1_000_000
         store.showPlayheadAhead(list: other, cue: cues[0])
         store.showPlayheadAhead(list: list, cue: gone)
         _ = await store.transport(.setPlayhead(list: list, cue: gone))

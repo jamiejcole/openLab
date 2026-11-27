@@ -1116,8 +1116,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         store.playheadAnswered(list: list, accepted: accepted)
         playheadSends = max(0, playheadSends - 1)
         guard playheadSends == 0 else { return }
-        // Any echo is in by now. A send that failed, or that the engine only warned about (a cue
-        // deleted meanwhile), has none: the next click on that row must send again.
+        // The last send is answered, so a repeat click may send again. A send that failed, or that the
+        // engine only warned about (a cue deleted meanwhile), leaves no echo, so it must be allowed to.
         sentPlayhead = nil
         let moved = headMovedWhileSending
         headMovedWhileSending = false
