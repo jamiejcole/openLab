@@ -106,6 +106,48 @@ extension VideoCueTests {
         XCTAssertNotNil(seen.0, "stretch: the whole card on the stage, its barcode across the top")
     }
 
+    // MARK: The thumbnail shows the cue's media
+
+    /// The colours the thumbnail draws at fractions of its stage rectangle (from its top left), (red, green, blue, 255).
+    private func thumbnailColours(_ points: [[Double]]) throws -> [[UInt8]] {
+        let t = g.thumbnail
+        let rep = try XCTUnwrap(t.bitmapImageRepForCachingDisplay(in: t.bounds))
+        t.cacheDisplay(in: t.bounds, to: rep)
+        let scale = Double(rep.pixelsWide) / Double(t.bounds.width)
+        let box = t.stageRect
+        let read = points.map { p -> [UInt8] in
+            let x = (box.minX + box.width * p[0]) * scale
+            let y = (box.minY + box.height * p[1]) * scale
+            guard let c = rep.colorAt(x: Int(x), y: Int(y))?.usingColorSpace(.sRGB) else { return [] }
+            return [UInt8(c.redComponent * 255), UInt8(c.greenComponent * 255), UInt8(c.blueComponent * 255), 255]
+        }
+        return read
+    }
+
+    /// Geometry tab of a movie cue and of a still: the stage drawing holds the cue's media (the first
+    /// frame, the picture), not a plain tinted rectangle, so it shows the card's several colours.
+    func testGeometryThumbnailShowsTheMediaOfAMovieAndOfAStill() async throws {
+        try await showGeometry(of: 1)
+        await soon("the movie's frame is read") { self.g.thumbnail.image != nil }
+        // The picture is a small box in the middle of the tall stage: its centre is read.
+        let centre = [[0.5, 0.5]]
+        let movie = try thumbnailColours(centre)
+        g.thumbnail.image = nil
+        let plain = try thumbnailColours(centre)
+        let isGreen = { (c: [[UInt8]]) in c.first.map { $0[1] > 200 && $0[0] < 100 && $0[2] < 40 } ?? false }
+        let isYellow = { (c: [[UInt8]]) in c.first.map { $0[0] > 150 && $0[1] > 130 && $0[2] < 40 } ?? false }
+        XCTAssertTrue(isYellow(plain), "without the frame it is the yellow rectangle: \(plain)")
+        XCTAssertTrue(isGreen(movie), "the card's own colour at its centre: \(movie)")
+        // A still, on another cue of the show.
+        let id = Self.geometryCue(4)
+        click(id)
+        await soon("the inspector shows the still") { self.wc.inspector.cue?.id == id }
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "geometry")
+        wc.window?.layoutIfNeeded()
+        await soon("the still is read") { self.g.thumbnail.image != nil }
+        XCTAssertTrue(isGreen(try thumbnailColours(centre)))
+    }
+
     // MARK: Flow 2
 
     /// Custom mode: the picture at its own pixel size, and the position, scale with its lock,
