@@ -23,7 +23,7 @@ const NUMBERING_LIMIT: f64 = 1e12;
 /// cue before the insertion point (none counts as 0) plus the first step of [`steps`] that stays
 /// below the numeric cue after it, repeated while the result is used anywhere in the workspace.
 /// `None`: no step fits (the next number is not above the one before, or the gap is under
-/// [`SMALLEST_STEP`]), so the cue gets no number. `auto_number_start` does not take part.
+/// [`SMALLEST_STEP`]), so the cue gets no number.
 pub fn next_auto_number(ws: &Workspace, at: &Position) -> Result<Option<String>, CommandError> {
     let increment = ws.settings.auto_number_increment;
     check_increment(increment)?;
@@ -74,7 +74,9 @@ fn steps(increment: f64) -> Vec<f64> {
 
 /// A value without float noise, to the nine decimals `format_number` keeps.
 fn round(value: f64) -> f64 {
-    (value * 1e9).round() / 1e9
+    // Going through the decimal text gives the double nearest the nine-decimal value; scaling by
+    // 1e9 and back leaves noise once the value passes about two million.
+    format!("{value:.9}").parse().unwrap_or(value)
 }
 
 fn numeric(number: &str) -> Option<f64> {
@@ -144,8 +146,12 @@ fn check_increment(increment: f64) -> Result<(), CommandError> {
 /// Plain decimal text without float noise: 3 → "3", 0.1 + 0.2 → "0.3".
 fn format_number(value: f64) -> String {
     // Adding 0.0 turns −0.0 into 0.0.
-    let rounded = (value * 1e9).round() / 1e9 + 0.0;
-    rounded.to_string()
+    let text = format!("{:.9}", value + 0.0);
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" {
+        return "0".to_string();
+    }
+    text.to_string()
 }
 
 /// Longest prefix or suffix of a renumber, in characters.

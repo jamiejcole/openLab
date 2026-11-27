@@ -112,9 +112,6 @@ pub enum WorkspaceSetting {
         #[serde(deserialize_with = "strict_hotkeys")]
         value: Box<TransportHotkeys>,
     },
-    AutoNumberStart {
-        value: f64,
-    },
     AutoNumberIncrement {
         value: f64,
     },
@@ -253,9 +250,6 @@ impl WorkspaceSetting {
             Self::Hotkeys { .. } => Self::Hotkeys {
                 value: Box::new(s.hotkeys.clone()),
             },
-            Self::AutoNumberStart { .. } => Self::AutoNumberStart {
-                value: s.auto_number_start,
-            },
             Self::AutoNumberIncrement { .. } => Self::AutoNumberIncrement {
                 value: s.auto_number_increment,
             },
@@ -289,7 +283,6 @@ impl WorkspaceSetting {
             Self::OutputMinDb { value } => s.output_min_db = *value,
             Self::Hotkey { key, value } => hotkey_slot_mut(s, *key).clone_from(value),
             Self::Hotkeys { value } => s.hotkeys.clone_from(&**value),
-            Self::AutoNumberStart { value } => s.auto_number_start = *value,
             Self::AutoNumberIncrement { value } => s.auto_number_increment = *value,
             Self::NewCuesAutoLoad { value } => s.new_cues_auto_load = *value,
             Self::AutoNumberNewCues { value } => s.auto_number_new_cues = *value,

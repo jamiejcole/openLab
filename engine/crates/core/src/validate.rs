@@ -852,14 +852,6 @@ impl Checker {
         for (name, key) in s.hotkeys.slots() {
             self.hotkey(None, hotkey_field(name), key.as_ref());
         }
-        if clamp(&mut s.auto_number_start, 0.0, MAX_AUTO_NUMBER) {
-            self.warn(
-                None,
-                IssueKind::InvalidValue {
-                    field: "settings.auto_number_start",
-                },
-            );
-        }
         if !(s.auto_number_increment > 0.0 && s.auto_number_increment <= MAX_AUTO_NUMBER) {
             s.auto_number_increment = if s.auto_number_increment > 0.0 {
                 MAX_AUTO_NUMBER

@@ -168,7 +168,6 @@
           }
         }
       },
-      "auto_number_start": 1.0,
       "auto_number_increment": 0.5,
       "new_cues_auto_load": false,
       "auto_number_new_cues": true,

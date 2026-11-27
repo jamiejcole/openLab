@@ -131,7 +131,6 @@ impl Workspace {
                 output_max_db: DEFAULT_OUTPUT_MAX_DB,
                 output_min_db: DEFAULT_OUTPUT_MIN_DB,
                 hotkeys: TransportHotkeys::default(),
-                auto_number_start: 1.0,
                 auto_number_increment: 1.0,
                 new_cues_auto_load: false,
                 auto_number_new_cues: true,
@@ -363,8 +362,6 @@ pub struct WorkspaceSettings {
     /// Levels at or below this are silent (-inf), -180 to -40 dB (PB-11).
     pub output_min_db: f64,
     pub hotkeys: TransportHotkeys,
-    /// Number given to the first auto-numbered cue (ED-08).
-    pub auto_number_start: f64,
     /// Step between auto-numbered cues; greater than 0.
     pub auto_number_increment: f64,
     /// Cues made from now on have `auto_load` set (QLab 5, Workspace Settings, General; manual

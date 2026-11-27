@@ -546,7 +546,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let cues = cueList.selectedIDs()
         guard !isShowMode, let window, !cues.isEmpty else { return NSSound.beep() }
         let settings = store.model?.settings
-        let start = NSTextField(string: Self.plain(settings?["auto_number_start"]?.doubleValue ?? 1))
+        let start = NSTextField(string: "1")
         let step = NSTextField(string: Self.plain(settings?["auto_number_increment"]?.doubleValue ?? 1))
         let prefix = NSTextField(string: "")
         let suffix = NSTextField(string: "")

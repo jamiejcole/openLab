@@ -534,6 +534,20 @@ fn auto_numbering_has_no_float_noise() {
     assert_eq!(numbers, ["0.1", "0.2", "0.3", "0.4"]);
 }
 
+/// Past about two million a float sum carries noise a nine-decimal rounding keeps.
+#[test]
+fn auto_numbering_has_no_float_noise_for_large_numbers() {
+    assert_eq!(
+        auto_number_after(&["2256915.285", "2256915.287"], 1, 0.001).as_deref(),
+        Some("2256915.286")
+    );
+    for base in [2_000_001.0_f64, 2_256_915.285, 12_345_678.5, 99_999_999.125] {
+        let before = format!("{base}");
+        let got = auto_number_after(&[&before], 1, 0.5).unwrap();
+        assert_eq!(got, format!("{}", base + 0.5), "after {before}");
+    }
+}
+
 #[test]
 fn auto_number_replaces_the_cues_own_number_and_survives_undo_and_redo() {
     let mut ws = workspace(vec![numbered(1, "3", CueKind::Memo)]);
@@ -1912,7 +1926,6 @@ fn renumber_handles_groups_and_nested_groups() {
 #[test]
 fn renumber_uses_whatever_start_and_increment_it_is_given() {
     let mut ws = workspace(vec![memo(1), memo(2), memo(3)]);
-    ws.settings.auto_number_start = 50.0;
     round_trip(&mut ws, renumber(&[1, 2, 3], 0.1, 0.1));
     assert_eq!(
         [1, 2, 3].map(|n| number(&ws, n).unwrap()),

@@ -522,7 +522,7 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         TransportKey::CycleContinue,
         TransportKey::ToggleFlag,
     ][p.c as usize % 20];
-    match p.b % 8 {
+    match p.b % 7 {
         0 => WorkspaceSetting::MinGoInterval {
             value: time(p.c) / 10.0,
         },
@@ -543,7 +543,6 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
                     modifiers: Modifiers::default(),
                 }),
         },
-        6 => WorkspaceSetting::AutoNumberStart { value: time(p.c) },
         _ => WorkspaceSetting::AutoNumberIncrement { value: time(p.c) },
     }
 }
@@ -1211,7 +1210,6 @@ fn base() -> Workspace {
         name: "Second".into(),
         cues: vec![],
     });
-    ws.settings.auto_number_start = 1.0;
     ws.settings.auto_number_increment = 1.0;
     // Two stages, so stage edits find one to change.
     ws.stages = vec![
