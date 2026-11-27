@@ -542,7 +542,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     }
 
     /// What the waveform says while it draws no peaks: no file, the file missing, the read failed,
-    /// or the file being read.
+    /// (the file being read has none).
     private func showMessage() {
         let key: String
         if (kind["media"]?.stringValue ?? "").isEmpty {
@@ -554,7 +554,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         } else if waveform.readFailed {
             key = "timeLoops.unavailable"
         } else {
-            key = "timeLoops.notRead"
+            // The file being read: the area stands empty, with no words (QLab 5 draws the waves in).
+            waveform.message = nil
+            return
         }
         waveform.message = loc(key)
     }

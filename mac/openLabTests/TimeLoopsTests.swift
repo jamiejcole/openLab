@@ -2349,7 +2349,9 @@ extension PlayheadFlowTests {
     func testFileStillBeingReadTakesNoClickAndABrokenCueGetsOnlyTheLine() async throws {
         let id = try await waveTones(1, probed: false)[0]
         await showWaveform(id, drawn: false)
-        XCTAssertEqual(waveView.message, loc("timeLoops.notRead"), "it says the file is being read")
+        XCTAssertNil(waveView.message, "the area stands empty while the file is read: no words")
+        XCTAssertNil(waveView.peaks)
+        XCTAssertFalse(waveView.isHidden, "the waveform area is there at once")
         clickWave(at: 0)
         dragWave(fromX: 40, through: [80, 120])
         XCTAssertNil(waveView.insertion, "a click does nothing")

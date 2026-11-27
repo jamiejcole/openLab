@@ -1255,7 +1255,6 @@
 "timeLoops.preview" = "Preview";
 "timeLoops.stopPreview" = "Stop preview";
 "timeLoops.noFile" = "No file";
-"timeLoops.notRead" = "Reading the file…";
 "timeLoops.missing" = "The file is missing or cannot be read";
 "timeLoops.unavailable" = "The waveform could not be read";
 "timeLoops.invalid.trim" = "The start must be at least 0.05 s before the end.";
