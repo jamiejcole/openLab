@@ -107,10 +107,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return false
     }
 
+    /// Asks to quit again after a modal was ended for the quit (tests replace it: the real one
+    /// would end the test host).
+    @MainActor var terminateAgain: @MainActor () -> Void = { NSApp.terminate(nil) }
+
     /// One save prompt per dirty workspace, then `goodbye { shutdown }`; Cancel aborts the quit.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if isSecondInstance { return .terminateNow }  // it never started or reached an engine
         if appController.quitting { return .terminateCancel }
+        // An open, save or other modal panel or alert is running its own loop, which never runs the
+        // main queue the quit walk is queued on: ending it first (it answers as cancelled) lets the
+        // walk run, and the quit is asked again on the main queue once the modal has returned.
+        if NSApp.modalWindow != nil {
+            NSApp.abortModal()
+            DispatchQueue.main.async { [self] in MainActor.assumeIsolated { terminateAgain() } }
+            return .terminateCancel
+        }
         Task { @MainActor in
             let ok = await appController.prepareToQuit()
             NSApp.reply(toApplicationShouldTerminate: ok)

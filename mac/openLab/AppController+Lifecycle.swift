@@ -356,6 +356,26 @@ extension AppController {
             bookmarkDataIsStale: &stale)
     }
 
+    /// The copy points the cues at their copies as an edit, which would leave a workspace the
+    /// operator just saved with unsaved changes: once the copy ends, a workspace that was clean when it
+    /// began and is not now is saved again, so the window shows no unsaved mark and a close asks
+    /// nothing. A workspace with changes of the operator's own before the copy began is left alone.
+    private func saveAgainWhenCopyEnds(_ store: WorkspaceStore) {
+        guard store.document?.dirty == false else { return }
+        let key = ObjectIdentifier(store)
+        mediaCopyFollowers[key] = store.mediaCopied.first().sink { [weak self, weak store] _ in
+            MainActor.assumeIsolated {
+                self?.mediaCopyFollowers[key] = nil
+                guard let self, let store else { return }
+                Task { @MainActor in
+                    // The `document` message with the edit's dirty mark comes before the copy's report.
+                    guard store.document?.dirty == true else { return }
+                    _ = await self.bounded { await store.save() }
+                }
+            }
+        }
+    }
+
     private func save(_ store: WorkspaceStore, name: String, asNew: Bool = false) async -> Bool {
         var saveAsURL: URL?
         let reply: Result<OkBody, EngineError>?
@@ -387,8 +407,12 @@ extension AppController {
             }
             // The new show folder takes a copy of every file the cues target (WS-04); the copy runs
             // in the engine and its end shows in the window's footer.
-            if copyMedia, case .failure(let e) = await store.copyMediaIntoShowFolder() {
-                raise(describe(e), from: store)
+            if copyMedia {
+                if case .failure(let e) = await store.copyMediaIntoShowFolder() {
+                    raise(describe(e), from: store)
+                } else {
+                    saveAgainWhenCopyEnds(store)
+                }
             }
             return true
         case .failure(let e)?:
