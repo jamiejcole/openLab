@@ -37,7 +37,7 @@ pub use device::{
 };
 #[doc(hidden)]
 pub use fade_shape::{FadeShape, MAX_SHAPE_KNOTS, SHAPE_KNOT, ShapeDomain, ShapeKind, ShapeSide};
-pub use fuzzing::fuzz_decode;
+pub use fuzzing::{fuzz_decode, fuzz_init};
 pub use gain::{
     Curve, Fade, MAX_GAIN, MAX_GAIN_DB, RAMP_TOLERANCE, SILENCE_DB, db_to_linear, linear_to_db,
     ramp_value, sanitize_gain,
