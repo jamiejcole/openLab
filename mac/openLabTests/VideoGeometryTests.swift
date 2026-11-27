@@ -134,7 +134,8 @@ extension VideoCueTests {
         let movie = try thumbnailColours(centre)
         g.thumbnail.image = nil
         let plain = try thumbnailColours(centre)
-        let isGreen = { (c: [[UInt8]]) in c.first.map { $0[1] > 200 && $0[0] < 100 && $0[2] < 40 } ?? false }
+        // Colour management on a hosted runner shifts the card's green a little (red 100 there).
+        let isGreen = { (c: [[UInt8]]) in c.first.map { $0[1] > 200 && $0[0] < 140 && $0[2] < 40 } ?? false }
         let isYellow = { (c: [[UInt8]]) in c.first.map { $0[0] > 150 && $0[1] > 130 && $0[2] < 40 } ?? false }
         XCTAssertTrue(isYellow(plain), "without the frame it is the yellow rectangle: \(plain)")
         XCTAssertTrue(isGreen(movie), "the card's own colour at its centre: \(movie)")

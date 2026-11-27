@@ -37,6 +37,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let cueListView = CueListInspectorView()
     /// The type whose remembered tab the tab view is showing (the shown cue's kind).
     var shownKind = ""
+    /// The cue whose tabs the tab view is showing, to tell a kind change on it from another cue.
+    var shownTabCue: ModelID?
     /// The device each patch plays on on this Mac, as the engine last said (nil until it has); a patch
     /// not in it has no device here. For the I/O tab's output format.
     var patchDevices: [ModelID: String]?
@@ -1063,7 +1065,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // Only Wait and Fade cues, and stills, have a duration to type; others take theirs from content
         // or have none.
         durationField.isEnabled = InspectorEdit.editsDuration(cue, media: store.mediaDurations[cue.id])
-        syncTabs(InspectorTabs.ids(for: cue, model: model, media: store.mediaDurations), kind: kind)
+        syncTabs(InspectorTabs.ids(for: cue, model: model, media: store.mediaDurations), kind: kind, cue: cue.id)
         showChoice(colourPopup, Self.colourItems, [cue.raw["color"]?.stringValue ?? "none"])
         let second = cue.raw["second_color"]?.stringValue ?? "none"
         showChoice(secondColourPopup, Self.colourItems, [second])

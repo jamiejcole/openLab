@@ -48,7 +48,15 @@ extension InspectorViewController {
     /// fallback does not change the choice, so the next cue that has the tab shows it again.
     /// Idempotent, so a model change that keeps the tabs does not touch them (and a typed field
     /// keeps its focus).
-    func syncTabs(_ wanted: [String], kind: String) {
+    func syncTabs(_ wanted: [String], kind: String, cue: ModelID? = nil) {
+        // The same cue turned into another kind keeps the tab the operator is on when the new kind has
+        // it; that becomes the new kind's choice. Another cue shows its own kind's choice.
+        if let cue, cue == shownTabCue, kind != shownKind,
+            let current = tabView.selectedTabViewItem?.identifier as? String, wanted.contains(current)
+        {
+            chosenTabs[kind] = current
+        }
+        shownTabCue = cue
         shownKind = kind
         guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else {
             selectChosen(wanted)
