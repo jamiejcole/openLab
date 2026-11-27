@@ -27,9 +27,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let targetField = TargetField()
     /// A file cue's Target, drawn as a path (shown in place of `targetField` while the cue has a file).
     let targetPath = TargetPathControl()
-    /// The tab the user last chose, for every cue: a cue without it shows its first tab and the choice
-    /// stays (`syncTabs`).
-    var chosenTab: String?
+    /// The tab the user last chose on a cue of each type, for the session (QLab 5 keeps one per cue
+    /// type): a cue without it shows its first tab and the choice stays (`syncTabs`).
+    var chosenTabs: [String: String] = [:]
+    /// The type whose remembered tab the tab view is showing (the shown cue's kind).
+    var shownKind = ""
     /// The device each patch plays on on this Mac, as the engine last said (nil until it has); a patch
     /// not in it has no device here. For the I/O tab's output format.
     var patchDevices: [ModelID: String]?
@@ -520,7 +522,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // A zero-wide tab view lays its tab strip out at a negative width as tabs are added (AppKit logs
         // "Invalid view geometry" on macOS 27); Auto Layout sizes it for real below.
         tabView.frame = NSRect(x: 0, y: 0, width: 900, height: 240)
-        syncTabs(InspectorTabs.ids(forKind: ""))
+        syncTabs(InspectorTabs.ids(forKind: ""), kind: "")
         tabView.tabViewType = .noTabsNoBorder
         tabView.setAX(AX.inspectorTabs)
         tabView.delegate = self
@@ -1047,7 +1049,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // Only Wait and Fade cues, and stills, have a duration to type; others take theirs from content
         // or have none.
         durationField.isEnabled = InspectorEdit.editsDuration(cue, media: store.mediaDurations[cue.id])
-        syncTabs(InspectorTabs.ids(for: cue, model: model, media: store.mediaDurations))
+        syncTabs(InspectorTabs.ids(for: cue, model: model, media: store.mediaDurations), kind: kind)
         showChoice(colourPopup, Self.colourItems, [cue.raw["color"]?.stringValue ?? "none"])
         let second = cue.raw["second_color"]?.stringValue ?? "none"
         showChoice(secondColourPopup, Self.colourItems, [second])

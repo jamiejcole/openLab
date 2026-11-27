@@ -70,8 +70,8 @@ extension InspectorViewController {
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         endGestures()
         // Every choice through the tab view is the user's (`syncTabs` detaches this delegate while it
-        // falls back), and is kept across cues of other kinds.
-        if let id = tabViewItem?.identifier as? String { chosenTab = id }
+        // falls back), and is kept for cues of the shown cue's type.
+        if let id = tabViewItem?.identifier as? String { chosenTabs[shownKind] = id }
         tabBar.select(tabViewItem?.identifier as? String)
         updateTimeLoopsActive()
     }

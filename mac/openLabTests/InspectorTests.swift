@@ -135,7 +135,7 @@ final class InspectorTests: XCTestCase {
     /// What only reads the model or the controls needs no engine (and runs in engine-free runs).
     private static let engineFree = [
         "testEmptyAndMultipleStates", "testShowsTheSelectedCue", "testModeTabIsForGroupsOnly",
-        "testSelectionFollowsTheCueList", "testTheChosenTab", "testAFallbackDoesNotChange",
+        "testSelectionFollowsTheCueList", "testTheChosenTab", "testTabsPickFromAList", "testAFallbackDoesNotChange",
         "testUnchangedSelectionMidEditKeepsTextAndMessage", "testDecimalCommaHasItsOwnMessage",
     ]
     private var vc: InspectorViewController!
@@ -342,20 +342,6 @@ final class InspectorTests: XCTestCase {
         XCTAssertEqual(vc.tabBar.buttons.filter(\.isChosen).map(\.tabID), ["timeLoops"], "the bar agrees")
     }
 
-    /// The owner's second sequence: Q1 on Time & Loops, then the user picks I/O on another Audio cue;
-    /// Q1 then shows I/O. The choice is global, not per cue.
-    func testTheChosenTabIsNotPerCue() throws {
-        vc.setSelection([Self.intro])
-        try clickTab("timeLoops")
-        vc.setSelection([Self.door])
-        XCTAssertEqual(shownTab, "timeLoops", "the same tab on another cue of the kind")
-        try clickTab("io")
-        vc.setSelection([Self.intro])
-        XCTAssertEqual(shownTab, "io")
-        vc.setSelection([Self.door])
-        XCTAssertEqual(shownTab, "io")
-    }
-
     /// A fallback is not a choice: after a cue without the tab, nothing the user did changes it, and a
     /// tab clicked on that cue (a Fade's Curve) becomes the choice for the cues that have it.
     func testAFallbackDoesNotChangeTheChosenTab() throws {
@@ -374,36 +360,7 @@ final class InspectorTests: XCTestCase {
         XCTAssertEqual(shownTab, "curve")
     }
 
-    /// A Fade's Levels tab is the same tab to the user as an Audio cue's: the choice carries across, both ways.
-    func testLevelsChosenOnAnAudioCueShowsOnAFadeAndBack() throws {
-        vc.setSelection([Self.intro])
-        try clickTab("levels")
-        vc.setSelection([Self.fade])
-        XCTAssertEqual(shownTab, "fadeLevels")
-        vc.setSelection([Self.intro])
-        XCTAssertEqual(shownTab, "levels")
-        vc.setSelection([Self.fade])
-        try clickTab("fadeLevels")
-        vc.setSelection([Self.intro])
-        XCTAssertEqual(shownTab, "levels")
-    }
-
-    func testTabsThatMeanTheSameThingMatchAcrossCueKinds() {
-        let pick = InspectorViewController.shownTab(chosen:wanted:)
-        XCTAssertEqual(pick("levels", ["basics", "fadeLevels"]), "fadeLevels")
-        XCTAssertEqual(pick("fadeLevels", ["basics", "levels"]), "levels")
-        XCTAssertEqual(pick("geometry", ["basics", "fadeGeometry"]), "fadeGeometry")
-        XCTAssertEqual(pick("fadeGeometry", ["basics", "geometry"]), "geometry")
-        // Every other id means one thing on every kind that has it.
-        let kinds = ["audio", "fade", "group", "load", "target", "devamp", "network", "video", ""]
-        for kind in kinds {
-            for id in InspectorTabs.ids(forKind: kind) where !id.hasPrefix("fade") {
-                XCTAssertEqual(InspectorViewController.tabKind(id), id)
-            }
-        }
-    }
-
-    func testTheChosenTabPicksFromAListByTheRule() {
+    func testTabsPickFromAListByTheRule() {
         XCTAssertEqual(InspectorViewController.shownTab(chosen: "io", wanted: ["basics", "io"]), "io")
         XCTAssertEqual(InspectorViewController.shownTab(chosen: "io", wanted: ["basics", "mode"]), "basics")
         XCTAssertEqual(InspectorViewController.shownTab(chosen: nil, wanted: ["basics", "mode"]), "basics")

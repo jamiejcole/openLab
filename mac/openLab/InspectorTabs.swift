@@ -27,6 +27,8 @@ enum InspectorTabs {
         var ids = ids(forKind: cue.kindType)
         switch cue.kindType {
         case "video":
+            // A still has no timeline (QLab 5): no Timing & Loops tab, as a movie has.
+            if media[cue.id]?.picture?.type == "still" { ids.removeAll { $0 == "timeLoops" } }
             if cue.sounds(media[cue.id]) { ids.append("levels") }
         case "fade":
             let target = cue.raw["kind"]?["target"]?.stringValue.flatMap({ model.cue(ModelID($0)) })
@@ -43,14 +45,18 @@ enum InspectorTabs {
 }
 
 extension InspectorViewController {
-    /// Brings the tab view to `wanted` in order, showing the tab the user last chose (`chosenTab`) when
-    /// `wanted` has it, else the first. A fallback does not change the choice, so the next cue that has
-    /// the tab shows it again. Idempotent, so a model change that keeps the tabs does not touch them
-    /// (and a typed field keeps its focus).
-    func syncTabs(_ wanted: [String]) {
-        guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
+    /// Brings the tab view to `wanted` in order, showing the tab last chosen on a cue of `kind` (the
+    /// choice is remembered per cue type, for the session) when `wanted` has it, else the first. A
+    /// fallback does not change the choice, so the next cue that has the tab shows it again.
+    /// Idempotent, so a model change that keeps the tabs does not touch them (and a typed field
+    /// keeps its focus).
+    func syncTabs(_ wanted: [String], kind: String) {
+        shownKind = kind
+        guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else {
+            selectChosen(wanted)
+            return
+        }
         endGestures()  // a drag's view may be about to go; this may render, and so may do what follows
-        guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
         let byID = Dictionary(
             tabView.tabViewItems.compactMap { i in (i.identifier as? String).map { ($0, i) } },
             uniquingKeysWith: { a, _ in a })
@@ -66,30 +72,28 @@ extension InspectorViewController {
         for id in wanted {
             if let item = byID[id] ?? tabItems[id] { tabView.addTabViewItem(item) }
         }
-        if let shown = Self.shownTab(chosen: chosenTab, wanted: wanted),
+        selectChosen(wanted)
+    }
+
+    /// Selects the tab `kind` remembers (or the first) when the tab view is not already on it. A
+    /// selection made by the user is never moved by a model change on the same cue.
+    private func selectChosen(_ wanted: [String]) {
+        guard let shown = Self.shownTab(chosen: chosenTabs[shownKind], wanted: wanted),
+            tabView.selectedTabViewItem?.identifier as? String != shown,
             let item = tabView.tabViewItems.first(where: { ($0.identifier as? String) == shown })
-        {
-            tabView.selectTabViewItem(item)
-        }
+        else { return }
+        let delegate = tabView.delegate
+        tabView.delegate = nil
+        tabView.selectTabViewItem(item)
+        tabView.delegate = delegate
+        syncTabBar()
+        updateTimeLoopsActive()
     }
 
-    /// The tab a tab list shows: the user's last choice when the list has it, else its first tab.
+    /// The tab a tab list shows: the last choice on this cue type when the list has it, else its first tab.
     static func shownTab(chosen: String?, wanted: [String]) -> String? {
-        if let chosen {
-            let kind = tabKind(chosen)
-            if let same = wanted.first(where: { tabKind($0) == kind }) { return same }
-        }
+        if let chosen, wanted.contains(chosen) { return chosen }
         return wanted.first
-    }
-
-    /// What a tab is to the user: a Fade's Levels and Geometry tabs carry the same titles as an Audio
-    /// or Video cue's, so choosing one on either shows the other.
-    static func tabKind(_ id: String) -> String {
-        switch id {
-        case "fadeLevels": return "levels"
-        case "fadeGeometry": return "geometry"
-        default: return id
-        }
     }
 
     /// Draws the tab bar for the tab view's tabs: every title whole, the chosen one marked.
