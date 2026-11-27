@@ -7546,10 +7546,12 @@ fn a_video_cues_sound_has_a_waveform_and_a_silent_movie_has_none() {
     };
     let mut rx = ask(&mut s, 1);
     s.settle_media();
+    // The read may send growing `waveform_partial`s before its result.
     let Some(ServerMessage::Result {
         outcome: Outcome::Ok(ok),
         ..
-    }) = rx.try_recv().ok()
+    }) = std::iter::from_fn(|| rx.try_recv().ok())
+        .find(|m| !matches!(m, ServerMessage::WaveformPartial { .. }))
     else {
         panic!("no waveform");
     };
