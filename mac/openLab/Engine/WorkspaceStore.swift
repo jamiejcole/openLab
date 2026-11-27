@@ -44,6 +44,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var problems: [ModelID: [WireProblem]] = [:]
     @Published private(set) var groupWarnings: Set<ModelID> = []
     @Published private(set) var playheads: [ModelID: ModelID] = [:]
+    /// The playheads as the engine last reported them (`playheads` also holds those shown ahead of its echo).
+    private(set) var engineHeads: [ModelID: ModelID] = [:]
+    /// Lists whose `playheads` entry was set by `showPlayheadAhead` and not yet confirmed by the engine.
+    private var headsAhead = Set<ModelID>()
     @Published private(set) var previewing: Set<ModelID> = []
     /// Cues started since they were last reset: their rows show the second colour, if they have one.
     @Published private(set) var played: Set<ModelID> = []
@@ -201,6 +205,29 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     // MARK: Intents (all go through the client)
 
     @discardableResult
+    /// The playhead drawn on `cue` at once, for a click or key that has just sent it, so the arrow and
+    /// the masthead move in the redraw that moves the highlight. The engine's echo confirms it (or
+    /// replaces it); `playheadAnswered` takes it back if the engine never moved the playhead there.
+    func showPlayheadAhead(list: ModelID, cue: ModelID) {
+        guard playheads[list] != cue else { return }
+        var heads: Set<ModelID> = [cue]
+        if let old = playheads[list] { heads.insert(old) }
+        playheads[list] = cue
+        headsAhead.insert(list)
+        changes.send(.runtime(cues: [], playheads: heads))
+    }
+
+    /// The engine answered the move sent for `list`: a playhead still shown ahead of the engine's was
+    /// refused (Show Mode, a failure) and goes back to the engine's.
+    func playheadAnswered(list: ModelID) {
+        guard headsAhead.remove(list) != nil else { return }
+        var heads = Set<ModelID>()
+        if let shown = playheads[list] { heads.insert(shown) }
+        if let engine = engineHeads[list] { heads.insert(engine) }
+        playheads[list] = engineHeads[list]
+        changes.send(.runtime(cues: [], playheads: heads))
+    }
+
     func transport(_ action: TransportAction) async -> Result<OkBody, EngineError> {
         await client.send { .transport(id: $0, action) }
     }
@@ -499,6 +526,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         problems = Dictionary(s.problems.map { ($0.cue, $0.problems) }, uniquingKeysWith: { $1 })
         groupWarnings = Set(s.groupWarnings)
         playheads = Dictionary(s.playheads.compactMap { e in e.cue.map { (e.list, $0) } }, uniquingKeysWith: { $1 })
+        engineHeads = playheads
+        headsAhead = []
         previewing = Set(s.previewing)
         played = Set(s.played ?? [])
         playlistNext = Dictionary((s.playlistNext ?? []).map { ($0.group, $0.cue) }, uniquingKeysWith: { $1 })
@@ -666,6 +695,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 if let old = playheads[list] { heads.insert(old) }
                 if let cue { heads.insert(cue) }
                 playheads[list] = cue
+                engineHeads[list] = cue
+                // The engine's word replaces what was shown ahead of it, whether it agrees or not.
+                headsAhead.remove(list)
             case .preview(let cue, let active):
                 if active { previewing.insert(cue) } else { previewing.remove(cue) }
                 cues.insert(cue)

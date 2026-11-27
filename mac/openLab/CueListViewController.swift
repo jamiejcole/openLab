@@ -1044,6 +1044,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         sentPlayhead = id
         lastSentHead = id
         playheadSends += 1
+        store.showPlayheadAhead(list: list, cue: id)
         Task { [weak self] in
             _ = await self?.store.transport(.setPlayhead(list: list, cue: id))
             self?.playheadSendAnswered(list: list)
@@ -1096,6 +1097,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private func playheadSendAnswered(list: ModelID) {
         playheadSends = max(0, playheadSends - 1)
         guard playheadSends == 0 else { return }
+        // A playhead still shown ahead of the engine's was refused: it goes back (the selection with it).
+        store.playheadAnswered(list: list)
         // Any echo is in by now. A send that failed, or that the engine only warned about (a cue
         // deleted meanwhile), has none: the next click on that row must send again.
         sentPlayhead = nil

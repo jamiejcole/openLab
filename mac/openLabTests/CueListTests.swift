@@ -1647,6 +1647,7 @@ final class PlayheadFlowTests: XCTestCase {
     func assertAllOn(_ id: ModelID?, file: StaticString = #filePath, line: UInt = #line) async throws {
         await assertEventually("the highlight and the playhead", file: file, line: line) {
             self.wc.cueList.selectedIDs() == (id.map { [$0] } ?? []) && self.store.playheads[self.list] == id
+                && self.store.engineHeads[self.list] == id
         }
         let all = wc.cueList.roots.flatMap { [$0] + $0.children }.map(\.id)
         XCTAssertEqual(
@@ -1675,7 +1676,9 @@ final class PlayheadFlowTests: XCTestCase {
     /// The engine's move of the playhead onto a cue just made has arrived: a click before it would be
     /// followed away from.
     private func playheadSettled(on id: ModelID, line: UInt = #line) async {
-        await assertEventually("the playhead arrived", line: line) { self.store.playheads[self.list] == id }
+        await assertEventually("the playhead arrived", line: line) {
+            self.store.playheads[self.list] == id && self.store.engineHeads[self.list] == id
+        }
     }
 
     /// Another client of the workspace (an OSC peer's `/playhead`, another Mac) moves the playhead.
@@ -3733,15 +3736,36 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(cues.count, 200)
         await sync()
         await assertEventually { self.wc.cueList.nodeCount == 200 && self.store.playheads[self.list] == self.cues[199] }
+        let drawn = { (id: ModelID) -> [ModelID] in
+            self.wc.cueList.roots.map(\.id).filter { self.status($0, 0) == loc("cue.playhead") && $0 == id }
+        }
         click(cues[10])
         XCTAssertEqual(wc.cueList.selectedIDs(), [cues[10]], "the highlight is on the row when the click returns")
         XCTAssertEqual(wc.inspector.selection, [cues[10]], "and the inspector shows the cue")
-        XCTAssertNotEqual(store.playheads[list], cues[10], "the engine has not answered yet")
+        XCTAssertEqual(drawn(cues[10]), [cues[10]], "and the playhead arrow is drawn on it, before the engine's echo")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[10]), "and the masthead names it")
         wc.cueList.selectAdjacent(by: 1)
         XCTAssertEqual(wc.cueList.selectedIDs(), [cues[11]])
         XCTAssertEqual(wc.inspector.selection, [cues[11]])
-        XCTAssertNotEqual(store.playheads[list], cues[11], "an arrow press does not wait for the engine either")
+        XCTAssertEqual(drawn(cues[11]), [cues[11]], "an arrow press moves the arrow in the same turn")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[11]))
         try await assertAllOn(cues[11])
+    }
+
+    /// S4: a move the engine never makes (Show Mode, a failure) is drawn at once and then taken back, with
+    /// the arrow, the masthead and the selection all back on the engine's playhead.
+    func testAPlayheadShownAheadOfTheEngineSnapsBackWhenTheMoveIsRefused() async throws {
+        try await threeCues()
+        let first = cues[0]
+        store.showPlayheadAhead(list: list, cue: cues[2])
+        XCTAssertEqual(status(cues[2], 0), loc("cue.playhead"), "drawn ahead of the engine")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[2]))
+        store.playheadAnswered(list: list)
+        XCTAssertEqual(store.playheads[list], first, "the engine's own playhead is back")
+        XCTAssertNotEqual(status(cues[2], 0), loc("cue.playhead"))
+        XCTAssertEqual(status(first, 0), loc("cue.playhead"))
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(first))
+        try await assertAllOn(first)
     }
 
     /// S5: Q1 selected, Delete: Q2 is selected in the turn that draws the removal, and no frame between

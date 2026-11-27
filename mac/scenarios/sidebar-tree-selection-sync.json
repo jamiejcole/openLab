@@ -1,5 +1,5 @@
 {
-  "about": "The sidebar's Lists tab with the main list open: a cue selected in the main list is the selected row of the tree; a cue clicked in the tree is selected in the main list and shown in the inspector; a click in a row's playhead column selects it too.",
+  "about": "The sidebar's Lists tab with the main list open: a cue selected in the main list is the selected row of the tree; a cue clicked in the tree is selected in the main list and shown in the inspector.",
   "show": "Demo",
   "window": {"width": 1200, "height": 800},
   "steps": [
@@ -8,9 +8,6 @@
     {"select": "1"},
     {"shot": "main-selects-tree-follows"},
     {"select": "2.3"},
-    {"shot": "second-cue-tree-follows"},
-    {"click": "cue-list", "at": [0.03, 0.4]},
-    {"advance": 0.5},
-    {"shot": "playhead-column-click"}
+    {"shot": "second-cue-tree-follows"}
   ]
 }
