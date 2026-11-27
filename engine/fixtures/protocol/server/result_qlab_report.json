@@ -22,12 +22,14 @@
           "number": "12",
           "name": "Storm",
           "kind": "rate",
+          "severity": "error",
           "detail": "Its playback rate was not kept."
         },
         {
           "number": "",
           "name": "",
           "kind": "setting",
+          "severity": "warning",
           "detail": "OSC access passcodes were not kept."
         }
       ],
