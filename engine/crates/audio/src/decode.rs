@@ -523,11 +523,14 @@ fn shift_warning(w: &mut MediaWarning, shift: u64) -> bool {
     cut == 0 || w.frames > 0
 }
 
+/// The [`MediaError::Corrupt`] text of a decoder panic that [`contain`] caught.
+pub(crate) const DECODER_FAILED: &str = "decoder failed";
+
 /// Runs third-party decoding code so that a panic in it (a decoder bug hit by malformed input)
 /// is a [`MediaError::Corrupt`] for this file instead of taking the calling thread down.
 pub(crate) fn contain<T>(f: impl FnOnce() -> Result<T, MediaError>) -> Result<T, MediaError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-        .unwrap_or_else(|_| Err(MediaError::Corrupt("decoder failed".into())))
+        .unwrap_or_else(|_| Err(MediaError::Corrupt(DECODER_FAILED.into())))
 }
 
 /// Probes `path` and returns its exact format and length. Blocking: call from an I/O thread.
@@ -2238,6 +2241,21 @@ impl FrameSource for Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A decoder bug that panics (a symphonia arithmetic overflow on a malformed FLAC) is a
+    /// refused file for that call, never a panic out of it; every decoder entry (probe, preload,
+    /// stream open and fill, waveform) runs its decoding inside `contain`.
+    #[test]
+    fn a_decoder_panic_is_a_corrupt_file_not_a_panic_out_of_the_call() {
+        let overflow = || -> Result<(), MediaError> {
+            let n = std::hint::black_box(u32::MAX);
+            let _ = n.checked_add(std::hint::black_box(1)).expect("overflow");
+            Ok(())
+        };
+        let got = contain(overflow);
+        assert!(matches!(got, Err(MediaError::Corrupt(m)) if m == DECODER_FAILED));
+        assert_eq!(contain(|| Ok(7)).ok(), Some(7));
+    }
 
     /// The routing's format-chunk lookup walks as the PCM reader does (cull M25): past an
     /// odd-sized chunk and its pad byte, in a container that starts later in the stream, and a

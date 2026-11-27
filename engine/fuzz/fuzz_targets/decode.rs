@@ -7,7 +7,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-fuzz_target!(|data: &[u8]| {
+fuzz_target!(init: openlab_audio::fuzz_init(), |data: &[u8]| {
     if let Err(e) = openlab_audio::fuzz_decode(data) {
         panic!("{e}");
     }
