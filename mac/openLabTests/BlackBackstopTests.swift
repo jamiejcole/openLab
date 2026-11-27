@@ -507,6 +507,41 @@ final class BlackBackstopTests: XCTestCase {
         await pushed("black again after the next picture") { self.app.backstop.windows["V2"] != nil }
     }
 
+    /// #842 V2: Workspace Settings > Video > Output Routing, Guides ticked on an output so they
+    /// cover its display, then Esc: the guides go off the display and the box is unticked, as Esc
+    /// gets the operator out of a stage elsewhere.
+    func testV2EscTurnsOffAGuidesTickedOnAnOutput() async throws {
+        let (store, _, _) = try await start()
+        let settings = WorkspaceSettingsWindowController(store: store)
+        addTeardownBlock { @MainActor in settings.close() }
+        await settings.present().value
+        let routing = settings.videoRoutingPane
+        await pushed("the routes are listed") {
+            await routing.refresh()
+            return routing.guideChecks.count == 2
+        }
+        let probe = [[0.5, 0.001]]
+        func colour(_ display: String) async -> [UInt8]? {
+            guard case .success(let ok) = await engine.request(.displayProbe(display: display, points: probe)),
+                case .stageProbe(_, let colours)? = ok.data
+            else { return nil }
+            return colours.first
+        }
+        let before = await colour("V1")
+        routing.guideChecks[0].performClick(nil)
+        await pushed("the guides cover V1") {
+            let now = await colour("V1")
+            return now != nil && now != before && routing.guideChecks[0].state == .on
+        }
+        app.beep = {}
+        _ = await app.panicAll()
+        await pushed("Esc took the guides off V1 and unticked the box") {
+            await routing.refresh()
+            return await colour("V1") == before && routing.guideChecks[0].state == .off
+        }
+        XCTAssertEqual(store.videoOutputs.routes.map(\.guides), [false, false])
+    }
+
     /// #708: Esc takes the app's black away even with no engine to hear it (one relaunching).
     func testEscTakesTheAppsBlackAwayWithoutAnEngine() async throws {
         let (store, stage1, _) = try await start()

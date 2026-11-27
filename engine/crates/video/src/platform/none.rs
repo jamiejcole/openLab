@@ -79,6 +79,7 @@ mod tests {
                     rotation: 0,
                     scaling: openlab_core::RouteScaling::Fill,
                     display: None,
+                    partial: None,
                     guide: None,
                 }],
             },

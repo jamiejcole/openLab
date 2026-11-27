@@ -90,7 +90,7 @@ C-V6 | Several previews at once allowed; Esc fades them, second Esc stops at onc
 C-Q8 | Preview uses the cue's own levels and built-in fade-in (linear curve) | user 2026-10-27
 Q209 | Preview skips pre-waits, ignores auto-continue/auto-follow; several previews start through normal outputs | manual: auditioning-cues
 Q210 | StopPreview fade is 50 ms | assumed
-Q211 | Only audio cue kinds preview (no video kind built) | manual: auditioning-cues
+Q211 | Audio, Video (and Image) cues preview, and groups of them; other kinds do not (Video: Q843) | manual: auditioning-cues
 
 ## Basics and Triggers fields
 Q270 | Auto-load: superseded by Q296 (measured). An auto-load cue that is disarmed, broken, already loaded or running is left alone; a group auto-loads as Load does | manual p. 128 + assumed

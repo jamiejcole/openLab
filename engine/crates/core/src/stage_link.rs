@@ -21,7 +21,7 @@ use crate::video_geometry::{PictureParam, PictureRamp, VideoGeometry};
 use crate::video_timing::{PictureFades, PlanPass, picture_run_ok};
 
 /// The link version both ends speak; a stage host answering another version is not used.
-pub const LINK_VERSION: u32 = 8;
+pub const LINK_VERSION: u32 = 9;
 /// Longest line either end accepts, newline excluded: enough for a `stages` set of
 /// [`MAX_LINK_STAGES`] stages of [`MAX_REGIONS`] regions each whose monitor titles are all
 /// [`MAX_TEXT_BYTES`] long, and [`MAX_LINK_ROUTES`] routes whose display ids and guide names are
@@ -231,6 +231,10 @@ pub struct RouteOutput {
     /// The display it is shown on (an id from `displays`); `None`: no display on this machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
+    /// The part of `display` it is shown on (a splitter's output), which it treats as a whole
+    /// display; `None`: the whole display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial: Option<crate::video::Partial>,
     /// Its alignment guides, drawn over everything the display shows of it; `None`: hidden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide: Option<RouteGuide>,
@@ -578,6 +582,13 @@ fn check_stages(stages: &[StageOutput], routes: &[RouteOutput]) -> Result<(), Li
         if route.guide.as_ref().is_some_and(|g| !text_ok(&g.name)) {
             return Err(LinkError::Invalid("bad guide name"));
         }
+        if route
+            .partial
+            .as_ref()
+            .is_some_and(|p| p.problem().is_some())
+        {
+            return Err(LinkError::Invalid("bad part of a display"));
+        }
     }
     for stage in stages {
         if !side_ok(stage.width) || !side_ok(stage.height) {
@@ -749,6 +760,7 @@ mod tests {
             rotation: 0,
             scaling: RouteScaling::Fill,
             display: display.map(str::to_owned),
+            partial: None,
             guide: None,
         }
     }
@@ -1276,6 +1288,34 @@ mod tests {
                     }],
                 ),
                 "bad guide name",
+            ),
+            (
+                set(
+                    vec![],
+                    vec![RouteOutput {
+                        partial: Some(crate::Partial {
+                            columns: 2,
+                            rows: 1,
+                            index: 2,
+                        }),
+                        ..route_out(1, Some("D"))
+                    }],
+                ),
+                "bad part of a display",
+            ),
+            (
+                set(
+                    vec![],
+                    vec![RouteOutput {
+                        partial: Some(crate::Partial {
+                            columns: 1,
+                            rows: 1,
+                            index: 0,
+                        }),
+                        ..route_out(1, Some("D"))
+                    }],
+                ),
+                "bad part of a display",
             ),
             (
                 set(

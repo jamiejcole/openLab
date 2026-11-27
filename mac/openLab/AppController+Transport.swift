@@ -147,7 +147,7 @@ extension AppController {
                 switch node.cue.kindType {
                 // A Fade's preview runs the Fade on its target now, the playhead left where it is.
                 case "network", "fade": return true
-                case "audio", "group":
+                case "audio", "video", "group":
                     return !store.previewing.contains(node.id)
                         && !coveredByGroupPreview(node, nodes, previewing: store.previewing)
                 default: return false
@@ -230,7 +230,15 @@ extension AppController {
     /// displays goes at once, whether or not an engine answers: the operator is never locked out.
     func panicAll() async -> Result<OkBody, EngineError> {
         backstop.dismiss()
+        // Alignment guides cover their display like a stage does: Esc takes them off too (each
+        // workspace's ticked routes, sent while the panic is), so they never lock the operator out.
+        let hides = session.orderedStores.compactMap { entry -> Task<Void, Never>? in
+            let routes = entry.store.videoOutputs.routes.filter(\.guides).map(\.route)
+            guard !routes.isEmpty else { return nil }
+            return Task { _ = await entry.store.setRouteGuides(routes, show: false) }
+        }
         let result = await session.panicAll()
+        for hide in hides { await hide.value }
         if case .failure(let e) = result {
             beep()
             for (_, store) in session.orderedStores { log(e, on: store) }

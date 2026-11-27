@@ -67,7 +67,7 @@ A running Wait takes an edited duration (`broken-and-edits.md`); its pending aut
 - Its length comes from the binary as for audio (`ActionLength`, `CueLengths`): a video file's length, a still's typed `duration`, none for a still without one (it runs until stopped).
 - Problems: `no_media`, `media_missing`, `media_unsupported` from the media status of its file (shared with Audio cues on the same file), `no_stage` when its stage is none, `stage_missing` when the stage is not in the workspace (a change to the stage ids rebuilds every cue's problems).
 - A picture that fails mid-show is `ActionFailed { decode_failed }`: only that cue breaks.
-- A Fade cue may target it (it fades its sound's levels as an Audio cue's; a cue without sound has no voice to fade) and so may a Devamp cue; preview is `NotAudio`.
+- A Fade cue may target it (it fades its sound's levels as an Audio cue's; a cue without sound has no voice to fade) and so may a Devamp cue; preview is a timed one: its run id is the preview's own, the binary tells the action's length (`ActionLength`) and the preview ends that long after its start, less what it had played before a Pause All (a still with no duration stays until stopped); the show run of the same cue ending leaves its preview's picture alone, and Panic fades it as any preview.
 - Its sound's patch problems (`no_patch`, `patch_missing`, `device_unavailable`) count only while the binary has told its file has sound (`Input::MediaSound`).
 
 ## Display name
