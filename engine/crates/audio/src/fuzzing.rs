@@ -6,7 +6,8 @@ use std::io::Cursor;
 use std::sync::atomic::AtomicBool;
 
 use crate::decode::{
-    Media, MediaError, MediaWarning, Seeking, WarningKind, open_source, preload, probe_media,
+    DECODER_FAILED, Media, MediaError, MediaWarning, Seeking, WarningKind, contain, open_source,
+    preload, probe_media,
 };
 use crate::resample::Pipeline;
 use crate::waveform::build_waveform;
@@ -14,9 +15,33 @@ use crate::waveform::build_waveform;
 /// Device rate the pipeline resamples to: most inputs then go through the resampler.
 const DEVICE_RATE: u32 = 48_000;
 
+/// Replaces libFuzzer's abort-at-panic hook (see [`fuzz_decode`]).
+pub fn fuzz_init() {
+    // libFuzzer's hook aborts at the panic, before the unwind the product relies on. Release
+    // builds also lack the overflow checks the fuzz build has, so a panic here is one the
+    // product has already confined to its file; the message is kept on stderr.
+    // Only a panic inside the symphonia decoders (a registry crate) is let through; one in our
+    // own code (the reader, resampler, seek or this target's invariants) aborts as before, so
+    // the fuzzer still reports it.
+    std::panic::set_hook(Box::new(|info| {
+        use std::io::Write;
+        let third_party = info.location().is_some_and(|l| {
+            l.file().contains("/registry/src/") && l.file().contains("/symphonia")
+        });
+        if third_party {
+            let _ = writeln!(std::io::stderr(), "third-party decoder panic: {info}");
+        } else {
+            let _ = writeln!(std::io::stderr(), "panic: {info}");
+            std::process::abort();
+        }
+    }));
+}
+
 /// Probes, preloads and streams `data` with seeks. Bad input must give a typed [`MediaError`];
-/// a panic in a decoder is a bug the fuzzer reports (its panic hook aborts before
-/// [`contain`](crate::decode::contain) can catch it). Returns an `Err` describing a broken
+/// a panic in a decoder is a refused file when the product catches it
+/// ([`contain`](crate::decode::contain)), so the target calls [`fuzz_init`] to replace
+/// libFuzzer's abort-at-panic hook for panics inside a third-party decoder only; a panic in
+/// our own code aborts at once, caught or not. Returns an `Err` describing a broken
 /// invariant: whatever probes must preload to the same format, length and warnings, and must
 /// stream and seek without error (a cue that loads must not fail during the show), damaged or
 /// not.
@@ -34,6 +59,8 @@ pub fn fuzz_decode(data: &[u8]) -> Result<(), String> {
         Ok(p) if p.info() == info && p.warnings() == damage(&probed.warnings).as_slice() => {}
         // Over the memory budget is a legitimate outcome (the cue streams instead).
         Err(MediaError::TooLarge { .. }) => {}
+        // A decoder panic the product caught: the cue is a refused file.
+        Err(MediaError::Corrupt(m)) if m == DECODER_FAILED => return Ok(()),
         other => {
             return Err(format!(
                 "probe {info:?} but preload {:?}",
@@ -57,8 +84,11 @@ pub fn fuzz_decode(data: &[u8]) -> Result<(), String> {
     } else {
         1
     };
-    stream(media(), info.frames, probed.seeking.clone(), seeks)
-        .map_err(|e| format!("probe {info:?} but streaming: {e}"))
+    // The product streams inside `contain`; a panic there is a refused file, not a crash.
+    match contain(|| stream(media(), info.frames, probed.seeking.clone(), seeks)) {
+        Err(MediaError::Corrupt(m)) if m == DECODER_FAILED => Ok(()),
+        r => r.map_err(|e| format!("probe {info:?} but streaming: {e}")),
+    }
 }
 
 fn damage(warnings: &[MediaWarning]) -> Vec<MediaWarning> {
