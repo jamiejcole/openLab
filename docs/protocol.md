@@ -59,6 +59,8 @@ Fields: `ClientMessage` in `protocol/client.rs`. Behaviour notes:
 
 Each action becomes one cue-engine input (mapping in `control/transport.rs`; semantics in skill `cue-engine`). Notes the types do not carry:
 
+- The answer is `result { ok: { data: { type: "transport", seq } } }`: the doc's runtime `seq` once the action was handled. Every `runtime` change the action made has a `seq` up to it, but the broadcast can reach the client after this result, so a client that needs the action's effect (the app's playhead shown ahead of the engine's) waits until it has applied `runtime` up to `seq`. An action that changed nothing (an unknown cue, which only warns) names the `seq` the doc already had.
+
 - `go_from { list, cue }`: the playhead moves to `cue`, then GO, in one step; nothing starts if `cue` is not a playhead position of `list` (`not_in_list` warning).
 - `stop_all` and `hard_stop_all` both map to `StopAll`: every cue and preview stops at once, no fade, nothing pending fires, no panic window. They stay distinct so a client can say which it means (OSC `/stop`, `/hardStop`).
 - `stop { cue, fade_out? }` fades out over `fade_out` (`{duration, curve}`) when given; `hard_stop { cue }` never fades.

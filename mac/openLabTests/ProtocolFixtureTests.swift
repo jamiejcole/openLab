@@ -177,6 +177,14 @@ final class ProtocolFixtureTests: XCTestCase {
         }
     }
 
+    /// A transport answer names the runtime `seq` once the action was handled.
+    func testTransportResultCarriesTheRuntimeSeq() throws {
+        guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_transport")),
+            case .transport(let seq)? = ok.data
+        else { return XCTFail("result_transport") }
+        XCTAssertEqual(seq, 42)
+    }
+
     /// A cue loaded to a time: how far into its action it stands, and a voice's file point beside it.
     func testLoadedProgressCarriesTheTimeIntoTheAction() throws {
         guard case .progress(let items, _) = try ServerMessage.decode(try Fixtures.text("server", "progress_loaded"))

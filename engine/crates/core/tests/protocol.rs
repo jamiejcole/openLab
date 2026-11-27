@@ -1865,6 +1865,16 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "result_transport",
+        server(ServerMessage::Result {
+            id: rid(65),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::Transport { seq: 42 }),
+            }),
+        }),
+    );
+    add(
         "result_sequence_span_unknown",
         server(ServerMessage::Result {
             id: rid(64),

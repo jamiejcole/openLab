@@ -933,6 +933,9 @@ enum ResultData: Sendable, Equatable, Decodable {
     case routeDisplays(routes: [RouteEntry], stages: [StageEntry])
     /// Seconds a cue's sequence lasts; nil when its end is not known.
     case sequenceSpan(Double?)
+    /// A transport action's answer: the workspace's runtime `seq` once it was handled; a client
+    /// that has applied that `seq` has seen every change the action made.
+    case transport(seq: UInt64)
     #if DEBUG
         /// Test support: the test card's frame number the stage shows, and the RGBA colour at each point.
         case stageProbe(frame: UInt16?, colours: [[UInt8]])
@@ -988,6 +991,7 @@ enum ResultData: Sendable, Equatable, Decodable {
                 routes: try c.decode([RouteEntry].self, forKey: "routes"),
                 stages: try c.decode([StageEntry].self, forKey: "stages"))
         case "sequence_span": self = .sequenceSpan(try c.decodeIfPresent(Double.self, forKey: "span"))
+        case "transport": self = .transport(seq: try c.decode(UInt64.self, forKey: "seq"))
         #if DEBUG
             case "stage_probe":
                 self = .stageProbe(

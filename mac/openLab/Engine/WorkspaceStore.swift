@@ -49,16 +49,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     /// Per list, the moves sent with `showPlayheadAhead` that the engine has not answered. While any is
     /// open the list's `playheads` entry keeps the head shown ahead; the engine's echoes only update `engineHeads`.
     private var movesInFlight: [ModelID: Int] = [:]
-    /// Lists whose last move was accepted but whose echo may still be on its way: the result of a
-    /// transport action only says the engine took it, and what happened comes in `runtime`.
-    private var echoPending = Set<ModelID>()
-    /// The engine's playhead when a list's first open move was sent.
-    private var headBeforeMoves: [ModelID: ModelID?] = [:]
-    /// How long a head shown ahead waits for the engine's echo after an accepted move, when no runtime
-    /// message comes to settle it (a move the engine only warned about leaves no echo).
-    var echoWaitNanoseconds: UInt64 = 1_000_000_000
-    /// Numbers each echo wait, so the timer of an earlier answer cannot end a later move's wait early.
-    private var echoWaitTags: [ModelID: Int] = [:]
+    /// Per list with moves open, the highest runtime `seq` their answers named.
+    private var answeredSeq: [ModelID: UInt64] = [:]
+    /// Per list, the runtime `seq` at which the head shown goes back to the engine's: the answer to
+    /// the last move came before the `runtime` messages up to its `seq` (they travel separately).
+    private var settleAt: [ModelID: UInt64] = [:]
     @Published private(set) var previewing: Set<ModelID> = []
     /// Cues started since they were last reset: their rows show the second colour, if they have one.
     @Published private(set) var played: Set<ModelID> = []
@@ -220,12 +215,11 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
 
     /// The playhead drawn on `cue` at once, for a click or key that has just sent it, so the arrow and
     /// the masthead move in the redraw that moves the highlight. The engine's echoes do not move it
-    /// back while a move for the list is unanswered; `playheadAnswered` for the last one reconciles
-    /// with the engine's head (a refused move snaps back).
+    /// back while a move for the list is unanswered; `playheadAnswered` for the last one settles it
+    /// on the engine's head (a refused move snaps back).
     func showPlayheadAhead(list: ModelID, cue: ModelID) {
-        if movesInFlight[list] == nil { headBeforeMoves[list] = engineHeads[list] }
         movesInFlight[list, default: 0] += 1
-        echoPending.remove(list)
+        settleAt[list] = nil
         guard playheads[list] != cue else { return }
         var heads: Set<ModelID> = [cue]
         if let old = playheads[list] { heads.insert(old) }
@@ -233,39 +227,25 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         changes.send(.runtime(cues: [], playheads: heads))
     }
 
-    /// The engine answered one move sent for `list`. With none left open, the head shown is the
-    /// engine's again (the engine refuses an unknown list or a cue not in it, and a send can fail; or
-    /// the playhead moved on by itself meanwhile, a GO). One case waits: an accepted move with the
-    /// engine's head still where it was before the moves, since the result of a transport action says
-    /// only that the engine took the move and its echo comes in `runtime`. The next `runtime` message
-    /// settles the head, or `echoWaitNanoseconds` does when none comes (a move the engine only warned about).
-    func playheadAnswered(list: ModelID, accepted: Bool) {
+    /// The engine answered one move sent for `list`: `seq` is the runtime `seq` its answer named, nil
+    /// for a move refused or a send that failed (which changed nothing). With none left open, the head
+    /// shown is the engine's again once this store has applied every `runtime` message up to the
+    /// highest such `seq`, so an accepted move's echo is in first and a refused or unknown cue's move
+    /// (the engine only warns) goes back. A gap or a new engine brings a snapshot, which settles every list.
+    func playheadAnswered(list: ModelID, seq: UInt64?) {
         guard let open = movesInFlight[list] else { return }
+        if let seq { answeredSeq[list] = max(answeredSeq[list] ?? 0, seq) }
         if open > 1 {
             movesInFlight[list] = open - 1
             return
         }
         movesInFlight[list] = nil
-        let before = headBeforeMoves.removeValue(forKey: list) ?? nil
-        if accepted, engineHeads[list] == before, playheads[list] != engineHeads[list] {
-            echoPending.insert(list)
-            let tag = (echoWaitTags[list] ?? 0) + 1
-            echoWaitTags[list] = tag
-            let wait = echoWaitNanoseconds
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: wait)
-                self?.echoWaitEnded(list: list, tag: tag)
-            }
+        let target = answeredSeq.removeValue(forKey: list) ?? 0
+        if target > runtimeSeq {
+            settleAt[list] = target
         } else if let heads = reconcilePlayhead(list: list) {
             changes.send(.runtime(cues: [], playheads: heads))
         }
-    }
-
-    private func echoWaitEnded(list: ModelID, tag: Int) {
-        guard echoWaitTags[list] == tag, echoPending.remove(list) != nil, movesInFlight[list] == nil,
-            let heads = reconcilePlayhead(list: list)
-        else { return }
-        changes.send(.runtime(cues: [], playheads: heads))
     }
 
     /// The head shown goes back to the engine's; the rows that change, or nil if it already is.
@@ -586,8 +566,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         playheads = Dictionary(s.playheads.compactMap { e in e.cue.map { (e.list, $0) } }, uniquingKeysWith: { $1 })
         engineHeads = playheads
         movesInFlight = [:]
-        echoPending = []
-        headBeforeMoves = [:]
+        answeredSeq = [:]
+        settleAt = [:]
         previewing = Set(s.previewing)
         played = Set(s.played ?? [])
         playlistNext = Dictionary((s.playlistNext ?? []).map { ($0.group, $0.cue) }, uniquingKeysWith: { $1 })
@@ -753,8 +733,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 cues.insert(group)
             case .playhead(let list, let cue):
                 engineHeads[list] = cue
-                // While a move is unanswered the head shown ahead stays; the answer reconciles.
-                if movesInFlight[list] == nil {
+                // While a move is unanswered, or answered with its echo still to come, the head shown
+                // ahead stays (an earlier move's echo must not pull it back); the settle reconciles.
+                if movesInFlight[list] == nil, settleAt[list] == nil {
                     if let old = playheads[list] { heads.insert(old) }
                     if let cue { heads.insert(cue) }
                     playheads[list] = cue
@@ -798,8 +779,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 engineLog.notice("ignoring unknown runtime change \(type, privacy: .public)")
             }
         }
-        for list in echoPending where movesInFlight[list] == nil {
-            echoPending.remove(list)
+        for (list, seq) in settleAt where seq <= runtimeSeq {
+            settleAt[list] = nil
             if let moved = reconcilePlayhead(list: list) { heads.formUnion(moved) }
         }
         // A refusal to start a broken cue is past once the cue can play again: a later break

@@ -254,6 +254,10 @@ pub enum ResultData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         span: Option<f64>,
     },
+    /// Answer to `transport`: the doc's runtime `seq` once the action was handled. Every
+    /// `runtime` change the action made has a `seq` up to this one, so a client that has applied
+    /// `seq` sees everything the action did (the broadcast can reach it after this result).
+    Transport { seq: u64 },
     /// Answer to `backup_keep` and `set_backup_keep`: how many backups of each workspace are kept.
     BackupKeep { count: u32 },
     /// Answer to `osc_state` and `set_osc_port`: the port OSC listens on (the one in use while

@@ -1061,9 +1061,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         lastSentHead = id
         playheadSends += 1
         store.showPlayheadAhead(list: list, cue: id)
-        Task { [weak self] in
-            let result = await self?.store.transport(.setPlayhead(list: list, cue: id))
-            self?.playheadSendAnswered(list: list, accepted: (try? result?.get()) != nil)
+        // The store, not this controller, is held while the engine answers: a window closed meanwhile
+        // is not kept alive by its answer.
+        Task { [weak self, store] in
+            let result = await store.transport(.setPlayhead(list: list, cue: id))
+            var seq: UInt64?
+            if case .success(let ok) = result {
+                // An answer without a seq (none is expected) settles at once.
+                if case .transport(let s)? = ok.data { seq = s } else { seq = store.runtimeSeq }
+            }
+            store.playheadAnswered(list: list, seq: seq)
+            self?.playheadSendAnswered(list: list)
         }
     }
 
@@ -1110,10 +1118,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
-    private func playheadSendAnswered(list: ModelID, accepted: Bool) {
-        // The store counts per list: a move still shown ahead of the engine's, with none left open,
-        // was refused and goes back (the selection with it).
-        store.playheadAnswered(list: list, accepted: accepted)
+    private func playheadSendAnswered(list: ModelID) {
         playheadSends = max(0, playheadSends - 1)
         guard playheadSends == 0 else { return }
         // The last send is answered, so a repeat click may send again. A send that failed, or that the
