@@ -47,9 +47,9 @@ use openlab_core::video_probe::ProbeReport;
 use super::media::Probe;
 use openlab_audio::{MediaInfo, Plays as Passes, Slice, total_frames};
 use openlab_core::{
-    Action, BrokenReason, CueId, CueKind, CueState, Input, LevelParam, PictureFades, PictureParam,
-    PictureRamp, PlanPass, RampCurve, RunId, SampleTime, StageId, VideoGeometry, VideoTiming,
-    plan_point, seconds_to_samples,
+    Action, BrokenReason, CueId, CueKind, CueState, Input, LevelParam, PREVIEW_RUN_BASE,
+    PictureFades, PictureParam, PictureRamp, PlanPass, RampCurve, RunId, SampleTime, StageId,
+    VideoGeometry, VideoTiming, plan_point, seconds_to_samples,
 };
 
 use super::plan::{PlanSpec, cue_slices, picture_info};
@@ -2427,6 +2427,9 @@ impl DocCx<'_> {
                 .filter(|(_, l)| l.doc == doc && l.cue == cue && l.ends.is_none())
                 // Not the picture of a run the cue started since (a GO in its panic fade).
                 .filter(|(_, l)| lost || current != Some(l.run))
+                // A preview's picture is no part of the show run that ended: it ends on its own
+                // length or its Stop Preview.
+                .filter(|(_, l)| l.run.0 < PREVIEW_RUN_BASE)
                 .map(|(id, _)| *id)
                 .collect();
             for id in ids {

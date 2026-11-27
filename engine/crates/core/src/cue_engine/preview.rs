@@ -278,7 +278,9 @@ impl CueEngine {
         match self.previews.get_mut(&cue) {
             Some(p) if p.run == run => {
                 if p.timed && p.paused_at.is_none() {
-                    p.ends = Some(p.started.saturating_add(frames));
+                    // The binary tells the whole action's length: after a pause it has the offset
+                    // already behind it, as `Run::planned_end` counts.
+                    p.ends = Some(p.started.saturating_add(frames.saturating_sub(p.offset)));
                 }
                 true
             }

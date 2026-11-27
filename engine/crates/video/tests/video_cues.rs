@@ -974,6 +974,80 @@ fn previewing_a_movie_plays_it_in_step_and_ends_on_its_last_frame() {
     assert_eq!(s.control().pictures_live(), 0);
 }
 
+/// Pause All / Resume All on a movie preview: it ends the time it had left, not its whole length
+/// after the resume.
+#[test]
+fn a_movie_preview_paused_and_resumed_ends_when_its_rest_has_played() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    s.transport(TransportAction::Preview { cue: id(1) });
+    let at = s.now();
+    run_to(&mut s, at + samples(1.5));
+    s.transport(TransportAction::PauseAll);
+    s.run(samples(0.3));
+    s.transport(TransportAction::ResumeAll);
+    let r = s.now();
+    run_to(&mut s, r + samples(0.4));
+    assert!(s.control().engine().is_previewing(id(1)), "0.1 s left");
+    run_to(&mut s, r + samples(0.6));
+    assert!(
+        !s.control().engine().is_previewing(id(1)),
+        "ended 0.5 s after the resume"
+    );
+    assert_eq!(shown(&mut s), None, "no frozen frame");
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
+/// The show run of a cue ending does not take the picture of the same cue's preview.
+#[test]
+fn a_cues_show_run_ending_leaves_its_preview_on_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![still_cue(1, &png, Some(2.0))]);
+    go(&mut s);
+    let at = s.now();
+    run_to(&mut s, at + samples(1.5));
+    s.transport(TransportAction::Preview { cue: id(1) });
+    run_to(&mut s, at + samples(2.5));
+    expect_state(&s, 1, CueState::Idle, "the run ended");
+    assert!(s.control().engine().is_previewing(id(1)));
+    assert_eq!(shown(&mut s), Some(0), "the preview's picture is still up");
+    assert_eq!(s.control().pictures_live(), 1);
+}
+
+/// Panic takes a Video cue's preview away (a movie and a still), a second Panic cutting it at
+/// once.
+#[test]
+fn panic_takes_a_video_preview_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let png = make(dir.path(), "card.png", "png", None);
+    for (name, cue, twice) in [
+        ("movie", video_cue(1, Some(&movie)), false),
+        ("still", still_cue(1, &png, None), false),
+        ("still, twice", still_cue(1, &png, None), true),
+    ] {
+        let mut ws: Workspace = workspace(vec![cue]);
+        ws.settings.panic_duration = 1.0;
+        let mut s = video_show_of(ws);
+        s.transport(TransportAction::Preview { cue: id(1) });
+        s.run(samples(0.5));
+        assert!(shown(&mut s).is_some(), "{name}: previewing");
+        s.transport(TransportAction::Panic);
+        if twice {
+            s.run(samples(0.1));
+            s.transport(TransportAction::Panic);
+            s.run(samples(0.2));
+        } else {
+            s.run(samples(1.2));
+        }
+        assert!(!s.control().engine().is_previewing(id(1)), "{name}");
+        assert_eq!(shown(&mut s), None, "{name}: picture gone");
+        assert_eq!(s.control().pictures_live(), 0, "{name}");
+    }
+}
+
 /// A still with a duration typed: GO shows it, and it ends after that time.
 #[test]
 fn a_still_with_a_duration_ends_after_it() {
