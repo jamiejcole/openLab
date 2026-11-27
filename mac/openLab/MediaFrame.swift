@@ -20,8 +20,16 @@ enum MediaFrame {
     private final class Cancelled: @unchecked Sendable {
         private let lock = NSLock()
         private var value = false
-        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+        func set() {
+            lock.lock()
+            value = true
+            lock.unlock()
+        }
     }
 
     /// The frame of `url`, or nil when it cannot be read or the task was cancelled (a read still
