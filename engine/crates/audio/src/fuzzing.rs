@@ -20,17 +20,28 @@ pub fn fuzz_init() {
     // libFuzzer's hook aborts at the panic, before the unwind the product relies on. Release
     // builds also lack the overflow checks the fuzz build has, so a panic here is one the
     // product has already confined to its file; the message is kept on stderr.
+    // Only a panic inside a third-party decoder (a registry crate) is let through; one in our
+    // own code (the reader, resampler, seek or this target's invariants) aborts as before, so
+    // the fuzzer still reports it.
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
-        let _ = writeln!(std::io::stderr(), "decoder panic: {info}");
+        let third_party = info
+            .location()
+            .is_some_and(|l| l.file().contains("/registry/src/"));
+        if third_party {
+            let _ = writeln!(std::io::stderr(), "third-party decoder panic: {info}");
+        } else {
+            let _ = writeln!(std::io::stderr(), "panic: {info}");
+            std::process::abort();
+        }
     }));
 }
 
 /// Probes, preloads and streams `data` with seeks. Bad input must give a typed [`MediaError`];
 /// a panic in a decoder is a refused file when the product catches it
 /// ([`contain`](crate::decode::contain)), so the target calls [`fuzz_init`] to replace
-/// libFuzzer's abort-at-panic hook. A panic no `contain` catches still unwinds out of the
-/// target and aborts it. Returns an `Err` describing a broken
+/// libFuzzer's abort-at-panic hook for panics inside a third-party decoder only; a panic in
+/// our own code aborts at once, caught or not. Returns an `Err` describing a broken
 /// invariant: whatever probes must preload to the same format, length and warnings, and must
 /// stream and seek without error (a cue that loads must not fail during the show), damaged or
 /// not.
