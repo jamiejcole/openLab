@@ -614,8 +614,9 @@ final class AppControllerTests: XCTestCase {
         app.windows[second]?.masthead.goButton.performClick(nil)
         await assertEventually { !gos().isEmpty }
         XCTAssertEqual(gos(), [second])
-        let pause = try XCTUnwrap(app.windows[second]?.sidebar.transportButtons[AX.transportPause])
-        pause.performClick(nil)
+        // The window's own Pause All (its button is greyed while nothing plays there).
+        let pause = try XCTUnwrap(app.windows[second]?.onPauseAll)
+        pause()
         await assertEventually { !transports(.pauseAll).isEmpty }
         XCTAssertEqual(transports(.pauseAll), [second])
     }
@@ -779,7 +780,7 @@ final class AppControllerTests: XCTestCase {
     func testResumeAllButtonAddressesItsOwnStore() async throws {
         let second = try await addWorkspace()
         keyDoc = "1"
-        app.windows[second]?.sidebar.transportButtons[AX.transportResume]?.performClick(nil)
+        app.windows[second]?.onResumeAll?()
         await assertEventually { !transports(.resumeAll).isEmpty }
         XCTAssertEqual(transports(.resumeAll), [second])
     }
@@ -2345,6 +2346,177 @@ final class AppControllerTests: XCTestCase {
         _ = delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
         XCTAssertEqual(controller.launcher.window?.isVisible, true)
         controller.closeAllWindows()
+    }
+
+    /// Checklist A3: the app menu's item that opens the settings reads "openLab Preferences…".
+    func testTheAppMenuPreferencesItemReadsOpenLabPreferences() throws {
+        let items = try XCTUnwrap(MainMenu.make().bar.items.first?.submenu?.items)
+        let item = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.showPreferences(_:)) })
+        XCTAssertEqual(item.title, "openLab Preferences…")
+    }
+
+    /// The colour a transport button draws at its left edge, mid-height (inside its plate, clear of the
+    /// picture), read from its own drawing.
+    private func plate(_ button: NSButton) throws -> NSColor {
+        button.layoutSubtreeIfNeeded()
+        let rep = try XCTUnwrap(button.bitmapImageRepForCachingDisplay(in: button.bounds))
+        button.cacheDisplay(in: button.bounds, to: rep)
+        return try XCTUnwrap(rep.colorAt(x: 6, y: rep.pixelsHigh / 2)?.usingColorSpace(.sRGB))
+    }
+
+    /// Checklist A5: nothing playing → Pause and Resume are greyed; a cue plays → Pause is on with a
+    /// yellow plate; Pause → Resume is on with a green plate and Pause is off again; Resume → back to
+    /// playing. Nothing left playing → both greyed again.
+    func testTheSidebarPauseAndResumeButtonsFollowWhatPlaysAndIsPaused() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = wc.store
+        let strip = wc.sidebar.transportButtons
+        let pause = try XCTUnwrap(strip[AX.transportPause] as? TransportButton)
+        let resume = try XCTUnwrap(strip[AX.transportResume] as? TransportButton)
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        // The demo show's intro cue is playing.
+        XCTAssertTrue(pause.isEnabled)
+        XCTAssertFalse(resume.isEnabled)
+        let yellow = try plate(pause)
+        XCTAssertGreaterThan(yellow.redComponent, 0.6, "yellow: \(yellow)")
+        XCTAssertGreaterThan(yellow.greenComponent, 0.45)
+        XCTAssertLessThan(yellow.blueComponent, 0.35)
+        XCTAssertNil(resume.plate)
+        pause.performClick(nil)
+        await assertEventually("the cue is held") {
+            try? await self.real.advance(seconds: 0.05)
+            return store.cueStates[self.intro]?.state == .paused
+        }
+        XCTAssertFalse(pause.isEnabled, "nothing left to pause")
+        XCTAssertTrue(resume.isEnabled)
+        let green = try plate(resume)
+        XCTAssertGreaterThan(green.greenComponent, green.redComponent + 0.2, "green: \(green)")
+        XCTAssertGreaterThan(green.greenComponent, green.blueComponent + 0.2)
+        XCTAssertNil(pause.plate)
+        resume.performClick(nil)
+        await assertEventually("the cue plays again") {
+            try? await self.real.advance(seconds: 0.05)
+            return store.cueStates[self.intro]?.state == .running
+        }
+        XCTAssertTrue(pause.isEnabled)
+        XCTAssertFalse(resume.isEnabled)
+        _ = await store.transport(.stopAll)
+        await assertEventually("nothing plays") {
+            try? await self.real.advance(seconds: 0.05)
+            return !store.cueStates.values.contains { $0.state.isActive }
+        }
+        XCTAssertFalse(pause.isEnabled)
+        XCTAssertFalse(resume.isEnabled)
+        XCTAssertNil(pause.plate)
+        XCTAssertNil(resume.plate)
+    }
+
+    /// Checklist A1: Open Workspace's panel (any open or save panel, any alert) is up → Command-Q → it
+    /// closes and the quit goes on; the app is never left waiting. The quit walk is queued on the main
+    /// queue, which a modal run started from a task on it never serves, so the delegate ends the modal
+    /// first and asks to quit again once it has returned. The guard timer is a deadline, not a wait: it
+    /// ends the modal if the quit left it up.
+    func testQuitWithAPanelOpenClosesItAndQuitsInsteadOfHanging() async throws {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        var asked = 0
+        delegate.terminateAgain = { asked += 1 }
+        func alert() -> NSAlert {
+            let alert = NSAlert()
+            alert.messageText = "Question"
+            alert.addButton(withTitle: "OK")
+            return alert
+        }
+        let modals: [(String, @MainActor () -> NSApplication.ModalResponse)] = [
+            ("open panel", { StandBack.runModal(NSOpenPanel()) }),
+            ("save panel", { StandBack.runModal(NSSavePanel()) }),
+            ("alert", { StandBack.runModal(alert()) }),
+        ]
+        for (what, run) in modals {
+            asked = 0
+            final class Seen: @unchecked Sendable {
+                var reply: NSApplication.TerminateReply?
+                var hung = false
+                nonisolated(unsafe) var delegate: AppDelegate?
+            }
+            let seen = Seen()
+            seen.delegate = delegate
+            let quit = Timer(timeInterval: 0, repeats: false) { _ in
+                MainActor.assumeIsolated { seen.reply = seen.delegate?.applicationShouldTerminate(NSApp) }
+            }
+            let deadline = Timer(timeInterval: 10, repeats: false) { _ in
+                MainActor.assumeIsolated {
+                    seen.hung = true
+                    NSApp.stopModal()
+                }
+            }
+            for timer in [quit, deadline] {
+                RunLoop.main.add(timer, forMode: .common)
+                RunLoop.main.add(timer, forMode: .modalPanel)
+            }
+            let answer = run()
+            deadline.invalidate()
+            XCTAssertFalse(seen.hung, "\(what): the quit left the modal up")
+            XCTAssertEqual(answer, .abort, "\(what) is ended as the quit's own")
+            XCTAssertEqual(seen.reply, .terminateCancel, "\(what): this ask is cancelled, the next one quits")
+            await assertEventually("\(what): the quit is asked again") { asked == 1 }
+            XCTAssertNil(NSApp.modalWindow)
+            XCTAssertFalse(StandBack.shared.isAsking)
+        }
+    }
+
+    /// Modals nested (the import's notes window, then its Save panel) and Command-Q pressed twice: each
+    /// modal is ended in turn, and the quit is asked again once, after the last one has returned.
+    func testQuitWithNestedModalsEndsEachInTurnAndAsksOnce() async throws {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        var asked = 0
+        var modalLeftWhenAsked = false
+        delegate.terminateAgain = {
+            asked += 1
+            modalLeftWhenAsked = modalLeftWhenAsked || NSApp.modalWindow != nil
+        }
+        final class Seen: @unchecked Sendable {
+            var replies: [NSApplication.TerminateReply] = []
+            var inner: NSApplication.ModalResponse?
+            var hung = false
+            nonisolated(unsafe) var delegate: AppDelegate?
+        }
+        let seen = Seen()
+        seen.delegate = delegate
+        let notes = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        notes.isReleasedWhenClosed = false
+        addTeardownBlock { @MainActor in notes.close() }
+        @discardableResult
+        func on(_ delay: TimeInterval, _ work: @escaping @MainActor () -> Void) -> Timer {
+            let timer = Timer(timeInterval: delay, repeats: false) { _ in MainActor.assumeIsolated { work() } }
+            RunLoop.main.add(timer, forMode: .common)
+            RunLoop.main.add(timer, forMode: .modalPanel)
+            return timer
+        }
+        on(0) { seen.inner = StandBack.runModal(NSSavePanel()) }
+        on(0.2) {
+            for _ in 0..<2 {
+                if let reply = seen.delegate?.applicationShouldTerminate(NSApp) { seen.replies.append(reply) }
+            }
+        }
+        let deadline = on(10) {
+            seen.hung = true
+            NSApp.stopModal()
+        }
+        let outer = StandBack.runModal(notes)
+        deadline.invalidate()  // it holds the delegate, and with it the app's windows
+        XCTAssertFalse(seen.hung, "a modal was left up")
+        XCTAssertEqual(outer, .abort)
+        XCTAssertEqual(seen.inner, .abort)
+        XCTAssertEqual(seen.replies, [.terminateCancel, .terminateCancel], "neither ask quits by itself")
+        await assertEventually("the quit is asked again") { asked >= 1 }
+        for _ in 0..<5 { try await real.advance(seconds: 0.05) }  // a second, wrongly queued ask would show
+        XCTAssertEqual(asked, 1, "one quit, not one per Command-Q")
+        XCTAssertFalse(modalLeftWhenAsked, "asked only once no modal is left")
+        XCTAssertNil(NSApp.modalWindow)
     }
 
     // MARK: Launcher flows

@@ -1,0 +1,20 @@
+{
+  "about": "The sidebar's transport strip follows what plays: nothing playing (Pause and Resume greyed), a cue playing (Pause on, yellow), paused (Resume on, green, Pause greyed), resumed; dark, then light.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"shot": "transport-idle"},
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 1},
+    {"shot": "transport-playing"},
+    {"click": "transport-pause"},
+    {"advance": 1},
+    {"shot": "transport-paused"},
+    {"click": "transport-resume"},
+    {"advance": 1},
+    {"shot": "transport-resumed"}
+  ]
+}

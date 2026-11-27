@@ -62,10 +62,37 @@ final class LauncherPreferencesTests: XCTestCase {
         let table = launcher.recentsTable
         let scroll = try XCTUnwrap(table.enclosingScrollView)
         XCTAssertEqual(table.numberOfRows, 10)
-        let last = table.convert(table.rect(ofRow: 9), to: scroll.contentView)
-        XCTAssertLessThanOrEqual(last.maxY, scroll.contentView.bounds.height + 0.5, "the last row ends inside the list")
+        // The list is a fixed area that scrolls (A4): scrolled to its end, the last row is whole.
+        let clip = scroll.contentView
+        clip.scroll(to: NSPoint(x: 0, y: max(0, table.frame.height - clip.bounds.height)))
+        scroll.reflectScrolledClipView(clip)
+        let last = table.convert(table.rect(ofRow: 9), to: clip)
+        XCTAssertLessThanOrEqual(last.maxY, clip.bounds.maxY + 0.5, "the last row ends inside the list")
+        XCTAssertGreaterThanOrEqual(last.minY, clip.bounds.minY - 0.5, "and starts inside it")
         XCTAssertEqual(scroll.contentInsets.top, 0, "no padding above the first row")
         XCTAssertEqual(scroll.contentInsets.bottom, 0)
+    }
+
+    /// Checklist A4: more recent workspaces than fit → the list scrolls inside an area of one fixed
+    /// height; the launcher window keeps its size however many entries there are (it grew with every
+    /// entry before).
+    func testALongRecentsListScrollsInAFixedAreaAndTheWindowKeepsItsSize() throws {
+        let launcher = LauncherWindowController()
+        let window = try XCTUnwrap(launcher.window)
+        window.setContentSize(LauncherWindowController.leastSize)
+        let content = try XCTUnwrap(window.contentView)
+        func recents(_ n: Int) -> [URL] { (1...n).map { URL(fileURLWithPath: "/Shows/Show \($0).openlab") } }
+        launcher.reload(recents: recents(1))
+        content.layoutSubtreeIfNeeded()
+        let scroll = try XCTUnwrap(launcher.recentsTable.enclosingScrollView)
+        let (frame, area) = (window.frame, scroll.frame)
+        launcher.reload(recents: recents(10))
+        content.layoutSubtreeIfNeeded()
+        XCTAssertEqual(window.frame, frame, "the window does not grow with the list")
+        XCTAssertEqual(scroll.frame, area, "the list's area is the same for one entry or ten")
+        XCTAssertGreaterThan(
+            launcher.recentsTable.frame.height, scroll.contentView.bounds.height, "more rows than the area shows")
+        XCTAssertTrue(scroll.hasVerticalScroller, "so it scrolls")
     }
 
     func testNoRecentShowsShowsAnEmptyStateAndDoesNotClipAtItsSmallestSizeInLightAndDark() throws {

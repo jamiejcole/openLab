@@ -491,6 +491,7 @@ impl Converter<'_, '_> {
                         device_output: j - 1,
                         level_db,
                         mute: false,
+                        solo: false,
                     });
                 }
             }

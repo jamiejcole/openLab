@@ -107,10 +107,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return false
     }
 
+    /// A quit ended the modals and is waiting to be asked again.
+    @MainActor private var quitPending = false
+    /// Asks to quit again after a modal was ended for the quit (tests replace it: the real one
+    /// would end the test host).
+    @MainActor var terminateAgain: @MainActor () -> Void = { NSApp.terminate(nil) }
+
     /// One save prompt per dirty workspace, then `goodbye { shutdown }`; Cancel aborts the quit.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if isSecondInstance { return .terminateNow }  // it never started or reached an engine
         if appController.quitting { return .terminateCancel }
+        // An open, save or other modal panel or alert is running its own loop, which never runs the
+        // main queue the quit walk is queued on: ending it first (it answers as cancelled) lets the
+        // walk run. Modals can be nested (the import's notes window, then its Save panel): a timer
+        // that runs inside a modal loop ends each in turn until none is left, then the quit is
+        // asked again once. A second Command-Q meanwhile only waits for that.
+        if quitPending { return .terminateCancel }
+        if NSApp.modalWindow != nil {
+            quitPending = true
+            NSApp.abortModal()
+            nonisolated(unsafe) let delegate = self
+            let timer = Timer(timeInterval: 0.05, repeats: true) { fired in
+                nonisolated(unsafe) let fired = fired
+                MainActor.assumeIsolated {
+                    if NSApp.modalWindow != nil {
+                        NSApp.abortModal()
+                        return
+                    }
+                    fired.invalidate()
+                    delegate.quitPending = false
+                    delegate.terminateAgain()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            RunLoop.main.add(timer, forMode: .modalPanel)
+            return .terminateCancel
+        }
         Task { @MainActor in
             let ok = await appController.prepareToQuit()
             NSApp.reply(toApplicationShouldTerminate: ok)

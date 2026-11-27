@@ -17,7 +17,8 @@ struct PatchRouting: Equatable {
     struct DeviceOutput: Equatable {
         var level: Double = 0
         var mute = false
-        var isDefault: Bool { level == 0 && !mute }
+        var solo = false
+        var isDefault: Bool { level == 0 && !mute && !solo }
     }
 
     struct CueOutput: Equatable {
@@ -35,7 +36,7 @@ struct PatchRouting: Equatable {
     var channels: [Int]?
     /// The crosspoints the show lists.
     var crosspoints: [Pair: Double] = [:]
-    /// Device outputs not at 0 dB, unmuted.
+    /// Device outputs not at 0 dB, unmuted and not soloed.
     var deviceOutputs: [Int: DeviceOutput] = [:]
 
     init() {}
@@ -57,7 +58,8 @@ struct PatchRouting: Equatable {
         }
         for e in patch["device_outputs"]?.arrayValue ?? [] {
             guard let d = e["device_output"]?.doubleValue else { continue }
-            deviceOutputs[Int(d)] = DeviceOutput(level: e["level_db"]?.doubleValue ?? 0, mute: Self.flag(e["mute"]))
+            deviceOutputs[Int(d)] = DeviceOutput(
+                level: e["level_db"]?.doubleValue ?? 0, mute: Self.flag(e["mute"]), solo: Self.flag(e["solo"]))
         }
     }
 
@@ -163,7 +165,7 @@ struct PatchRouting: Equatable {
     func unmuteCommands(_ id: ModelID, outputsJSON: [JSONValue]) -> Command? {
         var target = self
         for i in target.outputs.indices { target.outputs[i].mute = false }
-        target.deviceOutputs = deviceOutputs.mapValues { DeviceOutput(level: $0.level, mute: false) }
+        target.deviceOutputs = deviceOutputs.mapValues { DeviceOutput(level: $0.level, mute: false, solo: $0.solo) }
             .filter { !$0.value.isDefault }
         return commands(id, to: target, outputsJSON: outputsJSON)
     }
@@ -237,13 +239,25 @@ extension Command {
             ])
     }
 
+    /// `SetPatchProperty { device_output_solo }`.
+    static func setPatchDeviceOutputSolo(_ patch: ModelID, deviceOutput: Int, solo: Bool) -> Command {
+        setPatchProperty(
+            patch,
+            [
+                "type": .string("device_output_solo"), "device_output": .int(Int64(deviceOutput)),
+                "value": .bool(solo),
+            ])
+    }
+
     /// `SetPatchProperty { device_outputs }`: every device output's level and mute, sorted.
     static func setPatchDeviceOutputs(_ patch: ModelID, _ outputs: [Int: PatchRouting.DeviceOutput]) -> Command {
         let list: [JSONValue] = outputs.keys.sorted().map { d in
             let o = outputs[d] ?? PatchRouting.DeviceOutput()
-            return .object([
+            var entry: JSONValue = .object([
                 "device_output": .int(Int64(d)), "level_db": .double(o.level), "mute": .bool(o.mute),
             ])
+            if o.solo { entry["solo"] = .bool(true) }
+            return entry
         }
         return setPatchProperty(patch, ["type": .string("device_outputs"), "value": .array(list)])
     }

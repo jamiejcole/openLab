@@ -1257,6 +1257,30 @@ final class WorkspaceSettingsTests: XCTestCase {
         editor.close()
     }
 
+    /// Checklist A6: each device output's strip has an S beside its M. Pressing S solos that output
+    /// (drawn yellow, saved in the patch, so the engine plays only the soloed outputs); pressing it
+    /// again takes the solo off. What the engine does with a solo is tested in its routing tests.
+    func testEachDeviceOutputHasASoloButtonBesideMute() async throws {
+        let (_, sc) = try await open()
+        let editor = try await edit(in: sc)
+        defer { editor.close() }
+        let ew = try XCTUnwrap(editor.window)
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        ew.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(editor.deviceSolos.count, editor.deviceMutes.count)
+        XCTAssertEqual(editor.deviceSolos.map(\.title), Array(repeating: "S", count: editor.deviceSolos.count))
+        editor.deviceSolos[0].performClick(nil)
+        await assertEventually("S is drawn on, M is not") {
+            editor.deviceSolos[0].layer?.backgroundColor != nil && editor.deviceMutes[0].layer?.backgroundColor == nil
+        }
+        XCTAssertFalse(editor.deviceSolos[0].isBordered, "soloed: a yellow fill in place of the bezel")
+        XCTAssertNil(editor.deviceSolos[1].layer?.backgroundColor)
+        XCTAssertTrue(editor.deviceSolos[1].isBordered)
+        editor.deviceSolos[0].performClick(nil)
+        await assertEventually("the solo is off") { editor.deviceSolos[0].layer?.backgroundColor == nil }
+        XCTAssertTrue(editor.deviceSolos[0].isBordered)
+    }
+
     /// Every view under `root`, hidden or not.
     private func allViews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(allViews) }
 
@@ -1310,9 +1334,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         editor.render()
         _ = try page("routing", of: editor)
         await assertEventually { editor.deviceFields.count == 2 && editor.outputFields.count == 2 }
-        // The header's views are the strips and nothing more: three per device output.
+        // The header's views are the strips and nothing more: four per device output (fader, M, S, box).
         let header = editor.matrixHeader.subviews
-        XCTAssertEqual(header.count, 6, "\(header.map { Swift.type(of: $0) })")
+        XCTAssertEqual(header.count, 8, "\(header.map { Swift.type(of: $0) })")
         XCTAssertEqual(editor.matrixCorner.subviews.count, 2, "the main strip: fader and level box, no mute")
         // The rows: one level box per cue output and the (silent) meter.
         XCTAssertEqual(editor.matrixRows.subviews.count, editor.outputFields.count + 1)
@@ -1329,7 +1353,11 @@ final class WorkspaceSettingsTests: XCTestCase {
                 editor.deviceFields[d].frame.minX, box.minX, accuracy: 0.5, "level box \(d + 1) over its boxes")
             XCTAssertEqual(editor.deviceFields[d].frame.width, box.width, accuracy: 0.5)
             XCTAssertEqual(editor.deviceFaders[d].frame.midX, column, accuracy: 0.5)
-            XCTAssertEqual(editor.deviceMutes[d].frame.midX, column, accuracy: 0.5)
+            // M and S side by side, centred together on the column, S on the right.
+            XCTAssertEqual(
+                editor.deviceMutes[d].frame.union(editor.deviceSolos[d].frame).midX, column, accuracy: 0.5)
+            XCTAssertLessThanOrEqual(editor.deviceMutes[d].frame.maxX, editor.deviceSolos[d].frame.minX)
+            XCTAssertEqual(editor.deviceSolos[d].frame.minY, editor.deviceMutes[d].frame.minY)
             // Top to bottom: fader, mute, level box, none overlapping.
             XCTAssertLessThanOrEqual(editor.deviceFaders[d].frame.maxY, editor.deviceMutes[d].frame.minY)
             XCTAssertLessThanOrEqual(editor.deviceMutes[d].frame.maxY, editor.deviceFields[d].frame.minY)
@@ -3020,8 +3048,17 @@ final class WorkspaceSettingsTests: XCTestCase {
         // Each strip sits over its crosspoint column and above the grid's rows.
         for d in 0..<2 {
             let cell = editor.matrix.cellRect(row: 0, column: d)
-            for v in [editor.deviceFaders[d], editor.deviceMutes[d], editor.deviceFields[d]] as [NSView] {
+            for v in [editor.deviceFaders[d], editor.deviceFields[d]] as [NSView] {
                 XCTAssertEqual(v.frame.midX, cell.midX, accuracy: 0.5, "strip \(d + 1) is over its column")
+            }
+            // M and S are a pair centred on the column.
+            XCTAssertEqual(
+                editor.deviceMutes[d].frame.union(editor.deviceSolos[d].frame).midX, cell.midX, accuracy: 0.5,
+                "strip \(d + 1)'s M and S are over its column")
+            let strip: [NSView] = [
+                editor.deviceFaders[d], editor.deviceMutes[d], editor.deviceSolos[d], editor.deviceFields[d],
+            ]
+            for v in strip {
                 XCTAssertLessThan(v.frame.maxY, PatchRoutingView.headerH)
             }
             XCTAssertLessThan(editor.deviceFaders[d].frame.maxY, editor.deviceMutes[d].frame.minY, "fader, then mute")

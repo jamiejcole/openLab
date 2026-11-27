@@ -184,6 +184,8 @@ final class AppController {
     /// Files just saved with Save As, by store: the save's reply may overtake the message that gives
     /// the store its new path, and a quit records the open files before that message can arrive.
     var savedAsPaths: [ObjectIdentifier: String] = [:]
+    /// A Save As that copies the media waits, by store, for the copy's end to save again.
+    var mediaCopyFollowers: [ObjectIdentifier: AnyCancellable] = [:]
     lazy var aboutWindow = AboutWindowController()
     lazy var preferencesWindow = PreferencesWindowController(
         preferences: launchPreferences, audio: AudioPreferencesModel(client: session.appClient))
