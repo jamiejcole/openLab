@@ -444,7 +444,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             l.textColor = .secondaryLabelColor
             return l
         }
-        stillFadeRow = NSStackView(views: [small("timeLoops.fadeIn"), fadeInField, small("timeLoops.fadeOut"), fadeOutField])
+        stillFadeRow = NSStackView(views: [
+            small("timeLoops.fadeIn"), fadeInField, small("timeLoops.fadeOut"), fadeOutField,
+        ])
         stillFadeRow.spacing = 6
         stillFadeRow.isHidden = true
         timelineViews = [left, strip]
