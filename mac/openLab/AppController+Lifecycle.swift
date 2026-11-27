@@ -367,11 +367,12 @@ extension AppController {
         mediaCopyFollowers[key] = store.mediaCopied.first().sink { [weak self, weak store] _ in
             MainActor.assumeIsolated {
                 self?.mediaCopyFollowers[key] = nil
-                guard let self, let store else { return }
-                Task { @MainActor in
+                // Only the store is held while the engine answers (its client fails the request if it
+                // stops): an app or window closed meanwhile is not kept alive by the save.
+                Task { @MainActor [weak store] in
                     // The `document` message with the edit's dirty mark comes before the copy's report.
-                    guard store.document?.dirty == true, store.editsSent == edits else { return }
-                    _ = await self.bounded { await store.save() }
+                    guard let store, store.document?.dirty == true, store.editsSent == edits else { return }
+                    _ = await store.save()
                 }
             }
         }
