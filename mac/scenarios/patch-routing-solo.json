@@ -1,0 +1,18 @@
+{
+  "about": "The patch editor's routing page: each device output's strip has M and S side by side under its fader; S pressed on the first output draws it yellow, M on the second draws it red; then at the least window size.",
+  "show": "Demo",
+  "appearance": "dark",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "audio"},
+    {"click": "settings-patch-edit-1"},
+    {"focus": "patch-editor"},
+    {"tab": "routing"},
+    {"shot": "solo-default"},
+    {"click": "patch-editor-device-solo-1"},
+    {"click": "patch-editor-device-mute-2"},
+    {"shot": "solo-and-mute-on"},
+    {"resize": [520, 460]},
+    {"shot": "solo-least-size"}
+  ]
+}

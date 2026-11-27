@@ -174,7 +174,6 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
     private let scroll = NSScrollView()
     private var nameLabel: NSTextField?
     private var recentHeading: NSTextField?
-    private var listHeight = NSLayoutConstraint()
     /// Where the list starts: below the app name's line, level with the bottom of the icon.
     private static let listTop: CGFloat = 76
     private let emptyView = NSStackView()
@@ -418,8 +417,9 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         noticeBox.isHidden = true
         noticeLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // The list takes the room its rows need (never more than there is), and the notice sits
-        // directly under it: near the row it is about.
+        // The list fills the column above the notice, which sits directly under it: near the row it
+        // is about. Its height never depends on the rows, so the window keeps its size and a long
+        // list scrolls.
         let column = NSView()
         let background = NSBox()
         background.boxType = .custom
@@ -430,10 +430,6 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
             column.addSubview(v)
         }
         recentHeading = heading
-        listHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
-        listHeight.priority = .defaultHigh
-        let noticeGap = noticeBox.topAnchor.constraint(equalTo: scroll.bottomAnchor)
-        noticeGap.priority = .defaultLow
         NSLayoutConstraint.activate([
             column.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
             background.topAnchor.constraint(equalTo: column.topAnchor),
@@ -444,12 +440,10 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
             scroll.topAnchor.constraint(equalTo: column.topAnchor, constant: Self.listTop),
             scroll.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: column.trailingAnchor),
-            listHeight,
-            noticeBox.topAnchor.constraint(greaterThanOrEqualTo: scroll.bottomAnchor),
-            noticeGap,
+            noticeBox.topAnchor.constraint(equalTo: scroll.bottomAnchor),
             noticeBox.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             noticeBox.trailingAnchor.constraint(equalTo: column.trailingAnchor),
-            noticeBox.bottomAnchor.constraint(lessThanOrEqualTo: column.bottomAnchor),
+            noticeBox.bottomAnchor.constraint(equalTo: column.bottomAnchor),
             emptyView.centerXAnchor.constraint(equalTo: column.centerXAnchor),
             emptyView.centerYAnchor.constraint(equalTo: column.centerYAnchor, constant: Self.listTop / 2),
             emptyView.leadingAnchor.constraint(greaterThanOrEqualTo: column.leadingAnchor, constant: 16),
@@ -510,7 +504,6 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
         // A missing-file notice is about the list as it was.
         if missingURL != nil { showNotice(nil) }
         recents = urls.prefix(10).map { LauncherRecent(url: $0, missing: missing.contains($0)) }
-        listHeight.constant = CGFloat(recents.count) * table.rowHeight
         table.reloadData()
         let any = !recents.isEmpty
         scroll.isHidden = !any

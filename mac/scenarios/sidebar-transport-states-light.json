@@ -1,0 +1,18 @@
+{
+  "about": "The sidebar's transport strip in a light window: nothing playing, a cue playing, paused.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "appearance": "light",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"shot": "transport-idle-light"},
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 1},
+    {"shot": "transport-playing-light"},
+    {"click": "transport-pause"},
+    {"advance": 1},
+    {"shot": "transport-paused-light"}
+  ]
+}

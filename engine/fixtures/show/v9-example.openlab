@@ -216,7 +216,8 @@
           {
             "device_output": 2,
             "level_db": -3.0,
-            "mute": false
+            "mute": false,
+            "solo": true
           },
           {
             "device_output": 3,
