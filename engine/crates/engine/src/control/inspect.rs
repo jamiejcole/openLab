@@ -37,6 +37,22 @@ impl Control {
         self.eng.patches.free_slots()
     }
 
+    /// Where each patch of doc `id` plays now, as the wire sends it.
+    pub fn patch_resolutions(
+        &self,
+        id: DocId,
+    ) -> Vec<(
+        openlab_core::PatchId,
+        openlab_core::protocol::WireResolution,
+    )> {
+        self.eng
+            .patches
+            .resolutions(id)
+            .iter()
+            .map(|(p, r)| (*p, openlab_core::protocol::WireResolution::from(r)))
+            .collect()
+    }
+
     /// Probe workers running: one pool for the engine, whatever the number of docs.
     pub fn probe_workers(&self) -> usize {
         self.eng.pool.workers()

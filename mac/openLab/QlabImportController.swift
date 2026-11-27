@@ -103,8 +103,9 @@ final class QlabImportController: NSObject, NSTableViewDataSource, NSTableViewDe
         configure(
             outputsTable,
             [
-                column("name", "qlab.col.output", 140), column("detail", "qlab.col.detail", 92),
-                column("device", "qlab.col.device", 230), column("tag", "qlab.col.tag", 170, flexible: true),
+                column("name", "qlab.col.output", 130), column("kind", "qlab.col.kind", 56),
+                column("detail", "qlab.col.detail", 86), column("device", "qlab.col.device", 220),
+                column("tag", "qlab.col.tag", 140, flexible: true),
             ])
         outputsTable.setAX("qlab-outputs-table")
         headingLabel.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -304,6 +305,8 @@ final class QlabImportController: NSObject, NSTableViewDataSource, NSTableViewDe
         switch (outputRows[row], id) {
         case (.audio(let i), "name"): return label(outputs.audio[i].patch.name)
         case (.video(let i), "name"): return label(outputs.video[i].output.name)
+        case (.audio, "kind"): return label(loc("qlab.outputs.kind.audio"))
+        case (.video, "kind"): return label(loc("qlab.outputs.kind.video"))
         case (.audio(let i), "detail"):
             return label(String(format: loc("qlab.outputs.count"), outputs.audio[i].patch.outputs))
         case (.video(let i), "detail"):
@@ -316,11 +319,10 @@ final class QlabImportController: NSObject, NSTableViewDataSource, NSTableViewDe
         }
     }
 
-    private func tagLabel(_ tag: QlabOutputChoices.Tag?) -> NSTextField {
+    private func tagLabel(_ tag: QlabOutputChoices.Tag) -> NSTextField {
         switch tag {
-        case .matched?: return label(loc("qlab.tag.matched"), color: .systemGreen)
-        case .notFound?: return label(loc("qlab.tag.notFound"), color: .systemOrange)
-        case nil: return label("")
+        case .matched: return label(loc("qlab.tag.matched"), color: .systemGreen)
+        case .notFound: return label(loc("qlab.tag.notFound"), color: .systemOrange)
         }
     }
 
@@ -383,7 +385,7 @@ final class QlabImportController: NSObject, NSTableViewDataSource, NSTableViewDe
 
 /// The notes the new workspace comes with: counts and the report's notes, with Save Notes… and OK.
 @MainActor
-final class QlabNotesController: NSObject {
+final class QlabNotesController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let window: NSWindow
     let info: QlabNotesInfo
     /// The file to write the notes to (nil: cancelled); a seam for tests.
@@ -397,10 +399,17 @@ final class QlabNotesController: NSObject {
     var onError: @MainActor (String) -> Void = { _ in }
     let saveButton = NSButton(title: loc("qlab.notes.save"), target: nil, action: nil)
     let okButton = NSButton(title: loc("alert.ok"), target: nil, action: nil)
-    let textView = NSTextView()
+    let table = NSTableView()
+    private let rows: [QlabNotesInfo.Row]
+    /// The icon column, and the least width of the text column, which fills the rest: the window does
+    /// not resize, so a row's height follows from the text's width.
+    private static let iconWidth: CGFloat = 28
+    private static let textWidth: CGFloat = 526
+    private static let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
 
     init(info: QlabNotesInfo) {
         self.info = info
+        rows = info.rows
         window = PanicKeyWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 420), styleMask: [.titled], backing: .buffered,
             defer: false)
@@ -423,23 +432,31 @@ final class QlabNotesController: NSObject {
                 String(format: loc("qlab.notes.deleted"), info.deleted),
             ].joined(separator: "\n"))
         counts.setAX("qlab-notes-counts")
-        var lines = info.report.notes.map { "• " + QlabNotesInfo.text(of: $0) }
-        if info.report.notes.isEmpty { lines = [loc("qlab.notes.none")] }
-        if info.report.notesOmitted > 0 {
-            lines.append(String(format: loc("qlab.notes.omitted"), info.report.notesOmitted))
+        for (id, width) in [("icon", Self.iconWidth), ("text", Self.textWidth)] {
+            let c = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
+            c.width = width
+            c.minWidth = width
+            if id == "icon" {
+                c.maxWidth = width
+                c.resizingMask = []
+            } else {
+                c.resizingMask = .autoresizingMask
+            }
+            table.addTableColumn(c)
         }
-        textView.string = lines.joined(separator: "\n")
-        textView.isEditable = false
-        textView.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        textView.textContainerInset = NSSize(width: 6, height: 6)
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
-        textView.setAX("qlab-notes-text")
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.intercellSpacing = NSSize(width: 0, height: 1)
+        table.headerView = nil
+        table.dataSource = self
+        table.delegate = self
+        table.usesAlternatingRowBackgroundColors = true
+        table.allowsEmptySelection = true
+        table.allowsColumnResizing = false
+        table.setAX("qlab-notes-table")
         let scroll = NSScrollView()
-        scroll.documentView = textView
+        scroll.documentView = table
         scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
         scroll.scrollerStyle = .legacy
         scroll.borderType = .bezelBorder
         saveButton.setAX("qlab-notes-save")
@@ -487,6 +504,55 @@ final class QlabNotesController: NSObject {
         window.center()
         _ = StandBack.runModal(window)
         window.orderOut(nil)
+    }
+
+    // MARK: Table: one note a row, as tall as its wrapped text
+
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard rows.indices.contains(row) else { return 22 }
+        let text = rows[row].text as NSString
+        let box = text.boundingRect(
+            with: NSSize(width: Self.textWidth - 8, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: Self.font])
+        return max(24, ceil(box.height) + 10)
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard rows.indices.contains(row), let id = tableColumn?.identifier.rawValue else { return nil }
+        let box = NSTableCellView()
+        if id == "icon" {
+            guard let severity = rows[row].severity else { return box }
+            let error = severity == .error
+            let image = NSImageView()
+            image.image = NSImage(
+                systemSymbolName: error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill",
+                accessibilityDescription: loc(error ? "qlab.notes.severity.error" : "qlab.notes.severity.warning"))
+            image.contentTintColor = error ? .systemRed : .systemOrange
+            image.setAccessibilityLabel(loc(error ? "qlab.notes.severity.error" : "qlab.notes.severity.warning"))
+            image.setAX(error ? "qlab-note-error-\(row)" : "qlab-note-warning-\(row)")
+            image.translatesAutoresizingMaskIntoConstraints = false
+            box.addSubview(image)
+            NSLayoutConstraint.activate([
+                image.centerXAnchor.constraint(equalTo: box.centerXAnchor),
+                image.topAnchor.constraint(equalTo: box.topAnchor, constant: 5),
+                image.widthAnchor.constraint(equalToConstant: 16), image.heightAnchor.constraint(equalToConstant: 16),
+            ])
+            return box
+        }
+        let label = NSTextField(wrappingLabelWithString: rows[row].text)
+        label.font = Self.font
+        label.maximumNumberOfLines = 0
+        label.preferredMaxLayoutWidth = Self.textWidth - 8
+        label.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -4),
+            label.topAnchor.constraint(equalTo: box.topAnchor, constant: 5),
+        ])
+        return box
     }
 
     /// Writes the notes as plain text where the operator chose; the sheet stays up.
