@@ -2004,6 +2004,8 @@ final class ScenarioShotTests: XCTestCase {
                 """), out: out)
         do {
             try await runner.run()
+        } catch let skip as XCTSkip {
+            throw skip
         } catch {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             XCTFail("\(error)\n\(log)")
@@ -2018,7 +2020,7 @@ final class ScenarioShotTests: XCTestCase {
                 {"show": "Demo", "window": {"width": 900, "height": 400},
                  "steps": [{"shot": "top"}, {"scroll": "cue-list", "dy": -400, "at": [0.5, 0.05]}, {"shot": "scrolled"}]}
                 """), out: out)
-        do { try await runner.run() } catch {
+        do { try await runner.run() } catch let skip as XCTSkip { throw skip } catch {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             return XCTFail("\(error)\n\(log)")
         }
@@ -2044,7 +2046,7 @@ final class ScenarioShotTests: XCTestCase {
                            {"scroll": "cue-list", "dx": -60, "at": [0.5, 0.05]},
                            {"shot": "sideways"}]}
                 """), out: out)
-        do { try await runner.run() } catch {
+        do { try await runner.run() } catch let skip as XCTSkip { throw skip } catch {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             return XCTFail("\(error)\n\(log)")
         }
@@ -2215,7 +2217,7 @@ final class ScenarioShotTests: XCTestCase {
                   {"choose": "settings-patch-device-1", "item": "\(system)"}, {"advance": 1},
                   {"device": "lose", "output": 2}, {"advance": 2}, {"shot": "unplugged"}]}
                 """), out: out)
-        do { try await runner.run() } catch {
+        do { try await runner.run() } catch let skip as XCTSkip { throw skip } catch {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             return XCTFail("\(error)\n\(log)")
         }
