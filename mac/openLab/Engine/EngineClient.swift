@@ -423,6 +423,7 @@ final class EngineClient: ObservableObject {
         else { return }
         if snapshotRequest == stub.id { snapshotRequest = nil }
         deadlines.removeValue(forKey: stub.id)?.cancel()
+        partials[stub.id] = nil
         pending.removeValue(forKey: stub.id)?(.failure(.encoding("undecodable result")))
     }
 
