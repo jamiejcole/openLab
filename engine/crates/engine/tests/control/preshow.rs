@@ -423,6 +423,10 @@ fn the_no_device_notice_of_a_spare_patch_follows_the_cues_on_it() {
         );
     };
 
+    // Unused and set to no device: the check passes with no system problem.
+    let r = preshow(&mut s);
+    assert!(r.ok && r.system.is_empty() && r.summary.total == 0, "{r:?}");
+
     let mut on_spare = audio(7, &good, 0);
     if let CueKind::Audio { patch, .. } = &mut on_spare.kind {
         *patch = spare_patch();
