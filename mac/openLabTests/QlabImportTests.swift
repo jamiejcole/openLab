@@ -208,6 +208,55 @@ final class QlabImportTests: XCTestCase {
         XCTAssertEqual(outputs.audioRequest.first?.mapping?.channels, [0, 1])
     }
 
+    /// #838 I3: Video Output 1 shows Not mapped with the orange "Device not found"; choosing a display
+    /// turns its Match cell to the green "Matched"; Not mapped again brings the orange text back.
+    func testI3ChoosingAnOutputTurnsItsMatchCellGreen() throws {
+        let r = try report(outputs: [
+            #"{"qlab_id":"v1","name":"Video Output 1","screen":"Gone Display","width":1920,"height":1080}"#
+        ])
+        let displays = [StageDisplay(id: "D1", name: "Studio Display", width: 2560, height: 1440)]
+        let c = QlabImportController(report: r, devices: [], displays: displays)
+        c.window.contentView?.layoutSubtreeIfNeeded()
+        let table = try XCTUnwrap(find("qlab-outputs-table", in: c.window.contentView) as? NSTableView)
+        func match() throws -> NSTextField {
+            let cell = try XCTUnwrap(table.view(atColumn: 4, row: 0, makeIfNecessary: true))
+            return try XCTUnwrap(cell.subviews.compactMap { $0 as? NSTextField }.first)
+        }
+        XCTAssertEqual(try match().stringValue, loc("qlab.tag.notFound"))
+        XCTAssertEqual(try match().textColor, .systemOrange)
+        func choose(_ title: String) throws {
+            let cell = try XCTUnwrap(table.view(atColumn: 3, row: 0, makeIfNecessary: true))
+            let pop = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSPopUpButton }.first)
+            pop.selectItem(withTitle: title)
+            _ = pop.target?.perform(pop.action, with: pop)
+        }
+        try choose("Studio Display")
+        XCTAssertEqual(try match().stringValue, loc("qlab.tag.matched"))
+        XCTAssertEqual(try match().textColor, .systemGreen)
+        try choose(loc("qlab.outputs.notMapped"))
+        XCTAssertEqual(try match().stringValue, loc("qlab.tag.notFound"))
+        XCTAssertEqual(try match().textColor, .systemOrange)
+    }
+
+    /// #838 I4: the outputs table has a Type column saying Audio or Video for each row, and the device
+    /// column is headed "openLab Output".
+    func testI4TheOutputsTableHasATypeColumnAndAnOpenLabOutputHeading() throws {
+        let r = try report(
+            patches: [patch("p1", name: "Main")],
+            outputs: [#"{"qlab_id":"v1","name":"Screen","screen":"","width":1920,"height":1080}"#])
+        let c = QlabImportController(report: r, devices: [device("Main")], displays: [])
+        c.window.contentView?.layoutSubtreeIfNeeded()
+        let table = try XCTUnwrap(find("qlab-outputs-table", in: c.window.contentView) as? NSTableView)
+        XCTAssertEqual(table.tableColumns.map(\.title), ["QLab output", "Type", "Size", "openLab Output", "Match"])
+        let typeColumn = try XCTUnwrap(table.tableColumns.firstIndex { $0.title == "Type" })
+        func text(_ row: Int) throws -> String {
+            let cell = try XCTUnwrap(table.view(atColumn: typeColumn, row: row, makeIfNecessary: true))
+            return try XCTUnwrap(cell.subviews.compactMap { $0 as? NSTextField }.first).stringValue
+        }
+        XCTAssertEqual(try text(0), "Audio")
+        XCTAssertEqual(try text(1), "Video")
+    }
+
     // MARK: Through the app
 
     private func startApp() async throws -> AppController {
@@ -340,26 +389,58 @@ final class QlabImportTests: XCTestCase {
 
     // MARK: Notes
 
-    /// Each note reads as its cue and one plain sentence; a workspace note is the sentence alone.
-    func testTheNotesSheetShowsEachNoteAsOneSentence() throws {
+    private func note(_ number: String, _ name: String, _ kind: String, _ severity: String, _ detail: String) -> String
+    {
+        """
+        {"qlab_id":"q\(number)","number":"\(number)","name":"\(name)","kind":"\(kind)","severity":"\(severity)","detail":"\(detail)"}
+        """
+    }
+
+    /// The notes table's row `row`: its text and the icon's accessibility label (nil: no icon).
+    private func notesRow(_ sheet: QlabNotesController, _ row: Int) throws -> (text: String, icon: String?) {
+        let textCell = try XCTUnwrap(sheet.table.view(atColumn: 1, row: row, makeIfNecessary: true))
+        let label = try XCTUnwrap(textCell.subviews.compactMap { $0 as? NSTextField }.first)
+        let iconCell = try XCTUnwrap(sheet.table.view(atColumn: 0, row: row, makeIfNecessary: true))
+        return (label.stringValue, iconCell.subviews.compactMap { $0 as? NSImageView }.first?.accessibilityLabel())
+    }
+
+    /// #838 I5: the notes are a table, one note a row, each with an icon for error or warning, the
+    /// passcode note a warning, and a row as tall as its wrapped text.
+    func testI5TheConversionNotesAreATableWithAnIconAndAHeightPerRow() throws {
+        let long = String(repeating: "This sentence is long enough to need several lines when it wraps. ", count: 8)
         let notes = [
-            """
-            {"qlab_id":"q","number":"12","name":"Storm","kind":"rate","detail":"Its playback rate was not kept."}
-            """,
-            """
-            {"number":"","name":"","kind":"setting","detail":"OSC access passcodes were not kept; the new workspace has a passcode of its own."}
-            """,
+            note("12", "Storm", "rate", "error", "Its playback rate was not kept."),
+            note(
+                "", "", "setting", "warning",
+                "OSC access passcodes were not kept; the new workspace has a passcode of its own."),
+            note("30", "Long", "effects", "error", long),
         ]
-        let r = try report(notes: notes)
-        let info = QlabNotesInfo(fileName: "Show.qlab5", report: r, converted: 10, placeholders: 0, deleted: 0)
+        let info = QlabNotesInfo(
+            fileName: "Show.qlab5", report: try report(notes: notes), converted: 10, placeholders: 0, deleted: 0)
         let sheet = QlabNotesController(info: info)
-        let text = try XCTUnwrap(find("qlab-notes-text", in: sheet.window.contentView) as? NSTextView).string
+        sheet.window.contentView?.layoutSubtreeIfNeeded()
+        let table = sheet.table
+        XCTAssertEqual(table.numberOfRows, 3, "one note a row")
+        XCTAssertLessThan(
+            table.rect(ofColumn: 1).minX, 40, "the text sits beside its icon: \(table.tableColumns.map(\.width))")
         XCTAssertEqual(
-            text,
-            """
-            • 12 Storm: Its playback rate was not kept.
-            • OSC access passcodes were not kept; the new workspace has a passcode of its own.
-            """)
+            table.rect(ofColumn: 1).maxX, table.superview?.bounds.width ?? 0, accuracy: 1, "the text fills the table")
+        let first = try notesRow(sheet, 0)
+        XCTAssertEqual(first.text, "12 Storm: Its playback rate was not kept.")
+        XCTAssertEqual(first.icon, loc("qlab.notes.severity.error"))
+        let passcode = try notesRow(sheet, 1)
+        XCTAssertEqual(
+            passcode.text, "OSC access passcodes were not kept; the new workspace has a passcode of its own.")
+        XCTAssertEqual(passcode.icon, loc("qlab.notes.severity.warning"), "the passcode note is a warning")
+        XCTAssertEqual(try notesRow(sheet, 2).icon, loc("qlab.notes.severity.error"))
+        let heights = (0..<3).map { table.rect(ofRow: $0).height }
+        XCTAssertEqual(heights[0], heights[1], accuracy: 0.5, "two short notes are as tall as each other")
+        XCTAssertGreaterThan(heights[2], heights[0] * 3, "a long note is as tall as its wrapped text")
+        // The long text is drawn whole in its row: the label's wrapped height fits inside the row.
+        let cell = try XCTUnwrap(table.view(atColumn: 1, row: 2, makeIfNecessary: true))
+        cell.layoutSubtreeIfNeeded()
+        let label = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSTextField }.first)
+        XCTAssertLessThanOrEqual(label.fittingSize.height + 5, heights[2] + 1)
     }
 
     func testSaveNotesWritesPlainText() throws {

@@ -868,7 +868,7 @@
 "problem.patch_missing" = "Its audio patch, {patch}, does not exist.";
 "problem.device_unavailable" = "The audio device for patch {patch} is not available.";
 "problem.device_unavailable.mapped" = "Patch {patch} is available on “{device}”.";
-"problem.device_unavailable.unmapped" = "Patch {patch} is not mapped to an audio device on this Mac.";
+"problem.device_unavailable.unmapped" = "Patch {patch} is not mapped to an audio device.";
 "problem.device_unavailable.device_missing" = "Audio device “{device}” (patch {patch}) is not connected.";
 "problem.device_unavailable.system_output_missing" = "The Mac has no output device selected (patch {patch}, on the system output).";
 "problem.device_unavailable.channels_missing" = "Audio device “{device}” has {available} outputs; patch {patch} needs {needed}.";
@@ -1355,7 +1355,8 @@
 "qlab.col.action" = "Action";
 "qlab.col.output" = "QLab output";
 "qlab.col.detail" = "Size";
-"qlab.col.device" = "On this Mac";
+"qlab.col.device" = "openLab Output";
+"qlab.col.kind" = "Type";
 "qlab.col.tag" = "Match";
 "qlab.action.delete" = "Delete";
 "qlab.action.placeholder" = "Placeholder";
@@ -1370,6 +1371,8 @@
 "qlab.outputs.systemOutput" = "System Output";
 "qlab.outputs.count" = "%d outputs";
 "qlab.outputs.video" = "Video";
+"qlab.outputs.kind.audio" = "Audio";
+"qlab.outputs.kind.video" = "Video";
 "qlab.tag.matched" = "Matched";
 "qlab.tag.notFound" = "Device not found";
 "qlab.error.notQlab" = "This file is not a QLab 5 workspace.";
@@ -1384,6 +1387,8 @@
 "qlab.notes.deleted" = "Deleted: %d";
 "qlab.notes.none" = "Nothing was dropped or changed.";
 "qlab.notes.omitted" = "…and %u more.";
+"qlab.notes.severity.error" = "Error";
+"qlab.notes.severity.warning" = "Warning";
 "qlab.notes.save" = "Save Notes…";
 "qlab.notes.fileName" = "%@ notes.txt";
 "qlab.notes.saveFailed" = "The notes could not be saved: %@";

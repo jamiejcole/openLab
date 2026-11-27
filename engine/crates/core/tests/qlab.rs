@@ -1203,11 +1203,7 @@ fn i6_a_cue_has_its_hotkey_ticked_only_when_the_qlab_cue_has_one() {
             "keyed",
             &[("hotKey", some), ("useHotKey", V::Bool(true))],
         );
-        let off = memo(
-            a,
-            "off",
-            &[("hotKey", some), ("useHotKey", V::Bool(false))],
-        );
+        let off = memo(a, "off", &[("hotKey", some), ("useHotKey", V::Bool(false))]);
         vec![plain, empty, keyed, off]
     });
     let import = read(&file).unwrap();
