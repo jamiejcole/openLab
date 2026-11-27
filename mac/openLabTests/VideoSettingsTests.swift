@@ -82,7 +82,7 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(SettingsCategory.video.pages, [.video, .videoRouting, .videoDevices])
         await settled(sc) { sc.videoPane.nameFields.count == 1 }
         XCTAssertFalse(sc.videoPane.cols.contains(.display), "the stages page chooses no display")
-        XCTAssertEqual(sc.videoRoutingPane.cols, [.handle, .name, .size, .display, .scaling, .guides, .edit, .remove])
+        XCTAssertEqual(sc.videoRoutingPane.cols, [.handle, .name, .size, .display, .layout, .guides, .edit, .remove])
         XCTAssertEqual(sc.videoPane.cols, [.name, .size, .devices, .edit, .monitor, .remove])
         XCTAssertEqual(sc.videoDevicesPane.cols, [.device, .name, .resolution, .rate])
         sc.pageBar.selectedSegment = 1
@@ -555,7 +555,7 @@ final class VideoSettingsTests: XCTestCase {
         // The routing page's display choice reads whole, and its titles line up with its columns.
         sc.tabs.selectTabViewItem(withIdentifier: "videoRouting")
         window.contentView?.layoutSubtreeIfNeeded()
-        for popup in routing.displayPopups + routing.scalingPopups {
+        for popup in routing.displayPopups + routing.layoutPopups {
             XCTAssertLessThanOrEqual(
                 popup.intrinsicContentSize.width, popup.frame.width, popup.titleOfSelectedItem ?? "")
         }
@@ -569,7 +569,7 @@ final class VideoSettingsTests: XCTestCase {
             routing.scroll.scrollerStyle = style
             window.setContentSize(window.contentMinSize)
             window.contentView?.layoutSubtreeIfNeeded()
-            for popup in routing.displayPopups + routing.scalingPopups {
+            for popup in routing.displayPopups + routing.layoutPopups {
                 XCTAssertLessThanOrEqual(
                     popup.intrinsicContentSize.width, popup.frame.width,
                     "least size, \(name) scroll bars: \(popup.titleOfSelectedItem ?? "")")
@@ -991,7 +991,8 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1"])
         XCTAssertEqual(routing.sizeLabels.map(\.stringValue), ["1920 × 1080"])
         XCTAssertEqual(routing.displayPopups.map { $0.titleOfSelectedItem }, ["Virtual V1 (1920 × 1080)"])
-        XCTAssertEqual(routing.scalingPopups.map { $0.titleOfSelectedItem }, [loc("settings.video.scaling.fill")])
+        XCTAssertEqual(routing.layoutPopups.map { $0.title }, [loc("settings.video.layout.full")])
+        XCTAssertEqual(routing.shown?.map(\.scaling), ["fill"])
         XCTAssertEqual(routing.warningLabels.map(\.stringValue), [""], "no warning: shown")
         XCTAssertEqual(rig.store.model?.routes.first?.raw["rotation"]?.doubleValue ?? 0, 0, "not turned")
         XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Stage 1"])
@@ -1059,7 +1060,7 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(routing.nameFields.map(\.stringValue), ["Output 1", "Output 2"])
         XCTAssertEqual(routing.sizeLabels.last?.stringValue, "1280 × 720")
         XCTAssertEqual(routing.displayPopups.last?.titleOfSelectedItem, "Virtual V2 (1280 × 720)")
-        XCTAssertEqual(routing.scalingPopups.last?.titleOfSelectedItem, loc("settings.video.scaling.fill"))
+        XCTAssertEqual(routing.shown?.last?.scaling, "fill")
         XCTAssertEqual(rig.store.model?.routes.last?.raw["rotation"]?.doubleValue ?? 0, 0)
         XCTAssertEqual(rig.store.document?.undoName, "add_route")
         _ = await rig.store.undo()
@@ -1203,11 +1204,11 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { routing.shown?.first?.width == 1280 }
         XCTAssertNil(sc.routeEditor, "OK takes the sheet down")
         XCTAssertEqual(routing.sizeLabels.first?.stringValue, "1280 × 720")
-        XCTAssertEqual(routing.scalingPopups.first?.titleOfSelectedItem, loc("settings.video.scaling.fit"))
+        XCTAssertEqual(routing.shown?.first?.scaling, "fit")
         XCTAssertEqual(rig.store.document?.undoName, "edit_route")
         _ = await rig.store.undo()
         await settled(sc) { routing.shown?.first?.width == 1920 }
-        XCTAssertEqual(routing.scalingPopups.first?.titleOfSelectedItem, loc("settings.video.scaling.fill"), "both")
+        XCTAssertEqual(routing.shown?.first?.scaling, "fill", "both")
     }
 
     /// A route removed while its editor is up (by another client or an undo): OK is refused with
@@ -1621,6 +1622,25 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(urls, [VideoSettingsPane.displaysSettings].compactMap { $0 })
         XCTAssertEqual(urls.first?.scheme, "x-apple.systempreferences")
     }
+
+    /// #842 V4: the Displays Settings button is on the Output Devices page too, in the top row
+    /// beside the caption (as on Output Routing), and opens the same settings; the Video Outputs
+    /// page has none.
+    func testV4TheDisplaysSettingsButtonIsOnBothOutputRoutingAndOutputDevices() async throws {
+        let (_, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let devices = sc.videoDevicesPane
+        let routing = sc.videoRoutingPane
+        for pane in [routing, devices] {
+            XCTAssertEqual(pane.displaysButton.title, loc("settings.video.displaysButton"))
+            XCTAssertNotNil(pane.displaysButton.superview, "the button is in the page")
+            XCTAssertTrue(pane.displaysButton.isDescendant(of: pane.view))
+        }
+        XCTAssertFalse(sc.videoPane.displaysButton.isDescendant(of: sc.videoPane.view))
+        var urls: [URL] = []
+        devices.openURL = { urls.append($0) }
+        devices.displaysButton.performClick(nil)
+        XCTAssertEqual(urls, [VideoSettingsPane.displaysSettings].compactMap { $0 })
+    }
 }
 
 // MARK: Output route guides (#821; QLab 5 manual pp. 230, 232-233)
@@ -1781,7 +1801,11 @@ extension VideoSettingsTests {
         await assertEventually("fill: top and bottom, sides cut off") {
             await self.displayColours("V2", edges) == [c, c, self.black, self.black]
         }
-        choose(loc("settings.video.scaling.fit"), in: routing.scalingPopups[0])
+        routing.editButtons[0].performClick(nil)
+        let scalingEditor = try XCTUnwrap(sc.routeEditor)
+        scalingEditor.scalingPopup.selectItem(withTitle: loc("settings.video.scaling.fit"))
+        scalingEditor.okButton.performClick(nil)
+        await scalingEditor.saving?.value
         await settled(sc) { routing.shown?.first?.scaling == "fit" }
         // Fitted: 1280 x 720 in the middle, black bars of 152 rows above and below.
         await assertEventually("fit: the sides on the edges, bars above and below") {
@@ -1975,11 +1999,11 @@ extension VideoSettingsTests {
     func testAChoiceFromARemovedRowsPopUpGoesToItsOwnRoute() async throws {
         let (rig, sc) = try await openTwoStages()
         let routing = sc.videoRoutingPane
-        await settled(sc) { routing.shown?.count == 3 && routing.scalingPopups.count == 3 }
+        await settled(sc) { routing.shown?.count == 3 && routing.layoutPopups.count == 3 }
         let route3 = "00000000-0000-0000-0000-00000000b003"
         // Output 2's pop-ups, held as an open menu would hold them.
         let display = routing.displayPopups[1]
-        let scaling = routing.scalingPopups[1]
+        let layout = routing.layoutPopups[1]
         XCTAssertEqual(routing.shown?.first { $0.id.raw == route2 }?.display, "V2")
         // Another client removes Output 1: Output 3 now sits where Output 2 did.
         guard case .success = await rig.store.send(command: .removeRoute(ModelID(route1))) else {
@@ -1989,13 +2013,13 @@ extension VideoSettingsTests {
         // The choices are made from the old pop-ups.
         display.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = display.sendAction(display.action, to: display.target)
-        scaling.selectItem(withTitle: loc("settings.video.scaling.fit"))
-        _ = scaling.sendAction(scaling.action, to: scaling.target)
-        await settled(sc) { routing.shown?.first?.display == "V1" && routing.shown?.first?.scaling == "fit" }
+        await settled(sc) { routing.shown?.first?.display == "V1" }
+        try pickLayout(layout, "2 wide", part: 2)
+        await settled(sc) { routing.shown?.first?.partial?.index == 1 }
         let after = routing.shown ?? []
         XCTAssertEqual(after.map(\.id.raw), [route2, route3])
         XCTAssertNotEqual(after[1].display, "V1", "Output 3 keeps its own display")
-        XCTAssertNotEqual(after[1].scaling, "fit", "Output 3 keeps its own scaling")
+        XCTAssertNil(after[1].partial, "Output 3 keeps its own layout")
     }
 
     /// The stage editor's region route pop-up, open while another client removes the region above
@@ -2237,5 +2261,135 @@ extension VideoSettingsTests {
         await showsGuides("V1", [black, black, black], "gone with the workspace")
         _ = try await engine.open(path: path)
         await showsGuides("V1", [black, black, black], "opened again: none")
+    }
+}
+
+// MARK: Route layout (#842 V3; QLab 5 manual pp. 232-234: a route can use one part of a display)
+
+extension VideoSettingsTests {
+    /// The leaf "Part `part`" of the layout `name` ("2 wide") in a route's layout pop-up.
+    private func layoutLeaf(_ popup: NSPopUpButton, _ name: String, part: Int) throws -> NSMenuItem {
+        let group = try XCTUnwrap(
+            popup.menu?.items.first { $0.title == name && $0.hasSubmenu }, "no layout \"\(name)\"")
+        return try XCTUnwrap(
+            group.submenu?.items.first { $0.title == String(format: loc("settings.video.layout.part"), part) })
+    }
+
+    /// Picks the layout `name`, part `part`, as the operator does from the pop-up's menu.
+    func pickLayout(_ popup: NSPopUpButton, _ name: String, part: Int) throws {
+        let item = try layoutLeaf(popup, name, part: part)
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item))
+    }
+
+    private func openOneRouteWithTheCard() async throws -> (Rig, WorkspaceSettingsWindowController) {
+        let (rig, sc) = try await openRouted(
+            routes: [(route1, "Output 1", 1920, 1080)], width: 1920, regions: [(regionA, route1, 0, 1920)],
+            displays: [(route1, "V1")])
+        guard
+            case .success = await rig.client.send({
+                .request(id: $0, .stageTestCard(stage: ModelID(self.stageA), frame: 5))
+            })
+        else {
+            XCTFail("test card")
+            return (rig, sc)
+        }
+        await settled(sc) { sc.videoRoutingPane.layoutPopups.count == 1 }
+        return (rig, sc)
+    }
+
+    /// V3: Output Routing → each route's row has a Layout column where Scaling was, its pop-up
+    /// reading Full and offering the layouts QLab 5 does (2, 3 and 4 wide and high, and the grids by
+    /// their rows, each with its parts); the scaling is in the route's editor.
+    func testV3TheRoutingTableHasALayoutColumnWhereScalingWasWithQLabsChoices() async throws {
+        let (_, sc) = try await openOneRouteWithTheCard()
+        let routing = sc.videoRoutingPane
+        XCTAssertFalse(routing.cols.contains { $0.key == "scaling" }, "no Scaling column")
+        let at = try XCTUnwrap(routing.cols.firstIndex(of: .layout))
+        XCTAssertEqual(routing.cols[at - 1], .display, "beside the display, where Scaling was")
+        let title = routing.header.cell(atColumnIndex: at, rowIndex: 0).contentView as? NSTextField
+        XCTAssertEqual(title?.stringValue, loc("settings.video.col.layout"))
+        let popup = try XCTUnwrap(routing.layoutPopups.first)
+        XCTAssertTrue(popup.isEnabled)
+        XCTAssertEqual(popup.title, loc("settings.video.layout.full"))
+        let items = popup.menu?.items ?? []
+        XCTAssertEqual(
+            items.dropFirst().filter { !$0.isSeparatorItem }.map(\.title),
+            [
+                "Full", "Horizontal", "2 wide", "3 wide", "4 wide", "Vertical", "2 high", "3 high", "4 high", "2 rows",
+                "2 × 2", "3 × 2", "4 × 2", "3 rows", "2 × 3", "3 × 3", "4 × 3", "4 rows", "2 × 4", "3 × 4", "4 × 4",
+            ])
+        let grid = try XCTUnwrap(items.first { $0.title == "3 × 2" }?.submenu)
+        XCTAssertEqual(grid.items.map(\.title), (1...6).map { "Part \($0)" })
+        XCTAssertEqual(items.first { $0.title == "Horizontal" }?.isEnabled, false, "a heading")
+        // The scaling is in the editor, as QLab keeps it.
+        routing.editButtons[0].performClick(nil)
+        XCTAssertEqual(sc.routeEditor?.scalingPopup.itemTitles.contains(loc("settings.video.scaling.stretch")), true)
+    }
+
+    /// V3: Output 1 on V1 showing the card → pick "2 wide", part 2: the pop-up reads that, the
+    /// card fills the right half of V1 and the left half is black; part 1: the other way round;
+    /// Full: the whole display again. The choice is this Mac's, not an undo step.
+    func testV3PickingAPartShowsTheRouteOnThatPartOfItsDisplayOnly() async throws {
+        let (rig, sc) = try await openOneRouteWithTheCard()
+        let routing = sc.videoRoutingPane
+        let popup = try XCTUnwrap(routing.layoutPopups.first)
+        let before = await displayColours("V1", [[0.25, 0.8], [0.75, 0.8]])
+        XCTAssertEqual(before, [[0, 0, 255, 255], [255, 255, 0, 255]], "the card across the whole display")
+        let undoName = rig.store.document?.undoName
+        try pickLayout(popup, "2 wide", part: 2)
+        await settled(sc) { routing.shown?.first?.partial == DisplayPart(columns: 2, rows: 1, index: 1) }
+        XCTAssertEqual(routing.layoutPopups.first?.title, "2 wide · 2")
+        await assertEventually("the card on the right half of V1, black on the left") {
+            await self.displayColours("V1", [[0.25, 0.8], [0.625, 0.8], [0.875, 0.8], [0.49, 0.5]])
+                == [self.black, [0, 0, 255, 255], [255, 255, 0, 255], self.black]
+        }
+        XCTAssertEqual(rig.store.document?.undoName, undoName, "no undo step")
+        let tick = try layoutLeaf(try XCTUnwrap(routing.layoutPopups.first), "2 wide", part: 2)
+        XCTAssertEqual(tick.state, .on, "the chosen part is ticked")
+        try pickLayout(try XCTUnwrap(routing.layoutPopups.first), "2 wide", part: 1)
+        await settled(sc) { routing.shown?.first?.partial?.index == 0 }
+        await assertEventually("the card on the left half") {
+            await self.displayColours("V1", [[0.125, 0.8], [0.375, 0.8], [0.75, 0.8]])
+                == [[0, 0, 255, 255], [255, 255, 0, 255], self.black]
+        }
+        let full = try XCTUnwrap(routing.layoutPopups.first?.menu?.items.first { $0.title == "Full" })
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(full.action), to: full.target, from: full))
+        await settled(sc) { routing.shown?.first?.partial == nil }
+        XCTAssertEqual(routing.layoutPopups.first?.title, loc("settings.video.layout.full"))
+        await assertEventually("the whole display again") {
+            await self.displayColours("V1", [[0.25, 0.8], [0.75, 0.8]]) == before
+        }
+    }
+
+    /// V3: the part is kept with this Mac's display choice: choosing another display puts the
+    /// route on the whole of it, and a route with no display has nothing to lay out (its pop-up is
+    /// off).
+    func testV3AnotherDisplayTakesTheWholeOfItAndNoDisplayLeavesTheLayoutOff() async throws {
+        let (rig, sc) = try await openOneRouteWithTheCard()
+        let routing = sc.videoRoutingPane
+        try pickLayout(try XCTUnwrap(routing.layoutPopups.first), "3 wide", part: 3)
+        await settled(sc) { routing.shown?.first?.partial?.index == 2 }
+        choose("Virtual V2 (1280 × 720)", in: routing.displayPopups[0])
+        await settled(sc) { routing.shown?.first?.display == "V2" && routing.shown?.first?.partial == nil }
+        XCTAssertEqual(routing.layoutPopups.first?.title, loc("settings.video.layout.full"))
+        choose(loc("settings.video.displayNone"), in: routing.displayPopups[0])
+        await settled(sc) { routing.shown?.first?.display == nil }
+        XCTAssertEqual(routing.layoutPopups.first?.isEnabled, false)
+        XCTAssertEqual(rig.store.videoOutputs.routes.first?.mapping?.partial, nil)
+    }
+
+    /// V3: a route on a part of a display → its editor's Set from Device takes the part's size
+    /// (QLab 5 manual p. 234), and the device size line says it.
+    func testV3SetFromDeviceTakesThePartsSize() async throws {
+        let (_, sc) = try await openOneRouteWithTheCard()
+        let routing = sc.videoRoutingPane
+        try pickLayout(try XCTUnwrap(routing.layoutPopups.first), "2 high", part: 2)
+        await settled(sc) { routing.shown?.first?.partial == DisplayPart(columns: 1, rows: 2, index: 1) }
+        routing.editButtons[0].performClick(nil)
+        let editor = try XCTUnwrap(sc.routeEditor)
+        XCTAssertEqual(editor.displaySizeLabel.stringValue, "1920 × 540")
+        editor.fromDisplayButton.performClick(nil)
+        XCTAssertEqual(editor.widthField.stringValue, "1920")
+        XCTAssertEqual(editor.heightField.stringValue, "540")
     }
 }

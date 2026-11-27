@@ -101,7 +101,7 @@ extension CueListViewController: NSMenuDelegate {
         let selected = selectedIDs().compactMap { self.node($0) }
         let context = CueRowMenu.Context(
             selectedCount: selected.count,
-            anyPreviewable: selected.contains { ["audio", "group", "network"].contains($0.cue.kindType) },
+            anyPreviewable: selected.contains { ["audio", "video", "group", "network"].contains($0.cue.kindType) },
             clickedIsPlayhead: isPlayheadRow(node.id),
             clickedHasMedia: revealURL(node) != nil,
             anyActive: store.cueStates.values.contains { $0.state.isActive } || !store.previewing.isEmpty,

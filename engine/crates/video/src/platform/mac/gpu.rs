@@ -148,10 +148,14 @@ impl QuadBytes {
     }
 }
 
-/// Where `place` puts its region on a target of `target` pixels, in normalised device
-/// coordinates (x0, y0, x1, y1; y up), past the target where the scaling overhangs it.
-fn dest_ndc(place: &Placement, target: (u32, u32)) -> [f32; 4] {
-    let [l, t, r, b] = place.dest(target);
+/// Where `place`'s region lands on its part of the display, in normalised device coordinates:
+/// `Placement::dest` (past the target where the scaling overhangs it) cut at the part's edges (a scissor never lets a route drawn on one part of a
+/// splitter's display onto its neighbour's).
+fn lands_ndc(place: &Placement, target: (u32, u32)) -> [f32; 4] {
+    ndc(place.lands(target))
+}
+
+fn ndc([l, t, r, b]: [f64; 4]) -> [f32; 4] {
     [
         (l * 2.0 - 1.0) as f32,
         (1.0 - b * 2.0) as f32,
@@ -279,7 +283,7 @@ impl Gpu {
         let mut quads = Vec::with_capacity(layers.len());
         for layer in layers {
             let place = &layer.place;
-            let clip = scissor(dest_ndc(place, size), size);
+            let clip = scissor(lands_ndc(place, size), size);
             let (w, h) = (f64::from(layer.width), f64::from(layer.height));
             let whole = Quad {
                 corners: [[0.0, 0.0], [w, 0.0], [0.0, h], [w, h]],
@@ -360,7 +364,7 @@ impl Gpu {
         quads: &mut Vec<(QuadBytes, Texture, MTLScissorRect)>,
     ) -> Result<(), String> {
         let place = &guide.place;
-        let clip = scissor(dest_ndc(place, size), size);
+        let clip = scissor(lands_ndc(place, size), size);
         let solid = self.solid(guide.colour)?;
         for corners in guide.quads(size) {
             let bar = Quad {
@@ -652,10 +656,11 @@ fn texture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::WHOLE_DISPLAY;
 
     #[test]
     fn a_whole_stage_fits_its_target_keeping_its_shape() {
-        let fit = |stage: (u32, u32), target| dest_ndc(&Placement::whole(stage.0, stage.1), target);
+        let fit = |stage: (u32, u32), target| ndc(Placement::whole(stage.0, stage.1).dest(target));
         assert_eq!(fit((1920, 1080), (1920, 1080)), [-1.0, -1.0, 1.0, 1.0]);
         assert_eq!(
             fit((1080, 1080), (1920, 1080)),
@@ -729,6 +734,7 @@ mod tests {
             rotation,
             scaling,
             screen: None,
+            part: WHOLE_DISPLAY,
         };
         // The stage's left half alone, filling a route of its own shape: red above, blue below.
         let left = draw(
@@ -881,6 +887,7 @@ mod tests {
             rotation,
             scaling,
             screen: Some(display),
+            part: WHOLE_DISPLAY,
         };
         let layer = |rotation, scaling| Layer {
             stage: openlab_core::StageId(uuid::Uuid::nil()),
