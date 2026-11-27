@@ -120,6 +120,8 @@ final class EngineClient: ObservableObject {
     private var endWaiters: [CheckedContinuation<Void, Never>] = []
     private typealias Completion = @MainActor (Result<OkBody, EngineError>) -> Void
     private var pending: [UInt64: Completion] = [:]
+    /// Requests that take the start of their answer while it is made (`waveform_partial`).
+    private var partials: [UInt64: @MainActor (WaveformPartial) -> Void] = [:]
     /// The one snapshot-answering request in flight, if any.
     private var snapshotRequest: UInt64?
     /// Per connection, from 1. Settable for tests only (to reach the `u64::MAX` edge).
@@ -170,9 +172,12 @@ final class EngineClient: ObservableObject {
     // MARK: Requests
 
     /// Sends one message built from a fresh request id and waits for its `result`.
-    func send(_ make: (UInt64) -> ClientMessage) async -> Result<OkBody, EngineError> {
+    /// `onPartial` is given each `waveform_partial` the engine sends for it before the `result`.
+    func send(
+        _ make: (UInt64) -> ClientMessage, onPartial: (@MainActor (WaveformPartial) -> Void)? = nil
+    ) async -> Result<OkBody, EngineError> {
         await withCheckedContinuation { cont in
-            submit(make, completion: { cont.resume(returning: $0) })
+            submit(make, partial: onPartial, completion: { cont.resume(returning: $0) })
         }
     }
 
@@ -243,7 +248,10 @@ final class EngineClient: ObservableObject {
     }
 
     /// Synchronous so the bookkeeping (pending, snapshot gate) is settled before any suspension.
-    private func submit(_ make: (UInt64) -> ClientMessage, completion: @escaping Completion) {
+    private func submit(
+        _ make: (UInt64) -> ClientMessage, partial: (@MainActor (WaveformPartial) -> Void)? = nil,
+        completion: @escaping Completion
+    ) {
         guard state == .connected, let connection else { return completion(.failure(.notConnected)) }
         let id = allocateID()
         let message = make(id)
@@ -253,6 +261,7 @@ final class EngineClient: ObservableObject {
         let text: String
         do { text = try message.text() } catch { return completion(.failure(.encoding("\(error)"))) }
         pending[id] = completion
+        partials[id] = partial
         if answersWithSnapshot { snapshotRequest = id }
         if message.hasDeadline {
             deadlines[id] = Task { [weak self, requestScheduler, timeout = policy.requestTimeout] in
@@ -268,6 +277,7 @@ final class EngineClient: ObservableObject {
     /// an open socket: the connection is closed, which fails the rest and reconnects.
     private func timedOut(_ id: UInt64, on conn: any EngineConnection) {
         deadlines[id] = nil
+        partials[id] = nil
         guard connection === conn, let completion = pending.removeValue(forKey: id) else { return }
         if snapshotRequest == id { snapshotRequest = nil }
         timeoutsInARow += 1
@@ -283,6 +293,7 @@ final class EngineClient: ObservableObject {
     private func failPending(_ error: EngineError) {
         let all = pending
         pending = [:]
+        partials = [:]
         snapshotRequest = nil
         for (_, timer) in deadlines { timer.cancel() }
         deadlines = [:]
@@ -423,6 +434,7 @@ final class EngineClient: ObservableObject {
             if snapshotRequest == id { snapshotRequest = nil }
             timeoutsInARow = 0
             deadlines.removeValue(forKey: id)?.cancel()
+            partials[id] = nil
             guard let completion = pending.removeValue(forKey: id) else { return }
             switch outcome {
             case .ok(let body):
@@ -436,6 +448,9 @@ final class EngineClient: ObservableObject {
         case .error(let code, let text, _):
             engineLog.error("engine error \(code.raw, privacy: .public): \(text, privacy: .public)")
             engineErrors.send(ErrorBody(code: code, message: text))
+        case .waveformPartial(let p):
+            // Only for a request still waiting; one that came after its result is dropped.
+            partials[p.id]?(p)
         case .unknown(let type):
             engineLog.notice("ignoring unknown server message type \(type, privacy: .public)")
         case .closed(let doc):

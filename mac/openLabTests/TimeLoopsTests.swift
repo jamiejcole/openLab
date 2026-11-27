@@ -363,7 +363,7 @@ final class TimeLoopsTests: XCTestCase {
         var held: [CheckedContinuation<Result<WaveformPeaks, EngineError>, Never>] = []
         let panel = TimeLoopsPanel()
         init() {
-            panel.loadPeaks = { [unowned self] cue, _, _, _ in
+            panel.loadPeaks = { [unowned self] cue, _, _, _, _ in
                 asked.append(cue)
                 return await withCheckedContinuation { held.append($0) }
             }
@@ -470,10 +470,10 @@ final class TimeLoopsTests: XCTestCase {
         var out = 0
         var most = 0
         let real = panel.loadPeaks
-        panel.loadPeaks = { cue, a, b, n in
+        panel.loadPeaks = { cue, a, b, n, partial in
             out += 1
             most = max(most, out)
-            let r = await real?(cue, a, b, n) ?? .failure(.notConnected)
+            let r = await real?(cue, a, b, n, partial) ?? .failure(.notConnected)
             out -= 1
             return r
         }
@@ -485,6 +485,87 @@ final class TimeLoopsTests: XCTestCase {
         await assertEventually("the last cue's waveform is drawn") { panel.waveform.peaks?.cue == last }
         XCTAssertNotEqual(panel.waveform.message, loc("timeLoops.unavailable"))
         XCTAssertLessThanOrEqual(most, 1)
+    }
+
+    /// What the drawing held each time the engine gave the start of the waves (W2).
+    @MainActor private final class PartialLog {
+        var drawn: [(columns: Int, wholeYet: Bool, rightEdge: CGFloat)] = []
+    }
+
+    /// W2: Timing & Loops open, a long Audio cue not yet shown is clicked: the waveform area is there
+    /// at once, empty and with no words; the waves draw in from the left as the engine reads the file
+    /// (the right of them still empty), and the whole waveform then replaces them.
+    func testW2WaveformDrawsInAsTheFileIsRead() async throws {
+        // A short sound is shown first, so the tab is open; the long one is not yet shown this session.
+        let (short, id) = ("00000000-0000-0000-0000-000000000300", "00000000-0000-0000-0000-000000000301")
+        let rig = try await Rig.open("Demo") { show in
+            try writeWAV(show.appendingPathComponent("media/a.wav"), seconds: 1)
+            try writeWAV(show.appendingPathComponent("media/long.wav"), seconds: 20)
+            try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
+                guard var lists = ws["cue_lists"]?.arrayValue, var cues = lists.first?["cues"]?.arrayValue,
+                    let first = cues.first
+                else { return XCTFail("the demo show has no first cue") }
+                for (n, (cueID, file)) in [(short, "a.wav"), (id, "long.wav")].enumerated() {
+                    var cue = first
+                    cue.set("id", .string(cueID))
+                    cue.set("number", .string("W2\(n)"))
+                    var kind = first["kind"] ?? .object([:])
+                    let media = kind["media"]?.stringValue ?? "media/a.wav"
+                    kind.set("media", .string(media.replacingOccurrences(of: "a.wav", with: file)))
+                    cue.set("kind", kind)
+                    cues.append(cue)
+                }
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+        defer { rig.client.stop() }
+        let inspector = InspectorViewController(store: rig.store)
+        let box = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 300), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        box.isReleasedWhenClosed = false
+        box.contentView = inspector.view
+        defer { box.orderOut(nil) }
+        inspector.setSelection([ModelID(short)])
+        inspector.tabView.selectTabViewItem(withIdentifier: "timeLoops")
+        inspector.view.layoutSubtreeIfNeeded()
+        let panel = inspector.timeLoops
+        if panel.waveform.bounds.width < 625 { panel.waveform.setFrameSize(NSSize(width: 625, height: 120)) }
+        await assertEventually("durations known") {
+            [short, id].allSatisfy { rig.store.mediaDurations[ModelID($0)]?.file != nil }
+        }
+        await assertEventually("the short sound's waveform is drawn") { panel.waveform.peaks != nil }
+        // What the drawing held each time the engine gave the start of the waves.
+        let log = PartialLog()
+        let real = panel.loadPeaks
+        panel.loadPeaks = { cue, a, b, n, partial in
+            let hook: @MainActor (WaveformPeaks) -> Void = { p in
+                partial(p)
+                let d = panel.waveform.currentDrawing()
+                log.drawn.append((d.columns.count, panel.waveform.peaks != nil, d.columns.last?.x ?? 0))
+            }
+            guard let real else { return .failure(.notConnected) }
+            return await real(cue, a, b, n, hook)
+        }
+        inspector.setSelection([ModelID(id)])
+        // At once, before any answer: the area is there, empty, with nothing said in it.
+        XCTAssertNotNil(panel.waveform.superview)
+        XCTAssertFalse(panel.waveform.isHidden)
+        XCTAssertNil(panel.waveform.message)
+        XCTAssertNil(panel.waveform.peaks)
+        XCTAssertTrue(panel.waveform.currentDrawing().columns.isEmpty)
+        await assertEventually("the whole waveform replaces the start of it") { panel.waveform.peaks != nil }
+        let seen = log.drawn
+        XCTAssertFalse(seen.isEmpty, "the engine sent the start of the waves while it read the file")
+        XCTAssertTrue(seen.allSatisfy { !$0.wholeYet && $0.columns > 0 }, "each drew some waves, before the whole")
+        XCTAssertEqual(seen.map(\.columns), seen.map(\.columns).sorted(), "the waves grow")
+        let width = panel.waveform.currentDrawing().rect.width
+        XCTAssertTrue(seen.allSatisfy { $0.rightEdge < width - 2 }, "the rest stays empty until it is read")
+        let whole = panel.waveform.currentDrawing().columns.count
+        XCTAssertGreaterThan(whole, seen.last?.columns ?? whole)
+        XCTAssertNil(panel.waveform.partialPeaks)
+        XCTAssertNil(panel.waveform.message)
     }
 
     /// Waits for the peaks of the visible stretch, including a read a later zoom queued behind one.

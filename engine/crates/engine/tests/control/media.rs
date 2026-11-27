@@ -2076,6 +2076,58 @@ fn a_waveform_is_read_on_a_worker_and_kept_for_every_zoom() {
     assert_eq!(s.control().waveforms_pending(), 0);
 }
 
+/// AUD-14: while a long file is read, the request is sent the start of its answer: at least one
+/// `waveform_partial` before the `result`, each holding more columns than the last, the same
+/// total each time, and the `result` last with the whole answer.
+#[test]
+fn a_long_waveform_read_sends_growing_partials_before_its_result() {
+    // Four times the frames between two partials: a half of 0.5 then a half of -0.25.
+    let half = 2 * openlab_audio::MIN_PARTIAL_FRAMES as usize;
+    let mut samples = dc(half, 0.5);
+    samples.extend(dc(half, -0.25));
+    let path = wav(&samples);
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    let mut rx = ask_waveform(&mut s, 1, (0.0, 1e9, 64));
+    s.settle_media();
+    let mut partials = Vec::new();
+    let mut last = None;
+    while let Ok(m) = rx.try_recv() {
+        assert!(last.is_none(), "nothing follows the result");
+        match m {
+            ServerMessage::WaveformPartial { .. } => partials.push(m),
+            other => last = Some(other),
+        }
+    }
+    assert!(!partials.is_empty(), "a partial before the result");
+    let whole = waveform_of(last);
+    assert_eq!(whole.channels[0].max.len(), 64);
+    let mut seen = 0;
+    for m in partials {
+        let ServerMessage::WaveformPartial {
+            cue,
+            duration,
+            start,
+            end,
+            buckets,
+            channels,
+            ..
+        } = m
+        else {
+            continue;
+        };
+        assert_eq!(cue, id(1));
+        assert_eq!((duration, start, end), (whole.duration, 0.0, whole.end));
+        assert_eq!(buckets, 64, "the columns the result will have");
+        let n = channels[0].max.len();
+        assert!(n > seen && n < 64, "{n} columns after {seen}");
+        assert_eq!(channels[0].min.len(), n);
+        seen = n;
+        // The first half of the file is 0.5 throughout.
+        assert!(channels[0].max[..n.min(30)].iter().all(|&v| v == 16384));
+    }
+    assert_eq!(s.control().waveforms_pending(), 0);
+}
+
 /// A waveform of a cue that is not an Audio cue, has no playable file or does not exist is
 /// refused at once, each with its own code.
 #[test]

@@ -276,9 +276,20 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     }
 
     /// An Audio cue's file waveform over file seconds `start..<end` in `buckets` parts (AUD-14).
-    func waveform(cue: ModelID, start: Double, end: Double, buckets: Int) async -> Result<WaveformPeaks, EngineError> {
+    /// `onPartial` is given the start of the drawing while the file is read: the columns so far, over
+    /// the stretch they cover; the result replaces it whole.
+    func waveform(
+        cue: ModelID, start: Double, end: Double, buckets: Int, onPartial: (@MainActor (WaveformPeaks) -> Void)? = nil
+    ) async -> Result<WaveformPeaks, EngineError> {
         let n = UInt32(Swift.max(1, Swift.min(buckets, 8192)))
-        switch await client.send({ .request(id: $0, .waveform(cue: cue, start: start, end: end, buckets: n)) }) {
+        let partial = onPartial.map { handler in
+            { @MainActor (p: WaveformPartial) in
+                if p.cue == cue, let peaks = p.peaks { handler(peaks) }
+            }
+        }
+        switch await client.send(
+            { .request(id: $0, .waveform(cue: cue, start: start, end: end, buckets: n)) }, onPartial: partial)
+        {
         case .success(let ok):
             if case .waveform(let peaks)? = ok.data { return .success(peaks) }
             return .failure(.encoding("waveform result has no waveform data"))
@@ -482,7 +493,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         case .mediaCopied(let report):
             setCopying([], onDemand: false)
             mediaCopied.send(report)
-        case .result, .error, .appWelcome, .workspaces, .unknown:
+        case .result, .error, .appWelcome, .workspaces, .unknown, .waveformPartial:
             // These belong to the client or session.
             break
         }

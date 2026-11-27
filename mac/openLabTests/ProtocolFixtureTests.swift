@@ -28,6 +28,7 @@ final class ProtocolFixtureTests: XCTestCase {
         case .videoOutputs: return "video_outputs"
         case .mediaCopyProgress: return "media_copy_progress"
         case .mediaCopied: return "media_copied"
+        case .waveformPartial: return "waveform_partial"
         case .unknown(_): return "?"
         }
     }
@@ -242,6 +243,36 @@ final class ProtocolFixtureTests: XCTestCase {
                 WaveformPeaks.Channel(min: [-32767, -120, 0], max: [32767, 4000, 0]),
                 WaveformPeaks.Channel(min: [-16384, -1, 0], max: [16384, 1, 0]),
             ])
+    }
+
+    /// AUD-14: a `waveform_partial` decodes, and what is drawn from it is the columns it holds over the
+    /// stretch they cover; one that does not hold together draws nothing.
+    func testWaveformPartialMatchesTheFixture() throws {
+        guard case .waveformPartial(let p) = try ServerMessage.decode(try Fixtures.text("server", "waveform_partial"))
+        else { return XCTFail("waveform_partial") }
+        XCTAssertEqual(p.id, 52)
+        XCTAssertEqual(p.cue, "00000000-0000-0000-0000-00000000000a")
+        XCTAssertEqual([p.duration, p.start, p.end], [62.5, 1.5, 2.0])
+        XCTAssertEqual(p.buckets, 6)
+        // Two of six columns over 1.5 s ... 2.0 s: the first third.
+        let peaks = try XCTUnwrap(p.peaks)
+        XCTAssertEqual(peaks.start, 1.5)
+        XCTAssertEqual(peaks.end, 1.5 + 0.5 * 2 / 6, accuracy: 1e-9)
+        XCTAssertEqual(peaks.channels.count, 2)
+        let tooMany = WaveformPartial(
+            id: 1, cue: p.cue, duration: 62.5, start: 1.5, end: 2.0, buckets: 1, channels: p.channels)
+        XCTAssertNil(tooMany.peaks, "more columns than the answer will have")
+        let ragged = WaveformPartial(
+            id: 1, cue: p.cue, duration: 62.5, start: 1.5, end: 2.0, buckets: 6,
+            channels: [p.channels[0], WaveformPeaks.Channel(min: [0], max: [0])])
+        XCTAssertNil(ragged.peaks, "channels of different lengths")
+        let empty = WaveformPartial(
+            id: 1, cue: p.cue, duration: 62.5, start: 1.5, end: 2.0, buckets: 6,
+            channels: [WaveformPeaks.Channel(min: [], max: [])])
+        XCTAssertNil(empty.peaks, "no columns")
+        let wild = WaveformPartial(
+            id: 1, cue: p.cue, duration: 62.5, start: 1.5, end: .infinity, buckets: 6, channels: p.channels)
+        XCTAssertNil(wild.peaks, "a stretch that is not finite")
     }
 
     /// The snapshot's `media_durations` and the `media_duration` runtime change.

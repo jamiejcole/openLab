@@ -20,6 +20,13 @@ pub const MAX_RANGE_BUCKETS: usize = 1 << 16;
 pub const PEAK_SCALE: f32 = 32767.0;
 /// Frames the decoder is asked for at a time (cancellation latency).
 const CHUNK_FRAMES: usize = 4096;
+/// Most partial overviews one build hands out: one per `1 / MAX_PARTIALS` of the file read, so a
+/// build's partials are bounded whatever its length.
+pub const MAX_PARTIALS: u64 = 32;
+/// Fewest frames read between two partials: a short file is read in moments and has none.
+pub const MIN_PARTIAL_FRAMES: u64 = 32_768;
+/// Most buckets of one partial overview (per channel); the read-so-far is merged down to fit.
+pub const MAX_PARTIAL_BUCKETS: usize = 8192;
 
 /// Minimum and maximum of a stretch of one channel, quantised to `i16` (full scale = ±32767).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -216,6 +223,37 @@ impl WaveformBuilder {
         })
     }
 
+    /// The overview of the whole buckets read so far, merged down to at most
+    /// [`MAX_PARTIAL_BUCKETS`] (a single level; `frames` is what it covers). `None` before the
+    /// first bucket is whole, or when memory for it cannot be had.
+    pub fn partial(&self) -> Option<Waveform> {
+        let n = self.level0.first().map_or(0, Vec::len);
+        if n == 0 {
+            return None;
+        }
+        let per = n.div_ceil(MAX_PARTIAL_BUCKETS);
+        let mut channels = Vec::new();
+        channels.try_reserve_exact(self.level0.len()).ok()?;
+        for src in &self.level0 {
+            let mut v: Vec<Peak> = Vec::new();
+            v.try_reserve_exact(n.div_ceil(per)).ok()?;
+            v.extend(
+                src.chunks(per)
+                    .map(|c| c.iter().copied().reduce(Peak::merge).unwrap_or_default()),
+            );
+            channels.push(v);
+        }
+        Some(Waveform {
+            sample_rate: self.sample_rate,
+            frames: n as u64 * BASE_FRAMES,
+            channels: u16::try_from(self.channels).unwrap_or(u16::MAX),
+            levels: vec![Level {
+                frames_per_bucket: BASE_FRAMES * per as u64,
+                channels,
+            }],
+        })
+    }
+
     /// Frames accepted so far.
     pub fn frames(&self) -> u64 {
         self.frames
@@ -331,6 +369,15 @@ pub struct WaveformResult {
     pub warnings: Vec<MediaWarning>,
 }
 
+/// An overview of the start of a file, handed out while [`build_waveform_with`] still reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaveformPartial {
+    /// What is read so far: one level, covering `wave.frames` frames from the file's start.
+    pub wave: Waveform,
+    /// The frames the whole file is expected to have (the probe's).
+    pub total_frames: u64,
+}
+
 /// Decodes `media` once with the regular decoder and builds its waveform. `info` is the file's
 /// probe ([`crate::Probed::info`]); it sizes the allocation. Blocking: call from a worker
 /// thread. `cancel` is checked before opening, before every ~4096-frame read and before each
@@ -345,15 +392,32 @@ pub fn build_waveform(
     info: &MediaInfo,
     cancel: &AtomicBool,
 ) -> Result<WaveformResult, WaveformError> {
+    build_waveform_with(media, info, cancel, &mut |_| {})
+}
+
+/// [`build_waveform`] that also hands `on_partial` an overview of the file read so far each
+/// time another `1 / MAX_PARTIALS` of it (at least [`MIN_PARTIAL_FRAMES`]) has been read, so at
+/// most [`MAX_PARTIALS`] of them, each covering more than the last and none once the cancel flag
+/// is set. A file that cannot be decoded still ends in its error: the partials before it stand
+/// for what was readable. `on_partial` runs on the calling thread between two reads.
+pub fn build_waveform_with(
+    media: Media,
+    info: &MediaInfo,
+    cancel: &AtomicBool,
+    on_partial: &mut dyn FnMut(WaveformPartial),
+) -> Result<WaveformResult, WaveformError> {
     // A panic inside symphonia (malformed data) is a corrupt file, not a dead worker.
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(media, info, cancel)))
-        .unwrap_or_else(|_| Err(MediaError::Corrupt("decoder failed".into()).into()))
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        build(media, info, cancel, on_partial)
+    }))
+    .unwrap_or_else(|_| Err(MediaError::Corrupt("decoder failed".into()).into()))
 }
 
 fn build(
     media: Media,
     info: &MediaInfo,
     cancel: &AtomicBool,
+    on_partial: &mut dyn FnMut(WaveformPartial),
 ) -> Result<WaveformResult, WaveformError> {
     if cancel.load(Ordering::Relaxed) {
         return Err(WaveformError::Cancelled);
@@ -365,6 +429,8 @@ fn build(
     let ch = src.channels();
     let mut builder = WaveformBuilder::new(info.sample_rate, info.channels, info.frames)?;
     let mut buf = vec![0.0f32; CHUNK_FRAMES * ch];
+    let step = (info.frames / MAX_PARTIALS).max(MIN_PARTIAL_FRAMES);
+    let mut next_partial = step;
     while builder.remaining() > 0 {
         if cancel.load(Ordering::Relaxed) {
             return Err(WaveformError::Cancelled);
@@ -377,6 +443,18 @@ fn build(
             break;
         }
         builder.push(buf.get(..n * ch).unwrap_or_default());
+        // Not at the very end: the finished waveform follows at once.
+        if builder.frames() >= next_partial && builder.remaining() > 0 {
+            next_partial = builder.frames() + step;
+            if !cancel.load(Ordering::Relaxed)
+                && let Some(wave) = builder.partial()
+            {
+                on_partial(WaveformPartial {
+                    wave,
+                    total_frames: info.frames,
+                });
+            }
+        }
     }
     let mut warnings = src.take_warnings();
     let got = builder.frames();

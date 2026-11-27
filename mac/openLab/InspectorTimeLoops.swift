@@ -16,9 +16,10 @@ extension InspectorViewController {
             onTransport?(.stopPreview(cue: id))
         }
         timeLoops.onSeek = { [weak self] cue, position in self?.seek(cue, to: position) }
-        timeLoops.loadPeaks = { [weak self] cue, start, end, buckets in
+        timeLoops.loadPeaks = { [weak self] cue, start, end, buckets, partial in
             guard let self else { return .failure(.notConnected) }
-            return await self.store.waveform(cue: cue, start: start, end: end, buckets: buckets)
+            return await self.store.waveform(
+                cue: cue, start: start, end: end, buckets: buckets, onPartial: partial)
         }
         let item = NSTabViewItem(identifier: "timeLoops")
         item.label = loc("inspector.tab.timeLoops")

@@ -236,8 +236,13 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     var onHold: ((Bool) -> Void)?
     /// A typed value was refused here (its `Localizable.strings` key); the field shows the model's again.
     var onInvalid: ((String) -> Void)?
-    /// Fetches peaks (the store's `waveform`).
-    var loadPeaks: ((ModelID, Double, Double, Int) async -> Result<WaveformPeaks, EngineError>)?
+    /// Fetches peaks (the store's `waveform`); the last argument is given the start of the drawing
+    /// while the file is still being read.
+    var loadPeaks:
+        (
+            (ModelID, Double, Double, Int, @escaping @MainActor (WaveformPeaks) -> Void) async
+                -> Result<WaveformPeaks, EngineError>
+        )?
     var isLocked = false {
         didSet {
             applyLock()
@@ -529,6 +534,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         if fileChanged {
             waveform.duration = file?.duration
             waveform.peaks = nil
+            waveform.partialPeaks = nil
             waveform.playhead = nil
             waveform.insertion = nil
             waveform.selection = nil
@@ -694,7 +700,13 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         let gen = generation
         inFlight = gen
         loading = Task { [weak self] in
-            let result = await loadPeaks(key.cue, key.start, key.end, key.buckets)
+            let result = await loadPeaks(key.cue, key.start, key.end, key.buckets) { [weak self] partial in
+                // The waves so far, while the file is read: only for what is still asked for, and
+                // only until the first whole drawing (the finished answer replaces them whole).
+                guard let self, gen == self.generation, partial.cue == key.cue, self.waveform.peaks == nil
+                else { return }
+                self.waveform.partialPeaks = partial
+            }
             guard let self else { return }
             self.inFlight = nil
             if self.reloadPending {
@@ -706,6 +718,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             switch result {
             case .success(let peaks):
                 self.remember(key, peaks)
+                self.waveform.partialPeaks = nil
                 self.waveform.peaks = peaks
             case .failure(.engine(.commandRefused, _)) where busyRetries < Self.busyRetryLimit:
                 // The engine's queue was full of reads that nobody waits for now; it drains.
@@ -713,6 +726,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             case .failure:
                 // Clicks still move the cue and place the line without a drawing.
                 self.waveform.peaks = nil
+                self.waveform.partialPeaks = nil
                 self.waveform.readFailed = true
                 self.showMessage()
             }
