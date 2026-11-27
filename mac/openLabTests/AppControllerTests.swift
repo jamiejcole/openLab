@@ -2465,6 +2465,60 @@ final class AppControllerTests: XCTestCase {
         }
     }
 
+    /// Modals nested (the import's notes window, then its Save panel) and Command-Q pressed twice: each
+    /// modal is ended in turn, and the quit is asked again once, after the last one has returned.
+    func testQuitWithNestedModalsEndsEachInTurnAndAsksOnce() async throws {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        var asked = 0
+        var modalLeftWhenAsked = false
+        delegate.terminateAgain = {
+            asked += 1
+            modalLeftWhenAsked = modalLeftWhenAsked || NSApp.modalWindow != nil
+        }
+        final class Seen: @unchecked Sendable {
+            var replies: [NSApplication.TerminateReply] = []
+            var inner: NSApplication.ModalResponse?
+            var hung = false
+            nonisolated(unsafe) var delegate: AppDelegate?
+        }
+        let seen = Seen()
+        seen.delegate = delegate
+        let notes = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        notes.isReleasedWhenClosed = false
+        addTeardownBlock { @MainActor in notes.close() }
+        @discardableResult
+        func on(_ delay: TimeInterval, _ work: @escaping @MainActor () -> Void) -> Timer {
+            let timer = Timer(timeInterval: delay, repeats: false) { _ in MainActor.assumeIsolated { work() } }
+            RunLoop.main.add(timer, forMode: .common)
+            RunLoop.main.add(timer, forMode: .modalPanel)
+            return timer
+        }
+        on(0) { seen.inner = StandBack.runModal(NSSavePanel()) }
+        on(0.2) {
+            for _ in 0..<2 {
+                if let reply = seen.delegate?.applicationShouldTerminate(NSApp) { seen.replies.append(reply) }
+            }
+        }
+        let deadline = on(10) {
+            seen.hung = true
+            NSApp.stopModal()
+        }
+        let outer = StandBack.runModal(notes)
+        deadline.invalidate()  // it holds the delegate, and with it the app's windows
+        XCTAssertFalse(seen.hung, "a modal was left up")
+        XCTAssertEqual(outer, .abort)
+        XCTAssertEqual(seen.inner, .abort)
+        XCTAssertEqual(seen.replies, [.terminateCancel, .terminateCancel], "neither ask quits by itself")
+        await assertEventually("the quit is asked again") { asked >= 1 }
+        for _ in 0..<5 { try await real.advance(seconds: 0.05) }  // a second, wrongly queued ask would show
+        XCTAssertEqual(asked, 1, "one quit, not one per Command-Q")
+        XCTAssertFalse(modalLeftWhenAsked, "asked only once no modal is left")
+        XCTAssertNil(NSApp.modalWindow)
+    }
+
     // MARK: Launcher flows
 
     private func click(_ id: String) throws {

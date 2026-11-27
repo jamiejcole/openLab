@@ -3055,8 +3055,10 @@ final class WorkspaceSettingsTests: XCTestCase {
             XCTAssertEqual(
                 editor.deviceMutes[d].frame.union(editor.deviceSolos[d].frame).midX, cell.midX, accuracy: 0.5,
                 "strip \(d + 1)'s M and S are over its column")
-            for v in [editor.deviceFaders[d], editor.deviceMutes[d], editor.deviceSolos[d], editor.deviceFields[d]]
-            as [NSView] {
+            let strip: [NSView] = [
+                editor.deviceFaders[d], editor.deviceMutes[d], editor.deviceSolos[d], editor.deviceFields[d],
+            ]
+            for v in strip {
                 XCTAssertLessThan(v.frame.maxY, PatchRoutingView.headerH)
             }
             XCTAssertLessThan(editor.deviceFaders[d].frame.maxY, editor.deviceMutes[d].frame.minY, "fader, then mute")

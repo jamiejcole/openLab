@@ -112,6 +112,15 @@ fn golden_fixture_loads_cleanly_and_covers_every_cue_kind_and_group_mode() {
     modes.dedup();
     assert_eq!(modes.len(), 5);
     assert_eq!(loaded.workspace.stages.len(), 1, "the example has a stage");
+    let soloed: Vec<_> = loaded
+        .workspace
+        .patches
+        .iter()
+        .flat_map(|p| &p.device_outputs)
+        .filter(|d| d.solo)
+        .map(|d| d.device_output)
+        .collect();
+    assert_eq!(soloed, vec![2], "the example has a soloed device output");
 }
 
 /// An autosave names its show file (its file name only holds a hash); a show file never does,
