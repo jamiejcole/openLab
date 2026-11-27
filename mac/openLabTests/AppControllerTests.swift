@@ -2758,11 +2758,19 @@ final class AppControllerTests: XCTestCase {
         let waits = ManualScheduler()
         let held = Counter()
         app.recentChecker.scheduler = waits
-        app.recentChecker.run = { url, work, deliver in
-            if url == stuck { held.count += 1 } else { deliver(work()) }
+        app.recentChecker.run = { [unowned self] url, work, deliver in
+            if url == stuck {
+                held.count += 1
+                lateAnswer = { deliver(work()) }
+            } else {
+                deliver(work())
+            }
         }
         return (waits, held)
     }
+
+    /// The held-back check's answer, for a volume that comes back.
+    private var lateAnswer: (@MainActor () -> Void)?
 
     private func waitsStarted(_ waits: ManualScheduler) async {
         for _ in 0..<1000 where await waits.waitingCount == 0 { await Task.yield() }
@@ -2794,6 +2802,14 @@ final class AppControllerTests: XCTestCase {
         app.launcher.select(row: 1)
         app.launcher.openSelected()
         XCTAssertEqual(app.launcher.noticeLabel.stringValue, String(format: loc("launcher.unreachable"), "Stuck"))
+        // Asked again while the volume is still silent: no second look starts.
+        app.showLauncher()
+        XCTAssertEqual(held.count, 1, "one stuck look per file, however often the launcher reloads")
+        // The volume answers late: the row fills in.
+        let late = try XCTUnwrap(lateAnswer)
+        late()
+        await assertEventually { app.launcher.recents.map(\.unreachable) == [false, false, false] }
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, false, true], "the late answer: it is there")
     }
 
     /// Checklist (#792): The Open Recent menu opens without waiting on such a volume; it drops the

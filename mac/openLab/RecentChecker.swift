@@ -43,6 +43,9 @@ final class RecentChecker {
     private(set) var states: [URL: State] = [:]
     private(set) var probes: [URL: RecentProbe] = [:]
     private var generation: [URL: Int] = [:]
+    /// Files whose look has not answered yet: a dead volume holds one thread per file, however often
+    /// the launcher or the menu asks again, and that first look's wait still runs out.
+    private var inFlight: Set<URL> = []
 
     /// What is known of `url`: a file not answered for yet is `checking`, which callers treat as usable.
     func state(of url: URL) -> State { states[url] ?? .checking }
@@ -52,7 +55,8 @@ final class RecentChecker {
         let exists = exists
         // A file last found is not known to be there now: it reads as unchecked until answered.
         for url in urls where states[url] == .found { states[url] = nil }
-        for url in urls {
+        for url in urls where !inFlight.contains(url) {
+            inFlight.insert(url)
             let token = (generation[url] ?? 0) + 1
             generation[url] = token
             let held = bookmarks[url.path]
@@ -60,7 +64,9 @@ final class RecentChecker {
                 url,
                 { Self.probe(url, bookmark: held, exists: exists) },
                 { [weak self] result in
-                    guard let self, generation[url] == token else { return }
+                    guard let self else { return }
+                    inFlight.remove(url)
+                    guard generation[url] == token else { return }
                     probes[url] = result
                     states[url] = result.exists ? .found : .missing
                     onChange?()
