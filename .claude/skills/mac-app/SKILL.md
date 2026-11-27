@@ -346,7 +346,7 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
   - The offer of autosaves after an unclean end is the same alert, ordinary style, with Restore Autosaves… and Not Now.
   - OutputOverrides is a palette (`NonKeyPanel`) and the media-copy notice a footer line, not alerts.
 - The inspector remembers one tab per cue type for the session: `chosenTabs[kind]` is set only from `tabView(_:didSelect:)` (not while `syncTabs` rebuilds; `shownKind` is the shown cue's type), and `shownTab(chosen:wanted:)` (InspectorTabs.swift) falls back to the first tab for a cue that lacks it without changing the choice.
-  - A Fade's Levels and Geometry are its own (`fadeLevels`, `fadeGeometry`); an Image cue (a still) is a Video cue to the memory and has no Timing & Loops tab; a mixed selection has one memory (`batch`).
+  - A Fade's Levels and Geometry are its own (`fadeLevels`, `fadeGeometry`); an Image cue (a still) is a Video cue to the memory and has the Timing & Loops tab, with only its built-in fades (in and out lengths, curve); a mixed selection has one memory (`batch`).
   - `LevelMatrixView.captionGap` separates the names row from the inputs/crosspoints captions.
 
 - File > New Workspace from QLab File… (`AppController+QlabImport`, `QlabImportController`, `QlabNotesController`; skill `qlab-import`): its windows are modal through `StandBack.runModal(_ window:)`, so the item is off while any workspace is in Show Mode. Scenario `focus` `qlab-import` / `qlab-notes` (scenario key `qlab_file`) draws them off screen.

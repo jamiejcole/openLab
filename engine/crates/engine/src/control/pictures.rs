@@ -304,6 +304,9 @@ struct Plays {
     /// The action's length in seconds, if it has one (a still's typed duration; a movie's is
     /// its plan's).
     length: Option<f64>,
+    /// A still's integrated fades: in from its start, out to the end of its typed duration (none
+    /// while it has none, as a movie looping for ever has none).
+    still_fades: PictureFades,
     /// What a movie's plan is built on (its length as media on the engine's clock, or the
     /// probe of the audio track its sound plays), and its time and loops.
     movie: Option<(MediaInfo, VideoTiming)>,
@@ -832,6 +835,7 @@ impl DocCx<'_> {
                 stage: *stage,
                 geometry: *geometry,
                 length: None,
+                still_fades: PictureFades::NONE,
                 movie: Some((
                     self.sound_info(cue)
                         .unwrap_or_else(|| picture_info(d, self.eng.rate)),
@@ -844,6 +848,11 @@ impl DocCx<'_> {
                 stage: *stage,
                 geometry: *geometry,
                 length: *duration,
+                still_fades: PictureFades {
+                    fade_in: timing.fade_in,
+                    fade_out: timing.fade_out,
+                    end: duration.map(|d| d.min(openlab_core::MAX_TIME)),
+                },
                 movie: None,
             },
             ProbeReport::Missing | ProbeReport::Unsupported { .. } => {
@@ -1916,7 +1925,7 @@ impl DocCx<'_> {
                 let ends = !timing.hold_at_end;
                 (position, Some(plan), fades, end, ends)
             }
-            None => (still_own, None, PictureFades::NONE, plays.length, true),
+            None => (still_own, None, plays.still_fades, plays.length, true),
         };
         // The picture's own time at `at` (a still has no plan: its action time less its delay).
         let into = plan.as_ref().map_or(still_own, |p| seconds(p.into, rate));

@@ -173,25 +173,28 @@ final class InspectorTabMemoryTests: XCTestCase {
         XCTAssertNil(vc.mediaFrameTask)
     }
 
-    /// An Image cue is a Video cue to the memory (one type): a still's lack of Timing & Loops falls back
-    /// without changing the choice, and a tab chosen on a still shows on a movie.
+    /// An Image cue is a Video cue to the memory: a tab chosen on a movie shows on a still and back.
     func testTabMemoryAnImageCueSharesTheVideoTypesChoice() throws {
         try select(Self.video1, click: "timeLoops")
         try select(Self.still)
-        XCTAssertEqual(shown, "basics", "no Timing & Loops on a still")
-        try select(Self.video1)
-        XCTAssertEqual(shown, "timeLoops", "the fallback left the choice alone")
+        XCTAssertEqual(shown, "timeLoops", "the still has the Timing & Loops tab too")
         try select(Self.still, click: "geometry")
         try select(Self.video1)
         XCTAssertEqual(shown, "geometry")
     }
 
-    /// T2: a still has no Timing & Loops tab, a movie has.
-    func testImageCueHasNoTimingAndLoopsTab() throws {
+    /// T2 (reversed by the owner 2026-11-27): a still has the Timing & Loops tab, as a movie has, and
+    /// its fade-in and fade-out fields.
+    func testImageCueHasTheTimingAndLoopsTabWithItsFadeFields() throws {
         vc.setSelection([Self.still])
-        XCTAssertFalse(tabs.contains("timeLoops"))
+        XCTAssertTrue(tabs.contains("timeLoops"))
         XCTAssertTrue(tabs.contains("geometry"))
+        let panel = vc.timeLoops
+        XCTAssertFalse(panel.fadeInField.isHidden)
+        XCTAssertFalse(panel.fadeOutField.isHidden)
+        XCTAssertTrue(panel.fadeInField.isEnabled)
         vc.setSelection([Self.video1])
         XCTAssertTrue(tabs.contains("timeLoops"))
+        XCTAssertTrue(panel.fadeInField.isHiddenOrHasHiddenAncestor, "a movie's fades are on its timeline")
     }
 }

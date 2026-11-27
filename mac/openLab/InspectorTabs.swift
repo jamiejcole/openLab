@@ -27,8 +27,6 @@ enum InspectorTabs {
         var ids = ids(forKind: cue.kindType)
         switch cue.kindType {
         case "video":
-            // A still has no timeline (QLab 5): no Timing & Loops tab, as a movie has.
-            if media[cue.id]?.picture?.type == "still" { ids.removeAll { $0 == "timeLoops" } }
             if cue.sounds(media[cue.id]) { ids.append("levels") }
         case "fade":
             let target = cue.raw["kind"]?["target"]?.stringValue.flatMap({ model.cue(ModelID($0)) })
