@@ -410,6 +410,57 @@ soak_classifier() {
   rm -rf "$d"
 }
 
+# 11a. A CI run is re-run by itself only when every failed job is an app test job that
+# scripts/run-mac-tests.sh ended as a proven runner stall (exit 75). Canned jobs and annotations.
+rerun_job() { # id, name, conclusion, failed step names (comma-separated)
+  jq -n --argjson id "$1" --arg name "$2" --arg c "$3" --arg failed "$4" '{id: $id, name: $name, conclusion: $c,
+    steps: ([{name: "Run actions/checkout@v7", conclusion: "success"}]
+      + [$failed | split(",")[] | select(. != "") | {name: ., conclusion: "failure"}])}'
+}
+rerun_case() { # name, wanted exit code, then jobs as "id|name|conclusion|failed steps|annotations" with
+  # annotations one of: stall, retry (the wrapper's retried-stall notice), timeout, exit (exit code only)
+  local name=$1 want=$2 d spec id job c steps ann rc
+  shift 2
+  d=$(mktemp -d)
+  mkdir "$d/ann"
+  for spec in "$@"; do
+    IFS='|' read -r id job c steps ann <<<"$spec"
+    rerun_job "$id" "$job" "$c" "$steps" >>"$d/jobs.ndjson"
+    {
+      echo '['
+      case "$ann" in
+        stall) echo '{"annotation_level":"warning","title":"WindowServer wedged on the runner","message":"the run went silent and a sample shows the window server stuck in the GPU driver (above); re-run the job"},' ;;
+        retry) echo '{"annotation_level":"warning","title":"WindowServer wedged on the runner","message":"the GPU driver stalled, so these tests hit their hang limit and run again: x"},' ;;
+        timeout) echo '{"annotation_level":"failure","title":"","message":"The action '"'"'Run make test-mac-shard SHARD=2'"'"' has timed out after 35 minutes."},' ;;
+      esac
+      echo '{"annotation_level":"failure","title":"","message":"Process completed with exit code 2."}]'
+    } >"$d/ann/$id.json"
+  done
+  jq -s . "$d/jobs.ndjson" >"$d/jobs.json"
+  scripts/ci-rerun-stall.sh --classify "$d/jobs.json" "$d/ann" >/dev/null 2>&1 && rc=0 || rc=$?
+  [ "$rc" = "$want" ] || fail rerun-stall "$name: exit $rc, wanted $want"
+  rm -rf "$d"
+}
+rerun_stall() {
+  local shard='Run make test-mac-shard SHARD=1'
+  rerun_case "one stalled shard" 0 "1|macOS app (1/2)|failure|$shard|stall" "9|CI Result|failure|Run|exit"
+  rerun_case "both shards stalled" 0 "1|macOS app (1/2)|failure|$shard|stall" "2|macOS app (2/2)|failure|$shard|stall"
+  rerun_case "the nightly core flows stalled" 0 "1|macOS app|failure|Run make test-mac-core-flows|stall"
+  rerun_case "nothing failed but the result" 1 "9|CI Result|failure|Run|exit"
+  rerun_case "a stall and a Rust failure" 1 "1|macOS app (1/2)|failure|$shard|stall" "3|Rust (Windows x64)|failure|Run ../scripts/rust-checks.sh test|exit"
+  rerun_case "a stalled shard and a failed one" 1 "1|macOS app (1/2)|failure|$shard|stall" "2|macOS app (2/2)|failure|$shard|exit"
+  rerun_case "a stall retried in the run is not a stall" 1 "1|macOS app (1/2)|failure|$shard|retry"
+  rerun_case "a step out of time" 1 "1|macOS app (1/2)|failure|$shard|timeout"
+  rerun_case "a stall beside a step out of time" 1 "1|macOS app (1/2)|failure|$shard|stall" "2|macOS app (2/2)|failure|$shard|timeout"
+  rerun_case "a second failed step" 1 "1|macOS app|failure|Run make test-mac-core-flows,Run make test-mac-ui-full|stall"
+  rerun_case "the bundle build failed" 1 "1|macOS app (bundle)|failure|Run make mac|stall"
+  rerun_case "a job out of time" 1 "1|macOS app (1/2)|timed_out||stall"
+  rerun_case "a cancelled job" 1 "1|macOS app (1/2)|cancelled||stall"
+  # The marker the classifier looks for is the one the wrapper prints when it ends a run with exit 75.
+  grep -q 'title=WindowServer wedged on the runner::the run went silent.*; re-run the job"' scripts/run-mac-tests.sh ||
+    fail rerun-stall "scripts/run-mac-tests.sh no longer prints the stall notice scripts/ci-rerun-stall.sh looks for"
+}
+
 # 11b. The app-test wrapper retries a hang only when the spindump proves the runner's WindowServer is
 # stuck in the GPU driver and every failure is such a hang. Canned reports and summaries.
 wedged_report() { # samples in the driver; samples waiting on WindowServer: several ranges, `/` starts a second tree of the thread, `=N` is not a kernel frame, and a stack with no wait named: `qN` QuartzCore, `sN` SkyLight, `oN` our code, `fN` our code with a framework in its name, `mN` libsystem_malloc, `nN` mach_msg alone, `tN` mach_msg down to the trap, then kernel frames `bN` waiting on launchd, `pN` on this process, `uN` suspended, `wN` on WindowServer; waiting thread; waiting process; samples another thread waits
@@ -933,6 +984,7 @@ job_timeouts
 stand_back_gate
 prepush_no_stamp
 soak_classifier
+rerun_stall
 wedged_classifier
 wedged_run
 test_list_cases

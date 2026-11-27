@@ -542,6 +542,48 @@ final class BlackBackstopTests: XCTestCase {
         XCTAssertEqual(store.videoOutputs.routes.map(\.guides), [false, false])
     }
 
+    /// #842 V2, the user's path: two outputs' Guides ticked, then a real Esc key event through the
+    /// app's key handling, first with the settings window key and then with the workspace window
+    /// key. The boxes are unticked from what the engine pushes, with no refresh asked for.
+    func testV2EscKeyFromEitherWindowUnticksBothGuidesBoxes() async throws {
+        let (store, _, _) = try await start()
+        let wc = WorkspaceWindowController(store: store)
+        let settings = WorkspaceSettingsWindowController(store: store)
+        addTeardownBlock { @MainActor in
+            settings.close()
+            wc.close()
+        }
+        wc.showWindow(nil)
+        await settings.present().value
+        let routing = settings.videoRoutingPane
+        await pushed("the routes are listed") {
+            await routing.refresh()
+            return routing.guideChecks.count == 2
+        }
+        app.beep = {}
+        func esc(in window: NSWindow?) throws {
+            let event = try XCTUnwrap(
+                NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window?.windowNumber ?? 0, context: nil, characters: "\u{1B}",
+                    charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: 53))
+            _ = app.handleKeyDown(event)
+        }
+        for window in [settings.window, wc.window] {
+            for check in routing.guideChecks { check.performClick(nil) }
+            await pushed("both boxes ticked and held by the engine") {
+                routing.guideChecks.allSatisfy { $0.state == .on } && store.videoOutputs.routes.allSatisfy(\.guides)
+            }
+            window?.makeKeyAndOrderFront(nil)
+            try esc(in: window)
+            await pushed("Esc unticked both boxes") {
+                routing.guideChecks.allSatisfy { $0.state == .off }
+                    && store.videoOutputs.routes.allSatisfy { !$0.guides }
+            }
+        }
+    }
+
     /// #708: Esc takes the app's black away even with no engine to hear it (one relaunching).
     func testEscTakesTheAppsBlackAwayWithoutAnEngine() async throws {
         let (store, stage1, _) = try await start()

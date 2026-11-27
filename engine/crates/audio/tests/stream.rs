@@ -1430,3 +1430,46 @@ fn an_end_the_stream_cannot_follow_changes_nothing() {
     out.extend(render_synced(&mut r, &mut ctl, &h, 6_000 - done, 0));
     assert_plays(&out, 0, &unrolled(&slices));
 }
+
+/// A FLAC that overflows symphonia's predictor (see `fuzz-findings/flac-lpc-add-overflow.flac`)
+/// fails its stream as a corrupt file, and the worker streams on.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the overflow is a panic only with overflow checks on; a release build wraps the add"
+)]
+fn flac_lpc_overflow_panic_fails_the_stream_and_the_worker_lives() {
+    let mut d = streamer(100);
+    let info = MediaInfo {
+        channels: 1,
+        sample_rate: 44_100,
+        frames: 16,
+        duration: Duration::from_secs_f64(16.0 / 44_100.0),
+    };
+    let media = Media::Reader(
+        Box::new(std::io::Cursor::new(flac_lpc_add_overflow())),
+        Some("flac".into()),
+    );
+    let p = d
+        .prepare(StreamRequest {
+            media,
+            info,
+            seeking: Seeking::Direct,
+            slices: plan(0..info.frames_at(SR), &[], &[], 0).unwrap(),
+        })
+        .unwrap();
+    assert!(matches!(
+        p.handle.wait_primed(FAILSAFE),
+        Err(MediaError::Corrupt(_))
+    ));
+    let (media, info) = marker_file("after-flac-overflow.wav", 1000);
+    let p = d
+        .prepare(StreamRequest {
+            media,
+            info,
+            seeking: Seeking::Direct,
+            slices: plan(0..1000, &[], &[], 0).unwrap(),
+        })
+        .unwrap();
+    assert!(p.handle.wait_written(u64::MAX, FAILSAFE).unwrap());
+}

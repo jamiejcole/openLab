@@ -18,7 +18,8 @@ use std::path::Path;
 use common::media::*;
 use common::*;
 use openlab_audio::{
-    Media, MediaError, MediaWarning, Probed, WarningKind, preload, probe, probe_media,
+    Media, MediaError, MediaWarning, Probed, WarningKind, WaveformError, build_waveform, preload,
+    probe, probe_media,
 };
 
 const RATE: u32 = 44_100;
@@ -484,6 +485,9 @@ fn fuzz_invariants_hold_on_fixtures_and_damaged_copies() {
 /// `junk-then-aiff-channel-overflow.aiff`: two junk bytes, then an AIFF with 32769 channels of 24
 /// bits; the scan for embedded headers looked only for WAV markers, and symphonia 0.6.1's AIFF
 /// reader overflowed `u16` computing the frame size.
+/// `flac-lpc-add-overflow.flac`: a valid FLAC whose LPC residuals make symphonia 0.6.1's
+/// predictor loop overflow an `i32` (a panic with overflow checks on, as here); contained as a
+/// typed error (see `flac_lpc_overflow_panics_symphonia_and_is_contained_by_every_entry`).
 #[test]
 fn fuzz_findings_stay_fixed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fuzz-findings");
@@ -1077,4 +1081,77 @@ fn a_fifo_or_device_as_media_is_refused_without_blocking() {
     assert_eq!(device, Err(MediaError::NotAFile("/dev/zero".into())));
     assert_eq!(streamed, Err(MediaError::NotAFile(fifo.clone())));
     let _ = std::fs::remove_file(&fifo);
+}
+
+/// The committed `flac-lpc-add-overflow.flac` is what `flac_lpc_add_overflow` generates.
+#[test]
+fn flac_lpc_overflow_finding_is_the_generated_file() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fuzz-findings/flac-lpc-add-overflow.flac");
+    assert_eq!(std::fs::read(&path).unwrap(), flac_lpc_add_overflow());
+}
+
+/// The built FLAC really reaches symphonia's overflow (decoded directly, so nothing of ours
+/// contains it), and every entry that decodes turns that panic into a typed error.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the overflow is a panic only with overflow checks on; a release build wraps the add"
+)]
+fn flac_lpc_overflow_panics_symphonia_and_is_contained_by_every_entry() {
+    use std::sync::atomic::AtomicBool;
+    use symphonia::core::codecs::audio::AudioDecoderOptions;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+
+    let bytes = flac_lpc_add_overflow();
+
+    let direct = std::panic::catch_unwind(|| {
+        let mss = MediaSourceStream::new(Box::new(Cursor::new(bytes.clone())), Default::default());
+        let mut format = symphonia::default::get_probe()
+            .probe(
+                &Hint::new(),
+                mss,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .unwrap();
+        let params = format
+            .default_track(TrackType::Audio)
+            .unwrap()
+            .codec_params
+            .as_ref()
+            .unwrap()
+            .audio()
+            .unwrap()
+            .clone();
+        let mut decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(&params, &AudioDecoderOptions::default())
+            .unwrap();
+        let packet = format.next_packet().unwrap().unwrap();
+        let _ = decoder.decode(&packet);
+    });
+    assert!(
+        direct.is_err(),
+        "symphonia no longer overflows on this file"
+    );
+
+    let media = || Media::Reader(Box::new(Cursor::new(bytes.clone())), Some("flac".into()));
+    let corrupt = |e: MediaError| assert!(matches!(e, MediaError::Corrupt(_)), "{e:?}");
+    corrupt(probe_media(media()).unwrap_err());
+    corrupt(preload(media()).unwrap_err());
+    // The overview takes the probe's answer, which this file never gets: give it the header's.
+    let info = openlab_audio::MediaInfo {
+        channels: 1,
+        sample_rate: 44_100,
+        frames: 16,
+        duration: std::time::Duration::from_secs_f64(16.0 / 44_100.0),
+    };
+    match build_waveform(media(), &info, &AtomicBool::new(false)) {
+        Err(WaveformError::Media(e)) => corrupt(e),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(openlab_audio::fuzz_decode(&bytes), Ok(()));
 }

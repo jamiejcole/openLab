@@ -289,3 +289,90 @@ impl Seek for FailingReader {
         self.inner.seek(pos)
     }
 }
+
+/// Bits, most significant first, as a FLAC frame writes them.
+struct Bits {
+    bytes: Vec<u8>,
+    used: u32,
+}
+
+impl Bits {
+    fn new() -> Self {
+        Bits {
+            bytes: Vec::new(),
+            used: 0,
+        }
+    }
+
+    fn put(&mut self, value: u64, width: u32) {
+        for i in (0..width).rev() {
+            if self.used.is_multiple_of(8) {
+                self.bytes.push(0);
+            }
+            let bit = ((value >> i) & 1) as u8;
+            if let Some(last) = self.bytes.last_mut() {
+                *last |= bit << (7 - self.used % 8);
+            }
+            self.used += 1;
+        }
+    }
+}
+
+/// MSB-first CRC of `bits` width (8 or 16) with polynomial `poly`, zero start.
+fn crc(data: &[u8], poly: u16, bits: u32) -> u16 {
+    let top = 1u16 << (bits - 1);
+    let mask = u16::MAX >> (16 - bits);
+    let mut crc = 0u16;
+    for &b in data {
+        crc ^= u16::from(b) << (bits - 8);
+        for _ in 0..8 {
+            crc = if crc & top != 0 {
+                (crc << 1) ^ poly
+            } else {
+                crc << 1
+            } & mask;
+        }
+    }
+    crc
+}
+
+/// A valid mono 16-bit 44.1 kHz FLAC of one 16-frame frame, CRCs correct, whose one LPC
+/// subframe (order 1, coefficient 1, shift 0, warm-up 0) has Rice residuals of 2^29: each sample
+/// adds 2^29 to the one before, so the fifth (the first the predictor's main loop computes)
+/// is 2^31 and symphonia 0.6.1's `buf[i] += ..` overflows `i32`.
+pub fn flac_lpc_add_overflow() -> Vec<u8> {
+    let mut f = b"fLaC".to_vec();
+    // STREAMINFO: last block, 34 bytes; block size 16; no frame size bounds; then 44.1 kHz,
+    // 1 channel, 16 bits, 16 samples; no MD5.
+    f.extend([0x80, 0, 0, 34, 0, 16, 0, 16, 0, 0, 0, 0, 0, 0]);
+    let mut si = Bits::new();
+    si.put(44_100, 20);
+    si.put(0, 3);
+    si.put(15, 5);
+    si.put(16, 36);
+    f.extend(si.bytes);
+    f.extend([0; 16]);
+
+    let mut frame = vec![0xFF, 0xF8, 0x69, 0x08, 0x00, 0x0F];
+    frame.push(crc(&frame, 0x07, 8) as u8);
+    let mut sub = Bits::new();
+    sub.put(0, 1); // padding
+    sub.put(0b10_0000, 6); // LPC, order 1
+    sub.put(0, 1); // no wasted bits
+    sub.put(0, 16); // warm-up sample
+    sub.put(14, 4); // precision 15
+    sub.put(0, 5); // shift 0
+    sub.put(1, 15); // coefficient 1
+    sub.put(1, 2); // Rice2 residuals
+    sub.put(0, 4); // one partition
+    sub.put(30, 5); // Rice parameter
+    for _ in 0..15 {
+        sub.put(0b01, 2); // quotient 1: zigzag value 2^30, a residual of 2^29 ...
+        sub.put(0, 30); // ... with no remainder
+    }
+    frame.extend(sub.bytes);
+    let c = crc(&frame, 0x8005, 16);
+    frame.extend(c.to_be_bytes());
+    f.extend(frame);
+    f
+}
