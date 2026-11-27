@@ -14,6 +14,8 @@ final class WorkspaceWindow: NSWindow {
     /// Told when a press starts and when its `mouseDown` has returned: a standard control tracks the
     /// mouse inside that call, and sends its action there too.
     var onPress: ((Bool) -> Void)?
+    /// Told of every left mouse press before the window dispatches it.
+    var onMouseDown: ((NSEvent) -> Void)?
 
     /// Takes the keys when nothing else is focused (typing ended, a focused control went): the window
     /// itself would leave the arrow keys driving nothing.
@@ -32,6 +34,7 @@ final class WorkspaceWindow: NSWindow {
         guard event.type == .leftMouseDown else { return super.sendEvent(event) }
         onPress?(true)
         defer { onPress?(false) }
+        onMouseDown?(event)
         super.sendEvent(event)
     }
 
@@ -216,6 +219,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             if down { inspector?.endGestures() }
             cueList?.setFollowHold(.press, down)
         }
+        // A press in the cue list shows its cues in the inspector again, also on the row already selected
+        // (which announces no change) after a cue list was chosen in the sidebar.
+        window.onMouseDown = { [weak self] event in
+            guard let self, let content = self.window?.contentView else { return }
+            let point = content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+            if content.hitTest(point)?.isDescendant(of: self.cueList.view) == true { self.inspector.leaveCueList() }
+        }
         inspector.isFollowHeld = { [weak cueList] in cueList?.followHeld == true }
         inspector.onGestureHold = { [weak cueList] in cueList?.setFollowHold(.gesture, $0) }
         window.keyTarget = cueList.outlineView
@@ -322,7 +332,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             self?.cueList.showList(id)
         }
         sidebar.onNotice = { [weak self] in self?.showNotice($0) }
-        sidebar.onSelectCue = { [weak self] id in self?.reveal(cue: id) }
+        sidebar.onChooseList = { [weak self] id in self?.inspector.showCueList(id) }
+        sidebar.onSelectCue = { [weak self] id in
+            self?.inspector.leaveCueList()
+            self?.reveal(cue: id)
+        }
         // Both publish before they change: use the delivered values.
         statusSub = store.$status.combineLatest(store.$connectionState).sink { [weak self] status, state in
             MainActor.assumeIsolated { self?.footer.show(status: status, connected: state == .connected) }

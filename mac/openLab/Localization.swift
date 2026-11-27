@@ -61,6 +61,8 @@ enum AX {
     static let inspectorNumber = "inspector-number"
     static let inspectorName = "inspector-name"
     static let inspectorNotes = "inspector-notes"
+    static let cueListInspectorName = "inspector-cue-list-name"
+    static let cueListInspectorTabs = "inspector-cue-list-tabs"
     static let inspectorPreWait = "inspector-pre-wait"
     static let inspectorPostWait = "inspector-post-wait"
     static let inspectorDuration = "inspector-duration"

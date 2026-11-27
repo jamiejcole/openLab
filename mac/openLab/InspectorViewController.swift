@@ -30,6 +30,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The tab the user last chose on a cue of each type, for the session (QLab 5 keeps one per cue
     /// type): a cue without it shows its first tab and the choice stays (`syncTabs`).
     var chosenTabs: [String: String] = [:]
+    /// The cue list chosen in the sidebar, shown in place of any cue (`showCueList`): nil while cues are.
+    var shownCueList: ModelID?
+    let cueListView = CueListInspectorView()
     /// The type whose remembered tab the tab view is showing (the shown cue's kind).
     var shownKind = ""
     /// The device each patch plays on on this Mac, as the engine last said (nil until it has); a patch
@@ -530,11 +533,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         tabBar.onChoose = { [weak self] id in self?.tabView.selectTabViewItem(withIdentifier: id) }
         syncTabBar()
 
-        for v in [tabBar, tabView, emptyLabel, messageLabel] {
+        for v in [tabBar, tabView, cueListView, emptyLabel, messageLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
+        cueListView.isHidden = true
+        wireCueListView()
         NSLayoutConstraint.activate([
+            cueListView.topAnchor.constraint(equalTo: root.topAnchor, constant: 4),
+            cueListView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 4),
+            cueListView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -4),
+            cueListView.bottomAnchor.constraint(equalTo: messageLabel.topAnchor, constant: -2),
             emptyLabel.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: root.centerYAnchor),
             tabBar.topAnchor.constraint(equalTo: root.topAnchor, constant: 4),
@@ -987,6 +996,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         {
             window.makeFirstResponder(nil)
         }
+        // Another cue shown (not an announcement of the one already there) leaves the cue list.
+        shownCueList = nil
         selection = ids
         secondColourUnlocked = false
         if !(byFollow && refusalOutlivesFollow) { messageLabel.stringValue = "" }
@@ -1012,6 +1023,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// Puts the model's values in the controls. A field being edited keeps its text unless `force`.
     func render(force: Set<InspectorField> = []) {
         _ = view
+        if renderCueList() { return }
         if isBatch, let model = store.model, case let cues = batchCues, !cues.isEmpty {
             return renderBatch(cues, model: model, force: force)
         }
@@ -1149,6 +1161,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         fadeGeometry.isLocked = isLocked
         timeLoops.isLocked = isLocked
         geometry.isLocked = isLocked
+        if shownCueList != nil { _ = renderCueList() }
         if isLocked, !stale.isEmpty { render(force: stale) }
     }
 

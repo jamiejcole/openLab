@@ -297,6 +297,7 @@
 "cue.continue.autoFollow" = "Auto-follow";
 
 "inspector.empty" = "No cue selected";
+"inspector.cueList.noTriggers" = "A cue list has no triggers here.";
 "inspector.mixed" = "Mixed";
 "inspector.mixed.level" = "–";
 
