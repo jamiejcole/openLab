@@ -1042,11 +1042,13 @@ final class VideoCueTests: XCTestCase {
         // A GO on a cue whose file is not open yet waits for it and draws nothing meanwhile (a
         // slow runner takes seconds); nothing on the stage is no frame, not frame 0.
         await soon("the picture is on the stage") { await self.shownFrame() != nil }
-        let first = try XCTUnwrap(await shownFrame(), "a frame on the stage")
+        let shownFirst = await shownFrame()
+        let first = try XCTUnwrap(shownFirst, "a frame on the stage")
         XCTAssertEqual(Double(first), 25, accuracy: 1, "from the start trim's frame")
         try await play(1.9)
         XCTAssertEqual(status(Self.movie), loc("cue.state.running"))
-        let late = try XCTUnwrap(await shownFrame(), "a frame before the end trim")
+        let shownLate = await shownFrame()
+        let late = try XCTUnwrap(shownLate, "a frame before the end trim")
         XCTAssertEqual(Double(late), 72, accuracy: 2, "before the end trim")
         try await play(0.2)
         await soon("ended at the end trim") { self.status(Self.movie) == nil }

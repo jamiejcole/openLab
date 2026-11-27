@@ -1122,3 +1122,25 @@ fn a_video_previews_end_is_not_taken_from_a_stale_length() {
     assert!(rig.tick(1000).is_empty());
     assert!(rig.engine.is_previewing(id(1)));
 }
+
+#[test]
+fn an_edit_while_a_video_cue_previews_leaves_the_preview_playing_and_a_kind_change_stops_it() {
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1))), memo(2)]);
+    rig.preview(0, 1);
+    assert!(rig.engine.is_previewing(id(1)));
+    // Any edit signals the engine: the preview of a Video cue is still a preview of a cue.
+    rig.engine.model_changed();
+    rig.tick(10);
+    assert!(rig.engine.is_previewing(id(1)), "an edit does not stop it");
+    // The cue made into something that does not preview stops it.
+    rig.find_mut(1).kind = CueKind::Memo;
+    rig.engine.model_changed();
+    let after = rig.tick(20);
+    assert!(!rig.engine.is_previewing(id(1)), "{after:?}");
+    assert!(
+        after
+            .iter()
+            .any(|a| matches!(a, Action::PreviewStop { cue, .. } if *cue == id(1))),
+        "{after:?}"
+    );
+}

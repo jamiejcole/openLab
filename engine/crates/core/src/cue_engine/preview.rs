@@ -504,8 +504,9 @@ impl CueEngine {
         let gone: Vec<CueId> = (self.previews.keys())
             .copied()
             .filter(|cue| {
-                !ws.find_cue(*cue)
-                    .is_some_and(|c| matches!(c.kind, CueKind::Audio { .. }))
+                !ws.find_cue(*cue).is_some_and(|c| {
+                    matches!(c.kind, CueKind::Audio { .. } | CueKind::Video { .. })
+                })
             })
             .collect();
         for group in groups {

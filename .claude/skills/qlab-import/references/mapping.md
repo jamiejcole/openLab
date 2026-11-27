@@ -61,6 +61,7 @@ Modifiers: `shift`, `control`, `option` (alt), `command`; `function`, `numericPa
 | `rotationDegrees` 0/90/180/270 | `rotation`; anything else 0, noted | cue-types (0) |
 | `scalingMode` 0 centre, 1 fit, 2 stretch, other fill | `scaling` | assumed: the manual's menu order (p. 233); QLab's default route stores 2 |
 | `rear` | dropped | |
+| a route's partial screen layout and index (QLab keeps them on the route; none in the fixtures) | not read: the part of a display is this Mac's display choice (skill `video`), so an imported route is on a whole display | assumed 2026-11-27 (#842) |
 | `stages` (empty when saved unlicensed) | a stage per entry, name and `size` or `naturalSize`, regions not imported (noted) | assumed: no licensed fixture |
 | No stages | "Stage 1", the first route's size, one region covering it on that route; Video cues with an empty `viewportID` play on it | cue-types |
 

@@ -961,11 +961,11 @@ impl DocCx<'_> {
                     at,
                     offset: 0,
                 };
-                return self.picture_action(&start, fx);
+                self.picture_action(&start, fx)
             }
             Action::PreviewStop { cue, run, at, fade } => {
                 let stop = Action::StopVoice { cue, run, at, fade };
-                return self.picture_action(&stop, fx);
+                self.picture_action(&stop, fx)
             }
             Action::LoadVoice { cue, run, offset } => match self.load_picture(cue, run, offset) {
                 Ok(()) => self.sound_action(action, fx),
