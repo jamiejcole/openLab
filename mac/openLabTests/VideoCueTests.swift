@@ -1073,6 +1073,8 @@ final class VideoCueTests: XCTestCase {
         try await openVideoShow()
         click(Self.still)
         await soon("the inspector's Preview button is enabled") { self.wc.inspector.previewButton.isEnabled }
+        // The click moves the playhead too; take it only once the engine has done so.
+        await soon("the click moved the playhead") { self.store.playheads.values.contains(Self.still) }
         let playheads = store.playheads
         XCTAssertEqual(wc.inspector.previewButton.title, loc("inspector.preview"))
         XCTAssertTrue(try previewMenuItem(Self.still).isEnabled, "the row menu's Preview")
