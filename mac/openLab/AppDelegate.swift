@@ -409,6 +409,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// The Transport menu shows the key window's workspace keys.
     @MainActor func menuNeedsUpdate(_ menu: NSMenu) {
         if menu.title == NSLocalizedString("menu.file.openRecent", comment: "") {
+            appController.recentMenuRefill = { [weak menu, weak self] in
+                guard let menu, let self else { return }
+                MainMenu.fillRecent(menu, self.appController.openableRecentURLs())
+            }
             MainMenu.fillRecent(menu, appController.existingRecentURLs())
             return
         }

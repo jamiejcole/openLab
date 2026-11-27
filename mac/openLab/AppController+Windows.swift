@@ -118,6 +118,8 @@ extension AppController {
     }
 
     func showLauncher() {
+        // A missing-file notice is about the list it was raised on.
+        launcher.showNotice(nil)
         reloadLauncher()
         launcher.window?.makeKeyAndOrderFront(nil)
     }

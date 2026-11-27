@@ -95,7 +95,18 @@ final class AppController {
     var noteRecent: @MainActor (URL) -> Void = { NSDocumentController.shared.noteNewRecentDocumentURL($0) }
     var recentURLs: @MainActor () -> [URL] = { NSDocumentController.shared.recentDocumentURLs }
     /// Whether a recent workspace's file is still there (a seam: tests list files that do not exist).
-    var recentExists: @MainActor (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+    var recentExists: @Sendable (URL) -> Bool {
+        get { recentChecker.exists }
+        set { recentChecker.exists = newValue }
+    }
+    /// Fills the Open Recent menu again while it is open.
+    var recentMenuRefill: (@MainActor () -> Void)?
+    /// Looks at the recent workspaces' files off the main thread, for the launcher and Open Recent.
+    lazy var recentChecker: RecentChecker = {
+        let checker = RecentChecker()
+        checker.onChange = { [weak self] in self?.recentsChecked() }
+        return checker
+    }()
     var forgetRecents: @MainActor () -> Void = { NSDocumentController.shared.clearRecentDocuments(nil) }
     var keyWindow: @MainActor () -> NSWindow? = { NSApp.keyWindow }
     var beep: @MainActor () -> Void = { NSSound.beep() }
@@ -227,8 +238,8 @@ final class AppController {
         launcher.onOpenRecent = { [weak self] url in
             guard let self else { return }
             // The file may have gone since the list was drawn: say so, and leave the launcher up.
-            if isMissingRecent(url) {
-                launcher.showMissing(url)
+            if isMissingRecent(url) || recentChecker.state(of: url) == .unreachable {
+                launcher.showMissing(url, unreachable: recentChecker.state(of: url) == .unreachable)
                 return
             }
             Task { await self.openWorkspace(url: url) }

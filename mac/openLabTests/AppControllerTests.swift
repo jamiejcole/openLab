@@ -208,6 +208,8 @@ final class AppControllerTests: XCTestCase {
         app.noteRecent = { [unowned self] in recents.append($0) }
         app.recentURLs = { [unowned self] in recents }
         app.recentExists = { _ in true }
+        // The recents checks answer at once here; a test that needs one held back says so.
+        app.recentChecker.run = { _, work, deliver in deliver(work()) }
         app.keyWindow = { [unowned self] in keyDoc.flatMap { app.windows[$0]?.window } }
         app.pickSaveURL = { [unowned self] _, _ in saveURL.map { SaveTarget(url: $0) } }
         app.pickOpenURL = { [unowned self] in openURL }
@@ -2748,6 +2750,75 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept", "Dropped"])
         app.showLauncher()
         XCTAssertEqual(app.launcher.recents.map(\.name), ["Kept", "Dropped"], "stays gone after a reload")
+    }
+
+    /// Holds back the check of `stuck`, as a volume that has stopped answering does, and gives the
+    /// waits a scheduler a test fires.
+    private func holdBack(_ stuck: URL) -> (waits: ManualScheduler, held: Counter) {
+        let waits = ManualScheduler()
+        let held = Counter()
+        app.recentChecker.scheduler = waits
+        app.recentChecker.run = { url, work, deliver in
+            if url == stuck { held.count += 1 } else { deliver(work()) }
+        }
+        return (waits, held)
+    }
+
+    private func waitsStarted(_ waits: ManualScheduler) async {
+        for _ in 0..<1000 where await waits.waitingCount == 0 { await Task.yield() }
+    }
+
+    /// Checklist (#792): A recent show on a volume that does not answer -> the launcher appears and
+    /// stays usable at once; that show's row fills in when the check returns, or is marked as not
+    /// reachable after a bounded wait.
+    func testARecentOnAVolumeThatDoesNotAnswerLeavesTheLauncherUsableAndIsMarkedNotReachable() async throws {
+        newestFirstRecents()
+        let good = try showFile("Present")
+        let stuck = URL(fileURLWithPath: "/Volumes/Dead/Stuck.openlab")
+        let gone = URL(fileURLWithPath: "/Shows/Gone.openlab")
+        recents = [good, stuck, gone]
+        app.recentExists = { $0 != gone }
+        let (waits, held) = holdBack(stuck)
+        app.showLauncher()
+        XCTAssertEqual(held.count, 1, "the stuck check never returned")
+        XCTAssertEqual(app.launcher.recents.map(\.name), ["Present", "Stuck", "Gone"], "the rows are there at once")
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, false, true], "the others filled in")
+        XCTAssertEqual(app.launcher.recents.map(\.unreachable), [false, false, false])
+        XCTAssertFalse(app.isMissingRecent(stuck), "the unanswered row is usable")
+        await waitsStarted(waits)
+        let requested = await waits.requested
+        XCTAssertEqual(Set(requested), [RecentChecker.waitSeconds])
+        await waits.fire()
+        await assertEventually { app.launcher.recents.map(\.unreachable) == [false, true, false] }
+        XCTAssertEqual(app.launcher.recents.map(\.missing), [false, false, true])
+        app.launcher.select(row: 1)
+        app.launcher.openSelected()
+        XCTAssertEqual(app.launcher.noticeLabel.stringValue, String(format: loc("launcher.unreachable"), "Stuck"))
+    }
+
+    /// Checklist (#792): The Open Recent menu opens without waiting on such a volume; it drops the
+    /// show once the wait ends.
+    func testTheOpenRecentMenuDoesNotWaitOnAVolumeThatDoesNotAnswer() async throws {
+        let good = try showFile("Present")
+        let stuck = URL(fileURLWithPath: "/Volumes/Dead/Stuck.openlab")
+        recents = [good, stuck]
+        let (waits, _) = holdBack(stuck)
+        let menu = NSMenu()
+        app.recentMenuRefill = { [unowned self] in MainMenu.fillRecent(menu, app.openableRecentURLs()) }
+        MainMenu.fillRecent(menu, app.existingRecentURLs())
+        XCTAssertEqual(Array(menu.items.map(\.title).prefix(2)), ["Present", "Stuck"], "filled without waiting")
+        await waitsStarted(waits)
+        await waits.fire()
+        await assertEventually { !menu.items.contains { $0.title == "Stuck" } && menu.items.first?.title == "Present" }
+    }
+
+    /// Checklist (#792): A show in the Trash is not offered as openable in the Open Recent menu.
+    func testAShowInTheTrashIsNotOfferedInTheOpenRecentMenu() throws {
+        let good = try showFile("Present")
+        let trashed = URL(fileURLWithPath: "/Users/op/.Trash/Binned.openlab")
+        recents = [trashed, good]
+        app.recentExists = { _ in true }
+        XCTAssertEqual(app.existingRecentURLs(), [good])
     }
 
     /// A missing-file notice is about the list it was raised on: showing the launcher again, or

@@ -294,9 +294,21 @@ extension AppController {
         return session.doc(of: store) != nil
     }
 
-    /// Recent workspaces whose file is still there: a moved or deleted one would fail on every choice.
+    /// Recent workspaces the Open Recent menu offers: those not known to be gone, unreachable or in the
+    /// Trash. A file not yet answered for is offered; the menu is filled again when an answer comes.
     func existingRecentURLs() -> [URL] {
-        recentURLs().filter(recentExists)
+        recentChecker.refresh(recentURLs(), bookmarks: recentBookmarks)
+        return openableRecentURLs()
+    }
+
+    func openableRecentURLs() -> [URL] {
+        recentURLs().filter { !isMissingRecent($0) && recentChecker.state(of: $0) != .unreachable }
+    }
+
+    /// An answer came for a recent file: the launcher and an open Open Recent menu are drawn again.
+    func recentsChecked() {
+        reloadLauncher(recheck: false)
+        recentMenuRefill?()
     }
 
     func clearRecents() {
@@ -317,43 +329,49 @@ extension AppController {
     /// The launcher lists the system's recent workspaces, then the ones it listed before whose file
     /// has gone (the system forgets those), marked as missing. A remembered file that was moved or
     /// renamed is found again by its bookmark and is not listed as gone (the system lists it at its
-    /// new place); a file the bookmark cannot find is deleted, and stays listed as missing.
-    func reloadLauncher() {
+    /// new place); a file the bookmark cannot find is deleted, and stays listed as missing. The list
+    /// is drawn at once from what the checker already knows; each file is checked off the main
+    /// thread (`recheck`) and the list is drawn again as the answers come.
+    func reloadLauncher(recheck: Bool = true) {
         let system = recentURLs()
-        var marks = recentBookmarks
+        if recheck {
+            recentChecker.refresh(Array(Set(system + rememberedRecents)), bookmarks: recentBookmarks)
+        }
+        // A remembered file the system no longer lists stays until a check says it is there (the
+        // system lists it) or was moved; one not yet checked is listed as it was.
         let gone = rememberedRecents.filter { old in
-            guard !system.contains(old), !recentExists(old) else { return false }
-            if let data = marks[old.path], let now = Self.resolve(data), recentExists(now) {
-                // Found: moved (listed at its new place), or in the Trash, which is deleted; the
-                // system's own entry for a trashed show is the one listed, as missing.
-                return !Self.inTrash(now) ? false : !system.contains(now)
+            guard !system.contains(old) else { return false }
+            switch recentChecker.state(of: old) {
+            case .found: return false
+            case .checking, .unreachable: return true
+            case .missing:
+                guard let now = recentChecker.probes[old]?.movedTo else { return true }
+                // Moved (listed at its new place), or in the Trash, which is deleted; the system's
+                // own entry for a trashed show is the one listed, as missing.
+                return Self.inTrash(now) && !system.contains(now)
             }
-            return true
         }
         let all = Array((system + gone).prefix(10))
         rememberedRecents = all
-        for url in all where marks[url.path] == nil && recentExists(url) {
-            marks[url.path] = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        var marks = recentBookmarks
+        for url in all where marks[url.path] == nil {
+            if let made = recentChecker.probes[url]?.newBookmark { marks[url.path] = made }
         }
         recentBookmarks = marks.filter { key, _ in all.contains { $0.path == key } }
-        launcher.reload(recents: all, missing: Set(all.filter(isMissingRecent)))
+        launcher.reload(
+            recents: all, missing: Set(all.filter(isMissingRecent)),
+            unreachable: Set(all.filter { recentChecker.state(of: $0) == .unreachable }))
     }
 
     /// A recent workspace the operator cannot open: its file is gone, or it is in the Trash. The
-    /// rows are marked, and a choice is refused, by this one test.
-    func isMissingRecent(_ url: URL) -> Bool { !recentExists(url) || Self.inTrash(url) }
+    /// rows are marked, and a choice is refused, by this one test. A file not answered for yet is
+    /// not missing.
+    func isMissingRecent(_ url: URL) -> Bool { recentChecker.state(of: url) == .missing || Self.inTrash(url) }
 
     /// A show moved to the Trash is deleted as far as the operator is concerned: it is listed as
     /// missing, never as one that opens from there.
     static func inTrash(_ url: URL) -> Bool {
         url.pathComponents.contains { $0 == ".Trash" || $0 == ".Trashes" }
-    }
-
-    private static func resolve(_ data: Data) -> URL? {
-        var stale = false
-        return try? URL(
-            resolvingBookmarkData: data, options: [.withoutUI, .withoutMounting], relativeTo: nil,
-            bookmarkDataIsStale: &stale)
     }
 
     /// The copy points the cues at their copies as an edit, which would leave a workspace the

@@ -21,6 +21,8 @@ enum LauncherEngineState: Equatable {
 struct LauncherRecent: Equatable {
     var url: URL
     var missing = false
+    /// The file's volume did not answer in time: it may still open once it does.
+    var unreachable = false
     var name: String { url.deletingPathExtension().lastPathComponent }
 }
 
@@ -71,11 +73,14 @@ private final class RecentCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     func configure(_ recent: LauncherRecent) {
-        missing = recent.missing
+        missing = recent.missing || recent.unreachable
         name.stringValue = recent.name
         let folderPath = (recent.url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
-        folder.stringValue = recent.missing ? String(format: loc("launcher.recent.missing"), folderPath) : folderPath
-        let symbol = recent.missing ? "exclamationmark.triangle" : "doc"
+        folder.stringValue =
+            recent.unreachable
+            ? String(format: loc("launcher.recent.unreachable"), folderPath)
+            : recent.missing ? String(format: loc("launcher.recent.missing"), folderPath) : folderPath
+        let symbol = missing ? "exclamationmark.triangle" : "doc"
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         recolor()
     }
@@ -194,6 +199,8 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
     private let noticeBox = NSStackView()
     private let removeButton = NSButton(title: loc("launcher.remove"), target: nil, action: nil)
     private var missingURL: URL?
+    /// `reload` has drawn a list at least once.
+    private var listed = false
     /// Why something did not open (shown under the recents; empty: hidden).
     let noticeLabel = NSTextField(wrappingLabelWithString: "")
 
@@ -495,15 +502,21 @@ final class LauncherWindowController: NSWindowController, NSTableViewDataSource,
     }
 
     /// The recent workspace's file is not where it was: say so and offer to forget it.
-    func showMissing(_ url: URL) {
+    func showMissing(_ url: URL, unreachable: Bool = false) {
         showNotice(
-            String(format: loc("launcher.missing"), url.deletingPathExtension().lastPathComponent), removing: url)
+            String(format: loc(unreachable ? "launcher.unreachable" : "launcher.missing"), url.deletingPathExtension().lastPathComponent), removing: url)
     }
 
-    func reload(recents urls: [URL], missing: Set<URL> = []) {
+    func reload(recents urls: [URL], missing: Set<URL> = [], unreachable: Set<URL> = []) {
+        let next = urls.prefix(10).map {
+            LauncherRecent(url: $0, missing: missing.contains($0), unreachable: unreachable.contains($0))
+        }
+        // A late answer that changes nothing leaves the list, its selection and its notice alone.
+        if listed, next == recents { return }
+        listed = true
         // A missing-file notice is about the list as it was.
         if missingURL != nil { showNotice(nil) }
-        recents = urls.prefix(10).map { LauncherRecent(url: $0, missing: missing.contains($0)) }
+        recents = next
         table.reloadData()
         let any = !recents.isEmpty
         scroll.isHidden = !any
