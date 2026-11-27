@@ -410,7 +410,7 @@ pub fn build_waveform_with(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         build(media, info, cancel, on_partial)
     }))
-    .unwrap_or_else(|_| Err(MediaError::Corrupt("decoder failed".into()).into()))
+    .unwrap_or_else(|_| Err(MediaError::Corrupt(crate::decode::DECODER_FAILED.into()).into()))
 }
 
 fn build(
