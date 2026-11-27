@@ -596,6 +596,7 @@ fn patch_property(p: &Pick) -> PatchProperty {
                     device_output: device_output.wrapping_add(i),
                     level_db: level(p.c.wrapping_add(i)),
                     mute: i.is_multiple_of(2),
+                    solo: false,
                 })
                 .collect(),
         },

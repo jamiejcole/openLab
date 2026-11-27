@@ -1622,14 +1622,14 @@ fn any_patch() -> impl Strategy<Value = AnyPatch> {
             device_output,
             db,
         });
-    let device_output =
-        (0u32..66, level(), any::<bool>()).prop_map(|(device_output, level_db, mute)| {
-            DeviceOutputLevel {
-                device_output,
-                level_db,
-                mute,
-            }
-        });
+    let device_output = (0u32..66, level(), any::<bool>(), any::<bool>()).prop_map(
+        |(device_output, level_db, mute, solo)| DeviceOutputLevel {
+            device_output,
+            level_db,
+            mute,
+            solo,
+        },
+    );
     (
         text(),
         level(),
