@@ -108,7 +108,7 @@ Before applying a client's command the engine calls `Command::prepare(&Workspace
 - A never-saved show has no folder, so paths stay absolute. Save As rebasing, and when history is kept or cleared: skill `persistence`.
 
 ## Helpers
-- `next_auto_number(&Workspace)`: one `auto_number_increment` above the highest numeric cue number, never below `auto_number_start`; plain decimal text (`0.3`, not `0.30000000000000004`).
+- `next_auto_number(&Workspace, at)`: the new cue is numbered from the numeric cue before it (none = 0) plus the first step that stays below the numeric cue after it (none after = any), repeated while the number is used anywhere; steps, limits and edge cases are row Q611 in skill qlab-behaviour. Plain decimal text (`0.3`, not `0.30000000000000004`); `None` = no number, and `AddCue` then leaves the cue unnumbered.
 - `prepare_paste(&Workspace, &[Cue], new_id)`: copies a clipboard for any workspace. Fresh ids from `new_id` (core cannot make ids); targets inside the copied set follow to the copies, others are kept if they exist in the destination and cleared otherwise; numbers already in use are cleared; a missing patch or network destination becomes the destination's first. Fails only if the clipboard is nested deeper than `MAX_GROUP_DEPTH`.
 - Cut is copy + `RemoveCue`; duplicate is `prepare_paste` + `Paste`: wrap in a `Transaction` when they must be one step.
 

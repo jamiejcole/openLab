@@ -191,8 +191,8 @@ pub struct NumberAssignment {
 )]
 pub enum Command {
     /// Adds one cue, with its children if it is a Group. With `auto_number` and the workspace's
-    /// auto-numbering on, its number is replaced by [`next_auto_number`] (ED-08); with it off the
-    /// cue keeps the number it came with.
+    /// auto-numbering on, its number is replaced by [`next_auto_number`] (ED-08), which may be none;
+    /// with it off the cue keeps the number it came with.
     AddCue {
         at: Position,
         cue: Cue,
@@ -674,7 +674,7 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
             auto_number,
         } => {
             if auto_number && ws.settings.auto_number_new_cues {
-                cue.number = Some(next_auto_number(ws, &at)?);
+                cue.number = next_auto_number(ws, &at)?;
             }
             if !restoring {
                 ws.clamp_new_cues(std::slice::from_mut(&mut cue));

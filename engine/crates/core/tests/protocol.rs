@@ -4489,7 +4489,6 @@ fn property_commands() -> Vec<(String, Command)> {
                 ..TransportHotkeys::default()
             }),
         },
-        WorkspaceSetting::AutoNumberStart { value: 10.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 0.5 },
         WorkspaceSetting::NewCuesAutoLoad { value: true },
     ];
