@@ -20,14 +20,14 @@ pub fn fuzz_init() {
     // libFuzzer's hook aborts at the panic, before the unwind the product relies on. Release
     // builds also lack the overflow checks the fuzz build has, so a panic here is one the
     // product has already confined to its file; the message is kept on stderr.
-    // Only a panic inside a third-party decoder (a registry crate) is let through; one in our
+    // Only a panic inside the symphonia decoders (a registry crate) is let through; one in our
     // own code (the reader, resampler, seek or this target's invariants) aborts as before, so
     // the fuzzer still reports it.
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
-        let third_party = info
-            .location()
-            .is_some_and(|l| l.file().contains("/registry/src/"));
+        let third_party = info.location().is_some_and(|l| {
+            l.file().contains("/registry/src/") && l.file().contains("/symphonia")
+        });
         if third_party {
             let _ = writeln!(std::io::stderr(), "third-party decoder panic: {info}");
         } else {
