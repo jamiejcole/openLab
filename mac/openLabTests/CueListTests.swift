@@ -2007,7 +2007,7 @@ final class PlayheadFlowTests: XCTestCase {
         let added = try XCTUnwrap(addedID, "a cue added after the first")
         XCTAssertEqual(wc.cueList.roots.firstIndex { $0.id == added }, 1, "added right after the selected cue")
         await assertEventually("the new cue is selected and holds the playhead") {
-            self.wc.cueList.selectedIDs() == [added] && self.store.playheads[self.list] == added
+            self.wc.cueList.selectedIDs() == [added] && self.store.engineHeads[self.list] == added
         }
         await wc.editor.undo()
         await assertEventually("the cue is gone and the playhead moved on") {
