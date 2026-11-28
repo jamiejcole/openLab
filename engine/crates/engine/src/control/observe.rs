@@ -690,7 +690,15 @@ impl DocCx<'_> {
                         }
                         _ => LogLevel::Warn,
                     };
-                    self.record(LogKind::Engine, level, format!("warning {text}"), cue, None);
+                    // A broken cue that was asked to start reads as a sentence naming the cue, not as the
+                    // wire record with its internal id.
+                    let message = match (warning, cue) {
+                        (openlab_core::protocol::WireWarning::CueBroken { .. }, Some(id)) => {
+                            format!("{} is broken and was not started", self.cue_label(id))
+                        }
+                        _ => format!("warning {text}"),
+                    };
+                    self.record(LogKind::Engine, level, message, cue, None);
                 }
                 _ => {}
             }
