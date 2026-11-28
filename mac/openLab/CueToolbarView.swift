@@ -69,7 +69,7 @@ final class CueToolbarView: NSView {
 
     /// QLab 5's order for the kinds openLab has: Group, Audio, Video, Fade, Network, then the cues
     /// that act on cues, with Wait and Memo last.
-    private static let groups: [[(icon: Icon, key: String)]] = [
+    static let groups: [[(icon: Icon, key: String)]] = [
         [(.kindGroup, "cue.type.group")],
         [(.kindAudio, "cue.type.audio")],
         [(.kindVideo, "cue.type.video")],

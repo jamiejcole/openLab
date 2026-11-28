@@ -9,7 +9,7 @@ import Combine
 /// Both tabs share one layout: a label column to the right edge of its text, controls beside it, help
 /// text in the small grey type under the control it explains.
 @MainActor
-final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
+final class PreferencesWindowController: NSWindowController, NSTabViewDelegate, NSWindowDelegate {
     /// The one set of measures both tabs use.
     enum Layout {
         static let inset: CGFloat = 20
@@ -39,12 +39,15 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
     private(set) var bufferPopups: [NSPopUpButton] = []
     let audio: AudioPreferencesModel?
     private let preferences: LaunchPreferences
+    private let scheduler: Scheduler
     /// The last refresh, so tests can wait for it.
     private(set) var refreshing: Task<Void, Never>?
     private var connectionSub: AnyCancellable?
 
-    init(preferences: LaunchPreferences, audio: AudioPreferencesModel? = nil) {
+    init(preferences: LaunchPreferences, audio: AudioPreferencesModel? = nil, scheduler: Scheduler = SystemScheduler())
+    {
         self.preferences = preferences
+        self.scheduler = scheduler
         self.audio = audio
         let window = PanicKeyWindow(
             contentRect: NSRect(origin: .zero, size: Layout.leastSize),
@@ -68,12 +71,57 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         window.contentView = tabs
         window.center()
         reload()
-        // An engine that was still starting when the window opened fills the controls in once it is up.
-        connectionSub = audio?.connectionStates.sink { [weak self] state in
-            guard state == .connected, self?.audio?.loaded != true else { return }
+        window.delegate = self
+        // An engine that was still starting when the window opened fills the controls in once it is up,
+        // and one that restarted under the open window (a new run, its devices read again) does too.
+        connectionSub = audio?.connectionStates.removeDuplicates().dropFirst().sink { [weak self] state in
+            guard state == .connected else { return }
             self?.reload()
         }
     }
+
+    /// While the window is open the device list is read again every `followSeconds`: nothing tells an
+    /// unbound connection that a device was unplugged (or came back), and a clock device chosen for the
+    /// next start that was never opened produces no notice at all. Only a changed list is drawn again, so
+    /// a pop-up held open is left alone.
+    static let followSeconds = 2.0
+    private var following: Task<Void, Never>?
+
+    func startFollowing() {
+        guard audio != nil, following == nil else { return }
+        let scheduler = scheduler
+        following = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await scheduler.sleep(seconds: Self.followSeconds)
+                guard !Task.isCancelled, let self else { return }
+                await self.followOnce()
+            }
+        }
+    }
+
+    func stopFollowing() {
+        following?.cancel()
+        following = nil
+    }
+
+    /// One read of the device list, drawn only when it differs; tests wait on `refreshing`.
+    private func followOnce() async {
+        guard let audio else { return }
+        let before = (audio.devices, audio.chosenDevice, audio.loaded)
+        await audio.refresh()
+        if (audio.devices, audio.chosenDevice, audio.loaded) != before { renderAudio() }
+        pollsDone += 1
+    }
+
+    /// Polls finished, for tests.
+    private(set) var pollsDone = 0
+
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        startFollowing()
+    }
+
+    func windowWillClose(_ notification: Notification) { stopFollowing() }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }

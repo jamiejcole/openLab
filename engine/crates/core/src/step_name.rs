@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::command::Command;
+use crate::command::{Command, CueProperty};
 use crate::model::Workspace;
 use crate::video::{RegionProperty, RouteProperty, StageProperty};
 
@@ -36,6 +36,31 @@ pub enum StepName {
     ResizeRegion,
     MoveRegion,
     RegionRoute,
+    AddCue,
+    RemoveCue,
+    MoveCue,
+    /// One or several cues pasted.
+    PasteCues,
+    RenumberCues,
+    RenameCue,
+    /// Any other property of one or several cues.
+    EditCue,
+}
+
+impl StepName {
+    /// A step of cue edits: several of them in one transaction are still one named step.
+    fn is_cue_edit(self) -> bool {
+        matches!(
+            self,
+            StepName::AddCue
+                | StepName::RemoveCue
+                | StepName::MoveCue
+                | StepName::PasteCues
+                | StepName::RenumberCues
+                | StepName::RenameCue
+                | StepName::EditCue
+        )
+    }
 }
 
 /// The name of the step `command` makes when applied to `workspace` as it is before the command
@@ -51,6 +76,17 @@ pub fn step_name(command: &Command, workspace: &Workspace) -> Option<StepName> {
             StageProperty::KeepBlack { .. } => StepName::StageKeepBlack,
             StageProperty::Layer { .. } => StepName::StageLayer,
         },
+        Command::AddCue { .. } => StepName::AddCue,
+        Command::RemoveCue { .. } => StepName::RemoveCue,
+        Command::MoveCue { .. } | Command::ReparentCue { .. } => StepName::MoveCue,
+        Command::Paste { .. } | Command::PasteClipboard { .. } => StepName::PasteCues,
+        Command::Renumber { .. } | Command::SetCueNumbers { .. } => StepName::RenumberCues,
+        Command::SetCueProperty { property, .. } | Command::BatchSet { property, .. } => {
+            match property {
+                CueProperty::Name { .. } => StepName::RenameCue,
+                _ => StepName::EditCue,
+            }
+        }
         Command::AddRoute { .. } => StepName::AddRoute,
         Command::RemoveRoute { .. } => StepName::RemoveRoute,
         Command::MoveRoute { .. } => StepName::MoveRoute,
@@ -92,7 +128,14 @@ pub fn step_name(command: &Command, workspace: &Workspace) -> Option<StepName> {
             {
                 StepName::EditRoute
             }
-            _ => return None,
+            _ => {
+                // Several edits of cues that all mean the same thing (a delete of a selection).
+                let mut names = commands.iter().map(|c| step_name(c, workspace));
+                match names.next().flatten() {
+                    Some(first) if first.is_cue_edit() && names.all(|n| n == Some(first)) => first,
+                    _ => return None,
+                }
+            }
         },
         _ => return None,
     })
