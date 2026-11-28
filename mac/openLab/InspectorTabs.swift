@@ -380,11 +380,18 @@ final class TargetPathControl: NSPathControl {
                 setFullItems([])
                 return
             }
-            let names = newValue.standardizedFileURL.pathComponents.filter { $0 != "/" }
+            var names = newValue.standardizedFileURL.pathComponents.filter { $0 != "/" }
+            // A file on another drive starts at the drive, with a drive's icon, as the system's own path does.
+            let onDrive = names.count > 2 && names[0] == "Volumes"
+            if onDrive { names.removeFirst() }
             let items = names.enumerated().map { (index, name) -> NSPathControlItem in
                 let item = NSPathControlItem()
                 item.title = name
-                item.image = Self.icon(forExtension: index == names.count - 1 ? (name as NSString).pathExtension : nil)
+                if index == names.count - 1 {
+                    item.image = Self.icon(.file((name as NSString).pathExtension))
+                } else {
+                    item.image = Self.icon(index == 0 && onDrive ? .drive : .folder)
+                }
                 return item
             }
             setFullItems(InspectorViewController.shownPathItems(items, of: newValue))
@@ -393,11 +400,23 @@ final class TargetPathControl: NSPathControl {
 
     private static var iconCache: [String: NSImage] = [:]
 
-    /// The generic icon of a folder (`nil`) or of a file type; cached, and read from no file.
-    private static func icon(forExtension ext: String?) -> NSImage {
-        let key = ext?.lowercased() ?? "\u{0}folder"
+    private enum IconKind {
+        case folder, drive
+        case file(String)
+    }
+
+    /// The generic icon of a folder, a drive or a file type; cached, and read from no file.
+    private static func icon(_ kind: IconKind) -> NSImage {
+        let key: String
+        let type: UTType
+        switch kind {
+        case .folder: (key, type) = ("\u{0}folder", .folder)
+        case .drive: (key, type) = ("\u{0}drive", .volume)
+        case .file(let ext):
+            key = ext.lowercased()
+            type = UTType(filenameExtension: ext) ?? .data
+        }
         if let cached = iconCache[key] { return cached }
-        let type = ext.flatMap { UTType(filenameExtension: $0) } ?? (ext == nil ? .folder : .data)
         let image = NSWorkspace.shared.icon(for: type)
         image.size = NSSize(width: 16, height: 16)
         iconCache[key] = image

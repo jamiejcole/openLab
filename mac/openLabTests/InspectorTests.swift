@@ -2204,7 +2204,7 @@ final class UserTestFlowTests: XCTestCase {
         let control = TargetPathControl(frame: NSRect(x: 0, y: 0, width: 900, height: 24))
         control.show(url: url)
         control.layoutSubtreeIfNeeded()
-        XCTAssertEqual(control.pathItems.map(\.title), ["Volumes", "NoSuchShowDisk", "Props", "media", "a.wav"])
+        XCTAssertEqual(control.pathItems.map(\.title), ["NoSuchShowDisk", "Props", "media", "a.wav"], "from the drive")
         XCTAssertTrue(control.pathItems.allSatisfy { $0.image != nil }, "each with its icon")
         XCTAssertEqual(control.url, url)
         XCTAssertEqual(control.accessibilityValue() as? String, url.path)
