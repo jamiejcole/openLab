@@ -147,7 +147,8 @@ final class MainMenuTests: XCTestCase {
         let toolbar = CueToolbarView.groups.flatMap { $0 }.map { loc($0.key) }
         for name in toolbar {
             XCTAssertTrue(
-                cues.contains { $0.title == String(format: loc("menu.cues.new"), name) }, "\(name) is in Cues and the toolbar")
+                cues.contains { $0.title == String(format: loc("menu.cues.new"), name) },
+                "\(name) is in Cues and the toolbar")
         }
         XCTAssertEqual(
             loc("cuelist.menu.revealTarget"), loc("menu.tools.revealTarget"), "one name for the one action")

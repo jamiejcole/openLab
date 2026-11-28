@@ -442,7 +442,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case .pauseAll: return store?.anyPlaying() ?? false
         case .resumeAll: return store?.anyPaused() ?? false
         case .stopAll: return store?.anyActive() ?? false
-        case .pauseResumeSelected: return (store?.anyPlaying(in: selected) ?? false) || (store?.anyPaused(in: selected) ?? false)
+        case .pauseResumeSelected:
+            return (store?.anyPlaying(in: selected) ?? false) || (store?.anyPaused(in: selected) ?? false)
         case .stopSelected, .panicSelected: return store?.anyActive(in: selected) ?? false
         case .previewSelected: return appController.frontController?.cueList.anyPreviewableSelected ?? false
         case .loadSelected, .startSelected, .resetSelected: return !selected.isEmpty

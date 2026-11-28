@@ -44,7 +44,8 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate, 
     private(set) var refreshing: Task<Void, Never>?
     private var connectionSub: AnyCancellable?
 
-    init(preferences: LaunchPreferences, audio: AudioPreferencesModel? = nil, scheduler: Scheduler = SystemScheduler()) {
+    init(preferences: LaunchPreferences, audio: AudioPreferencesModel? = nil, scheduler: Scheduler = SystemScheduler())
+    {
         self.preferences = preferences
         self.scheduler = scheduler
         self.audio = audio
