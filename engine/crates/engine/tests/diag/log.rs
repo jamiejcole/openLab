@@ -234,7 +234,10 @@ fn a_go_on_a_broken_cue_is_logged_as_a_sentence_naming_the_cue() {
         .find(|e| e.level == LogLevel::Warn && e.kind == LogKind::Engine)
         .unwrap_or_else(|| panic!("{log:#?}"));
     assert_eq!(warn.cue, Some(id(1)));
-    assert_eq!(warn.message, "cue 1 \"cue 1\" is broken and was not started");
+    assert_eq!(
+        warn.message,
+        "cue 1 \"cue 1\" is broken and was not started"
+    );
 }
 
 #[test]
