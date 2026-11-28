@@ -728,17 +728,38 @@ final class VideoSettingsTests: XCTestCase {
         return colours
     }
 
-    /// #674 flow 1 and #813 G6: a stage's size is changed in its editor: its row shows the new size,
-    /// its region follows it (half the width: still the whole stage) and still fills its route on
-    /// V1, and one undo puts both back.
-    func testG6AStagesSizeChangedInItsEditorScalesItsRegionsAndOneUndoRestoresBoth() async throws {
+    /// Opens `editor`'s resize dialog (off screen) and types `width` (and `height` when given) with the
+    /// shape box set to `keepShape`, regions handled by `mode`; OK when `ok`.
+    @discardableResult
+    private func resize(
+        _ editor: StageEditorWindowController, width: String, height: String? = nil, keepShape: Bool = false,
+        mode: ResizeStageDialog.Mode = .scale, ok: Bool = true
+    ) throws -> ResizeStageDialog {
+        editor.resizeClicked()
+        let dialog = try XCTUnwrap(editor.resizeDialog, "the dialog is up")
+        dialog.keepShapeCheck.state = keepShape ? .on : .off
+        dialog.modePopup.selectItem(at: mode == .scale ? 0 : 1)
+        dialog.widthField.stringValue = width
+        dialog.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: dialog.widthField))
+        if let height {
+            dialog.heightField.stringValue = height
+            dialog.controlTextDidChange(
+                Notification(name: NSControl.textDidChangeNotification, object: dialog.heightField))
+        }
+        if ok { dialog.okClicked() }
+        return dialog
+    }
+
+    /// #674 flow 1, #813 G6 and #860 B7: a stage's size is changed from its editor's resize dialog,
+    /// regions scaled: its row and the editor's size text show the new size, its region follows it
+    /// (still the whole stage) and still fills its route on V1, and one undo puts both back.
+    func testStageEditor_resizeScalesRegionsOneUndo() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
         let routing = sc.videoRoutingPane
         await settled(sc) { pane.sizeLabels.count == 1 && routing.displayPopups.count == 1 }
         let editor = sc.openStageEditor(ModelID(stageA))
-        XCTAssertEqual(editor.widthField.stringValue, "1920")
-        XCTAssertEqual(editor.heightField.stringValue, "1080")
+        XCTAssertEqual(editor.sizeLabel.stringValue, "1920 × 1080")
         let popup = routing.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
@@ -753,12 +774,19 @@ final class VideoSettingsTests: XCTestCase {
         // stage filling the display.
         let points: [[Double]] = [[0.05, 0.3], [0.3, 0.3]]
         await assertEventually("the card fills V1") { await self.displayColours("V1", points) == [red, red] }
-        type("1080", into: editor.widthField, editor)
+        // The shape kept: the height follows the width typed; unticked it does not.
+        let kept = try resize(editor, width: "960", keepShape: true, ok: false)
+        XCTAssertEqual(kept.heightField.stringValue, "540", "the height follows with the shape kept")
+        kept.cancelButton.performClick(nil)
+        XCTAssertNil(editor.resizeDialog, "Cancel takes it down")
+        await editor.editing?.value
+        XCTAssertEqual(rig.store.document?.canUndo, false, "Cancel sent nothing")
+        try resize(editor, width: "1080")
         await settled(sc) { pane.shown?.first?.width == 1080 }
         await editor.editing?.value
+        editor.render()
         XCTAssertEqual(pane.sizeLabels[0].stringValue, "1080 × 1080")
-        XCTAssertEqual(editor.widthField.stringValue, "1080")
-        XCTAssertEqual(editor.heightField.stringValue, "1080")
+        XCTAssertEqual(editor.sizeLabel.stringValue, "1080 × 1080")
         XCTAssertEqual(editor.messageLabel.stringValue, "")
         XCTAssertEqual(editor.regions.map(\.bounds), [RegionBounds(x: 0, y: 0, width: 1080, height: 1080)])
         XCTAssertEqual(editor.canvas.regionFrames, [editor.canvas.stageFrame], "the region still covers the stage")
@@ -769,59 +797,107 @@ final class VideoSettingsTests: XCTestCase {
         _ = await rig.store.undo()
         await settled(sc) { pane.shown?.first?.width == 1920 }
         editor.render()
-        XCTAssertEqual(editor.widthField.stringValue, "1920")
+        XCTAssertEqual(editor.sizeLabel.stringValue, "1920 × 1080")
         XCTAssertEqual(editor.regions.map(\.bounds), [RegionBounds(x: 0, y: 0, width: 1920, height: 1080)])
         await assertEventually("back across V1") { await self.displayColours("V1", points) == [red, red] }
     }
 
-    /// #674 flow 2: a size of 0, above the limit, or not a number is refused with the reason shown
-    /// where every other refused value's is, and the old size stays (nothing is sent).
-    func testASizeOfZeroAboveTheLimitOrNotANumberIsRefusedWithTheReasonAndTheOldSizeStays() async throws {
+    /// #674 flow 2 and #860 B6: the resize dialog has the width and height, the shape box ticked,
+    /// the regions' choice and a picture; a size of 0, above the limit, or not a number keeps it up
+    /// with the reason and nothing is sent; Cancel changes nothing; the largest size is taken.
+    func testStageEditor_resizeDialogControls() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
         await settled(sc) { pane.sizeLabels.count == 1 }
         let editor = sc.openStageEditor(ModelID(stageA))
+        editor.resizeClicked()
+        let dialog = try XCTUnwrap(editor.resizeDialog)
+        let window = try XCTUnwrap(dialog.window)
+        XCTAssertNil(window.sheetParent, "a window of its own, not a sheet")
+        XCTAssertEqual(window.title, loc("resize.title"))
+        XCTAssertEqual([dialog.widthField.stringValue, dialog.heightField.stringValue], ["1920", "1080"])
+        XCTAssertEqual(dialog.keepShapeCheck.state, .on, "the shape is kept by default")
+        XCTAssertEqual(dialog.modePopup.itemTitles, [loc("resize.mode.scale"), loc("resize.mode.cropOrPad")])
+        XCTAssertEqual(dialog.preview.newSize, NSSize(width: 1920, height: 1080))
+        XCTAssertEqual([dialog.cancelButton.title, dialog.okButton.title], ["Cancel", "OK"])
+        dialog.cancelButton.performClick(nil)
+        XCTAssertNil(editor.resizeDialog)
         for (text, width) in [("0", true), ("16385", false), ("abc", true), ("-5", false), ("", true)] {
-            let field = width ? editor.widthField : editor.heightField
-            type(text, into: field, editor)
-            XCTAssertEqual(editor.messageLabel.stringValue, loc("settings.video.badSize"), text)
-            XCTAssertEqual(field.stringValue, width ? "1920" : "1080", "\(text): the old size stays")
+            let d = try resize(editor, width: width ? text : "1920", height: width ? "1080" : text)
+            XCTAssertEqual(d.messageLabel.stringValue, loc("settings.video.badSize"), text)
+            XCTAssertTrue(editor.resizeDialog === d, "\(text): the dialog stays up")
+            d.cancelButton.performClick(nil)
         }
         await editor.editing?.value
         XCTAssertEqual(rig.store.model?.stages.first?.raw["width"]?.doubleValue, 1920)
-        XCTAssertEqual(rig.store.model?.stages.first?.raw["height"]?.doubleValue, 1080)
         XCTAssertEqual(rig.store.document?.canUndo, false, "nothing was sent")
-        // The largest size is taken, and a good edit clears the reason.
-        type("16384", into: editor.heightField, editor)
+        try resize(editor, width: "1920", height: "16384")
         await settled(sc) { pane.shown?.first?.height == 16384 }
         await editor.editing?.value
         XCTAssertEqual(editor.messageLabel.stringValue, "")
-        XCTAssertEqual(editor.heightField.stringValue, "16384")
     }
 
-    /// A size typed in the stage editor and committed with Return, then undone: the field shows the
-    /// size the undo put back, and a click on another control sends no size (the undone one stays).
-    func testASizeUndoneAfterReturnIsShownAndAClickElsewhereNeverSendsItAgain() async throws {
+    /// #860 B8: a stage 1920 x 1080 with region A on its left half and B partly past its right
+    /// edge once shrunk; resized to 1280 x 720 keeping the regions' size (crop or pad): each keeps
+    /// its pixel size and its place about the centre, cut at the new edges; one undo restores both.
+    func testStageEditor_resizeCropPadKeepsRegions() async throws {
+        let (rig, sc) = try await openRouted(
+            routes: [(route1, "Output 1", 1920, 1080)], width: 1920,
+            regions: [(regionA, route1, 0, 960), (regionB, nil, 1500, 400)])
+        let editor = sc.openStageEditor(ModelID(stageA))
+        await editorSettled(sc, editor) { editor.regionRows.count == 2 }
+        let before = editor.regions
+        try resize(editor, width: "1280", height: "720", mode: .cropOrPad)
+        await editorSettled(sc, editor) { editor.sizeLabel.stringValue == "1280 × 720" }
+        // The stage loses 320 a side and 180 above and below: A (0..960 x 0..1080) becomes
+        // -320..640 x -180..900, cut to 0..640 x 0..720; B (1500..1900) becomes 1180..1580, cut to 1180..1280.
+        XCTAssertEqual(
+            editor.regions.map(\.bounds),
+            [RegionBounds(x: 0, y: 0, width: 640, height: 720), RegionBounds(x: 1180, y: 0, width: 100, height: 720)])
+        XCTAssertEqual(editor.regions.map(\.route), [ModelID(route1), nil], "routes kept")
+        XCTAssertEqual(rig.store.document?.undoName, "resize_stage")
+        _ = await rig.store.undo()
+        await editorSettled(sc, editor) { editor.sizeLabel.stringValue == "1920 × 1080" }
+        XCTAssertEqual(editor.regions, before, "one undo restores the size and the regions exactly")
+    }
+
+    /// Crop or pad never drops a region: one left wholly outside the smaller stage comes in to the
+    /// nearest edge with its size; a larger stage pads round each region, which keeps its place
+    /// about the centre.
+    func testCropOrPadClampsARegionWhollyOutsideAndPadsAroundTheCentre() {
+        let a = RegionRow(id: "a", route: nil, bounds: RegionBounds(x: 1800, y: 0, width: 100, height: 100))
+        let b = RegionRow(id: "b", route: nil, bounds: RegionBounds(x: 0, y: 980, width: 100, height: 100))
+        let shrunk = ResizeStageDialog.cropOrPad([a, b], from: (1920, 1080), to: (1000, 600))
+        XCTAssertEqual(
+            shrunk.map(\.bounds),
+            [RegionBounds(x: 900, y: 0, width: 100, height: 100), RegionBounds(x: 0, y: 500, width: 100, height: 100)])
+        let grown = ResizeStageDialog.cropOrPad([a], from: (1920, 1080), to: (3840, 2160))
+        XCTAssertEqual(grown.map(\.bounds), [RegionBounds(x: 2760, y: 540, width: 100, height: 100)])
+    }
+
+    /// A layer typed in the stage editor and committed with Return, then undone: the field shows the
+    /// layer the undo put back, and a click on another control sends no layer (the undone one stays).
+    func testALayerUndoneAfterReturnIsShownAndAClickElsewhereNeverSendsItAgain() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080), (stageB, "Side", 1280, 720)])
         let pane = sc.videoPane
         await settled(sc) { pane.sizeLabels.count == 2 }
         let stageEditor = sc.openStageEditor(ModelID(stageA))
         let window = try XCTUnwrap(stageEditor.window)
-        XCTAssertTrue(window.makeFirstResponder(stageEditor.heightField))
-        try XCTUnwrap(stageEditor.heightField.currentEditor()).string = "400"
-        let editor = try XCTUnwrap(stageEditor.heightField.currentEditor() as? NSTextView)
+        XCTAssertTrue(window.makeFirstResponder(stageEditor.layerField))
+        try XCTUnwrap(stageEditor.layerField.currentEditor()).string = "400"
+        let editor = try XCTUnwrap(stageEditor.layerField.currentEditor() as? NSTextView)
         editor.insertNewline(nil)
-        await settled(sc) { pane.shown?.first?.height == 400 }
+        await settled(sc) { rig.store.model?.stages.first?.raw["layer"]?.doubleValue == 400 }
         await stageEditor.editing?.value
         _ = await rig.store.undo()
-        await settled(sc) { pane.shown?.first?.height == 1080 }
-        await assertEventually("the undone size is shown") { stageEditor.heightField.stringValue == "1080" }
-        XCTAssertNotEqual(stageEditor.heightField.currentEditor()?.string, "400")
+        await settled(sc) { rig.store.model?.stages.first?.raw["layer"]?.doubleValue == 1 }
+        await assertEventually("the undone layer is shown") { stageEditor.layerField.stringValue == "1" }
+        XCTAssertNotEqual(stageEditor.layerField.currentEditor()?.string, "400")
         stageEditor.blackCheck.performClick(nil)
         await stageEditor.editing?.value
         await settled(sc) { rig.store.model?.stages.first?.raw["keep_black"] == .bool(true) }
-        XCTAssertEqual(rig.store.model?.stages.first?.raw["height"]?.doubleValue, 1080, "no size sent again")
-        XCTAssertEqual(stageEditor.heightField.stringValue, "1080")
+        XCTAssertEqual(rig.store.model?.stages.first?.raw["layer"]?.doubleValue, 1, "no layer sent again")
+        XCTAssertEqual(stageEditor.layerField.stringValue, "1")
         XCTAssertEqual(stageEditor.messageLabel.stringValue, "")
     }
 
@@ -1140,7 +1216,7 @@ final class VideoSettingsTests: XCTestCase {
             Array(titles(editor.newRegionPopup).dropFirst()),
             ["On Output 2", "On Output 1", loc("stageEditor.newRegionNone")])
         // Let go where it already is: nothing is sent.
-        routing.moveRoute(from: 0, toGap: 1)
+        routing.move(from: 0, toGap: 1)
         await routing.pending?.value
         XCTAssertEqual(rig.store.document?.undoName, "move_route")
         _ = await rig.store.undo()
@@ -1376,7 +1452,7 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(editor.nameField.stringValue, "Stage 1")
         XCTAssertEqual(editor.layerField.stringValue, "1")
         XCTAssertEqual(editor.blackCheck.state, .off)
-        XCTAssertEqual([editor.widthField.stringValue, editor.heightField.stringValue], ["3840", "1080"])
+        XCTAssertEqual(editor.sizeLabel.stringValue, "3840 × 1080")
         XCTAssertEqual(editor.regionChips.map(\.letter), ["A", "B"])
         XCTAssertNotEqual(editor.regionChips[0].colour, editor.regionChips[1].colour)
         XCTAssertEqual(editor.regionRoutePopups.map { $0.titleOfSelectedItem }, ["Output 1", "Output 2"])
@@ -1426,7 +1502,7 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(
             [editor.regionWidthField, editor.regionHeightField, editor.lowerLeftXField, editor.lowerLeftYField]
                 .map(\.stringValue), ["1920", "1080", "-960", "-540"])
-        XCTAssertEqual(editor.upperRightLabel.stringValue, "960, 540")
+        XCTAssertEqual([editor.upperRightXLabel.stringValue, editor.upperRightYLabel.stringValue], ["960", "540"])
         XCTAssertEqual(rig.store.document?.undoName, "add_region")
         _ = await rig.store.undo()
         await editorSettled(sc, editor) { editor.regionChips.count == 1 }
@@ -2116,7 +2192,7 @@ extension VideoSettingsTests {
         guard case .success = removed else { return XCTFail("remove") }
         await editorSettled(sc, editor) { editor.regionChips.count == 2 }
         XCTAssertEqual(
-            editor.regionGrid.subviews.count, editor.regionGrid.numberOfRows * 3, "no views of dropped rows are left")
+            editor.regionList.arrangedSubviews.count, editor.regionRows.count, "no views of dropped rows are left")
         XCTAssertNil(held.superview, "the old button is out of the window")
         held.performClick(nil)
         await editorSettled(sc, editor) { editor.regionChips.count == 1 }

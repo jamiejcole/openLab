@@ -484,9 +484,11 @@ final class VideoCueTests: XCTestCase {
         let pane = sc.videoPane
         await soon("the Video page lists the stages") { pane.sizeLabels.count == 2 }
         let editor = sc.openStageEditor(Self.stage)
-        let field = editor.widthField
-        field.stringValue = "1080"
-        editor.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        editor.resizeClicked()
+        let dialog = try XCTUnwrap(editor.resizeDialog)
+        dialog.keepShapeCheck.state = .off
+        dialog.widthField.stringValue = "1080"
+        dialog.okClicked()
         await editor.editing?.value
         await soon("the row shows the square stage") {
             await pane.refresh()
@@ -1718,7 +1720,7 @@ extension VideoCueTests {
         await expectStep("rotate_route")
         try await editRoute { $0.scalingPopup.selectItem(withTitle: loc("settings.video.scaling.stretch")) }
         await expectStep("route_scaling")
-        routing.moveRoute(from: 2, toGap: 0)
+        routing.move(from: 2, toGap: 0)
         await expectStep("move_route")
         // The display choice is no step: the menu still names the reorder.
         await settledVideo(sc) { routing.shown?.first?.name == "Cyc" }

@@ -130,6 +130,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let editPatchButton = NSButton(title: loc("inspector.io.editPatch"), target: nil, action: nil)
     /// Opens the patch editor of a patch (set by the window controller).
     var onEditPatch: ((ModelID) -> Void)?
+    /// Opens a stage's editor, and the workspace settings on the Video page (set by the window
+    /// controller; a Video cue's I/O tab).
+    var onEditStage: ((ModelID) -> Void)?
+    var onOpenVideoSettings: (() -> Void)?
     /// A Video cue's rows of the I/O tab.
     let videoIO = VideoIOControls()
     let geometry = GeometryControls()

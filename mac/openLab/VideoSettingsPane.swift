@@ -10,7 +10,9 @@ struct StageRow: Equatable {
     var name: String
     var width: Int
     var height: Int
-    /// A stage's: the displays it reaches through its regions' routes, in route order.
+    /// A stage's: where its regions' routes reach on this machine, in route order (a display's
+    /// name, one not connected marked, a route with no display named so); empty when no region
+    /// goes to a route.
     var devices: [String] = []
     /// A route's scaling (`centre`, `fit`, `stretch`, `fill`), set in its editor.
     var scaling: String = "fill"
@@ -152,8 +154,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private(set) var warningLabels: [NSTextField] = []
     /// The Output Devices rows: each display's number, name, size and refresh rate.
     private(set) var deviceLabels: [[NSTextField]] = []
-    /// The line drawn where a dragged route would go.
+    /// The line drawn where a dragged row would go.
     let dropLine = NSBox()
+    /// The selected row (Video Outputs and Output Routing): a click on a row's background or a
+    /// row just added selects it; drawn as a highlight behind the row (`selectionBox`).
+    private(set) var selectedRow: ModelID?
+    let selectionBox = NSBox()
     private var subs: [AnyCancellable] = []
     /// Edits on their way to the engine, one after another.
     private var commits: Task<Void, Never>?
@@ -174,7 +180,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     /// The columns of `section`'s table, left to right.
     static func columns(of section: Section) -> [Col] {
         switch section {
-        case .outputs: return [.name, .size, .devices, .edit, .monitor, .remove]
+        case .outputs: return [.handle, .name, .size, .devices, .edit, .monitor, .remove]
         case .routing: return [.handle, .name, .size, .display, .layout, .guides, .edit, .remove]
         case .devices: return [.device, .name, .resolution, .rate]
         }
@@ -274,6 +280,15 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         dropLine.fillColor = .controlAccentColor
         dropLine.borderWidth = 0
         dropLine.isHidden = true
+        selectionBox.boxType = .custom
+        selectionBox.fillColor = .unemphasizedSelectedContentBackgroundColor
+        selectionBox.borderWidth = 0
+        selectionBox.cornerRadius = 4
+        selectionBox.isHidden = true
+        selectionBox.setAX(Self.id + "-selection")
+        let click = NSClickGestureRecognizer(target: self, action: #selector(rowsClicked(_:)))
+        click.delaysPrimaryMouseButtonEvents = false
+        holder.addGestureRecognizer(click)
         NSLayoutConstraint.activate([
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
@@ -388,6 +403,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         }
         for c in wideWidths { c.constant = display }
         for (c, beside) in nameWidths { c.constant = name - beside }
+        drawSelection()
     }
 
     /// Puts `new` in the old table's place (the old one goes with every view it holds).
@@ -433,11 +449,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         }
         return (store.model?.stages ?? []).map { s in
             let raw = s.raw
-            let devices = Self.devices(of: s, routes: routes, outputs: outputs)
+            let devices = Self.destinations(of: s, routes: routes, outputs: outputs)
+            // A stage whose regions go to routes none of which shows here warns; one whose regions
+            // go nowhere says so in its destinations instead (QLab 5 does the same).
+            let shownHere = !Self.devices(of: s, routes: routes, outputs: outputs).isEmpty
             return StageRow(
                 id: s.id, name: raw["name"]?.stringValue ?? "", width: Int(raw["width"]?.doubleValue ?? 0),
                 height: Int(raw["height"]?.doubleValue ?? 0), devices: devices,
-                warning: devices.isEmpty ? loc("settings.video.warn.stageNoDisplay") : nil)
+                warning: devices.isEmpty || shownHere ? nil : loc("settings.video.warn.stageNoDisplay"))
         }
     }
 
@@ -459,6 +478,53 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             }
         }
         return names
+    }
+
+    /// Where `stage`'s regions go on this machine, in route order, each once: a route's display by
+    /// its name (one not connected marked so), or the route named with no display here. Empty when
+    /// no region goes to a route of the workspace.
+    static func destinations(of stage: ModelObject, routes: [ModelObject], outputs: VideoOutputs) -> [String] {
+        let used = Set((stage.raw["regions"]?.arrayValue ?? []).compactMap { $0["route"]?.stringValue })
+        var names: [String] = []
+        for route in routes where used.contains(route.id.raw) {
+            let name: String
+            if let mapping = outputs.route(route.id)?.mapping {
+                name =
+                    outputs.displays.first { $0.id == mapping.display }?.name
+                    ?? String(format: loc("settings.video.displayAbsent"), mapping.name)
+            } else {
+                name = String(format: loc("video.route.noDisplayNamed"), route.raw["name"]?.stringValue ?? "")
+            }
+            if !names.contains(name) { names.append(name) }
+        }
+        return names
+    }
+
+    /// A route as the region and cue pop-ups name it: its name, then in brackets its display here
+    /// (or that it has none, or that it is not connected) and its rotation when turned, e.g.
+    /// "Output 2 (Projector, 90°)".
+    static func routeTitle(_ route: ModelObject, outputs: VideoOutputs) -> String {
+        var parts: [String] = []
+        if let mapping = outputs.route(route.id)?.mapping {
+            parts.append(
+                outputs.displays.first { $0.id == mapping.display }?.name
+                    ?? String(format: loc("settings.video.displayAbsent"), mapping.name))
+        } else {
+            parts.append(loc("video.route.noDisplay"))
+        }
+        let rotation = Int(route.raw["rotation"]?.doubleValue ?? 0)
+        if rotation != 0 { parts.append(String(format: loc("routeEditor.degrees"), rotation)) }
+        return String(
+            format: loc("video.route.title"), route.raw["name"]?.stringValue ?? "", parts.joined(separator: ", "))
+    }
+
+    /// A stage as the cue's stage pop-up names it: its name, then in brackets where it goes (its
+    /// destinations), or that it goes nowhere.
+    static func stageTitle(_ stage: ModelObject, routes: [ModelObject], outputs: VideoOutputs) -> String {
+        let goes = destinations(of: stage, routes: routes, outputs: outputs)
+        return String(
+            format: loc("video.route.title"), stage.raw["name"]?.stringValue ?? "",
+            goes.isEmpty ? loc("video.stage.noOutputs") : goes.joined(separator: ", "))
     }
 
     /// What a route's state says to the operator; nil for a route that is fine.
@@ -567,22 +633,26 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             remove.isEnabled = enabled
             remove.setAX("\(Self.id)-remove-\(n)", label: "\(loc("settings.video.remove")) \(row.name)")
             removeButtons.append(remove)
+            let handle = RowHandle()
+            handle.tag = i
+            handle.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
+            handle.isEnabled = enabled
+            handle.setAX("\(Self.id)-handle-\(n)", label: String(format: loc("settings.video.handle.ax"), row.name))
+            handle.onDrag = { [weak self] handle, point in self?.dragged(handle, to: point) }
+            handle.onDrop = { [weak self] handle, point in self?.dropped(handle, at: point) }
+            handles.append(handle)
+            let icon = NSImageView(
+                image: section == .routing
+                    ? Icon.videoRoute.image(loc("settings.video.routeIcon"))
+                    : Icon.videoStage.image(loc("settings.video.stageIcon")))
+            icon.contentTintColor = .secondaryLabelColor
+            icon.setContentHuggingPriority(.required, for: .horizontal)
+            icon.setAX("\(Self.id)-icon-\(n)")
+            let cell = NSStackView(views: [icon, name])
+            cell.orientation = .horizontal
+            cell.spacing = Self.iconRoom - 16
+            nameWidths.append((Self.widthConstraint(of: name, nameWidth - Self.iconRoom), Self.iconRoom))
             if section == .routing {
-                let handle = RowHandle()
-                handle.tag = i
-                handle.identifier = NSUserInterfaceItemIdentifier(row.id.raw)
-                handle.isEnabled = enabled
-                handle.setAX("\(Self.id)-handle-\(n)", label: String(format: loc("settings.video.handle.ax"), row.name))
-                handle.onDrag = { [weak self] handle, point in self?.dragged(handle, to: point) }
-                handle.onDrop = { [weak self] handle, point in self?.dropped(handle, at: point) }
-                handles.append(handle)
-                let icon = NSImageView(image: Icon.videoRoute.image(loc("settings.video.routeIcon")))
-                icon.contentTintColor = .secondaryLabelColor
-                icon.setContentHuggingPriority(.required, for: .horizontal)
-                let cell = NSStackView(views: [icon, name])
-                cell.orientation = .horizontal
-                cell.spacing = Self.iconRoom - 16
-                nameWidths.append((Self.widthConstraint(of: name, nameWidth - Self.iconRoom), Self.iconRoom))
                 let popup = displayPopup(row, tag: i, enabled: enabled)
                 popup.setAX("\(Self.id)-display-\(n)", label: "\(row.name), \(loc("settings.video.col.display"))")
                 displayPopups.append(popup)
@@ -592,8 +662,10 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
                 let guides = guidesCell(row, tag: i, enabled: enabled)
                 grid.addRow(with: [handle, cell, size, popup, layout, guides, edit, remove])
             } else {
-                nameWidths.append((Self.widthConstraint(of: name, nameWidth), 0))
-                let devices = Self.cellLabel(row.devices.joined(separator: ", "), key: "devices", n: n)
+                let devices = Self.cellLabel(
+                    row.devices.isEmpty ? loc("settings.video.noDestinations") : row.devices.joined(separator: ", "),
+                    key: "devices", n: n)
+                if row.devices.isEmpty { devices.textColor = .secondaryLabelColor }
                 wideWidths.append(Self.widthConstraint(of: devices, displayWidth))
                 deviceCells.append(devices)
                 let monitor = smallButton(loc("settings.video.monitor"), action: #selector(monitorClicked(_:)), tag: i)
@@ -601,16 +673,17 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
                 monitor.toolTip = loc("settings.video.monitor.tip")
                 monitor.setAX("\(Self.id)-monitor-\(n)", label: "\(row.name), \(loc("settings.video.monitor.ax"))")
                 monitorButtons.append(monitor)
-                grid.addRow(with: [name, size, devices, edit, monitor, remove])
+                grid.addRow(with: [handle, cell, size, devices, edit, monitor, remove])
             }
             nameFields.append(name)
             addWarning(row, n)
         }
         install(grid)
-        if section == .routing { holder.addSubview(dropLine) }
+        holder.addSubview(dropLine)
         dropLine.isHidden = true
         fitColumns()
         grid.layoutSubtreeIfNeeded()
+        drawSelection()
         if let resume { self.resume(resume) }
     }
 
@@ -624,11 +697,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if section == .outputs {
             items.append((loc("settings.video.addEmpty"), "", true))
             let routes = store.model?.routes ?? []
-            if !routes.isEmpty { items.append(("-", nil, false)) }
+            if !routes.isEmpty {
+                items.append(("-", nil, false))
+                items.append((loc("settings.video.addOnRouteHeader"), nil, false))
+            }
             for r in routes {
-                items.append(
-                    (String(format: loc("settings.video.addOnRoute"), r.raw["name"]?.stringValue ?? ""), r.id.raw, true)
-                )
+                items.append(("   " + Self.routeTitle(r, outputs: store.videoOutputs), r.id.raw, true))
             }
         } else {
             if !displays.isEmpty { items.append((loc("settings.video.addRouteWith"), nil, false)) }
@@ -647,8 +721,9 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         shownAddItems = key
         let menu = NSMenu()
         menu.autoenablesItems = false
+        // The title names its key, Command-N on the page, as QLab 5's does.
         let title = NSMenuItem(
-            title: loc(section == .routing ? "settings.video.newRoute" : "settings.video.add"), action: nil,
+            title: loc(section == .routing ? "settings.video.newRoute.key" : "settings.video.add.key"), action: nil,
             keyEquivalent: "")
         menu.addItem(title)
         for (text, object, on) in items {
@@ -939,9 +1014,46 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         popup.selectItem(at: scalings.firstIndex(of: chosen) ?? 3)
     }
 
-    // MARK: Dragging a route
+    // MARK: Selecting a row
 
-    /// The gap among the routes `point` (in the window) is nearest: 0 above the first, the count
+    /// Selects the row `id` (nil: none) and draws its highlight.
+    func select(_ id: ModelID?) {
+        selectedRow = id
+        drawSelection()
+    }
+
+    /// The highlight behind the selected row, as tall as the row's controls; hidden with no row
+    /// selected (or the selected one gone).
+    private func drawSelection() {
+        guard section != .devices, let id = selectedRow, let i = shown?.firstIndex(where: { $0.id == id }),
+            nameFields.indices.contains(i)
+        else {
+            selectionBox.isHidden = true
+            return
+        }
+        if selectionBox.superview !== holder { holder.addSubview(selectionBox, positioned: .below, relativeTo: grid) }
+        let f = nameFields[i].convert(nameFields[i].bounds, to: holder)
+        let pad = grid.rowSpacing / 2
+        selectionBox.frame = NSRect(
+            x: Self.inset / 2, y: f.minY - pad, width: max(0, holder.bounds.width - Self.inset), height: f.height + 2 * pad)
+        selectionBox.isHidden = false
+    }
+
+    /// A click among the rows (not on a control that takes it) selects the row under it.
+    @objc private func rowsClicked(_ sender: NSClickGestureRecognizer) {
+        let y = sender.location(in: holder).y
+        let pad = grid.rowSpacing / 2
+        let hit = nameFields.firstIndex { field in
+            let f = field.convert(field.bounds, to: holder)
+            return y >= f.minY - pad && y <= f.maxY + pad
+        }
+        guard let hit, let row = row(hit) else { return }
+        select(row.id)
+    }
+
+    // MARK: Dragging a row
+
+    /// The gap among the rows `point` (in the window) is nearest: 0 above the first, the count
     /// below the last.
     func gap(at point: NSPoint) -> Int {
         let y = holder.convert(point, from: nil).y
@@ -971,22 +1083,23 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     private func dropped(_ handle: RowHandle, at point: NSPoint) {
         dropLine.isHidden = true
-        // The route the handle was drawn for, found where it is now: the rows may have changed
-        // during the drag, and the handle's tag then names another route (or none).
+        // The row the handle was drawn for, found where it is now: the rows may have changed
+        // during the drag, and the handle's tag then names another row (or none).
         guard let id = handle.identifier?.rawValue, let from = shown?.firstIndex(where: { $0.id.raw == id }) else {
             return
         }
-        moveRoute(from: from, toGap: gap(at: point))
+        move(from: from, toGap: gap(at: point))
     }
 
-    /// Moves the route at `from` into `gap` (0 above the first route, the count below the last):
-    /// one undo step; nothing when it lands where it is.
-    func moveRoute(from: Int, toGap gap: Int) {
+    /// Moves the stage or route at `from` into `gap` (0 above the first row, the count below the
+    /// last): one undo step; nothing when it lands where it is.
+    func move(from: Int, toGap gap: Int) {
         let typed = endTyping()
         guard let row = row(from) else { return }
         let index = gap > from ? gap - 1 : gap
         guard index != from, let count = shown?.count, (0..<count).contains(index) else { return }
-        commit(row.id, after: typed) { [store] in await store.send(command: .moveRoute(row.id, to: index)) }
+        let command: Command = section == .routing ? .moveRoute(row.id, to: index) : .moveStage(row.id, to: index)
+        commit(row.id, after: typed) { [store] in await store.send(command: command) }
     }
 
     // MARK: Editing
@@ -1096,23 +1209,37 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         }
     }
 
-    /// A new stage: 1920 x 1080 with no region (QLab 5 manual p. 226: an empty stage), or sized as
-    /// `route` with one region covering it sent there.
+    /// A new stage on the top layer, selected: 1920 x 1080 with no region (QLab 5 manual p. 226: an
+    /// empty stage), whose editor then opens to draw its regions, or sized as `route` with one
+    /// region covering it sent there (no editor: it is ready to use).
     private func addStage(on route: ModelID?, after typed: Bool) {
-        let stages = store.model?.stages ?? []
+        let (id, command) = Self.newStage(on: route, in: store.model)
+        commit(nil, after: typed) { [weak self, store] in
+            let added = await store.send(command: command)
+            guard case .success = added else { return added }
+            self?.select(id)
+            if route == nil { self?.onEditStage?(id) }
+            return added
+        }
+    }
+
+    /// A new stage "Stage N" after the workspace's stages (the add pop-ups here and in a Video
+    /// cue's I/O tab): 1920 x 1080 with no region, or sized as `route` with one region covering it
+    /// sent there. Its id and the command that adds it.
+    static func newStage(on route: ModelID?, in model: WorkspaceModel?) -> (ModelID, Command) {
+        let stages = model?.stages ?? []
         let id = ModelID(UUID().uuidString.lowercased())
-        let name = Self.nextName(
-            loc("settings.video.newName"), after: stages.map { $0.raw["name"]?.stringValue ?? "" })
-        let routeRow = route.flatMap { r in store.model?.routes.first { $0.id == r } }
+        let name = nextName(loc("settings.video.newName"), after: stages.map { $0.raw["name"]?.stringValue ?? "" })
+        let routeRow = route.flatMap { r in model?.routes.first { $0.id == r } }
         let width = routeRow.map { Int($0.raw["width"]?.doubleValue ?? 1920) } ?? 1920
         let height = routeRow.map { Int($0.raw["height"]?.doubleValue ?? 1080) } ?? 1080
         let region = routeRow.map { _ in ModelID(UUID().uuidString.lowercased()) }
-        commit(nil, after: typed) { [store] in
-            await store.send(
-                command: .addStage(
-                    id: id, name: name, width: width, height: height, index: stages.count, route: routeRow?.id,
-                    region: region))
-        }
+        return (
+            id,
+            .addStage(
+                id: id, name: name, width: width, height: height, index: stages.count, route: routeRow?.id,
+                region: region)
+        )
     }
 
     /// A new route "Output N": sized as `display` and shown on it on this machine (QLab 5 manual
@@ -1122,13 +1249,15 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         let id = ModelID(UUID().uuidString.lowercased())
         let name = Self.nextName(
             loc("settings.video.routeName"), after: routes.map { $0.raw["name"]?.stringValue ?? "" })
-        commit(nil, after: typed) { [store] in
+        commit(nil, after: typed) { [weak self, store] in
             let added = await store.send(
                 command: .addRoute(
                     id: id, name: name, width: display.map { Int($0.width) } ?? 1920,
                     height: display.map { Int($0.height) } ?? 1080,
                     index: routes.count))
-            guard case .success = added, let display else { return added }
+            guard case .success = added else { return added }
+            self?.select(id)
+            guard let display else { return added }
             return await store.setRouteDisplay(id, display: display.id)
         }
     }
@@ -1140,6 +1269,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     @objc private func editClicked(_ sender: NSButton) {
         endTyping()
         guard let row = row(sender.tag) else { return }
+        select(row.id)
         if section == .routing { onEditRoute?(row.id) } else { onEditStage?(row.id) }
     }
 

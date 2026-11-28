@@ -18,6 +18,8 @@ enum Icon: CaseIterable {
     case stateLoaded, stateRunning, statePaused, stateStopping, stateBroken
     // The second colour's lock in the Inspector (locked: no second colour; open: one to pick).
     case colourLocked, colourUnlocked
+    // The stage editor's lock between a region's width and height (locked: typing one sets the other too).
+    case aspectLocked, aspectUnlocked
     // Continue modes.
     case continueAuto, continueFollow
     // Transport strip and the Active Cues rows.
@@ -33,8 +35,8 @@ enum Icon: CaseIterable {
     case timeToggle, timeToggleUp
     // The Target column's button for a file cue (present and missing), and the Target field's clear, choose and jump glyphs.
     case targetFile, targetFileMissing, targetFileCopying, fieldClear, fieldChoose, fieldJump, fieldReveal
-    // A video output route's row on the Output Routing page.
-    case videoRoute
+    // A video output route's row on the Output Routing page, and a stage's on Video Outputs.
+    case videoRoute, videoStage
     // Reserved for a screen that does not exist yet; it resolves and is tested already.
     case reservedPopOut
 
@@ -64,6 +66,9 @@ enum Icon: CaseIterable {
         case .kindGroupRandom: return "kind-group-random"
         case .colourLocked: return "colour-locked"
         case .colourUnlocked: return "colour-unlocked"
+        // The same lock drawing: one concept, a link that holds or not.
+        case .aspectLocked: return "colour-locked"
+        case .aspectUnlocked: return "colour-unlocked"
         case .stateLoaded: return "state-loaded"
         case .stateRunning: return "state-running"
         case .statePaused: return "state-paused"
@@ -99,6 +104,7 @@ enum Icon: CaseIterable {
         case .fieldJump: return "field-jump"
         case .fieldReveal: return "field-reveal"
         case .videoRoute: return "video-route"
+        case .videoStage: return "video-stage"
         case .reservedPopOut: return "reserved-pop-out"
         case .transportPanic, .activeCuePause, .activeCueResume, .targetFileMissing: return nil
         }

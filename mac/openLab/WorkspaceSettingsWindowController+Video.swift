@@ -2,15 +2,22 @@
 
 import AppKit
 
-/// The Video pages' editors: a stage's editor window and a route's editor sheet.
+/// The Video pages' editors: a stage's editor window and a route's editor dialog.
 extension WorkspaceSettingsWindowController {
-    /// Opens the editor of `stage` (one window per stage; a second Edit brings it forward).
+    /// Opens the editor of `stage` (one window per stage; a second Edit brings it forward). It goes
+    /// when its stage is removed, and an undo bringing the stage back does not reopen it.
     @discardableResult
     func openStageEditor(_ stage: ModelID) -> StageEditorWindowController {
         let editor =
             stageEditors[stage] ?? commitsAsItGoes(StageEditorWindowController(store: model.store, stage: stage))
         stageEditors[stage] = editor
         stageEditor = editor
+        editor.presentsDialogs = presentsEditors
+        editor.onGone = { [weak self, weak editor] in
+            guard let self, let editor else { return }
+            if self.stageEditors[stage] === editor { self.stageEditors[stage] = nil }
+            if self.stageEditor === editor { self.stageEditor = nil }
+        }
         if presentsEditors { editor.present() } else { editor.render() }
         return editor
     }
@@ -27,8 +34,9 @@ extension WorkspaceSettingsWindowController {
         return editor
     }
 
-    /// Opens the editor of `route` as a sheet on this window (none while one is up, or for a
-    /// route gone since its row was drawn).
+    /// Opens the editor of `route` as a dialog run modally over the app (none while one is up, or
+    /// for a route gone since its row was drawn); returns once it is up (off screen) or, on screen,
+    /// once it is done.
     @discardableResult
     func openRouteEditor(_ route: ModelID) -> RouteEditorController? {
         guard routeEditor == nil, let editor = RouteEditorController(store: model.store, route: route) else {
@@ -36,9 +44,7 @@ extension WorkspaceSettingsWindowController {
         }
         routeEditor = editor
         editor.onDone = { [weak self] in self?.endRouteEditor() }
-        if presentsEditors, let window, let sheet = editor.window {
-            StandBack.beginSheet(sheet, on: window)
-        }
+        if presentsEditors { editor.run(over: window) }
         return editor
     }
 
@@ -46,9 +52,7 @@ extension WorkspaceSettingsWindowController {
     func endRouteEditor() {
         guard let editor = routeEditor else { return }
         routeEditor = nil
-        if let sheet = editor.window, let parent = sheet.sheetParent {
-            parent.endSheet(sheet)
-        }
+        if let w = editor.window, NSApp.modalWindow === w { NSApp.stopModal() }
         editor.close()
     }
 
@@ -57,5 +61,6 @@ extension WorkspaceSettingsWindowController {
     func owns(_ window: NSWindow) -> Bool {
         self.window === window || stageEditors.values.contains { $0.window === window }
             || routeEditor?.window === window
+            || stageEditors.values.contains { $0.resizeDialog?.window === window }
     }
 }

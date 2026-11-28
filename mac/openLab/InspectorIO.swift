@@ -57,9 +57,27 @@ final class VideoIOControls {
         outputSection?.isHidden = !shown
         divider.isHidden = !shown
     }
-    /// Item i of the stage pop-up is `stageIDs[i]`'s stage; nil is the separator or "none".
-    var stageIDs: [ModelID?] = []
-    var stageNames: [String] = []
+    /// What an item of the stage pop-up's menu stands for (QLab 5 manual p. 212, UI map
+    /// `inspector.video.i-o.demo`).
+    enum StageChoice: Equatable {
+        /// No stage: the cue does not play.
+        case none
+        case separator
+        /// The stages' heading, not chosen.
+        case heading
+        case stage(ModelID)
+        /// Opens the workspace settings on Video Outputs.
+        case settings
+        /// A submenu of new stages (empty, or on a route) the cue is put on.
+        case newStage
+    }
+
+    /// Item i of the stage pop-up's menu is `stageChoices[i]`.
+    var stageChoices: [StageChoice] = []
+    /// The menu's titles as last built: it is rebuilt only when they change.
+    var stageMenuKey: [String] = []
+    /// Opens the cue's stage's editor; off with no stage.
+    let editStageButton = NSButton(title: loc("inspector.io.editStage"), target: nil, action: nil)
 
     init() {
         filePath.configure(id: "inspector-io-file", label: loc("inspector.io.file")) {}
@@ -98,6 +116,13 @@ final class VideoIOControls {
         Self.makeSmall(monitorButton)
         monitorButton.toolTip = loc("inspector.io.monitor.tip")
         monitorButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        editStageButton.setAX("inspector-io-edit-stage", label: loc("inspector.io.editStage.ax"))
+        Self.makeSmall(editStageButton)
+        editStageButton.toolTip = loc("inspector.io.editStage.ax")
+        editStageButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        editStageButton.setContentHuggingPriority(.required, for: .horizontal)
+        stageSizeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        stageSizeLabel.setContentHuggingPriority(.required, for: .horizontal)
         soundLabel.font = Self.valueFont
         soundLabel.setAX("inspector-io-sound-format", label: loc("inspector.io.soundFormat"))
         soundLabel.lineBreakMode = .byTruncatingTail
@@ -200,8 +225,13 @@ extension InspectorViewController {
         v.stagePopup.target = self
         v.stagePopup.action = #selector(stageChosen)
         v.stagePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+        // The stage pop-up takes the row's spare width, Monitor, the size and Edit at its right.
+        v.stagePopup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        v.stagePopup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         v.monitorButton.target = self
         v.monitorButton.action = #selector(monitorClicked)
+        v.editStageButton.target = self
+        v.editStageButton.action = #selector(editStageClicked)
         v.trackPopup.target = self
         v.trackPopup.action = #selector(audioTrackChosen)
         func label(_ key: String) -> NSTextField {
@@ -252,7 +282,7 @@ extension InspectorViewController {
             [labels[0], line([v.filePath.box, v.fileProblem, v.clearButton, v.revealButton])],
             [labels[1], v.formatLabel],
             [labels[2], line([v.soundLabel, v.trackPopup, v.trackNote])],
-            [labels[3], line([v.stagePopup, v.monitorButton, v.stageSizeLabel])],
+            [labels[3], line([v.stagePopup, v.monitorButton, v.stageSizeLabel, v.editStageButton])],
         ])
         v.videoRows = [fileGrid.row(at: 1), fileGrid.row(at: 3)]
         v.soundRow = fileGrid.row(at: 2)
@@ -494,24 +524,70 @@ extension InspectorViewController {
             picture.map(VideoIOControls.formatText) ?? (media.isEmpty ? "" : loc("inspector.io.formatUnknown"))
         renderSoundFormat(cue)
         let stages = model.stages
-        let names = stages.map { $0.raw["name"]?.stringValue ?? "" }
-        let ids: [ModelID?] = stages.map(\.id) + [nil, nil]
-        if ids != v.stageIDs || names != v.stageNames {
-            v.stageNames = names
-            v.stageIDs = ids
-            v.stagePopup.menu?.removeAllItems()
-            for name in names { v.stagePopup.menu?.addItem(NSMenuItem(title: name, action: nil, keyEquivalent: "")) }
-            v.stagePopup.menu?.addItem(.separator())
-            v.stagePopup.menu?.addItem(NSMenuItem(title: loc("inspector.io.stageNone"), action: nil, keyEquivalent: ""))
-        }
+        fillStageMenu(model: model)
         let current = cue.raw["kind"]?["stage"]?.stringValue
-        // None is the last item; a stage that is gone shows no choice.
-        let chosen = current == nil ? v.stageIDs.count - 1 : stages.firstIndex { $0.id.raw == current } ?? -1
+        // A stage that is gone shows no choice.
+        let chosen = v.stageChoices.firstIndex { choice in
+            if case .stage(let id) = choice { return id.raw == current }
+            return current == nil && choice == .none
+        } ?? -1
         if v.stagePopup.indexOfSelectedItem != chosen { v.stagePopup.selectItem(at: chosen) }
         v.stagePopup.isEnabled = !isLocked
         v.stageSizeLabel.stringValue = Self.stageSize(stages.first { $0.id.raw == current })
-        // Watching is no edit: a locked cue's stage can be watched too.
+        // Watching and opening the editor are no edit of the cue: a locked cue's stage too.
         v.monitorButton.isEnabled = monitoredStage != nil && store.videoOutputs.video != false
+        v.editStageButton.isEnabled = monitoredStage != nil
+    }
+
+    /// The stage pop-up's menu (UI map `inspector.video.i-o.demo`): no stage, then the stages under
+    /// their heading, each with where it goes in brackets, then an item opening the Video settings
+    /// and a submenu adding a stage (empty, or on each route) that the cue is put on. Rebuilt only
+    /// when its titles change, so an open menu is not pulled from under the operator.
+    func fillStageMenu(model: WorkspaceModel) {
+        let v = videoIO
+        let outputs = store.videoOutputs
+        var choices: [VideoIOControls.StageChoice] = [.none, .separator, .heading]
+        var titles = [loc("inspector.io.stageNone"), "-", loc("inspector.io.stagesHeading")]
+        for stage in model.stages {
+            choices.append(.stage(stage.id))
+            titles.append(VideoSettingsPane.stageTitle(stage, routes: model.routes, outputs: outputs))
+        }
+        choices += [.separator, .settings, .newStage]
+        titles += ["-", loc("inspector.io.stageSettings"), loc("inspector.io.newStage")]
+        let routeTitles = model.routes.map { VideoSettingsPane.routeTitle($0, outputs: outputs) }
+        let key = titles + ["\u{0}"] + zip(model.routes, routeTitles).map { "\($0.id.raw)\u{0}\($1)" }
+        guard key != v.stageMenuKey else { return }
+        v.stageMenuKey = key
+        v.stageChoices = choices
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for (choice, title) in zip(choices, titles) {
+            if choice == .separator {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.isEnabled = choice != .heading
+            if choice == .newStage {
+                let sub = NSMenu()
+                sub.autoenablesItems = false
+                let empty = NSMenuItem(
+                    title: loc("settings.video.addEmpty"), action: #selector(newStageChosen(_:)), keyEquivalent: "")
+                empty.target = self
+                empty.representedObject = ""
+                sub.addItem(empty)
+                if !model.routes.isEmpty { sub.addItem(.separator()) }
+                for (route, title) in zip(model.routes, routeTitles) {
+                    let on = NSMenuItem(title: title, action: #selector(newStageChosen(_:)), keyEquivalent: "")
+                    on.target = self
+                    on.representedObject = route.id.raw
+                    sub.addItem(on)
+                }
+                item.submenu = sub
+            }
+            menu.addItem(item)
+        }
+        v.stagePopup.menu = menu
     }
 
     /// The stage the I/O tab's monitor button opens: the one every shown Video cue is on, if it is
@@ -619,14 +695,45 @@ extension InspectorViewController {
     }
 
     /// A stage (or none) chosen for the shown Video cues; none leaves them broken until a stage is
-    /// chosen (QLab 5 p. 212: a cue on no stage does not play).
+    /// chosen (QLab 5 p. 212: a cue on no stage does not play). The settings item opens the Video
+    /// settings and leaves the cue's stage as it was.
     @objc func stageChosen() {
         let i = videoIO.stagePopup.indexOfSelectedItem
-        guard videoIO.stageIDs.indices.contains(i), i != videoIO.stageIDs.count - 2 else { return }
-        let stage = videoIO.stageIDs[i]
+        let choices = videoIO.stageChoices
+        guard choices.indices.contains(i) else { return render() }
+        let stage: ModelID?
+        switch choices[i] {
+        case .none: stage = nil
+        case .stage(let id): stage = id
+        case .settings:
+            render()
+            onOpenVideoSettings?()
+            return
+        case .separator, .heading, .newStage:
+            return render()
+        }
         sendEach(key: "stage") { cue in
             guard cue.kindType == "video", cue.raw["kind"]?["stage"]?.stringValue != stage?.raw else { return nil }
             return .setProperty(cue.id, .stage(stage))
         }
+    }
+
+    /// A new stage from the pop-up's submenu (empty, or on the route the item carries): added and
+    /// the shown Video cues put on it, one undo step. Its editor is not opened.
+    @objc func newStageChosen(_ sender: NSMenuItem) {
+        guard !isLocked, let object = sender.representedObject as? String else { return }
+        let (id, add) = VideoSettingsPane.newStage(on: object.isEmpty ? nil : ModelID(object), in: store.model)
+        let cues = editCues.filter { $0.kindType == "video" }
+        guard let first = cues.first,
+            let command = Command.transaction([add] + cues.map { .setProperty($0.id, .stage(id)) })
+        else { return }
+        messageLabel.stringValue = ""
+        send(command, cue: first.id, key: "stage", revert: [], coalesce: nil)
+    }
+
+    /// Opens the editor of the shown cue's stage (QLab 5 manual p. 212: the button beside the size).
+    @objc func editStageClicked() {
+        guard let stage = monitoredStage else { return }
+        onEditStage?(stage)
     }
 }
