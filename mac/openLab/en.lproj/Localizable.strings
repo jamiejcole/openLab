@@ -632,7 +632,6 @@
 "routeEditor.scaling.note.fill" = "Covers the whole display, its shape kept: what reaches past the display’s edges is cut off.";
 "routeEditor.display" = "Display:";
 "routeEditor.displaySize" = "Display size:";
-"routeEditor.noDisplaySize" = "—";
 "routeEditor.badSize" = "An output route is a whole number of pixels from 1 to 30000 wide and high.";
 "routeEditor.cancel" = "Cancel";
 "routeEditor.ok" = "OK";

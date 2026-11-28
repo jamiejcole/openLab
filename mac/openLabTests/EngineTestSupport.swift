@@ -485,7 +485,12 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
     func testCaseWillStart(_ testCase: XCTestCase) {
         for leak in leaks { testCase.record(XCTIssue(type: .assertionFailure, compactDescription: leak)) }
         leaks = []
-        MainActor.assumeIsolated { windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init)) }
+        MainActor.assumeIsolated {
+            windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init))
+            // A modal dialog run by a test would wait for input that never comes: tests drive the
+            // video settings' dialogs off screen.
+            WorkspaceSettingsWindowController.runsDialogs = false
+        }
     }
 
     func testCaseDidFinish(_ testCase: XCTestCase) {

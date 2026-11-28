@@ -12,7 +12,7 @@ extension WorkspaceSettingsWindowController {
             stageEditors[stage] ?? commitsAsItGoes(StageEditorWindowController(store: model.store, stage: stage))
         stageEditors[stage] = editor
         stageEditor = editor
-        editor.presentsDialogs = presentsEditors
+        editor.presentsDialogs = presentsEditors && Self.runsDialogs
         editor.onGone = { [weak self, weak editor] in
             guard let self, let editor else { return }
             if self.stageEditors[stage] === editor { self.stageEditors[stage] = nil }
@@ -44,7 +44,7 @@ extension WorkspaceSettingsWindowController {
         }
         routeEditor = editor
         editor.onDone = { [weak self] in self?.endRouteEditor() }
-        if presentsEditors { editor.run(over: window) }
+        if presentsEditors, Self.runsDialogs { editor.run(over: window) }
         return editor
     }
 

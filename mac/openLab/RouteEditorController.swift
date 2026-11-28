@@ -226,9 +226,10 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
 
     @objc private func displayChosen() {
         let size = chosenSize
-        displaySizeLabel.stringValue =
-            size.map { String(format: loc("settings.video.resolution"), String($0.width), String($0.height)) }
-            ?? loc("routeEditor.noDisplaySize")
+        // With no display chosen the size read is the route's own (as QLab 5 shows it); never typed in.
+        displaySizeLabel.stringValue = String(
+            format: loc("settings.video.resolution"), String(size?.width ?? UInt32(max(0, original.width))),
+            String(size?.height ?? UInt32(max(0, original.height))))
         fromDisplayButton.isEnabled = size != nil
     }
 
