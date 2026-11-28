@@ -2938,6 +2938,66 @@ extension VideoSettingsTests {
         XCTAssertNil(sc.routeEditor)
     }
 
+    /// What a dialog run for real showed while it was up (read inside its modal run).
+    private final class Seen: @unchecked Sendable {
+        var modal = false
+        var standingBack = false
+    }
+
+    /// Runs `body` from inside the modal run about to start: a test's body is itself a main-queue job,
+    /// so the main queue does not drain in a nested modal run, but a run-loop timer in the common
+    /// modes fires there. A run `body` did not end is aborted, so a failure cannot hang the test.
+    private func insideModalRun(_ body: @escaping @MainActor () -> Void) {
+        let timer = Timer(timeInterval: 0.2, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                body()
+                if NSApp.modalWindow != nil { NSApp.abortModal() }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// C1, B6 on screen: the route editor and the resize dialog run modally over the app, the stage on
+    /// the menu-bar display standing back meanwhile; Cancel ends the run at once and the stage covers
+    /// again. (Other tests drive these dialogs off screen.)
+    func testRouteEditorAndResizeDialogRunModallyWithTheStageStoodBack() async throws {
+        let (rig, sc) = try await openG4()
+        await settled(sc) { sc.videoRoutingPane.editButtons.count == 2 }
+        WorkspaceSettingsWindowController.runsDialogs = true
+        defer { WorkspaceSettingsWindowController.runsDialogs = false }
+
+        let route = Seen()
+        insideModalRun {
+            let window = sc.routeEditor?.window
+            route.modal = window != nil && NSApp.modalWindow === window
+            route.standingBack = StandBack.shared.isAsking
+            sc.routeEditor?.cancelButton.performClick(nil)
+        }
+        sc.videoRoutingPane.editButtons[0].performClick(nil)  // returns once the modal run has ended
+        XCTAssertTrue(route.modal, "the route editor is the app's modal window")
+        XCTAssertTrue(route.standingBack, "the stage stands back while it is up")
+        XCTAssertNil(sc.routeEditor)
+        XCTAssertNil(NSApp.modalWindow)
+        XCTAssertFalse(StandBack.shared.isAsking, "covering again once it is down")
+
+        let stage = try XCTUnwrap(rig.store.model?.stages.first?.id)
+        sc.videoPane.editButtons[0].performClick(nil)
+        let editor = try XCTUnwrap(sc.stageEditors[stage])
+        let resize = Seen()
+        insideModalRun {
+            let window = editor.resizeDialog?.window
+            resize.modal = window != nil && NSApp.modalWindow === window
+            resize.standingBack = StandBack.shared.isAsking
+            editor.resizeDialog?.cancelButton.performClick(nil)
+        }
+        editor.resizeClicked()
+        XCTAssertTrue(resize.modal, "the resize dialog is the app's modal window")
+        XCTAssertTrue(resize.standingBack)
+        XCTAssertNil(editor.resizeDialog)
+        XCTAssertNil(NSApp.modalWindow)
+        XCTAssertFalse(StandBack.shared.isAsking)
+    }
+
     /// C2: a 3840 x 2160 display chosen → the take-the-display's-size button makes the size 3840 x
     /// 2160; Cancel leaves the route as it was.
     func testRouteEditorSetSizeFromDisplay() async throws {

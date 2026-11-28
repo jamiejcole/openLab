@@ -127,6 +127,8 @@ final class ResizeStageDialog: NSWindowController, NSTextFieldDelegate {
         stack.alignment = .centerX
         stack.spacing = 14
         stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 16, right: 20)
+        // A centred stack's fitting width leaves out its side insets; pinned, the window keeps them.
+        stack.widthAnchor.constraint(equalTo: preview.widthAnchor, constant: 40).isActive = true
         buttons.setContentHuggingPriority(.required, for: .horizontal)
         return stack
     }

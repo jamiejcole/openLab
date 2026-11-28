@@ -2044,6 +2044,20 @@ extension VideoCueTests {
         _ = await store.undo()
         await settledVideo(sc) { pane.shown?.count == 2 }
         await soon("mended") { self.status(Self.movie) == nil }
+        // The cue playing on it: refused, naming the stage and the cue; the row and the cue stay.
+        click(Self.movie)
+        try await go()
+        try await play(0.3)
+        XCTAssertEqual(status(Self.movie), loc("cue.state.running"))
+        pane.removeButtons[0].performClick(nil)
+        await soon("the engine's reason is shown") {
+            await pane.pending?.value
+            return !pane.messageLabel.stringValue.isEmpty
+        }
+        let number = try XCTUnwrap(store.model?.cue(Self.movie)?.number)
+        XCTAssertEqual(pane.messageLabel.stringValue, String(format: loc("settings.video.inUse"), "Stage 1", number))
+        XCTAssertEqual(pane.shown?.count, 2, "the row stays")
+        XCTAssertEqual(status(Self.movie), loc("cue.state.running"))
     }
 
     /// B2: a name typed in the stage editor → the Video Outputs row, the window's title and the
@@ -2157,7 +2171,7 @@ extension VideoCueTests {
     }
 
     /// D3: a stage picked → the cue is on it and the size beside it follows; undo restores. None
-    /// picked → the pop-up shows none and no size.
+    /// picked → the pop-up shows none and no size, and the cue is broken for want of a stage (Q300).
     func testVideoCueIOPickStageAndUnpatched() async throws {
         try await openVideoShow()
         let v = try await movieIO()
@@ -2174,6 +2188,7 @@ extension VideoCueTests {
         await soon { v.stagePopup.titleOfSelectedItem == loc("inspector.io.stageNone") }
         XCTAssertEqual(v.stageSizeLabel.stringValue, "")
         XCTAssertFalse(v.editStageButton.isEnabled)
+        await soon("broken: no stage") { self.brokenTip(Self.movie)?.contains(loc("problem.no_stage")) == true }
     }
 
     /// D4: the Video settings item → the settings window opens on Video Outputs; the cue's pop-up
