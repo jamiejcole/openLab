@@ -77,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         #endif
         appController.beginLaunch()
         appController.bindLauncher(to: engine.1)
+        appController.isDisabledMenuChord = { [weak self] chord in self?.menuItemIsOff(for: chord) ?? false }
         appController.installKeyMonitor()
         _ = alarmController
         // The first time the engine is up: after its recovery check was asked, do what the launch
@@ -192,11 +193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// Text being edited (a field editor) keeps its own Undo and Cmd-Delete.
     @MainActor private var textEditor: NSText? {
-        (NSApp.keyWindow?.firstResponder as? NSText).flatMap { $0.isEditable ? $0 : nil }
+        (appController.keyWindow()?.firstResponder as? NSText).flatMap { $0.isEditable ? $0 : nil }
     }
 
     /// Any text in focus, editable or not, owns Cut, Copy and Paste.
-    @MainActor private var anyText: NSText? { NSApp.keyWindow?.firstResponder as? NSText }
+    @MainActor private var anyText: NSText? { appController.keyWindow()?.firstResponder as? NSText }
 
     @MainActor @objc func newCue(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let kind = NewCueKind(rawValue: raw) else { return }
@@ -324,6 +325,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// A workspace window is in front and not in Show Mode: the cue-editing items work.
     @MainActor private var canEditFront: Bool { appController.frontController.map { !$0.isShowMode } ?? false }
 
+    /// The front workspace's list has at least one cue selected: the items that act on the selection.
+    @MainActor private var hasSelection: Bool {
+        appController.frontController.map { !$0.cueList.selectedIDs().isEmpty } ?? false
+    }
+
+    /// The main menu has an item of this delegate's on `chord` and it is greyed out right now.
+    @MainActor func menuItemIsOff(for chord: KeyChord) -> Bool {
+        guard let menu = NSApp.mainMenu else { return false }
+        func find(_ menu: NSMenu) -> NSMenuItem? {
+            for item in menu.items {
+                if let sub = item.submenu, let found = find(sub) { return found }
+                guard !item.keyEquivalent.isEmpty, let action = item.action, responds(to: action),
+                    item.target == nil || item.target === self,
+                    !item.keyEquivalentModifierMask.contains(.function)
+                else { continue }
+                var mods = item.keyEquivalentModifierMask
+                if item.keyEquivalent.lowercased() != item.keyEquivalent { mods.insert(.shift) }
+                if KeyChord(item.keyEquivalent, mods) == chord { return item }
+            }
+            return nil
+        }
+        guard let item = find(menu) else { return false }
+        return !validateMenuItem(item)
+    }
+
     @MainActor @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         // Show Mode (SM-01): every item of the locked-edit list is off, in whatever menu it sits.
         if MainMenu.LockedEdit(action: item.action) != nil, appController.frontController?.isShowMode == true {
@@ -371,10 +397,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(closeAllWorkspaces(_:))?: return !appController.allWindows.isEmpty
         case #selector(showFind(_:))?, #selector(findNextCue(_:))?, #selector(findPreviousCue(_:))?:
             return canEditFront  // off in Show Mode, as in QLab
-        case #selector(newCue(_:))?, #selector(renumberCues(_:))?, #selector(moveCuesUp(_:))?,
-            #selector(moveCuesDown(_:))?:
-            return canEditFront
-        case #selector(copyCues(_:))?, #selector(cutCues(_:))?, #selector(pasteCues(_:))?:
+        case #selector(newCue(_:))?: return canEditFront
+        case #selector(renumberCues(_:))?, #selector(moveCuesUp(_:))?, #selector(moveCuesDown(_:))?:
+            return canEditFront && hasSelection
+        case #selector(copyCues(_:))?, #selector(cutCues(_:))?:
+            return anyText != nil || (canEditFront && hasSelection)
+        case #selector(pasteCues(_:))?:
             return anyText != nil || canEditFront
         case #selector(selectNextCue(_:))?, #selector(selectPreviousCue(_:))?:
             // Not while a text field is edited: Cmd-Up / Down move its insertion point.
@@ -383,7 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             // A cue copied and cues to paste onto; not while text is typed (the key is the text's then).
             return textEditor == nil && (appController.frontController?.canPasteProperties ?? false)
         case #selector(deleteNumbers(_:))?, #selector(deleteCues(_:))?:
-            return textEditor == nil && canEditFront
+            return textEditor == nil && canEditFront && hasSelection
         case #selector(undoEdit(_:))?:
             let document = textEditor == nil ? appController.undoController?.store.document : nil
             item.title = MainMenu.undoTitle(redo: false, step: document?.canUndo == true ? document?.undoName : nil)
@@ -392,8 +420,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             let document = textEditor == nil ? appController.undoController?.store.document : nil
             item.title = MainMenu.undoTitle(redo: true, step: document?.canRedo == true ? document?.redoName : nil)
             return textEditor != nil || (undoEditor?.canRedo ?? false)
-        case #selector(saveWorkspace(_:))?, #selector(saveWorkspaceAs(_:))?:
-            return appController.canSaveFront
+        case #selector(saveWorkspace(_:))?: return appController.canSaveFrontAgain
+        case #selector(saveWorkspaceAs(_:))?: return appController.canSaveFront
         case #selector(recoverAutosaves(_:))?: return engineSession.connectionState == .connected
         case #selector(showWorkspaceSettings(_:))?, #selector(showWorkspaceSettingsPage(_:))?:
             return appController.frontController != nil
@@ -403,7 +431,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         guard let raw = item.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
             return true
         }
-        return appController.canPerform(command)
+        let store = appController.frontController?.store
+        let selected = appController.frontController?.cueList.selectedIDs() ?? []
+        guard appController.canPerform(command) || command == .panic else { return false }
+        switch command {
+        // The key stays live whatever is open (Esc), but the item has nothing to panic with no workspace.
+        case .panic: return !appController.allWindows.isEmpty
+        // Pause and Resume follow the sidebar's buttons: Pause while something plays, Resume while
+        // something is held; Stop and Panic while something is live.
+        case .pauseAll: return store?.anyPlaying() ?? false
+        case .resumeAll: return store?.anyPaused() ?? false
+        case .stopAll: return store?.anyActive() ?? false
+        case .pauseResumeSelected: return (store?.anyPlaying(in: selected) ?? false) || (store?.anyPaused(in: selected) ?? false)
+        case .stopSelected, .panicSelected: return store?.anyActive(in: selected) ?? false
+        case .previewSelected: return appController.frontController?.cueList.anyPreviewableSelected ?? false
+        case .loadSelected, .startSelected, .resetSelected: return !selected.isEmpty
+        default: return appController.canPerform(command)
+        }
     }
 
     /// The Transport menu shows the key window's workspace keys.

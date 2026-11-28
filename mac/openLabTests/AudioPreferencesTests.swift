@@ -19,12 +19,13 @@ final class AudioPreferencesTests: XCTestCase {
     override func tearDown() async throws { engine?.stop() }
 
     /// The preferences window on the Audio tab, its first read of the engine done.
-    private func open() async throws -> PreferencesWindowController {
+    private func open(scheduler: Scheduler = SystemScheduler()) async throws -> PreferencesWindowController {
         let suite = "openlab-prefs-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
         let prefs = PreferencesWindowController(
-            preferences: LaunchPreferences(defaults: defaults), audio: AudioPreferencesModel(client: engine.app))
+            preferences: LaunchPreferences(defaults: defaults), audio: AudioPreferencesModel(client: engine.app),
+            scheduler: scheduler)
         prefs.tabs.selectTabViewItem(withIdentifier: "audio")
         await prefs.refreshing?.value
         return prefs
@@ -323,6 +324,50 @@ final class AudioPreferencesTests: XCTestCase {
         await prefs.refreshing?.value
         XCTAssertEqual(prefs.bufferPopups[0].titleOfSelectedItem, "64")
         XCTAssertTrue(prefs.audioMessage.isHidden)
+    }
+
+    /// Flow "An output device that was set earlier is unplugged", the window staying open: the open
+    /// window reads the list again by itself, shows the device as missing with the other settings
+    /// editable, shows it listed again when it is back, and stops asking once it is closed.
+    func testAnUnpluggedDeviceShowsAsMissingInTheOpenWindowWithoutReopeningAndBackWhenPluggedIn() async throws {
+        try await secondDevice()
+        let scheduler = ManualScheduler()
+        let prefs = try await open(scheduler: scheduler)
+        try pick(TestEngine.deviceNames[1], in: prefs.clockPopup)
+        await prefs.refreshing?.value
+        prefs.startFollowing()
+        XCTAssertEqual(prefs.deviceGrid.numberOfRows, 2)
+        XCTAssertNotEqual(try detail(prefs, row: 1), loc("prefs.audio.missing"))
+        func poll(_ n: Int) async {
+            await assertEventually { await scheduler.waitingCount == 1 }
+            await scheduler.fire()
+            await assertEventually { prefs.pollsDone == n }
+        }
+
+        guard case .success = await engine.request(.loseDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("lose_device")
+        }
+        try await engine.advance(seconds: 2)
+        await poll(1)
+        XCTAssertEqual(prefs.deviceGrid.numberOfRows, 2, "the missing device stays a row")
+        XCTAssertEqual(try name(prefs, row: 1), TestEngine.deviceNames[1])
+        XCTAssertEqual(try detail(prefs, row: 1), loc("prefs.audio.missing"))
+        XCTAssertTrue(prefs.bufferPopups[0].isEnabled, "the other device's settings stay editable")
+        try pick("64", in: prefs.bufferPopups[0])
+        await prefs.refreshing?.value
+        XCTAssertEqual(prefs.bufferPopups[0].titleOfSelectedItem, "64")
+
+        guard case .success = await engine.request(.restoreDevice(device: TestEngine.deviceIDs[1])) else {
+            return XCTFail("restore_device")
+        }
+        try await engine.advance(seconds: 2)
+        await poll(2)
+        XCTAssertNotEqual(try detail(prefs, row: 1), loc("prefs.audio.missing"), "plugged in again")
+
+        prefs.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        await scheduler.fire()
+        await settle()
+        XCTAssertEqual(prefs.pollsDone, 2, "a closed window asks no more")
     }
 
     /// Flow "Engine still starting": the window opens, the engine's controls wait, then fill in.

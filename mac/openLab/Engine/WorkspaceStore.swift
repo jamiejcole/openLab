@@ -818,3 +818,26 @@ struct LoadedStand: Equatable, Sendable {
     let time: Double
     let position: Double?
 }
+
+/// What the transport menu items and the sidebar's buttons ask of the cues' states, so they agree.
+extension WorkspaceStore {
+    /// Whether any of `cues` (all cues when nil) plays, waits or fades: Pause has something to pause.
+    func anyPlaying(in cues: [ModelID]? = nil) -> Bool {
+        states(of: cues).contains { [.running, .fading, .preWaiting, .postWaiting].contains($0) }
+    }
+
+    /// Whether any of `cues` (all cues when nil) is held paused: Resume has something to resume.
+    func anyPaused(in cues: [ModelID]? = nil) -> Bool { states(of: cues).contains(.paused) }
+
+    /// Whether any of `cues` (all cues when nil) is live, or one of them is previewing: Stop and
+    /// Panic have something to end.
+    func anyActive(in cues: [ModelID]? = nil) -> Bool {
+        let previews = cues.map { previewing.intersection($0) } ?? previewing
+        return states(of: cues).contains { $0.isActive } || !previews.isEmpty
+    }
+
+    private func states(of cues: [ModelID]?) -> [WireCueState] {
+        guard let cues else { return cueStates.values.map(\.state) }
+        return cues.compactMap { cueStates[$0]?.state }
+    }
+}

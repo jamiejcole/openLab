@@ -1340,7 +1340,7 @@ extension CueListTests {
         XCTAssertEqual(
             m.items.map { $0.isSeparatorItem ? "-" : $0.title },
             [
-                "Preview", "Load", "Panic", "-", "Move Playhead to This Cue", "Reveal Target in Finder", "-", "Cut",
+                "Preview", "Load", "Panic", "-", "Move Playhead to This Cue", "Reveal Target File in Finder", "-", "Cut",
                 "Copy", "Paste", "Paste Properties…", "Delete", "-", "Edit",
             ])
         XCTAssertTrue(
