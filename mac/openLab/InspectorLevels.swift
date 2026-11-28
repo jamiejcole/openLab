@@ -36,7 +36,8 @@ extension InspectorViewController {
         fadeSettings.onInvalid = { [weak self] message in self?.showRefusal(message) }
         fadeSettings.onGestureEnd = { [weak self] in self?.render() }
 
-        // Under a Fade's level buttons, at the foot of the column: how the levels are read, and Preview.
+        // Under a Fade's level buttons, at the foot of the column: whether the target stops when the
+        // fade is done, then how the levels are read and Preview.
         fadePreviewButton.setAX("fade-preview")
         fadePreviewButton.controlSize = .small
         fadePreviewButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -48,6 +49,7 @@ extension InspectorViewController {
         foot.spacing = 6
         foot.distribution = .fillEqually
         fadeLevels.side.addArrangedSubview(spacer)
+        fadeLevels.side.addArrangedSubview(fadeSettings.levelsStopCheck)
         fadeLevels.side.addArrangedSubview(foot)
         foot.widthAnchor.constraint(equalTo: fadeLevels.side.widthAnchor).isActive = true
         fadeLevels.side.heightAnchor.constraint(equalTo: fadeLevels.view.heightAnchor).isActive = true
