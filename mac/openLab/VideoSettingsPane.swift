@@ -1036,7 +1036,9 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         // A rebuilt table is added under every view, the highlight included, so the highlight is
         // put back beneath the current table each time (above it, it would hide the row's controls).
         let order = holder.subviews
-        if selectionBox.superview !== holder || (order.firstIndex(of: selectionBox) ?? 0) > (order.firstIndex(of: grid) ?? 0) {
+        if selectionBox.superview !== holder
+            || (order.firstIndex(of: selectionBox) ?? 0) > (order.firstIndex(of: grid) ?? 0)
+        {
             holder.addSubview(selectionBox, positioned: .below, relativeTo: grid)
         }
         let f = nameFields[i].convert(nameFields[i].bounds, to: holder)
