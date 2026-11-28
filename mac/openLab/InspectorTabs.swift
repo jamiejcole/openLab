@@ -445,7 +445,9 @@ final class TargetPathControl: NSPathControl {
     /// Longest title an item shows, in characters: a longer name is cut in the middle with an ellipsis
     /// (the file's extension stays), so one long folder never fills the box and runs under the next
     /// separator. The tooltip holds the whole path.
-    static let longestTitle = 24
+    /// 20, not more: the path control caps an item's width and fades the last letters of a title past
+    /// it, so a longer cut still lost its end.
+    static let longestTitle = 20
 
     static func shortened(_ title: String) -> String {
         guard title.count > longestTitle else { return title }

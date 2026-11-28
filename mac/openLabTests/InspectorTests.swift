@@ -991,6 +991,11 @@ final class NetworkInspectorTests: XCTestCase {
             XCTAssertGreaterThan(content, 300, when)
             XCTAssertEqual(tabArea.frame.width, content, accuracy: 1, "\(when): the tab's view spans the tab")
             XCTAssertEqual(field.frame.width, content - 24, accuracy: 1, "\(when): fills the tab")
+            // And its height: the area runs from under the patch row to the tab's foot (8 pt inset).
+            let area = field.convert(field.bounds, to: tabArea)
+            let foot = tabArea.isFlipped ? tabArea.bounds.maxY - area.maxY : area.minY
+            XCTAssertEqual(foot, 8, accuracy: 2, "\(when): reaches the tab's foot")
+            XCTAssertGreaterThan(area.height, tabArea.bounds.height / 2, when)
         }
         try assertFilled("first shown")
         inspector.tabView.selectTabViewItem(withIdentifier: "basics")

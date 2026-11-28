@@ -52,7 +52,8 @@ extension InspectorViewController {
             content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             content.topAnchor.constraint(equalTo: container.topAnchor),
-            content.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            // Pinned at the bottom too: the message area takes the tab's height under the patch row, as QLab's.
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         item.view = container
         return item
