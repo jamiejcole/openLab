@@ -294,6 +294,13 @@ extension AppController {
         return session.doc(of: store) != nil
     }
 
+    /// Save has something to write: the front workspace has a change the file lacks, or it has no
+    /// file yet (Save then asks where). Off after a save until the next edit.
+    var canSaveFrontAgain: Bool {
+        guard canSaveFront, let document = frontController?.store.document else { return false }
+        return document.dirty || document.path == nil
+    }
+
     /// Recent workspaces the Open Recent menu offers: those not known to be gone, unreachable or in the
     /// Trash. A file not yet answered for is offered; the menu is filled again when an answer comes.
     func existingRecentURLs() -> [URL] {

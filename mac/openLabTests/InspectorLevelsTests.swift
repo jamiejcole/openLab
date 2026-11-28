@@ -1880,6 +1880,39 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(modelKind(Self.fade)?["duration"], .double(2.5), "no edit lost the one before it")
     }
 
+    /// The stop box is on a Fade's Levels tab too, at the foot of its first column, and is the same
+    /// setting as the Curve tab's: unticking one unticks the other, and Show Mode locks it.
+    func testTheFadeLevelsTabHasTheStopTargetBoxAndItIsTheCurveTabsSetting() async throws {
+        vc.setSelection([Self.fade])
+        let f = vc.fadeSettings
+        let levelsBox = f.levelsStopCheck
+        XCTAssertTrue(levelsBox.isDescendant(of: vc.fadeLevels.view), "on the Levels tab")
+        XCTAssertFalse(levelsBox.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(levelsBox.title, f.stopCheck.title)
+        XCTAssertEqual(levelsBox.state, .on, "the fixture's fade stops its target")
+        XCTAssertTrue(levelsBox.isEnabled)
+
+        levelsBox.state = .off
+        fire(levelsBox)
+        await assertEventually("the model answers") {
+            self.modelKind(Self.fade)?["stop_target_when_done"] == .bool(false)
+        }
+        XCTAssertEqual(levelsBox.state, .off)
+        XCTAssertEqual(f.stopCheck.state, .off, "the Curve tab's box shows the same setting")
+
+        f.stopCheck.state = .on
+        fire(f.stopCheck)
+        await assertEventually("ticked from the Curve tab") {
+            self.modelKind(Self.fade)?["stop_target_when_done"] == .bool(true)
+        }
+        XCTAssertEqual(levelsBox.state, .on)
+
+        vc.isLocked = true
+        XCTAssertFalse(levelsBox.isEnabled, "Show Mode locks it")
+        vc.isLocked = false
+        XCTAssertTrue(levelsBox.isEnabled)
+    }
+
     /// An edit made before the engine answered the one before it keeps that one (the answer, arriving
     /// late, also must not undo it on screen).
     func testQuickEditsOfOneKindKeepEachOther() async throws {

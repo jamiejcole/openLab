@@ -302,8 +302,26 @@ final class AppController {
         {
             return event
         }
+        if swallowsDisabledMenuChord(chord) { return nil }
         if fireCueHotkeys(chord, event: event) { return nil }
         return listWindowKey && moveBySequenceKey(chord, event: event) ? nil : event
+    }
+
+    /// Whether the app's menu says a Command chord is off (an item of its own, greyed by
+    /// `validateMenuItem`). Set by the app delegate; nil asks nothing.
+    var isDisabledMenuChord: ((KeyChord) -> Bool)?
+
+    /// A Command key of a menu item that is greyed out is taken, so the press does nothing and the
+    /// system does not beep for a key no one handled. Only with a workspace window, the launcher or no
+    /// window key (a panel or sheet keeps its own keys: the open panel's Command-D) and no text being
+    /// edited (a field keeps Command-arrows).
+    private func swallowsDisabledMenuChord(_ chord: KeyChord) -> Bool {
+        guard chord.modifiers.contains(.command), !isTextEditing(), let isDisabled = isDisabledMenuChord else {
+            return false
+        }
+        let key = keyWindow()
+        guard key == nil || key is WorkspaceWindow || key === launcher.window else { return false }
+        return isDisabled(chord)
     }
 
     /// `=` and `-` move the playhead to the next and previous sequence (QLab 5's View menu gives
