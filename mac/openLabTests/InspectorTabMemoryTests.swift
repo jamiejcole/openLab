@@ -170,6 +170,11 @@ final class InspectorTabMemoryTests: XCTestCase {
         let group: ModelID = "00000000-0000-0000-0000-000000000020"
         let rain: ModelID = "00000000-0000-0000-0000-000000000022"
         let radio: ModelID = "00000000-0000-0000-0000-000000000023"
+        // How often a tab's view entered the window since the last check: a step shows its tab once
+        // (a view swap, a layout and a new key loop each time), never every tab on the way.
+        let tabViews = Set(inspector.tabItems.values.compactMap { $0.view.map(ObjectIdentifier.init) })
+        let entries = ViewEntries(counting: tabViews)
+        defer { entries.restore() }
         func key(_ code: UInt16, _ scalar: Int) throws {
             let chars = String(try XCTUnwrap(UnicodeScalar(scalar)))
             window.sendEvent(
@@ -183,8 +188,10 @@ final class InspectorTabMemoryTests: XCTestCase {
         func up() throws { try key(126, NSUpArrowFunctionKey) }
         func click(_ tab: String) throws {
             try XCTUnwrap(inspector.tabBar.buttons.first { $0.tabID == tab }, tab).performClick(nil)
+            _ = entries.take()  // the user's own tab choice shows that tab: not counted against the step
         }
         func check(_ id: ModelID, shows tab: String, line: UInt = #line) throws {
+            XCTAssertLessThanOrEqual(entries.take(), 1, "a tab's view entered the window more than once", line: line)
             XCTAssertEqual(wc.cueList.selectedIDs(), [id], "the highlight", line: line)
             let model = try XCTUnwrap(opened.store.model)
             let cue = try XCTUnwrap(model.cue(id))
@@ -283,4 +290,35 @@ final class InspectorTabMemoryTests: XCTestCase {
         XCTAssertTrue(tabs.contains("timeLoops"))
         XCTAssertTrue(panel.fadeInField.isHiddenOrHasHiddenAncestor, "a movie's fades are on its timeline")
     }
+}
+
+/// Counts `viewDidMoveToWindow` with a window for the views named, by wrapping NSView's for the test.
+@MainActor
+private final class ViewEntries {
+    private final class Box { var n = 0 }
+    private let box = Box()
+    private let method: Method
+    private let original: IMP
+
+    init(counting views: Set<ObjectIdentifier>) {
+        let selector = #selector(NSView.viewDidMoveToWindow)
+        method = class_getInstanceMethod(NSView.self, selector)!
+        let original = method_getImplementation(method)
+        self.original = original
+        let box = box
+        let block: @convention(block) (NSView) -> Void = { view in
+            if view.window != nil, views.contains(ObjectIdentifier(view)) { box.n += 1 }
+            typealias Call = @convention(c) (NSView, Selector) -> Void
+            unsafeBitCast(original, to: Call.self)(view, selector)
+        }
+        method_setImplementation(method, imp_implementationWithBlock(block))
+    }
+
+    /// The count since the last call.
+    func take() -> Int {
+        defer { box.n = 0 }
+        return box.n
+    }
+
+    func restore() { method_setImplementation(method, original) }
 }
