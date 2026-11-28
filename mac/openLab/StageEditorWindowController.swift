@@ -117,6 +117,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     static let minSize = NSSize(width: 620, height: 480)
+    /// The selected region's box: its labels, two number fields and the lock between them.
+    static let regionBoxWidth: CGFloat = 300
     static let id = "stage-editor"
     /// The scale pop-up's choices after Fit, in percent of a stage pixel per point.
     static let scales: [Int] = [10, 25, 50, 75, 100, 150, 200, 300, 400]
@@ -300,7 +302,8 @@ final class StageEditorWindowController: NSWindowController, NSTextFieldDelegate
         regionBox.contentViewMargins = .zero
         regionBox.contentView = boxStack
         regionBox.setAX("\(Self.id)-region-box")
-        regionBox.setContentHuggingPriority(.required, for: .horizontal)
+        // The box keeps its own width; the table takes the rest of the row, as QLab 5's does.
+        regionBox.widthAnchor.constraint(equalToConstant: Self.regionBoxWidth).isActive = true
         regionBox.setContentCompressionResistancePriority(.required, for: .horizontal)
         let middle = NSStackView(views: [listScroll, regionBox])
         middle.alignment = .top
