@@ -50,6 +50,13 @@
 "undo.step.resize_region" = "Region Size";
 "undo.step.move_region" = "Region Position";
 "undo.step.region_route" = "Region Output Route";
+"undo.step.add_cue" = "New Cue";
+"undo.step.remove_cue" = "Delete Cue";
+"undo.step.move_cue" = "Move Cue";
+"undo.step.paste_cues" = "Paste Cues";
+"undo.step.renumber_cues" = "Renumber Cues";
+"undo.step.rename_cue" = "Cue Name";
+"undo.step.edit_cue" = "Cue Edit";
 "menu.edit.cut" = "Cut";
 "menu.edit.copy" = "Copy";
 "menu.edit.paste" = "Paste";
@@ -70,7 +77,7 @@
 "menu.cues" = "Cues";
 "menu.cues.new" = "New %@ Cue";
 "menu.cues.deleteNumbers" = "Delete Numbers of Selected Cues";
-"menu.cues.renumber" = "Renumber Selected Cues...";
+"menu.cues.renumber" = "Renumber Selected Cues…";
 "menu.view.moveUp" = "Move Selected Cues Up";
 "menu.view.moveDown" = "Move Selected Cues Down";
 "menu.view.selectNext" = "Select Next";
@@ -1066,7 +1073,7 @@
 "loadTime.slider" = "Scrub the standing-by cue";
 "loadTime.done" = "Done";
 "loadTime.nothing" = "No cue is standing by.";
-"menu.tools.revealTarget" = "Reveal Target File in Finder";
+"menu.tools.revealTarget" = "Show Cue’s File in Finder";
 "menu.tools.findMissingFiles" = "Find Missing Files…";
 
 /* Find Missing Files (WS-03) */
@@ -1374,7 +1381,7 @@
 "cuelist.menu.panic" = "Panic";
 "cuelist.menu.edit" = "Edit";
 "cuelist.menu.movePlayhead" = "Move Playhead to This Cue";
-"cuelist.menu.revealTarget" = "Reveal Target in Finder";
+"cuelist.menu.revealTarget" = "Show Cue’s File in Finder";
 "footer.count" = "%1$@ in %2$@";
 "footer.count.cue.one" = "1 cue";
 "footer.count.cue.many" = "%ld cues";

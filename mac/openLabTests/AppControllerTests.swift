@@ -2191,6 +2191,374 @@ final class AppControllerTests: XCTestCase {
         return (plain, paths)
     }
 
+    // MARK: Menu audit (every item present, named alike, off when it cannot act)
+
+    private func allMenuItems() -> [NSMenuItem] {
+        func flat(_ menu: NSMenu) -> [NSMenuItem] {
+            menu.items.flatMap { [$0] + ($0.submenu.map(flat) ?? []) }
+        }
+        return flat(MainMenu.make().bar)
+    }
+
+    private func menuDelegate() -> AppDelegate {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        return delegate
+    }
+
+    /// Whether every item of the bar that acts through `action` is on (all must agree).
+    private func isOn(_ action: Selector, _ delegate: AppDelegate, _ items: [NSMenuItem]) throws -> Bool {
+        let own = items.filter { $0.action == action }
+        XCTAssertFalse(own.isEmpty, NSStringFromSelector(action))
+        let states = own.map { delegate.validateMenuItem($0) }
+        XCTAssertEqual(Set(states).count, 1, "\(NSStringFromSelector(action)) items disagree")
+        return states.first ?? false
+    }
+
+    private func transportItem(_ command: TransportCommand, _ items: [NSMenuItem]) throws -> NSMenuItem {
+        try XCTUnwrap(items.first { ($0.representedObject as? String) == command.rawValue }, command.rawValue)
+    }
+
+    /// Flow: app running, no workspace open (launcher only) -> items that need a workspace are off;
+    /// New, Open, Open Recent, About, Preferences, Window > launcher and Help are on.
+    func testMenusWithOnlyTheLauncherDisableWhatNeedsAWorkspace() async throws {
+        _ = await app.session.close(doc: "1", discardChanges: true)
+        await assertEventually { app.windows.isEmpty }
+        keyDoc = nil
+        let delegate = menuDelegate()
+        let items = allMenuItems()
+        let needWorkspace: [Selector] = [
+            #selector(AppDelegate.saveWorkspace(_:)), #selector(AppDelegate.saveWorkspaceAs(_:)),
+            #selector(AppDelegate.closeAllWorkspaces(_:)), #selector(AppDelegate.undoEdit(_:)),
+            #selector(AppDelegate.redoEdit(_:)), #selector(AppDelegate.cutCues(_:)),
+            #selector(AppDelegate.copyCues(_:)), #selector(AppDelegate.pasteCues(_:)),
+            #selector(AppDelegate.deleteCues(_:)), #selector(AppDelegate.newCue(_:)),
+            #selector(AppDelegate.renumberCues(_:)), #selector(AppDelegate.showFind(_:)),
+            #selector(AppDelegate.enterShowMode(_:)), #selector(AppDelegate.showWorkspaceSettings(_:)),
+            #selector(AppDelegate.showWorkspaceStatus(_:)), #selector(AppDelegate.loadToTime(_:)),
+            #selector(AppDelegate.copyMediaIntoShowFolder(_:)), #selector(AppDelegate.showWorkspaceInFinder(_:)),
+        ]
+        for action in needWorkspace {
+            XCTAssertFalse(try isOn(action, delegate, items), NSStringFromSelector(action))
+        }
+        for command in TransportCommand.allCases {
+            XCTAssertFalse(delegate.validateMenuItem(try transportItem(command, items)), "\(command)")
+        }
+        let available: [Selector] = [
+            #selector(AppDelegate.newWorkspace(_:)), #selector(AppDelegate.openWorkspace(_:)),
+            #selector(AppDelegate.showAbout(_:)), #selector(AppDelegate.showLauncherWindow(_:)),
+            #selector(AppDelegate.revealCrashReports(_:)), #selector(AppDelegate.newWorkspaceFromQlab(_:)),
+        ]
+        for action in available { XCTAssertTrue(try isOn(action, delegate, items), NSStringFromSelector(action)) }
+        let preferences = try XCTUnwrap(items.first { $0.title == loc("menu.app.preferences") })
+        XCTAssertTrue(delegate.validateMenuItem(preferences))
+        let recent = NSMenu()
+        MainMenu.fillRecent(recent, [URL(fileURLWithPath: "/Shows/A.openlab")])
+        XCTAssertEqual(recent.items.first?.title, "A")
+        XCTAssertEqual(recent.items.last?.action, #selector(AppDelegate.clearRecents(_:)))
+        XCTAssertTrue(recent.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled })
+    }
+
+    /// Flow: workspace open, nothing selected, engine ready -> Save is off until a change, on after one;
+    /// Undo and Redo are named after the last edit and plain and off when there is none.
+    func testSaveIsOffUntilAChangeAndUndoAndRedoAreNamedAfterTheLastEdit() async throws {
+        keyDoc = "1"
+        let delegate = menuDelegate()
+        let items = allMenuItems()
+        let save = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.saveWorkspace(_:)) })
+        let saveAs = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.saveWorkspaceAs(_:)) })
+        let undo = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.undoEdit(_:)) })
+        let redo = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.redoEdit(_:)) })
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let editor = try XCTUnwrap(app.undoController).editor
+        func named(_ step: String, redo: Bool) -> String {
+            String(format: loc(redo ? "menu.edit.redoNamed" : "menu.edit.undoNamed"), loc("undo.step.\(step)"))
+        }
+
+        // The rig's edit is unsaved: Save is on and Undo says what it would undo.
+        XCTAssertTrue(delegate.validateMenuItem(save))
+        XCTAssertTrue(delegate.validateMenuItem(undo))
+        XCTAssertEqual(undo.title, named("edit_cue", redo: false))
+        XCTAssertFalse(delegate.validateMenuItem(redo))
+        XCTAssertEqual(redo.title, loc("menu.edit.redo"), "nothing to redo: plain title")
+
+        // Saved: Save is off, Save As stays on.
+        guard await app.saveWorkspace(store) else { return XCTFail("save") }
+        await assertEventually { store.document?.dirty == false }
+        XCTAssertFalse(delegate.validateMenuItem(save), "nothing changed since the save")
+        XCTAssertTrue(delegate.validateMenuItem(saveAs))
+        XCTAssertTrue(delegate.validateMenuItem(undo), "a saved edit can still be undone")
+
+        // A new edit: Save is on again, and Undo names it.
+        guard case .success = await store.send(command: .removeCue(fade)) else { return XCTFail("remove") }
+        await assertEventually { store.document?.dirty == true && store.document?.undoName == "remove_cue" }
+        XCTAssertTrue(delegate.validateMenuItem(save))
+        _ = delegate.validateMenuItem(undo)
+        XCTAssertEqual(undo.title, named("remove_cue", redo: false))
+
+        // Undo, then Redo: the titles follow the step that moved.
+        await editor.undo()
+        await assertEventually { store.document?.canRedo == true }
+        _ = delegate.validateMenuItem(undo)
+        XCTAssertEqual(undo.title, named("edit_cue", redo: false), "the step before it")
+        XCTAssertTrue(delegate.validateMenuItem(redo))
+        XCTAssertEqual(redo.title, named("remove_cue", redo: true))
+        await editor.redo()
+        await assertEventually { store.document?.canRedo == false }
+        XCTAssertFalse(delegate.validateMenuItem(redo))
+        XCTAssertEqual(redo.title, loc("menu.edit.redo"))
+        _ = delegate.validateMenuItem(undo)
+        XCTAssertEqual(undo.title, named("remove_cue", redo: false))
+
+        // Back to the start of the history: nothing to undo, plain and off.
+        await editor.undo()
+        await editor.undo()
+        await assertEventually { store.document?.canUndo == false }
+        XCTAssertFalse(delegate.validateMenuItem(undo))
+        XCTAssertEqual(undo.title, loc("menu.edit.undo"))
+
+        // A workspace never saved has a file to make, so Save is on even before a change.
+        let second = try await addWorkspace()
+        keyDoc = second
+        XCTAssertNil(app.session.stores[second]?.document?.path)
+        XCTAssertTrue(delegate.validateMenuItem(save), "Save asks where to put a new workspace")
+        XCTAssertFalse(delegate.validateMenuItem(undo))
+        XCTAssertEqual(undo.title, loc("menu.edit.undo"))
+    }
+
+    /// A key of a greyed menu item is taken, so pressing it does nothing and the system does not beep.
+    func testTheKeyOfAGreyedMenuItemIsTakenAndNothingBeeps() async throws {
+        keyDoc = "1"
+        let saved = NSApp.mainMenu
+        NSApp.mainMenu = MainMenu.make().bar
+        defer { NSApp.mainMenu = saved }
+        let delegate = menuDelegate()
+        app.isDisabledMenuChord = { delegate.menuItemIsOff(for: $0) }
+        // The delegate and the app hold each other through this closure: let go of it.
+        defer { app.isDisabledMenuChord = nil }
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let cmdS = try keyDown("s", .command, code: 1)
+        XCTAssertTrue(app.handleKeyDown(cmdS) === cmdS, "unsaved changes: Save is on and the menu takes the key")
+        guard await app.saveWorkspace(store) else { return XCTFail("save") }
+        await assertEventually { store.document?.dirty == false }
+        XCTAssertNil(app.handleKeyDown(cmdS), "nothing to save: the key is taken, no beep")
+        app.frontController?.cueList.outlineView.deselectAll(nil)
+        let cmdR = try keyDown("r", .command, code: 15)
+        XCTAssertNil(app.handleKeyDown(cmdR), "Renumber needs a selection")
+        app.frontController?.cueList.selectAsUser([intro])
+        XCTAssertTrue(app.handleKeyDown(cmdR) === cmdR)
+        // A panel or sheet keeps its own keys.
+        let panel = NSPanel()
+        defer { panel.close() }
+        app.keyWindow = { panel }
+        app.frontController?.cueList.outlineView.deselectAll(nil)
+        XCTAssertTrue(app.handleKeyDown(cmdR) === cmdR)
+    }
+
+    /// Flow: a cue selected -> cue items are on only when they can act; with nothing selected the ones
+    /// that act on the selection are off.
+    func testACueSelectedEnablesItsItemsOnlyWhenTheyCanAct() async throws {
+        keyDoc = "1"
+        let delegate = menuDelegate()
+        let items = allMenuItems()
+        let list = try XCTUnwrap(app.windows["1"]).cueList
+        let onSelection: [Selector] = [
+            #selector(AppDelegate.renumberCues(_:)), #selector(AppDelegate.deleteCues(_:)),
+            #selector(AppDelegate.deleteNumbers(_:)), #selector(AppDelegate.cutCues(_:)),
+            #selector(AppDelegate.copyCues(_:)), #selector(AppDelegate.moveCuesUp(_:)),
+            #selector(AppDelegate.moveCuesDown(_:)),
+        ]
+        list.outlineView.deselectAll(nil)
+        XCTAssertTrue(list.selectedIDs().isEmpty)
+        for action in onSelection { XCTAssertFalse(try isOn(action, delegate, items), "none: \(action)") }
+        for command in [TransportCommand.loadSelected, .startSelected, .stopSelected, .panicSelected, .resetSelected] {
+            XCTAssertFalse(delegate.validateMenuItem(try transportItem(command, items)), "none: \(command)")
+        }
+        XCTAssertTrue(try isOn(#selector(AppDelegate.newCue(_:)), delegate, items), "New needs no selection")
+        XCTAssertTrue(try isOn(#selector(AppDelegate.showFind(_:)), delegate, items))
+        list.selectAsUser([intro])
+        for action in onSelection { XCTAssertTrue(try isOn(action, delegate, items), "one: \(action)") }
+        XCTAssertTrue(delegate.validateMenuItem(try transportItem(.loadSelected, items)))
+        XCTAssertTrue(delegate.validateMenuItem(try transportItem(.stopSelected, items)), "Intro plays")
+        XCTAssertTrue(delegate.validateMenuItem(try transportItem(.previewSelected, items)), "an Audio cue previews")
+        list.selectAsUser([fade])
+        XCTAssertFalse(try isOn(#selector(AppDelegate.revealTargetFile(_:)), delegate, items), "a Fade has no file")
+        XCTAssertFalse(delegate.validateMenuItem(try transportItem(.stopSelected, items)), "the Fade is idle")
+    }
+
+    /// Flow: a cue playing, then paused -> Pause is on while it plays and Resume while it is paused (as
+    /// the sidebar's buttons); Stop and Panic need a live cue; back to idle they revert.
+    func testPauseAndResumeFollowAPlayingCueAndStopAndPanicNeedALiveOne() async throws {
+        keyDoc = "1"
+        let delegate = menuDelegate()
+        let items = allMenuItems()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.cueList.selectAsUser([intro])
+        func on(_ command: TransportCommand) throws -> Bool {
+            delegate.validateMenuItem(try transportItem(command, items))
+        }
+        func buttons() -> (pause: Bool, resume: Bool) {
+            let sidebar = wc.sidebar.transportButtons
+            return (sidebar[AX.transportPause]?.isEnabled ?? false, sidebar[AX.transportResume]?.isEnabled ?? false)
+        }
+        XCTAssertEqual(state(intro), .running)
+        XCTAssertTrue(try on(.pauseAll))
+        XCTAssertFalse(try on(.resumeAll))
+        XCTAssertTrue(try on(.pauseResumeSelected))
+        XCTAssertTrue(try on(.stopAll))
+        XCTAssertTrue(try on(.stopSelected))
+        XCTAssertTrue(try on(.panicSelected))
+        XCTAssertTrue(try on(.panic))
+        XCTAssertEqual(buttons().pause, true, "the sidebar agrees")
+        XCTAssertEqual(buttons().resume, false)
+
+        guard case .success = await store.transport(.pauseAll) else { return XCTFail("pause all") }
+        try await advance()
+        await assertEventually { self.state(self.intro) == .paused }
+        XCTAssertFalse(try on(.pauseAll), "nothing left to pause")
+        XCTAssertTrue(try on(.resumeAll), "Resume takes Pause's place")
+        XCTAssertTrue(try on(.pauseResumeSelected))
+        XCTAssertTrue(try on(.stopSelected), "a paused cue is live")
+        XCTAssertEqual(buttons().pause, false)
+        XCTAssertEqual(buttons().resume, true)
+
+        guard case .success = await store.transport(.stopAll) else { return XCTFail("stop all") }
+        try await advance()
+        await assertEventually { self.state(self.intro)?.isActive == false }
+        XCTAssertFalse(try on(.pauseAll))
+        XCTAssertFalse(try on(.resumeAll))
+        XCTAssertFalse(try on(.stopAll), "reverted")
+        XCTAssertFalse(try on(.stopSelected))
+        XCTAssertFalse(try on(.panicSelected))
+        XCTAssertFalse(try on(.pauseResumeSelected))
+        XCTAssertTrue(try on(.panic), "Panic stays on while a workspace is open")
+        XCTAssertTrue(try on(.go))
+        XCTAssertEqual(buttons().resume, false)
+    }
+
+    /// Flow: Show Mode on -> editing items are off, playback items stay on; Show Mode off restores them.
+    func testShowModeTurnsEditingItemsOffAndLeavesPlaybackOnAndEditModeRestoresThem() async throws {
+        keyDoc = "1"
+        let delegate = menuDelegate()
+        let items = allMenuItems()
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.cueList.selectAsUser([intro])
+        let editing: [Selector] = [
+            #selector(AppDelegate.newCue(_:)), #selector(AppDelegate.deleteCues(_:)),
+            #selector(AppDelegate.pasteCues(_:)), #selector(AppDelegate.renumberCues(_:)),
+            #selector(AppDelegate.deleteNumbers(_:)), #selector(AppDelegate.cutCues(_:)),
+            #selector(AppDelegate.moveCuesUp(_:)),
+        ]
+        let playback: [TransportCommand] = [.go, .stopAll, .panic, .pauseAll, .resetAll]
+        for action in editing { XCTAssertTrue(try isOn(action, delegate, items), "Edit Mode: \(action)") }
+        wc.setShowMode(true)
+        for action in editing { XCTAssertFalse(try isOn(action, delegate, items), "Show Mode: \(action)") }
+        XCTAssertFalse(try isOn(#selector(AppDelegate.pasteCueProperties(_:)), delegate, items))
+        for command in playback {
+            XCTAssertTrue(delegate.validateMenuItem(try transportItem(command, items)), "Show Mode: \(command)")
+        }
+        XCTAssertTrue(try isOn(#selector(AppDelegate.selectNextCue(_:)), delegate, items))
+        XCTAssertTrue(wc.cueToolbar.isLocked, "the toolbar's buttons agree with New Cue")
+        wc.setShowMode(false)
+        for action in editing { XCTAssertTrue(try isOn(action, delegate, items), "restored: \(action)") }
+        XCTAssertFalse(wc.cueToolbar.isLocked)
+    }
+
+    /// Flow: editing text in a field -> Cut, Copy, Paste and Undo act on the text; the cue commands whose
+    /// keys clash are off until the field is left.
+    func testATextFieldInFocusTakesTheEditItemsAndGivesBackDeleteReturnAndSpace() async throws {
+        keyDoc = "1"
+        let delegate = menuDelegate()
+        let items = allMenuItems()
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        let list = wc.cueList
+        list.selectAsUser([intro])
+        XCTAssertTrue(try isOn(#selector(AppDelegate.deleteCues(_:)), delegate, items), "the list has the keys")
+        XCTAssertTrue(delegate.validateMenuItem(try transportItem(.go, items)))
+        XCTAssertTrue(list.beginCellEdit(intro, column: "name"))
+        app.isTextEditing = { (window.firstResponder as? NSText)?.isEditable == true }
+        XCTAssertNotNil(window.firstResponder as? NSText, "a field editor has the focus")
+        for action in [
+            #selector(AppDelegate.cutCues(_:)), #selector(AppDelegate.copyCues(_:)),
+            #selector(AppDelegate.pasteCues(_:)), #selector(AppDelegate.undoEdit(_:)),
+        ] {
+            XCTAssertTrue(try isOn(action, delegate, items), "text: \(action)")
+        }
+        for action in [
+            #selector(AppDelegate.deleteCues(_:)), #selector(AppDelegate.deleteNumbers(_:)),
+            #selector(AppDelegate.selectNextCue(_:)), #selector(AppDelegate.jumpToTargets(_:)),
+        ] {
+            XCTAssertFalse(try isOn(action, delegate, items), "text: \(action)")
+        }
+        XCTAssertFalse(delegate.validateMenuItem(try transportItem(.go, items)), "Space types a space")
+        window.endEditing(for: nil)
+        window.makeFirstResponder(list.outlineView)
+        XCTAssertTrue(try isOn(#selector(AppDelegate.deleteCues(_:)), delegate, items), "the field was left")
+        XCTAssertTrue(delegate.validateMenuItem(try transportItem(.go, items)))
+    }
+
+    /// Flow: several cues, or a group, selected -> items that need one cue are off; the others act on all.
+    func testSeveralCuesSelectedTurnOffWhatNeedsOneAndKeepWhatActsOnMany() async throws {
+        keyDoc = "1"
+        let delegate = menuDelegate()
+        let items = allMenuItems()
+        let list = try XCTUnwrap(app.windows["1"]).cueList
+        list.selectAsUser([intro, fade])
+        XCTAssertFalse(try isOn(#selector(AppDelegate.revealTargetFile(_:)), delegate, items), "two cues, no one file")
+        for action in [
+            #selector(AppDelegate.renumberCues(_:)), #selector(AppDelegate.deleteCues(_:)),
+            #selector(AppDelegate.copyCues(_:)), #selector(AppDelegate.moveCuesUp(_:)),
+            #selector(AppDelegate.deleteNumbers(_:)),
+        ] {
+            XCTAssertTrue(try isOn(action, delegate, items), "many: \(action)")
+        }
+        XCTAssertTrue(delegate.validateMenuItem(try transportItem(.previewSelected, items)))
+        XCTAssertEqual(list.selectedIDs().count, 2)
+
+        // A group and its child, nothing in it playing: no one file; the edits act on all; Stop, Panic
+        // and Pause of the selection have nothing live. With Intro (playing) added to the group, they act.
+        let (group, child, _) = try await addPreviewGroup()
+        list.selectAsUser([group, child])
+        XCTAssertEqual(Set(list.selectedIDs()), [group, child])
+        XCTAssertFalse(try isOn(#selector(AppDelegate.revealTargetFile(_:)), delegate, items), "a group, no one file")
+        for action in [#selector(AppDelegate.deleteCues(_:)), #selector(AppDelegate.copyCues(_:))] {
+            XCTAssertTrue(try isOn(action, delegate, items), "group: \(action)")
+        }
+        for command in [TransportCommand.stopSelected, .panicSelected] {
+            XCTAssertFalse(delegate.validateMenuItem(try transportItem(command, items)), "group idle: \(command)")
+        }
+        list.selectAsUser([group, intro])
+        for command in [TransportCommand.stopSelected, .panicSelected] {
+            XCTAssertTrue(delegate.validateMenuItem(try transportItem(command, items)), "Intro plays: \(command)")
+        }
+    }
+
+    /// Flow: unsaved changes and Close -> closing asks to save; the menu's Close and the window's close
+    /// button do the same.
+    func testCloseFromTheMenuAndTheCloseButtonAskTheSameQuestion() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        let close = try XCTUnwrap(allMenuItems().first { $0.action == #selector(NSWindow.performClose(_:)) })
+        XCTAssertEqual(close.keyEquivalent, "w")
+        alerts.closePlaying = true
+        alerts.saveChoices = [.cancel, .cancel]
+        // The menu item's action, as AppKit sends it to the key window.
+        window.performClose(close)
+        await assertEventually { self.alerts.log.contains { $0.hasPrefix("unsaved:") } }
+        let viaMenu = alerts.log
+        XCTAssertEqual(viaMenu, ["closePlaying", "unsaved:Demo"])
+        XCTAssertNotNil(app.windows["1"], "Cancel keeps the workspace")
+        window.standardWindowButton(.closeButton)?.performClick(nil)
+        await assertEventually { self.alerts.log.count == viaMenu.count * 2 }
+        XCTAssertEqual(Array(alerts.log.suffix(viaMenu.count)), viaMenu, "the button asks what the menu asked")
+        XCTAssertNotNil(app.windows["1"])
+    }
+
     func testSaveAndSaveAsNeedAFrontWorkspaceAndWorkInShowMode() async throws {
         keyDoc = nil
         XCTAssertFalse(app.canSaveFront)

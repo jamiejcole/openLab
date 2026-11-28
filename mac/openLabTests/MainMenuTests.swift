@@ -122,6 +122,47 @@ final class MainMenuTests: XCTestCase {
         XCTAssertEqual(launcher.keyEquivalentModifierMask, [.command, .shift])
     }
 
+    /// Flow: every menu title uses the vocabulary of the toolbar, row menu and alerts; no placeholder
+    /// or repeated item. The cue kinds are named as the toolbar names them, an ellipsis is the one
+    /// character, the row menu's Reveal reads as the Tools item, and Undo and Redo are named in the
+    /// words of the steps.
+    func testMenuTitlesShareTheVocabularyOfTheToolbarAndRowMenuWithNoPlaceholders() {
+        let bar = MainMenu.make().bar
+        let titles = allItems(bar).filter { !$0.isSeparatorItem }
+        for item in titles {
+            XCTAssertFalse(item.title.isEmpty, "an item with no title")
+            XCTAssertFalse(item.title.contains("..."), "\(item.title): an ellipsis is one character")
+            XCTAssertFalse(item.title.lowercased().contains("todo"), item.title)
+        }
+        func walk(_ menu: NSMenu) {
+            var seen = Set<String>()
+            for item in menu.items where !item.isSeparatorItem && item.submenu == nil {
+                let id = "\(item.title)|\(item.action.map(NSStringFromSelector) ?? "")|\(item.representedObject ?? "")"
+                XCTAssertTrue(seen.insert(id).inserted, "\(item.title) is listed twice in \(menu.title)")
+            }
+            for item in menu.items { item.submenu.map(walk) }
+        }
+        walk(bar)
+        let cues = MainMenu.make().cues.items.filter { $0.representedObject is String }
+        let toolbar = CueToolbarView.groups.flatMap { $0 }.map { loc($0.key) }
+        for name in toolbar {
+            XCTAssertTrue(
+                cues.contains { $0.title == String(format: loc("menu.cues.new"), name) },
+                "\(name) is in Cues and the toolbar")
+        }
+        XCTAssertEqual(
+            loc("cuelist.menu.revealTarget"), loc("menu.tools.revealTarget"), "one name for the one action")
+        XCTAssertEqual(loc("cuelist.menu.edit"), loc("menu.edit"))
+        XCTAssertEqual(MainMenu.undoTitle(redo: false, step: nil), loc("menu.edit.undo"))
+        for code in ["add_cue", "remove_cue", "move_cue", "paste_cues", "renumber_cues", "rename_cue", "edit_cue"] {
+            XCTAssertNotEqual(loc("undo.step.\(code)"), "undo.step.\(code)", "\(code) has words")
+            XCTAssertEqual(
+                MainMenu.undoTitle(redo: true, step: code),
+                String(format: loc("menu.edit.redoNamed"), loc("undo.step.\(code)")))
+        }
+        XCTAssertEqual(MainMenu.undoTitle(redo: false, step: "a_step_from_a_newer_engine"), loc("menu.edit.undo"))
+    }
+
     /// The one list of locked edits names real items: each is on some menu, so Show Mode cannot
     /// miss a new edit item added to the list.
     func testEveryLockedEditHasAMenuItem() {

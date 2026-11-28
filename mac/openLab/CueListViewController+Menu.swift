@@ -102,7 +102,7 @@ extension CueListViewController: NSMenuDelegate {
         let selected = selectedIDs().compactMap { self.node($0) }
         let context = CueRowMenu.Context(
             selectedCount: selected.count,
-            anyPreviewable: selected.contains { ["audio", "video", "group", "network"].contains($0.cue.kindType) },
+            anyPreviewable: anyPreviewableSelected,
             clickedIsPlayhead: isPlayheadRow(node.id),
             clickedHasMedia: revealURL(node) != nil,
             anyActive: store.cueStates.values.contains { $0.state.isActive } || !store.previewing.isEmpty,
@@ -305,16 +305,24 @@ extension CueListViewController: NSMenuDelegate {
         ["auto_continue", "auto_follow"].contains(cue.raw["continue_mode"]?.stringValue ?? "")
     }
 
-    /// Tools > Reveal Target File in Finder: the last selected cue's file, as the row menu does.
+    /// Tools > Show Cue’s File in Finder: the file of the one selected cue, as the row menu does.
     @discardableResult
     func revealSelectedTarget() -> Bool {
-        guard let id = selectedIDs().last else { return false }
+        guard selectedIDs().count == 1, let id = selectedIDs().last else { return false }
         return revealFile(of: id)
     }
 
-    /// Whether Reveal Target File has a file to show (for the menu item).
+    /// A selected cue has a preview: the row menu's Preview and the Transport menu's Preview Selected.
+    var anyPreviewableSelected: Bool {
+        selectedIDs().compactMap { node($0) }.contains {
+            ["audio", "video", "group", "network"].contains($0.cue.kindType)
+        }
+    }
+
+    /// Whether Show Cue’s File has a file to show (for the menu item).
     var canRevealSelectedTarget: Bool {
-        selectedIDs().last.flatMap { node($0) }.flatMap { revealURL($0) } != nil
+        // One file at a time: with several cues selected there is no one file to show.
+        selectedIDs().count == 1 && selectedIDs().last.flatMap { node($0) }.flatMap { revealURL($0) } != nil
     }
 
     /// The selected cues' cue targets, in row order (an Audio cue's file is not one).

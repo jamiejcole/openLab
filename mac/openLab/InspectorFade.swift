@@ -275,6 +275,9 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
     let domainPopup = NSPopUpButton()
     let resetButton = NSButton(title: loc("fade.curve.reset"), target: nil, action: nil)
     let stopCheck = NSButton(checkboxWithTitle: loc("fade.stopTarget"), target: nil, action: nil)
+    /// The same setting on the Levels tab, above the mode pop-up, as QLab shows it on every tab of
+    /// a Fade but Basics and Triggers (manual p. 199). The inspector places it.
+    let levelsStopCheck = NSButton(checkboxWithTitle: loc("fade.stopTarget"), target: nil, action: nil)
     let risingView = FadeCurveView(rising: true)
     let fallingView = FadeCurveView(rising: false)
     /// On: an edit of either graph's points is made to the other too, mirrored.
@@ -305,6 +308,7 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
         resetButton.setAX("fade-curve-reset")
         lockButton.setAX("fade-curve-lock", label: loc("fade.curve.lock"))
         stopCheck.setAX("fade-stop-target")
+        levelsStopCheck.setAX("fade-levels-stop-target")
         durationField.delegate = self
         intensityField.delegate = self
         durationField.widthAnchor.constraint(equalToConstant: 90).isActive = true
@@ -326,11 +330,14 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
             p.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         }
         modePopup.action = #selector(modeChanged)
-        for c in [curvePopup as NSControl, domainPopup, stopCheck, modePopup, resetButton] { c.target = self }
+        for c in [curvePopup as NSControl, domainPopup, stopCheck, levelsStopCheck, modePopup, resetButton] {
+            c.target = self
+        }
         curvePopup.action = #selector(curveChanged)
         domainPopup.action = #selector(domainChanged)
         resetButton.action = #selector(resetClicked)
         stopCheck.action = #selector(stopChanged)
+        levelsStopCheck.action = #selector(stopChanged)
         risingView.setAccessibilityIdentifier("fade-curve-rising")
         fallingView.setAccessibilityIdentifier("fade-curve-falling")
         for v in [risingView, fallingView] {
@@ -364,8 +371,10 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
         domainRow.spacing = 6
         let durationRow = NSStackView(views: [label("fade.duration"), durationField])
         durationRow.spacing = 6
-        stopCheck.controlSize = .small
-        stopCheck.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        for c in [stopCheck, levelsStopCheck] {
+            c.controlSize = .small
+            c.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        }
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         let side = NSStackView(views: [
@@ -412,7 +421,9 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
         }
         if gesture == nil { curve = FadeCurveSpec(json: kind["curve"]) }
         for v in [risingView, fallingView] { v.duration = kind["duration"]?.doubleValue ?? 0 }
-        stopCheck.state = kind["stop_target_when_done"] == .bool(true) ? .on : .off
+        let stops: NSControl.StateValue = kind["stop_target_when_done"] == .bool(true) ? .on : .off
+        stopCheck.state = stops
+        levelsStopCheck.state = stops
         modePopup.selectItem(at: Self.modes.firstIndex(of: kind["mode"]?.stringValue ?? "") ?? 0)
         showCurve()
     }
@@ -438,7 +449,8 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
 
     private func applyLock() {
         for c in [
-            durationField, curvePopup, domainPopup, intensityField, resetButton, stopCheck, modePopup, lockButton,
+            durationField, curvePopup, domainPopup, intensityField, resetButton, stopCheck, levelsStopCheck,
+            modePopup, lockButton,
         ]
             as [NSControl]
         {
@@ -551,8 +563,8 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
         onChange?(.mode(Self.modes[i]))
     }
 
-    @objc private func stopChanged() {
+    @objc private func stopChanged(_ sender: NSButton) {
         guard !isLocked else { return }
-        onChange?(.stopTarget(stopCheck.state == .on))
+        onChange?(.stopTarget(sender.state == .on))
     }
 }
