@@ -234,10 +234,16 @@ final class SelectionResponsivenessBenchmark: XCTestCase {
         results["click"] = summary("click", clicks)
         results["click_path"] = clickPath
 
-        // (b) Down once, 100 times, from the top.
+        // (b) Down once, 100 times, from the top. OPENLAB_BENCH_DOWNS=n makes it n, from the top again
+        // after the last cue: a long run to profile with `sample`.
         try await select(row: 0, rows: rows)
         var downs: [Step] = []
-        for _ in 0..<singles { downs.append(try await step(.down, rows: rows)) }
+        let downCount = ProcessInfo.processInfo.environment["OPENLAB_BENCH_DOWNS"].flatMap { Int($0) } ?? singles
+        if downCount != singles { print("BENCH profiling: \(downCount) Downs start now") }
+        for _ in 0..<downCount {
+            if outline.selectedRow >= rows.count - 1 { try await select(row: 0, rows: rows) }
+            downs.append(try await step(.down, rows: rows))
+        }
         results["down"] = summary("down", downs)
 
         // (c) Down 50 times at about 30 a second, five times.
@@ -475,10 +481,12 @@ final class SelectionResponsivenessBenchmark: XCTestCase {
         let leftover = settled.map { ($0 - lastInput) * 1000 }
         let span = (steps.last?.input ?? first) - (steps.first?.input ?? first)
         let busy = log.busy(from: steps.first?.input ?? first, to: settled ?? lastInput)
+        // Where the list ended up: the 50th cue, or how many rows short of it (a selection pulled back).
+        let endedRow = wc.cueList.outlineView.selectedRow
         try await quiet()
         return [
             "behind": behind, "latencies": latencies, "leftover_ms": leftover ?? -1, "presses": steps.count,
-            "span_ms": span * 1000, "busy_ms": busy * 1000,
+            "span_ms": span * 1000, "busy_ms": busy * 1000, "rows_short": start + count - endedRow,
         ]
     }
 
@@ -523,10 +531,12 @@ final class SelectionResponsivenessBenchmark: XCTestCase {
         var latencies: [String: [Double]] = [:]
         var behind: [String: [Int]] = [:]
         var leftovers: [Double] = []
+        var short: [Int] = []
         for b in bursts {
             for (k, v) in (b["latencies"] as? [String: [Double]]) ?? [:] { latencies[k, default: []] += v }
             for (k, v) in (b["behind"] as? [String: Int]) ?? [:] { behind[k, default: []].append(v) }
             leftovers.append((b["leftover_ms"] as? Double) ?? -1)
+            short.append((b["rows_short"] as? Int) ?? -1)
         }
         var out: [String: Any] = ["bursts": bursts]
         for (k, v) in latencies.sorted(by: { $0.key < $1.key }) {
@@ -537,7 +547,10 @@ final class SelectionResponsivenessBenchmark: XCTestCase {
         for (k, v) in behind.sorted(by: { $0.key < $1.key }) {
             print("BENCH burst behind at next press (of 49) \(k): \(v)")
         }
-        print("BENCH burst leftover after last key ms: \(leftovers.map { String(format: "%.1f", $0) })")
+        print(
+            "BENCH burst leftover after last key ms (-1: never all on the last cue): \(leftovers.map { String(format: "%.1f", $0) })"
+        )
+        print("BENCH burst ended this many rows short of the 50th cue: \(short)")
         let spans = bursts.compactMap { $0["span_ms"] as? Double }
         let busy = bursts.compactMap { $0["busy_ms"] as? Double }
         print(
