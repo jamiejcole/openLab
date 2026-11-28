@@ -985,8 +985,12 @@ final class NetworkInspectorTests: XCTestCase {
             let field = inspector.networkMessageField
             let tabArea = try XCTUnwrap(inspector.tabView.selectedTabViewItem?.view)
             tabArea.layoutSubtreeIfNeeded()
-            XCTAssertGreaterThan(tabArea.bounds.width, 300, when)
-            XCTAssertEqual(field.frame.width, tabArea.bounds.width - 24, accuracy: 1, "\(when): fills the tab")
+            // Measured against the tab view's content area, not the item's own view, so a view that kept
+            // its fitted width (the stack before it was pinned in a container) fails.
+            let content = inspector.tabView.contentRect.width
+            XCTAssertGreaterThan(content, 300, when)
+            XCTAssertEqual(tabArea.frame.width, content, accuracy: 1, "\(when): the tab's view spans the tab")
+            XCTAssertEqual(field.frame.width, content - 24, accuracy: 1, "\(when): fills the tab")
         }
         try assertFilled("first shown")
         inspector.tabView.selectTabViewItem(withIdentifier: "basics")
@@ -2230,6 +2234,16 @@ final class UserTestFlowTests: XCTestCase {
         let used = titles.reduce(CGFloat(0)) { $0 + TargetPathControl.itemWidth($1, font: font) }
         XCTAssertLessThanOrEqual(used, control.bounds.width, "every item fits: \(titles)")
         XCTAssertEqual(control.toolTip, url.path)
+    }
+
+    /// A note in place of a path ("No file") stays dimmed: the cut of long titles leaves a short one's
+    /// attributed title alone.
+    func testANoteInThePathControlStaysDimmed() throws {
+        let control = TargetPathControl(frame: NSRect(x: 0, y: 0, width: 400, height: 24))
+        control.showNote(loc("inspector.io.noFile"))
+        let item = try XCTUnwrap(control.pathItems.first)
+        let colour = item.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        XCTAssertEqual(colour, .secondaryLabelColor)
     }
 
     /// The path is built from the URL's own components and generic icons, so a file on a folder that is not

@@ -396,6 +396,9 @@ final class WarningsTests: XCTestCase {
         try runtime(#"{"type":"cue_state","cue":"\#(rain)","state":"paused","reason":"device_lost"}"#)
         let row = try XCTUnwrap(side.rows.firstIndex { $0.cue == rain })
         XCTAssertEqual(side.rows[row].detail, loc("paused.device_lost"))
+        XCTAssertFalse(side.rows[row].broken, "paused in the list, so not marked broken here")
+        let mark = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: row) as? WarningCell)
+        XCTAssertEqual(mark.marker.contentTintColor, MarkColour.caution)
         for width in [CGFloat(280), 200] {
             let height = WarningCell.height(of: side.rows[row], width: width)
             let cell = try XCTUnwrap(side.tableView(side.table, viewFor: nil, row: row) as? WarningCell)

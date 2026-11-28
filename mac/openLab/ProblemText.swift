@@ -215,7 +215,8 @@ enum WarningRows {
                             detail: reasons.joined(separator: "\n"),
                             canRelink: problems.contains { $0.type == "media_missing" },
                             inspectorTab: problems.contains { basicsProblems.contains($0.type) } ? "basics" : nil,
-                            broken: true))
+                            // A cue paused by a lost device reads paused in the list, so its mark is not the cross.
+                            broken: run?.state != .paused))
                 }
                 walk(cue.children)
             }
