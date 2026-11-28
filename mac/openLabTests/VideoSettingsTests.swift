@@ -821,6 +821,18 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertEqual(dialog.modePopup.itemTitles, [loc("resize.mode.scale"), loc("resize.mode.cropOrPad")])
         XCTAssertEqual(dialog.preview.newSize, NSSize(width: 1920, height: 1080))
         XCTAssertEqual([dialog.cancelButton.title, dialog.okButton.title], ["Cancel", "OK"])
+        XCTAssertEqual(window.defaultButtonCell, dialog.okButton.cell, "Return is OK")
+        XCTAssertEqual(dialog.messageLabel.stringValue, "")
+        for (text, wide) in [("0", "1920"), ("99999", "1920"), ("abc", "1920")] {
+            dialog.widthField.stringValue = text
+            dialog.controlTextDidChange(
+                Notification(name: NSControl.textDidChangeNotification, object: dialog.widthField))
+            XCTAssertEqual(dialog.messageLabel.stringValue, loc("settings.video.badSize"), "\(text) as typed")
+            dialog.widthField.stringValue = wide
+            dialog.controlTextDidChange(
+                Notification(name: NSControl.textDidChangeNotification, object: dialog.widthField))
+            XCTAssertEqual(dialog.messageLabel.stringValue, "", "valid again: \(text) cleared")
+        }
         dialog.cancelButton.performClick(nil)
         XCTAssertNil(editor.resizeDialog)
         for (text, width) in [("0", true), ("16385", false), ("abc", true), ("-5", false), ("", true)] {
@@ -2294,6 +2306,29 @@ extension VideoSettingsTests {
         XCTAssertEqual(heading?.isEnabled, false, "the heading is not an item to pick")
     }
 
+    /// The selected row's highlight stays under its controls: after the page is drawn again (a
+    /// removal, an undo, another row renamed, a stage added) the table is above the highlight, so the
+    /// name, size and buttons of the highlighted row are not hidden by a grey bar.
+    func testVideoOutputsSelectedRowKeepsControlsAboveHighlight() async throws {
+        let (_, sc) = try await openThree()
+        let pane = sc.videoPane
+        let id = try XCTUnwrap(pane.shown?.first?.id)
+        func highlightIsBelowTable() -> Bool {
+            let order = pane.holder.subviews
+            guard let box = order.firstIndex(of: pane.selectionBox), let grid = order.firstIndex(of: pane.grid) else {
+                return false
+            }
+            return box < grid
+        }
+        pane.select(id)
+        XCTAssertTrue(highlightIsBelowTable())
+        pane.render(forced: true)
+        XCTAssertTrue(highlightIsBelowTable(), "a redraw leaves the highlight under the table")
+        choose(loc("settings.video.addEmpty"), in: pane.addPopup)
+        await settled(sc) { pane.shown?.count == 4 }
+        XCTAssertTrue(highlightIsBelowTable(), "a new stage's row is drawn over its highlight")
+    }
+
     /// A6: the empty stage picked → a row "Stage 4", 1920 x 1080, going nowhere, selected, and its
     /// editor opens by itself with no region, nothing selected and a dash in every region field.
     func testVideoOutputsEmptyStageOpensEditor() async throws {
@@ -2756,6 +2791,20 @@ extension VideoSettingsTests {
         XCTAssertNil(editor.canvas.selected)
     }
 
+    /// A long stage name is cut with an ellipsis so the canvas label still shows, size kept.
+    func testStageCanvasLongNameIsCutKeepingSize() {
+        let canvas = StageCanvasView()
+        canvas.stageName = String(repeating: "Long stage name ", count: 8)
+        canvas.stageSize = NSSize(width: 1920, height: 1080)
+        let label = canvas.stageLabel(fitting: 200)
+        let lines = label.components(separatedBy: "\n")
+        XCTAssertEqual(lines.last, "1920 × 1080")
+        XCTAssertTrue(lines[0].hasSuffix("…"), label)
+        XCTAssertLessThan(lines[0].count, canvas.stageName.count)
+        canvas.stageName = "Cyc"
+        XCTAssertEqual(canvas.stageLabel(fitting: 200), canvas.stageLabel)
+    }
+
     /// B17: the canvas: the stage outline with its name and size in the middle; each routed region
     /// in its colour labelled "A → Output 1"; the selected one darker; a click on a region selects
     /// it and its row.
@@ -2933,6 +2982,7 @@ extension VideoSettingsTests {
         XCTAssertEqual(editor.displayPopup.titleOfSelectedItem, "Virtual V1 (1920 × 1080)")
         XCTAssertFalse(editor.displaySizeLabel.isEditable)
         XCTAssertEqual([editor.cancelButton.title, editor.okButton.title], ["Cancel", "OK"])
+        XCTAssertEqual(window.defaultButtonCell, editor.okButton.cell, "Return is OK")
         XCTAssertTrue(sc.owns(window), "Edit > Undo acts on this workspace from it")
         editor.cancelButton.performClick(nil)
         XCTAssertNil(sc.routeEditor)

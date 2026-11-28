@@ -56,6 +56,7 @@ final class ResizeStageDialog: NSWindowController, NSTextFieldDelegate {
         super.init(window: window)
         let content = build()
         window.contentView = content
+        window.defaultButtonCell = okButton.cell as? NSButtonCell
         widthField.stringValue = String(width)
         heightField.stringValue = String(height)
         updatePreview()
@@ -185,7 +186,15 @@ final class ResizeStageDialog: NSWindowController, NSTextFieldDelegate {
         }
     }
 
+    /// The range message follows the fields as typed: shown while a side is outside 1 to 16384 (or
+    /// not a number), gone once both are valid.
+    private func updateMessage() {
+        let bad = side(widthField) == nil || side(heightField) == nil
+        messageLabel.stringValue = bad ? loc("settings.video.badSize") : ""
+    }
+
     private func updatePreview() {
+        updateMessage()
         let w = side(widthField) ?? original.width
         let h = side(heightField) ?? original.height
         preview.newSize = NSSize(width: w, height: h)

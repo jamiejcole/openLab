@@ -2183,10 +2183,16 @@ extension VideoCueTests {
         _ = await store.undo()
         await soon("back on Stage 1") { self.movieStage == Self.stage.raw }
         await soon { v.stageSizeLabel.stringValue == "1920 × 1080" }
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        let withStage = [v.stagePopup, v.monitorButton, v.editStageButton].map { $0.frame }
         pickStage(loc("inspector.io.stageNone"), v)
         await soon("on no stage") { self.movieStage == nil }
         await soon { v.stagePopup.titleOfSelectedItem == loc("inspector.io.stageNone") }
         XCTAssertEqual(v.stageSizeLabel.stringValue, "")
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(
+            [v.stagePopup, v.monitorButton, v.editStageButton].map { $0.frame }, withStage,
+            "the row keeps its layout with no stage")
         XCTAssertFalse(v.editStageButton.isEnabled)
         await soon("broken: no stage") { self.brokenTip(Self.movie)?.contains(loc("problem.no_stage")) == true }
     }

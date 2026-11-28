@@ -67,6 +67,7 @@ final class RouteEditorController: NSWindowController, NSTextFieldDelegate {
         super.init(window: window)
         let content = build(mappingName: entry?.mapping?.name)
         window.contentView = content
+        window.defaultButtonCell = okButton.cell as? NSButtonCell
         fill()
         content.layoutSubtreeIfNeeded()
         window.setContentSize(content.fittingSize)

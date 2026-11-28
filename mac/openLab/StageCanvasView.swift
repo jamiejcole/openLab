@@ -68,6 +68,19 @@ final class StageCanvasView: NSView {
         "\(stageName)\n\(String(format: loc("settings.video.resolution"), String(Int(stageSize.width)), String(Int(stageSize.height))))"
     }
 
+    /// `stageLabel` with the name cut short, ending in an ellipsis, so the tag fits `width` (the
+    /// stage's width): a long name must not make the whole label drop out, the size stays.
+    func stageLabel(fitting width: CGFloat) -> String {
+        let size = String(format: loc("settings.video.resolution"), String(Int(stageSize.width)), String(Int(stageSize.height)))
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let room = width - 2 - 10
+        func wide(_ t: String) -> CGFloat { (t as NSString).size(withAttributes: [.font: font]).width }
+        var name = stageName
+        guard wide(name) > room else { return "\(name)\n\(size)" }
+        while !name.isEmpty, wide(name + "…") > room { name.removeLast() }
+        return "\(name)…\n\(size)"
+    }
+
     /// Where two regions overlap, in view coordinates (each pair once).
     var overlaps: [NSRect] {
         let frames = regionFrames
@@ -138,7 +151,7 @@ final class StageCanvasView: NSView {
             hatch.stroke()
             NSGraphicsContext.restoreGraphicsState()
         }
-        drawTag(stageLabel, at: NSPoint(x: stage.midX, y: stage.midY), within: stage, bold: false)
+        drawTag(stageLabel(fitting: stage.width), at: NSPoint(x: stage.midX, y: stage.midY), within: stage, bold: false)
         for (i, (r, frame)) in zip(regions, frames).enumerated() {
             let selected = i == self.selected
             // A region covering the stage's middle has its label under the stage's own.

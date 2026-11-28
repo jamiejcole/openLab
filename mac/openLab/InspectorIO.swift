@@ -112,6 +112,11 @@ final class VideoIOControls {
         Self.makeSmall(stageSizeLabel)
         stageSizeLabel.setAX("inspector-io-stage-size", label: loc("inspector.io.stageSize"))
         stageSizeLabel.textColor = .secondaryLabelColor
+        // The size's room is kept with no stage (the text empty) so the row does not shift.
+        let sample = NSTextField(labelWithString: String(format: loc("inspector.io.pixels"), 3840, 2160))
+        sample.font = stageSizeLabel.font
+        stageSizeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: sample.intrinsicContentSize.width)
+            .isActive = true
         monitorButton.setAX("inspector-io-monitor", label: loc("inspector.io.monitor.ax"))
         Self.makeSmall(monitorButton)
         monitorButton.toolTip = loc("inspector.io.monitor.tip")
