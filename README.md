@@ -9,14 +9,18 @@ GitHub issues and milestones.
 
 ## Installing
 
-openLab is not signed or notarized (that needs a paid developer account), so macOS blocks it the first time you open it. Only continue if the disk image came from this project's release page on GitHub.
+### First open
 
-1. Open the `.dmg` and drag the openLab app onto the Applications shortcut. Eject the disk image.
-2. Open Applications and double-click openLab. macOS says it cannot verify the app; choose Done (or OK).
-3. Right-click (or Control-click) the app and choose Open, then Open again in the box that appears. If there is no Open button in that box, go to System Settings, Privacy & Security, scroll to Security, and choose Open Anyway next to the openLab message, then confirm.
-4. From then on openLab opens with a normal double-click.
+openLab is not signed or notarized: that needs a paid Apple developer account, which this project does not have. macOS therefore blocks it the first time you open it. Before you override that, check that the disk image came from this project's release page on GitHub; if you got it anywhere else, do not open it.
 
-The exact wording differs a little between macOS versions. The disk image also holds the GPL licence and the notices for the third-party components openLab includes (`THIRD-PARTY-NOTICES.txt`, regenerated with `scripts/third-party-notices.py generate`).
+1. Open the `.dmg` and drag the openLab app onto the Applications shortcut in the window. Eject the disk image.
+2. Open Applications and double-click openLab. macOS says it cannot verify that the app is free of malware (the wording varies by version); choose Done (or OK). Do not choose Move to Bin.
+3. Allow it, by the route your macOS offers:
+   - macOS 12 to 14: right-click (or Control-click) the app, choose Open, then Open again in the box that appears.
+   - macOS 15 and later (including macOS 26): that box has no Open button. Open System Settings, then Privacy & Security, scroll down to Security, choose Open Anyway next to the message about openLab, enter your password when asked, then choose Open Anyway once more. This is the only route on these versions, and the message appears only after step 2.
+4. From then on openLab opens with a normal double-click. Each new version you download needs these steps once more.
+
+The disk image also holds the GPL licence and the notices for the third-party components openLab includes (`THIRD-PARTY-NOTICES.txt`, regenerated with `scripts/third-party-notices.py generate`).
 
 ## Using and contributing
 
@@ -45,7 +49,7 @@ make test-mac    # generate the Xcode project and run macOS unit tests + the UI 
 make test-mac-ui-full  # the same with every UI test (run nightly in CI, minus scripts/ui-local-only.txt)
 make mac         # build the Release app with a universal engine: build/Build/Products/Release/openLab.app
 make verify-bundle  # check that app: universal, macOS 12.0 minimum on every slice, one version, icon, valid signature
-make dmg         # the release disk image from that app: build/openLab-<version>.dmg (app, Applications link, LICENSE.txt, THIRD-PARTY-NOTICES.txt)
+make dmg         # the release disk image from that app: build/openLab-<version>.dmg (app, Applications link, LICENSE.txt, THIRD-PARTY-NOTICES.txt, Finder window layout)
 make test-bundle-rebuild  # check an engine-only rebuild still gives a validly signed app (slow; run nightly in CI)
 ```
 
